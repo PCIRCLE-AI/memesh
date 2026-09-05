@@ -933,17 +933,18 @@ class Journey {
   }
 
   createCodexWorkspace() {
-    this.workspace = path.join(this.dir, PROJECT);
-    fs.mkdirSync(this.workspace, { recursive: true, mode: 0o700 });
+    this.workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-lj-ws-')));
     const initialized = run('git', ['init', '--quiet', this.workspace]);
     if (initialized.status !== 0) {
       throw new Error(`Could not initialize the task-owned Codex workspace: ${initialized.stderr.trim()}`);
     }
+    const identified = run('git', [
+      '-C', this.workspace, 'remote', 'add', 'origin', `https://example.invalid/${PROJECT}.git`,
+    ]);
+    if (identified.status !== 0) {
+      throw new Error(`Could not identify the task-owned Codex workspace: ${identified.stderr.trim()}`);
+    }
     return this.workspace;
-  }
-
-  createCodexAutoRegistrationWorkspace() {
-    return this.createCodexWorkspace();
   }
 
   installCodexQueueStub() {
@@ -1406,7 +1407,7 @@ async function runCodex(journey) {
  * real Codex account.
  */
 async function runCodexSessionAutoRegistration(journey) {
-  const workspace = journey.createCodexAutoRegistrationWorkspace();
+  const workspace = journey.createCodexWorkspace();
   const fakeCodex = journey.installCodexQueueStub();
   const configPath = path.join(journey.memeshDir, 'hosts', 'codex-session.json');
   if (fs.existsSync(configPath)) {

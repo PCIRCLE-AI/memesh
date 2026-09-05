@@ -165,6 +165,17 @@ describe('ordinary Codex session companion', () => {
     expect(fs.existsSync(dataDir)).toBe(false);
   });
 
+  it.skipIf(process.platform === 'win32')('rejects a regular-file cwd before automatic state creation', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const connect = vi.fn();
+    await expect(startCodexSessionCompanion(
+      undefined, { ...hook, cwd: config.token_file }, { PLUGIN_ROOT: '/plugin' }, { connect: connect as never },
+    )).rejects.toThrow(/cwd must be a directory/i);
+    expect(connect).not.toHaveBeenCalled();
+    expect(fs.existsSync(dataDir)).toBe(false);
+  });
+
   it.skipIf(process.platform === 'win32')('does not fall back to automatic registration from malformed explicit config', async () => {
     const { config, hook } = fixture();
     const dataDir = automaticDataDir(config.workspace as string);
@@ -173,6 +184,19 @@ describe('ordinary Codex session companion', () => {
     await expect(startCodexSessionCompanion(
       { ...config, workspace: 'relative-workspace' }, hook, { PLUGIN_ROOT: '/plugin' }, { connect: connect as never },
     )).rejects.toThrow(/workspace must be an absolute path/i);
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(fs.existsSync(dataDir)).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not fall back from a regular-file explicit workspace', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const connect = vi.fn();
+
+    await expect(startCodexSessionCompanion(
+      { ...config, workspace: config.token_file }, hook, { PLUGIN_ROOT: '/plugin' }, { connect: connect as never },
+    )).rejects.toThrow(/workspace must be a directory/i);
 
     expect(connect).not.toHaveBeenCalled();
     expect(fs.existsSync(dataDir)).toBe(false);

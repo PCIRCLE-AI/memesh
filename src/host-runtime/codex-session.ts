@@ -104,7 +104,7 @@ function validateCodexSessionStart(
 
   return {
     threadId,
-    workspace: realpath(requiredAbsolutePath(hookInput.cwd, 'cwd')),
+    workspace: requiredExistingDirectory(hookInput.cwd, 'cwd', realpath),
   };
 }
 
@@ -130,7 +130,7 @@ function configuredCodexSessionConfig(
     ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
     ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
   };
-  const configuredWorkspace = realpath(requiredAbsolutePath(config.workspace, 'workspace'));
+  const configuredWorkspace = requiredExistingDirectory(config.workspace, 'workspace', realpath);
   if (configuredWorkspace !== session.workspace) return automaticCodexSessionConfig(session);
   return resolved;
 }
@@ -166,6 +166,16 @@ function requiredAbsolutePath(value: unknown, field: string): string {
   const result = requiredString(value, field);
   if (!path.isAbsolute(result)) throw new Error(`${field} must be an absolute path.`);
   return result;
+}
+
+function requiredExistingDirectory(
+  value: unknown,
+  field: string,
+  realpath: typeof fs.realpathSync,
+): string {
+  const resolved = realpath(requiredAbsolutePath(value, field));
+  if (!fs.statSync(resolved).isDirectory()) throw new Error(`${field} must be a directory.`);
+  return resolved;
 }
 
 async function readHookInput(): Promise<CodexSessionStartInput> {
