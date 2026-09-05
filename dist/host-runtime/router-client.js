@@ -182,9 +182,13 @@ class ActiveRouterHostConnection {
                         }
                         continue;
                     }
-                    if (frame.type === 'session_superseded'
-                        && frame.connection_id === connectionId
-                        && frame.generation === generation) {
+                    if (frame.type === 'session_superseded') {
+                        if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION
+                            || frame.connection_id !== connectionId
+                            || frame.generation !== generation) {
+                            socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router frame identity does not match the registered host.'));
+                            return;
+                        }
                         this.closed = true;
                         this.clearHeartbeat();
                         if (this.currentSocket === socket)
@@ -194,6 +198,10 @@ class ActiveRouterHostConnection {
                     }
                     if (frame.type !== 'deliver')
                         continue;
+                    if (!isDelivery(frame, connectionId, generation, this.input.identity)) {
+                        socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router frame identity does not match the registered host.'));
+                        return;
+                    }
                     this.deliveryTail = this.deliveryTail.then(() => this.handleDelivery(socket, frame, connectionId, generation)).catch(() => undefined);
                 }
             });
@@ -240,7 +248,7 @@ class ActiveRouterHostConnection {
         this.heartbeat.unref();
     }
     async handleDelivery(socket, frame, connectionId, generation) {
-        if (this.closed || !isDelivery(frame, connectionId, generation))
+        if (this.closed || !isDelivery(frame, connectionId, generation, this.input.identity))
             return;
         const common = {
             version: AGENT_ROUTER_PROTOCOL_VERSION,
@@ -420,14 +428,23 @@ function startPackagedRouter() {
         child.once('error', reject);
     });
 }
-function isDelivery(value, connectionId, generation) {
+function isDelivery(value, connectionId, generation, identity) {
+    const envelope = value.envelope;
     return value.type === 'deliver'
+        && value.version === AGENT_ROUTER_PROTOCOL_VERSION
+        && value.project === identity.project
+        && value.principal_id === identity.principal_id
+        && value.session_instance_id === identity.session_instance_id
         && value.connection_id === connectionId
         && value.generation === generation
+        && value.untrusted_payload === true
         && typeof value.attempt_id === 'string'
         && typeof value.delivery_id === 'string'
         && Number.isInteger(value.hops)
-        && isRecord(value.envelope);
+        && isRecord(envelope)
+        && envelope.project === identity.project
+        && ((envelope.target_kind === 'principal' && envelope.recipient === identity.principal_id)
+            || (envelope.target_kind === 'session' && envelope.recipient === identity.session_instance_id));
 }
 function isRouterUnavailable(error) {
     const code = error?.code;

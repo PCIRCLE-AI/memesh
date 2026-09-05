@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getProjectName } from '../../src/core/paths.js';
+import { execFileSync } from 'node:child_process';
 import { startCodexSessionCompanion } from '../../src/host-runtime/codex-session.js';
 
 const tempDirs: string[] = [];
@@ -86,6 +87,23 @@ describe('ordinary Codex session companion', () => {
     expect(fs.statSync(dataDir).mode & 0o777).toBe(0o700);
     expect(fs.statSync(path.join(dataDir, 'agent-router.token')).mode & 0o777).toBe(0o600);
     expect(fs.existsSync(path.join(dataDir, 'hosts', 'codex-session.json'))).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32')('derives automatic Codex scope from the full remote identity, not a colliding basename', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    execFileSync('git', ['-C', config.workspace as string, 'init'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', config.workspace as string, 'remote', 'add', 'origin', 'https://github.com/owner-a/shared.git'], { stdio: 'ignore' });
+    const connect = vi.fn(async () => ({ connection_id: 'automatic', generation: 1, close: async () => undefined }));
+
+    await startCodexSessionCompanion(
+      undefined, hook, { PLUGIN_ROOT: '/plugin' }, { connect: connect as never },
+    );
+
+    expect(connect).toHaveBeenCalledWith(expect.objectContaining({
+      socket_path: path.join(dataDir, 'agent-router-v2.sock'),
+      identity: expect.objectContaining({ project: expect.stringMatching(/^shared~[0-9a-f]{32}$/) }),
+    }));
   });
 
   it.skipIf(process.platform === 'win32')('accepts a resume SessionStart for automatic registration', async () => {

@@ -26,9 +26,9 @@
 //
 // Everything else is a REFUSAL rather than a rewrite. In particular an
 // absolute filesystem path is not a scope identifier and never can be:
-// `getProjectName` (core/paths.ts) has three layers — git remote slug, git
-// repo-root basename, and `basename(realpath)-<8 hex>` — and not one of them
-// can return a value beginning with a separator or a drive letter. So a value
+// `getProjectName` (core/paths.ts) hashes a credential-free remote locator or
+// native real path into `<label>~<32 hex>`, which cannot begin with a separator
+// or a drive letter. So a value
 // of that shape is provably not a project identity this product produced, and
 // the same holds for the agent id on the other side of the same key. Refusing
 // it names the field and what a valid value looks like; silently rewriting

@@ -108,6 +108,14 @@ resumed thread then registers automatically under the current project with a
 thread-scoped principal. Use `message discover` to obtain the exact live session
 ID. No manual `agent setup` is required.
 
+The automatic project is a readable repo label plus a 32-hex identity suffix.
+For a network Git remote, the suffix covers its credential-free host and full
+namespace; otherwise it covers the native real path. This keeps the same repo
+together across subdirectories, symlinks, remote-backed clones, and linked
+worktrees without letting two unrelated repos named `shared` discover or receive
+each other's messages. `memesh briefing` in that workspace reports the exact
+project value.
+
 If one workspace needs a stable named principal across different threads, run
 `memesh agent setup codex-session --project my-project --principal codex-reviewer
 --workspace "$PWD"` there and restart Codex. The owner-private config overrides

@@ -31,7 +31,7 @@ import {
   getMemeshDirFromDbPath,
   getProjectName,
   redactSecrets,
-  slugFromRemoteUrl,
+  canonicalRemoteLocator,
 } from './_generated/core-paths.js';
 import { autoCaptureDecision } from './_generated/capture-flag.js';
 export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP } from './_generated/work-topology.js';
@@ -126,7 +126,7 @@ import {
   tokenizeQuery,
 } from './_generated/fts-index.js';
 
-export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectName, redactSecrets, slugFromRemoteUrl };
+export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectName, redactSecrets, canonicalRemoteLocator };
 
 /**
  * Resolve the package root from a hook file's `import.meta.url`.

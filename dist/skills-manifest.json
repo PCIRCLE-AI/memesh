@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "7ab02ad57833d140f061037b9381ce5d39f206953adf79d6652313a8c4e6405c",
-      "bytes": 5752
+      "sha256": "281735c734cba0840b51ec2a6331e356ac9d36e4a2598573db797de4b9aac266",
+      "bytes": 7459
     },
     {
       "path": "scripts/hooks/_generated/fts-index.js",
@@ -88,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "0b5d4b4fe8521b9588153d0c6f6fd368d78e26653868648f17cbd0fa54c47691",
-      "bytes": 43559
+      "sha256": "3e3418b25247ad8f5008b240edce996362ad531643eeafe28129737853b1e01f",
+      "bytes": 43569
     },
     {
       "path": "scripts/hooks/decision-nudge.js",

@@ -6,7 +6,7 @@ import path from 'path';
 import { createRequire } from 'module';
 import {
   getProjectName,
-  slugFromRemoteUrl,
+  canonicalRemoteLocator,
   _clearProjectNameCache,
 } from '../../src/core/paths.js';
 
@@ -33,29 +33,35 @@ function makeRepo(remoteUrl?: string): string {
   return real;
 }
 
-describe('slugFromRemoteUrl', () => {
+describe('canonicalRemoteLocator', () => {
   const cases: [string, string][] = [
-    ['https://github.com/PCIRCLE-AI/memesh-llm-memory.git', 'memesh-llm-memory'],
-    ['https://github.com/PCIRCLE-AI/memesh-llm-memory', 'memesh-llm-memory'],
-    ['git@github.com:PCIRCLE-AI/memesh-llm-memory.git', 'memesh-llm-memory'],
-    ['git@github.com:PCIRCLE-AI/memesh-llm-memory', 'memesh-llm-memory'],
-    ['ssh://git@github.com/owner/Repo.git', 'Repo'],
-    ['https://gitlab.com/group/subgroup/proj.git', 'proj'],
-    ['https://host/owner/repo/', 'repo'],
+    ['https://github.com/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
+    ['git@github.com:PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
+    ['ssh://git@GITHUB.COM/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
+    ['ssh://git@github.com:22/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
+    ['https://github.com:443/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
+    ['https://user:secret@host.example/Owner/Repo.git', 'host.example/Owner/Repo'],
+    ['ssh://git@host.example:2222/Owner/Repo.git', 'host.example:2222/Owner/Repo'],
+    ['https://host.example:8443/Owner/Repo.git', 'host.example:8443/Owner/Repo'],
   ];
   for (const [url, expected] of cases) {
     it(`${url} → ${expected}`, () => {
-      expect(slugFromRemoteUrl(url)).toBe(expected);
+      expect(canonicalRemoteLocator(url)).toBe(expected);
     });
   }
-  it('returns null for an empty/whitespace url', () => {
-    expect(slugFromRemoteUrl('')).toBeNull();
-    expect(slugFromRemoteUrl('   ')).toBeNull();
+  it('returns null for empty and local filesystem remotes', () => {
+    expect(canonicalRemoteLocator('')).toBeNull();
+    expect(canonicalRemoteLocator('   ')).toBeNull();
+    expect(canonicalRemoteLocator('/local/repo.git')).toBeNull();
+    expect(canonicalRemoteLocator('C:/work/repo.git')).toBeNull();
+    expect(canonicalRemoteLocator('C:\\work\\repo.git')).toBeNull();
+    expect(canonicalRemoteLocator('\\\\server\\share\\repo.git')).toBeNull();
+    expect(canonicalRemoteLocator('file:///local/repo.git')).toBeNull();
   });
 
   it('the hook mirror produces identical slugs', () => {
     for (const [url, expected] of cases) {
-      expect(shared.slugFromRemoteUrl(url)).toBe(expected);
+      expect(shared.canonicalRemoteLocator(url)).toBe(expected);
     }
   });
 });
@@ -72,7 +78,7 @@ describe('getProjectName — layered git identity', () => {
     created.push(repo);
     // The directory basename is a random tmp name, NOT "canonical-name".
     expect(path.basename(repo)).not.toBe('canonical-name');
-    expect(getProjectName(repo)).toBe('canonical-name');
+    expect(getProjectName(repo)).toMatch(/^canonical-name~[0-9a-f]{32}$/);
   });
 
   it('a subdirectory resolves to the SAME identity as the repo root (fixes the split)', () => {
@@ -81,14 +87,96 @@ describe('getProjectName — layered git identity', () => {
     const sub = path.join(repo, 'backend', 'src');
     fs.mkdirSync(sub, { recursive: true });
     _clearProjectNameCache();
-    expect(getProjectName(sub)).toBe('whole-repo');
-    expect(getProjectName(repo)).toBe('whole-repo');
+    expect(getProjectName(sub)).toMatch(/^whole-repo~[0-9a-f]{32}$/);
+    expect(getProjectName(repo)).toBe(getProjectName(sub));
+  });
+
+  it('keeps same-basename repositories on different remote namespaces isolated', () => {
+    const ownerA = makeRepo('https://github.com/owner-a/shared.git');
+    const ownerB = makeRepo('git@github.com:owner-b/shared.git');
+    const otherHost = makeRepo('https://gitlab.example/owner-a/shared.git');
+    created.push(ownerA, ownerB, otherHost);
+    const identities = [getProjectName(ownerA), getProjectName(ownerB), getProjectName(otherHost)];
+    expect(new Set(identities).size).toBe(3);
+    for (const identity of identities) expect(identity).toMatch(/^shared~[0-9a-f]{32}$/);
+  });
+
+  it('normalizes standard HTTPS and SSH spellings of one remote to one identity', () => {
+    const https = makeRepo('https://github.com/Owner/CaseSensitiveRepo.git');
+    const ssh = makeRepo('git@GITHUB.COM:Owner/CaseSensitiveRepo.git');
+    created.push(https, ssh);
+    expect(getProjectName(https)).toBe(getProjectName(ssh));
+  });
+
+  it('one remote identity converges across root, subdir, symlink, and git worktree', () => {
+    const repo = makeRepo('https://github.com/Owner/worktree-case.git');
+    created.push(repo);
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\n');
+    git(repo, ['add', 'tracked.txt']);
+    git(repo, ['commit', '-m', 'fixture']);
+    const sub = path.join(repo, 'nested');
+    fs.mkdirSync(sub);
+    const link = `${repo}-link`;
+    fs.symlinkSync(repo, link);
+    created.push(link);
+    const worktree = `${repo}-worktree`;
+    git(repo, ['worktree', 'add', '--detach', worktree]);
+    created.push(worktree);
+
+    const identities = [repo, sub, link, worktree].map((cwd) => {
+      _clearProjectNameCache();
+      return getProjectName(cwd);
+    });
+    expect(new Set(identities)).toEqual(new Set([identities[0]]));
+  });
+
+  it('never exposes remote user-info in the project identity', () => {
+    const repo = makeRepo('https://private-user:private-password@github.com/Owner/safe-name.git');
+    created.push(repo);
+    const identity = getProjectName(repo);
+    expect(identity).toMatch(/^safe-name~[0-9a-f]{32}$/);
+    expect(identity).not.toContain('private-user');
+    expect(identity).not.toContain('private-password');
+  });
+
+  it('bounds a long readable label so the complete routing field is at most 200 chars', () => {
+    const longLabel = 'r'.repeat(190);
+    const repo = makeRepo(`https://github.com/Owner/${longLabel}.git`);
+    created.push(repo);
+    const identity = getProjectName(repo);
+    expect(identity.length).toBe(200);
+    expect(identity).toMatch(/~[0-9a-f]{32}$/);
   });
 
   it('falls back to the repo root basename when there is no remote', () => {
     const repo = makeRepo(); // no remote
     created.push(repo);
-    expect(getProjectName(repo)).toBe(path.basename(repo));
+    expect(getProjectName(repo)).toMatch(new RegExp(`^${path.basename(repo)}~[0-9a-f]{32}$`));
+  });
+
+  it('keeps same-basename no-remote git repositories at different roots isolated', () => {
+    const parentA = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-git-pa-')));
+    const parentB = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-git-pb-')));
+    created.push(parentA, parentB);
+    const repoA = path.join(parentA, 'shared');
+    const repoB = path.join(parentB, 'shared');
+    fs.mkdirSync(repoA);
+    fs.mkdirSync(repoB);
+    git(repoA, ['init']);
+    git(repoB, ['init']);
+    expect(getProjectName(repoA)).not.toBe(getProjectName(repoB));
+  });
+
+  it('keeps a no-remote git worktree on the primary repository identity', () => {
+    const repo = makeRepo();
+    created.push(repo);
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'one\n');
+    git(repo, ['add', 'tracked.txt']);
+    git(repo, ['commit', '-m', 'fixture']);
+    const worktree = `${repo}-worktree`;
+    git(repo, ['worktree', 'add', '--detach', worktree]);
+    created.push(worktree);
+    expect(getProjectName(worktree)).toBe(getProjectName(repo));
   });
 
   it('a non-git directory gets basename plus a hash of its real path', () => {
@@ -96,8 +184,7 @@ describe('getProjectName — layered git identity', () => {
     const real = fs.realpathSync(dir);
     created.push(real);
     const name = getProjectName(real);
-    // `<basename>-<8 hex>` — bare basename collided across same-named dirs.
-    expect(name).toMatch(new RegExp(`^${path.basename(real)}-[0-9a-f]{8}$`));
+    expect(name).toMatch(new RegExp(`^${path.basename(real)}~[0-9a-f]{32}$`));
   });
 
   it('two same-named non-git directories resolve to TWO identities', () => {
@@ -115,8 +202,8 @@ describe('getProjectName — layered git identity', () => {
     const idB = getProjectName(notesB);
     expect(idA).not.toBe(idB);
     // Both still carry the human-readable basename up front.
-    expect(idA.startsWith('notes-')).toBe(true);
-    expect(idB.startsWith('notes-')).toBe(true);
+    expect(idA.startsWith('notes~')).toBe(true);
+    expect(idB.startsWith('notes~')).toBe(true);
   });
 
   it('the same non-git directory resolves to ONE identity, even via a symlink', () => {
@@ -166,7 +253,7 @@ describe('getProjectName — layered git identity', () => {
     const ghost = path.join(os.tmpdir(), `memesh-ghost-${process.pid}`, 'gone');
     expect(fs.existsSync(ghost)).toBe(false);
     const core = getProjectName(ghost);
-    expect(core).toMatch(/^gone-[0-9a-f]{8}$/);
+    expect(core).toMatch(/^gone~[0-9a-f]{32}$/);
     // The mirror must take the identical fallback.
     _clearProjectNameCache();
     expect(shared.getProjectName(ghost)).toBe(core);

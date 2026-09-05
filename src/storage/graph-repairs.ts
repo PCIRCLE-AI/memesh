@@ -731,8 +731,8 @@ export const AGENT_SCOPE_PATH_KEY = 'agent_scope_path_identity';
  *
  * The rule applied here is the ONLY one that is mechanical: a value spelled as
  * an absolute filesystem path is rewritten to its final segment. It is safe
- * because `getProjectName` cannot produce such a value at any of its three
- * layers (git remote slug, git repo-root basename, `basename-<hash>`), so the
+ * because `getProjectName` cannot produce such a value from either its remote
+ * locator or native-real-path identity layer, so the
  * path spelling is a caller writing its own home directory or checkout path
  * where its NAME belonged, and the final segment is that name. The write path
  * now refuses the same shape (core/agent-scope-id.ts), so the divergence
@@ -744,15 +744,17 @@ export const AGENT_SCOPE_PATH_KEY = 'agent_scope_path_identity';
  *   - It does not merge `project` `memesh-llm-memory` into `memesh`, the
  *     LARGEST split on that graph (38 vs 28 messages). They ARE one project:
  *     `gh api repos/PCIRCLE-AI/memesh-llm-memory` answers `PCIRCLE-AI/memesh`,
- *     so the repository was renamed, and both values are `getProjectName`
- *     outputs for one working directory — the remote slug before and after the
- *     rename, the repo-root basename when no origin is configured. But the
+ *     so the repository was renamed, and both values were legacy
+ *     `getProjectName` outputs for one working directory — the remote slug
+ *     before and after the rename, or the repo-root basename when no origin
+ *     was configured. But the
  *     evidence that proves it is a network call against one owner's GitHub
  *     account. A `runOnceMigration` firing inside `openDatabase` on an
  *     arbitrary machine has no way to know it, and `src/core/project-tags.ts`
  *     already states the standing rule for exactly this case: the mapping is
- *     user-driven. `memesh kg rename-project --from memesh-llm-memory --to
- *     memesh` is the owner-driven, dry-run-by-default answer, and it now moves
+ *     user-driven. The owner first reads the exact current `<label>~<32 hex>`
+ *     identity from `memesh briefing`, then previews `memesh kg rename-project
+ *     --from memesh-llm-memory --to <current-identity>`; the command now moves
  *     these message rows as well as the project tags.
  *
  *     Nor may this pass resolve it from `getProjectName(process.cwd())`, which

@@ -56,6 +56,67 @@ async function leaveOrphanedSocket(socketPath: string): Promise<void> {
   fixtureChild = undefined;
 }
 
+async function startPostRegistrationFixture(
+  socketPath: string,
+  firstFrame: (connectionId: string, generation: number) => Record<string, unknown>,
+): Promise<{ registrations: () => number; close: () => Promise<void> }> {
+  let registrationCount = 0;
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer(socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    socket.once('data', chunk => {
+      const request = JSON.parse(chunk.toString('utf8').trim()) as { request_id: string };
+      registrationCount += 1;
+      const connectionId = `connection-${registrationCount}`;
+      socket.write(`${JSON.stringify({
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
+        request_id: request.request_id,
+        ok: true,
+        result: { connection_id: connectionId, generation: registrationCount, lease_ms: 60_000 },
+      })}\n`);
+      if (registrationCount === 1) {
+        setImmediate(() => socket.write(`${JSON.stringify(firstFrame(connectionId, registrationCount))}\n`));
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(socketPath, resolve);
+  });
+  fs.chmodSync(socketPath, 0o600);
+  return {
+    registrations: () => registrationCount,
+    close: async () => {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    },
+  };
+}
+
+function validDeliveryFrame(connectionId: string, generation: number): Record<string, unknown> {
+  return {
+    version: AGENT_ROUTER_PROTOCOL_VERSION,
+    type: 'deliver',
+    request_id: 'delivery-request',
+    attempt_id: 'attempt-a',
+    delivery_id: 'delivery-a',
+    project: 'project-a',
+    principal_id: 'principal-a',
+    session_instance_id: 'session-a',
+    connection_id: connectionId,
+    generation,
+    hops: 0,
+    untrusted_payload: true,
+    envelope: {
+      message_id: 'message-a', project: 'project-a', sender: 'sender-a', sender_host: null,
+      recipient: 'principal-a', target_kind: 'principal', content_type: 'application/json',
+      correlation_id: null, reply_to: null, privacy: 'private',
+      created_at: '2026-09-06T00:00:00.000Z', payload: { text: 'untrusted' }, provenance: {},
+    },
+  };
+}
+
 describe.skipIf(process.platform === 'win32')('production router host client', () => {
   it('uses the unified correlated protocol and invokes a delivery only once for duplicate notify hints', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-client-'));
@@ -104,6 +165,22 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
       delivery_id: sent.delivery_id,
       connection_id: connection?.connection_id,
       generation: connection?.generation,
+    });
+
+    const sessionSent = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'session-a', target_kind: 'session',
+      idempotency_key: 'session-target', payload: { text: 'session' }, content_type: 'application/json',
+    });
+    await notifier.notify({
+      project: sessionSent.project,
+      delivery_id: sessionSent.delivery_id,
+      event_id: sessionSent.event_id,
+      target_kind: sessionSent.target_kind,
+      target_id: sessionSent.recipient,
+    });
+    await vi.waitFor(() => expect(delivered).toHaveBeenCalledTimes(2));
+    expect(delivered.mock.calls[1][0].envelope).toMatchObject({
+      project: 'project-a', recipient: 'session-a', target_kind: 'session',
     });
   });
 
@@ -263,6 +340,80 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     } finally {
       await connection?.close();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('reconnects instead of accepting a wrong-version supersession frame', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rc-post-version-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const fixture = await startPostRegistrationFixture(socketPath, (connectionId, generation) => ({
+      version: AGENT_ROUTER_PROTOCOL_VERSION + 1,
+      type: 'session_superseded',
+      connection_id: connectionId,
+      generation,
+    }));
+    try {
+      connection = await connectRouterHost({
+        socket_path: socketPath,
+        auth_token: 'token',
+        identity: {
+          project: 'project-a', principal_id: 'principal-a',
+          session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+        },
+        deliver: async () => ({ host: 'fixture', status: 'queued' }),
+        resilience: { initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0 },
+      });
+      await vi.waitFor(() => expect(fixture.registrations()).toBe(2));
+      expect(connection.connection_id).toBe('connection-2');
+      expect(connection.generation).toBe(2);
+    } finally {
+      await connection?.close();
+      connection = undefined;
+      await fixture.close();
+    }
+  });
+
+  it.each([
+    ['wrong version', (frame: Record<string, unknown>) => ({ ...frame, version: AGENT_ROUTER_PROTOCOL_VERSION + 1 })],
+    ['cross-project scope', (frame: Record<string, unknown>) => ({ ...frame, project: 'project-b' })],
+    ['cross-principal scope', (frame: Record<string, unknown>) => ({ ...frame, principal_id: 'principal-b' })],
+    ['cross-session scope', (frame: Record<string, unknown>) => ({ ...frame, session_instance_id: 'session-b' })],
+    ['missing untrusted marker', (frame: Record<string, unknown>) => {
+      const { untrusted_payload: _removed, ...rest } = frame;
+      return rest;
+    }],
+    ['cross-target envelope', (frame: Record<string, unknown>) => ({
+      ...frame,
+      envelope: { ...(frame.envelope as Record<string, unknown>), recipient: 'principal-b' },
+    })],
+  ] as const)('rejects and reconnects after a %s delivery frame', async (_name, mutate) => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rc-post-deliver-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const fixture = await startPostRegistrationFixture(
+      socketPath,
+      (connectionId, generation) => mutate(validDeliveryFrame(connectionId, generation)),
+    );
+    const delivered = vi.fn(async () => ({ host: 'fixture', status: 'queued' }));
+    try {
+      connection = await connectRouterHost({
+        socket_path: socketPath,
+        auth_token: 'token',
+        identity: {
+          project: 'project-a', principal_id: 'principal-a',
+          session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+        },
+        deliver: delivered,
+        resilience: { initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0 },
+      });
+      await vi.waitFor(() => expect(fixture.registrations()).toBe(2));
+      expect(delivered).not.toHaveBeenCalled();
+      expect(connection.connection_id).toBe('connection-2');
+    } finally {
+      await connection?.close();
+      connection = undefined;
+      await fixture.close();
     }
   });
 

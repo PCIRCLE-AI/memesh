@@ -1718,7 +1718,7 @@ memesh kg backfill-relations [--project <name>] [--dry-run] [--max-per-source <n
 
 ### memesh kg rename-project
 
-Merge or rename a project across every entity **and every durable agent message scoped to it**. Heals project tags that were split by an identity-rule change: tags from before project identity became git-based (e.g. a repo captured under both `project:tim` and `project:TIM`, or memories captured in a subdirectory tagged with the subdirectory name), and — since non-git identity gained its real-path hash suffix — bare-basename tags like `project:notes` that should merge into the new `project:notes-<8 hex>` form (run with no flags to see both spellings side by side). The system cannot infer the correct project for an old value, so the mapping is user-driven.
+Merge or rename a project across every entity **and every durable agent message scoped to it**. Automatic identities use `<readable repo label>~<32 hex>` and hash either a credential-free full remote locator or a native real path, preventing unrelated same-basename repositories from sharing an inbox. Existing bare Git names and older non-Git `<name>-<8 hex>` values are not rewritten automatically: run with no flags to inspect the stored spellings, then use an explicit mapping when one old project has one unambiguous destination. An old basename that already mixed multiple repositories has no stored provenance from which MeMesh can safely split its rows; do not guess that migration.
 
 **Usage**:
 

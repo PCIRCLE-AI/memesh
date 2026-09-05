@@ -29,7 +29,7 @@ import {
   memeshDir as coreMemeshDir,
   getDbPath as coreGetDbPath,
   getMemeshDirFromDbPath as coreGetMemeshDirFromDbPath,
-  slugFromRemoteUrl as coreSlugFromRemoteUrl,
+  canonicalRemoteLocator as coreCanonicalRemoteLocator,
   getProjectName as coreGetProjectName,
 } from '../../src/core/paths.js';
 import { removeFromFts, insertFtsRow } from '../../src/storage/fts-index.js';
@@ -51,7 +51,7 @@ describe('F5 mirror parity: scripts/hooks/_shared.js vs src/core', () => {
   });
 
   describe('paths parity (wrong DB path / project = silent corruption)', () => {
-    it('slugFromRemoteUrl matches core for every URL shape', () => {
+    it('canonicalRemoteLocator matches core for every URL shape', () => {
       const urls = [
         'https://github.com/PCIRCLE-AI/memesh-llm-memory.git',
         'https://github.com/PCIRCLE-AI/memesh-llm-memory',
@@ -62,8 +62,8 @@ describe('F5 mirror parity: scripts/hooks/_shared.js vs src/core', () => {
         '',
       ];
       for (const url of urls) {
-        expect(shared.slugFromRemoteUrl(url), `slug drift for ${JSON.stringify(url)}`)
-          .toBe(coreSlugFromRemoteUrl(url));
+        expect(shared.canonicalRemoteLocator(url), `remote locator drift for ${JSON.stringify(url)}`)
+          .toBe(coreCanonicalRemoteLocator(url));
       }
     });
 
