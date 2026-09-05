@@ -340,7 +340,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         write(`src/host-runtime/${runtime}.ts`);
         for (const extension of ['.js', '.js.map', '.d.ts', '.d.ts.map']) write(`dist/host-runtime/${runtime}${extension}`);
       }
-      const codexSession = "CODEX_THREAD_ID hook_event_name !== 'SessionStart' adapter_kind: 'codex-cli-queue' workspace !== cwd";
+      const codexSession = "CODEX_THREAD_ID hook_event_name !== 'SessionStart' adapter_kind: 'codex-cli-queue' automaticCodexSessionConfig readCodexSessionConfigIfPresent codex-thread-${session.threadId}";
       write('src/host-runtime/codex-session.ts', codexSession);
       write('dist/host-runtime/codex-session.js', codexSession);
       write('src/host-runtime/acp.ts', 'session_update_file O_NOFOLLOW');
@@ -350,17 +350,17 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('skills/memesh/SKILL.md', 'message polling active compatible managed host stopped, missing, or replaced session message storage report');
       write('llms-install.md', '22.13.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report');
       write('README.md', [
-        'message memesh agent setup codex-session without polling or a human reminder stopped, missing, or disconnected Codex session message storage report',
+        'message registers automatically no manual `agent setup` is required without polling or a human reminder stopped, missing, or disconnected Codex session message storage report',
         'untrusted JSON-encoded payload is limited to 65,536 UTF-8 bytes (64 KiB); intake, acknowledgement, and workflow disposition are separate facts.',
         'The complete native envelope is limited to 16,384 bytes (16 KiB); native_message_too_large and recipient_unavailable are distinct. Principal targets retain durable store-and-forward behavior.',
       ].join('\n'));
       write('README.zh-TW.md', [
-        'message memesh agent setup codex-session 沒有輪詢或人工提醒 停止、缺失或斷線 message storage report',
+        'message 自動以 thread-scoped identity 註冊 不需要手動執行 `agent setup` 沒有輪詢或人工提醒 停止、缺失或斷線 message storage report',
         'JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload；intake、acknowledgement 與 workflow disposition 分開記錄。',
         '完整 native envelope 不超過 16,384 bytes（16 KiB）；native_message_too_large 與 recipient_unavailable 分開回報。Principal target 保留 durable store-and-forward。',
       ].join('\n'));
       write('README.de.md', [
-        'message memesh agent setup codex-session ohne Polling oder menschliche Erinnerung gestoppte, fehlende oder getrennte Codex-Session message storage report',
+        'message registriert sich ein manuelles `agent setup` ist nicht erforderlich ohne Polling oder menschliche Erinnerung gestoppte, fehlende oder getrennte Codex-Session message storage report',
         'Beim nicht vertrauenswürdigen, JSON-kodierten Payload gelten 65.536 UTF-8-Bytes (64 KiB); Intake, Bestätigung und Workflow-Status werden getrennt protokollieren.',
         'Die vollständige native Envelope ist auf 16.384 Bytes (16 KiB) begrenzt; native_message_too_large und recipient_unavailable bleiben getrennt. Principal-Ziele behalten Durable Store-and-Forward.',
       ].join('\n'));

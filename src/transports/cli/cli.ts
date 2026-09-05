@@ -12,7 +12,7 @@ import {
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, reindex, setPinned } from '../../core/operations.js';
 import { readConfig, writeConfig, maskApiKey, detectCapabilities } from '../../core/config.js';
 import { MAX_LANGUAGE_LENGTH, languageValueError } from '../../core/output-language.js';
-import { getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
 import { flushPendingEmbeddings, canRefillVectorIndex } from '../../core/embedder.js';
 import { NAMESPACES } from '../../core/types.js';
@@ -1093,7 +1093,8 @@ messageStorageCmd
 // This writes reusable owner-private configuration only. Managed hosts create
 // a fresh exact session after their native input boundary is ready. The
 // ordinary Codex path instead binds only the thread ID supplied by its own
-// SessionStart hook and only for an explicitly configured real workspace.
+// SessionStart hook. Its explicit config is an optional stable-principal
+// override for one real workspace; plugin sessions auto-register without it.
 const agentCmd = program
   .command('agent')
   .description('Set up reusable owner-private local host configuration');
@@ -1123,7 +1124,7 @@ agentCmd
     const routerTokenFile = path.join(messageDir, 'agent-router.token');
     ensureRouterTokenFile(routerTokenFile);
     const common = {
-      router_socket: path.join(messageDir, 'agent-router.sock'),
+      router_socket: getAgentRouterSocketPath(),
       token_file: routerTokenFile,
       // The fourth producer of a routing identity, after the MCP, HTTP and CLI
       // message surfaces. `send` refuses a path-shaped project or recipient,
@@ -1162,16 +1163,19 @@ agentCmd
         ? 'ordinary-session-native-queue'
         : host === 'claude' ? 'session-owned-channel' : 'memesh-managed-session',
       session_identity: host === 'codex-session' ? 'codex-thread-id-at-session-start' : 'generated-per-process',
-      ordinary_sessions: host === 'codex-session' ? 'explicit-workspace-opt-in' : 'presence-only/inbound-unavailable',
+      ordinary_sessions: host === 'codex-session' ? 'automatic-thread-scoped-with-workspace-override' : 'presence-only/inbound-unavailable',
       registration_command: registrationCommand,
       launch_command: launchCommand,
-      next_command: registrationCommand ?? launchCommand ?? 'Restart Codex in the configured workspace',
+      next_command: registrationCommand ?? launchCommand ?? 'Restart Codex in the configured workspace to apply the identity override',
     };
     console.log(opts.json ? JSON.stringify(result) : [
       `Created owner-private ${host} config: ${configPath}`,
       'No active or stopped ordinary session was attached.',
       ...(registrationCommand ? [`Register once: ${registrationCommand}`] : []),
-      ...(launchCommand ? [`Launch: ${launchCommand}`] : ['Restart Codex in the configured workspace.']),
+      ...(launchCommand ? [`Launch: ${launchCommand}`] : [
+        'This optional override gives that workspace a stable named principal.',
+        'Restart Codex in the configured workspace to apply it.',
+      ]),
     ].join('\n'));
   });
 

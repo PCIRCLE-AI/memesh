@@ -5,5 +5,6 @@ export declare function readHostConfigFile<T extends Record<string, unknown>>(co
 export declare function readTokenFile(tokenFile: unknown): string;
 export declare function ensureRouterTokenFile(tokenFile: string): string;
 export declare function requiredString(value: unknown, field: string): string;
+export declare function normalizeConfiguredRouterSocket(value: unknown): string;
 export declare function optionalStringArray(value: unknown, field: string): string[];
 //# sourceMappingURL=config.d.ts.map

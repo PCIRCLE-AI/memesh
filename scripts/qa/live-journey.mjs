@@ -66,11 +66,14 @@
 // connected it keeps the directory rather than racing that spawn.
 
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 export const PROJECT = 'memesh-live-journey';
 export const DEFAULT_WAIT_MS = 300_000;
@@ -112,12 +115,16 @@ export function helpText() {
     'Usage:',
     '  npm run qa:live-journey -- --host codex  [--out report.json] [--keep] [--wait-ms N]',
     '  npm run qa:live-journey -- --host claude [--out report.json] [--keep] [--wait-ms N]',
+    '  npm run qa:live-journey -- --codex-session-auto-registration [--out report.json] [--keep]',
     '',
     'Verified invocation on macOS (the socket path must fit AF_UNIX sun_path):',
     '  TMPDIR=/private/tmp npm run qa:live-journey -- --host codex --out report.json',
     '',
     'Options:',
-    '  --host <codex|claude>  Which live path to exercise. Required.',
+    '  --host <codex|claude>  Which live path to exercise. Required unless using the bounded',
+    '                         --codex-session-auto-registration mode.',
+    '  --codex-session-auto-registration  Exercise automatic Codex SessionStart registration',
+    '                         with a fresh HOME and a task-owned fake `codex queue` executable.',
     '  --out <path>           Write the JSON evidence report here (also written on failure).',
     '  --keep                 Keep the temporary MEMESH_DIR instead of deleting it on exit.',
     `  --wait-ms <N>          Bound for each wait on the operator or the model, default ${DEFAULT_WAIT_MS}.`,
@@ -128,6 +135,9 @@ export function helpText() {
     '  codex   — `codex` on PATH and `codex login status` reporting a logged-in owner.',
     '            Costs one or two small Codex turns. Creates one throwaway Codex thread',
     '            in the owner\'s Codex rollout store.',
+    '  --codex-session-auto-registration — no owner login is needed. Uses the packaged router,',
+    '            CLI, and codex-session entrypoints with a fresh HOME/MEMESH_DIR and a task-owned',
+    '            fake `codex` executable that records the native queue invocation and exits 0.',
     '  claude  — `claude` on PATH, and the owner launching one interactive session with',
     '            the command this script prints. Print mode (`claude -p`) is NOT supported:',
     '            a print-mode session does not surface memesh-channel notifications to the',
@@ -152,10 +162,17 @@ export function helpText() {
 
 /**
  * @param {string[]} argv arguments after the script path
- * @returns {{help: boolean, host: string|null, out: string|null, keep: boolean, waitMs: number}}
+ * @returns {{help: boolean, host: string|null, mode: string|null, out: string|null, keep: boolean, waitMs: number}}
  */
 export function parseArgs(argv) {
-  const parsed = { help: false, host: null, out: null, keep: false, waitMs: DEFAULT_WAIT_MS };
+  const parsed = {
+    help: false,
+    host: null,
+    mode: null,
+    out: null,
+    keep: false,
+    waitMs: DEFAULT_WAIT_MS,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const flag = argv[index];
     const value = () => {
@@ -166,6 +183,7 @@ export function parseArgs(argv) {
     };
     if (flag === '--help' || flag === '-h') parsed.help = true;
     else if (flag === '--keep') parsed.keep = true;
+    else if (flag === '--codex-session-auto-registration') parsed.mode = 'codex-session-auto-registration';
     else if (flag === '--host') parsed.host = value();
     else if (flag === '--out') parsed.out = value();
     else if (flag === '--wait-ms') {
@@ -177,8 +195,14 @@ export function parseArgs(argv) {
     } else throw new Error(`Unknown argument ${flag}. Run with --help.`);
   }
   if (parsed.help) return parsed;
-  if (parsed.host === null) throw new Error('--host is required (codex | claude). Run with --help.');
+  if (parsed.mode !== null && parsed.host !== null) {
+    throw new Error('--codex-session-auto-registration cannot be combined with --host. Run with --help.');
+  }
+  if (parsed.host === null && parsed.mode === null) {
+    throw new Error('--host is required (codex | claude), or use --codex-session-auto-registration. Run with --help.');
+  }
   if (parsed.host !== 'codex' && parsed.host !== 'claude') {
+    if (parsed.mode !== null) return parsed;
     throw new Error(`--host must be codex or claude, not ${parsed.host}.`);
   }
   return parsed;
@@ -517,6 +541,99 @@ export function assertIntakeReceipt(receipts, expected) {
 }
 
 /**
+ * Readback proof for the bounded automatic-registration journey. A successful
+ * `send` response is not enough: the durable projection must contain the
+ * host_accept written by the router and must still contain no model lifecycle
+ * facts (ACK or workflow disposition).
+ *
+ * @param {unknown} receipts parsed `message receipts` stdout
+ * @param {{messageId: string, deliveryId: string, adapterKind: string, recipient: string}} expected
+ */
+export function assertHostAcceptOnly(receipts, expected) {
+  if (!Array.isArray(receipts)) throw new Error('message receipts returned no JSON array.');
+  const matching = receipts.filter((fact) => (
+    fact !== null && typeof fact === 'object' && fact.message_id === expected.messageId
+  ));
+  const hostAccept = matching.find((fact) => fact.receipt_kind === 'host_accept');
+  if (!hostAccept) {
+    throw new Error(`No durable host_accept receipt was read back for message ${expected.messageId}.`);
+  }
+  if (hostAccept.recipient !== expected.recipient) {
+    throw new Error(`Durable host_accept names recipient ${JSON.stringify(hostAccept.recipient)}, not ${JSON.stringify(expected.recipient)}.`);
+  }
+  if (hostAccept.delivery_id !== expected.deliveryId) {
+    throw new Error(`Durable host_accept names delivery ${JSON.stringify(hostAccept.delivery_id)}, not ${JSON.stringify(expected.deliveryId)}.`);
+  }
+  if (hostAccept.adapter_kind !== expected.adapterKind) {
+    throw new Error(`Durable host_accept names adapter ${JSON.stringify(hostAccept.adapter_kind)}, not ${JSON.stringify(expected.adapterKind)}.`);
+  }
+  const lifecycle = matching.filter((fact) => fact.receipt_kind === 'ack' || fact.receipt_kind === 'disposition');
+  if (lifecycle.length > 0) {
+    throw new Error(
+      `Durable receipts unexpectedly include ${lifecycle.map((fact) => fact.receipt_kind).join(', ')}; `
+      + 'host_accept must not imply ACK or disposition.',
+    );
+  }
+  return hostAccept;
+}
+
+/**
+ * The failed exact-session send still creates a durable payload, but must not
+ * create any host or model lifecycle fact when no companion is live.
+ *
+ * @param {unknown} receipts parsed `message receipts` stdout
+ * @param {{messageId: string}} expected
+ */
+export function assertNoHostOutcomeReceipts(receipts, expected) {
+  if (!Array.isArray(receipts)) throw new Error('message receipts returned no JSON array.');
+  const matching = receipts.filter((fact) => (
+    fact !== null && typeof fact === 'object' && fact.message_id === expected.messageId
+  ));
+  const outcomes = matching.filter((fact) => (
+    fact.receipt_kind === 'host_accept' || fact.receipt_kind === 'ack' || fact.receipt_kind === 'disposition'
+  ));
+  if (outcomes.length > 0) {
+    throw new Error(
+      `Durable receipts unexpectedly include ${outcomes.map((fact) => fact.receipt_kind).join(', ')}; `
+      + 'an unavailable exact-session send must have no host_accept, ACK, or disposition.',
+    );
+  }
+  return matching;
+}
+
+/**
+ * Require a one-to-one mapping between exact-session sends and native queue
+ * invocations. Extra, duplicate, crossed, or rewritten envelopes all fail.
+ *
+ * @param {unknown[]} invocations task-owned codex queue records
+ * @param {Array<{sessionId: string, messageId: string, deliveryId: string}>} messages
+ */
+export function assertExactCodexQueueRouting(invocations, messages) {
+  if (!Array.isArray(invocations) || invocations.length !== messages.length) {
+    throw new Error(`The task-owned codex queue stub recorded ${invocations?.length ?? 'invalid'} invocations for ${messages.length} sends.`);
+  }
+  return messages.map((message) => {
+    const matching = invocations.filter((entry) => entry?.thread_id === message.sessionId);
+    if (matching.length !== 1) {
+      throw new Error(`The task-owned codex queue stub recorded ${matching.length} invocations for ${message.sessionId}, expected exactly one.`);
+    }
+    const invocation = matching[0];
+    let serialized;
+    try { serialized = JSON.parse(invocation.serialized_message); } catch {
+      throw new Error('The task-owned codex queue stub received invalid serialized native JSON.');
+    }
+    const envelope = serialized?.envelope;
+    if (serialized?.message_type !== 'memesh_message'
+      || serialized?.delivery_id !== message.deliveryId
+      || envelope?.message_id !== message.messageId
+      || envelope?.recipient !== message.sessionId) {
+      throw new Error(`The native queue envelope crossed exact-session boundaries: ${JSON.stringify(serialized)}.`);
+    }
+    return { message, invocation, envelope };
+  });
+}
+
+/**
  * @param {unknown} discovered parsed `message discover` stdout
  * @param {{hostKind?: string, sessionId?: string}} filter
  */
@@ -530,6 +647,34 @@ export function findLiveCards(discovered, filter = {}) {
     && (filter.hostKind === undefined || card.host_kind === filter.hostKind)
     && (filter.sessionId === undefined || card.session_id === filter.sessionId)
   ));
+}
+
+/**
+ * Require an independent discover response to contain exactly the expected
+ * live Codex cards. This is intentionally strict: a response from the wrong
+ * project, thread, or principal is not evidence of a successful discover.
+ *
+ * @param {unknown} discovered parsed `message discover` response
+ * @param {Array<{session_id: string, principal_id: string, project: string}>} expected
+ */
+export function assertMcpDiscoverCards(discovered, expected) {
+  const cards = findLiveCards(discovered, { hostKind: 'codex' });
+  if (cards.length !== expected.length) {
+    throw new Error(`MCP discover returned ${cards.length} Codex cards, expected exactly ${expected.length}.`);
+  }
+  const expectedBySession = new Map(expected.map((card) => [card.session_id, card]));
+  const seen = new Set();
+  for (const card of cards) {
+    const wanted = expectedBySession.get(card.session_id);
+    if (!wanted || seen.has(card.session_id) || card.principal_id !== wanted.principal_id || card.project !== wanted.project) {
+      throw new Error(`MCP discover returned an identity-mismatched live card: ${JSON.stringify(card)}.`);
+    }
+    seen.add(card.session_id);
+  }
+  if (seen.size !== expectedBySession.size) {
+    throw new Error('MCP discover did not return every expected exact-session card.');
+  }
+  return cards;
 }
 
 /**
@@ -648,10 +793,12 @@ class Journey {
     this.steps = [];
     this.limitations = [];
     this.router = null;
-    this.companion = null;
-    this.liveSessionId = null;
+    this.companions = [];
+    this.liveSessionIds = new Set();
     this.lastDurableMessageId = null;
     this.keptForSafety = false;
+    this.home = null;
+    this.codexQueueLog = null;
 
     // Judge the temporary root on REAL paths BEFORE creating anything: a
     // symlinked TMPDIR is exactly the case a resolve-only prefix test misses.
@@ -665,13 +812,28 @@ class Journey {
     // Measure the socket path BEFORE creating anything, on the real temp root
     // (os.tmpdir() may be a symlink to a longer path), so a refusal leaves no
     // empty directory behind. mkdtemp appends six characters.
-    assertSocketPathFits(path.join(realpathAsFarAsPossible(tmpRoot), 'memesh-lj-XXXXXX', 'memesh', 'agent-router.sock'));
+    assertSocketPathFits(path.join(realpathAsFarAsPossible(tmpRoot), 'memesh-lj-XXXXXX', 'memesh', 'agent-router-v2.sock'));
     this.dir = fs.realpathSync(fs.mkdtempSync(path.join(tmpRoot, 'memesh-lj-')));
     this.memeshDir = path.join(this.dir, 'memesh');
     this.dbPath = path.join(this.memeshDir, 'knowledge-graph.db');
-    this.socketPath = path.join(this.memeshDir, 'agent-router.sock');
+    this.socketPath = path.join(this.memeshDir, 'agent-router-v2.sock');
+    this.legacySocketPath = path.join(this.memeshDir, 'agent-router.sock');
+    this.legacyServer = null;
+    this.legacyConnections = new Set();
+    this.legacySocketIdentity = null;
+    this.legacyResponse = Object.freeze({
+      version: 1,
+      request_id: '',
+      ok: false,
+      error: Object.freeze({ code: 'unsupported_type', message: 'Unsupported router frame type.' }),
+    });
     fs.mkdirSync(this.memeshDir, { recursive: true, mode: 0o700 });
     this.env = { ...process.env, MEMESH_DIR: this.memeshDir, MEMESH_DB_PATH: this.dbPath };
+    if (options.mode === 'codex-session-auto-registration') {
+      this.home = path.join(this.dir, 'home');
+      fs.mkdirSync(this.home, { recursive: true, mode: 0o700 });
+      this.env = { ...this.env, HOME: this.home, USERPROFILE: this.home };
+    }
 
     // The Codex workspace is a SEPARATE temporary tree. Keeping it out of
     // `this.dir` means the database and this run's own logs are not sitting one
@@ -712,6 +874,47 @@ class Journey {
     return this.cliJson(['message', 'discover', '--project', PROJECT]);
   }
 
+  async mcpDiscover(expected) {
+    const clients = [0, 1].map((index) => new Client({ name: `live-journey-discover-${index}`, version: '1.0.0' }));
+    const transports = clients.map(() => new StdioClientTransport({
+      command: process.execPath,
+      args: [dist('dist/mcp/server.js')],
+      env: { ...this.env, MEMESH_AUTO_CAPTURE: 'false' },
+    }));
+    try {
+      await Promise.all(clients.map((client, index) => client.connect(transports[index])));
+      const results = await Promise.all(clients.map((client) => client.callTool({
+        name: 'message',
+        arguments: { action: 'discover', project: PROJECT, limit: 50 },
+      })));
+      return results.map((result, index) => {
+        if (result?.isError) throw new Error(`Packaged MCP discover client ${index + 1} returned an error.`);
+        const text = result?.content?.find((block) => block?.type === 'text')?.text;
+        if (typeof text !== 'string') throw new Error(`Packaged MCP discover client ${index + 1} returned no JSON text.`);
+        let discovered;
+        try { discovered = JSON.parse(text); } catch { throw new Error(`Packaged MCP discover client ${index + 1} returned invalid JSON.`); }
+        return assertMcpDiscoverCards(discovered, expected);
+      });
+    } finally {
+      await Promise.all(clients.map((client) => client.close().catch(() => undefined)));
+    }
+  }
+
+  watch(recipient) {
+    const outcome = this.cli([
+      'message', 'watch',
+      '--project', PROJECT,
+      '--recipient', recipient,
+      '--wait-ms', '0',
+      '--limit', '50',
+    ]);
+    if (outcome.status !== 0) {
+      throw new Error(`memesh message watch exited ${outcome.status}: ${outcome.stderr.trim()}`);
+    }
+    const events = parseJsonl(outcome.stdout);
+    return events.find((event) => event.type === 'events') ?? { events: [] };
+  }
+
   /** True when nothing is registered for `sessionId` any more. Never throws. */
   sessionGone(sessionId) {
     try {
@@ -721,9 +924,88 @@ class Journey {
     }
   }
 
+  trackLiveSession(sessionId) {
+    this.liveSessionIds.add(sessionId);
+  }
+
+  forgetLiveSession(sessionId) {
+    this.liveSessionIds.delete(sessionId);
+  }
+
   createCodexWorkspace() {
     this.workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-lj-ws-')));
     return this.workspace;
+  }
+
+  createCodexAutoRegistrationWorkspace() {
+    this.workspace = path.join(this.dir, PROJECT);
+    fs.mkdirSync(this.workspace, { recursive: true, mode: 0o700 });
+    const initialized = run('git', ['init', '--quiet', this.workspace]);
+    if (initialized.status !== 0) {
+      throw new Error(`Could not initialize the task-owned Codex workspace: ${initialized.stderr.trim()}`);
+    }
+    return this.workspace;
+  }
+
+  installCodexQueueStub() {
+    const bin = path.join(this.dir, 'bin');
+    fs.mkdirSync(bin, { recursive: true, mode: 0o700 });
+    this.codexQueueLog = path.join(this.dir, 'codex-queue.jsonl');
+    const executable = path.join(bin, 'codex');
+    fs.writeFileSync(executable, `#!/usr/bin/env node
+import fs from 'node:fs';
+
+if (process.argv[2] !== 'queue' || process.argv[3] !== '--thread' || process.argv[5] !== '--message') {
+  process.stderr.write('task-owned codex stub only supports codex queue --thread <id> --message <json>\\n');
+  process.exit(2);
+}
+const record = {
+  command: process.argv.slice(2),
+  thread_id: process.argv[4],
+  serialized_message: process.argv[6],
+};
+fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record) + '\\n');
+`, { mode: 0o700 });
+    fs.chmodSync(executable, 0o700);
+    this.env = {
+      ...this.env,
+      PATH: `${bin}${path.delimiter}${this.env.PATH ?? ''}`,
+      MEMESH_FAKE_CODEX_QUEUE_LOG: this.codexQueueLog,
+    };
+    return executable;
+  }
+
+  readCodexQueueInvocations() {
+    if (!this.codexQueueLog || !fs.existsSync(this.codexQueueLog)) return [];
+    return fs.readFileSync(this.codexQueueLog, 'utf8').trim().split('\n').filter(Boolean).map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        throw new Error('The task-owned codex queue stub wrote invalid JSON.');
+      }
+    });
+  }
+
+  startCodexCompanion(threadId, workspace, logName, source = 'startup') {
+    const log = fs.openSync(path.join(this.dir, logName), 'a');
+    const companion = spawn(process.execPath, [dist('dist/host-runtime/codex-session.js')], {
+      env: { ...this.env, PLUGIN_ROOT: repoRoot },
+      stdio: ['pipe', log, log],
+      detached: true,
+    });
+    this.companions.push(companion);
+    companion.stdin.end(JSON.stringify({
+      hook_event_name: 'SessionStart',
+      source,
+      session_id: threadId,
+      cwd: workspace,
+    }));
+    return companion;
+  }
+
+  async stopCodexCompanion(companion) {
+    await stopChild(companion);
+    this.companions = this.companions.filter((candidate) => candidate !== companion);
   }
 
   startRouter() {
@@ -737,6 +1019,101 @@ class Journey {
       detached: true,
     });
     return this.router;
+  }
+
+  async startLegacyRouter() {
+    if (this.legacyServer) throw new Error('The task-owned legacy router listener was already started.');
+    const server = net.createServer((socket) => {
+      this.legacyConnections.add(socket);
+      socket.once('close', () => this.legacyConnections.delete(socket));
+      socket.on('data', () => socket.write(`${JSON.stringify(this.legacyResponse)}\n`));
+    });
+    this.legacyServer = server;
+    try {
+      await new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(this.legacySocketPath, () => resolve());
+      });
+      fs.chmodSync(this.legacySocketPath, 0o700);
+      const stat = fs.lstatSync(this.legacySocketPath);
+      if (!stat.isSocket()) throw new Error(`The legacy router path is not a Unix socket: ${this.legacySocketPath}`);
+      this.legacySocketIdentity = { dev: stat.dev, ino: stat.ino };
+    } catch (error) {
+      await this.stopLegacyRouter();
+      throw error;
+    }
+  }
+
+  async probeLegacyRouter() {
+    if (!this.legacyServer?.listening) throw new Error('The task-owned legacy router listener is not listening.');
+    const expected = JSON.stringify(this.legacyResponse);
+    return new Promise((resolve, reject) => {
+      const socket = net.createConnection(this.legacySocketPath);
+      let data = '';
+      let settled = false;
+      const finish = (error, response) => {
+        if (settled) return;
+        settled = true;
+        socket.destroy();
+        if (error) reject(error);
+        else resolve(response);
+      };
+      socket.setTimeout(2_000, () => finish(new Error('The task-owned legacy router listener did not answer its probe.')));
+      socket.once('error', (error) => finish(error));
+      socket.on('data', (chunk) => {
+        data += chunk.toString();
+        const newline = data.indexOf('\n');
+        if (newline < 0) return;
+        const line = data.slice(0, newline);
+        if (line !== expected) {
+          finish(new Error(`The legacy router returned the wrong v1 response: ${line}`));
+          return;
+        }
+        try { finish(null, JSON.parse(line)); } catch { finish(new Error('The legacy router returned invalid JSON.')); }
+      });
+      socket.once('connect', () => socket.write('{"version":1,"type":"probe","request_id":"legacy-probe"}\n'));
+    });
+  }
+
+  async assertLegacyRouterUntouched() {
+    if (!this.legacyServer?.listening || !this.legacySocketIdentity) {
+      throw new Error('The task-owned legacy router listener is no longer listening.');
+    }
+    let stat;
+    try { stat = fs.lstatSync(this.legacySocketPath); } catch (error) {
+      throw new Error(`The task-owned legacy router socket disappeared: ${error.message}`, { cause: error });
+    }
+    if (!stat.isSocket()
+      || stat.dev !== this.legacySocketIdentity.dev
+      || stat.ino !== this.legacySocketIdentity.ino) {
+      throw new Error('The task-owned legacy router socket inode was replaced or modified.');
+    }
+    const response = await this.probeLegacyRouter();
+    if (JSON.stringify(response) !== JSON.stringify(this.legacyResponse)) {
+      throw new Error(`The task-owned legacy router response changed: ${JSON.stringify(response)}`);
+    }
+    return { path: this.legacySocketPath, dev: stat.dev, ino: stat.ino, response };
+  }
+
+  async stopLegacyRouter() {
+    const server = this.legacyServer;
+    if (!server) return;
+    for (const socket of this.legacyConnections) socket.destroy();
+    await new Promise((resolve) => {
+      if (!server.listening) resolve();
+      else server.close(() => resolve());
+    });
+    this.legacyServer = null;
+    this.legacyConnections.clear();
+    const identity = this.legacySocketIdentity;
+    this.legacySocketIdentity = null;
+    if (!identity) return;
+    try {
+      const stat = fs.lstatSync(this.legacySocketPath);
+      if (stat.isSocket() && stat.dev === identity.dev && stat.ino === identity.ino) fs.unlinkSync(this.legacySocketPath);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
   }
 
   async waitForRouterSocket(timeoutMs = 15_000) {
@@ -802,23 +1179,29 @@ class Journey {
     if (!Array.isArray(stillLive?.cards)) {
       throw new Error('The router stopped answering `discover`, so recipient_unavailable cannot be attributed to the recipient.');
     }
-    const durable = this.cliJson([
-      'message', 'fetch',
-      '--project', PROJECT,
-      '--recipient', recipient,
-      '--target-kind', 'session',
-      '--message-id', this.lastDurableMessageId,
-    ]);
-    if (durable?.payload?.qa_sentinel !== sentinel) {
-      throw new Error(
-        `Durable recovery broke: fetching ${this.lastDurableMessageId} as the stopped session returned `
-        + `${JSON.stringify(durable?.payload?.qa_sentinel)} instead of ${JSON.stringify(sentinel)}.`,
-      );
+    let failedMessageId = null;
+    for (const event of this.watch(recipient).events) {
+      if (!event.message_id || event.message_id === this.lastDurableMessageId) continue;
+      const durable = this.cliJson([
+        'message', 'fetch', '--project', PROJECT, '--recipient', recipient,
+        '--target-kind', 'session', '--message-id', event.message_id,
+      ]);
+      if (durable?.payload?.qa_sentinel === sentinel) {
+        failedMessageId = event.message_id;
+        break;
+      }
     }
+    if (!failedMessageId) throw new Error('The unavailable exact-session send was not durably fetchable by its sentinel.');
+    const receipts = this.cliJson([
+      'message', 'receipts', '--project', PROJECT,
+      '--recipient', recipient, '--message-id', failedMessageId,
+    ]);
+    assertNoHostOutcomeReceipts(receipts, { messageId: failedMessageId });
     return {
       send_stderr: outcome.stderr.trim(),
       router_still_answering_discover: true,
-      durable_message_still_fetchable_after_disconnect: this.lastDurableMessageId,
+      durable_message_still_fetchable_after_disconnect: failedMessageId,
+      host_accept_ack_disposition: false,
     };
   }
 
@@ -841,27 +1224,33 @@ class Journey {
   }
 
   async unwind(waitMs) {
-    await stopChild(this.companion);
+    for (const companion of this.companions) await stopChild(companion);
+    this.companions = [];
 
     const routerAlive = this.router !== null && this.router.exitCode === null && this.router.signalCode === null;
-    const disconnected = await awaitSessionDisconnect({
-      sessionId: routerAlive ? this.liveSessionId : null,
-      isGone: (sessionId) => this.sessionGone(sessionId),
-      waitMs,
-      now: Date.now,
-      sleep,
-      announce: (text) => this.say(`\n  ${text.split('\n').join('\n  ')}\n`),
-    });
+    const sessionIds = routerAlive ? [...this.liveSessionIds] : [];
+    let disconnected = true;
+    for (const sessionId of sessionIds) {
+      if (!await awaitSessionDisconnect({
+        sessionId,
+        isGone: (id) => this.sessionGone(id),
+        waitMs,
+        now: Date.now,
+        sleep,
+        announce: (text) => this.say(`\n  ${text.split('\n').join('\n  ')}\n`),
+      })) disconnected = false;
+    }
     if (!disconnected) {
       this.keptForSafety = true;
       process.stderr.write(
-        `\n  WARNING: ${this.liveSessionId} is still connected. Keeping ${this.dir} rather than deleting a\n`
+        `\n  WARNING: ${sessionIds.join(', ')} is still connected. Keeping ${this.dir} rather than deleting a\n`
         + '  directory a live host is about to recreate. Exit that session, then remove it by hand; if a\n'
         + '  detached router was started by that host, stop it too: pkill -f dist/host-runtime/router.js\n',
       );
     }
 
     await stopChild(this.router);
+    await this.stopLegacyRouter();
 
     if (!shouldRemoveWorkingDirectories({ keep: this.options.keep, keptForSafety: this.keptForSafety })) {
       process.stdout.write(`\nKept working directory: ${this.dir}\n`);
@@ -898,14 +1287,10 @@ async function runCodex(journey) {
   journey.step('router started against the temporary MEMESH_DIR', { socket_path: journey.socketPath });
 
   const workspace = journey.createCodexWorkspace();
-  const setup = journey.cliJson([
-    'agent', 'setup', 'codex-session',
-    '--project', PROJECT,
-    '--principal', 'codex-live-journey',
-    '--workspace', workspace,
-    '--json',
-  ]);
-  journey.step('agent setup codex-session', { config_path: setup.config_path, mode: setup.mode });
+  const configPath = path.join(journey.memeshDir, 'hosts', 'codex-session.json');
+  if (fs.existsSync(configPath)) {
+    throw new Error('Codex journey unexpectedly found hosts/codex-session.json before startup.');
+  }
 
   const first = run('codex', [
     'exec', '--json', '--skip-git-repo-check', '--ignore-user-config',
@@ -924,34 +1309,27 @@ async function runCodex(journey) {
     first_turn_reply: collectCodexAgentMessages(first.stdout).join(' | '),
   });
 
-  // Registration is harness-driven, and that is disclosed rather than hidden.
+  // Plugin loading under `codex exec --ignore-user-config` is not the subject
+  // of this real-model journey, so registration remains harness-driven and is
+  // disclosed rather than hidden. The shipped companion itself now exercises
+  // the no-config automatic identity path.
   // What runs here is the SHIPPED companion — dist/host-runtime/codex-session.js
   // — fed the SessionStart payload the packaged plugin hook would have handed it.
-  const companionLog = fs.openSync(path.join(journey.dir, 'codex-session.log'), 'a');
-  journey.companion = spawn(process.execPath, [dist('dist/host-runtime/codex-session.js')], {
-    env: { ...journey.env, PLUGIN_ROOT: repoRoot },
-    stdio: ['pipe', companionLog, companionLog],
-    detached: true, // same reason as the router: the harness, not the terminal, decides the order
-  });
-  journey.companion.stdin.end(JSON.stringify({
-    hook_event_name: 'SessionStart',
-    source: 'startup',
-    session_id: threadId,
-    cwd: workspace,
-  }));
+  const companion = journey.startCodexCompanion(threadId, workspace, 'codex-session.log');
   journey.note(
     'The Codex registration half is harness-driven. This run drives the shipped '
     + 'dist/host-runtime/codex-session.js directly with the SessionStart payload the packaged plugin hook '
-    + 'supplies, because a scripted `codex exec` turn was not observed to register anything on its own. '
-    + 'Whether `--ignore-user-config` is what prevents the plugin hook from loading was NOT verified; on a '
-    + 'machine whose ~/.memesh/hosts has no codex-session.json the shipped companion returns early in any '
-    + 'case. Only dispatch -> `codex queue` -> model-visible reply is product-path evidence.',
+    + 'supplies, because a scripted `codex exec --ignore-user-config` turn does not establish plugin-hook '
+    + 'loading. No codex-session.json is created: companion registration uses the automatic thread-scoped '
+    + 'path. Dispatch -> `codex queue` -> model-visible reply is product-path evidence; plugin-loader '
+    + 'invocation itself is not proved by this mode.',
   );
   const card = await journey.until(
     'The Codex session never registered with the router',
     () => journey.discover().cards.find((entry) => entry.session_id === threadId) ?? false,
     60_000,
   );
+  journey.trackLiveSession(threadId);
   journey.step('Codex thread registered with the router', {
     session_id: card.session_id,
     principal_id: card.principal_id,
@@ -995,13 +1373,13 @@ async function runCodex(journey) {
       + 'and the turn ran no commands, so it had no on-disk source for them',
   });
 
-  await stopChild(journey.companion);
-  journey.companion = null;
+  await journey.stopCodexCompanion(companion);
   await journey.until(
     'The router still lists the Codex session as live after its companion was stopped',
     () => journey.sessionGone(threadId),
     15_000,
   );
+  journey.forgetLiveSession(threadId);
   journey.step('companion stopped and the session left the router directory', { session_id: threadId });
 
   journey.step('a send to the stopped session fails closed and the durable row survives',
@@ -1017,6 +1395,184 @@ async function runCodex(journey) {
     'One throwaway Codex thread is created in the owner\'s Codex rollout store and one message is queued '
     + 'into it. No Codex or MeMesh configuration outside the temporary directories is written, and no auth '
     + 'file is read: the login precondition is the exit code of `codex login status`.',
+  );
+}
+
+/**
+ * Bounded packaged-entrypoint journey for the automatic Codex SessionStart
+ * path. It deliberately does not run `agent setup codex-session`: absence of
+ * hosts/codex-session.json is the behavior under test. The router's shipped
+ * codex-cli-queue adapter is exercised with a task-owned `codex` executable,
+ * which records the exact invocation and returns success without contacting a
+ * real Codex account.
+ */
+async function runCodexSessionAutoRegistration(journey) {
+  const workspace = journey.createCodexAutoRegistrationWorkspace();
+  const fakeCodex = journey.installCodexQueueStub();
+  const configPath = path.join(journey.memeshDir, 'hosts', 'codex-session.json');
+  if (fs.existsSync(configPath)) {
+    throw new Error('Automatic-registration journey unexpectedly found hosts/codex-session.json before startup.');
+  }
+
+  await journey.startLegacyRouter();
+  const legacy = await journey.assertLegacyRouterUntouched();
+  journey.startRouter();
+  await journey.waitForRouterSocket();
+  await journey.assertLegacyRouterUntouched();
+  journey.step('packaged router started against the temporary HOME/MEMESH_DIR', {
+    socket_path: journey.socketPath,
+    legacy_socket_path: legacy.path,
+    legacy_socket_inode: { dev: legacy.dev, ino: legacy.ino },
+    legacy_v1_response: legacy.response,
+    home: journey.home,
+    memesh_dir: journey.memeshDir,
+    fake_codex: fakeCodex,
+  });
+
+  const threadId = '01a0' + randomUUID().slice(4);
+  const secondThreadId = '01a0' + randomUUID().slice(4);
+  journey.trackLiveSession(threadId);
+  journey.trackLiveSession(secondThreadId);
+  const firstCompanion = journey.startCodexCompanion(threadId, workspace, 'codex-session-auto-1.log');
+  journey.startCodexCompanion(secondThreadId, workspace, 'codex-session-auto-2.log');
+  journey.step('packaged codex-session received a valid startup payload', {
+    hook_event_name: 'SessionStart',
+    source: 'startup',
+    session_ids: [threadId, secondThreadId],
+    cwd: workspace,
+    config_present: fs.existsSync(configPath),
+  });
+
+  const cards = await journey.until(
+    'The two automatic Codex SessionStart companions never registered as distinct exact sessions',
+    () => {
+      const found = findLiveCards(journey.discover(), { hostKind: 'codex' });
+      if (found.length < 2) return false;
+      const selected = found.filter((card) => card.session_id === threadId || card.session_id === secondThreadId);
+      return selected.length === 2 ? selected : false;
+    },
+    15_000,
+  );
+  for (const card of cards) {
+    if (card.host_kind !== 'codex' || card.project !== PROJECT || card.principal_id !== `codex-thread-${card.session_id}`) {
+      throw new Error(`Automatic Codex registration returned the wrong live card: ${JSON.stringify(card)}.`);
+    }
+  }
+  const firstCard = cards.find((card) => card.session_id === threadId);
+  const secondCard = cards.find((card) => card.session_id === secondThreadId);
+  if (!firstCard || !secondCard || firstCard.principal_id === secondCard.principal_id) {
+    throw new Error(`Automatic Codex sessions did not keep distinct thread-scoped identities: ${JSON.stringify(cards)}.`);
+  }
+  journey.step('discover returned two distinct exact automatic Codex sessions/cards', {
+    sessions: cards.map((card) => ({
+      session_id: card.session_id,
+      principal_id: card.principal_id,
+      host_kind: card.host_kind,
+      project: card.project,
+      generation: card.generation,
+    })),
+  });
+
+  const mcpDiscoveries = await journey.mcpDiscover([
+    { session_id: firstCard.session_id, principal_id: firstCard.principal_id, project: firstCard.project },
+    { session_id: secondCard.session_id, principal_id: secondCard.principal_id, project: secondCard.project },
+  ]);
+  await journey.assertLegacyRouterUntouched();
+  journey.step('two independent packaged MCP clients concurrently discovered the same live cards', {
+    client_results: mcpDiscoveries.map((cards) => cards.map((card) => ({
+      session_id: card.session_id,
+      principal_id: card.principal_id,
+      generation: card.generation,
+    }))),
+    legacy_socket_retained: true,
+  });
+
+  const sent = [];
+  for (const [sessionId, label] of [[threadId, 'first'], [secondThreadId, 'second']]) {
+    const sentinel = `codex-auto-${label}-${randomUUID().slice(0, 8)}`;
+    const message = journey.sendAccepted(sessionId, sentinel, sentinel, 'codex-cli-queue');
+    sent.push({ sessionId, sentinel, ...message });
+  }
+  for (const { message, invocation } of assertExactCodexQueueRouting(
+    journey.readCodexQueueInvocations(), sent,
+  )) {
+    const receipts = journey.cliJson([
+      'message', 'receipts', '--project', PROJECT,
+      '--recipient', message.sessionId, '--message-id', message.messageId,
+    ]);
+    const hostAccept = assertHostAcceptOnly(receipts, {
+      messageId: message.messageId,
+      deliveryId: message.deliveryId,
+      adapterKind: 'codex-cli-queue',
+      recipient: message.sessionId,
+    });
+    journey.step(`exact-session send/readback for ${message.sessionId}`, {
+      sentinel: message.sentinel,
+      message_id: message.messageId,
+      delivery_id: message.deliveryId,
+      host_accept_id: hostAccept.host_accept_id,
+      queue_thread_id: invocation.thread_id,
+    });
+  }
+  await journey.assertLegacyRouterUntouched();
+
+  if (firstCompanion.exitCode !== null) {
+    throw new Error('The original first Codex companion exited before the resume registration was attempted.');
+  }
+  const resumedCompanion = journey.startCodexCompanion(threadId, workspace, 'codex-session-auto-resume.log', 'resume');
+  const resumedCard = await journey.until(
+    'The resumed first Codex thread never superseded its original generation',
+    () => {
+      const current = findLiveCards(journey.discover(), { sessionId: threadId });
+      return current.length === 1 && current[0].generation > firstCard.generation ? current[0] : false;
+    },
+    15_000,
+  );
+  if (resumedCard.principal_id !== firstCard.principal_id || resumedCard.generation !== firstCard.generation + 1) {
+    throw new Error(`The resumed Codex thread did not increment exactly one generation: ${JSON.stringify(resumedCard)}.`);
+  }
+  journey.step('resume registration superseded the old first-thread generation', {
+    session_id: threadId,
+    old_generation: firstCard.generation,
+    new_generation: resumedCard.generation,
+    old_companion_was_live_before_resume: true,
+    resumed_companion_pid: resumedCompanion.pid,
+  });
+  await journey.assertLegacyRouterUntouched();
+
+  for (const companion of journey.companions) await stopChild(companion);
+  journey.companions = [];
+  for (const sessionId of [threadId, secondThreadId]) {
+    await journey.until(
+      `The automatic Codex session ${sessionId} remained live after all companions stopped`,
+      () => journey.sessionGone(sessionId),
+      15_000,
+    );
+    journey.forgetLiveSession(sessionId);
+  }
+  const afterStopSentinel = `codex-auto-after-stop-${randomUUID().slice(0, 8)}`;
+  journey.lastDurableMessageId = sent[0].messageId;
+  const stopped = journey.provesFailClosed(threadId, afterStopSentinel);
+  journey.step('all companions stopped; unavailable send remained durable with no host outcome', {
+    session_id: threadId,
+    message_id: stopped.durable_message_still_fetchable_after_disconnect,
+    recipient_unavailable: true,
+    payload_fetchable: true,
+    host_accept_ack_disposition: stopped.host_accept_ack_disposition,
+  });
+  journey.note(
+    'This bounded mode uses a task-owned fake `codex` executable in PATH. It proves the packaged '
+    + 'router -> codex-cli-queue -> codex queue process boundary and durable host_accept readback; '
+    + 'it does not claim that a real Codex model rendered or acted on the message.',
+  );
+  journey.note(
+    'No hosts/codex-session.json was created. The packaged companion selected its automatic '
+    + 'thread-scoped identity from the valid startup payload, using only this run\'s HOME/MEMESH_DIR.',
+  );
+  journey.note(
+    'The legacy agent-router.sock is a task-owned v1 listener returning the exact unsupported_type '
+    + 'response; the current packaged router uses agent-router-v2.sock. Its inode, listener, and response '
+    + 'were probed before and after the concurrent packaged MCP StdioClientTransport discover boundary.',
   );
 }
 
@@ -1087,7 +1643,7 @@ async function runClaude(journey, waitMs) {
     () => findLiveCards(journey.discover(), { hostKind: 'claude' })[0] ?? false,
     waitMs,
   );
-  journey.liveSessionId = card.session_id;
+  journey.trackLiveSession(card.session_id);
   journey.step('interactive Claude session registered on the channel', {
     session_id: card.session_id,
     principal_id: card.principal_id,
@@ -1130,7 +1686,7 @@ async function runClaude(journey, waitMs) {
     () => journey.sessionGone(card.session_id),
     waitMs,
   );
-  journey.liveSessionId = null;
+  journey.forgetLiveSession(card.session_id);
   journey.step('session disconnected and left the router directory', { session_id: card.session_id });
 
   journey.step('a send to the stopped session fails closed and the durable row survives',
@@ -1211,6 +1767,7 @@ async function main() {
       dirty,
       dist_stale: distStale,
       host: options.host,
+      mode: options.mode,
       project: PROJECT,
       started_at: startedAt,
       finished_at: new Date().toISOString(),
@@ -1242,7 +1799,8 @@ async function main() {
   process.once('SIGTERM', () => onSignal('SIGTERM', 143));
 
   try {
-    if (options.host === 'codex') await runCodex(journey);
+    if (options.mode === 'codex-session-auto-registration') await runCodexSessionAutoRegistration(journey);
+    else if (options.host === 'codex') await runCodex(journey);
     else await runClaude(journey, options.waitMs);
   } catch (error) {
     failure = error instanceof Error ? error.message : String(error);

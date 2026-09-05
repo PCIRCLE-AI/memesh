@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fetchAgentMessage, } from './agent-messaging.js';
-export const AGENT_ROUTER_PROTOCOL_VERSION = 1;
+export const AGENT_ROUTER_PROTOCOL_VERSION = 2;
 export const AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
 export const AGENT_ROUTER_MAX_HOPS = 4;
 const DEFAULT_RATE_LIMIT = 120;
@@ -17,6 +17,13 @@ const STARTUP_LOCK_WAIT_MS = 1_000;
 const STARTUP_LOCK_STALE_MS = 5_000;
 const MAX_FIELD_LENGTH = 200;
 const MAX_ADAPTER_RECEIPT_BYTES = 16 * 1024;
+export function isLegacyAgentRouterVersionMismatchResponse(value) {
+    if (!isPlainObject(value) || value.version !== 1 || value.request_id !== '' || value.ok !== false)
+        return false;
+    if (!isPlainObject(value.error))
+        return false;
+    return value.error.code === 'unsupported_type' || value.error.code === 'unsupported_version';
+}
 export class AgentRouterError extends Error {
     code;
     constructor(code, message) {
@@ -167,7 +174,7 @@ export class AgentRouter {
             const request = parseRequest(frame, this.limits.max_hops);
             requestId = request.request_id;
             const result = await this.handleRequest(request, socket);
-            this.writeResponse(socket, { version: 1, request_id: requestId, ok: true, result });
+            this.writeResponse(socket, { version: AGENT_ROUTER_PROTOCOL_VERSION, request_id: requestId, ok: true, result });
         }
         catch (error) {
             const routerError = toRouterError(error);
@@ -347,7 +354,7 @@ export class AgentRouter {
                 this.selectionCards.delete(previous.connection_id);
                 if (previousSocket && !previousSocket.destroyed) {
                     previousSocket.end(`${JSON.stringify({
-                        version: 1,
+                        version: AGENT_ROUTER_PROTOCOL_VERSION,
                         type: 'session_superseded',
                         connection_id: previous.connection_id,
                         generation: previous.generation,
@@ -575,7 +582,7 @@ export class AgentRouter {
     }
     dispatchExternal(socket, connection, attemptId, input) {
         const frame = Buffer.from(`${JSON.stringify({
-            version: 1,
+            version: AGENT_ROUTER_PROTOCOL_VERSION,
             type: 'deliver',
             request_id: randomUUID(),
             attempt_id: attemptId,
@@ -698,7 +705,7 @@ export class AgentRouter {
     }
     writeError(socket, requestId, code, message) {
         this.writeResponse(socket, {
-            version: 1,
+            version: AGENT_ROUTER_PROTOCOL_VERSION,
             request_id: requestId,
             ok: false,
             error: { code, message },
@@ -714,7 +721,7 @@ export function createAgentRouterNotifier(socketPath) {
     return {
         async notify(hint) {
             await sendAgentRouterRequest(validatedPath, {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type: 'notify',
                 request_id: randomUUID(),
                 project: hint.project,
@@ -762,7 +769,10 @@ export async function sendAgentRouterRequest(socketPath, request, timeoutMs = DE
                 return;
             try {
                 const response = JSON.parse(pending.subarray(0, newline).toString('utf8'));
-                if (response.version !== 1 || response.request_id !== request.request_id) {
+                if (isLegacyAgentRouterVersionMismatchResponse(response)) {
+                    throw new AgentRouterProtocolError('router_version_mismatch', 'router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.');
+                }
+                if (response.version !== AGENT_ROUTER_PROTOCOL_VERSION || response.request_id !== request.request_id) {
                     throw new AgentRouterProtocolError('invalid_response', 'Router response identity does not match.');
                 }
                 if (!response.ok)
@@ -862,8 +872,9 @@ function parseRequest(frame, maxHops) {
     }
     if (!isPlainObject(value))
         throw new AgentRouterProtocolError('invalid_frame', 'Router frame must be an object.');
-    if (value.version !== 1)
+    if (value.version !== AGENT_ROUTER_PROTOCOL_VERSION) {
         throw new AgentRouterProtocolError('unsupported_version', 'Unsupported router protocol version.');
+    }
     const type = value.type;
     const common = ['version', 'type', 'request_id', 'hops'];
     const requestId = validateField('request_id', value.request_id);
@@ -874,7 +885,7 @@ function parseRequest(frame, maxHops) {
                 ...common, 'project', 'principal_id', 'session_instance_id', 'adapter_kind', 'auth_token', 'model', 'work_summary',
             ]);
             return {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type,
                 request_id: requestId,
                 project: validateField('project', value.project),
@@ -890,7 +901,7 @@ function parseRequest(frame, maxHops) {
         case 'discover':
             assertAllowedKeys(value, [...common, 'project', 'limit']);
             return {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type,
                 request_id: requestId,
                 project: validateField('project', value.project),
@@ -900,7 +911,7 @@ function parseRequest(frame, maxHops) {
         case 'notify':
             assertAllowedKeys(value, [...common, 'project', 'delivery_id']);
             return {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type,
                 request_id: requestId,
                 project: validateField('project', value.project),
@@ -913,7 +924,7 @@ function parseRequest(frame, maxHops) {
                 ...common, 'project', 'session_instance_id', 'connection_id', 'generation',
             ]);
             return {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type,
                 request_id: requestId,
                 project: validateField('project', value.project),
@@ -930,7 +941,7 @@ function parseRequest(frame, maxHops) {
                 throw new AgentRouterProtocolError('invalid_field', 'receipt must be an object.');
             }
             return {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type,
                 request_id: requestId,
                 attempt_id: validateField('attempt_id', value.attempt_id),
@@ -945,7 +956,7 @@ function parseRequest(frame, maxHops) {
                 ...common, 'attempt_id', 'delivery_id', 'connection_id', 'generation', 'failure_code',
             ]);
             return {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type,
                 request_id: requestId,
                 attempt_id: validateField('attempt_id', value.attempt_id),

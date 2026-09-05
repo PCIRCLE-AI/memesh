@@ -11,6 +11,8 @@ import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
+export const AGENT_ROUTER_SOCKET_FILENAME = 'agent-router-v2.sock';
+const LEGACY_AGENT_ROUTER_SOCKET_FILENAME = 'agent-router.sock';
 export function homeDir() {
     const home = process.env.HOME;
     if (home && home.length > 0)
@@ -30,6 +32,15 @@ export function getMemeshDirFromDbPath() {
     return process.env.MEMESH_DB_PATH
         ? path.dirname(process.env.MEMESH_DB_PATH)
         : memeshDir();
+}
+export function getAgentRouterSocketPath() {
+    return path.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
+}
+export function normalizeAgentRouterSocketPath(socketPath) {
+    const dataDir = getMemeshDirFromDbPath();
+    return socketPath === path.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME)
+        ? getAgentRouterSocketPath()
+        : socketPath;
 }
 export function getProjectName(cwdInput) {
     const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();

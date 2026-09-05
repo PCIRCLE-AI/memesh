@@ -152,7 +152,7 @@ If MeMesh is installed as a Claude Code plugin, these happen **without any actio
 | **Stop** | Session ends | Auto-captures session knowledge + runs LLM failure analysis → lessons |
 | **PreCompact** | Before context compaction | Saves important knowledge before history is compressed |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
-| **SessionStart (Codex, async)** | A configured Codex session starts or resumes | Registers that exact live thread for bounded full-message native delivery; exits without registering outside the configured workspace |
+| **SessionStart (Codex, async)** | A Codex plugin session starts or resumes | Automatically registers that exact live thread for bounded full-message native delivery; a matching owner-private config may override its project/principal |
 
 Because of the SessionStart hook: **in Claude Code, do NOT call `briefing` at
 session start — it is already in your context.** Call it only mid-session

@@ -14,6 +14,7 @@ import {
 } from '../host-adapters/acp-client.js';
 import {
   assertSecureLocalHostRuntimeSupported,
+  normalizeConfiguredRouterSocket,
   optionalStringArray,
   readHostConfig,
   readTokenFile,
@@ -306,7 +307,7 @@ export async function startManagedAcpHost(
     config,
     dependencies.create_session_instance_id ?? randomUUID,
   );
-  const socketPath = requiredString(config.router_socket, 'router_socket');
+  const socketPath = normalizeConfiguredRouterSocket(config.router_socket);
   const project = requiredString(config.project, 'project');
   const authToken = readTokenFile(config.token_file);
   const model = config.model === undefined ? undefined : requiredString(config.model, 'model');

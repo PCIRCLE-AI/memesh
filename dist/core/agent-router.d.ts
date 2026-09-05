@@ -1,6 +1,6 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { type AgentJsonObject, type AgentMessagePayload, type AgentMessagePostCommitNotifier } from './agent-messaging.js';
-export declare const AGENT_ROUTER_PROTOCOL_VERSION = 1;
+export declare const AGENT_ROUTER_PROTOCOL_VERSION = 2;
 export declare const AGENT_ROUTER_MAX_FRAME_BYTES: number;
 export declare const AGENT_ROUTER_MAX_HOPS = 4;
 export interface AgentHostRegistration {
@@ -50,7 +50,7 @@ export interface AgentRouterOptions {
     limits?: AgentRouterLimits;
 }
 export interface AgentRouterRegisterRequest {
-    version: 1;
+    version: typeof AGENT_ROUTER_PROTOCOL_VERSION;
     type: 'register';
     request_id: string;
     project: string;
@@ -63,7 +63,7 @@ export interface AgentRouterRegisterRequest {
     hops: number;
 }
 export interface AgentRouterDiscoverRequest {
-    version: 1;
+    version: typeof AGENT_ROUTER_PROTOCOL_VERSION;
     type: 'discover';
     request_id: string;
     project: string;
@@ -71,7 +71,7 @@ export interface AgentRouterDiscoverRequest {
     hops: number;
 }
 export interface AgentRouterNotifyRequest {
-    version: 1;
+    version: typeof AGENT_ROUTER_PROTOCOL_VERSION;
     type: 'notify';
     request_id: string;
     project: string;
@@ -79,7 +79,7 @@ export interface AgentRouterNotifyRequest {
     hops: number;
 }
 export interface AgentRouterHeartbeatRequest {
-    version: 1;
+    version: typeof AGENT_ROUTER_PROTOCOL_VERSION;
     type: 'heartbeat';
     request_id: string;
     project: string;
@@ -89,7 +89,7 @@ export interface AgentRouterHeartbeatRequest {
     hops: number;
 }
 export interface AgentRouterDisconnectRequest {
-    version: 1;
+    version: typeof AGENT_ROUTER_PROTOCOL_VERSION;
     type: 'disconnect';
     request_id: string;
     project: string;
@@ -99,7 +99,7 @@ export interface AgentRouterDisconnectRequest {
     hops: number;
 }
 export interface AgentRouterHostAcceptRequest {
-    version: 1;
+    version: typeof AGENT_ROUTER_PROTOCOL_VERSION;
     type: 'host_accept';
     request_id: string;
     attempt_id: string;
@@ -110,7 +110,7 @@ export interface AgentRouterHostAcceptRequest {
     hops: number;
 }
 export interface AgentRouterHostRejectRequest {
-    version: 1;
+    version: typeof AGENT_ROUTER_PROTOCOL_VERSION;
     type: 'host_reject';
     request_id: string;
     attempt_id: string;
@@ -122,13 +122,13 @@ export interface AgentRouterHostRejectRequest {
 }
 export type AgentRouterRequest = AgentRouterRegisterRequest | AgentRouterDiscoverRequest | AgentRouterNotifyRequest | AgentRouterHeartbeatRequest | AgentRouterDisconnectRequest | AgentRouterHostAcceptRequest | AgentRouterHostRejectRequest;
 export type AgentRouterSuccessResponse = {
-    version: 1;
+    version: typeof AGENT_ROUTER_PROTOCOL_VERSION;
     request_id: string;
     ok: true;
     result: AgentJsonObject;
 };
 export type AgentRouterErrorResponse = {
-    version: 1;
+    version: typeof AGENT_ROUTER_PROTOCOL_VERSION;
     request_id: string;
     ok: false;
     error: {
@@ -137,6 +137,7 @@ export type AgentRouterErrorResponse = {
     };
 };
 export type AgentRouterResponse = AgentRouterSuccessResponse | AgentRouterErrorResponse;
+export declare function isLegacyAgentRouterVersionMismatchResponse(value: unknown): boolean;
 export interface AgentSelectionCard {
     session_id: string;
     principal_id: string;

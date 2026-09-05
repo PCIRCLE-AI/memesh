@@ -22,7 +22,7 @@ import {
 } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
-import { getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir, getProjectName } from './paths.js';
+import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir, getProjectName } from './paths.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { lastTranscriptMineAt } from './transcript-source.js';
 import { countMissingVectors } from './operations.js';
@@ -459,9 +459,10 @@ function inspectAgentMessageStorage(
 }
 
 /**
- * Report the separate opt-in bridge that lets ordinary Codex sessions receive
- * live notifications. A plugin cache copy is only evidence of cached source;
- * it does not prove that Codex enabled or registered the plugin.
+ * Report how ordinary Codex sessions choose their local routing identity.
+ * A plugin cache copy is only evidence of cached source; live discovery is
+ * still the authoritative proof that Codex enabled the plugin and its
+ * SessionStart companion registered this thread.
  */
 function inspectCodexSessionSetup(
   codexPluginCacheDetected: boolean,
@@ -471,21 +472,17 @@ function inspectCodexSessionSetup(
 
   const configPath = path.join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
   if (existsSyncImpl(configPath)) {
-    return createCheck(
+    return createInfo(
       'codex-session-setup',
-      'Codex ordinary-session notification setup',
-      'pass',
-      'A Codex plugin cache copy was detected, but this proves only that cached source exists, not that the plugin is enabled or registered. The explicit opt-in ordinary-session notification setup is present; durable inbox remains available, and MeMesh will not auto-attach.',
+      'Codex ordinary-session notifications',
+      'A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.',
     );
   }
 
-  return createCheck(
+  return createInfo(
     'codex-session-setup',
-    'Codex ordinary-session notification setup',
-    'warn',
-    'A Codex plugin cache copy was detected, but this proves only that cached source exists, not that the plugin is enabled or registered. Durable inbox remains available, but live ordinary-session wakeup is inactive. Setup is explicit opt-in; MeMesh will not auto-attach.',
-    'Run `memesh agent setup codex-session --project <project> --principal <principal> --workspace <exact-workspace>`, then restart Codex.',
-    { code: 'codex-session.config-missing' },
+    'Codex ordinary-session notifications',
+    'No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.',
   );
 }
 
@@ -2792,8 +2789,7 @@ function inspectMessageCapability(
 }
 
 async function defaultMessageRouterStatusProbe(): Promise<MessageRouterStatusProbe> {
-  const socketPath = process.env.MEMESH_ROUTER_SOCKET
-    ?? path.join(getMemeshDirFromDbPath(), 'agent-router.sock');
+  const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(socketPath);

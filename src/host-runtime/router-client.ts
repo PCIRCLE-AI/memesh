@@ -4,7 +4,11 @@ import fs from 'node:fs';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import type { AgentJsonObject, AgentMessagePayload } from '../core/agent-messaging.js';
-import { AGENT_ROUTER_MAX_FRAME_BYTES } from '../core/agent-router.js';
+import {
+  AGENT_ROUTER_MAX_FRAME_BYTES,
+  AGENT_ROUTER_PROTOCOL_VERSION,
+  isLegacyAgentRouterVersionMismatchResponse,
+} from '../core/agent-router.js';
 import { assertSecureLocalHostRuntimeSupported } from './config.js';
 
 const DEFAULT_INITIAL_RETRY_MS = 100;
@@ -70,6 +74,14 @@ type NormalizedResilienceOptions = {
 
 class RouterTransportError extends Error {}
 
+class RouterVersionMismatchError extends Error {
+  readonly code = 'router_version_mismatch';
+
+  constructor() {
+    super('router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.');
+  }
+}
+
 class ActiveRouterHostConnection implements RouterHostConnection {
   private currentConnectionId = '';
   private currentGeneration = 0;
@@ -128,7 +140,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
     if (!socket) return;
     try {
       this.write(socket, {
-        version: 1,
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
         type: 'disconnect',
         request_id: randomUUID(),
         project: this.input.identity.project,
@@ -205,6 +217,10 @@ class ActiveRouterHostConnection implements RouterHostConnection {
           if (raw.length === 0 || raw.length > AGENT_ROUTER_MAX_FRAME_BYTES) continue;
           let frame: Record<string, unknown>;
           try { frame = JSON.parse(raw.toString('utf8')) as Record<string, unknown>; } catch { continue; }
+          if (!registrationSettled && isLegacyAgentRouterVersionMismatchResponse(frame)) {
+            finish(new RouterVersionMismatchError());
+            continue;
+          }
           if (!registrationSettled && frame.request_id === registerId) {
             if (frame.ok !== true || !isRecord(frame.result)) {
               finish(new Error('Router registration was rejected.'));
@@ -248,7 +264,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
       });
 
       this.write(socket, {
-        version: 1,
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
         type: 'register',
         request_id: registerId,
         ...this.input.identity,
@@ -266,7 +282,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
     this.heartbeat = setInterval(() => {
       if (this.closed || this.currentSocket !== socket) return;
       this.write(socket, {
-        version: 1,
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
         type: 'heartbeat',
         request_id: randomUUID(),
         project: this.input.identity.project,
@@ -287,7 +303,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
   ): Promise<void> {
     if (this.closed || !isDelivery(frame, connectionId, generation)) return;
     const common = {
-      version: 1,
+      version: AGENT_ROUTER_PROTOCOL_VERSION,
       request_id: randomUUID(),
       attempt_id: frame.attempt_id,
       delivery_id: frame.delivery_id,

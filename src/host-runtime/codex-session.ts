@@ -3,8 +3,16 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getMemeshDirFromDbPath } from '../core/paths.js';
-import { readHostConfigFile, readTokenFile, requiredString } from './config.js';
+import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
+import { getAgentRouterSocketPath, getMemeshDirFromDbPath, getProjectName } from '../core/paths.js';
+import {
+  assertSecureLocalHostRuntimeSupported,
+  ensureRouterTokenFile,
+  readHostConfigFile,
+  readTokenFile,
+  normalizeConfiguredRouterSocket,
+  requiredString,
+} from './config.js';
 import { connectRouterHost, type RouterHostConnection } from './router-client.js';
 
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
@@ -32,6 +40,11 @@ export interface CodexSessionCompanionDependencies {
   realpath?: typeof fs.realpathSync;
 }
 
+interface ValidCodexSessionStart {
+  threadId: string;
+  workspace: string;
+}
+
 /**
  * Bind one living Codex hook process to the router for the lifetime of the
  * ordinary CLI session. The router invokes native queue locally; this process
@@ -39,38 +52,114 @@ export interface CodexSessionCompanionDependencies {
  * the bounded full message.
  */
 export async function startCodexSessionCompanion(
-  config: CodexSessionHostConfig,
+  config: CodexSessionHostConfig | undefined,
   hookInput: CodexSessionStartInput,
   environment: { PLUGIN_ROOT?: string },
   dependencies: CodexSessionCompanionDependencies = {},
 ): Promise<RouterHostConnection | null> {
-  if (hookInput.hook_event_name !== undefined && hookInput.hook_event_name !== 'SessionStart') return null;
-  if (hookInput.source === 'compact') return null;
-  if (typeof environment.PLUGIN_ROOT !== 'string' || environment.PLUGIN_ROOT.length === 0) return null;
-
-  const threadId = hookInput.session_id;
-  if (typeof threadId !== 'string' || !CODEX_THREAD_ID.test(threadId)) return null;
-
   const realpath = dependencies.realpath ?? fs.realpathSync;
-  const workspace = realpath(requiredAbsolutePath(config.workspace, 'workspace'));
-  const cwd = realpath(requiredAbsolutePath(hookInput.cwd, 'cwd'));
-  if (workspace !== cwd) return null;
+  const session = validateCodexSessionStart(hookInput, environment, realpath);
+  if (!session) return null;
+  return connectCodexSessionCompanion(config, session, realpath, dependencies.connect ?? connectRouterHost);
+}
 
-  return (dependencies.connect ?? connectRouterHost)({
-    socket_path: requiredString(config.router_socket, 'router_socket'),
-    auth_token: readTokenFile(config.token_file),
+function connectCodexSessionCompanion(
+  config: CodexSessionHostConfig | undefined,
+  session: ValidCodexSessionStart,
+  realpath: typeof fs.realpathSync,
+  connect: typeof connectRouterHost,
+): Promise<RouterHostConnection> {
+  const selected = config === undefined
+    ? automaticCodexSessionConfig(session)
+    : configuredCodexSessionConfig(config, session, realpath);
+
+  return connect({
+    socket_path: selected.router_socket,
+    auth_token: selected.auth_token,
     identity: {
-      project: requiredString(config.project, 'project'),
-      principal_id: requiredString(config.principal_id, 'principal_id'),
-      session_instance_id: threadId,
+      project: selected.project,
+      principal_id: selected.principal_id,
+      session_instance_id: session.threadId,
       adapter_kind: 'codex-cli-queue',
-      ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
-      ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
+      ...(selected.model === undefined ? {} : { model: selected.model }),
+      ...(selected.work_summary === undefined ? {} : { work_summary: selected.work_summary }),
     },
     async deliver() {
       throw new Error('Codex CLI queue delivery is owned by the router adapter.');
     },
   });
+}
+
+function validateCodexSessionStart(
+  hookInput: CodexSessionStartInput,
+  environment: { PLUGIN_ROOT?: string },
+  realpath: typeof fs.realpathSync,
+): ValidCodexSessionStart | null {
+  if (hookInput.hook_event_name !== 'SessionStart') return null;
+  if (hookInput.source !== 'startup' && hookInput.source !== 'resume') return null;
+  if (typeof environment.PLUGIN_ROOT !== 'string' || environment.PLUGIN_ROOT.length === 0) return null;
+
+  const threadId = hookInput.session_id;
+  if (typeof threadId !== 'string' || !CODEX_THREAD_ID.test(threadId)) return null;
+
+  return {
+    threadId,
+    workspace: realpath(requiredAbsolutePath(hookInput.cwd, 'cwd')),
+  };
+}
+
+interface ResolvedCodexSessionConfig {
+  router_socket: string;
+  auth_token: string;
+  project: string;
+  principal_id: string;
+  model?: string;
+  work_summary?: string;
+}
+
+function configuredCodexSessionConfig(
+  config: CodexSessionHostConfig,
+  session: ValidCodexSessionStart,
+  realpath: typeof fs.realpathSync,
+): ResolvedCodexSessionConfig {
+  const resolved: ResolvedCodexSessionConfig = {
+    router_socket: normalizeConfiguredRouterSocket(config.router_socket),
+    auth_token: readTokenFile(config.token_file),
+    project: requiredString(config.project, 'project'),
+    principal_id: requiredString(config.principal_id, 'principal_id'),
+    ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
+    ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
+  };
+  const configuredWorkspace = realpath(requiredAbsolutePath(config.workspace, 'workspace'));
+  if (configuredWorkspace !== session.workspace) return automaticCodexSessionConfig(session);
+  return resolved;
+}
+
+function automaticCodexSessionConfig(session: ValidCodexSessionStart): ResolvedCodexSessionConfig {
+  assertSecureLocalHostRuntimeSupported();
+  const dataDir = getMemeshDirFromDbPath();
+  ensureOwnerPrivateDataDirectory(dataDir);
+  return {
+    router_socket: getAgentRouterSocketPath(),
+    auth_token: ensureRouterTokenFile(path.join(dataDir, 'agent-router.token')),
+    project: canonicalAgentScopeId(getProjectName(session.workspace)),
+    principal_id: `codex-thread-${session.threadId}`,
+  };
+}
+
+function ensureOwnerPrivateDataDirectory(dataDir: string): void {
+  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(dataDir);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new Error('The MeMesh data directory must be a real owner-private directory.');
+  }
+  if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+    throw new Error('The MeMesh data directory must be owned by the current user.');
+  }
+  fs.chmodSync(dataDir, 0o700);
+  if ((fs.lstatSync(dataDir).mode & 0o077) !== 0) {
+    throw new Error('The MeMesh data directory must be owner-private.');
+  }
 }
 
 function requiredAbsolutePath(value: unknown, field: string): string {
@@ -97,14 +186,15 @@ async function readHookInput(): Promise<CodexSessionStartInput> {
 
 async function main(): Promise<void> {
   const configPath = path.join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
-  if (!fs.existsSync(configPath)) return;
   const input = await readHookInput();
-  const connection = await startCodexSessionCompanion(
-    readHostConfigFile<CodexSessionHostConfig>(configPath),
-    input,
-    { PLUGIN_ROOT: process.env.PLUGIN_ROOT },
+  const session = validateCodexSessionStart(input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT }, fs.realpathSync);
+  if (!session) return;
+  const connection = await connectCodexSessionCompanion(
+    readCodexSessionConfigIfPresent(configPath),
+    session,
+    fs.realpathSync,
+    connectRouterHost,
   );
-  if (!connection) return;
   let closing = false;
   const close = () => {
     if (closing) return;
@@ -113,6 +203,16 @@ async function main(): Promise<void> {
   };
   process.once('SIGINT', close);
   process.once('SIGTERM', close);
+}
+
+function readCodexSessionConfigIfPresent(configPath: string): CodexSessionHostConfig | undefined {
+  try {
+    fs.lstatSync(configPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+  return readHostConfigFile<CodexSessionHostConfig>(configPath);
 }
 
 function isMainModule(): boolean {

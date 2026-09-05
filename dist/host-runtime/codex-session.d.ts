@@ -20,7 +20,7 @@ export interface CodexSessionCompanionDependencies {
     connect?: typeof connectRouterHost;
     realpath?: typeof fs.realpathSync;
 }
-export declare function startCodexSessionCompanion(config: CodexSessionHostConfig, hookInput: CodexSessionStartInput, environment: {
+export declare function startCodexSessionCompanion(config: CodexSessionHostConfig | undefined, hookInput: CodexSessionStartInput, environment: {
     PLUGIN_ROOT?: string;
 }, dependencies?: CodexSessionCompanionDependencies): Promise<RouterHostConnection | null>;
 //# sourceMappingURL=codex-session.d.ts.map

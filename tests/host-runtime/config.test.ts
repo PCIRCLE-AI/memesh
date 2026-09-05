@@ -2,15 +2,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ensureRouterTokenFile, readHostConfig, readTokenFile } from '../../src/host-runtime/config.js';
+import {
+  ensureRouterTokenFile,
+  normalizeConfiguredRouterSocket,
+  readHostConfig,
+  readTokenFile,
+} from '../../src/host-runtime/config.js';
 
 const temporaryDirectories: string[] = [];
 let savedArgv: string[];
 let savedHostConfig: string | undefined;
+let savedDbPath: string | undefined;
 
 beforeEach(() => {
   savedArgv = [...process.argv];
   savedHostConfig = process.env.MEMESH_HOST_CONFIG;
+  savedDbPath = process.env.MEMESH_DB_PATH;
   delete process.env.MEMESH_HOST_CONFIG;
 });
 
@@ -18,6 +25,8 @@ afterEach(() => {
   process.argv.splice(0, process.argv.length, ...savedArgv);
   if (savedHostConfig === undefined) delete process.env.MEMESH_HOST_CONFIG;
   else process.env.MEMESH_HOST_CONFIG = savedHostConfig;
+  if (savedDbPath === undefined) delete process.env.MEMESH_DB_PATH;
+  else process.env.MEMESH_DB_PATH = savedDbPath;
   vi.restoreAllMocks();
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
@@ -52,6 +61,17 @@ describe.skipIf(process.platform === 'win32')('host config and token files', () 
     expect(created).toHaveLength(64);
     expect(fs.statSync(token).mode & 0o077).toBe(0);
     expect(ensureRouterTokenFile(token)).toBe(created);
+  });
+
+  it('upgrades only the historic default router socket beside the active database', () => {
+    const directory = privateDirectory();
+    process.env.MEMESH_DB_PATH = path.join(directory, 'knowledge-graph.db');
+    const legacyDefault = path.join(directory, 'agent-router.sock');
+    const customSocket = path.join(directory, 'custom', 'agent-router.sock');
+
+    expect(normalizeConfiguredRouterSocket(legacyDefault))
+      .toBe(path.join(directory, 'agent-router-v2.sock'));
+    expect(normalizeConfiguredRouterSocket(customSocket)).toBe(customSocket);
   });
 
   it('reads owner-private 0600 regular config and token files', () => {

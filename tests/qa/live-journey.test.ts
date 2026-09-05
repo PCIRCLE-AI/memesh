@@ -31,7 +31,11 @@ import {
   assertCodexRanNoCommands,
   assertCodexReply,
   assertDistPresent,
+  assertExactCodexQueueRouting,
+  assertHostAcceptOnly,
+  assertNoHostOutcomeReceipts,
   assertIntakeReceipt,
+  assertMcpDiscoverCards,
   assertNativeAccepted,
   assertNotCi,
   assertSupportedPlatform,
@@ -120,6 +124,13 @@ const RECEIPTS_WITH_INTAKE = [
 const RECEIPTS_WITHOUT_INTAKE = [RECEIPTS_WITH_INTAKE[0]];
 
 describe('parseArgs', () => {
+  it('accepts the bounded automatic Codex registration mode without a host', () => {
+    expect(parseArgs(['--codex-session-auto-registration'])).toMatchObject({
+      host: null,
+      mode: 'codex-session-auto-registration',
+    });
+  });
+
   it('accepts each supported host', () => {
     expect(parseArgs(['--host', 'codex']).host).toBe('codex');
     expect(parseArgs(['--host', 'claude']).host).toBe('claude');
@@ -138,7 +149,12 @@ describe('parseArgs', () => {
   });
 
   it('requires a host', () => {
-    expect(() => parseArgs([])).toThrow(/--host is required/);
+    expect(() => parseArgs([])).toThrow(/--host is required.*codex-session-auto-registration/);
+  });
+
+  it('rejects combining automatic registration with a host mode', () => {
+    expect(() => parseArgs(['--codex-session-auto-registration', '--host', 'codex']))
+      .toThrow(/cannot be combined with --host/);
   });
 
   it('rejects an unsupported host rather than guessing one', () => {
@@ -174,6 +190,11 @@ describe('--help', () => {
 
   it('discloses the harness-driven Codex registration', () => {
     expect(helpText()).toMatch(/registration is harness-driven/);
+  });
+
+  it('documents the bounded automatic-registration invocation', () => {
+    expect(helpText()).toMatch(/npm run qa:live-journey -- --codex-session-auto-registration/);
+    expect(helpText()).toMatch(/fresh HOME.*fake `codex queue`/);
   });
 
   it('warns that the launched Claude session is outside the isolation', () => {
@@ -283,11 +304,11 @@ describe('assertNotCi', () => {
 
 describe('assertSocketPathFits', () => {
   it('accepts a short temporary root', () => {
-    expect(() => assertSocketPathFits('/private/tmp/memesh-lj-abc123/memesh/agent-router.sock')).not.toThrow();
+    expect(() => assertSocketPathFits('/private/tmp/memesh-lj-abc123/memesh/agent-router-v2.sock')).not.toThrow();
   });
 
   it('refuses a path over the AF_UNIX limit and names the fix', () => {
-    const tooLong = `/private/tmp/${'d'.repeat(MAX_SOCKET_PATH_BYTES)}/memesh/agent-router.sock`;
+    const tooLong = `/private/tmp/${'d'.repeat(MAX_SOCKET_PATH_BYTES)}/memesh/agent-router-v2.sock`;
     expect(() => assertSocketPathFits(tooLong)).toThrow(/TMPDIR=\/private\/tmp/);
   });
 
@@ -527,6 +548,130 @@ describe('assertRecipientUnavailable', () => {
   it('rejects a different failure wearing a non-zero exit code', () => {
     expect(() => assertRecipientUnavailable({ status: 1, stderr: 'Error: native_message_too_large' }))
       .toThrow(/Expected recipient_unavailable/);
+  });
+});
+
+describe('assertHostAcceptOnly', () => {
+  const expected = {
+    messageId: MESSAGE_ID,
+    deliveryId: DELIVERY_ID,
+    adapterKind: 'codex-cli-queue',
+    recipient: THREAD,
+  };
+  const receipts = [{
+    receipt_kind: 'host_accept',
+    message_id: MESSAGE_ID,
+    recipient: THREAD,
+    delivery_id: DELIVERY_ID,
+    host_accept_id: 'host-accept-1',
+    adapter_kind: 'codex-cli-queue',
+  }];
+
+  it('accepts durable host_accept readback without lifecycle receipts', () => {
+    expect(assertHostAcceptOnly(receipts, expected)).toMatchObject({
+      receipt_kind: 'host_accept',
+      delivery_id: DELIVERY_ID,
+    });
+  });
+
+  it('rejects a send response-shaped input without durable readback', () => {
+    expect(() => assertHostAcceptOnly(ACCEPTED_SEND, expected)).toThrow(/JSON array/);
+  });
+
+  it('rejects host_accept readback with an ACK or disposition', () => {
+    expect(() => assertHostAcceptOnly([
+      ...receipts,
+      { receipt_kind: 'ack', message_id: MESSAGE_ID },
+    ], expected)).toThrow(/ACK or disposition/);
+    expect(() => assertHostAcceptOnly([
+      ...receipts,
+      { receipt_kind: 'disposition', message_id: MESSAGE_ID },
+    ], expected)).toThrow(/ACK or disposition/);
+  });
+
+  it('rejects a durable host_accept for a different delivery or adapter', () => {
+    expect(() => assertHostAcceptOnly([
+      { ...receipts[0], delivery_id: 'other-delivery' },
+    ], expected)).toThrow(/names delivery/);
+    expect(() => assertHostAcceptOnly([
+      { ...receipts[0], adapter_kind: 'claude-channel' },
+    ], expected)).toThrow(/names adapter/);
+  });
+});
+
+describe('assertNoHostOutcomeReceipts', () => {
+  it('accepts a durable failed-send projection with no host or model outcome', () => {
+    expect(assertNoHostOutcomeReceipts([
+      { receipt_kind: 'intake', message_id: MESSAGE_ID },
+    ], { messageId: MESSAGE_ID })).toHaveLength(1);
+  });
+
+  it('rejects host_accept, ACK, and disposition facts', () => {
+    for (const receipt_kind of ['host_accept', 'ack', 'disposition']) {
+      expect(() => assertNoHostOutcomeReceipts([
+        { receipt_kind, message_id: MESSAGE_ID },
+      ], { messageId: MESSAGE_ID })).toThrow(/no host_accept, ACK, or disposition/);
+    }
+  });
+
+  it('ignores receipts belonging to another message', () => {
+    expect(assertNoHostOutcomeReceipts([
+      { receipt_kind: 'host_accept', message_id: 'other-message' },
+    ], { messageId: MESSAGE_ID })).toEqual([]);
+  });
+});
+
+describe('assertExactCodexQueueRouting', () => {
+  const messages = [
+    { sessionId: 'thread-a', messageId: 'message-a', deliveryId: 'delivery-a' },
+    { sessionId: 'thread-b', messageId: 'message-b', deliveryId: 'delivery-b' },
+  ];
+  const invocation = (message: (typeof messages)[number]) => ({
+    thread_id: message.sessionId,
+    serialized_message: JSON.stringify({
+      message_type: 'memesh_message',
+      delivery_id: message.deliveryId,
+      envelope: { message_id: message.messageId, recipient: message.sessionId },
+    }),
+  });
+
+  it('accepts exactly one matching native envelope for each exact-session send', () => {
+    expect(assertExactCodexQueueRouting(messages.map(invocation), messages)).toHaveLength(2);
+  });
+
+  it('rejects extra, duplicate, or crossed queue delivery', () => {
+    expect(() => assertExactCodexQueueRouting([
+      ...messages.map(invocation), invocation(messages[0]),
+    ], messages)).toThrow(/3 invocations for 2 sends/);
+    expect(() => assertExactCodexQueueRouting([
+      invocation(messages[0]), invocation(messages[0]),
+    ], messages)).toThrow(/2 invocations for thread-a/);
+    expect(() => assertExactCodexQueueRouting([
+      invocation(messages[0]),
+      { ...invocation(messages[1]), thread_id: 'thread-b', serialized_message: invocation(messages[0]).serialized_message },
+    ], messages)).toThrow(/crossed exact-session boundaries/);
+  });
+});
+
+describe('assertMcpDiscoverCards', () => {
+  const expected = [
+    { session_id: 'thread-a', principal_id: 'codex-thread-thread-a', project: 'memesh-live-journey' },
+    { session_id: 'thread-b', principal_id: 'codex-thread-thread-b', project: 'memesh-live-journey' },
+  ];
+
+  it('accepts the exact pair of thread-scoped Codex cards', () => {
+    expect(assertMcpDiscoverCards({ cards: expected.map((card) => ({ ...card, host_kind: 'codex' })) }, expected))
+      .toHaveLength(2);
+  });
+
+  it('rejects missing or identity-mismatched cards', () => {
+    expect(() => assertMcpDiscoverCards({ cards: [expected[0]] }, expected)).toThrow(/expected exactly 2/);
+    expect(() => assertMcpDiscoverCards({
+      cards: expected.map((card, index) => ({ ...card, host_kind: 'codex', ...(index === 1 ? { principal_id: 'wrong' } : {}) })),
+    }, expected)).toThrow(/identity-mismatched/);
+    expect(() => assertMcpDiscoverCards({
+      cards: [{ ...expected[0], host_kind: 'codex' }, { ...expected[0], host_kind: 'codex' }],
+    }, expected)).toThrow(/identity-mismatched/);
   });
 });
 

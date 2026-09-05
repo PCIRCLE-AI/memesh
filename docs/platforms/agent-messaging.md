@@ -77,30 +77,43 @@ Linux. Windows remains supported for core MeMesh memory, durable message
 storage, and MCP tools, but host-native wakeup fails closed before creating
 credentials, configuration, IPC listeners, or managed child processes.
 
-Create one reusable owner-private config for each local path and principal.
-The stable principal is the logical recipient. Managed processes generate a
-fresh exact session identity; the ordinary Codex path instead uses the Codex
-thread identity supplied at SessionStart. No thread ID is copied by hand.
-Ordinary sessions outside the explicit `codex-session` workspace opt-in remain
-`presence-only/inbound-unavailable`.
+The default local endpoint is versioned with the wire protocol
+(`agent-router-v2.sock`). This lets a current router start beside an incompatible
+legacy daemon after an upgrade instead of killing it or taking over its live
+socket. Existing generated configs that name the former default are normalized
+in memory; an explicit custom socket remains exact and reports
+`router_version_mismatch` when it exposes the known legacy response shape.
+
+Create one reusable owner-private config for each managed local host and
+principal. The stable principal is the logical recipient. Managed processes
+generate a fresh exact session identity. Ordinary Codex plugin sessions instead
+register automatically from the Codex thread identity supplied at SessionStart,
+using a distinct thread-scoped principal; no thread ID is copied by hand.
 
 ```bash
-memesh agent setup codex-session --project my-project --principal codex-reviewer --workspace "$PWD"
 memesh agent setup codex --project my-project --principal codex-reviewer --workspace "$PWD"
 memesh agent setup claude --project my-project --principal claude-reviewer
 ```
 
 Optional declarations can be persisted with `--model <id>` and
 `--work-summary <text>` (each is capped at 200 characters); no defaults are guessed.
+For ordinary Codex only, `memesh agent setup codex-session ...` is an optional
+workspace-specific stable-principal override, not an activation prerequisite.
 
 ### Ordinary active Codex CLI session
 
-`codex-session` is the opt-in path for an ordinary local Codex session and
-requires the MeMesh Codex plugin to be installed and enabled so Codex loads
-the packaged SessionStart hook. Run
-the setup command from the exact workspace that Codex will use; it stores the
-configured real workspace and stable principal in the owner-private
-`codex-session.json` config. Restart Codex in that workspace after setup.
+An ordinary local Codex session requires the MeMesh Codex plugin to be installed
+and enabled so Codex loads the packaged SessionStart hook. Each startup or
+resumed thread then registers automatically under the current project with a
+thread-scoped principal. Use `message discover` to obtain the exact live session
+ID. No manual `agent setup` is required.
+
+If one workspace needs a stable named principal across different threads, run
+`memesh agent setup codex-session --project my-project --principal codex-reviewer
+--workspace "$PWD"` there and restart Codex. The owner-private config overrides
+project and principal only when its exact real workspace matches. Another
+workspace still uses automatic identity; a malformed or insecure override fails
+closed rather than silently downgrading.
 
 This guide's supported documented path is ordinary Codex CLI `SessionStart`.
 Codex Desktop or an unattached task is not user-visible native-delivery
@@ -109,10 +122,10 @@ result is directly verified. This is a scope boundary for evidence, not a
 claim that Codex Desktop is universally unsupported.
 
 On `SessionStart` for `startup` or `resume`, the asynchronous companion checks
-the Codex thread identity, hook session identity, and configured workspace
-realpath before it connects to the router. A missing identity, a different
-workspace, compact lifecycle input, or a failed/disconnected connection does
-not register a host and does not wake anything.
+the Codex thread identity and cwd before it creates owner-private router state
+or connects. A missing or malformed identity, compact lifecycle input, invalid
+cwd, insecure explicit override, or failed/disconnected connection does not
+register a host and does not wake anything.
 
 For a registered session, MeMesh invokes `codex queue` with one untrusted full
 envelope capped at 16,384 bytes (16 KiB), including routing metadata and payload.
@@ -124,7 +137,7 @@ disposition. Codex exposes message text only through its `--message` process
 argument, so same-user process inspection may observe it while the short-lived
 queue command runs; do not put secrets in native messages.
 
-If the configured Codex session is stopped, missing, disconnected, or no
+If the target Codex session is stopped, missing, disconnected, or no
 longer matches its configured workspace, MeMesh does not start or replace it.
 An exact-session send reports `recipient_unavailable`; durable scoped recovery
 and receipt history remain available to fetch, cursor recovery, `poll`, or
@@ -252,8 +265,9 @@ only then removes the directory; if a session is still connected when the wait
 expires it keeps the directory rather than racing that spawn. The same sequence
 runs on failures and on `SIGINT`/`SIGTERM`.
 
-**`--host codex`** starts the router, runs `memesh agent setup codex-session`,
-creates one real Codex CLI thread with `codex exec`, registers that thread,
+**`--host codex`** starts the router with no `codex-session.json`, creates one
+real Codex CLI thread with `codex exec`, registers that thread through the
+automatic companion path,
 sends one exact-session message, and then resumes the thread with a fixed
 prompt that names neither the sentinel nor any identifier. The reply must quote
 the envelope's `message_id` and `delivery_id` back, **and** that turn must have
@@ -288,12 +302,12 @@ The limitations these checks always declare:
 - The Codex **registration** half is harness-driven: the check drives the
   shipped `src/host-runtime/codex-session.ts` companion directly with the
   `SessionStart` payload the packaged plugin hook supplies, because a scripted
-  `codex exec` turn was not observed to register anything on its own. *Why* the
-  plugin hook does not run there is not established — `--ignore-user-config` is
-  documented only as skipping `config.toml`, and on a machine whose
-  `~/.memesh/hosts` has no `codex-session.json` the shipped companion would
-  return early regardless. Dispatch → `codex queue` → model-visible reply is
-  product-path evidence; the registration step is not.
+  `codex exec --ignore-user-config` turn does not establish plugin-hook loading.
+  No `codex-session.json` is created, so the companion does exercise automatic
+  thread-scoped registration. Dispatch → `codex queue` → model-visible reply is
+  product-path evidence; plugin-loader invocation itself is not proved by this
+  mode. The bounded `--codex-session-auto-registration` mode additionally proves
+  a clean-home packaged router → native queue boundary without using an account.
 - The interactive Claude session is **outside** this check's isolation.
   `--setting-sources ""` is accepted by the CLI (an invalid source name is
   rejected, an empty list is not), but it is not verified to exclude
@@ -433,7 +447,7 @@ reply, or a stopped-session wake-up.
 
 | Participant | Current path | Status today | Notes |
 |---|---|---|---|
-| Ordinary Codex CLI | `codex-session` owner-private opt-in | bounded full-message native delivery while active | Exact workspace, principal, and SessionStart identity must match; oversized envelopes return `native_message_too_large`, while stopped or disconnected sessions return `recipient_unavailable` |
+| Ordinary Codex CLI | automatic plugin SessionStart registration; optional `codex-session` identity override | bounded full-message native delivery while active | Exact thread identity is discoverable; oversized envelopes return `native_message_too_large`, while stopped or disconnected sessions return `recipient_unavailable` |
 | MeMesh-managed Codex app-server | `memesh-host-codex` | separate managed path | It creates its own Codex thread; it does not attach to an ordinary session |
 | Claude channel | `memesh-host-claude` | separate channel path | Requires the documented Channel opt-in; no stopped-session resume |
 | Other local MCP clients | MCP, HTTP, or CLI message operations | durable messaging only | Use `poll`/`watch` and scoped fetch where their own host loop supports it; this guide makes no native-wakeup claim |

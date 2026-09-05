@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import path from 'node:path';
 import { AgentMessageAccessError, AgentMessagingError, AgentNativeMessageTooLargeError, fetchAgentMessage, pollAgentEvents, readAgentMessageReceipts, recordAgentReceipt, sendAgentMessage, waitForAgentEvents, } from '../core/agent-messaging.js';
 import { MessageSchema } from './schemas.js';
-import { createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
-import { getMemeshDirFromDbPath } from '../core/paths.js';
+import { AGENT_ROUTER_PROTOCOL_VERSION, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
+import { getAgentRouterSocketPath } from '../core/paths.js';
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
     constructor() {
@@ -27,8 +26,7 @@ function configuredAgentMessageStorageQuotaBytes() {
     return parsed;
 }
 function routerSocketPath() {
-    return process.env.MEMESH_ROUTER_SOCKET
-        ?? path.join(getMemeshDirFromDbPath(), 'agent-router.sock');
+    return process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
 }
 function optionalRouterNotifier() {
     try {
@@ -52,7 +50,7 @@ async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
     if (existing)
         return nativeAcceptance(existing);
     const request = {
-        version: 1,
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
         type: 'notify',
         request_id: randomUUID(),
         project: sent.project,
@@ -312,7 +310,7 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
         }
         case 'discover': {
             const request = {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type: 'discover',
                 request_id: randomUUID(),
                 project: input.project,

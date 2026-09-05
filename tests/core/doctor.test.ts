@@ -4493,7 +4493,7 @@ describe('doctor rows that had no assertion', () => {
     });
   });
 
-  describe('Codex ordinary-session notification setup', () => {
+  describe('Codex ordinary-session notifications', () => {
     function codexPackageRoot(): string {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-.codex-plugins-cache-'));
       tempRoots.push(root);
@@ -4514,7 +4514,7 @@ describe('doctor rows that had no assertion', () => {
       });
     }
 
-    it('passes when the explicit session setup config exists', async () => {
+    it('reports the optional explicit identity override when its config exists', async () => {
       const packageRoot = codexPackageRoot();
       const memeshDir = isolateMemeshDir();
       const configPath = path.join(memeshDir, 'hosts', 'codex-session.json');
@@ -4523,25 +4523,25 @@ describe('doctor rows that had no assertion', () => {
       const result = await runDoctorImpl(codexOptions(packageRoot));
       const check = row(result, 'codex-session-setup');
       expect(check.status).toBe('pass');
-      expect(check.label).toBe('Codex ordinary-session notification setup');
-      expect(check.summary.toLowerCase()).toContain('durable inbox remains available');
-      expect(check.summary).toContain('will not auto-attach');
+      expect(check.informational).toBe(true);
+      expect(check.label).toBe('Codex ordinary-session notifications');
+      expect(check.summary).toContain('identity override file is present and will be validated at SessionStart');
+      expect(check.summary).toContain('other Codex plugin sessions use automatic thread-scoped identities');
+      expect(check.summary).toContain('memesh message discover');
     });
 
-    it('warns when the session setup config is missing', async () => {
+    it('reports automatic thread-scoped registration when no override exists', async () => {
       const packageRoot = codexPackageRoot();
       isolateMemeshDir();
 
       const result = await runDoctorImpl(codexOptions(packageRoot));
       const check = row(result, 'codex-session-setup');
-      expect(check.status).toBe('warn');
-      expect(check.code).toBe('codex-session.config-missing');
-      expect(check.summary.toLowerCase()).toContain('durable inbox remains available');
-      expect(check.summary).toContain('live ordinary-session wakeup is inactive');
-      expect(check.summary).toContain('explicit opt-in');
-      expect(check.summary).toContain('will not auto-attach');
-      expect(check.fix).toBe('Run `memesh agent setup codex-session --project <project> --principal <principal> --workspace <exact-workspace>`, then restart Codex.');
-      expect(result.status).toBe('PASS_WITH_CONCERNS');
+      expect(check.status).toBe('pass');
+      expect(check.informational).toBe(true);
+      expect(check.code).toBeUndefined();
+      expect(check.fix).toBeUndefined();
+      expect(check.summary).toContain('registers automatically under a thread-scoped identity');
+      expect(check.summary).toContain('memesh message discover');
     });
 
     it('does not add a row for a non-Codex plugin host', async () => {
@@ -4563,8 +4563,8 @@ describe('doctor rows that had no assertion', () => {
         pluginCacheDiscoveryImpl: () => [{ host: 'codex', packageRoot: discoveredCodexRoot }],
       }));
       const check = row(result, 'codex-session-setup');
-      expect(check.status).toBe('warn');
-      expect(check.code).toBe('codex-session.config-missing');
+      expect(check.status).toBe('pass');
+      expect(check.informational).toBe(true);
     });
 
     it('uses only existsSync for setup detection and does not probe a router', async () => {
@@ -4586,7 +4586,7 @@ describe('doctor rows that had no assertion', () => {
         },
       }));
 
-      expect(result.checks.find(check => check.id === 'codex-session-setup')?.status).toBe('warn');
+      expect(result.checks.find(check => check.id === 'codex-session-setup')?.status).toBe('pass');
       expect(readPaths).toEqual([]);
       expect(routerCalls).toBe(0);
     });

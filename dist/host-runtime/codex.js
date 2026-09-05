@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CodexAppServerDisconnectedError, CodexAppServerTimeoutError, createCodexAppServerAdapter, startCodexAppServerThread, } from '../host-adapters/codex-app-server.js';
-import { assertSecureLocalHostRuntimeSupported, readHostConfig, readTokenFile, requiredString, } from './config.js';
+import { assertSecureLocalHostRuntimeSupported, normalizeConfiguredRouterSocket, readHostConfig, readTokenFile, requiredString, } from './config.js';
 import { runHostEntry } from './entry.js';
 import { connectRouterHost } from './router-client.js';
 const DEFAULT_STARTUP_TIMEOUT_MS = 15_000;
@@ -133,7 +133,7 @@ function normalizeConfig(config) {
     if (!fs.statSync(workspace).isDirectory())
         throw new Error('workspace must be an existing directory.');
     return {
-        routerSocket: requiredString(config.router_socket, 'router_socket'),
+        routerSocket: normalizeConfiguredRouterSocket(config.router_socket),
         tokenFile: config.token_file,
         project: requiredString(config.project, 'project'),
         principalId: requiredString(config.principal_id, 'principal_id'),

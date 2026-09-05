@@ -120,10 +120,12 @@ requireText('dist/host-adapters/codex-cli-queue.js', [
   'dispatch(input', 'serializeNativeAgentMessage', "'queue', '--thread'", "'--message', message", 'shell: false',
 ]);
 requireText('src/host-runtime/codex-session.ts', [
-  'CODEX_THREAD_ID', "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'", 'workspace !== cwd',
+  'CODEX_THREAD_ID', "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
+  'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent', 'codex-thread-${session.threadId}',
 ]);
 requireText('dist/host-runtime/codex-session.js', [
-  'CODEX_THREAD_ID', "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'", 'workspace !== cwd',
+  'CODEX_THREAD_ID', "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
+  'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent', 'codex-thread-${session.threadId}',
 ]);
 requireText('src/transports/cli/cli.ts', [
   "'codex-session'", "mode: host === 'codex-session'", "'ordinary-session-native-queue'",
@@ -209,19 +211,19 @@ requireText('llms-install.md', [
   'memesh-host-codex', 'memesh-host-claude', 'memesh-host-acp', '--config', 'message storage report',
 ]);
 requireText('README.md', [
-  'message', 'memesh agent setup codex-session', 'without polling or a human reminder',
+  'message', 'registers automatically', 'no manual `agent setup` is required', 'without polling or a human reminder',
   'stopped, missing, or disconnected Codex session', 'message storage report', '64 KiB', '16 KiB',
   'untrusted', 'native_message_too_large', 'recipient_unavailable', 'Principal targets retain durable store-and-forward',
   'acknowledgement', 'workflow disposition',
 ]);
 requireText('README.zh-TW.md', [
-  'message', 'memesh agent setup codex-session', '沒有輪詢或人工提醒',
+  'message', '自動以 thread-scoped identity 註冊', '不需要手動執行 `agent setup`', '沒有輪詢或人工提醒',
   '停止、缺失或斷線', 'message storage report', '64 KiB', '16 KiB',
   '不受信任', 'native_message_too_large', 'recipient_unavailable', 'Principal target', 'durable store-and-forward',
   'acknowledgement', 'workflow disposition',
 ]);
 requireText('README.de.md', [
-  'message', 'memesh agent setup codex-session', 'ohne Polling oder menschliche Erinnerung',
+  'message', 'registriert sich', 'ein manuelles `agent setup` ist nicht erforderlich', 'ohne Polling oder menschliche Erinnerung',
   'gestoppte, fehlende oder getrennte Codex-Session', 'message storage report', '64 KiB', '16 KiB',
   'nicht vertrauenswürdigen', 'native_message_too_large', 'recipient_unavailable', 'Principal-Ziele', 'Durable Store-and-Forward',
   'Bestätigung', 'Workflow-Status',

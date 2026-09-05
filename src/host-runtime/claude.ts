@@ -20,6 +20,7 @@ import {
 } from './router-client.js';
 import {
   assertSecureLocalHostRuntimeSupported,
+  normalizeConfiguredRouterSocket,
   readHostConfig,
   readTokenFile,
   requiredString,
@@ -184,7 +185,7 @@ export async function startClaudeManagedSession(
     if (phase !== 'starting') return Promise.reject(new Error('Claude channel session is not available.'));
     phase = 'registering';
     registrationTask = connectRouter({
-      socket_path: requiredString(config.router_socket, 'router_socket'),
+      socket_path: normalizeConfiguredRouterSocket(config.router_socket),
       auth_token: requiredString(config.auth_token, 'router token'),
       identity: {
         project: requiredString(config.project, 'project'),
@@ -252,7 +253,7 @@ async function main(): Promise<void> {
   const config = readHostConfig<Record<string, unknown>>();
   await startClaudeManagedSession({
     server_name: requiredString(config.server_name ?? 'memesh-channel', 'server_name'),
-    router_socket: requiredString(config.router_socket, 'router_socket'),
+    router_socket: normalizeConfiguredRouterSocket(config.router_socket),
     auth_token: readTokenFile(config.token_file),
     project: requiredString(config.project, 'project'),
     principal_id: requiredString(config.principal_id, 'principal_id'),

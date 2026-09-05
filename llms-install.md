@@ -104,8 +104,13 @@ umask 077
 memesh-router
 ```
 
-If you start it yourself, it creates `agent-router.sock` and `agent-router.token` beside the active
-MeMesh database (normally `~/.memesh/`) with owner-private permissions. Check
+If you start it yourself, it creates the current protocol endpoint
+`agent-router-v2.sock` and the shared `agent-router.token` beside the active
+MeMesh database (normally `~/.memesh/`) with owner-private permissions. After
+an upgrade, an older router may remain on its legacy socket until its old
+sessions exit or the machine restarts. Current clients do not attach to it,
+and MeMesh does not kill or unlink a live process without durable ownership
+proof. Check
 the installed adapter imports and the live socket as distinct facts:
 
 ```bash
@@ -117,10 +122,18 @@ The router probe does not register a host, send content, or wake a stopped
 session. Generate reusable `0600` configs; session identities are not copied
 from an active ordinary session.
 
-For an ordinary active local Codex session, first install and enable the MeMesh
-Codex plugin (Option A), which supplies the packaged SessionStart hook. Then
-run this from the exact workspace you want to configure and restart Codex in
-that same workspace:
+For an ordinary active local Codex session, install and enable the MeMesh
+Codex plugin (Option A), which supplies the packaged SessionStart hook. On the
+next startup or resume, that thread registers automatically under the current
+project with a thread-scoped principal. Verify live presence with:
+
+```bash
+memesh message discover --project my-project
+```
+
+No manual host setup is required. If one exact workspace needs a stable named
+principal across different Codex threads, create this optional override and
+restart Codex in that workspace:
 
 ```bash
 memesh agent setup codex-session --project my-project --principal codex-recipient --workspace "$PWD"
@@ -128,17 +141,19 @@ memesh agent setup codex-session --project my-project --principal codex-recipien
 
 This stores the configured workspace realpath and principal in
 `~/.memesh/hosts/codex-session.json`. On `SessionStart` (`startup` or
-`resume`), an asynchronous companion registers only when its Codex thread ID,
-hook session ID, and workspace realpath match that config. The authenticated
-router sends the active exact session one bounded full message through native
-`codex queue`; no second `message fetch` is required for that live delivery.
+`resume`), an asynchronous companion validates the Codex thread ID and cwd. A
+matching valid override supplies its project and principal; another workspace
+keeps automatic thread-scoped registration. A malformed or insecure override
+fails closed. The authenticated router sends the active exact session one
+bounded full message through native `codex queue`; no second `message fetch`
+is required for that live delivery.
 
 `host_accept` records only that the local Codex queue accepted that message. It
 does not prove an agent read the payload, acknowledged it, or accepted the
 work. Codex exposes message text through its `--message` process argument, so
 same-user process inspection may observe it while the queue command runs; do
-not send secrets through the native path. If the session is stopped, missing, disconnected, or in another
-workspace, MeMesh neither starts nor replaces it; the durable inbox remains
+not send secrets through the native path. If the session is stopped, missing,
+or disconnected, MeMesh neither starts nor replaces it; the durable inbox remains
 available to scoped fetch, cursor recovery, `poll`, and `memesh message watch`
 for audit and diagnosis.
 

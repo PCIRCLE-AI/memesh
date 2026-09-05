@@ -437,14 +437,13 @@ async function main() {
 
   /** `memesh-host-codex-session` (both the `bin` entry and the async
    * SessionStart hook — same file, src/host-runtime/codex-session.ts).
-   * Unlike the three above, its `main()` checks
-   * `fs.existsSync(configPath)` FIRST (codex-session.ts:99-100) and returns
-   * before ever reading stdin when no host config exists — a silent,
-   * successful no-op is the documented safe behaviour here, not a bug. */
-  async function assertCodexSessionOptionalConfig(absolutePath, env, payload) {
+   * The generic entry-point gate supplies a deliberately invalid non-UUID
+   * session id, so the companion must exit before creating router state. The
+   * packaged live journey separately proves valid zero-config registration. */
+  async function assertCodexSessionInvalidIdentityNoop(absolutePath, env, payload) {
     const result = await run(absolutePath, [], { input: JSON.stringify(payload), env });
     if (result.timedOut) throw new Error(`timed out after ${DEFAULT_TIMEOUT_MS}ms`);
-    if (result.status !== 0) throw new Error(`exited ${result.status} with no host config present (expected a quiet no-op)\nstderr: ${result.stderr.slice(0, 500)}`);
+    if (result.status !== 0) throw new Error(`exited ${result.status} for an invalid session identity (expected a quiet fail-closed no-op)\nstderr: ${result.stderr.slice(0, 500)}`);
   }
 
   /** The eight ordinary hook scripts under scripts/hooks/. Each gets the
@@ -487,7 +486,7 @@ async function main() {
     'dist/host-runtime/codex.js': { run: (abs, env) => assertHostRuntimeFailsClosed(abs, env) },
     'dist/host-runtime/acp.js': { run: (abs, env) => assertHostRuntimeFailsClosed(abs, env) },
     'dist/host-runtime/codex-session.js': {
-      run: (abs, env) => assertCodexSessionOptionalConfig(abs, env, hookPayload({ hook_event_name: 'SessionStart', source: 'startup' })),
+      run: (abs, env) => assertCodexSessionInvalidIdentityNoop(abs, env, hookPayload({ hook_event_name: 'SessionStart', source: 'startup' })),
     },
     'scripts/hooks/pre-edit-recall.js': {
       run: (abs, env) => assertHookStarts(abs, env, 'PreToolUse', hookPayload({

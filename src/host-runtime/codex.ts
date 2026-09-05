@@ -16,6 +16,7 @@ import {
 } from '../host-adapters/codex-app-server.js';
 import {
   assertSecureLocalHostRuntimeSupported,
+  normalizeConfiguredRouterSocket,
   readHostConfig,
   readTokenFile,
   requiredString,
@@ -221,7 +222,7 @@ function normalizeConfig(config: ManagedCodexHostConfig): NormalizedConfig {
   const workspace = fs.realpathSync(requiredAbsolutePath(config.workspace, 'workspace'));
   if (!fs.statSync(workspace).isDirectory()) throw new Error('workspace must be an existing directory.');
   return {
-    routerSocket: requiredString(config.router_socket, 'router_socket'),
+    routerSocket: normalizeConfiguredRouterSocket(config.router_socket),
     tokenFile: config.token_file,
     project: requiredString(config.project, 'project'),
     principalId: requiredString(config.principal_id, 'principal_id'),

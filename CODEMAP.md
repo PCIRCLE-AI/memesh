@@ -114,7 +114,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `session-start.js` | SessionStart | inject top-N memories (additionalContext), banner, lesson warnings, auto-update |
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
-| `src/host-runtime/codex-session.ts` | SessionStart | register the exact configured Codex thread for metadata-only wakeups |
+| `src/host-runtime/codex-session.ts` | SessionStart | automatically register the exact Codex thread on the current protocol-versioned router endpoint; apply a matching optional identity override |
 | `session-summary.js` | Stop | auto-capture, LLM failure analysis, dream auto-trigger |
 | `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |

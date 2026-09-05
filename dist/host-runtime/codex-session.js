@@ -2,41 +2,92 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getMemeshDirFromDbPath } from '../core/paths.js';
-import { readHostConfigFile, readTokenFile, requiredString } from './config.js';
+import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
+import { getAgentRouterSocketPath, getMemeshDirFromDbPath, getProjectName } from '../core/paths.js';
+import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile, readHostConfigFile, readTokenFile, normalizeConfiguredRouterSocket, requiredString, } from './config.js';
 import { connectRouterHost } from './router-client.js';
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export async function startCodexSessionCompanion(config, hookInput, environment, dependencies = {}) {
-    if (hookInput.hook_event_name !== undefined && hookInput.hook_event_name !== 'SessionStart')
+    const realpath = dependencies.realpath ?? fs.realpathSync;
+    const session = validateCodexSessionStart(hookInput, environment, realpath);
+    if (!session)
         return null;
-    if (hookInput.source === 'compact')
+    return connectCodexSessionCompanion(config, session, realpath, dependencies.connect ?? connectRouterHost);
+}
+function connectCodexSessionCompanion(config, session, realpath, connect) {
+    const selected = config === undefined
+        ? automaticCodexSessionConfig(session)
+        : configuredCodexSessionConfig(config, session, realpath);
+    return connect({
+        socket_path: selected.router_socket,
+        auth_token: selected.auth_token,
+        identity: {
+            project: selected.project,
+            principal_id: selected.principal_id,
+            session_instance_id: session.threadId,
+            adapter_kind: 'codex-cli-queue',
+            ...(selected.model === undefined ? {} : { model: selected.model }),
+            ...(selected.work_summary === undefined ? {} : { work_summary: selected.work_summary }),
+        },
+        async deliver() {
+            throw new Error('Codex CLI queue delivery is owned by the router adapter.');
+        },
+    });
+}
+function validateCodexSessionStart(hookInput, environment, realpath) {
+    if (hookInput.hook_event_name !== 'SessionStart')
+        return null;
+    if (hookInput.source !== 'startup' && hookInput.source !== 'resume')
         return null;
     if (typeof environment.PLUGIN_ROOT !== 'string' || environment.PLUGIN_ROOT.length === 0)
         return null;
     const threadId = hookInput.session_id;
     if (typeof threadId !== 'string' || !CODEX_THREAD_ID.test(threadId))
         return null;
-    const realpath = dependencies.realpath ?? fs.realpathSync;
-    const workspace = realpath(requiredAbsolutePath(config.workspace, 'workspace'));
-    const cwd = realpath(requiredAbsolutePath(hookInput.cwd, 'cwd'));
-    if (workspace !== cwd)
-        return null;
-    return (dependencies.connect ?? connectRouterHost)({
-        socket_path: requiredString(config.router_socket, 'router_socket'),
+    return {
+        threadId,
+        workspace: realpath(requiredAbsolutePath(hookInput.cwd, 'cwd')),
+    };
+}
+function configuredCodexSessionConfig(config, session, realpath) {
+    const resolved = {
+        router_socket: normalizeConfiguredRouterSocket(config.router_socket),
         auth_token: readTokenFile(config.token_file),
-        identity: {
-            project: requiredString(config.project, 'project'),
-            principal_id: requiredString(config.principal_id, 'principal_id'),
-            session_instance_id: threadId,
-            adapter_kind: 'codex-cli-queue',
-            ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
-            ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
-        },
-        async deliver() {
-            throw new Error('Codex CLI queue delivery is owned by the router adapter.');
-        },
-    });
+        project: requiredString(config.project, 'project'),
+        principal_id: requiredString(config.principal_id, 'principal_id'),
+        ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
+        ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
+    };
+    const configuredWorkspace = realpath(requiredAbsolutePath(config.workspace, 'workspace'));
+    if (configuredWorkspace !== session.workspace)
+        return automaticCodexSessionConfig(session);
+    return resolved;
+}
+function automaticCodexSessionConfig(session) {
+    assertSecureLocalHostRuntimeSupported();
+    const dataDir = getMemeshDirFromDbPath();
+    ensureOwnerPrivateDataDirectory(dataDir);
+    return {
+        router_socket: getAgentRouterSocketPath(),
+        auth_token: ensureRouterTokenFile(path.join(dataDir, 'agent-router.token')),
+        project: canonicalAgentScopeId(getProjectName(session.workspace)),
+        principal_id: `codex-thread-${session.threadId}`,
+    };
+}
+function ensureOwnerPrivateDataDirectory(dataDir) {
+    fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    const stat = fs.lstatSync(dataDir);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+        throw new Error('The MeMesh data directory must be a real owner-private directory.');
+    }
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
+        throw new Error('The MeMesh data directory must be owned by the current user.');
+    }
+    fs.chmodSync(dataDir, 0o700);
+    if ((fs.lstatSync(dataDir).mode & 0o077) !== 0) {
+        throw new Error('The MeMesh data directory must be owner-private.');
+    }
 }
 function requiredAbsolutePath(value, field) {
     const result = requiredString(value, field);
@@ -61,12 +112,11 @@ async function readHookInput() {
 }
 async function main() {
     const configPath = path.join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
-    if (!fs.existsSync(configPath))
-        return;
     const input = await readHookInput();
-    const connection = await startCodexSessionCompanion(readHostConfigFile(configPath), input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT });
-    if (!connection)
+    const session = validateCodexSessionStart(input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT }, fs.realpathSync);
+    if (!session)
         return;
+    const connection = await connectCodexSessionCompanion(readCodexSessionConfigIfPresent(configPath), session, fs.realpathSync, connectRouterHost);
     let closing = false;
     const close = () => {
         if (closing)
@@ -76,6 +126,17 @@ async function main() {
     };
     process.once('SIGINT', close);
     process.once('SIGTERM', close);
+}
+function readCodexSessionConfigIfPresent(configPath) {
+    try {
+        fs.lstatSync(configPath);
+    }
+    catch (error) {
+        if (error.code === 'ENOENT')
+            return undefined;
+        throw error;
+    }
+    return readHostConfigFile(configPath);
 }
 function isMainModule() {
     const entrypoint = process.argv[1];

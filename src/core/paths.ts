@@ -20,6 +20,9 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 
+export const AGENT_ROUTER_SOCKET_FILENAME = 'agent-router-v2.sock';
+const LEGACY_AGENT_ROUTER_SOCKET_FILENAME = 'agent-router.sock';
+
 /**
  * Resolve the user's home directory, honouring `HOME` first.
  *
@@ -86,6 +89,22 @@ export function getMemeshDirFromDbPath(): string {
   return process.env.MEMESH_DB_PATH
     ? path.dirname(process.env.MEMESH_DB_PATH)
     : memeshDir();
+}
+
+/** The versioned local endpoint used when no owner-selected socket overrides it. */
+export function getAgentRouterSocketPath(): string {
+  return path.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
+}
+
+/**
+ * Migrate only the historic default beside the active database. An explicit
+ * socket, including one with the old basename elsewhere, remains owner-owned.
+ */
+export function normalizeAgentRouterSocketPath(socketPath: string): string {
+  const dataDir = getMemeshDirFromDbPath();
+  return socketPath === path.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME)
+    ? getAgentRouterSocketPath()
+    : socketPath;
 }
 
 /**

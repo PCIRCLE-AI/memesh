@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import { randomUUID } from 'node:crypto';
-import path from 'node:path';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import {
   AgentMessageAccessError,
@@ -19,12 +18,13 @@ import {
 } from '../core/agent-messaging.js';
 import { MessageSchema } from './schemas.js';
 import {
+  AGENT_ROUTER_PROTOCOL_VERSION,
   createAgentRouterNotifier,
   sendAgentRouterRequest,
   type AgentRouterNotifyRequest,
   type AgentRouterDiscoverRequest,
 } from '../core/agent-router.js';
-import { getMemeshDirFromDbPath } from '../core/paths.js';
+import { getAgentRouterSocketPath } from '../core/paths.js';
 
 export type AgentMessageActionInput = z.infer<typeof MessageSchema>;
 
@@ -105,8 +105,7 @@ function configuredAgentMessageStorageQuotaBytes(): number | undefined {
 }
 
 function routerSocketPath(): string {
-  return process.env.MEMESH_ROUTER_SOCKET
-    ?? path.join(getMemeshDirFromDbPath(), 'agent-router.sock');
+  return process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
 }
 
 function optionalRouterNotifier(): AgentMessagePostCommitNotifier | undefined {
@@ -140,7 +139,7 @@ async function requireExactSessionNativeAcceptance(
   if (existing) return nativeAcceptance(existing);
 
   const request: AgentRouterNotifyRequest = {
-    version: 1,
+    version: AGENT_ROUTER_PROTOCOL_VERSION,
     type: 'notify',
     request_id: randomUUID(),
     project: sent.project,
@@ -457,7 +456,7 @@ export async function executeAgentMessageAction(
     }
     case 'discover': {
       const request: AgentRouterDiscoverRequest = {
-        version: 1,
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
         type: 'discover',
         request_id: randomUUID(),
         project: input.project,

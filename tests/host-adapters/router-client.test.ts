@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -181,6 +182,45 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     expect(startRouter).toHaveBeenCalledTimes(1);
     expect(fs.lstatSync(socketPath).isSocket()).toBe(true);
     expect(connection.generation).toBe(1);
+  });
+
+  it('reports the exact legacy router response without replacing its endpoint', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-client-version-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const server = net.createServer((socket) => {
+      socket.once('data', () => {
+        socket.end(`${JSON.stringify({
+          version: 1,
+          request_id: '',
+          ok: false,
+          error: { code: 'unsupported_version', message: 'Unsupported router protocol version.' },
+        })}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    fs.chmodSync(socketPath, 0o600);
+    const startRouter = vi.fn();
+
+    try {
+      await expect(connectRouterHost({
+        socket_path: socketPath,
+        auth_token: 'token',
+        identity: {
+          project: 'project-a', principal_id: 'principal-a',
+          session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+        },
+        deliver: async () => ({ host: 'fixture', status: 'queued' }),
+        resilience: { initial_attempts: 1, start_router: startRouter },
+      })).rejects.toMatchObject({ code: 'router_version_mismatch' });
+      expect(startRouter).not.toHaveBeenCalled();
+      expect(fs.lstatSync(socketPath).isSocket()).toBe(true);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
   });
 
   it('reconnects with a new generation, resumes heartbeats, and drains durable deliveries without duplicate host work', async () => {
