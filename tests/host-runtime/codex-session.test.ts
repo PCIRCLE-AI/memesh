@@ -131,6 +131,7 @@ describe('ordinary Codex session companion', () => {
     ['compact lifecycle', { source: 'compact' }, { PLUGIN_ROOT: '/plugin' }],
     ['unknown lifecycle', { source: 'clear' }, { PLUGIN_ROOT: '/plugin' }],
     ['missing Codex plugin marker', {}, {}],
+    ['Claude-only plugin marker', {}, { PLUGIN_ROOT: undefined, CLAUDE_PLUGIN_ROOT: '/plugin' }],
     ['empty Codex plugin marker', {}, { PLUGIN_ROOT: '' }],
   ])('fails closed before automatic state creation for %s', async (_label, hookOverride, environment) => {
     const { config, hook } = fixture();
