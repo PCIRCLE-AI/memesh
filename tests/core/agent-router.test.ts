@@ -223,6 +223,60 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     expect(AGENT_ROUTER_PROTOCOL_VERSION).toBe(2);
   });
 
+  it('preserves an invalid-field parse error from the live router', async () => {
+    const { db, socketPath, token } = setup();
+    await startRouter(db, socketPath, token);
+
+    await expect(sendAgentRouterRequest(socketPath, {
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(),
+      project: '', limit: 10, hops: 0,
+    })).rejects.toMatchObject({ code: 'invalid_field', message: expect.stringContaining('project') });
+  });
+
+  it.each([
+    { name: 'current parse error', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: '', ok: false,
+      error: { code: 'invalid_field', message: 'project must be a string.' }, expectedCode: 'invalid_field' },
+    { name: 'historical v1 unsupported type', version: 1, requestId: '', ok: false,
+      error: { code: 'unsupported_type', message: 'Unsupported router frame type.' }, expectedCode: 'router_version_mismatch' },
+    { name: 'legacy unsupported version', version: 1, requestId: '', ok: false,
+      error: { code: 'unsupported_version', message: 'Unsupported router protocol version.' }, expectedCode: 'router_version_mismatch' },
+    { name: 'foreign error ID', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: 'foreign', ok: false,
+      error: { code: 'invalid_field', message: 'project must be a string.' }, expectedCode: 'invalid_response' },
+    { name: 'empty success ID', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: '', ok: true,
+      error: undefined, expectedCode: 'invalid_response' },
+    { name: 'foreign success ID', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: 'foreign', ok: true,
+      error: undefined, expectedCode: 'invalid_response' },
+    { name: 'wrong-version parse error', version: 99, requestId: '', ok: false,
+      error: { code: 'invalid_field', message: 'project must be a string.' }, expectedCode: 'invalid_response' },
+    { name: 'malformed parse error', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: '', ok: false,
+      error: { code: 'invalid_field' }, expectedCode: 'invalid_response' },
+  ])('validates the one-shot response envelope: $name', async ({ version, requestId, ok, error, expectedCode }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-envelope-'));
+    fs.chmodSync(dir, 0o700);
+    tempDirs.push(dir);
+    const socketPath = path.join(dir, 'router.sock');
+    const server = net.createServer(socket => {
+      socket.once('data', () => socket.end(`${JSON.stringify({
+        version, request_id: requestId, ok, error, result: { cards: [] },
+      })}\n`));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      await expect(sendAgentRouterRequest(socketPath, {
+        version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(),
+        project: 'project-a', limit: 10, hops: 0,
+      })).rejects.toMatchObject({
+        code: expectedCode,
+        ...(expectedCode === 'invalid_field' ? { message: error?.message } : {}),
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it('rejects a nominally successful response that omits its result object', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-response-'));
     fs.chmodSync(dir, 0o700);

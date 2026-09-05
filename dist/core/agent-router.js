@@ -772,7 +772,11 @@ export async function sendAgentRouterRequest(socketPath, request, timeoutMs = DE
                 if (isLegacyAgentRouterVersionMismatchResponse(response)) {
                     throw new AgentRouterProtocolError('router_version_mismatch', 'router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.');
                 }
-                if (response.version !== AGENT_ROUTER_PROTOCOL_VERSION || response.request_id !== request.request_id) {
+                const uncorrelatedError = response.request_id === '' && response.ok === false
+                    && isPlainObject(response.error)
+                    && typeof response.error.code === 'string' && typeof response.error.message === 'string';
+                if (response.version !== AGENT_ROUTER_PROTOCOL_VERSION
+                    || (response.request_id !== request.request_id && !uncorrelatedError)) {
                     throw new AgentRouterProtocolError('invalid_response', 'Router response identity does not match.');
                 }
                 if (!response.ok)

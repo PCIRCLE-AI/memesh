@@ -7,6 +7,7 @@ import type { AgentJsonObject, AgentMessagePayload } from '../core/agent-messagi
 import {
   AGENT_ROUTER_MAX_FRAME_BYTES,
   AGENT_ROUTER_PROTOCOL_VERSION,
+  AgentRouterProtocolError,
   isLegacyAgentRouterVersionMismatchResponse,
 } from '../core/agent-router.js';
 import { assertSecureLocalHostRuntimeSupported } from './config.js';
@@ -73,14 +74,6 @@ type NormalizedResilienceOptions = {
 };
 
 class RouterTransportError extends Error {}
-
-class RouterVersionMismatchError extends Error {
-  readonly code = 'router_version_mismatch';
-
-  constructor() {
-    super('router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.');
-  }
-}
 
 class ActiveRouterHostConnection implements RouterHostConnection {
   private currentConnectionId = '';
@@ -218,10 +211,17 @@ class ActiveRouterHostConnection implements RouterHostConnection {
           let frame: Record<string, unknown>;
           try { frame = JSON.parse(raw.toString('utf8')) as Record<string, unknown>; } catch { continue; }
           if (!registrationSettled && isLegacyAgentRouterVersionMismatchResponse(frame)) {
-            finish(new RouterVersionMismatchError());
+            finish(new AgentRouterProtocolError(
+              'router_version_mismatch',
+              'router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.',
+            ));
             continue;
           }
           if (!registrationSettled && frame.request_id === registerId) {
+            if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION) {
+              finish(new AgentRouterProtocolError('invalid_response', 'Router response identity does not match.'));
+              continue;
+            }
             if (frame.ok !== true || !isRecord(frame.result)) {
               finish(new Error('Router registration was rejected.'));
               continue;

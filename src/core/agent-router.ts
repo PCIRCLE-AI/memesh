@@ -1094,7 +1094,13 @@ export async function sendAgentRouterRequest(
             'router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.',
           );
         }
-        if (response.version !== AGENT_ROUTER_PROTOCOL_VERSION || response.request_id !== request.request_id) {
+        // Parsing can fail before the router extracts a request ID. Only a
+        // complete error envelope may omit that correlation; success never may.
+        const uncorrelatedError = response.request_id === '' && response.ok === false
+          && isPlainObject(response.error)
+          && typeof response.error.code === 'string' && typeof response.error.message === 'string';
+        if (response.version !== AGENT_ROUTER_PROTOCOL_VERSION
+          || (response.request_id !== request.request_id && !uncorrelatedError)) {
           throw new AgentRouterProtocolError('invalid_response', 'Router response identity does not match.');
         }
         if (!response.ok) throw new AgentRouterProtocolError(response.error.code, response.error.message);

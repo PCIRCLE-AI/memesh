@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { AGENT_ROUTER_MAX_FRAME_BYTES, AGENT_ROUTER_PROTOCOL_VERSION, isLegacyAgentRouterVersionMismatchResponse, } from '../core/agent-router.js';
+import { AGENT_ROUTER_MAX_FRAME_BYTES, AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterProtocolError, isLegacyAgentRouterVersionMismatchResponse, } from '../core/agent-router.js';
 import { assertSecureLocalHostRuntimeSupported } from './config.js';
 const DEFAULT_INITIAL_RETRY_MS = 100;
 const DEFAULT_MAX_RETRY_MS = 5_000;
@@ -12,12 +12,6 @@ const DEFAULT_INITIAL_ATTEMPTS = 6;
 const DEFAULT_REGISTRATION_TIMEOUT_MS = 5_000;
 const MIN_RETRY_MS = 10;
 class RouterTransportError extends Error {
-}
-class RouterVersionMismatchError extends Error {
-    code = 'router_version_mismatch';
-    constructor() {
-        super('router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.');
-    }
 }
 class ActiveRouterHostConnection {
     input;
@@ -164,10 +158,14 @@ class ActiveRouterHostConnection {
                         continue;
                     }
                     if (!registrationSettled && isLegacyAgentRouterVersionMismatchResponse(frame)) {
-                        finish(new RouterVersionMismatchError());
+                        finish(new AgentRouterProtocolError('router_version_mismatch', 'router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.'));
                         continue;
                     }
                     if (!registrationSettled && frame.request_id === registerId) {
+                        if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION) {
+                            finish(new AgentRouterProtocolError('invalid_response', 'Router response identity does not match.'));
+                            continue;
+                        }
                         if (frame.ok !== true || !isRecord(frame.result)) {
                             finish(new Error('Router registration was rejected.'));
                             continue;

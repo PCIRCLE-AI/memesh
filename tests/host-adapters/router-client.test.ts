@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closeDatabase, openDatabase } from '../../src/db.js';
 import { sendAgentMessage } from '../../src/core/agent-messaging.js';
-import { AgentRouter, createAgentRouterNotifier } from '../../src/core/agent-router.js';
+import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouter, createAgentRouterNotifier } from '../../src/core/agent-router.js';
 import {
   connectRouterHost,
   type RouterDelivery,
@@ -184,7 +184,7 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     expect(connection.generation).toBe(1);
   });
 
-  it('reports the exact legacy router response without replacing its endpoint', async () => {
+  it.each(['unsupported_version', 'unsupported_type'])('reports the legacy %s response without replacing its endpoint', async code => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-client-version-'));
     fs.chmodSync(tempDir, 0o700);
     const socketPath = path.join(tempDir, 'router.sock');
@@ -194,7 +194,7 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
           version: 1,
           request_id: '',
           ok: false,
-          error: { code: 'unsupported_version', message: 'Unsupported router protocol version.' },
+          error: { code, message: 'Unsupported router protocol.' },
         })}\n`);
       });
     });
@@ -219,6 +219,49 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
       expect(startRouter).not.toHaveBeenCalled();
       expect(fs.lstatSync(socketPath).isSocket()).toBe(true);
     } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it.each([1, AGENT_ROUTER_PROTOCOL_VERSION + 1])('rejects a matching-ID registration success with protocol version %s', async version => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-client-wrong-version-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const server = net.createServer(socket => {
+      socket.once('data', chunk => {
+        const request = JSON.parse(chunk.toString('utf8').trim()) as { request_id: string };
+        socket.end(`${JSON.stringify({
+          version, request_id: request.request_id, ok: true,
+          result: { connection_id: 'wrong-version', generation: 1, lease_ms: 1_000 },
+        })}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    fs.chmodSync(socketPath, 0o600);
+    const startRouter = vi.fn();
+    const delivered = vi.fn(async () => ({ status: 'queued' }));
+    try {
+      await expect(connectRouterHost({
+        socket_path: socketPath,
+        auth_token: 'token',
+        identity: {
+          project: 'project-a', principal_id: 'principal-a',
+          session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+        },
+        deliver: delivered,
+        resilience: { initial_attempts: 1, start_router: startRouter },
+      }).then(active => {
+        connection = active;
+        return active;
+      })).rejects.toMatchObject({ code: 'invalid_response' });
+      expect(connection).toBeUndefined();
+      expect(delivered).not.toHaveBeenCalled();
+      expect(startRouter).not.toHaveBeenCalled();
+    } finally {
+      await connection?.close();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
   });
