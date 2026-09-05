@@ -1,6 +1,11 @@
 {
   "comment": "Recorded triage, not suppression: every entry is a hit somebody classified, with the reason. New hits fail the audit until they are fixed or land here with a classification. Full detail: the 2026-08-04 triage (two agent passes, lead-verified).",
   "hits": {
+    "C1 tests/codex-plugin-fresh-consumer.test.ts": {
+      "class": "SAFE",
+      "reason": "The two absence assertions are anti-vacuity controls: the dependency-free package also proves sqlite-vec resolution fails before the packaged SessionStart companion auto-starts a live router and persists the exact session registration, while the missing manual config is paired with that same positive automatic-registration readback.",
+      "triaged": "2026-09-06 Codex plugin fresh-consumer regression"
+    },
     "C1 tests/cli-agent-message-ingress.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
       "reason": "The detector's `.toBe(0)` matches successful CLI exit-status assertions, not empty collections. Each success test also parses emitted JSON and asserts concrete routing fields and a generated message ID; rejection tests assert nonzero status plus exact privacy/error behavior.",
