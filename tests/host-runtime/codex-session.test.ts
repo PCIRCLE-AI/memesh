@@ -83,8 +83,8 @@ describe('ordinary Codex session companion', () => {
         adapter_kind: 'codex-cli-queue',
       },
     }));
-    expect(fs.statSync(dataDir).mode & 0o077).toBe(0);
-    expect(fs.statSync(path.join(dataDir, 'agent-router.token')).mode & 0o077).toBe(0);
+    expect(fs.statSync(dataDir).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(path.join(dataDir, 'agent-router.token')).mode & 0o777).toBe(0o600);
     expect(fs.existsSync(path.join(dataDir, 'hosts', 'codex-session.json'))).toBe(false);
   });
 
