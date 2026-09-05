@@ -933,11 +933,6 @@ class Journey {
   }
 
   createCodexWorkspace() {
-    this.workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-lj-ws-')));
-    return this.workspace;
-  }
-
-  createCodexAutoRegistrationWorkspace() {
     this.workspace = path.join(this.dir, PROJECT);
     fs.mkdirSync(this.workspace, { recursive: true, mode: 0o700 });
     const initialized = run('git', ['init', '--quiet', this.workspace]);
@@ -945,6 +940,10 @@ class Journey {
       throw new Error(`Could not initialize the task-owned Codex workspace: ${initialized.stderr.trim()}`);
     }
     return this.workspace;
+  }
+
+  createCodexAutoRegistrationWorkspace() {
+    return this.createCodexWorkspace();
   }
 
   installCodexQueueStub() {
