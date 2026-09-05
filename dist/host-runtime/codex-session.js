@@ -114,18 +114,18 @@ async function main() {
     const configPath = path.join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
     const input = await readHookInput();
     const session = validateCodexSessionStart(input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT }, fs.realpathSync);
-    if (session) {
-        const connection = await connectCodexSessionCompanion(readCodexSessionConfigIfPresent(configPath), session, fs.realpathSync, connectRouterHost);
-        let closing = false;
-        const close = () => {
-            if (!closing) {
-                closing = true;
-                void connection.close().finally(() => process.exit(0));
-            }
-        };
-        process.once('SIGINT', close);
-        process.once('SIGTERM', close);
-    }
+    if (!session)
+        return;
+    const connection = await connectCodexSessionCompanion(readCodexSessionConfigIfPresent(configPath), session, fs.realpathSync, connectRouterHost);
+    let closing = false;
+    const close = () => {
+        if (closing)
+            return;
+        closing = true;
+        void connection.close().finally(() => process.exit(0));
+    };
+    process.once('SIGINT', close);
+    process.once('SIGTERM', close);
 }
 function readCodexSessionConfigIfPresent(configPath) {
     try {
