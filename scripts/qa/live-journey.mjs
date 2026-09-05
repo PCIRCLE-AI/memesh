@@ -896,7 +896,7 @@ class Journey {
         return assertMcpDiscoverCards(discovered, expected);
       });
     } finally {
-      await Promise.all(clients.map((client) => client.close().catch(() => undefined)));
+      await Promise.all(clients.map((client) => client.close()));
     }
   }
 
@@ -1050,10 +1050,7 @@ fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record
     return new Promise((resolve, reject) => {
       const socket = net.createConnection(this.legacySocketPath);
       let data = '';
-      let settled = false;
       const finish = (error, response) => {
-        if (settled) return;
-        settled = true;
         socket.destroy();
         if (error) reject(error);
         else resolve(response);
@@ -1063,13 +1060,14 @@ fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record
       socket.on('data', (chunk) => {
         data += chunk.toString();
         const newline = data.indexOf('\n');
-        if (newline < 0) return;
-        const line = data.slice(0, newline);
-        if (line !== expected) {
-          finish(new Error(`The legacy router returned the wrong v1 response: ${line}`));
-          return;
+        if (newline >= 0) {
+          const line = data.slice(0, newline);
+          if (line !== expected) {
+            finish(new Error(`The legacy router returned the wrong v1 response: ${line}`));
+          } else {
+            try { finish(null, JSON.parse(line)); } catch { finish(new Error('The legacy router returned invalid JSON.')); }
+          }
         }
-        try { finish(null, JSON.parse(line)); } catch { finish(new Error('The legacy router returned invalid JSON.')); }
       });
       socket.once('connect', () => socket.write('{"version":1,"type":"probe","request_id":"legacy-probe"}\n'));
     });
@@ -1097,22 +1095,24 @@ fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record
 
   async stopLegacyRouter() {
     const server = this.legacyServer;
-    if (!server) return;
-    for (const socket of this.legacyConnections) socket.destroy();
-    await new Promise((resolve) => {
-      if (!server.listening) resolve();
-      else server.close(() => resolve());
-    });
-    this.legacyServer = null;
-    this.legacyConnections.clear();
-    const identity = this.legacySocketIdentity;
-    this.legacySocketIdentity = null;
-    if (!identity) return;
-    try {
-      const stat = fs.lstatSync(this.legacySocketPath);
-      if (stat.isSocket() && stat.dev === identity.dev && stat.ino === identity.ino) fs.unlinkSync(this.legacySocketPath);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
+    if (server) {
+      for (const socket of this.legacyConnections) socket.destroy();
+      await new Promise((resolve) => {
+        if (!server.listening) resolve();
+        else server.close(() => resolve());
+      });
+      this.legacyServer = null;
+      this.legacyConnections.clear();
+      const identity = this.legacySocketIdentity;
+      this.legacySocketIdentity = null;
+      if (identity) {
+        try {
+          const stat = fs.lstatSync(this.legacySocketPath);
+          if (stat.isSocket() && stat.dev === identity.dev && stat.ino === identity.ino) fs.unlinkSync(this.legacySocketPath);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+      }
     }
   }
 
