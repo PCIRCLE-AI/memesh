@@ -201,7 +201,8 @@ describe('Installation Verification', () => {
       expect(install).not.toContain('memesh agent setup gemini');
       expect(guide).toContain('Experimental ACP runner (not release-gated)');
       expect(guide).toContain('owner-private');
-      expect(guide).toContain('presence-only/inbound-unavailable');
+      expect(install).toContain('No manual host setup is required');
+      expect(guide).toContain('No manual `agent setup` is required');
       expect(guide).toContain('stopped, missing, disconnected, or replaced');
     });
   });
