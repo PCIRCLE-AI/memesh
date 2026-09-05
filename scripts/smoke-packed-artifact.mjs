@@ -72,7 +72,6 @@ const requiredFiles = [
   'package.json',
   '.claude-plugin/plugin.json',
   '.codex-plugin/plugin.json',
-  '.codex-plugin/mcp.json',
   '.claude-plugin/mcp.json',
   'hooks/hooks.json',
   // Dist — core engine
@@ -199,13 +198,11 @@ assert.equal(packagedJson.version, JSON.parse(fs.readFileSync(path.join(repoRoot
 
 const codexPlugin = JSON.parse(fs.readFileSync(path.join(packageDir, '.codex-plugin', 'plugin.json'), 'utf8'));
 assert.equal(codexPlugin.version, packagedJson.version);
-assert.equal(codexPlugin.mcpServers, './.codex-plugin/mcp.json');
-const codexMcp = JSON.parse(fs.readFileSync(path.join(packageDir, '.codex-plugin', 'mcp.json'), 'utf8'));
-assert.deepEqual(codexMcp.memesh, {
-  command: 'node',
-  args: ['./dist/mcp/server.js'],
-  cwd: '.',
-}, 'Codex plugin manifest must start the packaged MCP server from its plugin root');
+assert.ok(!('mcpServers' in codexPlugin), 'Codex plugin must not declare a second MCP server');
+assert.ok(
+  !fs.existsSync(path.join(packageDir, '.codex-plugin', 'mcp.json')),
+  'Codex plugin must not ship an MCP manifest; global memesh-mcp is the sole Codex MCP path',
+);
 
 // Install the way a consumer does — production deps only, scripts ON so the
 // native bindings actually build — into a project that has no relationship to

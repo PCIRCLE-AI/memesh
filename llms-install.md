@@ -242,8 +242,9 @@ codex plugin remove memesh
 codex plugin add memesh@pcircle-memesh
 ```
 
-These commands are separate from the MCP registration above; keep the MCP
-path when a host needs `memesh-mcp` directly.
+These commands install the optional SessionStart companion only. They do not
+declare an MCP server, so keep the global `memesh-mcp` registration from
+section 3 as Codex's sole MCP path.
 
 | Failure | Remedy |
 |---|---|

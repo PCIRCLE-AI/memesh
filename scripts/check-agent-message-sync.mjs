@@ -198,8 +198,14 @@ requireAbsent(
     '-32000 Connection closed. Custom component paths supplement the defaults rather than ' +
     'replacing them, so .claude-plugin/plugin.json declaring a path is only half the fix.'
 );
-requireText('.codex-plugin/plugin.json', ['"name": "memesh"', '"version"', '"mcpServers": "./.codex-plugin/mcp.json"']);
-requireText('.codex-plugin/mcp.json', ['"memesh"', '"command": "node"', '"./dist/mcp/server.js"', '"cwd": "."']);
+requireText('.codex-plugin/plugin.json', ['"name": "memesh"', '"version"']);
+if (read('.codex-plugin/plugin.json').includes('"mcpServers"')) {
+  missing.push('.codex-plugin/plugin.json (must NOT declare mcpServers; global memesh-mcp is the sole Codex MCP path)');
+}
+requireAbsent(
+  '.codex-plugin/mcp.json',
+  'the Codex plugin supplies only lifecycle hooks; global memesh-mcp is the sole Codex MCP path'
+);
 requireText('.claude-plugin/marketplace.json', ['"name": "pcircle-memesh"', '"version"']);
 requireText('hooks/hooks.json', [
   'session-start.js', 'session-summary.js', 'pre-compact.js',

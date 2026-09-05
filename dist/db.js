@@ -1,5 +1,5 @@
 import { MemeshDatabase } from './storage/sqlite.js';
-import * as sqliteVec from 'sqlite-vec';
+import { createRequire } from 'node:module';
 import path from 'path';
 import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
@@ -12,6 +12,7 @@ import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUnique
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 let db = null;
+const require = createRequire(import.meta.url);
 let dimensionMismatchNoticed = false;
 export function openDatabase(dbPath) {
     if (db)
@@ -99,6 +100,7 @@ function migrateToCurrentSchema(db, resolvedPath) {
     let vectorIndexAvailable = true;
     db.enableLoadExtension(true);
     try {
+        const sqliteVec = require('sqlite-vec');
         sqliteVec.load(db);
     }
     catch (err) {

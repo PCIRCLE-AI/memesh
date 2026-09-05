@@ -1,5 +1,5 @@
 import { MemeshDatabase } from './storage/sqlite.js';
-import * as sqliteVec from 'sqlite-vec';
+import { createRequire } from 'node:module';
 import path from 'path';
 import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
@@ -28,6 +28,7 @@ import type { PragmaColumnRow } from './core/types.js';
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 
 let db: MemeshDatabase | null = null;
+const require = createRequire(import.meta.url);
 /** The dimension-mismatch notice has been printed this process. See ensureVecTable. */
 let dimensionMismatchNoticed = false;
 
@@ -264,6 +265,11 @@ function migrateToCurrentSchema(db: MemeshDatabase, resolvedPath: string): void 
   let vectorIndexAvailable = true;
   db.enableLoadExtension(true);
   try {
+    // This must resolve only when vector search is about to be used. The
+    // Codex plugin's SessionStart companion can start the packaged router from
+    // a plugin cache that contains no node_modules; FTS-only memory must still
+    // work there.
+    const sqliteVec = require('sqlite-vec') as { load(database: MemeshDatabase): void };
     sqliteVec.load(db);
   } catch (err) {
     vectorIndexAvailable = false;
