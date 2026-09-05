@@ -133,8 +133,8 @@ describe('Feature: Post-Commit Hook', () => {
     expect(obs.content).toBe('fix: resolve login bug');
 
     // Verify tag
-    const tag = db.prepare('SELECT * FROM tags WHERE entity_id = ? AND tag = ?').get(entity.id, 'project:repo') as Row;
-    expect(tag).toBeTruthy();
+    const tag = db.prepare("SELECT * FROM tags WHERE entity_id = ? AND tag LIKE 'project:%'").get(entity.id) as Row;
+    expect(tag?.tag).toMatch(/^project:repo~[0-9a-f]{32}$/);
 
     // Verify FTS
     const fts = db.prepare("SELECT * FROM entities_fts WHERE entities_fts MATCH 'login'").all() as Row[];
