@@ -1618,7 +1618,7 @@ async function runCodexSessionAutoRegistration(journey) {
     if (fs.existsSync(configPath)) {
       throw new Error('Automatic Codex SessionStart registration unexpectedly created hosts/codex-session.json.');
     }
-    const firstCard = expectedCards[0];
+    const firstCard = cards.find((card) => card.session_id === threadId);
     journey.step('packaged SessionStart companions remained alive, registered, and discoverable without host config', {
       hook_event_name: 'SessionStart',
       source: 'startup',
