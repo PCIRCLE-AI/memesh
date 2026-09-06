@@ -3064,7 +3064,7 @@ function inspectLlmTelemetryHealth(
       'warn',
       `${broken.length} AI-backed feature${broken.length === 1 ? '' : 's'} failed every call in the last `
         + `${windowDays} days: ${detail}. Those features are silently doing nothing.`,
-      'Run `memesh telemetry --flow <flow>` for that flow\'s detail, then check its provider and network '
+      'Run `memesh telemetry` and inspect the failing flow\'s scorecard, then check its provider and network '
         + 'configuration outside MeMesh.',
       { code: 'llm-telemetry.silent-failure', params: { count: broken.length, detail, windowDays } },
     );
