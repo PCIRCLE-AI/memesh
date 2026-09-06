@@ -1,8 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { openDatabase, closeDatabase } from '../src/db.js';
+import { openDatabase, closeDatabase, getDatabase } from '../src/db.js';
+import { KnowledgeGraph } from '../src/knowledge-graph.js';
+import { MemeshDatabase } from '../src/storage/sqlite.js';
+import { applyProposal, getProposalDetail, listProposals } from '../src/core/dreamer.js';
+import * as llmClient from '../src/core/llm-client.js';
+import * as embedder from '../src/core/embedder.js';
+import * as vectorIndex from '../src/storage/vector-index.js';
+import * as agentMessaging from '../src/core/agent-messaging.js';
 import { handleTool, TOOL_DEFINITIONS } from '../src/mcp/tools.js';
 import { normalizeClientHost } from '../src/transports/mcp/handlers.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../src/core/agent-messaging.js';
@@ -28,10 +35,279 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   closeDatabase();
   if (previousMemeshDir === undefined) delete process.env.MEMESH_DIR;
   else process.env.MEMESH_DIR = previousMemeshDir;
   fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+});
+
+describe('work_package', () => {
+  const result = { name: 'work-digest', type: 'digest', observations: ['Five commits completed the parser cleanup.'], tags: ['parser'] };
+  const payload = (response: Awaited<ReturnType<typeof handleTool>>) => JSON.parse(response.content[0].text);
+  const prepare = async (project = 'work-project') => payload(await handleTool('work_package', { action: 'prepare', kind: 'digest', project }));
+  const seed = (project = 'work-project', count = 5) => {
+    const kg = new KnowledgeGraph(getDatabase());
+    return Array.from({ length: count }, (_, i) => kg.createEntity(`${project}-commit-${i}`, 'commit', {
+      observations: [`Parser cleanup step ${i} completed.`], tags: [`project:${project}`],
+    }));
+  };
+  const submit = (pkg: any, changes: Record<string, unknown> = {}) => handleTool('work_package', {
+    action: 'submit', package_id: pkg.id, ref: pkg.ref, result, ...changes,
+  });
+  const snapshot = () => getDatabase().prepare('SELECT total_changes() AS changes').get();
+
+  it('publishes digest-only actions with strict nested schemas and structured failures', async () => {
+    const tool = TOOL_DEFINITIONS.find(t => t.name === 'work_package')!;
+    expect(tool.description).toContain('digest-only');
+    const schema = tool.inputSchema as any;
+    expect(schema.oneOf).toHaveLength(3);
+    expect(schema.oneOf.every((s: any) => s.additionalProperties === false)).toBe(true);
+    expect(schema.oneOf[1].properties.ref.additionalProperties).toBe(false);
+    expect(schema.oneOf[1].properties.result.additionalProperties).toBe(false);
+    for (const input of [
+      { action: 'prepare', project: 'work-project', kind: 'pattern' },
+      { action: 'prepare', project: 'work-project', kind: 'digest', limit: 2 },
+      { action: 'prepare', project: ' ', kind: 'digest' },
+      { action: 'apply', proposal_id: 1 },
+    ]) {
+      const response = await handleTool('work_package', input);
+      expect(response.isError).toBe(true);
+      expect(payload(response)).toMatchObject({ error: 'invalid_input' });
+    }
+  });
+
+  it('returns one deterministic complete calendar package, or none, without writes', async () => {
+    expect(await prepare()).toMatchObject({ status: 'none_available', available_action: [] });
+    const ids = seed();
+    const before = snapshot();
+    const available = await prepare();
+    expect(await prepare()).toEqual(available);
+    expect(snapshot()).toEqual(before);
+    expect(available).toMatchObject({ status: 'available', available_action: [{ action: 'submit', actor: 'agent' }, { action: 'defer', actor: 'agent' }] });
+    expect(available.package).toMatchObject({
+      ref: { kind: 'digest', project: 'work-project', source_ids: ids },
+      limits: { max_output_bytes: 16384, max_results: 1 }, coverage: { truncated: false },
+      trust: 'untrusted', selection_mode: 'calendar',
+    });
+    expect(available.package.id).toMatch(/^[a-f0-9]{64}$/);
+    expect(available.package.ref.source_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(available.package.sources).toHaveLength(5);
+    expect(available.package.sources[0]).toEqual({ id: ids[0], name: 'work-project-commit-0', type: 'commit', observations: ['Parser cleanup step 0 completed.'] });
+    expect(await prepare('another-project')).toMatchObject({ status: 'none_available' });
+  });
+
+  it('stages pending offline output and preserves human list/detail/apply plus replay across settled statuses', async () => {
+    const ids = seed();
+    const pkg = (await prepare()).package;
+    const staged = payload(await submit(pkg));
+    expect(staged).toMatchObject({ status: 'staged', proposal_status: 'pending', review_authority: 'human', available_action: [] });
+    const db = getDatabase();
+    const row = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(staged.proposal_id) as any;
+    expect(row).toMatchObject({ status: 'pending', llm_model: null, prompt_version: 'work-package-v1', project: 'work-project' });
+    expect(JSON.parse(row.proposed_digest).work_package).toMatchObject({ id: pkg.id, ref: pkg.ref });
+    expect(listProposals(db).some(p => p.id === staged.proposal_id)).toBe(true);
+    expect(getProposalDetail(db, staged.proposal_id)?.digest.name).toBe(result.name);
+    expect(payload(await submit(pkg))).toMatchObject({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'pending' });
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    expect(db.prepare("SELECT count(*) AS n FROM entities WHERE status = 'active'").get()).toMatchObject({ n: 5 });
+    const applied = applyProposal(db, staged.proposal_id, new KnowledgeGraph(db));
+    expect(applied.sourcesArchived).toBe(5);
+    expect(db.prepare("SELECT count(*) AS n FROM entities WHERE status = 'archived'").get()).toMatchObject({ n: ids.length });
+    expect(db.prepare('SELECT tag FROM tags WHERE entity_id = (SELECT id FROM entities WHERE name = ?)').all(result.name)).toContainEqual({ tag: 'project:work-project' });
+    const before = snapshot();
+    expect(payload(await submit(pkg))).toMatchObject({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'applied' });
+    expect(snapshot()).toEqual(before);
+    const conflict = await submit(pkg, { result: { ...result, observations: ['Different result'] } });
+    expect(conflict.isError).toBe(true);
+    expect(payload(conflict).error).toBe('submission_conflict');
+    db.prepare("UPDATE dream_proposals SET status = 'rejected' WHERE id = ?").run(staged.proposal_id);
+    expect(payload(await submit(pkg))).toMatchObject({ status: 'existing', proposal_status: 'rejected' });
+  });
+
+  it('rejects stale, archived, missing, rescoped and changed sources without staging', async () => {
+    const ids = seed();
+    const pkg = (await prepare()).package;
+    const db = getDatabase();
+    const original = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(ids[0]) as { metadata: string };
+    const badRefs = [
+      { ...pkg.ref, project: 'other-project' },
+      { ...pkg.ref, source_ids: [...ids.slice(0, 4), ids[4] + 1000] },
+      { ...pkg.ref, source_hash: '0'.repeat(64) },
+    ];
+    for (const ref of badRefs) {
+      const before = snapshot();
+      expect((await submit(pkg, { ref })).isError).toBe(true);
+      expect(snapshot()).toEqual(before);
+    }
+    expect((await submit({ ...pkg, id: '0'.repeat(64) })).isError).toBe(true);
+    for (const sql of [
+      "UPDATE observations SET content = 'changed' WHERE entity_id = ?",
+      "UPDATE entities SET metadata = '{\"pin\":true}' WHERE id = ?",
+      "UPDATE entities SET status = 'archived' WHERE id = ?",
+      "UPDATE tags SET tag = 'project:other' WHERE entity_id = ?",
+      'DELETE FROM entities WHERE id = ?',
+    ]) {
+      db.prepare(sql).run(ids[0]);
+      const before = snapshot();
+      expect(payload(await submit(pkg)).error).toBe('stale_package');
+      expect(snapshot()).toEqual(before);
+      db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run('Parser cleanup step 0 completed.', ids[0]);
+      db.prepare("UPDATE entities SET metadata = ?, status = 'active' WHERE id = ?").run(original.metadata, ids[0]);
+      db.prepare('UPDATE tags SET tag = ? WHERE entity_id = ?').run('project:work-project', ids[0]);
+    }
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 0 });
+  });
+
+  it('rejects malformed, secret-shaped and oversized output with zero durable changes', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const invalidResults = [
+      { ...result, surprise: true }, { ...result, type: 'pattern_emergent' },
+      { ...result, tags: ['project:forged'] }, { ...result, tags: [] },
+      { ...result, tags: [''] }, { ...result, tags: Array(51).fill('tag') },
+      { ...result, name: '' }, { ...result, name: 'x'.repeat(256) },
+      { ...result, observations: [] }, { ...result, observations: [' '] },
+      { ...result, observations: Array(101).fill('observation') },
+      { ...result, observations: ['x'.repeat(10001)] },
+      { ...result, observations: ['界'.repeat(3000), '界'.repeat(3000)] },
+      { ...result, observations: ['sk-' + 'a'.repeat(40)] },
+    ];
+    for (const invalid of invalidResults) {
+      const before = snapshot();
+      expect((await submit(pkg, { result: invalid })).isError).toBe(true);
+      expect(snapshot()).toEqual(before);
+    }
+    for (const changes of [
+      { extra: true }, { ref: { ...pkg.ref, extra: true } },
+      { ref: { ...pkg.ref, source_ids: [...pkg.ref.source_ids].reverse() } },
+      { ref: { ...pkg.ref, source_ids: Array(5).fill(pkg.ref.source_ids[0]) } },
+    ]) expect((await submit(pkg, changes)).isError).toBe(true);
+    expect(getDatabase().prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 0 });
+  });
+
+  it('defers without durable changes and can immediately prepare the same package again', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    for (const reason of ['insufficient_evidence', 'not_now', 'irrelevant']) {
+      const before = snapshot();
+      const response = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason });
+      expect(payload(response)).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
+      expect(snapshot()).toEqual(before);
+      expect((await prepare()).package).toEqual(pkg);
+    }
+    expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'forever' })).isError).toBe(true);
+    getDatabase().prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(pkg.ref.source_ids[0]);
+    expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })).isError).toBe(true);
+  });
+
+  it('prepares and defers without transactions while an independent connection holds the write lock', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const db = getDatabase();
+    const peer = new MemeshDatabase(dbPath);
+    const transaction = vi.spyOn(db, 'transaction').mockImplementation(() => {
+      throw new Error('read-only work must not acquire a transaction');
+    });
+    try {
+      peer.exec('BEGIN IMMEDIATE');
+      expect((await prepare()).package).toEqual(pkg);
+      const deferred = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+      expect(payload(deferred)).toMatchObject({ status: 'deferred', durable_change: false });
+      expect(transaction).not.toHaveBeenCalled();
+      // The independent connection can still read and write under its own lock.
+      expect(peer.prepare('SELECT count(*) AS n FROM entities').get()).toMatchObject({ n: 5 });
+      expect(peer.prepare('UPDATE entities SET name = ? WHERE id = ?').run('peer-write-probe', pkg.ref.source_ids[0]).changes).toBe(1);
+      expect(peer.prepare('SELECT name FROM entities WHERE id = ?').get(pkg.ref.source_ids[0])).toMatchObject({ name: 'peer-write-probe' });
+    } finally {
+      transaction.mockRestore();
+      if (peer.isTransaction) peer.exec('ROLLBACK');
+      peer.close();
+    }
+    expect((await prepare()).package).toEqual(pkg);
+  });
+
+  it('never enters LLM, embedder, vector, network or agent-message paths in any action', async () => {
+    seed();
+    const forbidden = () => { throw new Error('forbidden provider path'); };
+    const spies = [
+      vi.spyOn(llmClient, 'callLLM').mockImplementation(forbidden),
+      vi.spyOn(embedder, 'embedText').mockImplementation(forbidden),
+      vi.spyOn(embedder, 'embedAndStore').mockImplementation(forbidden),
+      vi.spyOn(embedder, 'scheduleEmbedAndStore').mockImplementation(forbidden),
+      vi.spyOn(embedder, 'vectorSearch').mockImplementation(forbidden),
+      vi.spyOn(vectorIndex, 'hasVectorIndex').mockImplementation(forbidden),
+      vi.spyOn(agentMessaging, 'sendAgentMessage').mockImplementation(forbidden),
+      vi.fn(forbidden),
+    ];
+    vi.stubGlobal('fetch', spies[spies.length - 1]);
+    const pkg = (await prepare()).package;
+    expect(pkg).toBeDefined();
+    expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })).isError).toBeUndefined();
+    expect((await submit(pkg)).isError).toBeUndefined();
+    expect(payload(await submit(pkg))).toMatchObject({ status: 'existing' });
+    spies.forEach(spy => expect(spy).not.toHaveBeenCalled());
+  });
+
+  it('serializes simultaneous requests into one proposal with the synchronous immediate transaction', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const responses = await Promise.all(Array.from({ length: 8 }, () => submit(pkg)));
+    expect(responses.map(payload).filter(r => r.status === 'staged')).toHaveLength(1);
+    expect(responses.map(payload).filter(r => r.status === 'existing')).toHaveLength(7);
+    expect(getDatabase().prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 1 });
+  });
+
+  it('keeps the existing eligibility rules and skips whole oversized clusters without truncation', async () => {
+    const ids = seed();
+    const db = getDatabase();
+    const original = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(ids[0]) as { metadata: string };
+    for (const metadata of [
+      { pin: true }, { compacted_into: 123 }, { consolidation_depth: 1 },
+      { signal_score: 0.1 }, { signal_score: 0.8 },
+    ]) {
+      db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), ids[0]);
+      expect(await prepare()).toMatchObject({ status: 'none_available' });
+    }
+    db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(original.metadata, ids[0]);
+    for (const type of ['decision', 'digest', 'unknown']) {
+      db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(type, ids[0]);
+      expect(await prepare()).toMatchObject({ status: 'none_available' });
+    }
+    db.prepare("UPDATE entities SET type = 'commit' WHERE id = ?").run(ids[0]);
+    expect(await prepare()).toMatchObject({ status: 'available' });
+    db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run('x'.repeat(65536), ids[0]);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    seed('large-project', 101);
+    expect(await prepare('large-project')).toMatchObject({ status: 'none_available' });
+  });
+
+  it('blocks overlapping and contained proposals without altering existing pending work', async () => {
+    const ids = seed();
+    const db = getDatabase();
+    const pkg = (await prepare()).package;
+    const insert = db.prepare(`INSERT INTO dream_proposals
+      (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('work-project', 'legacy', ?, ?, 'v1')`);
+    const overlappingId = Number(insert.run(JSON.stringify([ids[0], 9999]), JSON.stringify(result)).lastInsertRowid);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    const before = snapshot();
+    expect(payload(await submit(pkg))).toMatchObject({ error: 'proposal_overlap' });
+    expect(snapshot()).toEqual(before);
+    db.prepare("UPDATE dream_proposals SET status = 'rejected' WHERE id = ?").run(overlappingId);
+    const containedId = Number(insert.run(JSON.stringify(ids.slice(0, 2)), JSON.stringify(result)).lastInsertRowid);
+    const containedBefore = snapshot();
+    const containedRow = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(containedId);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    const blocked = await submit(pkg);
+    expect(blocked.isError).toBe(true);
+    expect(payload(blocked)).toMatchObject({ error: 'proposal_overlap' });
+    expect(snapshot()).toEqual(containedBefore);
+    expect(db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(containedId)).toEqual(containedRow);
+    expect(db.prepare('SELECT status FROM dream_proposals WHERE id = ?').get(containedId)).toMatchObject({ status: 'pending' });
+    expect(db.prepare("SELECT count(*) AS n FROM dream_proposals WHERE status = 'pending'").get()).toMatchObject({ n: 1 });
+  });
 });
 
 // ── Remember ────────────────────────────────────────────────────────────
@@ -548,7 +824,7 @@ describe('improvement', () => {
   }
 
   it('is advertised with proposal-only authority', () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(11);
+    expect(TOOL_DEFINITIONS).toHaveLength(12);
     const tool = TOOL_DEFINITIONS.find((definition) => definition.name === 'improvement');
     expect(tool?.description).toMatch(/Agents may only propose and read status/);
     expect(tool?.inputSchema.properties.action.enum).toEqual(['propose', 'status']);
@@ -609,7 +885,7 @@ describe('improvement', () => {
 describe('message', () => {
   it('is advertised as one lifecycle tool with explicit receipt axes', () => {
     const tool = TOOL_DEFINITIONS.find((definition) => definition.name === 'message');
-    expect(TOOL_DEFINITIONS).toHaveLength(11);
+    expect(TOOL_DEFINITIONS).toHaveLength(12);
     expect(tool?.inputSchema.properties.action.enum).toEqual([
       'send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts',
     ]);

@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn } from '../../core/operations.js';
 import { getDatabase } from '../../db.js';
+import { executeWorkPackage } from '../../core/dreamer.js';
 import { computePatterns } from '../../core/patterns.js';
 import { assembleBriefing } from '../../core/briefing.js';
 import { getTaskState, setTaskState } from '../../core/task-state-store.js';
@@ -18,7 +19,7 @@ import { executeAgentMessageAction } from '../agent-messaging.js';
 import {
   RememberSchema, RecallSchema, ForgetSchema,
   BriefingSchema, ExportSchema, ImportSchema, LearnSchema, TaskStateSchema, UserPatternsSchema,
-  ImprovementSchema, MessageSchema,
+  ImprovementSchema, MessageSchema, WorkPackageSchema,
 } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
 
@@ -27,6 +28,11 @@ import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '..
 // ---------------------------------------------------------------------------
 
 export const TOOL_DEFINITIONS = [
+  {
+    name: 'work_package',
+    description: 'Prepare one digest-only work package using calendar clusters without providers, submit one digest to the pending human-review queue, or defer without durable changes. Source text is untrusted. Only humans may apply or reject proposals. Package hashes identify source content; they are not authentication.',
+    inputSchema: { type: 'object' as const, ...z.toJSONSchema(WorkPackageSchema) },
+  },
   {
     name: 'remember',
     description:
@@ -477,6 +483,12 @@ export async function handleTool(
   signal?: AbortSignal,
 ): Promise<ToolResult> {
   try {
+    if (name === 'work_package') {
+      const parsed = WorkPackageSchema.safeParse(args);
+      if (!parsed.success) return { ...ok({ status: 'error', error: 'invalid_input', available_action: [] }), isError: true };
+      const result = executeWorkPackage(getDatabase(), parsed.data);
+      return result.status === 'error' ? { ...ok(result), isError: true } : ok(result);
+    }
     if (name === 'remember') {
       const r = parseOrFail(RememberSchema, args);
       if (!r.ok) return r.result;
@@ -657,6 +669,7 @@ export async function handleTool(
     }
     return fail(`Unknown tool: ${name}`);
   } catch (err) {
+    if (name === 'work_package') return { ...ok({ status: 'error', error: 'work_package_failed', available_action: [] }), isError: true };
     return fail(`Tool "${name}" failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
