@@ -74,10 +74,9 @@ export function isFilesystemPathScopeId(value: string): boolean {
 
 /**
  * The final segment of a path-shaped identifier, or `null` when there is none
- * (`/`, `C:\`). Used only by the one-shot repair in storage/graph-repairs.ts:
- * `/root` → `root`, `/Users/ktseng/Developer/Projects/memesh-llm-memory` →
- * `memesh-llm-memory`. It is NOT used on the write path, where the same value
- * is refused instead.
+ * (`/`, `C:\`). Used only to make the refusal actionable by suggesting a
+ * stable name. It never rewrites persisted identities: only the owner can
+ * decide whether a historical path and a basename identify the same agent.
  */
 export function lastPathSegment(value: string): string | null {
   const segments = canonicalAgentScopeId(value).split(/[\\/]+/).filter((s) => s.length > 0);
@@ -106,13 +105,10 @@ export function agentScopeIdRejection(field: string, value: string): string | nu
 
 /**
  * Every durable-message column that holds a routing identity, with the role
- * each column plays. One list, imported by the one-shot repair
- * (`storage/graph-repairs.ts`) and by `kg rename-project`
- * (`core/project-tags.ts`), and mirrored — it cannot be imported from
- * JavaScript — by the invariant in `scripts/audit/memory-invariants.mjs`.
- * Keep the three in step: the set the write path refuses, the set the repair
- * rewrites, and the set the invariant watches must be equal, or the result is
- * either a hole or an invariant that is red forever.
+ * each column plays. One list is imported by `kg rename-project`
+ * (`core/project-tags.ts`) and mirrored — it cannot be imported from
+ * JavaScript — by the read-only invariant in
+ * `scripts/audit/memory-invariants.mjs`.
  *
  * Table and column names here are literals and never caller input, so
  * interpolating them into SQL is safe.

@@ -373,9 +373,12 @@ error about some other agent's send.
 it keys no inbox, and it keys the send idempotency record — so it is stored
 exactly as given, and the transport-bound provenance remains the field to trust.
 
-Rows written before this rule are repaired once, in place, at the first
-database open after upgrade. Renaming a project across both its entity tags and
-its message scopes is a separate, deliberate, owner-run operation:
+Rows written before this rule are preserved byte-for-byte. MeMesh reports
+path-shaped historical scope through its read-only memory invariant rather than
+guessing that `/root`, `/tmp/root`, and `root` name one recipient. Such rows may
+remain unreachable through the stricter public API until the owner supplies an
+explicit mapping. For a confirmed project mapping, rename both its entity tags
+and message scopes with the deliberate owner-run operation:
 
 ```bash
 memesh kg rename-project --from <old> --to <new>          # dry run

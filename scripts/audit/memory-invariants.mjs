@@ -105,9 +105,7 @@ function resolveDbPath(argv) {
  * Every durable-message column that holds a routing identity — mirrored from
  * `AGENT_MESSAGE_SCOPE_COLUMNS` in src/core/agent-scope-id.ts (this script
  * cannot import TypeScript). Keep the two in step: the set the write path
- * refuses, the set src/storage/graph-repairs.ts rewrites, and the set this
- * invariant watches must be equal, or the result is either a hole or an
- * invariant that is red forever.
+ * refuses and the set this read-only invariant reports must be equal.
  */
 const AGENT_MESSAGE_SCOPE_COLUMNS = [
   ['agent_messages', ['project', 'recipient']],
@@ -391,8 +389,9 @@ const INVARIANTS = [
     // identity are two inboxes: a recipient that fetches under one never sees
     // what was sent under the other, and briefing counts unread per spelling.
     // A filesystem path is the spelling that is provably wrong rather than
-    // merely different — getProjectName cannot produce one at any of its three
-    // layers — so it is the shape the write path refuses and this watches.
+    // merely different — getProjectName cannot produce one — so it is the
+    // shape the write path refuses and this watches. Historical rows are
+    // reported, never rewritten: their intended identity is not inferable.
     // Measured before the fix on the maintainer's graph: recipient `/root` 20
     // rows beside `root` 25, and one project `/Users/…/memesh-llm-memory`.
     // No LIMIT inside the UNION: it would bound candidates per table, not
