@@ -675,7 +675,9 @@ export function assertMcpDenied(result, expected) {
   if (record.isError !== true || !expected.error.test(text)) {
     throw new Error(`${expected.label} did not fail with the expected MCP error: ${text || '<empty>'}`);
   }
-  if (text.includes(expected.sentinel)) throw new Error(`${expected.label} leaked the private payload sentinel.`);
+  if (JSON.stringify(record).includes(expected.sentinel)) {
+    throw new Error(`${expected.label} leaked the private payload sentinel.`);
+  }
   return text;
 }
 
@@ -947,18 +949,12 @@ class Journey {
     }));
     try {
       await Promise.all(clients.map((client, index) => client.connect(transports[index])));
-      const results = await Promise.all(clients.map((client) => client.callTool({
-        name: 'message',
-        arguments: { action: 'discover', project: this.project, limit: 50 },
-      })));
-      const discoveries = results.map((result, index) => {
-        if (result?.isError) throw new Error(`Packaged MCP discover client ${index + 1} returned an error.`);
-        const text = result?.content?.find((block) => block?.type === 'text')?.text;
-        if (typeof text !== 'string') throw new Error(`Packaged MCP discover client ${index + 1} returned no JSON text.`);
-        let discovered;
-        try { discovered = JSON.parse(text); } catch { throw new Error(`Packaged MCP discover client ${index + 1} returned invalid JSON.`); }
-        return assertMcpDiscoverCards(discovered, expected);
-      });
+      const results = await Promise.all(clients.map((client, index) => this.mcpJson(
+        client,
+        { action: 'discover', project: this.project, limit: 50 },
+        `Packaged MCP discover client ${index + 1}`,
+      )));
+      const discoveries = results.map((result) => assertMcpDiscoverCards(result, expected));
       return { discoveries, result: await scenario(clients) };
     } finally {
       await Promise.all(clients.map((client) => client.close()));

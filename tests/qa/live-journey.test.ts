@@ -726,6 +726,11 @@ describe('MCP message readback and access denial', () => {
     expect(() => assertMcpDenied({
       isError: true, content: [{ type: 'text', text: `not available: ${SENTINEL}` }],
     }, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL })).toThrow(/leaked/);
+    expect(() => assertMcpDenied({
+      isError: true,
+      content: [{ type: 'text', text: 'not available' }],
+      structuredContent: { payload: { qa_sentinel: SENTINEL } },
+    }, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL })).toThrow(/leaked/);
   });
 });
 
