@@ -571,10 +571,11 @@ If you switch to an embedder with a different dimension (e.g. 768 → 1536), **n
 
 ---
 
-## All 11 Memory and Coordination Tools
+## All 12 Memory and Coordination Tools
 
 | Tool | What it does |
 |------|-------------|
+| `work_package` | Prepare one bounded, calendar-selected untrusted digest package; submit one strictly validated digest for pending human review, or defer without durable change. Agents cannot apply or reject it; package hashes identify freshness, not authentication |
 | `remember` | Store knowledge with observations, relations, and tags |
 | `recall` | FTS5 + sqlite-vec search with multi-factor scoring (relevance, recency, frequency, confidence, recall impact) — no LLM in the hot path |
 | `forget` | Soft-archive (never deletes) or remove specific observations |

@@ -35,10 +35,11 @@ host is recallable from all of them. Not installed yet? Follow
    `recipient`; poll first, then fetch each returned `message_id`. Fetching
    does not acknowledge.
 
-## All 11 MCP tools
+## All 12 MCP tools
 
 | Tool | Purpose |
 |---|---|
+| `work_package` | Prepare one bounded calendar-selected untrusted digest package, submit one strictly validated digest for pending human review, or defer without durable change; agents cannot apply or reject it, and package hashes identify freshness rather than authentication |
 | `remember` | Store knowledge as an entity with observations, tags, and relations |
 | `recall` | Search stored knowledge (words are OR-ed, ranked by relevance); empty query lists recent |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |

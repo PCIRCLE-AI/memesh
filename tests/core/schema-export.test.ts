@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
+import { z } from 'zod';
 import { exportOpenAITools } from '../../src/core/schema-export.js';
-import { BriefingSchema, MessageSchema, RememberSchema, RecallSchema } from '../../src/transports/schemas.js';
+import { BriefingSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
 import { TOOL_DEFINITIONS } from '../../src/transports/mcp/handlers.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../src/core/agent-messaging.js';
+
+const objectVariants = (schema: any): any[] => Array.isArray(schema.oneOf) ? schema.oneOf : [schema];
 
 describe('exportOpenAITools', () => {
   const tools = exportOpenAITools();
@@ -26,13 +29,27 @@ describe('exportOpenAITools', () => {
       expect(typeof t.function.description).toBe('string');
       expect(t.function.parameters).toBeDefined();
       expect(t.function.parameters.type).toBe('object');
-      expect(t.function.parameters.properties).toBeDefined();
+      for (const schema of objectVariants(t.function.parameters)) {
+        expect(schema.type).toBe('object');
+        expect(schema.properties).toBeDefined();
+      }
     }
   });
 
   it('exports exactly the MCP tool names, prefixed, in registry order', () => {
     const names = tools.map((t: any) => t.function.name);
     expect(names).toEqual(TOOL_DEFINITIONS.map((t) => `memesh_${t.name}`));
+  });
+
+  it('memesh_work_package exports the strict Zod oneOf contract for every action', () => {
+    const tool = tools.find((t: any) => t.function.name === 'memesh_work_package') as any;
+    const parameters = tool.function.parameters;
+
+    expect(parameters).toEqual({ type: 'object', ...z.toJSONSchema(WorkPackageSchema) });
+    expect(parameters.oneOf.map((variant: any) => variant.properties.action.const)).toEqual(['prepare', 'submit', 'defer']);
+    expect(parameters.oneOf.every((variant: any) => variant.additionalProperties === false)).toBe(true);
+    expect(parameters.oneOf[1].properties.ref.additionalProperties).toBe(false);
+    expect(parameters.oneOf[1].properties.result.additionalProperties).toBe(false);
   });
 
   it('memesh_import requires data and merge_strategy', () => {
@@ -159,9 +176,10 @@ describe('exportOpenAITools', () => {
   it('all parameter properties have a type field', () => {
     for (const tool of tools) {
       const t = tool as any;
-      const props = t.function.parameters.properties;
-      for (const [key, value] of Object.entries(props)) {
-        expect((value as any).type, `${t.function.name}.${key} should have a type`).toBeDefined();
+      for (const schema of objectVariants(t.function.parameters)) {
+        for (const [key, value] of Object.entries(schema.properties)) {
+          expect((value as any).type, `${t.function.name}.${key} should have a type`).toBeDefined();
+        }
       }
     }
   });
@@ -172,11 +190,13 @@ describe('exportOpenAITools', () => {
     // to a description that only MENTIONED the three values in prose. A
     // client (or a model reading the schema, not the docs) had no
     // machine-readable way to know 'prod' would be rejected until it tried.
-    const withNamespace = TOOL_DEFINITIONS.filter((t: any) => 'namespace' in t.inputSchema.properties);
+    const withNamespace = TOOL_DEFINITIONS.flatMap((definition: any) =>
+      objectVariants(definition.inputSchema).map((schema: any) => ({ definition, schema })),
+    ).filter(({ schema }) => 'namespace' in schema.properties);
     expect(withNamespace.length, 'fixture: no registered tool declares a namespace field').toBeGreaterThan(0);
-    for (const def of withNamespace) {
-      const field = (def.inputSchema.properties as any).namespace;
-      expect(field.enum, `${def.name}.namespace has no enum`).toEqual(['personal', 'team', 'global']);
+    for (const { definition, schema } of withNamespace) {
+      const field = schema.properties.namespace;
+      expect(field.enum, `${definition.name}.namespace has no enum`).toEqual(['personal', 'team', 'global']);
     }
   });
 });

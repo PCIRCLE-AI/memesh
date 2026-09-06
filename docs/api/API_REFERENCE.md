@@ -10,9 +10,13 @@
 
 ## Tools
 
-MeMesh exposes 11 tools via MCP.
+MeMesh exposes 12 tools via MCP.
 
 ---
+
+### work_package
+
+Prepare one bounded calendar-selected untrusted digest package, submit one strictly validated digest into pending human review, or defer without durable change. Agents cannot apply or reject packages; package hashes identify freshness, not authentication.
 
 ### remember
 

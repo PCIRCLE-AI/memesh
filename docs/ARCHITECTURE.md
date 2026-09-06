@@ -8,7 +8,7 @@
 
 ## Overview
 
-MeMesh is the local agentic-memory and governed-collaboration layer for individual AI coding agents, including Claude Code, Codex, Gemini, Cursor, and other MCP-compatible clients. It provides 11 MCP tools (`remember`, `recall`, `forget`, `export`, `import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, `message`) backed by SQLite with FTS5 full-text search and optional sqlite-vec vector embeddings. Memory, bounded discovery of live project registrations, and durable exact-recipient messaging are available through CLI, HTTP REST, and MCP; `improvement` stages proposals through MCP while the existing CLI/HTTP review surfaces retain human accept/reject authority. Generic briefing and SessionStart context has no recipient identity and stays quiet; `briefing(project, recipient)` reports only that exact recipient's unfetched deliveries and directs the caller to poll before fetching.
+MeMesh is the local agentic-memory and governed-collaboration layer for individual AI coding agents, including Claude Code, Codex, Gemini, Cursor, and other MCP-compatible clients. It provides 12 MCP tools (`work_package`, `remember`, `recall`, `forget`, `export`, `import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, `message`) backed by SQLite with FTS5 full-text search and optional sqlite-vec vector embeddings. Memory, bounded discovery of live project registrations, and durable exact-recipient messaging are available through CLI, HTTP REST, and MCP; `work_package` prepares one bounded calendar-selected untrusted digest package, submits one strictly validated digest for pending human review, or defers without durable change. Agents cannot apply or reject packages; package hashes identify freshness, not authentication. `improvement` stages proposals through MCP while the existing CLI/HTTP review surfaces retain human accept/reject authority. Generic briefing and SessionStart context has no recipient identity and stays quiet; `briefing(project, recipient)` reports only that exact recipient's unfetched deliveries and directs the caller to poll before fetching.
 
 The package is intentionally local-first and inspectable:
 - one SQLite database under the user's control
@@ -82,7 +82,7 @@ MeMesh separates concerns into two layers:
 - `cli/cli.ts` — Commander CLI (`memesh` command, 30 top-level commands; `message`, `agent`, `config`, `kg`, and `dream` have subcommands)
 - `http/server.ts` — Express REST API server (`memesh serve`, default port 3737, 37 endpoints, bearer-auth gate when bound non-loopback)
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that binds provenance at the transport boundary and never turns a read into a receipt
-- `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 11 tools); `src/mcp/tools.ts` is a re-export shim
+- `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
 
 This separation means the same `remember`/`recall`/`forget` logic runs identically whether invoked from a terminal, an HTTP request, or an MCP tool call. Governed product-improvement proposals reuse the dream staging/review lifecycle: agents can propose over MCP, and humans apply or reject through the CLI or dashboard-backed HTTP endpoints.
 

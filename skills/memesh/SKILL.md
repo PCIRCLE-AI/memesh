@@ -23,10 +23,11 @@ Persistent memory for AI agents. The point is continuity: the next session start
 
 All examples below use CLI. MCP tools accept the same parameters as JSON objects.
 
-## All 11 MCP tools
+## All 12 MCP tools
 
 | Tool | Purpose |
 |---|---|
+| `work_package` | Prepare one bounded calendar-selected untrusted digest package, submit one strictly validated digest for pending human review, or defer without durable change; agents cannot apply or reject it, and package hashes identify freshness rather than authentication |
 | `remember` | Store knowledge as an entity with observations, tags, and relations |
 | `recall` | Search stored knowledge; empty query lists recent memories |
 | `forget` | Archive an entity or remove one exact observation |

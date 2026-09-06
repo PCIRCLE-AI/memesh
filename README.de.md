@@ -553,10 +553,11 @@ Wechselst du zu einer anderen Dimension (z. B. 768 → 1536), wird **nichts gel�
 
 ---
 
-## Alle 11 Memory- und Koordinations-Tools
+## Alle 12 Memory- und Koordinations-Tools
 
 | Tool | Was es tut |
 |------|-------------|
+| `work_package` | Ein begrenztes, kalenderausgewähltes nicht vertrauenswürdiges Digest-Paket vorbereiten; ein streng validiertes Digest zur ausstehenden menschlichen Prüfung einreichen oder ohne dauerhafte Änderung zurückstellen. Agenten können es nicht annehmen oder ablehnen; Paket-Hashes kennzeichnen Aktualität, nicht Authentifizierung |
 | `remember` | Wissen mit Beobachtungen, Relationen und Tags speichern |
 | `recall` | FTS5 + sqlite-vec Suche mit Multi-Faktor-Bewertung (Relevanz, Aktualität, Häufigkeit, Konfidenz, Abruf-Auswirkung) — kein LLM auf dem Hot Path |
 | `forget` | Soft-Archivierung (löscht nie) oder entfernt spezifische Beobachtungen |
