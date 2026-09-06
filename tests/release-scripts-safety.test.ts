@@ -394,7 +394,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       ].join('\n'));
       write('.claude-plugin/mcp.json', 'memesh ${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js');
       write('.claude-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.claude-plugin/mcp.json"');
-      write('.codex-plugin/plugin.json', '"name": "memesh" "version"');
+      write('.codex-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.codex-plugin/mcp.json"');
+      write('.codex-plugin/mcp.json', '"mcpServers" "memesh" "command": "node" "args": ["./dist/mcp/server.js"] "cwd": "."');
       write('.claude-plugin/marketplace.json', '"name": "pcircle-memesh" "version"');
       write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume "async": true');
       write('package.json', JSON.stringify({

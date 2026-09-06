@@ -129,6 +129,7 @@ flowchart TB
 | Auto-Capture in Claude Code (Session → Lessons → nächste Recall) | Path A (Plugin) |
 | `memesh remember` / `memesh recall` / `memesh doctor` im Terminal | Path B (npm-global) |
 | `memesh serve` direkt zum Öffnen des Dashboards (ohne `npx`-Startverzögerung) | Path B (npm-global) |
+| MCP-Tools in Codex CLI verwenden | Codex-Plugin (ohne manuelle Konfiguration) oder Path B |
 | `memesh-mcp` an Cursor, Cline oder andere MCP-Clients anbinden | Path B (npm-global) |
 | Alles oben | **Beide installieren** — kein Konflikt |
 
@@ -193,12 +194,18 @@ Die Hooks existieren neben Ihren bestehenden Custom-Hooks unter `~/.claude/hooks
 
 ### Dieselben Memories aus Codex CLI, Cursor und anderen MCP-Clients
 
-`memesh-mcp` ist ein gewöhnlicher stdio-MCP-Server — jeder MCP-fähige Host kann ihn nutzen, nicht nur Claude Code. Mit installierter Option B (`memesh-mcp` im `PATH`) einmal pro Host registrieren:
+Die Installation über den Codex-Plugin-Marketplace deklariert den gebündelten MCP-Server automatisch. Sie startet `dist/mcp/server.js` direkt aus dem Plugin-Cache; eine globale Installation und `codex mcp add` sind dafür nicht erforderlich:
+
+```bash
+codex plugin marketplace add PCIRCLE-AI/memesh
+codex plugin add memesh@pcircle-memesh
+```
+
+`memesh-mcp` ist außerdem ein gewöhnlicher stdio-MCP-Server. Mit installierter Option B (`memesh-mcp` im `PATH`) kann er als manuelle Alternative registriert werden:
 
 ```bash
 # OpenAI Codex CLI — schreibt [mcp_servers.memesh] in ~/.codex/config.toml
 codex mcp add memesh -- memesh-mcp
-
 ```
 
 Für Cursor fügen Sie denselben stdio-Server in `~/.cursor/mcp.json` (global)

@@ -120,7 +120,8 @@ flowchart TB
 | Get auto-capture (sessions → lessons → recall) in Claude Code | Path A (plugin) |
 | Run `memesh remember` / `memesh recall` / `memesh doctor` in any terminal | Path B (npm-global) |
 | Open the local dashboard via `memesh serve` (no `npx` lookup delay) | Path B (npm-global) |
-| Plug `memesh-mcp` into Codex CLI, Cursor, or another local MCP client | Path B (npm-global) |
+| Use MCP tools in Codex CLI | Codex plugin (zero-config), or Path B for manual registration |
+| Plug `memesh-mcp` into Cursor or another local MCP client | Path B (npm-global) |
 | All of the above | **Install both** — they don't conflict |
 
 ### ⚠️ Installing the plugin does NOT install the CLI
@@ -161,7 +162,7 @@ The MCP server runs directly from the plugin's bundled compiled output — no `n
 
 ### Option B — npm global (optional optimisation)
 
-If you want the binary directly on your shell `PATH` (so plain `memesh`, `memesh-mcp`, etc. work in any terminal without the per-call `npx` lookup), or you want to expose `memesh-mcp` as a fixed-path stdio command to **non-Claude-Code MCP clients** (Codex CLI, Cursor, Cline, terminal-only flows):
+If you want the binary directly on your shell `PATH` (so plain `memesh`, `memesh-mcp`, etc. work in any terminal without the per-call `npx` lookup), or you want to expose `memesh-mcp` as a fixed-path stdio command to MCP clients that are not using the Claude or Codex plugin (Cursor, Cline, terminal-only flows):
 
 ```bash
 npm install -g @pcircle/memesh
@@ -191,7 +192,14 @@ The hooks coexist with any custom hooks you already have under `~/.claude/hooks/
 
 ### Same memory from Codex CLI, Cursor, and other MCP clients
 
-`memesh-mcp` is a plain stdio MCP server, so any MCP-capable host can talk to it — not just Claude Code. With Option B installed (`memesh-mcp` on your `PATH`), register it once per host:
+The Codex plugin marketplace install declares its bundled MCP server automatically; it starts `dist/mcp/server.js` directly from the plugin cache, with no global install or manual `codex mcp add` step:
+
+```bash
+codex plugin marketplace add PCIRCLE-AI/memesh
+codex plugin add memesh@pcircle-memesh
+```
+
+`memesh-mcp` is also a plain stdio MCP server, so any MCP-capable host can talk to it. With Option B installed (`memesh-mcp` on your `PATH`), register it once per host. For Codex this is the manual alternative to the plugin:
 
 ```bash
 # OpenAI Codex CLI — writes [mcp_servers.memesh] into ~/.codex/config.toml

@@ -58,12 +58,18 @@ describe('Installation Verification', () => {
       });
     });
 
-    it('should have a Codex plugin manifest without a duplicate MCP server', () => {
+    it('declares the bundled MCP server in the Codex plugin manifest', () => {
       const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
       const plugin = JSON.parse(fs.readFileSync('.codex-plugin/plugin.json', 'utf8'));
       expect(plugin.version).toBe(pkg.version);
-      expect(plugin).not.toHaveProperty('mcpServers');
-      expect(fs.existsSync('.codex-plugin/mcp.json')).toBe(false);
+      expect(plugin.mcpServers).toBe('./.codex-plugin/mcp.json');
+      const mcp = JSON.parse(fs.readFileSync(plugin.mcpServers, 'utf8'));
+      expect(Object.keys(mcp)).toEqual(['mcpServers']);
+      expect(mcp.mcpServers.memesh).toEqual({
+        command: 'node',
+        args: ['./dist/mcp/server.js'],
+        cwd: '.',
+      });
     });
 
     it('hooks.json declares the canonical Claude Code hook event types and references real script files', () => {

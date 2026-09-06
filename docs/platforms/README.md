@@ -11,7 +11,8 @@ If your goal is cross-agent collaboration rather than memory alone, start with t
 | Client | Best Mode | Setup | Guide |
 |--------|-----------|-------|-------|
 | **Claude Code** | Plugin (hooks + MCP + skills, wired automatically) | `/plugin marketplace add PCIRCLE-AI/memesh` → `/plugin install memesh@pcircle-memesh` | See root [README](../../README.md) |
-| **Codex CLI / Gemini CLI** | MCP Server | `codex mcp add memesh -- memesh-mcp` / `gemini mcp add -s user memesh memesh-mcp` (needs `npm install -g @pcircle/memesh`) | See root [README](../../README.md) |
+| **Codex CLI** | Plugin (SessionStart + MCP, wired automatically) | `codex plugin marketplace add PCIRCLE-AI/memesh` → `codex plugin add memesh@pcircle-memesh`; global `memesh-mcp` remains a manual alternative | See root [README](../../README.md) |
+| **Gemini CLI** | MCP Server | `gemini mcp add -s user memesh memesh-mcp` (needs `npm install -g @pcircle/memesh`) | See root [README](../../README.md) |
 | **Other MCP coding agents (Cursor, Cline…)** | MCP Server | Point the client at `memesh-mcp` | See root [README](../../README.md) |
 | **Local agent messaging across hosts** | MCP / HTTP / CLI; bridge where required | Explicit exact-recipient local messaging today; host push/resume remains adapter work | [agent-messaging.md](./agent-messaging.md) |
 | **Hermes Agent (NousResearch)** | Native `MemoryProvider` plugin | Drop `plugins/memory/memesh/` into a Hermes Agent checkout; `hermes memory setup memesh` | [hermes-agent.md](./hermes-agent.md) |

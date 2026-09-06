@@ -137,9 +137,21 @@ describe('Codex plugin fresh consumer', () => {
     expect(fs.existsSync(path.join(dataDirectory, 'hosts', 'codex-session.json'))).toBe(false);
   });
 
-  it('does not let the Codex plugin declare a duplicate MCP server', () => {
+  it('declares the bundled MCP server for a zero-config Codex plugin install', () => {
     const plugin = JSON.parse(fs.readFileSync(path.join(repoRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
-    expect(plugin).not.toHaveProperty('mcpServers');
-    expect(fs.existsSync(path.join(repoRoot, '.codex-plugin', 'mcp.json'))).toBe(false);
+    expect(plugin.mcpServers).toBe('./.codex-plugin/mcp.json');
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, plugin.mcpServers), 'utf8'),
+    );
+    expect(Object.keys(manifest)).toEqual(['mcpServers']);
+    expect(manifest.mcpServers.memesh).toEqual({
+      command: 'node',
+      args: ['./dist/mcp/server.js'],
+      cwd: '.',
+    });
+    expect(
+      fs.existsSync(path.resolve(repoRoot, manifest.mcpServers.memesh.cwd, manifest.mcpServers.memesh.args[0])),
+    ).toBe(true);
   });
 });

@@ -30,7 +30,7 @@
     "AGENTS.md"
   ],
   "scripts": {
-    "build": "node scripts/check-schema-drift.mjs && tsc && node scripts/generate-hook-core.mjs && node scripts/copy-cli-assets.mjs && node scripts/set-executable-bits.mjs && node scripts/generate-skills-manifest.mjs && npm run build:dashboard && node scripts/smoke-test.mjs",
+    "build": "node scripts/check-schema-drift.mjs && tsc && node scripts/build-mcp-bundle.mjs && node scripts/generate-hook-core.mjs && node scripts/copy-cli-assets.mjs && node scripts/set-executable-bits.mjs && node scripts/generate-skills-manifest.mjs && npm run build:dashboard && node scripts/smoke-test.mjs",
     "build:dashboard": "node scripts/build-dashboard.mjs",
     "test": "vitest",
     "test:e2e-dashboard": "node scripts/dashboard-e2e-smoke.mjs",
@@ -118,6 +118,7 @@
     "@types/node": "25.6.2",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "4.1.5",
+    "esbuild": "0.28.1",
     "eslint": "^10.3.0",
     "happy-dom": "^20.9.0",
     "playwright": "^1.59.1",

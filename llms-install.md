@@ -209,13 +209,17 @@ memesh doctor
 
 ## 3. Codex CLI
 
-Prerequisite: section 2 — `memesh-mcp` must resolve on PATH.
+Install from the Codex plugin marketplace for zero-config MCP tools and the
+SessionStart companion:
 
 ```
-codex mcp add memesh -- memesh-mcp
+codex plugin marketplace add PCIRCLE-AI/memesh
+codex plugin add memesh@pcircle-memesh
 ```
 
-Writes `[mcp_servers.memesh]` into `~/.codex/config.toml`.
+The plugin manifest starts its bundled `dist/mcp/server.js` directly from the
+plugin cache. It does not need a global `memesh-mcp` command or a manual
+`codex mcp add` entry.
 
 **Verify**:
 
@@ -225,15 +229,18 @@ codex mcp list
 
 Expected: `memesh` is listed as enabled.
 
-### Optional: Codex plugin marketplace
+### Manual npm-global alternative
 
-Current Codex CLI versions can install the repository's plugin marketplace
-directly. For a fresh install:
+If you installed section 2 instead of the Codex plugin, register the global
+stdio command manually:
 
 ```
-codex plugin marketplace add PCIRCLE-AI/memesh
-codex plugin add memesh@pcircle-memesh
+codex mcp add memesh -- memesh-mcp
 ```
+
+This writes `[mcp_servers.memesh]` into `~/.codex/config.toml`.
+
+### Refresh a stale plugin cache
 
 If the configured marketplace snapshot is stale, refresh it and reinstall the
 plugin:
@@ -244,15 +251,12 @@ codex plugin remove memesh
 codex plugin add memesh@pcircle-memesh
 ```
 
-These commands install the optional SessionStart companion only. They do not
-declare an MCP server, so keep the global `memesh-mcp` registration from
-section 3 as Codex's sole MCP path.
-
 | Failure | Remedy |
 |---|---|
 | `command not found: codex` | Codex CLI itself is not installed — out of scope here; install it first, then re-run the add. |
-| `memesh` absent from the list | The add did not persist. Re-run `codex mcp add memesh -- memesh-mcp` and re-check. |
-| Listed, but tool calls fail | Run `command -v memesh-mcp`. Empty output means section 2 is incomplete or PATH is wrong — fix per section 2's table. |
+| Plugin-installed `memesh` is absent | Refresh and reinstall the plugin using the commands above, then restart Codex. |
+| Manually registered `memesh` is absent | Re-run `codex mcp add memesh -- memesh-mcp` and re-check. |
+| Manual registration is listed, but tool calls fail | Run `command -v memesh-mcp`. Empty output means section 2 is incomplete or PATH is wrong — fix per section 2's table. |
 
 ## 4. Cursor
 

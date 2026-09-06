@@ -1620,7 +1620,7 @@ Two behaviours worth stating because they differ from a filesystem:
 
 ## Connection
 
-MeMesh runs as a stdio MCP server. Claude Code manages the connection automatically via the MCP manifest the plugin declares in `.claude-plugin/plugin.json` (`mcpServers: "./.claude-plugin/mcp.json"`).
+MeMesh runs as a stdio MCP server. Claude Code and Codex manage the connection automatically through their plugin manifests. Both resolve to the same bundled `dist/mcp/server.js`: Claude declares `mcpServers: "./.claude-plugin/mcp.json"`, while Codex declares `mcpServers: "./.codex-plugin/mcp.json"`.
 
 ```json
 {
@@ -1629,6 +1629,20 @@ MeMesh runs as a stdio MCP server. Claude Code manages the connection automatica
       "command": "node",
       "args": ["${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js"],
       "env": { "NODE_ENV": "production" }
+    }
+  }
+}
+```
+
+The Codex manifest uses the plugin cache as its working directory:
+
+```json
+{
+  "mcpServers": {
+    "memesh": {
+      "command": "node",
+      "args": ["./dist/mcp/server.js"],
+      "cwd": "."
     }
   }
 }

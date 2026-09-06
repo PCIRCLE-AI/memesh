@@ -1,0 +1,131 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { builtinModules } from 'node:module';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const entryPoint = path.join(projectRoot, 'dist/mcp/server.js');
+const noticePath = path.join(projectRoot, 'dist/mcp/THIRD_PARTY_NOTICES.txt');
+
+const result = await build({
+  absWorkingDir: projectRoot,
+  entryPoints: [entryPoint],
+  outfile: entryPoint,
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node22.13',
+  packages: 'bundle',
+  external: ['node:*'],
+  sourcemap: true,
+  sourcesContent: false,
+  legalComments: 'none',
+  metafile: true,
+  write: false,
+});
+
+const builtinSpecifiers = new Set([
+  ...builtinModules,
+  ...builtinModules.map((name) => `node:${name}`),
+]);
+const externalImports = Object.values(result.metafile.outputs)
+  .flatMap((output) => output.imports)
+  .filter((entry) => entry.external);
+const nonBuiltinImports = externalImports.filter(({ path: specifier }) => !builtinSpecifiers.has(specifier));
+if (nonBuiltinImports.length > 0) {
+  const specifiers = [...new Set(nonBuiltinImports.map(({ path: specifier }) => specifier))].sort();
+  throw new Error(`MCP bundle left non-builtin imports external: ${specifiers.join(', ')}`);
+}
+
+const javascript = result.outputFiles.find((file) => file.path === entryPoint);
+if (!javascript) throw new Error('esbuild did not produce the canonical MCP server output');
+const sourceMap = result.outputFiles.find((file) => file.path === `${entryPoint}.map`);
+if (!sourceMap) throw new Error('esbuild did not produce the canonical MCP server source map');
+if (!javascript.text.startsWith('#!/usr/bin/env node\n')) {
+  throw new Error('MCP bundle lost its executable shebang');
+}
+// Some bundled validator templates contain spaces on otherwise blank lines.
+// Removing only horizontal whitespace immediately before a line terminator
+// keeps every token position and source-map mapping before EOL unchanged.
+const normalizedJavascript = javascript.text.replace(/[ \t]+(?=\r?\n)/g, '');
+const originalLines = javascript.text.split(/\r?\n/);
+const normalizedLines = normalizedJavascript.split(/\r?\n/);
+if (
+  originalLines.length !== normalizedLines.length
+  || normalizedLines.some((line, index) => line !== originalLines[index].replace(/[ \t]+$/, ''))
+) {
+  throw new Error('MCP bundle whitespace normalization changed non-whitespace content');
+}
+
+function replaceAtomically(destination, contents, mode) {
+  const temporaryDirectory = fs.mkdtempSync(path.join(path.dirname(destination), '.memesh-build-'));
+  const temporary = path.join(temporaryDirectory, path.basename(destination));
+  let descriptor;
+  try {
+    descriptor = fs.openSync(temporary, 'wx', mode ?? 0o666);
+    fs.writeFileSync(descriptor, contents);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    if (mode !== undefined && process.platform !== 'win32') fs.chmodSync(temporary, mode);
+    fs.renameSync(temporary, destination);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    fs.rmSync(temporary, { force: true });
+    fs.rmdirSync(temporaryDirectory);
+  }
+}
+
+function packageRootForInput(inputPath) {
+  const absoluteInput = path.resolve(projectRoot, inputPath);
+  const segments = absoluteInput.split(path.sep);
+  const nodeModulesIndex = segments.lastIndexOf('node_modules');
+  if (nodeModulesIndex < 0) return null;
+  const packageEnd = segments[nodeModulesIndex + 1]?.startsWith('@')
+    ? nodeModulesIndex + 3
+    : nodeModulesIndex + 2;
+  return segments.slice(0, packageEnd).join(path.sep);
+}
+
+const packageRoots = [...new Set(
+  Object.keys(result.metafile.inputs)
+    .map(packageRootForInput)
+    .filter(Boolean)
+)].sort();
+
+const notices = packageRoots.map((packageRoot) => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8'));
+  const noticeFiles = fs.readdirSync(packageRoot)
+    .filter((name) => /^(?:licen[cs]e|notice|copying)(?:[._-].*)?$/i.test(name))
+    .sort();
+  if (noticeFiles.length === 0) {
+    throw new Error(`Bundled package ${packageJson.name}@${packageJson.version} has no license or notice file`);
+  }
+  const texts = noticeFiles.map((name) => {
+    const text = fs.readFileSync(path.join(packageRoot, name), 'utf8').replace(/\r\n/g, '\n').trimEnd();
+    return `${name}\n${'-'.repeat(name.length)}\n${text}`;
+  });
+  return `${packageJson.name}@${packageJson.version} (${packageJson.license ?? 'license not declared'})\n${'='.repeat(72)}\n${texts.join('\n\n')}`;
+});
+
+const noticeHeader = [
+  'Third-party software bundled in dist/mcp/server.js',
+  '',
+  `Bundle SHA-256: ${createHash('sha256').update(normalizedJavascript).digest('hex')}`,
+  `Source map SHA-256: ${createHash('sha256').update(sourceMap.contents).digest('hex')}`,
+  '',
+  'Generated by scripts/build-mcp-bundle.mjs from the esbuild input closure.',
+  '',
+  '',
+].join('\n');
+
+// Validate and assemble every output before publishing any of them. Publish
+// the executable last so a concurrently starting MCP host sees either the
+// complete old server or the complete new one, never a truncated bundle.
+replaceAtomically(noticePath, `${noticeHeader}${notices.join('\n\n')}\n`);
+for (const output of result.outputFiles.filter((file) => file.path !== entryPoint)) {
+  replaceAtomically(output.path, output.contents);
+}
+replaceAtomically(entryPoint, normalizedJavascript, 0o755);

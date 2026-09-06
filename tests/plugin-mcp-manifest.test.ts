@@ -17,6 +17,23 @@ const PROJECT_SCOPED_MCP_PATHS = ['.mcp.json'];
 interface McpServer {
   command?: unknown;
   args?: unknown;
+  cwd?: unknown;
+}
+
+function codexMcpServer(config: unknown): McpServer {
+  const record = (config ?? {}) as Record<string, unknown>;
+  if (
+    typeof record.mcpServers !== 'object'
+    || record.mcpServers === null
+    || Array.isArray(record.mcpServers)
+  ) {
+    throw new Error('Codex MCP manifest must wrap server entries in `mcpServers`.');
+  }
+  const server = (record.mcpServers as Record<string, unknown>).memesh;
+  if (typeof server !== 'object' || server === null || Array.isArray(server)) {
+    throw new Error('Codex MCP manifest must declare `mcpServers.memesh`.');
+  }
+  return server as McpServer;
 }
 
 /**
@@ -171,5 +188,40 @@ describe('the Claude plugin MCP manifest is not also a project-scoped config', (
     } finally {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Codex and Claude plugin MCP manifests', () => {
+  it('resolve to the same canonical bundled server', () => {
+    const codexPlugin = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, '.codex-plugin', 'plugin.json'), 'utf8'),
+    );
+    expect(codexPlugin.mcpServers).toBe('./.codex-plugin/mcp.json');
+
+    const codexManifest = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, codexPlugin.mcpServers), 'utf8'),
+    );
+    expect(Object.keys(codexManifest)).toEqual(['mcpServers']);
+    const codexServer = codexMcpServer(codexManifest);
+    expect(codexServer).toEqual({
+      command: 'node',
+      args: ['./dist/mcp/server.js'],
+      cwd: '.',
+    });
+
+    const claudeTarget = mcpEntry(repoRoot);
+    const codexTarget = (codexServer.args as string[])[0].replace(/^\.\//, '');
+    expect(codexTarget).toBe(claudeTarget);
+    expect(fs.existsSync(path.resolve(repoRoot, codexServer.cwd as string, codexTarget))).toBe(true);
+  });
+
+  it('rejects the malformed direct server map that the old cache shipped', () => {
+    expect(() => codexMcpServer({
+      memesh: {
+        command: 'node',
+        args: ['./dist/mcp/server.js'],
+        cwd: '.',
+      },
+    })).toThrow(/wrap server entries in `mcpServers`/);
   });
 });

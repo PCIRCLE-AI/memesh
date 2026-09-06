@@ -445,7 +445,8 @@ MeMesh supports three integration tiers:
 | | OpenClaw | Native memory-capability plugin (TypeScript, `api.registerMemoryCapability()`) |
 | **MCP server** | Claude Managed Agents | MCP connector (beta, via session config) |
 | | Claude Desktop | MCP server config |
-| | Codex CLI / Gemini CLI | MCP server (`memesh-mcp` in client config) |
+| | Codex CLI | Plugin-managed MCP server (`dist/mcp/server.js`), or manual `memesh-mcp` client config |
+| | Gemini CLI | MCP server (`memesh-mcp` in client config) |
 | | Cursor | MCP server (`memesh-mcp` in client config) |
 | | Custom apps | Direct stdio MCP connection |
 | **HTTP API** | Custom apps/scripts | HTTP REST API (`memesh serve`, 32 endpoints) |

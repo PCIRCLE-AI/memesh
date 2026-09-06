@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -72,6 +73,7 @@ const requiredFiles = [
   '.claude-plugin/plugin.json',
   '.codex-plugin/plugin.json',
   '.claude-plugin/mcp.json',
+  '.codex-plugin/mcp.json',
   'hooks/hooks.json',
   // Dist — core engine
   'dist/index.js',
@@ -91,6 +93,8 @@ const requiredFiles = [
   'dist/transports/schemas.js',
   'dist/transports/agent-messaging.js',
   'dist/mcp/server.js',
+  'dist/mcp/server.js.map',
+  'dist/mcp/THIRD_PARTY_NOTICES.txt',
   'dist/transports/mcp/handlers.js',
   'dist/transports/http/server.js',
   'dist/transports/cli/cli.js',
@@ -128,6 +132,30 @@ for (const relativePath of requiredFiles) {
     `Missing packaged file: ${relativePath}`
   );
 }
+
+const bundledServer = fs.readFileSync(path.join(packageDir, 'dist/mcp/server.js'));
+const bundledSourceMap = fs.readFileSync(path.join(packageDir, 'dist/mcp/server.js.map'));
+const bundledNotice = fs.readFileSync(
+  path.join(packageDir, 'dist/mcp/THIRD_PARTY_NOTICES.txt'),
+  'utf8',
+);
+const declaredBundleDigest = bundledNotice.match(/^Bundle SHA-256: ([0-9a-f]{64})$/m)?.[1];
+const declaredSourceMapDigest = bundledNotice.match(/^Source map SHA-256: ([0-9a-f]{64})$/m)?.[1];
+assert.equal(
+  declaredBundleDigest,
+  createHash('sha256').update(bundledServer).digest('hex'),
+  'third-party notice is not bound to the packaged MCP bundle',
+);
+assert.equal(
+  declaredSourceMapDigest,
+  createHash('sha256').update(bundledSourceMap).digest('hex'),
+  'third-party notice is not bound to the packaged MCP source map',
+);
+assert.equal(
+  Object.hasOwn(JSON.parse(bundledSourceMap.toString('utf8')), 'sourcesContent'),
+  false,
+  'packaged MCP source map embeds source bodies instead of following the repository map policy',
+);
 
 // Every hook the plugin manifest can invoke, and every command package.json
 // declares, has to be in the tarball AND be runnable. Both lists are derived
@@ -195,10 +223,107 @@ assert.equal(packagedJson.version, JSON.parse(fs.readFileSync(path.join(repoRoot
 
 const codexPlugin = JSON.parse(fs.readFileSync(path.join(packageDir, '.codex-plugin', 'plugin.json'), 'utf8'));
 assert.equal(codexPlugin.version, packagedJson.version);
-assert.ok(!('mcpServers' in codexPlugin), 'Codex plugin must not declare a second MCP server');
-assert.ok(
-  !fs.existsSync(path.join(packageDir, '.codex-plugin', 'mcp.json')),
-  'Codex plugin must not ship an MCP manifest; global memesh-mcp is the sole Codex MCP path',
+assert.equal(
+  codexPlugin.mcpServers,
+  './.codex-plugin/mcp.json',
+  'Codex plugin manifest must declare the bundled MCP manifest',
+);
+const codexMcpManifestPath = codexPlugin.mcpServers.slice(2);
+const codexMcpManifest = JSON.parse(
+  fs.readFileSync(path.join(packageDir, codexMcpManifestPath), 'utf8'),
+);
+assert.deepEqual(
+  Object.keys(codexMcpManifest),
+  ['mcpServers'],
+  'Codex MCP manifest must use the loader mcpServers wrapper, not a direct server map',
+);
+const codexMcp = codexMcpManifest.mcpServers?.memesh;
+assert.deepEqual(codexMcp, {
+  command: 'node',
+  args: ['./dist/mcp/server.js'],
+  cwd: '.',
+});
+assert.equal(
+  codexMcp.args[0].replace(/^\.\//, ''),
+  mcpTarget,
+  'Codex and Claude plugin manifests must resolve to the same bundled MCP server',
+);
+
+// A plugin cache is the raw extracted package: no npm install runs inside it.
+// Start exactly what the Codex manifests declare before creating the installed
+// consumer below, so a server that only works by walking into node_modules
+// cannot pass this gate.
+assert.equal(
+  fs.existsSync(path.join(packageDir, 'node_modules')),
+  false,
+  'raw extracted plugin cache unexpectedly contains node_modules',
+);
+const rawProtocolHome = path.join(smokeDir, 'raw-protocol-home');
+const rawProtocolMemeshDir = path.join(rawProtocolHome, '.memesh');
+fs.mkdirSync(rawProtocolMemeshDir, { recursive: true });
+const rawProtocolDbPath = path.join(rawProtocolMemeshDir, 'knowledge-graph.db');
+const rawOsEnvKeys = ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'ComSpec', 'PATHEXT', 'WINDIR'];
+const rawBaseEnv = Object.fromEntries(
+  rawOsEnvKeys.flatMap((key) => (
+    typeof process.env[key] === 'string' ? [[key, process.env[key]]] : []
+  )),
+);
+assert.equal('NODE_PATH' in rawBaseEnv, false, 'raw plugin cache inherited NODE_PATH');
+assert.equal('NODE_OPTIONS' in rawBaseEnv, false, 'raw plugin cache inherited NODE_OPTIONS');
+assert.equal(
+  Object.keys(rawBaseEnv).some((key) => /(?:KEY|TOKEN|SECRET|SOCKET)/i.test(key)),
+  false,
+  'raw plugin cache inherited a credential or agent-socket variable',
+);
+const clientModuleUrl = pathToFileURL(
+  path.join(repoRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'esm', 'client', 'index.js'),
+).href;
+const transportModuleUrl = pathToFileURL(
+  path.join(repoRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'esm', 'client', 'stdio.js'),
+).href;
+execFileSync(
+  process.execPath,
+  [
+    '--input-type=module',
+    '-e',
+    `import assert from 'node:assert/strict';
+import { Client } from ${JSON.stringify(clientModuleUrl)};
+import { StdioClientTransport } from ${JSON.stringify(transportModuleUrl)};
+
+const transport = new StdioClientTransport({
+  command: ${JSON.stringify(codexMcp.command)},
+  args: ${JSON.stringify(codexMcp.args)},
+  cwd: ${JSON.stringify(path.resolve(packageDir, codexMcp.cwd))},
+  env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false' },
+});
+const client = new Client({ name: 'memesh-raw-plugin-cache-smoke', version: '1.0.0' });
+try {
+  await client.connect(transport);
+  assert.deepEqual(
+    client.getServerVersion(),
+    { name: 'memesh', version: ${JSON.stringify(packagedJson.version)} },
+    'raw plugin cache initialize returned the wrong server identity/version',
+  );
+  const listed = await client.listTools();
+  assert.deepEqual(
+    listed.tools.map((tool) => tool.name).sort(),
+    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'recall', 'remember', 'task_state', 'user_patterns', 'work_package'],
+    'raw plugin cache exposed an unexpected tool surface',
+  );
+} finally {
+  await client.close();
+}
+`,
+  ],
+  {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: buildIsolatedRuntimeEnv(rawBaseEnv, {
+      runtimeHome: rawProtocolHome,
+      memeshDir: rawProtocolMemeshDir,
+      dbPath: rawProtocolDbPath,
+    }),
+  },
 );
 
 // Install the way a consumer does — production deps only, scripts ON so the

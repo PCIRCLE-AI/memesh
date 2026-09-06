@@ -129,6 +129,7 @@ flowchart TB
 | 在 Claude Code 自動 capture（session → 教訓 → 下次 recall）| Path A（plugin）|
 | 在任何 terminal 跑 `memesh remember` / `memesh recall` / `memesh doctor` | Path B（npm-global）|
 | 用 `memesh serve` 直接開 dashboard（沒有 `npx` 啟動延遲）| Path B（npm-global）|
+| 在 Codex CLI 使用 MCP 工具 | Codex plugin（零設定），或用 Path B 手動註冊 |
 | 把 `memesh-mcp` 接到 Cursor、Cline 或其他 MCP client | Path B（npm-global）|
 | 以上都要 | **兩條都裝** — 不會衝突 |
 
@@ -168,7 +169,7 @@ Claude Code 會自動接好 hooks、skills 和 MCP server。你會獲得對話�
 
 ### 選項 B — npm 全域安裝（可選最佳化）
 
-如果你希望二進位執行檔直接放在 shell `PATH` 上（讓 `memesh`、`memesh-mcp` 等指令能在任何終端機直接執行，省去每次呼叫的 `npx` 查找），或想將 `memesh-mcp` 以固定路徑的 stdio 指令暴露給**非 Claude Code 的 MCP 用戶端**（Cursor、Cline、純終端機流程）：
+如果你希望二進位執行檔直接放在 shell `PATH` 上（讓 `memesh`、`memesh-mcp` 等指令能在任何終端機直接執行，省去每次呼叫的 `npx` 查找），或想將 `memesh-mcp` 以固定路徑的 stdio 指令暴露給未使用 Claude 或 Codex plugin 的 MCP 用戶端（Cursor、Cline、純終端機流程）：
 
 ```bash
 npm install -g @pcircle/memesh
@@ -198,7 +199,14 @@ memesh setup --check         # 機器層級驗證：讀各主機自己的設定�
 
 ### 從 Codex CLI、Cursor 與其他 MCP 用戶端使用同一份記憶
 
-`memesh-mcp` 是標準的 stdio MCP server，任何支援 MCP 的主機都能用 — 不限 Claude Code。裝好選項 B（`memesh-mcp` 在 `PATH` 上）之後，每個主機註冊一次：
+Codex plugin marketplace 安裝會自動宣告內建的 MCP server；它直接從 plugin cache 啟動 `dist/mcp/server.js`，不需要全域安裝，也不需要手動執行 `codex mcp add`：
+
+```bash
+codex plugin marketplace add PCIRCLE-AI/memesh
+codex plugin add memesh@pcircle-memesh
+```
+
+`memesh-mcp` 也是標準的 stdio MCP server，任何支援 MCP 的主機都能用。裝好選項 B（`memesh-mcp` 在 `PATH` 上）之後，每個主機註冊一次；對 Codex 而言，這是 plugin 以外的手動替代方案：
 
 ```bash
 # OpenAI Codex CLI — 會把 [mcp_servers.memesh] 寫進 ~/.codex/config.toml
