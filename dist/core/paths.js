@@ -98,7 +98,7 @@ export function canonicalRemoteLocator(remote) {
         return null;
     let host;
     let port = '';
-    let user = '';
+    let user;
     let remotePath;
     let transport;
     if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) {

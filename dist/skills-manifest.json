@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "3e344366270b987acec842ece841f234435938a00a5317dbb9e5e061ea39ffac",
-      "bytes": 8188
+      "sha256": "4ccf5bbab63c66fefbf1ed79af79f0ea173db14ae5e2b21d7d235118d465619d",
+      "bytes": 8183
     },
     {
       "path": "scripts/hooks/_generated/fts-index.js",

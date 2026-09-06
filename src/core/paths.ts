@@ -230,7 +230,7 @@ export function canonicalRemoteLocator(remote: string): string | null {
 
   let host: string;
   let port = '';
-  let user = '';
+  let user: string;
   let remotePath: string;
   let transport: string;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) {
