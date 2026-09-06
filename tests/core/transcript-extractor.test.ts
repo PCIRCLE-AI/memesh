@@ -406,6 +406,11 @@ describe('transcript-extractor: staging + apply', () => {
     const entity = db.prepare("SELECT type, status FROM entities WHERE name = 'parser-choice'").get() as any;
     expect(entity.type).toBe('decision');
     expect(entity.status).toBe('active');
+    // createEntity rebuilds entities_fts during acceptance. This assertion uses
+    // KnowledgeGraph's ordinary FTS search path, so it fails if the accepted
+    // entity is not indexed and searchable from its observation text.
+    expect(kg.search('library B', { countAsAccess: false }))
+      .toContainEqual(expect.objectContaining({ name: 'parser-choice' }));
     const applied = db.prepare("SELECT status FROM dream_proposals WHERE id = ?").get(proposalId) as any;
     expect(applied.status).toBe('applied');
   });

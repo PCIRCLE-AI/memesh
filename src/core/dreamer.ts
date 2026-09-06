@@ -39,7 +39,6 @@ import { recordTelemetry } from './llm-telemetry.js';
 import { validateDigest, type SuspiciousClaim } from './digest-validator.js';
 import { wrapUntrusted } from './prompt-safety.js';
 import { outputLanguageInstruction } from './output-language.js';
-import { isEmbeddingAvailable, scheduleEmbedAndStore, entityEmbedText } from './embedder.js';
 import { hasVectorIndex } from '../storage/vector-index.js';
 import { dropEntityFromIndexes } from '../storage/entity-index.js';
 import {
@@ -1537,16 +1536,7 @@ function applyTranscriptProposal(
     db.prepare("UPDATE dream_proposals SET status = 'applied', reviewed_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.id);
     return digestId;
   });
-  const digestId = tx();
-  // Embed the new entity so the NEXT transcript run's vector dedup (B3) can see
-  // it — without this, re-running after accept re-proposes the same memory (the
-  // gap B3 exists to close). Fire-and-forget with the SAME text builder every
-  // other writer uses (entityEmbedText); the caller flushes pending writes
-  // (CLI `dream accept` awaits flushPendingEmbeddings). Guarded on
-  // availability like remember() — no vector index, nothing to write.
-  if (isEmbeddingAvailable()) {
-    scheduleEmbedAndStore(digestId, entityEmbedText(entityName, digest.observations));
-  }
+  tx();
   return {
     proposalId: row.id,
     // Report the name actually written (possibly collision-suffixed) so the
