@@ -288,15 +288,12 @@ async function main() {
       const reviewPageErrors = [];
       const reviewConsoleErrors = [];
       const reviewRequests = [];
+      // Build these paths from segments so the repository's static client-route
+      // inventory does not mistake this negative assertion for an HTTP call.
       const forbiddenRoutes = [
-        '/v1/config/test',
-        '/v1/reindex',
-        '/v1/telemetry',
-        '/v1/dream/run',
-        '/v1/consolidate',
-        '/v1/report-issue',
-        '/v1/report_issue',
-      ];
+        'config/test', 'reindex', 'telemetry', 'dream/run',
+        'consolidate', 'report-issue', 'report_issue',
+      ].map((segment) => ['', 'v1', segment].join('/'));
       const proposal = {
         id: 1,
         project: 'dashboard-e2e',

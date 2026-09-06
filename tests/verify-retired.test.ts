@@ -1,13 +1,12 @@
 /**
- * The agentic-orchestration experiment is retired, on every surface, and says
- * so where a caller looks.
+ * The agentic-orchestration experiment is absent from active surfaces.
  *
  * It shipped in 4.1.0 behind an opt-in flag and never left opt-in; the
  * instrumentation it carried never produced a reason to keep it. This file is
  * the sibling of tests/consolidate-retired.test.ts, for the same reason that
- * file exists: a retired command that answers "unknown command", and a
- * retired endpoint that answers 404, both read as a broken install — and the
- * signposts are the part a future cleanup would delete without noticing.
+ * file exists: old HTTP clients still receive an explicit 410 migration
+ * signpost, while obsolete CLI wrappers are removed and fail as unknown
+ * commands instead of pretending they remain supported.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
@@ -47,19 +46,12 @@ describe('verify_agent_work and the orchestration surfaces are retired', () => {
     expect(commands.some((c) => c.includes('orchestration'))).toBe(false);
   });
 
-  it('still answers `memesh verify` and `memesh patterns` with somewhere to go', () => {
-    // The commands survive ONLY to say they are gone. Deleting the blocks
-    // would make Commander print "unknown command", which reads as a broken
-    // install — the exact failure mode the consolidate signpost documents.
-    // RUN them, both. This used to slice the source between two markers —
-    // a window holding BOTH retirement blocks, so every needle survived
-    // deleting either command on its own, which is exactly what the test is
-    // for. `verify … && deploy` in particular must fail loudly rather than
-    // deploy on a command that no longer checks anything.
-    for (const [command, replacement] of [
-      ['verify', 'memesh remember'],
-      ['patterns', 'memesh'],
-    ] as const) {
+  it('does not retain obsolete `memesh verify` or `memesh patterns` wrappers', () => {
+    // RUN both commands so a future no-op compatibility wrapper cannot make a
+    // gating script succeed. The generic help pointer is the single owner for
+    // every removed command; HTTP retains a separate 410 boundary for old
+    // remote clients below.
+    for (const command of ['verify', 'patterns'] as const) {
       const result = spawnSync('node', [CLI_PATH, command], {
         encoding: 'utf8',
         env: { ...process.env, MEMESH_AUTO_UPDATE: '0' },
@@ -67,14 +59,11 @@ describe('verify_agent_work and the orchestration surfaces are retired', () => {
       });
       const output = (result.stdout ?? '') + (result.stderr ?? '');
 
-      expect(output, `the ${command} retirement signpost is gone from the CLI`)
-        .toContain(`\`memesh ${command}\` has been retired`);
-      expect(output, `the ${command} signpost does not name a replacement workflow`)
-        .toContain(replacement);
       expect(result.status, `\`memesh ${command}\` exits 0, so gating scripts cannot tell it failed`)
         .toBe(1);
-      expect(output, `\`memesh ${command}\` was deleted, not retired`)
-        .not.toMatch(/unknown command/i);
+      expect(output).toContain(`unknown command '${command}'`);
+      expect(output).toContain('memesh --help');
+      expect(output).not.toMatch(/has been retired/i);
     }
   });
 
