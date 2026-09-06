@@ -447,13 +447,26 @@ function isDelivery(value, connectionId, generation, identity) {
         && value.connection_id === connectionId
         && value.generation === generation
         && value.untrusted_payload === true
-        && typeof value.attempt_id === 'string'
-        && typeof value.delivery_id === 'string'
+        && requiredNonEmptyString(value.attempt_id)
+        && requiredNonEmptyString(value.delivery_id)
         && Number.isInteger(value.hops)
         && isRecord(envelope)
+        && requiredNonEmptyString(envelope.message_id)
         && envelope.project === identity.project
+        && requiredNonEmptyString(envelope.sender)
+        && (envelope.sender_host === null || requiredNonEmptyString(envelope.sender_host))
         && ((envelope.target_kind === 'principal' && envelope.recipient === identity.principal_id)
-            || (envelope.target_kind === 'session' && envelope.recipient === identity.session_instance_id));
+            || (envelope.target_kind === 'session' && envelope.recipient === identity.session_instance_id))
+        && (envelope.content_type === 'text/plain' || envelope.content_type === 'application/json')
+        && (envelope.correlation_id === null || requiredNonEmptyString(envelope.correlation_id))
+        && (envelope.reply_to === null || requiredNonEmptyString(envelope.reply_to))
+        && (envelope.privacy === 'private' || envelope.privacy === 'team')
+        && requiredNonEmptyString(envelope.created_at)
+        && Object.hasOwn(envelope, 'payload')
+        && isRecord(envelope.provenance);
+}
+function requiredNonEmptyString(value) {
+    return typeof value === 'string' && value.length > 0;
 }
 function isRouterUnavailable(error) {
     const code = error?.code;
