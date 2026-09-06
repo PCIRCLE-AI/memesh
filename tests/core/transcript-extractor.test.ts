@@ -127,6 +127,21 @@ describe('transcript-extractor: parsing', () => {
     expect(parseVisibleConversation(snapshot)).toEqual(expected);
   });
 
+  it('filters every meta-user prefix equally in strings and array text blocks', () => {
+    const prefixes = ['local-command', 'command-name', 'command-message', 'command-args', 'bash-input', 'bash-stdout', 'bash-stderr', 'user-memory-input', 'system-reminder'];
+    const path = writeTranscript(tmp, 'meta-arrays', [
+      ...prefixes.flatMap(prefix => [
+        { type: 'user', content: `  <${prefix}>hidden string scaffolding` },
+        { type: 'user', content: [{ type: 'text', text: `  <${prefix}>hidden array scaffolding` }] },
+      ]),
+      { type: 'user', content: [{ type: 'text', text: '  Genuine user text  ' }, { type: 'tool_result', content: 'hidden tool output' }] },
+      { type: 'assistant', content: [{ type: 'text', text: 'Visible assistant answer' }] },
+    ]);
+    const expected = [{ role: 'user', text: 'Genuine user text' }, { role: 'assistant', text: 'Visible assistant answer' }];
+    expect(parseVisibleConversation(path)).toEqual(expected);
+    expect(parseConversation(path)).toEqual(expected);
+  });
+
   it('countConversationTurns is a cheap turn count and never throws on a missing file', () => {
     const path = writeTranscript(tmp, 'sess2', CONTRADICTION_ENTRIES);
     expect(countConversationTurns(path)).toBe(4);

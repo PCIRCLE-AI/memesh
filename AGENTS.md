@@ -39,7 +39,7 @@ host is recallable from all of them. Not installed yet? Follow
 
 | Tool | Purpose |
 |---|---|
-| `work_package` | Prepare one bounded calendar-selected untrusted digest package, submit one strictly validated digest for pending human review, or defer without durable change; agents cannot apply or reject it, and package hashes identify freshness rather than authentication |
+| `work_package` | Prepare one bounded untrusted digest (calendar-selected) or visible transcript (current-project session) package, submit one strictly validated result for pending human review, or defer without durable change; agents cannot apply or reject it, and package hashes identify freshness rather than authentication |
 | `remember` | Store knowledge as an entity with observations, tags, and relations |
 | `recall` | Search stored knowledge (words are OR-ed, ranked by relevance); empty query lists recent |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |

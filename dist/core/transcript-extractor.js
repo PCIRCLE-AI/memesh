@@ -59,8 +59,8 @@ function textFromUserContent(content) {
             if (!block || typeof block !== 'object')
                 continue;
             const b = block;
-            if (b.type === 'text' && typeof b.text === 'string' && b.text.trim())
-                out.push(b.text.trim());
+            if (b.type === 'text' && typeof b.text === 'string')
+                out.push(...textFromUserContent(b.text));
         }
         return out;
     }

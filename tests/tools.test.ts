@@ -589,7 +589,7 @@ describe('transcript work_package', () => {
     expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 1 });
     expect(fs.readFileSync(file)).toEqual(bytes);
     writeSession('review-session', [user('Changed after human review')]);
-    expect((await submit(pkg, output)).isError).toBe(true);
+    expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'rejected' });
   });
 
   it('rejects path injection, unknown fields, wrong kinds, tags, secrets and oversized output without writes', async () => {

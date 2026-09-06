@@ -37,6 +37,10 @@ function sameProjectPath(a, b) {
     catch { }
     return false;
 }
+export function transcriptMatchesProject(bytes, cwd) {
+    const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString('utf8'));
+    return sessionCwd === null || sameProjectPath(sessionCwd, cwd);
+}
 export function scanTranscripts(opts = {}) {
     const cwd = opts.cwd && opts.cwd.length > 0 ? opts.cwd : process.cwd();
     const windowDays = opts.windowDays ?? 3;
@@ -73,9 +77,7 @@ export function scanTranscripts(opts = {}) {
             for (let i = 0; i < buf.length; i++)
                 if (buf[i] === 0x0a)
                     lineCount++;
-            const prefix = buf.subarray(0, Math.min(buf.length, 65536)).toString('utf8');
-            const sessionCwd = recordedCwd(prefix);
-            if (sessionCwd !== null && !sameProjectPath(sessionCwd, cwd))
+            if (!transcriptMatchesProject(buf, cwd))
                 continue;
             sessions.push({
                 sessionId: name.replace(/\.jsonl$/, ''),

@@ -207,7 +207,7 @@ function textFromUserContent(content: unknown): string[] {
       const b = block as { type?: string; text?: unknown };
       // A user entry whose blocks are tool_result is the model's own tool
       // output echoed back — pure mechanics. Keep only genuine text blocks.
-      if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) out.push(b.text.trim());
+      if (b.type === 'text' && typeof b.text === 'string') out.push(...textFromUserContent(b.text));
     }
     return out;
   }

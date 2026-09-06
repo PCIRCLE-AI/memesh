@@ -18,6 +18,7 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
   const runtimeCwd = fs.realpathSync(runtime);
   const dbPath = path.join(runtime, 'memory.db');
   const project = 'mcp-runtime-digest';
+  const secret = 'sk-' + 'z'.repeat(40); // Synthetic credential shape, never a real key.
   // Only named fixture settings reach the child; no ambient provider configuration.
   const env = {
     HOME: runtime, USERPROFILE: runtime, MEMESH_DIR: runtime,
@@ -62,8 +63,8 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
 
     for (let i = 0; i < 5; i++) {
       const remembered = await call('remember', {
-        name: `runtime-parser-commit-${i}`, type: 'commit',
-        observations: [`Parser cleanup step ${i} completed.`], tags: [`project:${project}`],
+        name: `runtime-parser-commit-${i}-${secret}`, type: 'commit',
+        observations: [`Parser cleanup step ${i} completed. ${secret}`], tags: [`project:${project}`],
       });
       expect(remembered.response.isError).not.toBe(true);
       expect(remembered.data.stored).toBe(true);
@@ -78,6 +79,9 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
       coverage: { truncated: false }, limits: { max_output_bytes: 16384, max_results: 1 },
     });
     expect(pkg.sources).toHaveLength(5);
+    expect(JSON.stringify(pkg)).not.toContain(secret);
+    expect(pkg.sources[0].name).toContain('***REDACTED***');
+    expect(pkg.sources[0].observations[0]).toContain('***REDACTED***');
     expect(pkg.ref.source_ids).toEqual(pkg.sources.map((source: { id: number }) => source.id));
     expect(pkg.id).toMatch(/^[a-f0-9]{64}$/);
     expect(pkg.ref.source_hash).toMatch(/^[a-f0-9]{64}$/);
@@ -103,18 +107,21 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     const transcriptProject = getProjectName(runtimeCwd);
     const transcriptDir = path.join(runtime, '.claude/projects', projectTranscriptSlug(runtimeCwd));
     fs.mkdirSync(transcriptDir, { recursive: true });
-    fs.writeFileSync(path.join(transcriptDir, 'runtime-session.jsonl'), [
+    const transcriptPath = path.join(transcriptDir, 'runtime-session.jsonl');
+    fs.writeFileSync(transcriptPath, [
       { type: 'user', cwd: runtimeCwd, message: { content: 'Use the smaller parser.' } },
-      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'RUNTIME_PRIVATE' }, { type: 'text', text: 'The smaller parser satisfies our requirements.' }, { type: 'tool_use', input: 'RUNTIME_TOOL' }] } },
+      { type: 'user', message: { content: [{ type: 'text', text: '<system-reminder>RUNTIME_SCAFFOLDING' }] } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'RUNTIME_PRIVATE' }, { type: 'text', text: `The smaller parser satisfies our requirements. ${secret}` }, { type: 'tool_use', input: 'RUNTIME_TOOL' }] } },
     ].map(entry => JSON.stringify(entry)).join('\n'));
     const transcript = await call('work_package', { action: 'prepare', kind: 'transcript', project: transcriptProject });
     expect(transcript.response.isError).not.toBe(true);
     expect(transcript.data.status).toBe('available');
     const transcriptPackage = transcript.data.package;
     expect(transcriptPackage.ref).toMatchObject({ kind: 'transcript', project: transcriptProject, session_id: 'runtime-session' });
-    expect(transcriptPackage.sources).toEqual([{ role: 'user', text: 'Use the smaller parser.' }, { role: 'assistant', text: 'The smaller parser satisfies our requirements.' }]);
+    expect(transcriptPackage.sources).toEqual([{ role: 'user', text: 'Use the smaller parser.' }, { role: 'assistant', text: 'The smaller parser satisfies our requirements. ***REDACTED***' }]);
     expect(transcriptPackage.coverage).toEqual({ truncated: false, total_turns: 2, included_turns: 2 });
-    expect(JSON.stringify(transcriptPackage)).not.toMatch(/RUNTIME_PRIVATE|RUNTIME_TOOL/);
+    expect(JSON.stringify(transcriptPackage)).not.toMatch(/RUNTIME_PRIVATE|RUNTIME_TOOL|RUNTIME_SCAFFOLDING/);
+    expect(JSON.stringify(transcriptPackage)).not.toContain(secret);
     expect(transcriptPackage.ref).not.toHaveProperty('path');
     const transcriptDeferred = await call('work_package', { action: 'defer', package_id: transcriptPackage.id, ref: transcriptPackage.ref, reason: 'not_now' });
     expect(transcriptDeferred.data).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
@@ -124,6 +131,15 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     const transcriptStaged = await call('work_package', { action: 'submit', package_id: transcriptPackage.id, ref: transcriptPackage.ref, result: transcriptResult });
     expect(transcriptStaged.response.isError).not.toBe(true);
     expect(transcriptStaged.data).toMatchObject({ status: 'staged', proposal_status: 'pending' });
+    const existing = { status: 'existing', proposal_id: transcriptStaged.data.proposal_id, proposal_status: 'pending', available_action: [] };
+    fs.writeFileSync(transcriptPath, JSON.stringify({ type: 'user', cwd: `${runtimeCwd}-foreign`, message: { content: 'FOREIGN_PRIVATE_TEXT' } }));
+    expect((await call('work_package', { action: 'submit', package_id: transcriptPackage.id, ref: transcriptPackage.ref, result: transcriptResult })).data).toEqual(existing);
+    fs.unlinkSync(transcriptPath);
+    expect((await call('work_package', { action: 'defer', package_id: transcriptPackage.id, ref: transcriptPackage.ref, reason: 'not_now' })).data).toEqual(existing);
+    const conflict = await call('work_package', { action: 'submit', package_id: transcriptPackage.id, ref: transcriptPackage.ref, result: { ...transcriptResult, name: 'conflicting-result' } });
+    expect(conflict.response.isError).toBe(true);
+    expect(conflict.data.error).toBe('submission_conflict');
+    expect(proposalCount()).toMatchObject({ n: 2 });
     await client.close();
     expect(transport.pid).toBeNull();
     const db = new MemeshDatabase(dbPath, { readOnly: true });

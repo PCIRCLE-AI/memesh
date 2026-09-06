@@ -1,7 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { createHash } from 'node:crypto';
+import { openDatabase, closeDatabase } from '../../src/db.js';
+import { KnowledgeGraph } from '../../src/knowledge-graph.js';
+import { executeWorkPackage } from '../../src/core/dreamer.js';
+import { getProjectName } from '../../src/core/paths.js';
 import {
   projectTranscriptSlug,
   scanTranscripts,
@@ -19,6 +24,7 @@ import {
 
 let root: string;
 let prev: string | undefined;
+type WorkPackageInput = Parameters<typeof executeWorkPackage>[1];
 
 beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-transcripts-'));
@@ -41,6 +47,108 @@ function seedSession(cwd: string, sessionId: string, lines: number, ageDays: num
   fs.utimesSync(file, new Date(t), new Date(t));
   return file;
 }
+
+describe('work-package source boundary', () => {
+  let db: ReturnType<typeof openDatabase>;
+  let cwd: string;
+  let project: string;
+  const secret = 'sk-' + 'z'.repeat(40); // Synthetic shape only; never a real credential.
+  const result = { name: 'fixture-decision', type: 'decision' as const, observations: ['Use the smaller parser.'], tags: ['parser'] };
+  const prepare = () => executeWorkPackage(db, { action: 'prepare', kind: 'transcript', project });
+  const writeSession = (recordedProject: string, text: string) => {
+    const file = seedSession(cwd, 'snapshot-session', 1, 0);
+    fs.writeFileSync(file, JSON.stringify({ cwd: recordedProject, type: 'user', message: { content: text } }));
+    return file;
+  };
+  beforeEach(() => {
+    cwd = fs.realpathSync(root);
+    project = getProjectName(cwd);
+    vi.stubEnv('MEMESH_DIR', root);
+    vi.spyOn(process, 'cwd').mockReturnValue(cwd);
+    db = openDatabase(path.join(root, 'fixture.db'));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    closeDatabase();
+  });
+
+  it('accepts equivalent project paths and redacts transcript text without changing raw-byte identity', () => {
+    const alias = path.join(root, 'alias');
+    fs.symlinkSync(cwd, alias, 'dir');
+    const file = writeSession(alias, `Visible fixture ${secret}`);
+    const response = prepare();
+    expect(response.status).toBe('available');
+    expect(response.package).toMatchObject({
+      ref: { source_hash: createHash('sha256').update(fs.readFileSync(file)).digest('hex') },
+      sources: [{ role: 'user', text: 'Visible fixture ***REDACTED***' }],
+    });
+    expect(JSON.stringify(response)).not.toContain(secret);
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
+  });
+
+  it.each(['prepare', 'submit', 'defer'] as const)('rejects a same-mtime foreign-project snapshot swap during %s', (action) => {
+    const file = writeSession(cwd, 'Visible local evidence');
+    const pkg = prepare().package as { id: string; ref: Extract<WorkPackageInput, { action: 'submit' }>['ref'] };
+    const stamp = fs.statSync(file).mtime;
+    const replacement = path.join(root, 'replacement.jsonl');
+    fs.writeFileSync(replacement, JSON.stringify({ cwd: `${cwd}-foreign`, type: 'user', message: { content: 'FOREIGN_PRIVATE_TEXT' } }));
+    fs.utimesSync(replacement, stamp, stamp);
+    const realOpen = fs.openSync;
+    let opens = 0;
+    vi.spyOn(fs, 'openSync').mockImplementation((...args) => {
+      if (args[0] === file && ++opens === 2) fs.renameSync(replacement, file);
+      return realOpen(...args);
+    });
+    const response = action === 'prepare' ? prepare() : executeWorkPackage(db, action === 'submit'
+      ? { action, package_id: pkg.id, ref: pkg.ref, result }
+      : { action, package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+    expect(opens).toBe(2);
+    expect(response).toMatchObject(action === 'prepare' ? { status: 'none_available' } : { status: 'error', error: 'stale_package' });
+    expect(JSON.stringify(response)).not.toContain('FOREIGN_PRIVATE_TEXT');
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
+  });
+
+  it('redacts digest names and observations while hashing original source content', () => {
+    const kg = new KnowledgeGraph(db);
+    for (let i = 0; i < 5; i++) kg.createEntity(`commit-${i}-${secret}`, 'commit', {
+      observations: [`Visible change ${i}: ${secret}`], tags: [`project:${project}`],
+    });
+    const input = { action: 'prepare' as const, kind: 'digest' as const, project };
+    const response = executeWorkPackage(db, input);
+    expect(response.status).toBe('available');
+    const pkg = response.package as { sources: Array<{ name: string; observations: string[] }>; ref: { source_hash: string } };
+    expect(pkg.sources).toHaveLength(5);
+    expect(pkg.sources[0]).toMatchObject({ name: 'commit-0-***REDACTED***', observations: ['Visible change 0: ***REDACTED***'] });
+    expect(JSON.stringify(response)).not.toContain(secret);
+    db.prepare('UPDATE observations SET content = replace(content, ?, ?)').run(secret, 'sk-' + 'x'.repeat(40));
+    const changed = executeWorkPackage(db, input).package as typeof pkg;
+    expect(changed.sources).toEqual(pkg.sources);
+    expect(changed.ref.source_hash).not.toBe(pkg.ref.source_hash);
+  });
+
+  it.each(['pending', 'applied', 'rejected'])('replays exact %s packages before reading changed or missing transcripts', (status) => {
+    const file = writeSession(cwd, 'Use the smaller parser.');
+    const pkg = prepare().package as { id: string; ref: Extract<WorkPackageInput, { action: 'submit' }>['ref'] };
+    const submit = { action: 'submit' as const, package_id: pkg.id, ref: pkg.ref, result };
+    const staged = executeWorkPackage(db, submit);
+    expect(staged.status).toBe('staged');
+    db.prepare('UPDATE dream_proposals SET status = ? WHERE id = ?').run(status, Number(staged.proposal_id));
+    if (status === 'pending') writeSession(`${cwd}-foreign`, 'Changed after submission');
+    else if (status === 'applied') fs.utimesSync(file, new Date(0), new Date(0));
+    else fs.unlinkSync(file);
+    const before = db.prepare('SELECT total_changes() AS n').get();
+    const open = vi.spyOn(fs, 'openSync').mockImplementation(() => { throw new Error('replay must not read transcripts'); });
+    const existing = { status: 'existing', proposal_id: staged.proposal_id, proposal_status: status, available_action: [] };
+    expect(executeWorkPackage(db, submit)).toEqual(existing);
+    expect(executeWorkPackage(db, { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })).toEqual(existing);
+    expect(executeWorkPackage(db, { ...submit, result: { ...result, name: 'conflicting-result' } })).toMatchObject({ error: 'submission_conflict' });
+    expect(executeWorkPackage(db, { ...submit, ref: { ...pkg.ref, source_hash: '0'.repeat(64) } })).toMatchObject({ error: 'stale_package' });
+    expect(open).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 1 });
+  });
+});
 
 describe('transcript-source discovery', () => {
   it('slug mirrors Claude Code: every non-alphanumeric char becomes a dash', () => {

@@ -96,6 +96,12 @@ function sameProjectPath(a: string, b: string): boolean {
   return false;
 }
 
+/** Check project identity on the same byte snapshot the caller will consume. */
+export function transcriptMatchesProject(bytes: Buffer, cwd: string): boolean {
+  const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString('utf8'));
+  return sessionCwd === null || sameProjectPath(sessionCwd, cwd);
+}
+
 export interface TranscriptSession {
   /** Session id = the transcript filename without .jsonl. */
   sessionId: string;
@@ -176,9 +182,7 @@ export function scanTranscripts(opts: ScanOptions = {}): TranscriptSession[] {
       // cosmetic OR a symlink difference (macOS /tmp vs /private/tmp) does not
       // cause a false skip. Still FAIL-CLOSED: a present-but-genuinely-different
       // recorded cwd is dropped so the "current project only" promise holds.
-      const prefix = buf.subarray(0, Math.min(buf.length, 65536)).toString('utf8');
-      const sessionCwd = recordedCwd(prefix);
-      if (sessionCwd !== null && !sameProjectPath(sessionCwd, cwd)) continue;
+      if (!transcriptMatchesProject(buf, cwd)) continue;
 
       sessions.push({
         sessionId: name.replace(/\.jsonl$/, ''),
