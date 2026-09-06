@@ -490,7 +490,7 @@ Verknüpfen Sie dann Folgen mit ihren Ursachen, sobald sie eintreten — von jed
 
 ## Agenten-unterstützte Arbeitspakete
 
-MeMesh hält Recall und Erfassung lokal und deterministisch: SQLite-FTS5-Suche, explizite Memory-Tools und regelbasierte Hooks. Wenn ein Digest nützlich wäre oder sichtbare Gesprächszüge noch wertvolles Wissen enthalten, kann ein bereits laufender Agent `work_package` verwenden. Hosts mit interaktiven Hinweisen zeigen die knappen Optionen **Agentenaufgabe senden**, **Später** und **Nicht erneut vorschlagen**. Das Ergebnis wartet immer auf menschliche Prüfung; es gibt kein Hintergrundmodell, keine Anbieter-Konfiguration, kein geplantes Mining und keinen Versand durch das Dashboard.
+MeMesh hält Recall und Erfassung lokal und deterministisch: SQLite-FTS5-Suche, explizite Memory-Tools und regelbasierte Hooks. Wenn ein Digest nützlich wäre oder sichtbare Gesprächszüge noch wertvolles Wissen enthalten, kann ein bereits laufender Agent `work_package` verwenden. Hosts mit interaktiven Hinweisen zeigen die knappen Optionen **Agentenaufgabe senden**, **Später** und **In dieser Sitzung nicht erneut vorschlagen**. Die letzte Auswahl unterdrückt nur den Hinweis in dieser Sitzung; sie richtet keine dauerhafte Abwahl ein. Das Ergebnis wartet immer auf menschliche Prüfung; es gibt kein Hintergrundmodell, keine Anbieter-Konfiguration, kein geplantes Mining und keinen Versand durch das Dashboard.
 
 ---
 
@@ -498,7 +498,7 @@ MeMesh hält Recall und Erfassung lokal und deterministisch: SQLite-FTS5-Suche, 
 
 | Tool | Was es tut |
 |------|-------------|
-| `work_package` | Ein begrenztes, nicht vertrauenswürdiges Paket vorbereiten: `digest` wählt einen Kalender-Cluster, `transcript` sichtbare Züge der neuesten Projektsitzung. Ein Agent reicht genau ein strikt validiertes Ergebnis ein oder stellt zurück; die Einreichung stellt nur zur menschlichen Prüfung bereit. Es werden weder verborgenes Denken, Rohtranskript, Pfad, API-Schlüssel, LLM-, Embedding- noch Vektordaten offengelegt oder verwendet; Agenten können nicht annehmen oder ablehnen, und Hashes kennzeichnen Aktualität statt Authentifizierung. |
+| `work_package` | Ein begrenztes, nicht vertrauenswürdiges Paket vorbereiten: `digest` wählt einen Kalender-Cluster, `transcript` sichtbare Züge der neuesten Projektsitzung. Ein Agent reicht genau ein strikt validiertes Ergebnis ein oder stellt zurück; die Einreichung stellt nur zur menschlichen Prüfung bereit. Verborgenes Denken, Rohtranskripte und Pfade werden nicht offengelegt; erkannte Zugangsdatenmuster werden redigiert. LLM-, Embedding- und Vektordaten werden weder verwendet noch offengelegt. Der MCP-Vertrag von `work_package` bietet keine Annahme- oder Ablehnungsaktion; die lokalen Review-Oberflächen in Dashboard und CLI bieten sie, ohne einen menschlichen Akteur kryptografisch zu authentifizieren. Hashes kennzeichnen Aktualität statt Authentifizierung. |
 | `remember` | Wissen mit Beobachtungen, Relationen und Tags speichern |
 | `recall` | Lokale FTS5-Suche mit Multi-Faktor-Bewertung (Relevanz, Aktualität, Häufigkeit, Konfidenz, Abruf-Auswirkung) |
 | `forget` | Soft-Archivierung (löscht nie) oder entfernt spezifische Beobachtungen |

@@ -1032,6 +1032,53 @@ describe('dashboard components on degenerate data', () => {
       .toContain(en('auth.title'));
   });
 
+  it('PatternCard reveals pending review actions only with expanded full detail', () => {
+    const proposal = {
+      id: 1,
+      project: 'memesh',
+      cluster_key: 'pattern-1',
+      source_count: 1,
+      digest_name: 'reviewable pattern',
+      digest_observations_preview: 'preview',
+      status: 'pending',
+      created_at: '2026-08-04T00:00:00.000Z',
+    };
+    const detail = {
+      proposed_digest: {
+        name: 'reviewable pattern',
+        type: 'digest',
+        observations: ['full observation'],
+        tags: ['project:memesh'],
+      },
+      source_ids: [1],
+    };
+    const shared = {
+      proposal,
+      onToggleExpand: vi.fn(),
+      onAccept: vi.fn(),
+      onReject: vi.fn(),
+      formatRelative: () => 'just now',
+      statusBadgeStyle: () => ({}),
+      statusLabel: () => 'Pending',
+    };
+    const view = render(<PatternCard {...shared} detail={detail} expanded={false} inFlight={false} />);
+
+    expect(view.queryByRole('button', { name: 'Accept' })).toBeNull();
+    expect(view.queryByRole('button', { name: 'Reject' })).toBeNull();
+
+    view.rerender(<PatternCard {...shared} detail={undefined} expanded inFlight />);
+    expect(view.queryByRole('button', { name: 'Accept' })).toBeNull();
+    expect(view.queryByRole('button', { name: 'Reject' })).toBeNull();
+
+    view.rerender(<PatternCard {...shared} detail={detail} expanded inFlight={false} />);
+    expect(view.getByRole('button', { name: 'Accept' })).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Reject' })).toBeTruthy();
+
+    view.rerender(<PatternCard {...shared} detail={detail} expanded inFlight />);
+    expect((view.getByRole('button', { name: 'Applying…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((view.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   describe('shape guards, leaf by leaf', () => {
     for (const g of GUARD_LEAVES) {
       it(`${g.name} accepts the payload it exists to admit`, () => {

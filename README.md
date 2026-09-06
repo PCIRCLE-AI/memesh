@@ -511,9 +511,10 @@ MeMesh recall and capture stay local and deterministic: SQLite FTS5 search,
 explicit memory tools, and rule-based hooks. When a digest would help, or useful
 knowledge remains in the visible conversation, an already-running agent can use
 `work_package`. On hosts with interactive prompts, the concise choices are
-**Dispatch agent task**, **Later**, and **Don't suggest again**. The result is
-always pending human review; there is no background model, provider setup,
-scheduled mining, or dashboard-side dispatch.
+**Dispatch agent task**, **Later**, and **Don't suggest again this session**.
+The last choice suppresses only this session's prompt; it does not create a
+durable opt-out. The result is always pending human review; there is no
+background model, provider setup, scheduled mining, or dashboard-side dispatch.
 
 ---
 
@@ -521,7 +522,7 @@ scheduled mining, or dashboard-side dispatch.
 
 | Tool | What it does |
 |------|-------------|
-| `work_package` | Prepare one bounded untrusted package: `digest` selects a calendar cluster, `transcript` selects visible turns from the newest project session. An agent submits exactly one strict result or defers; submit only stages pending human review. No hidden reasoning, raw transcript, path, API key, LLM, embedding, or vector data is exposed or used; agents cannot apply or reject, and hashes identify freshness rather than authentication. |
+| `work_package` | Prepare one bounded untrusted package: `digest` selects a calendar cluster, `transcript` selects visible turns from the newest project session. An agent submits exactly one strict result or defers; submit only stages pending human review. Hidden reasoning, raw transcripts, and paths are not exposed; recognized credential shapes are redacted. No LLM, embedding, or vector data is used or exposed. The MCP contract exposes no apply/reject action; the local Dashboard and CLI review surfaces do, without cryptographically authenticating a human actor. Hashes identify freshness rather than authentication. |
 | `remember` | Store knowledge with observations, relations, and tags |
 | `recall` | Local FTS5 search with multi-factor scoring (relevance, recency, frequency, confidence, recall impact) |
 | `forget` | Soft-archive (never deletes) or remove specific observations |

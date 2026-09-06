@@ -25,7 +25,9 @@ host is recallable from all of them. Not installed yet? Follow
    not answer from your own conversation context.
 4. **When memory could be condensed or recovered from this conversation** —
    offer one short in-session choice when the host supports interactive prompts:
-   **Dispatch agent task**, **Later**, or **Don't suggest again**. Dispatch means
+   **Dispatch agent task**, **Later**, or **Don't suggest again this session**.
+   The last choice suppresses only this session's prompt; it does not create a
+   durable opt-out. Dispatch means
    using `work_package` in this already-running agent session; it does not mean
    the Dashboard can start or wake an agent. Prepare either one calendar-selected
    digest package or one package from the newest current-project session's visible

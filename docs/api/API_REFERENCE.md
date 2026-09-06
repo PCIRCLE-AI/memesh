@@ -1543,7 +1543,7 @@ reject review surface without adding another queue or execution path.
 
 For applications that call the **Messages API directly** rather than through MCP. Claude gets a memory tool whose storage is MeMesh instead of a folder of text files, so it also gets search, ranking, decay, relations and namespaces without knowing they are there.
 
-This is **not** one of the eleven MCP tools and is not exposed over HTTP or the CLI. The MCP surface serves an agent that already speaks MeMesh; this serves an application that speaks only the Messages API.
+This is **not** one of the twelve MCP tools and is not exposed over HTTP or the CLI. The MCP surface serves an agent that already speaks MeMesh; this serves an application that speaks only the Messages API.
 
 ### Wiring it up
 

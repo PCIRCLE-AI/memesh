@@ -1,11 +1,10 @@
 // @vitest-environment happy-dom
 //
-// Rejecting a dream proposal is one click and permanent.
+// Rejecting a dream proposal is one click and irreversible.
 //
-// The dreamer deliberately never re-proposes a rejected cluster — that is
-// what the status is for (`dreamer.ts:226`) — and no surface offers an
-// un-reject. So a mis-click on a ghost-styled button next to the primary
-// action irreversibly rejects reviewed agent work, silently.
+// No surface offers an un-reject. So a mis-click on a ghost-styled button
+// next to the primary action irreversibly rejects this reviewed proposal,
+// silently. Rejection does not create a durable opt-out from future prompts.
 //
 // The sibling irreversible action in this dashboard, `OnboardingBanner`'s
 // demo reset, already asks first. Accept deliberately does not: an accepted
@@ -118,13 +117,14 @@ describe('rejecting a proposal asks first', () => {
     // satisfy the test above perfectly.
     const posts: string[] = [];
     const { container } = await renderWithProposal(posts);
-    answerConfirm(true);
+    const confirmSpy = answerConfirm(true);
 
     fireEvent.click(rejectButton(container));
 
     await waitFor(() => {
       expect(posts.some((u) => u.includes('/v1/dream/proposals/7/reject'))).toBe(true);
     });
+    expect(confirmSpy).toHaveBeenCalledWith('Reject this insight? This action cannot be undone.');
     // The size pin that gives the `toEqual([])` above its meaning: one click
     // produces exactly one call, so "no calls" is a real observation and not
     // a stub that never records anything.

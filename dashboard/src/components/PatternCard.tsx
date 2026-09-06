@@ -146,7 +146,7 @@ export function PatternCard(props: PatternCardProps) {
           >
             {expanded ? t('insights.collapse') : t('insights.viewDetail')}
           </button>
-          {isPending && (
+          {isPending && expanded && detail?.proposed_digest && (
             <>
               <button class="btn btn-primary" onClick={() => onAccept(p.id)} disabled={inFlight}>
                 {inFlight ? t('insights.applying') : t('insights.accept')}
