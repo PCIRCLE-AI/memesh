@@ -107,16 +107,16 @@ For contrast, the same 500 questions through the same function **before** the
 retrieval fixes in this release: R@5 **5.20%**, R@10 5.20%, MRR 0.0520, and
 **473 of 500** questions returning nothing.
 
-### What the embeddings buy: 14 changed result lists and nothing at the cut-off
+### What the historical embeddings bought: 14 changed result lists and nothing at the cut-off
 
-Before the vector threshold was fixed, Mode B was identical to Mode A to sixteen
-decimal places — `MAX_VECTOR_DISTANCE = 1` discarded essentially every hit
-sqlite-vec returned, so storing 25 000 embeddings changed not one result. The
-cut-off is now 1.30 and the supplement does reach the ranker: **14 of the 500
-result lists differ between the modes.**
+Before that retired vector experiment raised its threshold, Mode B was identical
+to Mode A to sixteen decimal places — `MAX_VECTOR_DISTANCE = 1` discarded
+essentially every hit sqlite-vec returned, so storing 25 000 embeddings changed
+not one result. At 1.30 the historical supplement reached the ranker: **14 of
+the 500 result lists differed between the modes.**
 
-It still does not move the metric. R@5 and R@10 are unchanged, and only **two**
-questions move the position of the correct session at all:
+It still did not move the metric. R@5 and R@10 were unchanged, and only **two**
+questions moved the position of the correct session at all:
 
 | Question | Type | Mode A | Mode B |
 |---|---|---|---|
@@ -127,12 +127,13 @@ One recovery and one small regression, both far outside the top 10. MRR moves
 from 0.8929348706848708 to 0.8930598706848707 — a gain of 0.000125 for **89×
 the wall-clock** (807.7s against 9.1s).
 
-This refutes a prediction this file used to make. It said the 22 remaining Mode
+This refuted a prediction this file used to make. It said the 22 remaining Mode
 A failures were "dominated by vocabulary mismatch — exactly what a working
-vector supplement would cover". The supplement now works, and it covers one of
-the 22, at a rank no one would ever see. Vocabulary mismatch may still be the
-right diagnosis; MiniLM-L6 at 384 dimensions is not the cure. Recall stays
-LLM-free and embeddings stay optional, which is what these numbers support.
+vector supplement would cover". The retired supplement did run, and it covered
+one of the 22, at a rank no one would ever see. Vocabulary mismatch may still
+be the right diagnosis; MiniLM-L6 at 384 dimensions was not the cure in that
+experiment. Current MeMesh recall is LLM-free, FTS5-only, and has no embedding
+mode; the historical numbers do not describe a current product option.
 
 The 95.40% Mode B figure published previously came from the adapter
 reimplementation and does not carry over; do not quote it.
@@ -215,8 +216,9 @@ Every one of the 22 is a ranking failure, not a retrieval failure: **no question
 returned zero results**, and 18 of the 22 had the right session somewhere in the
 returned set, below position 5. The remaining 4 fell outside the top 10.
 Vocabulary mismatch is the recurring cause — the question's words do not appear
-in the session that answers it, which is precisely the case a working vector
-supplement would cover (see METHODOLOGY.md §4.2 on why it currently does not).
+in the session that answers it. The retired vector experiment tested that gap
+and did not improve the cut-off metrics (see METHODOLOGY.md §4.2). Current
+MeMesh recall is FTS5-only.
 
 ### Dataset note
 We use `longmemeval_s`, the original public dataset (ICLR 2025 paper). A `longmemeval-cleaned` variant exists with some data corrections — recent competitors may use this. We have not tested the cleaned variant.

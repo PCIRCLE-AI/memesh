@@ -4,7 +4,10 @@ Raw per-question output from `run.mjs`. **Two different things produced the file
 in this directory**, and the difference is larger than any version-to-version
 change.
 
-## Files from 2026-07 onward — the shipped retrieval path
+The vector and embedding references below describe historical runs only.
+Current MeMesh recall is FTS5-only and has no vector or embedding mode.
+
+## Historical files from 2026-07 — the then-shipped retrieval path
 
 `run_info.measures` is `"shipped_recall_path"` and
 `run_info.retrieval_entrypoint` names the function that produced them
@@ -25,10 +28,11 @@ with 0/500 questions returning nothing:
 | Mode A | 95.60% | 97.80% | 0.8929348706848708 |
 | Mode B | 95.60% | 97.80% | 0.8930598706848707 |
 
-Mode B matters separately because it is the path the vector-hydration change
-touches; Mode A alone could not have told us about it. The term-cap reorder (dropping ubiquitous terms *before* capping at
-32, rather than after) therefore does not move English retrieval, and the
-quality metrics are hardware-independent.
+Mode B mattered separately at the time because it was the path the then-current
+vector-hydration change touched; Mode A alone could not have told us about it.
+The term-cap reorder (dropping ubiquitous terms *before* capping at 32, rather
+than after) therefore did not move English retrieval, and the quality metrics
+were hardware-independent in those runs.
 
 `elapsed_seconds` is 22.4 (A) and 1013 (B) against the release runs' 9.1 and 807.7. That is the machine,
 not a regression — this box is ARM. **Do not quote elapsed time from this
@@ -52,7 +56,7 @@ threshold, document-frequency guard and `recall_hits` ownership changes.
 Same R@5 and R@10 as the pair above, different MRR (0.8931166888666888), because
 they predate the vector-threshold change, the document-frequency guard and the
 `recall_hits` ownership fix. At the time they were taken `MAX_VECTOR_DISTANCE`
-was 1, which discarded hits sqlite-vec returns at L2 distances of 1.2–1.4 —
+was 1, which discarded hits sqlite-vec returned at L2 distances of 1.2–1.4 —
 which is why Mode B came out byte-for-byte identical to Mode A. That is a
 correct record of the code as it stood, not a claim about the release.
 
@@ -79,7 +83,7 @@ They are kept unmodified because they are published evidence and deleting or
 editing them would be worse than labelling them. Read them as a record of what
 the adapter did, not as a statement about any version of MeMesh.
 
-`mode-C-*` additionally measures a 60/40 weighted FTS+vector fusion that MeMesh
-has never implemented.
+`mode-C-*` additionally measured a 60/40 weighted FTS+vector fusion that MeMesh
+never implemented.
 
 See `../METHODOLOGY.md` §2 and CHANGELOG `[Unreleased]` / PR #78.

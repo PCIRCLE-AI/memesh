@@ -12,10 +12,8 @@
  *                       vanished from every scoped view including the dashboard.
  *   --severity whatever was written into the graph as a tag nothing filters on.
  *
- * Two more commands crashed instead of answering: `export -o` into a directory
- * that does not exist, and `telemetry --window abc` (NaN reaching
- * `new Date().toISOString()`), each dumping a Node stack trace with the
- * absolute install path.
+ * Another command crashed instead of answering: `export -o` into a directory
+ * that does not exist dumped a Node stack trace with the absolute install path.
  *
  * Every test here asserts the exit code as well as the message. A validation
  * that prints a complaint and exits 0 is not a validation — a script cannot see

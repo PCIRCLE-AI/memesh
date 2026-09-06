@@ -158,7 +158,10 @@ fresh corpus, under a keyword-retrieval task.
 
 - **Session truncation at 8000 chars**: Long sessions are truncated. Some answer sessions may have the relevant information in the second half.
 - **FTS5 query quality**: OR-joining individual keywords is not optimal BM25. Proximity operators or phrase matching would likely do better. This item used to sit here as an *adapter* limitation — while the shipped `search()` was AND-joining and would have been listed as a far worse limitation had anyone measured it. A limitation described next to a number it does not apply to is how a divergence stays invisible; the adapter and the product now share one implementation, so anything listed here applies to both.
-- **MiniLM-L6 embedding quality**: The 384-dim model is too small for indirect semantic matching. Vocabulary mismatches (e.g., session uses "Dr. Patel" instead of "doctor") are not recovered by this model.
+- **Historical MiniLM-L6 embedding quality**: In the retired vector experiment,
+  the 384-dim model was too small for indirect semantic matching. It did not
+  recover vocabulary mismatches (e.g., a session using "Dr. Patel" instead of
+  "doctor"). Current MeMesh recall is FTS5-only and does not run this model.
 - **Historical Mode B's vector supplement reached the ranker and still changed nothing at the cut-off**: the retired `vectorSearch()` path filtered hits at `MAX_VECTOR_DISTANCE = 1` before the historical experiment raised it to 1.30. Fourteen of 500 result lists differed, but R@5 and R@10 were unchanged; only two correct sessions moved, both outside the top 10 (RESULTS.md). This describes the archived experiment, not current product behavior.
 
 ### 4.3 Comparison Limitations

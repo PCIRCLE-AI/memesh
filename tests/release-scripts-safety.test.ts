@@ -73,8 +73,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
   });
 
   it('runs every gate that opens the database under the throwaway HOME', () => {
-    // `doctor` calls openDatabase(), which runs schema migrations, the FTS
-    // rebuild and the telemetry prune — so an unisolated gate MUTATES the
+    // `doctor` calls openDatabase(), which runs schema and FTS migrations plus
+    // lifecycle maintenance — so an unisolated gate MUTATES the
     // maintainer's real knowledge-graph.db as a side effect of verifying a
     // release. The commit that introduced the throwaway HOME isolated the test
     // suite and stopped one gate short, which is why this asserts the set
@@ -505,7 +505,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     // 'buildIsolatedSuiteEnv deletes the memesh path variables' below.
     expect(text).toMatch(/buildIsolatedSuiteEnv\(process\.env, \{ runtimeHome: home \}\)/);
     // MEMESH_DB_PATH must stay unset — pointing it at an existing file breaks
-    // session-start-telemetry's "short-circuits on missing DB" case. This is
+    // session-start's no-database-yet cases. This is
     // the assertion the helper cannot make for the runner: the runner must not
     // pin one of its own after building the env.
     expect(text).not.toMatch(/MEMESH_DB_PATH:/);

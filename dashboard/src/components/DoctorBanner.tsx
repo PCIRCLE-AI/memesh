@@ -102,8 +102,8 @@ export function isBannerWorthy(c: DoctorCheck): boolean {
 
 /**
  * Surfaces doctor WARN/FAIL checks above the tab nav so users
- * who hit a real install/runtime problem (hooks unwired, LLM 401,
- * pending reindex) actually see it instead of silently wondering
+ * who hit a real install/runtime problem (hooks unwired, MCP config
+ * missing, database unreadable) actually see it instead of silently wondering
  * why memesh "doesn't work properly". This is the user-visible
  * tip of the "ship-前-verify" gate: doctor finds it → user sees it
  * → one-click "Get help" routes to the existing FeedbackWidget

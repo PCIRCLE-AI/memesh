@@ -119,7 +119,7 @@ is invoked by the session-start flow rather than registered directly in the mani
 ```
 transport (cli/http/mcp) → validate (transports/schemas.ts, Zod)
   → operations.recallEnhanced()
-    → knowledge-graph FTS5 + sqlite-vec  → scoring.rankEntities()
+    → knowledge-graph FTS5  → scoring.rankEntities()
       → conflict detection (storage/conflicts.ts) → result
 ```
 
