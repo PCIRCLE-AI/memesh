@@ -26,6 +26,18 @@ import {
 import { projectTranscriptSlug } from '../../src/core/transcript-source.js';
 import { entityEmbedText } from '../../src/core/embedder.js';
 
+const transcriptAcceptEmbeddingAvailability = vi.fn(() => false);
+const transcriptAcceptScheduleEmbed = vi.fn();
+vi.mock('../../src/core/embedder.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/embedder.js')>();
+  return {
+    ...actual,
+    isEmbeddingAvailable: () => transcriptAcceptEmbeddingAvailability(),
+    scheduleEmbedAndStore: (...args: Parameters<typeof actual.scheduleEmbedAndStore>) =>
+      transcriptAcceptScheduleEmbed(...args),
+  };
+});
+
 const FAKE_LLM = { provider: 'anthropic' as const, apiKey: 'test-key-fake', model: 'claude-haiku-4-5' };
 
 // A credential-SHAPED but non-real value for the secret-detection tests,
@@ -391,6 +403,9 @@ describe('transcript-extractor: staging + apply', () => {
   it('dream accept applies a transcript proposal to the KG without throwing', async () => {
     stageTranscriptProposals(db, session, memories, FAKE_LLM, 'memesh');
     const proposalId = (db.prepare("SELECT id FROM dream_proposals WHERE status='pending'").get() as { id: number }).id;
+    transcriptAcceptEmbeddingAvailability.mockClear();
+    transcriptAcceptScheduleEmbed.mockClear();
+    transcriptAcceptEmbeddingAvailability.mockReturnValue(true);
 
     const { applyProposal } = await import('../../src/core/dreamer.js');
     const { KnowledgeGraph } = await import('../../src/knowledge-graph.js');
@@ -402,6 +417,11 @@ describe('transcript-extractor: staging + apply', () => {
     const result = applyProposal(db, proposalId, kg);
     expect(result.digestEntityName).toBe('parser-choice');
     expect(result.sourcesArchived).toBe(0);
+    // The mocked available embedder would record either legacy call without
+    // reaching a provider. Transcript acceptance must remain FTS-only.
+    expect(transcriptAcceptEmbeddingAvailability).not.toHaveBeenCalled();
+    expect(transcriptAcceptScheduleEmbed).not.toHaveBeenCalled();
+    transcriptAcceptEmbeddingAvailability.mockReturnValue(false);
 
     const entity = db.prepare("SELECT type, status FROM entities WHERE name = 'parser-choice'").get() as any;
     expect(entity.type).toBe('decision');

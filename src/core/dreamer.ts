@@ -1511,7 +1511,7 @@ function applyTranscriptProposal(
   // so createEntity always inserts a FRESH, untrusted row and never merges.
   const entityName = collisionSafeName(db, digest.name, 'transcript', row.id);
   const tx = db.transaction(() => {
-    const digestId = kg.createEntity(entityName, digest.type, {
+    kg.createEntity(entityName, digest.type, {
       observations: digest.observations,
       tags,
       // `trustOverride` (write-side) and `metadata.trust` (read-side) are two
@@ -1534,7 +1534,6 @@ function applyTranscriptProposal(
       },
     });
     db.prepare("UPDATE dream_proposals SET status = 'applied', reviewed_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.id);
-    return digestId;
   });
   tx();
   return {
