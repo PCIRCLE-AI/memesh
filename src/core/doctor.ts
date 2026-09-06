@@ -8,7 +8,6 @@ import { pathToFileURL } from 'url';
 import { execFileSync } from 'child_process';
 import { detectCapabilities, getConfigPath, isTranscriptMiningEnabled, readConfig, type Capabilities } from './config.js';
 import { embedText } from './embedder.js';
-import { probeProvider } from './llm-validator.js';
 import {
   openDatabase, closeDatabase, getPendingReindexInfo, isDatabaseOpen,
   readVectorGeneration, generationRowIds,
@@ -72,7 +71,7 @@ export interface DoctorCheck {
    *
    * Informational rows are excluded from `summarizeOverallStatus` and are
    * rendered as `[INFO]`. If you want a row to be able to fail, it must
-   * probe something — see `probeEmbeddings` / `probeLlm`.
+   * probe something — see `inspectEmbeddingProbe`.
    */
   informational?: boolean;
   /**
@@ -120,16 +119,9 @@ interface DoctorOptions {
   packageRoot: string;
   packageVersion: string;
   probeHttp?: boolean;
-  /**
-   * Make one small LIVE call to the configured LLM provider.
-   *
-   * Off by default: probing on every run costs latency and, for hosted
-   * providers, money. When off, the LLM row reports "NOT VERIFIED" rather
-   * than a green it did not earn.
-   */
+  /** Make one live embedding call to verify the configured capability. */
   probeCapabilities?: boolean;
   embedTextImpl?: (text: string) => Promise<Float32Array | null>;
-  probeProviderImpl?: typeof probeProvider;
   httpBaseUrl?: string;
   platform?: NodeJS.Platform;
   openDatabaseImpl?: typeof openDatabase;
@@ -2892,8 +2884,7 @@ async function inspectMessageRouterStatus(
  * When the probe is skipped the row says NOT VERIFIED and names the reason.
  * That is not the hardcoded-'pass' failure this row was rewritten to fix —
  * the point of that fix was that "not verified" and "verified working" must
- * never look the same, which is exactly what this preserves. Same shape as
- * `inspectLlmProbe`.
+ * never look the same, which is exactly what this preserves.
  */
 async function inspectEmbeddingProbe(
   capabilities: Capabilities,
@@ -2981,8 +2972,7 @@ const LLM_TELEMETRY_HEALTH_MIN_CALLS = 3;
  * transcript_extractor — and until this row existed, read by nothing that
  * could alert anyone: `memesh telemetry` shows it on request, which means a
  * broken flow needed someone to think to ask. Reading it costs nothing (no
- * network call, unlike `inspectLlmProbe` below), so this runs on every
- * `memesh doctor`.
+ * network call), so this runs on every `memesh doctor`.
  *
  * The window is 7 days, not `summariseTelemetry`'s 30-day default. Measured
  * against a real graph on 2026-09-02: `dreamer` has 29 historical successes,
@@ -3074,62 +3064,6 @@ function inspectLlmTelemetryHealth(
   );
 }
 
-/**
- * Does the configured LLM actually answer?
- *
- * Network-probing on every `memesh doctor` would add latency and (for
- * hosted providers) cost, so the live probe is opt-in via `--probe`.
- * Crucially, when the probe has NOT run this row says so explicitly rather
- * than reporting a green it did not earn — "not verified" and "verified
- * working" must never look the same.
- */
-async function inspectLlmProbe(
-  capabilities: Capabilities,
-  probeCapabilities: boolean,
-  probeProviderImpl: typeof probeProvider,
-): Promise<DoctorCheck> {
-  const llm = capabilities.llm;
-  if (!llm) {
-    return createInfo(
-      'llm_probe',
-      'LLM reachable',
-      'No LLM configured — Core Mode. Write-side features (lessons, auto-tag, dream) are off by design.',
-    );
-  }
-  if (!probeCapabilities) {
-    return createInfo(
-      'llm_probe',
-      'LLM reachable',
-      `NOT VERIFIED. Config names ${llm.provider} (${llm.model ?? 'default'}), but no live call was made — an expired key or an unreachable host would look identical to a healthy setup here.`,
-      'Run: memesh doctor --probe   (makes one small live call to confirm)',
-    );
-  }
-  try {
-    const result = await probeProviderImpl(llm.provider, llm.apiKey);
-    if (result.valid) {
-      return createCheck('llm_probe', 'LLM reachable', 'pass', `${llm.provider} answered a live probe.`);
-    }
-    return createCheck(
-      'llm_probe',
-      'LLM reachable',
-      'fail',
-      `${llm.provider} is configured but did not answer: ${result.error ?? 'unknown error'}. Every LLM-backed feature is silently doing nothing.`,
-      'Check the API key / host, then re-run: memesh doctor --probe',
-      { code: 'llm.unreachable', params: { provider: llm.provider, detail: result.error ?? 'unknown error' } },
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return createCheck(
-      'llm_probe',
-      'LLM reachable',
-      'fail',
-      `${llm.provider} probe threw: ${msg}. Every LLM-backed feature is silently doing nothing.`,
-      'Check the API key / host, then re-run: memesh doctor --probe',
-      { code: 'llm.threw', params: { provider: llm.provider, detail: msg } },
-    );
-  }
-}
-
 function summarizeOverallStatus(checks: DoctorCheck[]): DoctorOverallStatus {
   // Informational rows describe state and cannot fail — counting them would
   // pad the verdict with rows that verified nothing. See DoctorCheck.informational.
@@ -3146,7 +3080,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     probeHttp = false,
     probeCapabilities = false,
     embedTextImpl = embedText,
-    probeProviderImpl = probeProvider,
     httpBaseUrl = 'http://127.0.0.1:3737',
     platform = process.platform,
     envImpl = process.env,
@@ -3553,8 +3486,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
 
     // Has an AI-backed feature quietly stopped working? See
     // inspectLlmTelemetryHealth's own doc for the window/threshold and the
-    // measurements behind them. Zero cost (a local read), so unlike
-    // inspectLlmProbe below this runs unconditionally, not behind --probe.
+    // measurements behind them. Zero cost (a local read), so this runs
+    // unconditionally, not behind --probe.
     const llmTelemetryHealth = inspectLlmTelemetryHealth(db as unknown as MemeshDatabase);
     if (llmTelemetryHealth) dbChecks.push(llmTelemetryHealth);
   } catch (err) {
@@ -3746,7 +3679,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   }
 
   checks.push(await inspectEmbeddingProbe(capabilities, probeCapabilities, embedTextImpl));
-  checks.push(await inspectLlmProbe(capabilities, probeCapabilities, probeProviderImpl));
 
   checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport));
 

@@ -2205,7 +2205,7 @@ program
   .description('Verify local install health and show actionable fixes')
   .option('--json', 'Output machine-readable diagnostics as JSON')
   .option('--probe-http', 'Also probe the local HTTP server health endpoint')
-  .option('--probe', 'Make one small live call to the configured LLM to confirm it actually answers')
+  .option('--probe', 'Probe the configured embedding capability with one small live call')
   .option('--url <url>', 'Base URL for --probe-http', 'http://127.0.0.1:3737')
   .option('--fix', 'Apply the whitelisted fixes doctor prescribes (asks per fix; --yes skips asking)')
   .option('--yes', 'With --fix: apply without asking')
@@ -2274,8 +2274,8 @@ program
         // The verdict is a fresh doctor run, not trust in the fixes (the
         // inspectors are module-private, so re-run + diff beats an export
         // refactor). Probes are FORCED OFF here whatever the original flags
-        // said: no whitelisted fix can change what a live LLM/HTTP probe
-        // answers, and --probe --fix would otherwise pay the LLM call twice.
+        // said: no whitelisted fix can change what a live embedding/HTTP probe
+        // answers, and --probe --fix would otherwise run the embedding call twice.
         // The diff is scoped to fixable checks for the same reason — a
         // "probe: pass → skipped" flip would be noise from the re-run's own
         // flags, not a fix taking effect.

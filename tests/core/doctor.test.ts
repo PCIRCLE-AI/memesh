@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { formatDoctorReport, hoursSince, runDoctor as runDoctorImpl } from '../../src/core/doctor.js';
 import type { UpdateCheck } from '../../src/core/version-check.js';
 import type { Capabilities } from '../../src/core/config.js';
@@ -4159,6 +4159,28 @@ describe('doctor: embeddings probe', () => {
     expect(check.summary).toContain('401 invalid api key');
   });
 
+  it('warns when a probed embedder does not answer before the timeout', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    withMemeshDir();
+    vi.useFakeTimers();
+
+    try {
+      const pending = runDoctorImpl({
+        ...baseOptions(packageRoot, 'openai'),
+        probeCapabilities: true,
+        embedTextImpl: async () => await new Promise<Float32Array | null>(() => undefined),
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      const check = findProbe(await pending)!;
+      expect(check.status).toBe('warn');
+      expect(check.summary).toContain('no response within 15s');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('reports no-embedder as informational, not as a failure', async () => {
     const packageRoot = createPackageRoot();
     tempRoots.push(packageRoot);
@@ -4341,69 +4363,39 @@ describe('doctor rows that had no assertion', () => {
     });
   });
 
-  describe('llm_probe', () => {
-    it('says Core Mode when no LLM is configured, and cannot fail for it', async () => {
+  describe('configured LLM capability', () => {
+    it('never makes a chat-provider request or emits an llm probe row, even with --probe', async () => {
       const packageRoot = createPackageRoot();
       tempRoots.push(packageRoot);
       isolateMemeshDir();
 
-      const check = row(await runDoctorImpl(options(packageRoot)), 'llm_probe');
-      expect(check.informational, 'a row that verified nothing counted toward Overall').toBe(true);
-      expect(check.summary).toContain('Core Mode');
-    });
+      const originalFetch = globalThis.fetch;
+      let networkCalls = 0;
+      let embeddingCalls = 0;
+      globalThis.fetch = (async () => {
+        networkCalls++;
+        throw new Error('unexpected doctor provider request');
+      }) as typeof fetch;
 
-    it('says NOT VERIFIED — not "working" — when a provider is configured but unprobed', async () => {
-      // The whole point of the row: an expired key and a healthy setup must
-      // not read the same.
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-      let probes = 0;
+      try {
+        const result = await runDoctorImpl(options(packageRoot, {
+          probeCapabilities: true,
+          detectCapabilitiesImpl: () => caps({
+            llm: { provider: 'openai', model: 'gpt-4o-mini', apiKey: 'test-only-key' },
+            embeddings: 'openai',
+          }),
+          embedTextImpl: async () => {
+            embeddingCalls++;
+            return new Float32Array(1536);
+          },
+        }));
 
-      const check = row(await runDoctorImpl(options(packageRoot, {
-        detectCapabilitiesImpl: () => caps({ llm: { provider: 'anthropic', model: 'claude-3-5-haiku-latest' } }),
-        probeProviderImpl: async () => { probes++; return { valid: true }; },
-      })), 'llm_probe');
-
-      expect(probes, 'doctor made a live provider call without --probe').toBe(0);
-      expect(check.informational).toBe(true);
-      expect(check.summary).toContain('NOT VERIFIED');
-      expect(check.fix).toContain('--probe');
-    });
-
-    it('fails — and says features are silently doing nothing — when the probe is refused', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-
-      const check = row(await runDoctorImpl(options(packageRoot, {
-        probeCapabilities: true,
-        detectCapabilitiesImpl: () => caps({ llm: { provider: 'openai', model: 'gpt-4o-mini' } }),
-        probeProviderImpl: async () => ({ valid: false, error: 'invalid_api_key' }),
-      })), 'llm_probe');
-
-      expect(check.status).toBe('fail');
-      expect(check.code).toBe('llm.unreachable');
-      expect(check.summary).toContain('invalid_api_key');
-      expect(check.informational, 'a real failure must count toward Overall').toBeFalsy();
-    });
-
-    it('separates a probe that THREW from one that answered "no"', async () => {
-      // Two different fixes: a thrown error is usually a host/network fault,
-      // a refusal is usually the key. Collapsing them loses that.
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-
-      const check = row(await runDoctorImpl(options(packageRoot, {
-        probeCapabilities: true,
-        detectCapabilitiesImpl: () => caps({ llm: { provider: 'ollama', model: 'llama3' } }),
-        probeProviderImpl: async () => { throw new Error('ECONNREFUSED 127.0.0.1:11434'); },
-      })), 'llm_probe');
-
-      expect(check.status).toBe('fail');
-      expect(check.code).toBe('llm.threw');
-      expect(check.summary).toContain('ECONNREFUSED');
+        expect(embeddingCalls, '--probe stopped exercising the embedding capability').toBe(1);
+        expect(networkCalls, 'doctor made a chat-provider network request').toBe(0);
+        expect(result.checks.filter((check) => check.id === 'llm_probe')).toHaveLength(0);
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 
