@@ -11,6 +11,8 @@ import {
   projectTranscriptSlug,
   scanTranscripts,
   claudeProjectsDir,
+  MAX_TRANSCRIPT_CANDIDATES,
+  MAX_TRANSCRIPT_SCAN_BYTES,
   MAX_TRANSCRIPT_SOURCE_BYTES,
   recordedCwd,
 } from '../../src/core/transcript-source.js';
@@ -123,6 +125,32 @@ describe('work-package source boundary', () => {
     expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
   });
 
+  it.each(['prepare', 'submit', 'defer'] as const)('rejects a same-size in-place rewrite with restored mtime during %s', (action) => {
+    const original = 'Visible local evidence';
+    const changed = 'Foreign local evidence';
+    expect(Buffer.byteLength(changed)).toBe(Buffer.byteLength(original));
+    const file = writeSession(cwd, original);
+    const stableTime = new Date('2026-09-06T00:00:00.000Z');
+    fs.utimesSync(file, stableTime, stableTime);
+    const pkg = prepare().package as { id: string; ref: Extract<WorkPackageInput, { action: 'submit' }>['ref'] };
+    const realRead = fs.readSync;
+    let reads = 0;
+    vi.spyOn(fs, 'readSync').mockImplementation((...args) => {
+      if (++reads === 2) {
+        fs.writeFileSync(file, JSON.stringify({ cwd, type: 'user', message: { content: changed } }));
+        fs.utimesSync(file, stableTime, stableTime);
+      }
+      return realRead(...args);
+    });
+    const response = action === 'prepare' ? prepare() : executeWorkPackage(db, action === 'submit'
+      ? { action, package_id: pkg.id, ref: pkg.ref, result }
+      : { action, package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+    expect(reads).toBe(2);
+    expect(response).toMatchObject(action === 'prepare' ? { status: 'none_available' } : { status: 'error', error: 'stale_package' });
+    expect(JSON.stringify(response)).not.toContain(changed);
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
+  });
+
   it('redacts digest names and observations while hashing original source content', () => {
     const kg = new KnowledgeGraph(db);
     for (let i = 0; i < 5; i++) kg.createEntity(`commit-${i}-${secret}`, 'commit', {
@@ -209,6 +237,54 @@ describe('transcript-source discovery', () => {
     fs.symlinkSync(outside, path.join(dir, 'linked.jsonl'));
 
     expect(scanTranscripts({ cwd })).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not follow a project transcript directory symlink', () => {
+    const cwd = '/proj/symlinked-directory';
+    const outside = path.join(root, 'outside-directory');
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, 'outside.jsonl'), `${JSON.stringify({ cwd })}\n`);
+    fs.symlinkSync(outside, path.join(root, projectTranscriptSlug(cwd)), 'dir');
+
+    expect(scanTranscripts({ cwd })).toEqual([]);
+  });
+
+  it('accepts the exact candidate limit and fails closed at one candidate over it', () => {
+    const cwd = '/proj/candidate-limit';
+    for (let i = 0; i < MAX_TRANSCRIPT_CANDIDATES; i++) {
+      seedSession(cwd, `session-${String(i).padStart(4, '0')}`, 1, 0);
+    }
+    expect(scanTranscripts({ cwd })).toHaveLength(MAX_TRANSCRIPT_CANDIDATES);
+    seedSession(cwd, 'one-too-many', 1, 0);
+    expect(scanTranscripts({ cwd })).toEqual([]);
+  });
+
+  it('accepts the exact aggregate byte limit and fails closed at one byte over it', () => {
+    const cwd = '/proj/aggregate-limit';
+    const first = seedSession(cwd, 'first', 1, 0);
+    const second = seedSession(cwd, 'second', 1, 0);
+    fs.truncateSync(first, MAX_TRANSCRIPT_SOURCE_BYTES);
+    fs.truncateSync(second, MAX_TRANSCRIPT_SCAN_BYTES - MAX_TRANSCRIPT_SOURCE_BYTES);
+    expect(scanTranscripts({ cwd })).toHaveLength(2);
+
+    const third = seedSession(cwd, 'one-byte-over', 1, 0);
+    fs.truncateSync(third, 1);
+    expect(scanTranscripts({ cwd })).toEqual([]);
+  });
+
+  it('ignores old transcript bytes when applying the aggregate read limit', () => {
+    const cwd = '/proj/old-aggregate';
+    for (const name of ['a-old', 'b-old', 'c-old']) {
+      const file = seedSession(cwd, name, 1, 30);
+      fs.truncateSync(file, MAX_TRANSCRIPT_SOURCE_BYTES);
+      const old = new Date(Date.now() - 30 * 86400_000);
+      fs.utimesSync(file, old, old);
+    }
+    seedSession(cwd, 'z-recent', 1, 0);
+    const read = vi.spyOn(fs, 'readSync');
+
+    expect(scanTranscripts({ cwd, windowDays: 3 }).map(session => session.sessionId)).toEqual(['z-recent']);
+    expect(read).toHaveBeenCalledTimes(1);
   });
 
   it('rejects an oversized sparse transcript before allocating or parsing it', () => {

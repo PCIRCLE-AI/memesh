@@ -439,6 +439,10 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     ['cross-project scope', (frame: Record<string, unknown>) => ({ ...frame, project: 'project-b' })],
     ['cross-principal scope', (frame: Record<string, unknown>) => ({ ...frame, principal_id: 'principal-b' })],
     ['cross-session scope', (frame: Record<string, unknown>) => ({ ...frame, session_instance_id: 'session-b' })],
+    ['wrong connection', (frame: Record<string, unknown>) => ({ ...frame, connection_id: 'connection-b' })],
+    ['wrong generation', (frame: Record<string, unknown>) => ({ ...frame, generation: 999 })],
+    ['empty attempt id', (frame: Record<string, unknown>) => ({ ...frame, attempt_id: '' })],
+    ['empty delivery id', (frame: Record<string, unknown>) => ({ ...frame, delivery_id: '' })],
     ['missing untrusted marker', (frame: Record<string, unknown>) => {
       const { untrusted_payload: _removed, ...rest } = frame;
       return rest;
@@ -446,6 +450,38 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     ['cross-target envelope', (frame: Record<string, unknown>) => ({
       ...frame,
       envelope: { ...(frame.envelope as Record<string, unknown>), recipient: 'principal-b' },
+    })],
+    ['missing message id', (frame: Record<string, unknown>) => {
+      const envelope = { ...(frame.envelope as Record<string, unknown>) };
+      delete envelope.message_id;
+      return { ...frame, envelope };
+    }],
+    ['malformed message id', (frame: Record<string, unknown>) => ({
+      ...frame, envelope: { ...(frame.envelope as Record<string, unknown>), message_id: '' },
+    })],
+    ['empty sender host', (frame: Record<string, unknown>) => ({
+      ...frame, envelope: { ...(frame.envelope as Record<string, unknown>), sender_host: '' },
+    })],
+    ['missing payload', (frame: Record<string, unknown>) => {
+      const envelope = { ...(frame.envelope as Record<string, unknown>) };
+      delete envelope.payload;
+      return { ...frame, envelope };
+    }],
+    ['missing content type', (frame: Record<string, unknown>) => {
+      const envelope = { ...(frame.envelope as Record<string, unknown>) };
+      delete envelope.content_type;
+      return { ...frame, envelope };
+    }],
+    ['malformed content type', (frame: Record<string, unknown>) => ({
+      ...frame, envelope: { ...(frame.envelope as Record<string, unknown>), content_type: 'text/html' },
+    })],
+    ['missing privacy', (frame: Record<string, unknown>) => {
+      const envelope = { ...(frame.envelope as Record<string, unknown>) };
+      delete envelope.privacy;
+      return { ...frame, envelope };
+    }],
+    ['malformed privacy', (frame: Record<string, unknown>) => ({
+      ...frame, envelope: { ...(frame.envelope as Record<string, unknown>), privacy: 'public' },
     })],
   ] as const)('rejects and reconnects after a %s delivery frame', async (_name, mutate) => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rc-post-deliver-'));

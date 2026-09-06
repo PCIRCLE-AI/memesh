@@ -403,9 +403,10 @@ function parseStoredObject(raw: string, label: string): AgentJsonObject {
  * One transport-neutral dispatcher for the public message lifecycle.
  *
  * The Zod union owns conditional fields for MCP, HTTP, and CLI alike.  Host
- * provenance and receipt actors are derived at the trusted adapter boundary;
- * model-provided payload data cannot spoof them.  Read actions deliberately
- * do not write intake or acknowledgement receipts.
+ * Cooperative provenance context and receipt actors are supplied by the
+ * calling adapter rather than copied from message payload data. They describe
+ * the local transport path; they do not authenticate a human or model identity.
+ * Read actions deliberately do not write intake or acknowledgement receipts.
  */
 export async function executeAgentMessageAction(
   db: MemeshDatabase,
