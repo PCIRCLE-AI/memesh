@@ -74,6 +74,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { getProjectName } from '../../dist/core/paths.js';
 
 export const PROJECT = 'memesh-live-journey';
 export const DEFAULT_WAIT_MS = 300_000;
@@ -799,6 +800,7 @@ class Journey {
     this.keptForSafety = false;
     this.home = null;
     this.codexQueueLog = null;
+    this.project = PROJECT;
 
     // Judge the temporary root on REAL paths BEFORE creating anything: a
     // symlinked TMPDIR is exactly the case a resolve-only prefix test misses.
@@ -871,7 +873,7 @@ class Journey {
   }
 
   discover() {
-    return this.cliJson(['message', 'discover', '--project', PROJECT]);
+    return this.cliJson(['message', 'discover', '--project', this.project]);
   }
 
   async mcpDiscover(expected) {
@@ -885,7 +887,7 @@ class Journey {
       await Promise.all(clients.map((client, index) => client.connect(transports[index])));
       const results = await Promise.all(clients.map((client) => client.callTool({
         name: 'message',
-        arguments: { action: 'discover', project: PROJECT, limit: 50 },
+        arguments: { action: 'discover', project: this.project, limit: 50 },
       })));
       return results.map((result, index) => {
         if (result?.isError) throw new Error(`Packaged MCP discover client ${index + 1} returned an error.`);
@@ -903,7 +905,7 @@ class Journey {
   watch(recipient) {
     const outcome = this.cli([
       'message', 'watch',
-      '--project', PROJECT,
+      '--project', this.project,
       '--recipient', recipient,
       '--wait-ms', '0',
       '--limit', '50',
@@ -944,6 +946,7 @@ class Journey {
     if (identified.status !== 0) {
       throw new Error(`Could not identify the task-owned Codex workspace: ${identified.stderr.trim()}`);
     }
+    this.project = getProjectName(this.workspace);
     return this.workspace;
   }
 
@@ -1147,7 +1150,7 @@ fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record
     });
     return this.cli([
       'message', 'send',
-      '--project', PROJECT,
+      '--project', this.project,
       '--sender', 'memesh-live-journey-harness',
       '--recipient', recipient,
       '--target-kind', 'session',
@@ -1183,7 +1186,7 @@ fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record
     for (const event of this.watch(recipient).events) {
       if (!event.message_id || event.message_id === this.lastDurableMessageId) continue;
       const durable = this.cliJson([
-        'message', 'fetch', '--project', PROJECT, '--recipient', recipient,
+        'message', 'fetch', '--project', this.project, '--recipient', recipient,
         '--target-kind', 'session', '--message-id', event.message_id,
       ]);
       if (durable?.payload?.qa_sentinel === sentinel) {
@@ -1193,7 +1196,7 @@ fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record
     }
     if (!failedMessageId) throw new Error('The unavailable exact-session send was not durably fetchable by its sentinel.');
     const receipts = this.cliJson([
-      'message', 'receipts', '--project', PROJECT,
+      'message', 'receipts', '--project', this.project,
       '--recipient', recipient, '--message-id', failedMessageId,
     ]);
     assertNoHostOutcomeReceipts(receipts, { messageId: failedMessageId });
@@ -1454,7 +1457,7 @@ async function runCodexSessionAutoRegistration(journey) {
     15_000,
   );
   for (const card of cards) {
-    if (card.host_kind !== 'codex' || card.project !== PROJECT || card.principal_id !== `codex-thread-${card.session_id}`) {
+    if (card.host_kind !== 'codex' || card.project !== journey.project || card.principal_id !== `codex-thread-${card.session_id}`) {
       throw new Error(`Automatic Codex registration returned the wrong live card: ${JSON.stringify(card)}.`);
     }
   }
@@ -1497,7 +1500,7 @@ async function runCodexSessionAutoRegistration(journey) {
     journey.readCodexQueueInvocations(), sent,
   )) {
     const receipts = journey.cliJson([
-      'message', 'receipts', '--project', PROJECT,
+      'message', 'receipts', '--project', journey.project,
       '--recipient', message.sessionId, '--message-id', message.messageId,
     ]);
     const hostAccept = assertHostAcceptOnly(receipts, {
@@ -1589,7 +1592,7 @@ async function runClaude(journey, waitMs) {
 
   const setup = journey.cliJson([
     'agent', 'setup', 'claude',
-    '--project', PROJECT,
+    '--project', journey.project,
     '--principal', 'claude-live-journey',
     '--json',
   ]);
@@ -1669,7 +1672,7 @@ async function runClaude(journey, waitMs) {
     + 'the channel took the frame, not that the model saw it (this is exactly the print-mode failure of issue #275).',
     () => findIntakeReceipt(journey.cliJson([
       'message', 'receipts',
-      '--project', PROJECT,
+      '--project', journey.project,
       '--recipient', card.session_id,
       '--message-id', sent.messageId,
     ]), { messageId: sent.messageId, actor: card.session_id }),
@@ -1768,7 +1771,7 @@ async function main() {
       dist_stale: distStale,
       host: options.host,
       mode: options.mode,
-      project: PROJECT,
+      project: journey.project,
       started_at: startedAt,
       finished_at: new Date().toISOString(),
       verdict: failureText === null ? 'PASS' : 'FAIL',
