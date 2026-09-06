@@ -4,7 +4,6 @@ export type SqlOutputValue = import('node:sqlite').SQLOutputValue;
 export type SqlInputValue = import('node:sqlite').SQLInputValue;
 export interface OpenOptions {
     readOnly?: boolean;
-    allowExtension?: boolean;
 }
 export interface TransactionFunction<A extends unknown[], R> {
     (...args: A): R;

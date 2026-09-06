@@ -343,6 +343,66 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     }
   });
 
+  it('rejects a delivery sent before registration completes without invoking host work', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-client-pre-register-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const server = net.createServer(socket => {
+      socket.once('data', () => {
+        socket.end(`${JSON.stringify(validDeliveryFrame('', 0))}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    fs.chmodSync(socketPath, 0o600);
+    const delivered = vi.fn(async () => ({ status: 'queued' }));
+    try {
+      await expect(connectRouterHost({
+        socket_path: socketPath,
+        auth_token: 'token',
+        identity: {
+          project: 'project-a', principal_id: 'principal-a',
+          session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+        },
+        deliver: delivered,
+        resilience: { initial_attempts: 1, start_router: vi.fn() },
+      })).rejects.toMatchObject({ code: 'invalid_response' });
+      expect(delivered).not.toHaveBeenCalled();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('rejects a JSON primitive router frame as a protocol error', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-client-json-primitive-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const server = net.createServer(socket => {
+      socket.once('data', () => socket.end('null\n'));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    fs.chmodSync(socketPath, 0o600);
+    try {
+      await expect(connectRouterHost({
+        socket_path: socketPath,
+        auth_token: 'token',
+        identity: {
+          project: 'project-a', principal_id: 'principal-a',
+          session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+        },
+        deliver: async () => ({ status: 'queued' }),
+        resilience: { initial_attempts: 1, start_router: vi.fn() },
+      })).rejects.toMatchObject({ code: 'invalid_response' });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it('reconnects instead of accepting a wrong-version supersession frame', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rc-post-version-'));
     fs.chmodSync(tempDir, 0o700);

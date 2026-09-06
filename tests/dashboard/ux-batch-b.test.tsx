@@ -27,7 +27,6 @@ import { t, getLocale } from '../../dashboard/src/lib/i18n';
 import { MemoriesTab } from '../../dashboard/src/components/MemoriesTab';
 import { ProjectTab } from '../../dashboard/src/components/ProjectTab';
 import { GraphTab, capGraphEntities, GRAPH_NODE_CAP } from '../../dashboard/src/components/GraphTab';
-import { SettingsTab } from '../../dashboard/src/components/SettingsTab';
 import { InsightsTab } from '../../dashboard/src/components/InsightsTab';
 import { EmptyLibraryState } from '../../dashboard/src/components/EmptyLibraryState';
 
@@ -390,65 +389,6 @@ describe('ProjectTab empty states', () => {
   });
 });
 
-/* ── SettingsTab: re-test with the stored key + model visibility ─────────── */
-
-describe('SettingsTab stored-key re-test', () => {
-  function stubSettings(posts: Array<{ url: string; body: unknown }>) {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (method === 'POST' && url.includes('/v1/config/test')) {
-        posts.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
-        return jsonResponse({ success: true, data: { valid: true, models: [{ id: 'claude-x' }] } });
-      }
-      if (url.includes('/v1/config')) {
-        return jsonResponse({
-          success: true,
-          data: {
-            // Server masks a stored key as '***'.
-            config: { llm: { provider: 'anthropic', model: 'claude-x', apiKey: '***' } },
-            capabilities: { searchLevel: 1, embeddings: 'ollama', llm: { provider: 'anthropic', model: 'claude-x' } },
-          },
-        });
-      }
-      return jsonResponse({ success: true, data: {} });
-    });
-  }
-
-  it('enables Test with an empty field when a key is stored, and POSTs without apiKey', async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    stubSettings(posts);
-    const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
-
-    const testButton = await waitFor(() => {
-      const btn = [...container.querySelectorAll('button')]
-        .find((b) => b.textContent === t('settings.test')) as HTMLButtonElement | undefined;
-      if (!btn) throw new Error('Test button not rendered yet');
-      return btn;
-    });
-    // The dead end this fixes: empty field + stored key used to disable this.
-    expect(testButton.disabled).toBe(false);
-    fireEvent.click(testButton);
-
-    await waitFor(() => {
-      expect(posts.length).toBeGreaterThan(0);
-    });
-    // Omitting apiKey is the contract: the server then falls back to the
-    // stored key. Sending '' would probe with a blank credential instead.
-    expect(posts[0].body).not.toHaveProperty('apiKey');
-    expect(posts[0].body).toMatchObject({ provider: 'anthropic' });
-  });
-
-  it('shows the configured model in the Capabilities card', async () => {
-    stubSettings([]);
-    const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
-    await waitFor(() => {
-      const stats = [...container.querySelectorAll('.stat-val')].map((n) => n.textContent);
-      expect(stats).toContain('claude-x');
-    });
-  });
-});
-
 /* ── InsightsTab: action failures are sentences, not exceptions ──────────── */
 
 describe('InsightsTab action failure routing', () => {
@@ -468,10 +408,17 @@ describe('InsightsTab action failure routing', () => {
           }],
         });
       }
-      return jsonResponse({ success: true, data: { capabilities: { llm: null } } });
+      return jsonResponse({ success: true, data: { status: 'applied' } });
     });
 
     const { container } = render(<InsightsTab />);
+    const detailBtn = await waitFor(() => {
+      const btn = [...container.querySelectorAll('button')]
+        .find((b) => b.textContent === t('insights.viewDetail')) as HTMLButtonElement | undefined;
+      if (!btn) throw new Error('detail button not rendered yet');
+      return btn;
+    });
+    fireEvent.click(detailBtn);
     const acceptBtn = await waitFor(() => {
       const btn = [...container.querySelectorAll('button')]
         .find((b) => b.textContent === t('insights.accept')) as HTMLButtonElement | undefined;
@@ -489,122 +436,6 @@ describe('InsightsTab action failure routing', () => {
     expect(container.textContent).not.toContain('Failed to fetch');
   });
 
-  it('surfaces provider-error skips from a successful Dream envelope', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (method === 'POST' && url.includes('/v1/dream/run')) {
-        return jsonResponse({
-          success: true,
-          data: {
-            proposalsCreated: 0,
-            llmCalls: 0,
-            skipped: [{ code: 'provider_error', reason: 'LLM call failed: OpenAI API error: 400' }],
-          },
-        });
-      }
-      if (url.includes('/v1/dream/proposals')) return jsonResponse({ success: true, data: [] });
-      return jsonResponse({ success: true, data: { capabilities: { llm: { provider: 'openai' } } } });
-    });
-
-    const { container } = render(<InsightsTab />);
-    const run = await waitFor(() => {
-      const button = [...container.querySelectorAll('button')]
-        .find((entry) => entry.textContent === t('insights.runDream')) as HTMLButtonElement | undefined;
-      if (!button) throw new Error('Dream button not rendered');
-      return button;
-    });
-    fireEvent.click(run);
-
-    await waitFor(() => {
-      const alert = container.querySelector('[role="alert"]');
-      expect(alert?.textContent).toContain('OpenAI API error: 400');
-      expect(alert?.textContent).toContain(t('insights.runProviderError', { error: '' }).split(':')[0]);
-    });
-  });
-
-  it('keeps zero proposals without provider errors as an honest no-result state', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (method === 'POST' && url.includes('/v1/dream/run')) {
-        return jsonResponse({
-          success: true,
-          data: { proposalsCreated: 0, llmCalls: 1, skipped: [{ reason: 'LLM returned NOOP' }] },
-        });
-      }
-      if (url.includes('/v1/dream/proposals')) return jsonResponse({ success: true, data: [] });
-      return jsonResponse({ success: true, data: { capabilities: { llm: { provider: 'openai' } } } });
-    });
-
-    const { container } = render(<InsightsTab />);
-    const run = await waitFor(() => {
-      const button = [...container.querySelectorAll('button')]
-        .find((entry) => entry.textContent === t('insights.runDream')) as HTMLButtonElement | undefined;
-      if (!button) throw new Error('Dream button not rendered');
-      return button;
-    });
-    fireEvent.click(run);
-
-    await waitFor(() => {
-      expect(container.querySelector('[role="alert"]')).toBeNull();
-      expect(container.querySelector('[role="status"]')?.textContent).toContain(t('insights.runNoResult'));
-    });
-  });
-
-  it('renders the proposal created by a compatible Dream run after success', async () => {
-    let dreamRan = false;
-    let proposalReads = 0;
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (method === 'POST' && url.includes('/v1/dream/run')) {
-        dreamRan = true;
-        return jsonResponse({
-          success: true,
-          data: { proposalsCreated: 1, llmCalls: 1, skipped: [] },
-        });
-      }
-      if (url.includes('/v1/dream/proposals')) {
-        proposalReads += 1;
-        return jsonResponse({
-          success: true,
-          data: dreamRan
-            ? [{
-                id: 42,
-                project: 'dashboard-e2e',
-                cluster_key: 'compatible-model',
-                source_count: 2,
-                digest_name: 'dashboard-e2e-dream-proposal',
-                digest_observations_preview: 'Created through the real Dream response path',
-                status: 'pending',
-                created_at: '2026-08-31 00:00:00',
-                kind: 'digest',
-              }]
-            : [],
-        });
-      }
-      return jsonResponse({ success: true, data: { capabilities: { llm: { provider: 'openai' } } } });
-    });
-
-    const { container } = render(<InsightsTab />);
-    const run = await waitFor(() => {
-      const button = [...container.querySelectorAll('button')]
-        .find((entry) => entry.textContent === t('insights.runDream')) as HTMLButtonElement | undefined;
-      if (!button) throw new Error('Dream button not rendered');
-      return button;
-    });
-    expect(container.textContent).not.toContain('dashboard-e2e-dream-proposal');
-
-    fireEvent.click(run);
-
-    await waitFor(() => {
-      expect(container.textContent).toContain('dashboard-e2e-dream-proposal');
-      expect(container.querySelector('[role="status"]')?.textContent)
-        .toContain(t('insights.runCreated', { count: 1 }));
-    });
-    expect(proposalReads).toBeGreaterThanOrEqual(2);
-  });
 });
 
 /* ── EmptyLibraryState: its own failure surface ──────────────────────────── */

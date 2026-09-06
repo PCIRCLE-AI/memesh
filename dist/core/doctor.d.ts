@@ -1,6 +1,5 @@
 import fs from 'fs';
-import { detectCapabilities, getConfigPath } from './config.js';
-import { probeProvider } from './llm-validator.js';
+import { getConfigPath } from './config.js';
 import { openDatabase, closeDatabase, isDatabaseOpen } from '../db.js';
 import { getUpdateCheck } from './version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from './install-channel.js';
@@ -25,15 +24,11 @@ interface DoctorOptions {
     packageRoot: string;
     packageVersion: string;
     probeHttp?: boolean;
-    probeCapabilities?: boolean;
-    embedTextImpl?: (text: string) => Promise<Float32Array | null>;
-    probeProviderImpl?: typeof probeProvider;
     httpBaseUrl?: string;
     platform?: NodeJS.Platform;
     openDatabaseImpl?: typeof openDatabase;
     closeDatabaseImpl?: typeof closeDatabase;
     isDatabaseOpenImpl?: typeof isDatabaseOpen;
-    detectCapabilitiesImpl?: typeof detectCapabilities;
     getConfigPathImpl?: typeof getConfigPath;
     getUpdateCheckImpl?: typeof getUpdateCheck;
     getCurrentInstallChannelImpl?: typeof getCurrentInstallChannel;

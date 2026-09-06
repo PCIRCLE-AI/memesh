@@ -69,17 +69,9 @@ describe('recall presentation: disclose what geometry cannot certify', () => {
     expect(typeof parsed.retrieval.truncated).toBe('boolean');
   });
 
-  it('a zero-hit says whether it was keyword-only, not one generic line either way (M-06)', () => {
-    // Dogfooded on the real v4.7.1 release: an install with no embedder
-    // configured and one with a fully working semantic supplement both
-    // printed the identical "No results found." on a miss — no way to
-    // tell "there might be something related this pass could not see"
-    // from "this really searched everything". `retrieval.mode` already
-    // carries the answer (asserted directly above); this pins that the
-    // TEXT output says so too. Adaptive to whichever mode this
-    // environment's embedder config actually produces, same as the
-    // semantic-only test above — the assertion is that the line matches
-    // reality, not that a specific mode occurred.
+  it('a zero-hit identifies the keyword index that was searched', () => {
+    // The current retrieval path is always FTS5. Pin both the structured
+    // provenance and the plain-language zero-hit message to that boundary.
     runCli(['remember', 'irrelevant content for this fixture', '--name', 'unrelated-entry', '--type', 'note']);
     const probe = runCli(['recall', 'zzznomatchzzz998877', '--json']);
     const parsed = JSON.parse(probe.stdout);

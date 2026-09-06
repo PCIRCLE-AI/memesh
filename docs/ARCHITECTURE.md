@@ -8,13 +8,13 @@
 
 ## Overview
 
-MeMesh is the local agentic-memory and governed-collaboration layer for individual AI coding agents, including Claude Code, Codex, Gemini, Cursor, and other MCP-compatible clients. It provides 12 MCP tools (`work_package`, `remember`, `recall`, `forget`, `export`, `import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, `message`) backed by SQLite with FTS5 full-text search and optional sqlite-vec vector embeddings. Memory, bounded discovery of live project registrations, and durable exact-recipient messaging are available through CLI, HTTP REST, and MCP; the one `work_package` tool prepares either a bounded calendar-selected `digest` package or a bounded `transcript` package from the newest project's visible conversation. An agent submits exactly one strict result or defers; submit stages the existing pending human-review proposal, and agents cannot apply or reject it. Packages contain neither hidden reasoning, raw transcripts, transcript paths, API keys nor LLM, embedding, or vector data; no provider is called. This single mechanism adds neither a relation kind nor a second API/UI review path. Package hashes identify freshness, not authentication. `improvement` stages proposals through MCP while the existing CLI/HTTP review surfaces retain human accept/reject authority. Generic briefing and SessionStart context has no recipient identity and stays quiet; `briefing(project, recipient)` reports only that exact recipient's unfetched deliveries and directs the caller to poll before fetching.
+MeMesh is the local agentic-memory and governed-collaboration layer for individual AI coding agents, including Claude Code, Codex, Gemini, Cursor, and other MCP-compatible clients. It provides 12 MCP tools (`work_package`, `remember`, `recall`, `forget`, `export`, `import`, `learn`, `task_state`, `briefing`, `user_patterns`, `improvement`, `message`) backed by SQLite and FTS5 full-text search. Memory, bounded discovery of live project registrations, and durable exact-recipient messaging are available through CLI, HTTP REST, and MCP. `work_package` prepares either one bounded calendar-selected digest package or one bounded package from the newest current-project session's visible conversation. An already-running agent submits exactly one strict result or defers; submit stages the existing pending human-review proposal, and agents cannot apply or reject it. Packages contain neither hidden reasoning, raw transcripts, transcript paths nor credentials, and no provider is called. The Dashboard only reviews proposals that are already staged; it cannot start or wake an agent. Package hashes identify freshness, not authentication. `improvement` stages proposals through MCP while the existing CLI/HTTP review surfaces retain human accept/reject authority. Generic briefing and SessionStart context has no recipient identity and stays quiet; `briefing(project, recipient)` reports only that exact recipient's unfetched deliveries and directs the caller to poll before fetching.
 
 The package is intentionally local-first and inspectable:
 - one SQLite database under the user's control
 - no cloud service required
 - Claude Code hook integration for session-start, pre-edit recall, user-prompt-intent detection, post-commit capture, session-summary learning, and pre-compact save
-- optional smarter retrieval and extraction when an LLM is configured
+- deterministic capture rules and local FTS5 retrieval with no provider setup
 
 This repository is the standalone local package. Hosted workspace and enterprise operating-system products are intentionally out of scope for this package architecture.
 
@@ -30,7 +30,7 @@ This repository is the standalone local package. Hosted workspace and enterprise
                              │
                      KnowledgeGraph
                              │
-                     SQLite (FTS5 + sqlite-vec)
+                     SQLite (FTS5)
 ```
 
 ## Package Entry Points
@@ -59,28 +59,19 @@ MeMesh separates concerns into two layers:
 - `operations.ts` — `remember`, `recall`, `forget`, `export`, `import` as pure functions called by all transports
 - `agent-messaging.ts` — transactional exact-recipient messages, opaque cursors, bounded waits, payload fetch, a 64 KiB JSON-encoded durable payload cap, and independent receipt facts
 - `agent-router.ts` — owner-private local routing from a durable message event to an eligible active host adapter, plus a bounded project-scoped directory of live registrations; native delivery carries one untrusted full envelope capped at 16 KiB, including routing metadata and payload
-- `config.ts` — config management + capability detection (incl. `llmFallbacks` chain); exports `logCapabilities()` for startup logging
+- `config.ts` — local config management; exports `logCapabilities()` for startup logging
 - `paths.ts` — centralised filesystem path resolution (HOME-first override; shared with hooks via a build-generated copy in `scripts/hooks/_generated/`)
 - `scoring.ts` — multi-factor scoring engine: weights search relevance, recency, frequency, confidence, recall-impact; exports `rankEntities()` used by all recall paths
-- `llm-client.ts` — single dispatch for anthropic / openai / ollama with cross-provider failover, error classification, and per-attempt telemetry callback
-- `ollama-host.ts` — one trust policy for configured Ollama hosts: persisted/request values stay loopback-only while operator `OLLAMA_HOST` remains the explicit remote override
-- `llm-telemetry.ts` — `llm_telemetry` SQLite table + `recordTelemetry()` + `summariseTelemetry()` + `pruneTelemetry()` retention
-- `dreamer.ts` — LLM cluster compactor + pattern detector with propose/accept/reject lifecycle; auto-trigger from Stop hook; also the entry point for the `--from-transcripts` transcript-mining source.
-  Clusters are formed from `entities_vec` embedding distance (L2 cut-off `0.55`, measured — see the constant), with the project a hard partition. Candidates with no vector are grouped by ISO week instead of being dropped, and a graph with no vectors at all falls back to week buckets entirely; `DreamerResult.clusteringMode` reports which rule was used, because a week bucket can mix unrelated work. `cluster_key` is a display label, not the grouping rule — a proposal is identified by its source ids.
-- `digest-validator.ts` — opt-in second-pass LLM cross-check on dreamer digests (`pass | soften | reject`)
-- `transcript-source.ts` — read-only discovery half of transcript mining: locates the session JSONL files Claude Code writes for a project and reports what is available to mine (no LLM, no writes); dropout-proof because it reads the files directly rather than relying on the capture hook having fired
-- `transcript-extractor.ts` — extraction half: reads a session's conversation, asks the LLM for the durable memories hidden in the prose, drops any candidate carrying a secret, vector-dedups against entities already in the graph, and stages the rest as `dream_proposals` for human `dream accept` (emits the `transcript_extractor` telemetry flow)
-- `kg-backfill.ts` — non-LLM heuristic relation backfill: 4 rules (tag co-occurrence, project clustering, session co-occurrence, name-token similarity)
+- `dreamer.ts` — work-package preparation plus the shared proposal list/detail/accept/reject lifecycle. Digest candidates use deterministic calendar buckets; transcript packages expose only bounded visible turns from a server-resolved current-project session. Submission stages one proposal and never applies it.
+- `kg-backfill.ts` — deterministic relation backfill: 4 rules (tag co-occurrence, project clustering, session co-occurrence, name-token similarity)
 - `project-tags.ts` — list / merge / rename `project:<name>` tags AND the `project` scope column of the durable-message tables, in one transaction (heals tags mis-homed before git-based project identity, and the split inboxes that go with them); backs `memesh kg rename-project`
 - `agent-scope-id.ts` — the canonical form (Unicode NFC + trim) and fail-closed validation for durable-message scope identifiers (`project`, `recipient`, `actor`), plus the one list of columns that hold them; imported by the transport boundary and core write path, and mirrored by the read-only `scripts/audit/memory-invariants.mjs` detector. Historical ambiguous identities are preserved until an owner supplies a mapping.
-- `prompt-safety.ts` — F7 prompt-injection hardening (delimiter escaping for 3 LLM call sites)
-- `failure-analyzer.ts` / `auto-tagger.ts` / `digest-validator.ts` — Smart-Mode LLM flows (all use `callLLM` failover + telemetry)
 - `version-check.ts` — npm registry version check for update notifications
 - `why.ts` — file attribution (`memesh why` / `POST /v1/why`): a git half (`resolveFileCommits`, CLI-only — the HTTP route never shells out) and a DB half (`explainCommits`) joining full SHAs to the abbreviated-hash `commit-*` entity names, walking `metadata.session_id` to session entities, and collecting `file:<basename>`-tagged memories; every gap is a typed abstention
 
 **Transports** (`src/transports/`) — thin adapters that expose core operations:
-- `cli/cli.ts` — Commander CLI (`memesh` command, 30 top-level commands; `message`, `agent`, `config`, `kg`, and `dream` have subcommands)
-- `http/server.ts` — Express REST API server (`memesh serve`, default port 3737, 37 endpoints, bearer-auth gate when bound non-loopback)
+- `cli/cli.ts` — Commander CLI (`memesh` command, 25 top-level commands; `message`, `agent`, `config`, `kg`, and `dream` have subcommands)
+- `http/server.ts` — Express REST API server (`memesh serve`, default port 3737, 32 endpoints, bearer-auth gate when bound non-loopback)
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that binds provenance at the transport boundary and never turns a read into a receipt
 - `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
 
@@ -96,32 +87,21 @@ src/
 │   ├── types.ts           # Shared types (zero external deps)
 │   ├── operations.ts      # remember/recall/forget/learn + re-exports export/import
 │   ├── serializer.ts      # Export/import memory snapshots (extracted from operations)
-│   ├── config.ts          # Config management + capability detection + logCapabilities()
+│   ├── config.ts          # Local config management + logCapabilities()
 │   ├── paths.ts           # Centralised path helpers (homeDir, memeshDir, getDbPath, getProjectName)
 │   ├── scoring.ts         # Multi-factor scoring engine (rankEntities) + SESSION_START_WEIGHT_RATIO
-│   ├── extractor.ts       # Session knowledge extraction (rule-based + LLM)
+│   ├── extractor.ts       # Deterministic session knowledge extraction
 │   ├── lifecycle.ts       # Auto-decay + weekly noise compression
-│   ├── failure-analyzer.ts # LLM-powered failure analysis → StructuredLesson
 │   ├── lesson-engine.ts   # Structured lesson creation, upsert, project query
-│   ├── embedder.ts        # Neural embeddings via Ollama (768-dim) / OpenAI (1536-dim); keyword-only FTS5 fallback when none configured
-│   ├── auto-tagger.ts     # LLM-powered auto-tag generation (fire-and-forget)
-│   ├── llm-client.ts      # Single dispatch for anthropic/openai/ollama + cross-provider failover + secret redaction
-│   ├── ollama-host.ts     # Shared configured-host trust policy for Ollama
-│   ├── llm-telemetry.ts   # llm_telemetry table + recordTelemetry + summariseTelemetry + pruneTelemetry
-│   ├── llm-validator.ts   # Provider+model capability detection (list models, byte-capped fetch)
-│   ├── prompt-safety.ts   # F7 prompt-injection hardening (sanitizeForPrompt for 3 call sites)
-│   ├── dreamer.ts         # LLM cluster compactor + pattern detector (propose/accept/reject); entry point for --from-transcripts
+│   ├── dreamer.ts         # Work-package prepare/submit + human proposal review lifecycle
 │   ├── product-improvements.ts # Idempotent evidence-linked proposals + status; human review remains in dreamer
-│   ├── digest-validator.ts # Opt-in second-pass LLM cross-check on dreamer digests
-│   ├── transcript-source.ts    # Read-only discovery: find a project's session JSONL to mine (no LLM, no writes)
-│   ├── transcript-extractor.ts # Mine conversational memory from a session → sanitise → vector-dedup → stage dream_proposals
 │   ├── kg-backfill.ts     # Heuristic relation backfill (tag co-occurrence + project clustering)
 │   ├── patterns.ts        # User work patterns computation (shared by MCP + HTTP)
 │   ├── doctor.ts          # `memesh doctor` health check (runtime / install / hooks / DB / capabilities)
 │   ├── demo.ts            # `memesh demo` 30-entity onboarding seed
 │   ├── memory-tool.ts     # Anthropic memory_20250818 adapter over the knowledge graph
 │   └── version-check.ts   # npm registry version check
-├── db.ts                  # SQLite + FTS5 + sqlite-vec + migrations
+├── db.ts                  # SQLite + FTS5 + migrations
 ├── knowledge-graph.ts     # Entity CRUD, relations, FTS5 search, findConflicts
 ├── index.ts               # Package exports
 ├── cli/
@@ -152,7 +132,7 @@ src/
 
 **operations.ts** — Pure functions implementing `remember`, `recall`, `forget`, `learn`, and others. All three transports delegate here — no transport-specific logic leaks into business logic.
 
-**config.ts** — Config management: reads `MEMESH_DB_PATH` and other environment variables, detects sqlite-vec availability, exposes a typed config object to transports and core functions. `logCapabilities()` logs detected search level and LLM provider to stderr on server startup (safe for MCP stdio transport). The on-disk config path is resolved lazily via `paths.ts:memeshDir()` so HOME-first override works in hermetic Windows tests.
+**config.ts** — Local config management. `logCapabilities()` reports non-secret runtime capabilities to stderr on server startup (safe for MCP stdio transport). The on-disk config path is resolved lazily via `paths.ts:memeshDir()` so HOME-first override works in hermetic Windows tests.
 
 **paths.ts** — Centralised filesystem path resolution. Exports `homeDir()` (HOME-env-first override for testability), `memeshDir()` (MEMESH_DIR > `<home>/.memesh`), `getDbPath()` (MEMESH_DB_PATH > `<memeshDir>/knowledge-graph.db`), `getMemeshDirFromDbPath()` (parent dir of active DB file, used for sibling state files), and `getProjectName(cwdInput?)`. Automatic project identity is `<readable repo label>~<32 hex>`: the suffix hashes a password-free remote locator when a network remote exists, otherwise the native real path of the primary Git root or non-Git directory. Standard GitHub HTTPS and `git@github.com` spellings converge; generic SSH locators retain the login, absolute-versus-home-relative path semantics, and literal `.git` suffix so distinct repositories do not collide. This keeps one repo stable across clones, subdirectories, symlinks, and linked worktrees while isolating unrelated same-basename repositories. Results are resolved once per cwd and cached. Replaces 10+ inline `process.env.MEMESH_DB_PATH ?? path.join(os.homedir(), …)` patterns that had subtly different fallbacks. Hooks run the always-on capture path even when `dist/` is absent or stale (plugin-marketplace `--ignore-scripts`; source pull before build), so they cannot import the main `dist/` tree at will. Because `paths.ts` and `src/storage/fts-index.ts` are runtime-leaf modules, `npm run build` copies their compiled output to `scripts/hooks/_generated/` (via `scripts/generate-hook-core.mjs`); `_shared.js` imports that committed, version-locked copy. This replaces the former hand-mirror (the source of the P0 FTS drift): the copy is byte-locked to core and gated three ways — a CI `git diff` on rebuild, `tests/hooks/mirror-parity.test.ts`, and the `memesh doctor` manifest.
 
@@ -160,9 +140,8 @@ src/
 
 Session-start hook ranking is a SQL-only subset (no FTS query, no impact pass) that uses three of the five factors. `SESSION_START_WEIGHT_RATIO` exports the renormalised weights so the hook's hard-coded SQL stays in sync; a drift-guard test in `tests/core/scoring.test.ts` asserts the magic numbers in `scripts/hooks/session-start.js` match. The hook SQL uses SQLite's `exp()`/`log()` (present in Node's bundled SQLite) to match the core math exactly, with a runtime probe + linear/rational fallback for stripped-down builds without `-DSQLITE_ENABLE_MATH_FUNCTIONS`.
 
-**(retired) query-expander.ts** — LLM-powered query expansion was removed in 2026-05 after LongMemEval-S Mode A (FTS5 + sqlite-vec, no LLM) measured well above the LLM-augmented alternative's expected ceiling. The figure quoted at the time (95.40%) came from the benchmark's own reimplementation of retrieval rather than from this code; measured through `recallEnhanced()` the same 500 questions now score 95.60% R@5 in 9.1s, within 1.0pp of vendor reranker stacks. The expander cost ~500-10000ms per recall for an estimated 1-2pp ceiling lift, decisively losing the UX axis given that recall is the hot path for hooks (`pre-edit-recall`, `session-start`) and MCP agent calls. Recall is now strictly LLM-free; LLM augmentation is reserved for the async/analysis flows below (failure-analyzer, auto-tagger, dreamer, digest-validator, llm-validator).
-
-**failure-analyzer.ts** — LLM-powered failure analysis (Level 1). `analyzeFailure()` takes session errors and files edited, sends them to the configured LLM, and returns a `StructuredLesson` with error, root cause, fix, prevention, error/fix patterns, and severity. Used by the Stop hook to automatically create lessons from session failures.
+Recall is intentionally one local FTS5 path. There is no provider, embedding,
+vector supplement, or model-powered query expansion to configure or diagnose.
 
 **lesson-engine.ts** — Structured lesson management. `createLesson()` stores a `StructuredLesson` as a `lesson_learned` entity with upsert-safe naming (`lesson-{project}-{errorPattern}`). Same error pattern in different sessions updates the existing lesson. `createExplicitLesson()` supports the `learn` MCP tool; an explicit lesson with no caller-supplied `errorPattern` is keyed on a human-readable prefix plus a short digest of its complete normalised error (`lesson-{project}-{readable-prefix}-{digest}`), so lessons that share their first eight significant words still remain distinct while a resubmitted lesson appends — the seven-value `inferErrorPattern()` set is a coarse classifier, and keying explicit lessons on it fused everything outside those categories into one `-other` bucket per project. `findProjectLessons()` queries lessons for proactive warnings.
 
@@ -199,7 +178,7 @@ CRUD operations and full-text search over the entity graph.
 - `getRelations(entityName)` -- All outgoing relations for an entity
 
 **Search**:
-- `search(query?, opts?)` -- FTS5 MATCH query with optional tag filtering; tracks access on returned entities (access only — `recall_hits`/`recall_misses` belong to the Stop hook, the one place that can tell whether an injected memory was USED). With `includeArchived`, archived rows are matched by `LIKE` on the same terms, since `archiveEntity()` removes them from FTS5. Query terms are OR-ed (a bare space is FTS5's implicit AND, which required every word of a question to appear in one memory) and rows are ordered by FTS5 `rank` (BM25) with `e.id DESC` as the tiebreaker — `LIMIT` decides what survives to the scorer, so ordering by id alone discarded the best match before it could be scored, and leaving equal-ranked rows unordered made the same query return different sets on different runs. A non-empty query whose terms all tokenise away (`"???"`, a lone emoji) now returns `[]` rather than the recent list, on the vector-supplement path as well as the keyword one. Terms are capped at `MAX_QUERY_TERMS` (32) so a pasted log dump cannot build an unbounded disjunction, and `dropUbiquitousTerms()` removes any term present in more than half the corpus — those are the terms BM25 already scores near zero, and OR-ing them makes the scan proportional to the whole index (measured 80.15ms → 8.57ms at 100k rows, with R@5 unchanged). Document frequency comes from `fts_vocab`, an `fts5vocab` view over `entities_fts`; the guard stays out below 25 rows, where document frequency has no meaning, and falls back to the full term list if the view is absent. `buildMatchExpression()` splits on the boundaries `unicode61` itself uses — `[\p{L}\p{N}\p{M}]+` over an NFC-normalised query — rather than on whitespace, so `kitchen's` does not become the phrase `kitchen s` and decomposed text stays whole. Before splitting, both the query and the indexed text pass through `segmentUnspacedScripts()` (`src/storage/fts-index.ts`), which cuts runs of any spaceless script — CJK ideographs (including Extension A and, above the BMP, Extension B), kana, half-width katakana, hangul, Thai, Lao and Khmer — into overlapping character bigrams: `unicode61` indexes an unbroken run as a single token, so a Chinese memory used to be reachable only by its exact stored string. The list is by writing system, not by language reported: an earlier version covered only CJK, kana and hangul and left Thai, Lao, Khmer, half-width katakana and Extension B with the identical defect. Bigrams are built over code points, not UTF-16 code units, so a boundary between a BMP and a non-BMP character still produces a real token instead of a split surrogate pair. Index side and query side must use that same function — `tests/cjk-recall.test.ts` pins it. A lone unspaced-script character becomes a prefix query, which reaches every bigram starting with it. The optional tag filter is an `EXISTS` subquery rather than a join, so one statement serves every filter combination without `SELECT DISTINCT`.
+- `search(query?, opts?)` -- FTS5 MATCH query with optional tag filtering; tracks access on returned entities. With `includeArchived`, archived rows are matched by `LIKE` because `archiveEntity()` removes them from FTS5. Query terms are OR-ed and rows are ordered by BM25 rank before multi-factor scoring. Terms are bounded and ubiquitous terms are removed on larger corpora. Both indexed text and queries use the same NFC normalisation and unspaced-script segmentation, so CJK, kana, hangul, Thai, Lao and Khmer remain searchable without a second retrieval path.
 - `listRecent(limit?)` -- Most recent entities by ID
 - `findConflicts(entityNames[])` -- Returns conflict descriptions for any `contradicts` relations among the given entity names; surfaced as warnings by all three transports
 
@@ -235,7 +214,8 @@ Express server exposed via `memesh serve` (default port 3737; the endpoint count
 
 ### transports/cli/cli.ts -- CLI
 
-Commander-based CLI exposed via the `memesh` binary. It registers the 30 top-level commands catalogued in the module list above; `scripts/check-doc-claims.mjs` derives and verifies that count from `cli.ts`.
+Commander-based CLI exposed via the `memesh` binary. The public command list is
+derived from `cli.ts` and checked by `scripts/check-doc-claims.mjs`.
 
 ### dashboard/ -- Packaged Dashboard SPA
 
@@ -243,17 +223,17 @@ The primary dashboard is now the packaged Preact single-page app served by `GET 
 
 - packaged with the npm artifact under `dashboard/dist/`
 - preferred over the legacy HTML generator path
-- used for live local inspection and settings/config flows
+- used for live local inspection, proposal review, update preferences, and UI locale
 
 **Dashboard tabs**:
 
 | Tab | Feature |
 |-----|---------|
-| Home | Dreamer insights (weekly recaps, pattern proposals, accept/reject) leading; the analytics stack — health score, 30-day timeline, **MemoryAgeMatrix** (type × age heat map), **KnowledgeRadar** (6-axis SVG), work patterns — folded into a lazy expander that defers its fetches until first opened |
+| Home | Local memory status plus staged work-package review; the analytics stack — health score, 30-day timeline, **MemoryAgeMatrix** (type × age heat map), **KnowledgeRadar** (6-axis SVG), work patterns — remains read-only |
 | Memories | The whole library behind one surface: instant client filter + Enter for server-ranked recall, work-layer / evidence / all / archived scope chips (`layerOf()` over the shared `WORK_LAYER_TYPES` whitelist), cluster composition bar, per-row expandable detail (structured lesson bodies via `LessonCards`), inline archive/restore |
 | Project | One project's roadmap (phases, milestones, key lessons) behind a project selector |
 | Graph | Interactive knowledge graph with **signal-first node loading**, **access_count node sizing**, and **Drift Mode** (recency coloring) |
-| Settings | LLM provider setup, capabilities, and language selection |
+| Settings | Package update preferences and browser-local interface locale |
 
 The dashboard is a client of the ordinary HTTP API — no private endpoints — so the endpoint list lives in exactly one place: the route table in [API_REFERENCE.md](api/API_REFERENCE.md#http-rest-api), which `scripts/check-doc-claims.mjs` checks against `server.ts`'s registrations. A copy of it used to sit here and had already rotted: it named seven endpoints and missed `/v1/graph/evidence` and `/v1/projects`, both of which the dashboard calls. A second list nothing gates is a list that goes quietly wrong. When the packaged build is unavailable, the HTTP server falls back to the legacy `cli/view-live.ts` HTML generator for compatibility.
 
@@ -309,28 +289,28 @@ Tool call: recall({query, tag, limit})
   -> Zod validation (RecallSchema)
   -> recallEnhanced() in core/operations
      -> KnowledgeGraph.search() — FTS5 keyword match
-     -> supplementWithVectors() — sqlite-vec embedding similarity merge
      -> rankEntities() applies multi-factor scoring (relevance, recency, frequency, confidence, impact)
      -> KnowledgeGraph.findConflicts() checks for contradicts relations among results
   -> If conflicts: return {entities, conflicts}; else return Entity[]
 ```
 
-### Mine memory from transcripts (`dream run --from-transcripts`)
+### Prepare agent-assisted memory (`work_package`)
 
 ```
-memesh dream run --from-transcripts   (current project only)
-  -> transcript-source.ts: locate this project's session JSONL files (read-only)
-     -> --dry-run stops here: list sessions + conversation-turn counts, no LLM
-  -> transcript-extractor.ts: read a session's conversation (user + assistant text)
-     -> ask the LLM for the durable, high-value memories (time-ordered:
-        a claim later reversed in the same session is not recorded)
-     -> sanitise every candidate; drop any candidate carrying a detected secret
-     -> embed each survivor and vector-dedup against entities already in the
-        graph (same index recall uses); report — never silently drop — skips
-     -> stage the rest as dream_proposals (nothing enters the graph yet)
+Agent calls work_package.prepare(project, kind)
+  -> digest: select one bounded deterministic calendar cluster
+  -> transcript: select bounded visible user/assistant turns from the newest
+     server-resolved current-project session
+  -> agent submits one strict result bound to package_id + ref, or defers
+  -> submit stages one pending proposal (nothing enters the graph yet)
   -> human review: memesh dream show <id> / accept <id> / reject <id>
-     -> accept creates the entity AND embeds it, so the next run recognises it
+     -> Dashboard exposes the same list/detail/accept/reject surface
 ```
+
+The interactive suggestion belongs to an already-running host session. Where
+the host supports choices, it may offer **Dispatch agent task**, **Later**, or
+**Don't suggest again**. The Dashboard cannot wake or dispatch an agent; it
+only reviews proposals that are already staged.
 
 ### Delete knowledge (forget)
 
@@ -424,7 +404,7 @@ Hooks are defined in `hooks/hooks.json` and executed by Claude Code at specific 
 
 - **Trigger**: `Stop` event (when Claude finishes responding)
 - **Matcher**: `*` (all sessions)
-- **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) and stores it as entities in the knowledge graph. When LLM is configured (Level 1), additionally runs failure analysis to create structured `lesson_learned` entities from session errors. Also reads `~/.memesh/last-session-injected.json` to track recall effectiveness — updates `recall_hits` (entity name found in transcript) or `recall_misses` (not found). Opt-out via `MEMESH_AUTO_CAPTURE=false`
+- **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) with deterministic rules and stores it as entities in the knowledge graph. It also reads `~/.memesh/last-session-injected.json` to track recall effectiveness — updates `recall_hits` (entity name found in transcript) or `recall_misses` (not found). Opt-out via `MEMESH_AUTO_CAPTURE=false`
 
 ### Pre-Compact (`scripts/hooks/pre-compact.js`)
 
@@ -468,7 +448,7 @@ MeMesh supports three integration tiers:
 | | Codex CLI / Gemini CLI | MCP server (`memesh-mcp` in client config) |
 | | Cursor | MCP server (`memesh-mcp` in client config) |
 | | Custom apps | Direct stdio MCP connection |
-| **HTTP API** | Custom apps/scripts | HTTP REST API (`memesh serve`, 37 endpoints) |
+| **HTTP API** | Custom apps/scripts | HTTP REST API (`memesh serve`, 32 endpoints) |
 
 See [docs/platforms/](../platforms/) for platform-specific integration guides.
 
@@ -508,17 +488,11 @@ For release safety, `npm run test:packaged` creates a real npm tarball, extracts
 - Floor: confidence never below 0.01
 - Never deletes — only affects search ranking
 
-### Consolidation — retired
-- The `consolidate` tool was removed. It deleted an entity's observations and
-  wrote an LLM summary in their place with no proposal and no review, ignored
-  pins, reset confidence to 1.0, and could leave an entity permanently empty
-  while reporting that nothing had happened
-- `dreamer` is the surviving compression path and the reviewed form of the same
-  idea: propose → accept/reject, sources archived not deleted, `source_ids`
-  kept, semantic types and pinned entities refused
-- Not a like-for-like replacement: `dreamer` merges *clusters* of episodic
-  entities into a digest. Compressing the observations *within* one named entity
-  has no reviewed equivalent today
+### Agent-assisted digest and transcript review
+- `work_package` prepares one bounded calendar digest or visible-turn transcript package.
+- The already-running agent may submit one strict result or defer without durable change.
+- Submission only stages a proposal. A human reviews full detail and accepts or rejects it through the existing CLI or Dashboard review surface.
+- The Dashboard does not prepare packages and cannot start or wake an agent.
 
 ### Smart Session-Start
 - Session-start hook loads top-N entities by weighted score
@@ -564,18 +538,17 @@ memesh import memesh-backup.json --merge skip
 
 ---
 
-## Self-Improving Memory (v3.1.0)
+## Rule-Guided Memory (v3.1.0)
 
-MeMesh automatically learns from session failures and proactively warns about known pitfalls.
+MeMesh captures structured session evidence with deterministic rules and warns about accepted lessons on later matching commands.
 
 ### Architecture
 
 ```
 Session with errors
   → Stop hook detects errors + files edited
-  → analyzeFailure() sends to LLM (Level 1 only)
-  → StructuredLesson { error, rootCause, fix, prevention, patterns }
-  → createLesson() stores as lesson_learned entity (upsert-safe naming)
+  → deterministic extraction records bounded session evidence
+  → an explicit `learn` call may store a reviewed structured lesson
   → Next session: session-start queries lessons → proactive warnings
 ```
 
@@ -583,9 +556,8 @@ Session with errors
 
 | Component | File | Purpose |
 |-----------|------|---------|
-| Failure Analyzer | `src/core/failure-analyzer.ts` | LLM-powered root cause analysis |
 | Lesson Engine | `src/core/lesson-engine.ts` | Structured lesson CRUD + upsert dedup |
-| Stop Hook Integration | `scripts/hooks/session-summary.js` | Auto-triggers analysis after sessions |
+| Stop Hook Integration | `scripts/hooks/session-summary.js` | Captures bounded session evidence with deterministic rules |
 | Proactive Warnings | `scripts/hooks/session-start.js` | Shows known lessons at session start |
 | Learn Tool | All transports | Explicit lesson creation (MCP tool) |
 

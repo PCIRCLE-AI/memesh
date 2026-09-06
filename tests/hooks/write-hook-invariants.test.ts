@@ -72,8 +72,7 @@ describe('write-hook invariants (fake-working gates)', () => {
       const row = db.prepare('SELECT title, metadata FROM entities WHERE id = ?').get(res.id) as
         { title: string; metadata: string };
       expect(row.title).toBe('fix the flamingo renderer');
-      // Unmarked auto-titles become permanent — the LLM titling pass may only
-      // replace titles explicitly marked heuristic.
+      // Preserve the provenance distinction between derived and explicit titles.
       expect(JSON.parse(row.metadata).title_source).toBe('heuristic');
 
       // "flamingo" appears ONLY in the title.

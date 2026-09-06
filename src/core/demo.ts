@@ -47,15 +47,15 @@ const DEMO_DATA: DemoEntity[] = [
   // Phase 2 — Implementation (~21 days ago)
   { daysAgo: 22, name: 'feature-auth-flow', type: 'feature', observations: ['Email + password with TOTP fallback', 'Session cookies HttpOnly + Secure + SameSite=Lax'] },
   { daysAgo: 21, name: 'plan-billing-rollout', type: 'plan', observations: ['Plan: stripe-billing-rollout', 'Steps: webhook ingest, idempotent invoice processor, customer portal embed'] },
-  { daysAgo: 20, name: 'lesson-api-import-missing', type: 'lesson_learned', observations: ['Error: db.ts imported getEmbeddingDimension from embedder.ts; circular import', 'Root cause: function placed by domain not by dependency direction', 'Fix: moved getEmbeddingDimension to config.ts', 'Prevention: check for cycles before adding new imports'], tags: ['error-pattern:import-missing', 'severity:minor'] },
-  { daysAgo: 20, name: 'arch-storage-layer', type: 'architecture', observations: ['SQLite + sqlite-vec for memory storage', 'FTS5 virtual table for keyword recall'] },
+  { daysAgo: 20, name: 'lesson-api-import-missing', type: 'lesson_learned', observations: ['Error: a database module imported through the wrong dependency layer', 'Root cause: function placed by domain instead of dependency direction', 'Fix: moved the shared rule to the lower-level module', 'Prevention: check for cycles before adding new imports'], tags: ['error-pattern:import-missing', 'severity:minor'] },
+  { daysAgo: 20, name: 'arch-storage-layer', type: 'architecture', observations: ['SQLite stores the durable memory graph', 'FTS5 provides local full-text recall without a model provider'] },
   { daysAgo: 19, name: 'pattern-event-sourcing', type: 'technical_pattern', observations: ['Append-only event log with periodic snapshots', 'Replay rebuilds projections deterministically'] },
 
   // Phase 3 — Hardening (~14 days ago)
   { daysAgo: 14, name: 'lesson-billing-config-error', type: 'lesson_learned', observations: ['Error: billing webhook env var not propagated to staging', 'Root cause: secrets manager only synced production tier', 'Fix: extended sync to all tiers, added smoke check in CI', 'Prevention: env-var presence assertion at startup, fail fast'], tags: ['error-pattern:config-error', 'severity:major'] },
   { daysAgo: 13, name: 'bugfix-race-on-double-submit', type: 'bug_fix', observations: ['Symptom: double charges on slow networks', 'Cause: idempotency key derived after request body parse', 'Fix: derive key in middleware before any I/O'] },
-  { daysAgo: 13, name: 'decision-graceful-degradation', type: 'decision', observations: ['When LLM provider is down, fall back to FTS-only recall', 'No silent zero-result responses; surface "LLM unavailable" badge'] },
-  { daysAgo: 12, name: 'arch-recall-pipeline', type: 'architecture', observations: ['FTS5 → vector rerank → access-count boost → impact score', 'Each stage is opt-out via flags, not opt-in'] },
+  { daysAgo: 13, name: 'decision-graceful-degradation', type: 'decision', observations: ['Core recall must not depend on a model provider', 'Agent work packages stage optional suggestions for human review'] },
+  { daysAgo: 12, name: 'arch-recall-pipeline', type: 'architecture', observations: ['FTS5 match order → access-count boost → impact score', 'One authoritative retrieval path keeps provenance understandable'] },
   { daysAgo: 11, name: 'lesson-test-failure-flake', type: 'lesson_learned', observations: ['Error: integration tests passed locally, failed in CI 30% of the time', 'Root cause: tests shared a global temp dir cleared at suite end', 'Fix: per-test mkdtemp + per-test cleanup in afterEach', 'Prevention: assume parallelism; never share mutable state across tests'], tags: ['error-pattern:test-failure', 'severity:major'] },
 
   // Phase 4 — Optimization (~7 days ago)
@@ -175,10 +175,8 @@ export function seedDemo(
   if (opts.reset) {
     // Remove every entity carrying metadata.demo = true. We route the
     // delete through KnowledgeGraph.deleteEntity rather than a raw
-    // DELETE because the contentless FTS5 virtual table and the
-    // sqlite-vec table both keep their own row pointers — a bare
-    // DELETE FROM entities leaves orphaned index rows that surface
-    // later as phantom search hits.
+    // DELETE because the contentless FTS5 table keeps its own row pointers —
+    // a bare DELETE FROM entities leaves orphaned search rows.
     //
     // Wrap the per-entity deletes in a single transaction so a
     // mid-loop failure rolls back to a clean pre-reset state instead

@@ -69,8 +69,7 @@ describe('Feature: a failed open does not poison the process', () => {
       .prepare("SELECT value FROM memesh_metadata WHERE key = 'fts_segmentation_version'")
       .get() as { value: string } | undefined;
     expect(marker?.value, 'migrations did not run on the retry').toBeDefined();
-    // sqlite-vec is loaded by the same initialisation the first attempt aborted.
-    expect(() => db.prepare('SELECT count(*) FROM entities_vec').get()).not.toThrow();
+    expect(() => db.prepare('SELECT count(*) FROM entities_fts').get()).not.toThrow();
     // ...and it actually works.
     const kg = new KnowledgeGraph(db);
     kg.createEntity('after-retry', 'note', { observations: ['it works'] });

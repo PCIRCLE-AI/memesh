@@ -1,32 +1,27 @@
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useCallback, useState } from 'preact/hooks';
 import { InsightsTab } from './InsightsTab';
 import { AnalyticsTab } from './AnalyticsTab';
 import { MetricsRow } from './MetricsRow';
-import { api, type HealthData, type ReindexStatusData } from '../lib/api';
+import { type HealthData } from '../lib/api';
 import { t } from '../lib/i18n';
 
 type HomeDestination = 'Memories' | 'Settings';
-type NextActionKind = 'loading' | 'empty' | 'reindex' | 'insights' | 'llm' | 'healthy' | 'unavailable';
+type NextActionKind = 'loading' | 'empty' | 'insights' | 'healthy' | 'unavailable';
 
 interface InsightState {
   pendingCount: number;
-  llmConfigured: boolean | null;
   loading: boolean;
   failed: boolean;
 }
 
 export function chooseNextAction(
   entityCount: number | null,
-  reindex: ReindexStatusData | null | undefined,
   insights: InsightState,
 ): NextActionKind {
   if (entityCount === 0) return 'empty';
-  if (reindex === null || insights.failed) return 'unavailable';
-  if (reindex === undefined || insights.loading || insights.llmConfigured === null || entityCount === null) return 'loading';
-  if (reindex.pendingReindex !== null || reindex.missingVectors > 0
-    || reindex.status === 'failed' || reindex.status === 'retry-needed' || reindex.status === 'running') return 'reindex';
+  if (insights.failed) return 'unavailable';
+  if (insights.loading || entityCount === null) return 'loading';
   if (insights.pendingCount > 0) return 'insights';
-  if (!insights.llmConfigured) return 'llm';
   return 'healthy';
 }
 
@@ -40,10 +35,9 @@ function NextBestAction({
   onReviewInsights: () => void;
 }) {
   const action = kind === 'empty' ? () => onNavigate('Memories')
-    : kind === 'reindex' || kind === 'llm' ? () => onNavigate('Settings')
-      : kind === 'insights' ? onReviewInsights
-        : kind === 'unavailable' ? () => window.location.reload()
-          : null;
+    : kind === 'insights' ? onReviewInsights
+      : kind === 'unavailable' ? () => window.location.reload()
+        : null;
 
   return (
     <section class="card" aria-labelledby="home-next-action-title" style={{ padding: 16, marginBottom: 12 }}>
@@ -87,21 +81,7 @@ export function HomeTab({
 }) {
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [analyticsVisited, setAnalyticsVisited] = useState(false);
-  const [reindex, setReindex] = useState<ReindexStatusData | null | undefined>(undefined);
-  const [insights, setInsights] = useState<InsightState>({ pendingCount: 0, llmConfigured: null, loading: true, failed: false });
-
-  useEffect(() => {
-    let cancelled = false;
-    setReindex(undefined);
-    api<ReindexStatusData>('GET', '/v1/reindex')
-      .then((status) => { if (!cancelled) setReindex(status); })
-      .catch((error) => {
-        if (cancelled) return;
-        console.warn('[memesh dashboard] /v1/reindex failed to load:', error);
-        setReindex(null);
-      });
-    return () => { cancelled = true; };
-  }, [dataRevision]);
+  const [insights, setInsights] = useState<InsightState>({ pendingCount: 0, loading: true, failed: false });
 
   const updateInsights = useCallback((next: InsightState) => setInsights(next), []);
   const reviewInsights = useCallback(() => {
@@ -110,7 +90,7 @@ export function HomeTab({
     target?.focus({ preventScroll: true });
   }, []);
 
-  const nextAction = chooseNextAction(health?.entity_count ?? null, reindex, insights);
+  const nextAction = chooseNextAction(health?.entity_count ?? null, insights);
 
   function toggleAnalytics() {
     const next = !analyticsOpen;

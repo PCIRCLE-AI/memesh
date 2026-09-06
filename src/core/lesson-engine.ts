@@ -1,66 +1,7 @@
-import type { StructuredLesson } from './failure-analyzer.js';
 import { remember } from './operations.js';
 import type { LessonSeverity } from './types.js';
 import { getDatabase } from '../db.js';
-import { KnowledgeGraph } from '../knowledge-graph.js';
 import { lessonSlug } from './lesson-slug.js';
-
-/**
- * Create or update a structured lesson entity.
- * Uses lesson-{project}-{errorPattern} naming for upsert dedup.
- * Same error pattern = same entity = observations appended (not duplicated).
- *
- * SECURITY: this path runs from session-summary.js → analyzeFailure (LLM
- * paraphrasing of error text from a session transcript). The transcript
- * may contain attacker-controlled content (e.g. a malicious dependency
- * printing prompt-injection text in its error output). The resulting
- * lesson is therefore marked `trust: 'untrusted'` so
- * `isTrustedForAutoContext()` filters it out of session-start auto-context
- * injection. The lesson still lives in the DB and is searchable via
- * explicit `recall`, but it does NOT get surfaced as proactive guidance
- * unless a maintainer reviews it.
- */
-export function createLesson(
-  lesson: StructuredLesson,
-  projectName: string
-): { name: string; isNew: boolean } {
-  const name = `lesson-${projectName}-${lesson.errorPattern}`;
-
-  // Check existence BEFORE remember() so we can reliably detect new vs upsert.
-  //
-  // By NAME, not by recall. This used to be `recall({ query: name, limit: 1
-  // })` — a fuzzy search, to answer a question about an exact key. It cost
-  // three things: it matched some OTHER memory whenever the lesson did not
-  // exist yet (the `existing[0].name !== name` clause below is the evidence
-  // that its author knew), it ran the whole ranking stack for one lookup,
-  // and — because a search counts as a use — it bumped `access_count` and
-  // stamped `last_accessed_at` on that unrelated memory. Every LLM-generated
-  // lesson therefore manufactured one "memory reused this week", which is
-  // the dashboard's headline number.
-  const isNew = new KnowledgeGraph(getDatabase()).getEntity(name) === null;
-
-  remember({
-    name,
-    type: 'lesson_learned',
-    observations: [
-      `Error: ${lesson.error}`,
-      `Root cause: ${lesson.rootCause}`,
-      `Fix: ${lesson.fix}`,
-      `Prevention: ${lesson.prevention}`,
-    ],
-    tags: [
-      `project:${projectName}`,
-      `error-pattern:${lesson.errorPattern}`,
-      `fix-pattern:${lesson.fixPattern}`,
-      `severity:${lesson.severity}`,
-      'source:auto-learned',
-    ],
-    trustOverride: 'untrusted',
-    provenanceOverride: { source: 'auto-learned' },
-  });
-
-  return { name, isNew };
-}
 
 /**
  * Create a lesson from explicit user input (for the learn tool).
@@ -81,8 +22,8 @@ export function createExplicitLesson(
   const errorPattern = opts?.errorPattern || inferErrorPattern(error);
   // Keyed on the lesson's own content, not on the seven-value error enum.
   //
-  // `lesson-${project}-${errorPattern}` is the right key for an LLM-derived
-  // lesson from a RECURRING runtime error: same pattern, same entity, the
+  // `lesson-${project}-${errorPattern}` is the right key for a
+  // recurring runtime error: same pattern, same entity, the
   // observations accumulate. It is the wrong key for an explicit lesson,
   // where the categories are all code-level runtime errors and anything about
   // test design, a security boundary, or a process falls into `other` — one
@@ -91,10 +32,9 @@ export function createExplicitLesson(
   // times and matched 3. Re-submitting the SAME error text still lands on the
   // same slug, so the append/dedupe contract for a repeated lesson holds.
   //
-  // A caller that passes an explicit `errorPattern` is the recurring-error
-  // path (dreamer / failure-analyzer), where "same pattern = same entity" is
-  // the contract and confidence-reset-on-reconfirm depends on the key being
-  // stable. Only the unkeyed explicit `learn` gets the content slug.
+  // A caller that passes an explicit `errorPattern` deliberately requests a
+  // stable recurring-error key. Only the unkeyed explicit `learn` gets the
+  // content-derived slug.
   const name = opts?.errorPattern
     ? `lesson-${projectName}-${errorPattern}`
     : `lesson-${projectName}-${lessonSlug(error)}`;

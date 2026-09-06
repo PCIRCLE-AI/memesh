@@ -74,7 +74,7 @@ export function impactScore(recallHits: number, recallMisses: number): number {
 
 /**
  * Score a single entity.
- * searchRelevanceValue is provided by the search engine (FTS5 rank or vector distance).
+ * searchRelevanceValue is provided by the FTS5 search engine.
  */
 export function scoreEntity(
   entity: { access_count?: number; last_accessed_at?: string; confidence?: number; recall_hits?: number; recall_misses?: number },

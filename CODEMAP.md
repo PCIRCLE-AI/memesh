@@ -35,7 +35,7 @@ listed below.
 ```
 src/
 ├── core/            # framework-agnostic business logic (zero transport deps)
-├── db.ts            # SQLite + FTS5 + sqlite-vec + migrations + auto-decay
+├── db.ts            # SQLite + FTS5 + migrations + auto-decay
 ├── knowledge-graph.ts  # Entity CRUD, relations, FTS5 search, access tracking
 ├── storage/         # conflicts.ts (detection) + fts-index.ts (contentless-FTS5 primitives)
 ├── transports/      # cli/ · http/ · mcp/ (+ schemas.ts = shared Zod validation)
@@ -54,33 +54,21 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 
 ## Feature → file index
 
-### Recall / search (the LLM-free hot path)
+### Recall / search
 - Ranking / scoring weights → `src/core/scoring.ts` (`rankEntities`)
-- FTS5 + sqlite-vec query, access tracking → `src/knowledge-graph.ts`
+- FTS5 query + access tracking → `src/knowledge-graph.ts`
 - Recall operation (cross_project / namespace / include_archived) → `src/core/operations.ts` (`recallEnhanced`)
-- Vector index / embedding dimension / migration → `src/db.ts`, `src/core/embedder.ts`
 
 ### Write flows (remember / forget / learn / pin)
 - remember / forget / learn / **setPinned** → `src/core/operations.ts`
-- Structured lessons → `src/core/lesson-engine.ts`, `src/core/failure-analyzer.ts`
-- Auto-tagging (LLM) → `src/core/auto-tagger.ts`
+- Structured lessons → `src/core/lesson-engine.ts`
+- Hook capture and classification → deterministic rules in `scripts/hooks/`
 
-### Embeddings
-- Provider dispatch (Ollama / OpenAI) + graceful keyword-only fallback → `src/core/embedder.ts`
-- No local model: semantic search needs Ollama (nomic-embed-text, 768-dim) or OpenAI (1536-dim); with none, recall is FTS5 keyword-only
-
-### LLM (write-side Smart Mode only — never on the recall hot path)
-- Single dispatch + cross-provider failover + secret redaction → `src/core/llm-client.ts`
-- Fallback chain (`llmFallbacks`): ordered providers tried when the primary is down → defined in `src/core/config.ts`, consumed by `src/core/llm-client.ts`
-- Per-attempt telemetry (`by_model` / `by_project` / `sample_errors`) → `src/core/llm-telemetry.ts`
-- Provider/model capability probe → `src/core/llm-validator.ts`
-- Prompt-injection hardening → `src/core/prompt-safety.ts`
-
-### Dream (LLM cluster compaction + pattern detection)
-- Compactor + pattern detector (propose/accept/reject) → `src/core/dreamer.ts`
-- Transcript mining (`dream run --from-transcripts`): find a project's session JSONL → mine conversational memory → sanitise → vector-dedup → stage proposals → `src/core/transcript-source.ts` + `src/core/transcript-extractor.ts`
-- `metadata.pin === true` protection is honored here (set via `memesh pin`)
-- Second-pass digest cross-check → `src/core/digest-validator.ts`
+### Agent-assisted work packages + human review
+- Calendar-cluster or visible-transcript package preparation and strict submission → `src/core/dreamer.ts` (`workPackage`)
+- Package input is bounded, redacted, and treated as untrusted; submission stages one proposal rather than applying it
+- Proposal list/detail/accept/reject → `src/core/dreamer.ts`; accept/reject authority remains human
+- Transcript paths are server-resolved and never enter the package or API contract
 
 ### Project identity + tags
 - `getProjectName()` (git-remote-slug → repo-root → cwd-basename, cached) → `src/core/paths.ts`
@@ -88,8 +76,8 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 - List / merge / rename `project:*` tags → `src/core/project-tags.ts` (backs `memesh kg rename-project`)
 - Heuristic relation backfill (orphan connector) → `src/core/kg-backfill.ts`
 
-### Config / capabilities / self-update
-- Config read/write + capability detection + env auto-detect → `src/core/config.ts`
+### Config / self-update
+- Config read/write → `src/core/config.ts`
 - Path resolution (HOME-first) → `src/core/paths.ts`
 - `memesh doctor` health check + real probes → `src/core/doctor.ts`
 - npm version check / self-update → `src/core/version-check.ts`, `src/core/updater.ts`, `src/core/install-channel.ts`, `src/core/install-hooks.ts`
@@ -104,7 +92,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 
 ### Dashboard (Preact)
 - Tab routing → `dashboard/src/App.tsx`
-- Analytics / telemetry / insights panels → `dashboard/src/components/`
+- Analytics and proposal-review panels → `dashboard/src/components/`
 - Read-only aggregation endpoints → `src/core/analytics.ts`, `stats.ts`, `graph.ts`, `projects.ts`, `patterns.ts`
 - i18n registry → `dashboard/src/lib/i18n.ts`
 
@@ -115,7 +103,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
 | `src/host-runtime/codex-session.ts` | SessionStart | automatically register the exact Codex thread on the current protocol-versioned router endpoint; apply a matching optional identity override |
-| `session-summary.js` | Stop | auto-capture, LLM failure analysis, dream auto-trigger |
+| `session-summary.js` | Stop | deterministic session capture |
 | `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
 | `decision-nudge.js` | PostToolUse ExitPlanMode/AskUserQuestion | remind Claude to `remember` a decision just made, once per tool per session |

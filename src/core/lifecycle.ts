@@ -185,8 +185,6 @@ export function compressWeeklyNoise(db: MemeshDatabase): { compressed: number; w
       });
     } else {
       // Heuristic title, same as the auto-capture hooks generate.
-      // title_source marks this as machine-derived, so a future LLM titling
-      // pass may replace it; an unmarked title is treated as human-provided.
       const title = `${week} — ${entities.length} entities compressed`;
       const obsText = `${week}: ${count} auto-tracked entities compressed (${typeBreakdown})`;
       // Copy project tags from originals
@@ -209,7 +207,7 @@ export function compressWeeklyNoise(db: MemeshDatabase): { compressed: number; w
     // Archive originals — out of BOTH indexes, then out of circulation.
     //
     // This used to be the bare UPDATE alone, and an archived entity kept its
-    // FTS row and its vector. Measured on the maintainer's graph, this path
+    // FTS row. Measured on the maintainer's graph, this path
     // alone accounted for all 213 archived entities still in the keyword index
     // (`MATCH 'ae83279'` answered with the archived `commit-ae83279`), and it
     // is also what made re-remembering one of them insert a second, permanently

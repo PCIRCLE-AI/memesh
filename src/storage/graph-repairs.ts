@@ -32,9 +32,7 @@
 //   repairFusedLessonShellHistory → split-lesson-shell-carries-no-recall-history
 //
 // What each pass does NOT do, and why:
-//   - The dedupe keeps the lowest id of each (entity, content) pair and leaves
-//     the entity's vector alone: the set of sentences is unchanged, so the
-//     embedding of "name + observations" is the same text minus repeats.
+//   - The dedupe keeps the lowest id of each (entity, content) pair.
 //   - The split moves observation ROWS rather than copying them, so ids and
 //     created_at survive and nothing is re-authored. EVERY explicit lesson
 //     leaves the bucket — keeping the first would leave one lesson whose
@@ -45,11 +43,6 @@
 //     `source:explicit` tag is dropped ONLY when it emptied — a bucket that
 //     kept a stray row must stay visible to the invariant, not be hidden
 //     from it by losing the tag.
-//   - Vectors are left where they are. sqlite-vec is loaded AFTER the
-//     backfills run, so this code cannot touch `entities_vec` and does not
-//     pretend to; it records that a rebuild is owed (`pending_reindex`, the
-//     flag `memesh doctor` reports and `memesh reindex` clears). Until then
-//     the bucket's old vector still describes text it no longer holds.
 //   - FTS is rebuilt whole (`rebuildFtsIndex`, the same call the segmentation
 //     migration makes) rather than patched row by row. `entities_fts` is
 //     contentless: a delete must repeat the exact text that was indexed, and a
@@ -116,7 +109,7 @@ function note(line: string): void {
  * successor came from — only the live `recall_hits`/`recall_misses` columns,
  * which feed `impactScore` (scoring.ts) and the unfiltered
  * `SUM(recall_hits) FROM entities` in `scripts/audit/measure-signals.mjs`,
- * are cleared. Archived rows are excluded from the default FTS/vector
+ * are cleared. Archived rows are excluded from the default FTS
  * candidate set (`archiveEntity()` removes the FTS row; `search()`'s
  * `statusFilter` defaults to active-only), so a shell's stale rate is not
  * currently swaying live ranking — but it does inflate that audit sum
@@ -365,7 +358,7 @@ function legacyReadableLessonSlug(error: string): string {
  * title from `deriveTitle`), revived if it exists archived (a `forget` of the
  * re-learned copy must not swallow the older one), appended to if active.
  * The bucket loses its `source:explicit` tag and, once empty, is archived.
- * FTS follows; a reindex is marked owed via `markReindexOwed`.
+ * FTS follows in the same migration.
  *
  * @returns number of lessons moved out of buckets, or -1 if the pass did not run
  */
@@ -373,7 +366,6 @@ export function splitFusedLessons(
   db: MemeshDatabase,
   deps: {
     deriveTitle: (type: string, observations: string[]) => string | null;
-    markReindexOwed: (conn: MemeshDatabase) => void;
   },
 ): number {
   let moved = -1;
@@ -521,13 +513,12 @@ export function splitFusedLessons(
 
       if (moved > 0) {
         rebuildFtsIndex(conn);
-        deps.markReindexOwed(conn);
         if (legacyReadableMoved === 0) {
-          note(`moved ${moved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) into their own entities; run 'memesh reindex' to refresh their vectors.`);
+          note(`moved ${moved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) into their own entities.`);
         } else if (bucketsTouched === 0) {
-          note(`moved ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities; run 'memesh reindex' to refresh their vectors.`);
+          note(`moved ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities.`);
         } else {
-          note(`moved ${moved - legacyReadableMoved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) and ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities; run 'memesh reindex' to refresh their vectors.`);
+          note(`moved ${moved - legacyReadableMoved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) and ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities.`);
         }
       }
     },

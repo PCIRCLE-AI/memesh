@@ -48,8 +48,7 @@ const FILE_SUFFIX = '.md';
  *
  * Without them a model in a loop can grow one memory without bound — every
  * `insert` re-reads and rewrites the whole entity, so the cost is quadratic in
- * the number of appends, and the row lands in the FTS index and the embedding
- * pipeline behind it.
+ * the number of appends, and the row lands in the FTS index behind it.
  */
 const MAX_FILE_BYTES = 256 * 1024;
 /** Matches the 16 000 characters the tool description tells Claude to expect. */
@@ -591,7 +590,7 @@ function deletePath(parsed: ParsedPath, path: string): MemoryToolResult {
   if (!entity) return err(`Error: The path ${path} does not exist`);
 
   // Archive, not hard delete. MeMesh never destroys a memory on a forget —
-  // archived entities leave search and vector results but stay restorable, and
+  // archived entities leave search results but stay restorable, and
   // this path is driven by a model rather than by the person whose memory it
   // is. `view` lists only active entities, so from the model's side the file is
   // gone; from the user's side it is recoverable.

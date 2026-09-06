@@ -163,7 +163,7 @@ describe('RuleBasedExtractor: memory extraction', () => {
   it('Rule 2 (regression): does NOT count tool_result that mentions "Error" but has is_error=false', () => {
     // The bug: a Read of README.md containing the word "Error" was
     // being counted as a session error. Real impact: a 47MB transcript
-    // produced 315 fake "errors", drowning the LLM analyzer in noise.
+    // produced 315 fake "errors", drowning failure review in noise.
     // The fix: trust the is_error flag, not substring matching.
     writeTranscript([
       { type: 'tool_use', tool_name: 'Read', tool_input: { file_path: '/repo/README.md' } },
@@ -422,7 +422,7 @@ describe('parseTranscript', () => {
   it('current-format regression: ignores blocks missing the is_error flag entirely', () => {
     // Pre-flag transcripts (older Claude Code) had no is_error field.
     // Treat missing flag as not-an-error (false negative is safer than
-    // the old false positive that flooded the LLM with noise).
+    // the old false positive that flooded failure review with noise).
     const p = path.join(tmpDir, 't.jsonl');
     writeLine(p, [
       {

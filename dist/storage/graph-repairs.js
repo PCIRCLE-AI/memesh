@@ -1,12 +1,10 @@
 import { rebuildFtsIndex, runOnceMigration } from './schema.js';
-import { hasVectorIndex } from './vector-index.js';
 import { lessonSlug } from '../core/lesson-slug.js';
 import { computeSignalScore } from '../core/signal-scorer.js';
 export const SESSION_DEDUPE_KEY = 'session_observation_dedupe';
 export const ZERO_EDIT_RETRACT_KEY = 'session_zero_edit_retract';
 export const FUSED_LESSON_SPLIT_KEY = 'fused_lesson_split';
 export const ARCHIVED_FTS_ROWS_KEY = 'archived_fts_rows';
-export const ARCHIVED_VECTOR_ROWS_KEY = 'archived_vector_rows';
 export const FUSED_LESSON_SHELL_HISTORY_RESET_KEY = 'fused_lesson_shell_history_reset';
 const ZERO_EDITS = ', 0 files edited';
 const ZERO_EDITS_RETRACTED = ', files edited through Bash (count not recorded before 4.8.2)';
@@ -253,15 +251,14 @@ export function splitFusedLessons(db, deps) {
             }
             if (moved > 0) {
                 rebuildFtsIndex(conn);
-                deps.markReindexOwed(conn);
                 if (legacyReadableMoved === 0) {
-                    note(`moved ${moved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) into their own entities; run 'memesh reindex' to refresh their vectors.`);
+                    note(`moved ${moved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) into their own entities.`);
                 }
                 else if (bucketsTouched === 0) {
-                    note(`moved ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities; run 'memesh reindex' to refresh their vectors.`);
+                    note(`moved ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities.`);
                 }
                 else {
-                    note(`moved ${moved - legacyReadableMoved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) and ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities; run 'memesh reindex' to refresh their vectors.`);
+                    note(`moved ${moved - legacyReadableMoved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) and ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities.`);
                 }
             }
         },
@@ -269,7 +266,7 @@ export function splitFusedLessons(db, deps) {
     return moved;
 }
 export function dropArchivedIndexRows(db) {
-    const result = { ftsRows: -1, vectorRows: -1 };
+    const result = { ftsRows: -1 };
     runOnceMigration(db, {
         key: ARCHIVED_FTS_ROWS_KEY,
         version: 1,
@@ -284,23 +281,6 @@ export function dropArchivedIndexRows(db) {
             rebuildFtsIndex(conn);
             if (stale.n > 0) {
                 note(`removed ${stale.n} archived entit${stale.n === 1 ? 'y' : 'ies'} from the keyword index (archived before 4.8.4 by a path that left the index behind).`);
-            }
-        },
-    });
-    if (!hasVectorIndex(db))
-        return result;
-    runOnceMigration(db, {
-        key: ARCHIVED_VECTOR_ROWS_KEY,
-        version: 1,
-        describe: 'archived rows removed from the vector index',
-        migrate: (conn) => {
-            const removed = conn
-                .prepare(`DELETE FROM entities_vec WHERE rowid IN
-             (SELECT e.id FROM entities e WHERE e.status = 'archived')`)
-                .run();
-            result.vectorRows = Number(removed.changes);
-            if (result.vectorRows > 0) {
-                note(`removed ${result.vectorRows} archived entit${result.vectorRows === 1 ? 'y' : 'ies'} from the vector index; they were taking recall slots from live memories.`);
             }
         },
     });

@@ -1,37 +1,10 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
-import { type LLMAttempt } from './llm-client.js';
-import type { LLMConfig } from './config.js';
-export declare const PROTECTED_TYPES: Set<string>;
-export interface DreamerOptions {
-    project?: string;
-    dryRun?: boolean;
-    maxLlmCalls?: number;
-    windowDays?: number;
-    fallbacks?: LLMConfig[];
-    onAttempt?: (attempts: LLMAttempt[]) => void;
-    validateBeforeStage?: boolean;
-}
-export interface DreamerResult {
-    proposalsCreated: number;
-    clustersScanned: number;
-    llmCalls: number;
-    skipped: Array<{
-        reason: string;
-        project?: string;
-        clusterKey?: string;
-        code?: 'provider_error';
-    }>;
-    durationMs: number;
-    clusteringMode?: 'semantic' | 'calendar';
-    clusteringNote?: string;
-}
 interface ProposedDigest {
     name: string;
     type: string;
     observations: string[];
     tags: string[];
 }
-export declare function runDreamer(db: MemeshDatabase, llm: LLMConfig | null | undefined, opts?: DreamerOptions): Promise<DreamerResult>;
 type WorkPackageInput = {
     action: 'prepare';
     project: string;
@@ -57,30 +30,9 @@ type WorkPackageInput = {
     };
 } | {
     action: 'defer';
-    reason: 'insufficient_evidence' | 'not_now' | 'irrelevant';
+    reason: 'not_now';
 }));
 export declare function executeWorkPackage(db: MemeshDatabase, input: WorkPackageInput): Record<string, unknown>;
-export interface PatternDetectorOptions {
-    project?: string;
-    dryRun?: boolean;
-    maxLlmCalls?: number;
-    windowDays?: number;
-    fallbacks?: LLMConfig[];
-    onAttempt?: (attempts: LLMAttempt[]) => void;
-    minSignal?: number;
-}
-export interface PatternDetectorResult {
-    proposalsCreated: number;
-    entitiesScanned: number;
-    llmCalls: number;
-    skipped: Array<{
-        reason: string;
-        project?: string;
-        code?: 'provider_error';
-    }>;
-    durationMs: number;
-}
-export declare function runPatternDetector(db: MemeshDatabase, llm: LLMConfig | null | undefined, opts?: PatternDetectorOptions): Promise<PatternDetectorResult>;
 export interface ApplyResult {
     proposalId: number;
     digestEntityName: string;

@@ -204,7 +204,7 @@ describe('issue #224 — one data revision refreshes mounted surfaces', () => {
         return response(analytics(round === 1 ? 51 : 91));
       }
       if (url.includes('/v1/dream/proposals')) return response([proposal(round, round === 1 ? 'old proposal' : 'new proposal')]);
-      if (url.includes('/v1/config')) return response({ capabilities: { llm: { provider: 'openai' } } });
+      if (url.includes('/v1/config')) return response({ config: {} });
       return response({});
     });
 
@@ -231,7 +231,7 @@ describe('issue #224 — one data revision refreshes mounted surfaces', () => {
     let fail = false;
     vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
       const url = String(input);
-      if (url.includes('/v1/config')) return Promise.resolve(response({ capabilities: { llm: { provider: 'openai' } } }));
+      if (url.includes('/v1/config')) return Promise.resolve(response({ config: {} }));
       if (url.includes('/v1/dream/proposals')) {
         proposalRequest++;
         if (proposalRequest === 1) return new Promise<Response>((resolve) => { resolveOld = resolve; });
@@ -261,17 +261,15 @@ describe('issue #224 — one data revision refreshes mounted surfaces', () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
       const path = new URL(String(input), 'http://dashboard.local').pathname;
       counts.set(path, (counts.get(path) ?? 0) + 1);
-      if (failAnalytics && ['/v1/stats', '/v1/analytics', '/v1/patterns', '/v1/telemetry', '/v1/analytics/pm'].includes(path)) {
+      if (failAnalytics && ['/v1/stats', '/v1/analytics', '/v1/patterns', '/v1/analytics/pm'].includes(path)) {
         throw new TypeError('Failed to fetch');
       }
       if (path === '/v1/health') return response({ status: 'ok', version: '4.8.1', entity_count: 12 });
       if (path === '/v1/stats') return response(stats(12));
       if (path === '/v1/analytics') return response(analytics(66));
       if (path === '/v1/patterns') return response(patterns());
-      if (path === '/v1/telemetry') return response({ window_days: 30, summaries: [] });
       if (path === '/v1/analytics/pm') return response(pmAnalytics(3.5));
       if (path === '/v1/dream/proposals') return response([]);
-      if (path === '/v1/config') return response({ capabilities: { llm: null } });
       if (path === '/v1/doctor') return response({ status: 'pass', checks: [] });
       if (path === '/v1/improvements') return response([]);
       return response({});
@@ -285,25 +283,21 @@ describe('issue #224 — one data revision refreshes mounted surfaces', () => {
     });
     fireEvent.click(analyticsButton);
     await waitFor(() => expect(counts.get('/v1/stats')).toBe(1));
-    await waitFor(() => expect(counts.get('/v1/telemetry')).toBe(1));
     await waitFor(() => expect(counts.get('/v1/analytics/pm')).toBe(1));
-    expect(view.container.textContent).toContain('3.5');
+    await waitFor(() => expect(view.container.textContent).toContain('3.5'));
 
     const analyticsBefore = counts.get('/v1/analytics') ?? 0;
     const proposalsBefore = counts.get('/v1/dream/proposals') ?? 0;
-    const configBefore = counts.get('/v1/config') ?? 0;
     window.dispatchEvent(new Event('memesh:data-changed'));
     await waitFor(() => expect(counts.get('/v1/stats')).toBe(2));
     await waitFor(() => expect(counts.get('/v1/analytics')).toBe(analyticsBefore + 2));
     await waitFor(() => expect(counts.get('/v1/dream/proposals')).toBe(proposalsBefore + 2));
-    await waitFor(() => expect(counts.get('/v1/config')).toBe(configBefore + 1));
-    await waitFor(() => expect(counts.get('/v1/telemetry')).toBe(2));
     await waitFor(() => expect(counts.get('/v1/analytics/pm')).toBe(2));
     expect(counts.get('/v1/patterns')).toBe(2);
 
     failAnalytics = true;
     window.dispatchEvent(new Event('memesh:data-changed'));
-    await waitFor(() => expect(counts.get('/v1/telemetry')).toBe(3));
+    await waitFor(() => expect(counts.get('/v1/stats')).toBe(3));
     await waitFor(() => expect(view.container.querySelectorAll('[role="alert"]').length).toBeGreaterThanOrEqual(3));
     expect(view.container.textContent).toContain('3.5');
     expect(view.container.textContent).toContain('12');
@@ -323,7 +317,7 @@ describe('issue #224 — one data revision refreshes mounted surfaces', () => {
       }
       if (path === '/v1/analytics') return Promise.resolve(response(analytics(70)));
       if (path === '/v1/dream/proposals') return Promise.resolve(response([]));
-      if (path === '/v1/config') return Promise.resolve(response({ capabilities: { llm: null } }));
+      if (path === '/v1/config') return Promise.resolve(response({ config: {} }));
       if (path === '/v1/doctor') return Promise.resolve(response({ status: 'pass', checks: [] }));
       if (path === '/v1/improvements') return Promise.resolve(response([]));
       return Promise.resolve(response({}));
@@ -357,7 +351,6 @@ describe('issue #224 — one data revision refreshes mounted surfaces', () => {
       if (path === '/v1/health') return response({ status: 'ok', version: '4.8.1', entity_count: 1 });
       if (path === '/v1/analytics') return response(analytics(70));
       if (path === '/v1/dream/proposals') return response([]);
-      if (path === '/v1/config') return response({ capabilities: { llm: null } });
       if (path === '/v1/doctor') return response({ status: 'pass', checks: [] });
       if (path === '/v1/improvements') return response([]);
       return response({});
@@ -368,11 +361,9 @@ describe('issue #224 — one data revision refreshes mounted surfaces', () => {
     await waitFor(() => expect(counts.get('/v1/analytics')).toBe(1));
     await waitFor(() => expect(counts.get('/v1/dream/proposals')).toBe(2));
     const proposalsBefore = counts.get('/v1/dream/proposals') ?? 0;
-    const configBefore = counts.get('/v1/config') ?? 0;
     window.dispatchEvent(new Event('memesh:data-changed'));
     await waitFor(() => expect(counts.get('/v1/health')).toBe(2));
     await waitFor(() => expect(counts.get('/v1/analytics')).toBe(2));
     await waitFor(() => expect(counts.get('/v1/dream/proposals')).toBe(proposalsBefore + 2));
-    expect(counts.get('/v1/config')).toBe(configBefore + 1);
   });
 });

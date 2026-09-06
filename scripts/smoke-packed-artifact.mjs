@@ -15,8 +15,7 @@ const repoRoot = process.cwd();
 // This used to extract into `<repoRoot>/tmp/pack-smoke`, so when the import
 // check below loaded the packaged `dist/index.js`, every bare specifier
 // resolved by walking UP into the repo's own `node_modules` — devDependencies
-// included. Verified: `sqlite-vec` resolved to the repo tree. The gate
-// therefore could not see a missing runtime dependency. It also printed
+// included. The gate therefore could not see a missing runtime dependency. It also printed
 // "installs" for an install that never happened.
 //
 // In os.tmpdir() nothing resolves upward, so the install below is the only
@@ -82,11 +81,9 @@ const requiredFiles = [
   'dist/core/types.js',
   'dist/core/config.js',
   'dist/core/scoring.js',
-  'dist/core/failure-analyzer.js',
   'dist/core/lesson-engine.js',
   'dist/core/serializer.js',
   'dist/core/patterns.js',
-  'dist/core/embedder.js',
   'dist/core/product-improvements.js',
   'dist/core/agent-messaging.js',
   'dist/core/agent-router.js',
@@ -226,12 +223,8 @@ assert.ok(
   'the packed tarball did not install — nothing was imported'
 );
 
-// `openDatabase()` below gets an explicit path, so the DB file itself cannot
-// leak to an ambient location — but opening it also runs
-// `resolveEmbeddingDimension()`, which reads config.json through
-// `memeshDir()` (HOME/MEMESH_DIR), a path independent of the explicit DB
-// path. Without an isolated HOME/MEMESH_DIR here, an ambient MEMESH_DIR
-// would still hand this step the maintainer's real embedder/LLM config.
+// Keep every path inside the smoke directory even though openDatabase receives
+// an explicit file, so future startup reads cannot reach owner state.
 const importHome = path.join(smokeDir, 'import-home');
 const importMemeshDir = path.join(importHome, '.memesh');
 fs.mkdirSync(importMemeshDir, { recursive: true });
@@ -250,10 +243,12 @@ if (typeof pkg.KnowledgeGraph !== 'function') {
   throw new Error('Packaged module missing KnowledgeGraph export');
 }
 // Exercise the runtime path, not just the export shape: opening a database
-// loads sqlite-vec, which is where a dependency that was
-// moved out of \`dependencies\` actually bites.
+// must create the FTS-backed schema from the installed package.
 const db = pkg.openDatabase(${JSON.stringify(importDbPath)});
 if (!db) throw new Error('openDatabase returned nothing');
+const fts = db.prepare("SELECT name FROM sqlite_master WHERE name = 'entities_fts'").get();
+if (!fts) throw new Error('packaged database did not create entities_fts');
+pkg.closeDatabase();
 `,
   ],
   {
@@ -325,6 +320,43 @@ try {
     JSON.stringify(recalled),
     /packaged-protocol-smoke/,
     'recall did not return the memory written through MCP'
+  );
+
+  const learned = await client.callTool({
+    name: 'learn',
+    arguments: {
+      error: 'Packaged MCP learn contract failed',
+      fix: 'Use the documented snake_case field',
+      root_cause: 'The caller used a field name outside the strict MCP schema',
+      prevention: 'Keep runtime schemas, exported schemas, and examples in parity',
+      severity: 'major',
+    },
+  });
+  assert.notEqual(learned.isError, true, 'learn rejected the documented root_cause field');
+  const recalledLesson = await client.callTool({
+    name: 'recall',
+    arguments: { query: 'Packaged MCP learn contract failed', limit: 5 },
+  });
+  assert.notEqual(recalledLesson.isError, true, 'recall rejected the packaged learn readback');
+  assert.match(
+    JSON.stringify(recalledLesson),
+    /caller used a field name outside the strict MCP schema/,
+    'learn did not persist the documented root_cause value'
+  );
+
+  const camelCaseLearn = await client.callTool({
+    name: 'learn',
+    arguments: {
+      error: 'This request must be rejected',
+      fix: 'Do not silently drop unknown fields',
+      rootCause: 'Wrong public field name',
+    },
+  });
+  assert.equal(camelCaseLearn.isError, true, 'learn silently accepted the undocumented rootCause field');
+  assert.match(
+    JSON.stringify(camelCaseLearn.content),
+    /rootCause|Unrecognized key/,
+    'learn rejected rootCause without identifying the invalid request'
   );
 
   const sentMessage = await client.callTool({

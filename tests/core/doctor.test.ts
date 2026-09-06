@@ -111,11 +111,6 @@ function createPackageRoot(root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-
   fs.mkdirSync(path.join(root, 'dashboard', 'dist'), { recursive: true });
   fs.writeFileSync(path.join(root, 'dashboard', 'dist', 'index.html'), '<html></html>');
 
-  // Stub the sqlite-vec directory so the native-binding existence
-  // check passes. The probe itself is overridden per-test via
-  // `nativeBindingProbeImpl`, so no real native module is touched here.
-  fs.mkdirSync(path.join(root, 'node_modules', 'sqlite-vec'), { recursive: true });
-
   // F4: doctor verifies dist/skills-manifest.json. The fixture must
   // include one matching the on-disk hook stubs, otherwise the new
   // skills-manifest check fires and the overall status downgrades.
@@ -203,13 +198,6 @@ function makeDatabase(
     /** Auto-capture memories written since heartbeat tracking began — the
      *  legacy-hooks branch. Same default, same reason. */
     capturedSinceTracking?: number;
-    /** How many active memories the vector index still owes. Default 0 —
-     *  every test predating the measured Vector Index row assumes a graph
-     *  that is fully embedded. */
-    missingVectors?: number;
-    /** Make every read of `llm_telemetry` throw — a database from before the
-     *  table existed, or one whose table cannot be read. Default false. */
-    telemetryUnreadable?: boolean;
   } = {},
 ) {
   const sqliteTs = (hoursAgo: number) =>
@@ -224,15 +212,6 @@ function makeDatabase(
   return {
     prepare(sql: string) {
       if (sql.includes('sqlite_master')) return { get: () => ({ present: 1 }) };
-      // Two queries touch the vector table, and they answer different
-      // questions: `SELECT 1 ... LIMIT 1` asks whether THIS PROCESS can use
-      // the index at all (a throw is how absence is reported), and the
-      // COUNT asks how many active memories it still owes.
-      if (sql.includes('entities_vec')) {
-        return sql.includes('COUNT(')
-          ? { get: () => ({ n: opts.missingVectors ?? 0 }) }
-          : { get: () => undefined };
-      }
       if (sql.includes('fts_vocab')) {
         return { get: () => ({ c: opts.unsegmentedCount ?? 0 }) };
       }
@@ -273,16 +252,6 @@ function makeDatabase(
       }
       if (sql.includes('source_host')) {
         return { get: () => ({ c: opts.recentClaudeCodeWrites ?? 1 }) };
-      }
-      // llm_telemetry health (D13): every test in this file predates the
-      // row and asserts nothing about it, so the default is "no telemetry
-      // recorded" — the same "opt-in options, default absent" convention
-      // as citationCounters above. A real predicate (window filtering,
-      // per-flow grouping) is exercised against a real database in
-      // tests/cli/doctor-llm-telemetry-health.test.ts, not here.
-      if (sql.includes('FROM llm_telemetry')) {
-        if (opts.telemetryUnreadable) throw new Error('no such table: llm_telemetry');
-        return { all: () => [] };
       }
       // Three DIFFERENT questions used to share one canned answer.
       //
@@ -372,9 +341,7 @@ describe('doctor', () => {
         guidance: 'This installation can be updated directly from MeMesh.',
       }),
       fetchImpl: (async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) as typeof fetch,
-      // Fixture stubs node_modules/sqlite-vec as an empty dir, so the real
-      // probe would fail. Inject success since this test is verifying the
-      // overall-PASS flow, not the binding probe itself.
+      // This test verifies the overall-PASS flow, not SQLite itself.
       nativeBindingProbeImpl: () => ({ ok: true }),
     });
 
@@ -433,8 +400,7 @@ describe('doctor', () => {
         recommendedCommand: null,
         guidance: 'Update this source checkout from its repository and rebuild it.',
       }),
-      // Fixture's sqlite-vec dir is an empty stub; let the binding
-      // check pass so this test focuses on the update-status WARN.
+      // Keep this test focused on the update-status WARN.
       nativeBindingProbeImpl: () => ({ ok: true }),
     });
 
@@ -1320,9 +1286,9 @@ describe('doctor', () => {
     expect(wiring!.status).toBe('warn');
     expect(wiring!.fixId).toBe('install-hooks');
     // Nothing else in this run may carry a fixId the whitelist would act on
-    // unprompted — vector_index in particular must never (paid re-embed).
-    const vector = result.checks.find(c => c.id === 'vector_index');
-    if (vector) expect(vector.fixId).toBeUndefined();
+    // unprompted.
+    expect(result.checks.filter(c => c.fixId).map(c => ({ id: c.id, fixId: c.fixId })))
+      .toEqual([{ id: 'hook-wiring', fixId: 'install-hooks' }]);
   });
 
   it('hook-wiring: PASS when marker + settings + memesh hook entry all present', async () => {

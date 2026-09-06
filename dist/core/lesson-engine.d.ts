@@ -1,10 +1,5 @@
-import type { StructuredLesson } from './failure-analyzer.js';
 import type { LessonSeverity } from './types.js';
 import { lessonSlug } from './lesson-slug.js';
-export declare function createLesson(lesson: StructuredLesson, projectName: string): {
-    name: string;
-    isNew: boolean;
-};
 export declare function createExplicitLesson(error: string, fix: string, projectName: string, opts?: {
     rootCause?: string;
     prevention?: string;

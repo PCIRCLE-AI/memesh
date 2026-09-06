@@ -323,11 +323,10 @@ describe('Feature: memory_20250818 over the knowledge graph', () => {
     });
 
     it('refuses a write past the size cap, and writes nothing', () => {
-      // The contract puts a size cap on the implementer. Without one a model
-      // in a loop grows a single memory without bound — and because every
+      // The contract puts a size cap on the caller. Without one an automated
+      // loop grows a single memory without bound — and because every
       // `insert` rewrites the whole entity, the cost is quadratic in the
-      // number of appends, with the FTS index and the embedding pipeline
-      // behind it.
+      // number of appends and repeatedly rewrites the FTS index behind it.
       seed('bounded', ['a small memory']);
       const huge = 'x'.repeat(300 * 1024);
 

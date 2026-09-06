@@ -78,7 +78,7 @@ function packagedPluginWithoutNodeModules(): string {
 }
 
 describe('Codex plugin fresh consumer', () => {
-  it.skipIf(process.platform === 'win32')('lets SessionStart start its packaged router without any resolvable sqlite-vec', async () => {
+  it.skipIf(process.platform === 'win32')('starts and registers SessionStart without third-party runtime modules', async () => {
     const pluginRoot = packagedPluginWithoutNodeModules();
     const dataDirectory = path.join(pluginRoot, 'data');
     const dbPath = path.join(dataDirectory, 'knowledge-graph.db');
@@ -93,17 +93,12 @@ describe('Codex plugin fresh consumer', () => {
       MEMESH_ROUTER_SOCKET: socketPath,
       MEMESH_ROUTER_TOKEN_FILE: tokenPath,
       MEMESH_AUTO_UPDATE: '0',
-      MEMESH_AUTO_DETECT_LLM: '0',
       PLUGIN_ROOT: pluginRoot,
     };
 
-    const unresolved = spawnSync(process.execPath, [
-      '--input-type=module',
-      '--eval',
-      "import { createRequire } from 'node:module'; import path from 'node:path'; createRequire(path.join(process.cwd(), 'dist/db.js'))('sqlite-vec');",
-    ], { cwd: pluginRoot, encoding: 'utf8' });
-    expect(unresolved.status).not.toBe(0);
-    expect(`${unresolved.stderr}${unresolved.stdout}`).toMatch(/sqlite-vec|MODULE_NOT_FOUND|Cannot find module/);
+    const packed = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'package.json'), 'utf8'));
+    expect(packed.dependencies ?? {}).not.toHaveProperty('sqlite-vec');
+    expect(fs.existsSync(path.join(pluginRoot, 'dist/core/embedder.js'))).toBe(false);
 
     const companion = spawn(process.execPath, [path.join(pluginRoot, 'dist/host-runtime/codex-session.js')], {
       env: environment,

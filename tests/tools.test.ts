@@ -27,9 +27,7 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-tools-'));
   dbPath = path.join(tmpDir, 'test.db');
   previousMemeshDir = process.env.MEMESH_DIR;
-  // Tool tests must never inherit the developer's real embedder/LLM config.
-  // A configured Ollama instance otherwise schedules network work from
-  // `remember`, making a focused offline replay slow or non-terminating.
+  // Keep tool state isolated from the developer's real MeMesh directory.
   process.env.MEMESH_DIR = tmpDir;
   openDatabase(dbPath);
 });
@@ -107,7 +105,7 @@ describe('work_package', () => {
     expect(staged).toMatchObject({ status: 'staged', proposal_status: 'pending', review_authority: 'human', available_action: [] });
     const db = getDatabase();
     const row = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(staged.proposal_id) as any;
-    expect(row).toMatchObject({ status: 'pending', llm_model: null, prompt_version: 'work-package-v1', project: 'work-project' });
+    expect(row).toMatchObject({ status: 'pending', prompt_version: 'work-package-v1', project: 'work-project' });
     expect(JSON.parse(row.proposed_digest).work_package).toMatchObject({ id: pkg.id, ref: pkg.ref });
     expect(listProposals(db).some(p => p.id === staged.proposal_id)).toBe(true);
     expect(getProposalDetail(db, staged.proposal_id)?.digest.name).toBe(result.name);
@@ -192,14 +190,14 @@ describe('work_package', () => {
   it('defers without durable changes and can immediately prepare the same package again', async () => {
     seed();
     const pkg = (await prepare()).package;
-    for (const reason of ['insufficient_evidence', 'not_now', 'irrelevant']) {
-      const before = snapshot();
-      const response = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason });
-      expect(payload(response)).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
-      expect(snapshot()).toEqual(before);
-      expect((await prepare()).package).toEqual(pkg);
+    const before = snapshot();
+    const response = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+    expect(payload(response)).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
+    expect(snapshot()).toEqual(before);
+    expect((await prepare()).package).toEqual(pkg);
+    for (const reason of ['insufficient_evidence', 'irrelevant', 'forever']) {
+      expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason })).isError).toBe(true);
     }
-    expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'forever' })).isError).toBe(true);
     getDatabase().prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(pkg.ref.source_ids[0]);
     expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })).isError).toBe(true);
   });
@@ -271,16 +269,10 @@ describe('work_package', () => {
     expect((await prepare()).package).toEqual(pkg);
   });
 
-  it('never enters LLM, embedder, vector, network or agent-message paths in any action', async () => {
+  it('never enters network or agent-message paths in any action', async () => {
     seed();
-    const forbidden = () => { throw new Error('forbidden provider path'); };
+    const forbidden = () => { throw new Error('forbidden external path'); };
     const spies = [
-
-
-
-
-
-
       vi.spyOn(agentMessaging, 'sendAgentMessage').mockImplementation(forbidden),
       vi.fn(forbidden),
     ];
@@ -481,7 +473,7 @@ describe('transcript work_package', () => {
     const staged = payload(await submit(pkg, output));
     const db = getDatabase();
     const row = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(staged.proposal_id) as any;
-    expect(row).toMatchObject({ project, status: 'pending', source_kind: 'transcript', kind: 'digest', cluster_key: 'transcript:review-session', llm_model: null, prompt_version: 'work-package-v1' });
+    expect(row).toMatchObject({ project, status: 'pending', source_kind: 'transcript', kind: 'digest', cluster_key: 'transcript:review-session', prompt_version: 'work-package-v1' });
     expect(JSON.parse(row.proposed_digest)).toMatchObject({ ...output, work_package: { id: pkg.id, ref: pkg.ref } });
     expect(db.prepare('SELECT count(*) AS n FROM entities').get()).toMatchObject({ n: 0 });
     expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'pending' });
@@ -742,11 +734,7 @@ describe('remember', () => {
       relations: [{ to: 'auth-v2', type: 'supersedes' }],
     });
 
-    // auth-v2 should be auto-archived — must NOT appear in default recall.
-    // (We don't assert []: if a neural embedder is configured, recallEnhanced
-    // can supplement with vector hits, e.g. surfacing the related auth-v3.
-    // The behavioural guarantee here is "archived rows stay hidden", not
-    // "no results at all".)
+    // auth-v2 should be auto-archived and must not appear in default recall.
     const recallOld = await handleTool('recall', { query: 'JWT' });
     const oldNames = recallEntities(recallOld).map((e: any) => e.name);
     expect(oldNames).not.toContain('auth-v2');
@@ -817,12 +805,11 @@ describe('recall', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(Array.isArray(parsed), 'bare-array payload breaks Gemini CLI').toBe(false);
     expect(Array.isArray(parsed.entities)).toBe(true);
-    // R2: the envelope always says HOW it was answered — mode (fts|hybrid),
-    // degraded (configured vector side could not run), truncated (window
-    // filled). A caller must never have to guess whether keyword-only
-    // results are the configured behaviour or a silent degradation.
-    expect(['fts', 'hybrid']).toContain(parsed.retrieval.mode);
-    expect(typeof parsed.retrieval.degraded).toBe('boolean');
+    // R2: the envelope always says HOW it was answered. Current recall is
+    // exactly FTS; `degraded` remains a fixed-false compatibility field, and
+    // `truncated` says whether the result window filled.
+    expect(parsed.retrieval.mode).toBe('fts');
+    expect(parsed.retrieval.degraded).toBe(false);
     expect(typeof parsed.retrieval.truncated).toBe('boolean');
   });
 

@@ -173,8 +173,8 @@ export function stageProductImprovement(db, input) {
             },
         };
         const inserted = db.prepare(`INSERT INTO dream_proposals
-        (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version, source_kind, kind)
-       VALUES (?, ?, ?, ?, NULL, 'product-improvement-v1', 'entities', ?)`).run(project, clusterKey, JSON.stringify(sourceIds), JSON.stringify(payload), PRODUCT_IMPROVEMENT_KIND);
+        (project, cluster_key, source_ids, proposed_digest, prompt_version, source_kind, kind)
+       VALUES (?, ?, ?, ?, 'product-improvement-v1', 'entities', ?)`).run(project, clusterKey, JSON.stringify(sourceIds), JSON.stringify(payload), PRODUCT_IMPROVEMENT_KIND);
         const row = db.prepare(`SELECT id, project, source_ids, proposed_digest, status, reason, created_at, reviewed_at
        FROM dream_proposals WHERE id = ?`).get(Number(inserted.lastInsertRowid));
         return proposalResult(row, true);

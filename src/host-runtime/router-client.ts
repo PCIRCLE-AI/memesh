@@ -208,8 +208,16 @@ class ActiveRouterHostConnection implements RouterHostConnection {
           const raw = buffer.subarray(0, newline);
           buffer = buffer.subarray(newline + 1);
           if (raw.length === 0 || raw.length > AGENT_ROUTER_MAX_FRAME_BYTES) continue;
-          let frame: Record<string, unknown>;
-          try { frame = JSON.parse(raw.toString('utf8')) as Record<string, unknown>; } catch { continue; }
+          let parsed: unknown;
+          try { parsed = JSON.parse(raw.toString('utf8')); } catch { continue; }
+          if (!isRecord(parsed)) {
+            socket.destroy(new AgentRouterProtocolError(
+              'invalid_response',
+              'Router frame must be a JSON object.',
+            ));
+            return;
+          }
+          const frame = parsed;
           if (!registrationSettled && isLegacyAgentRouterVersionMismatchResponse(frame)) {
             finish(new AgentRouterProtocolError(
               'router_version_mismatch',
@@ -254,6 +262,13 @@ class ActiveRouterHostConnection implements RouterHostConnection {
             continue;
           }
           if (frame.type !== 'deliver') continue;
+          if (!registrationSettled) {
+            socket.destroy(new AgentRouterProtocolError(
+              'invalid_response',
+              'Router delivered a message before registration completed.',
+            ));
+            return;
+          }
           if (!isDelivery(frame, connectionId, generation, this.input.identity)) {
             socket.destroy(new AgentRouterProtocolError(
               'invalid_response',

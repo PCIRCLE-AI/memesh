@@ -1,7 +1,7 @@
 import { findConflicts, trackAccess } from './storage/conflicts.js';
 import { indexedObservationText, insertFtsRow, joinIndexedObservations, removeFromFts, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
-import { dropEntityFromIndexes, removeVectorRow } from './storage/entity-index.js';
+import { dropEntityFromIndexes } from './storage/entity-index.js';
 const MAX_QUERY_TERMS = 32;
 function buildMatchExpression(db, query) {
     const terms = tokenizeQuery(query);
@@ -505,7 +505,6 @@ export class KnowledgeGraph {
             this.db.prepare('DELETE FROM observations WHERE entity_id = ?').run(row.id);
             this.db.prepare('DELETE FROM tags WHERE entity_id = ?').run(row.id);
             this.rebuildFts(row.id, name, prevObsText, row.title);
-            removeVectorRow(this.db, row.id);
         })();
     }
     archiveEntity(name) {

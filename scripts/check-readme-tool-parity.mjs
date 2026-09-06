@@ -48,12 +48,13 @@ const surfaceDigest = (surface) => createHash('sha256')
 const checkedSurfaces = new Set();
 if (lock.schema_version !== 'mcp-doc-contract/v2') errors.push('scripts/mcp-doc-contract.json: unsupported schema_version');
 if (lock.source_sha256 !== contractDigest) {
-  errors.push('scripts/mcp-doc-contract.json: canonical MCP source digest is stale; review every documented tool description');
+  errors.push(`scripts/mcp-doc-contract.json: canonical MCP source digest is stale; review every documented tool description, then set source_sha256 to ${contractDigest}`);
 }
 const checkLockedSurface = (file, surface) => {
   checkedSurfaces.add(file);
-  if (lock.surfaces?.[file] !== surfaceDigest(surface)) {
-    errors.push(`${file}: certified MCP documentation surface is stale for the current source contract; review its tool names and descriptions, then recertify scripts/mcp-doc-contract.json`);
+  const expected = surfaceDigest(surface);
+  if (lock.surfaces?.[file] !== expected) {
+    errors.push(`${file}: certified MCP documentation surface is stale for the current source contract; review its tool names and descriptions, then set its scripts/mcp-doc-contract.json hash to ${expected}`);
   }
 };
 const tableDocs = [

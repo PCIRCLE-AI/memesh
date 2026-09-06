@@ -8,7 +8,6 @@ import { fileURLToPath } from 'url';
 import { openDatabase, closeDatabase } from '../db.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { normalizeClientHost } from '../transports/mcp/handlers.js';
-import { logCapabilities } from '../core/config.js';
 const packageJsonPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../package.json');
 const packageVersion = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')).version ?? '0.0.0';
 const server = new Server({ name: 'memesh', version: packageVersion }, { capabilities: { tools: {} } });
@@ -25,7 +24,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 });
 async function main() {
     openDatabase();
-    logCapabilities();
     const transport = new StdioServerTransport();
     await server.connect(transport);
 }

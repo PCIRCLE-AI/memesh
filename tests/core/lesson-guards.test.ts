@@ -94,8 +94,8 @@ describe('lesson guards (dreamer side)', () => {
     // Hand-stage a proposal whose pattern is too broad — as if validation
     // rules tightened between staging and review months later.
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version, kind)
-      VALUES ('memesh', 'guard:${lessonId}', ?, ?, 'test/fake', 'guard-v1', 'guard')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version, kind)
+      VALUES ('memesh', 'guard:${lessonId}', ?, ?, 'guard-v1', 'guard')
     `).run(JSON.stringify([lessonId]), JSON.stringify({
       guard: { tool: 'Bash', pattern: '.*', message: 'anything', should_match: ['a b c d e f'], should_not_match: [] },
       source_lesson: { id: lessonId, name: 'checkout-lesson' },

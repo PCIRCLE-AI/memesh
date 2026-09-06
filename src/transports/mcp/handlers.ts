@@ -509,9 +509,9 @@ export async function handleTool(
       // the same payload fine. An object envelope also removes the old bimodal
       // shape (array normally, object when conflicts exist) that every
       // consumer otherwise has to special-case.
-      // `retrieval` rides every envelope: how the results were found (fts vs
-      // hybrid), whether the vector side silently degraded, and whether the
-      // window filled — the three things a caller cannot see from the rows.
+      // `retrieval` rides every envelope so callers can see the FTS mode and
+      // whether the bounded window filled. `degraded: false` remains as a
+      // fixed compatibility field for older consumers.
       const { entities, conflicts, retrieval } = await recallWithConflicts(r.data);
       return ok(conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval });
     }

@@ -16,7 +16,7 @@
 
 ---
 
-**MeMesh** is the open-source **local collaboration layer for AI coding agents**: shared memory, durable exact-recipient messaging, and governed memory-to-product proposals for Claude Code, Codex, Cursor, custom or Ollama-backed agents, and compatible local MCP clients. One SQLite file. No Docker. No cloud required.
+**MeMesh** is the open-source **local collaboration layer for AI coding agents**: shared memory, durable exact-recipient messaging, and governed memory-to-product proposals for Claude Code, Codex, Cursor, custom agents, and compatible local MCP clients. One SQLite file. No Docker. No cloud required.
 
 ### New collaboration surfaces
 
@@ -52,10 +52,10 @@ Your coding agent doesn't just forget facts between sessions — it **repeats wo
 
 That's not a chat-history problem; it's an agent-memory problem. What needs to survive between sessions is the *work*: decisions with their reasons, failures with their fixes, and the links between them.
 
-**MeMesh is that memory.** Hooks capture it from what the agent actually does (sessions, commits, failures — not manual notes), recall injects it at the moment the agent acts (session start, before file edits), and the knowledge-graph layer keeps it honest over time (supersession, LLM-judged conflict detection). Install with npm, memory lives in `~/.memesh/knowledge-graph.db`, plug into Claude Code or any MCP-compatible client.
+**MeMesh is that memory.** Hooks capture it from what the agent actually does (sessions, commits, failures — not manual notes), recall injects it at the moment the agent acts (session start, before file edits), and explicit relations keep the knowledge graph honest over time. Install with npm, memory lives in `~/.memesh/knowledge-graph.db`, plug into Claude Code or any MCP-compatible client.
 
 > [!IMPORTANT]
-> Actively developed — features may change between releases. [Open an issue](https://github.com/PCIRCLE-AI/memesh/issues) for bugs or feature requests.
+> Actively developed — features may change between releases. Run `memesh feedback --bug`, `--feature`, or `--question` to prepare a public issue draft for review.
 
 ---
 
@@ -168,8 +168,7 @@ npm install -g @pcircle/memesh
 ```
 
 > **First-install notes (one-time):**
-> - **No compiler needed** — the database engine is Node's own `node:sqlite`. `sqlite-vec`, which adds meaning-based search, ships as a prebuilt file for macOS (arm64/x64), Linux (x64/arm64) and Windows x64; on any other platform it is simply absent and recall stays on keyword search. Nothing here runs an install script, so `npm install --ignore-scripts` installs a fully working memesh.
-> - **Semantic (meaning-based) search is optional** — the default recall path is FTS5 keyword search, which needs no model and no download. Meaning-based search needs an embedder: run [Ollama](https://ollama.com) locally, or configure a cloud embedder (see "Bring-your-own embeddings" below). Without one, memesh uses keyword search only.
+> - **No compiler needed** — the database engine is Node's own `node:sqlite`, and recall uses its built-in FTS5 full-text index. Nothing here runs an install script, so `npm install --ignore-scripts` installs a fully working memesh.
 
 ### Step 1.5: Wire MeMesh into Claude Code (npm path only)
 
@@ -301,7 +300,7 @@ This same block is what Claude Code receives automatically at session start, and
 
 ### Your data
 
-- **One local file.** Everything lives in `~/.memesh/knowledge-graph.db` — SQLite, on your disk. No cloud account; nothing leaves your machine unless you configure a cloud embedder or LLM yourself.
+- **One local file.** Everything lives in `~/.memesh/knowledge-graph.db` — SQLite, on your disk. Recall and rule-based capture require no provider, API key, or model download.
 - **Back up = copy that one file.** Restore = copy it back.
 - **Pause capture anytime**: `export MEMESH_AUTO_CAPTURE=false`.
 - **Delete everything**: remove `~/.memesh/`.
@@ -418,14 +417,9 @@ All configuration is via environment variables. Defaults are local-only and zero
 |---|---|---|
 | `MEMESH_DB_PATH` | `~/.memesh/knowledge-graph.db` | Override the SQLite database location. |
 | `MEMESH_AUTO_CAPTURE` | `true` | Disable the auto-capture hooks (`Stop`, `PreCompact`) entirely. |
-| `MEMESH_AUTO_DETECT_LLM` | unset (auto-detect **on**) | Set to `0` to stop memesh using an API key it finds in your shell env. By default, if `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OLLAMA_HOST` is set and you have not configured a provider in `~/.memesh/config.json`, memesh uses it for write-side LLM features (lesson extraction, auto-tagging, dream). Embeddings are unaffected — they stay keyword-only (FTS5) unless you explicitly set `embedder.provider` to `ollama` or `openai`. |
 | `MEMESH_AUTO_UPDATE` | `off` | Auto-update policy. `off` (default) never auto-updates; `patch` allows `X.Y.Z → X.Y.Z+N`; `minor` adds `X.Y.Z → X.Y+1.0`; `major` allows any bump. When permitted, a detached `npm install -g` fires at session end (Stop hook) so it never blocks your work — outcomes land in `~/.memesh/auto-update.log`. Also settable as `autoUpdate` in `~/.memesh/config.json` (env wins). A maintainer deprecation warning never overrides `off`: update manually or choose a policy that permits the bump. |
-| `OPENAI_API_KEY` | unset | Your OpenAI key. Used automatically for LLM features unless you set `MEMESH_AUTO_DETECT_LLM=0` or configure a provider explicitly. |
-| `OLLAMA_HOST` | `http://localhost:11434` | Override the Ollama endpoint when using a local Ollama provider. |
 
 `memesh doctor` prints the resolved configuration so you can see what's active.
-
-**Fallback LLM providers (Smart Mode).** In the dashboard **Settings → "Fallback providers"** you can set an ordered failover chain — memesh tries each provider in turn when your primary is down. Add a local [Ollama](https://ollama.com) fallback, or a cloud one (OpenAI / Anthropic, with an API key). Privacy tradeoff: when a cloud fallback is used, memory text — which can be private — is sent to that provider, so it matters if you run local-only for privacy.
 
 When npm flags an installed version as deprecated (typically a security advisory), the next session-start prepends a strong `⚠️ MeMesh <ver> is DEPRECATED` banner and `memesh update-status` surfaces the same line until you upgrade. The check is cached at `~/.memesh/update-check.<version>.json` so a transient network failure can't dim the warning.
 
@@ -437,17 +431,17 @@ When npm flags an installed version as deprecated (typically a security advisory
 
 | Tab | What you see |
 |-----|-------------|
-| **Home** | What memesh did for you — dreamer insights lead: weekly recaps and pattern proposals with one-click accept/reject; the full analytics stack (Memory Health Score, 30-day timeline, PM velocity + KG connectivity, work patterns) folds into an on-demand expander |
-| **Memories** | The whole library behind one surface — instant filter plus Enter for server-ranked search (full-text + vector), scope chips for the work layer (goals/decisions/lessons/plans) vs evidence vs all vs archived, a cluster composition bar, per-row expandable detail (lessons keep their structured error/root-cause/fix/prevention view), archive/restore inline |
+| **Home** | The next useful action, pending work-package proposals with human accept/reject, and an on-demand analytics stack |
+| **Memories** | The whole library behind one surface — instant filter plus Enter for FTS5-ranked search, scope chips for work/evidence/all/archived, expandable details, and archive/restore inline |
 | **Project** | One project's history — the roadmap view (phases, milestones, key lessons) behind a project selector |
 | **Graph** | Interactive force-directed knowledge graph with type filters, search, ego mode, recency heatmap |
-| **Settings** | LLM provider config, instant language selector |
+| **Settings** | Update policy and status, plus an instant browser-local language selector |
 
 ---
 
 ## Smart Features
 
-**🧠 Smart Search** — Search "login security" and find memories about "OAuth PKCE". MeMesh uses FTS5 + sqlite-vec on the hot path, LLM-free, and the vector supplement still reaches across related wording.
+**🧠 Fast local search** — MeMesh uses SQLite FTS5 on the recall path. Query words are OR-ed and ranked with recency, frequency, confidence, and recall-impact signals; no provider or model is called.
 
 **🌏 Search in scripts that don't use spaces** — Chinese, Japanese, Korean, Thai, Lao, Khmer and half-width katakana are indexed as overlapping character pairs, so a memory written as 「資料庫遷移前一定要先備份」 is found by searching 「備份」 — not only by its exact full text. Text is normalised (NFC) on both the write and the query side, so memories typed on macOS or with a Korean or Vietnamese IME are found in either spelling.
 
@@ -455,9 +449,7 @@ When npm flags an installed version as deprecated (typically a security advisory
 
 **🔄 Knowledge Evolution** — Decisions change. `forget` archives old memories (never deletes). `supersedes` relations link old → new. Your AI always sees the latest version.
 
-**⚠️ Conflict Detection** — `memesh dream conflicts` has the LLM judge your semantically-closest memory pairs for contradiction, supersession or duplication, and stages what it finds as proposals. Nothing applies itself: you review with `dream list` / `dream show`, and only an accepted proposal creates the relation — after which every `recall` touching either memory carries the warning. Causality is never inferred from timestamps; verdicts come from what the memories actually say.
-
-**🕸️ Knowledge Graph Connectivity** — `memesh kg backfill-relations --all-rules` links orphan entities using tag co-occurrence, project clustering, session context, and name similarity — no LLM required.
+**🕸️ Knowledge Graph Connectivity** — `memesh kg backfill-relations --all-rules` links orphan entities using deterministic tag co-occurrence, project, session, and name-similarity rules.
 
 **📦 Personal backup and migration** — `memesh export > memesh-backup.json` → copy it to another machine → `memesh import memesh-backup.json`
 Imported bundles stay searchable, but MeMesh does not auto-inject imported memories into host context until you review or re-store them locally.
@@ -472,33 +464,17 @@ Imported bundles stay searchable, but MeMesh does not auto-inject imported memor
 > "I stored a decision from Claude Code and recalled it from Codex the next day. The same local memory followed my work instead of one agent."
 > — **Solo developer using multiple coding agents**
 
-> "The dashboard showed me that 90% of my memories were auto-generated session logs. I started using `remember` deliberately for architecture decisions. Game changer."
-> — **Developer who discovered the analytics panel**
-
 ---
 
 ## Recipes
 
-### Catch a contradiction before it bites
+### Turn current work into a reviewed memory
 
-Two decisions, made weeks apart, that cannot both be true — the failure mode
-a memory layer exists to catch:
-
-```bash
-memesh remember --name retry-policy --type decision \
-  --obs "All HTTP clients retry failed requests up to 5 times with exponential backoff."
-# ...weeks later, someone decides the opposite...
-memesh remember --name retry-policy-v2 --type decision \
-  --obs "HTTP clients must never retry automatically — fail fast and surface the error."
-
-memesh dream conflicts        # the judge flags the pair, with its reasoning
-memesh dream show 1           # read the verdict, the excerpts, what accepting creates
-memesh dream accept 1         # YOU decide — nothing is ever linked automatically
-memesh recall "retry policy"  # → Warning: Conflicts detected
-```
-
-From then on, any assistant that recalls either decision is told they
-conflict — instead of confidently quoting whichever one it found first.
+Ask an agent in the current project session to prepare one `work_package`.
+It can prepare one calendar-selected digest or one package from the newest
+session's visible turns, then submit one bounded result or defer. Submission
+only stages a proposal: inspect its complete detail in the Dashboard and accept
+or reject it yourself. The Dashboard cannot start or wake an agent.
 
 ### One memory, three assistants
 
@@ -529,45 +505,15 @@ consequences attached — reasoning you can follow, not just text that matched.
 
 ---
 
-## Unlock Smart Mode (Optional)
+## Agent-assisted work packages
 
-MeMesh works offline by default — recall stays strictly LLM-free (95.60% R@5 on LongMemEval-S out of the box). Add an LLM API key only if you want LLM-augmented analysis flows on top: smarter session extraction, auto-tagging of new memories, lesson generation from failures, and `dream` compression:
-
-```bash
-memesh config set llm.provider anthropic
-memesh config set llm.api-key sk-ant-...
-```
-
-Or use the dashboard Settings tab (visual setup):
-
-```bash
-memesh serve  # opens dashboard → Settings tab
-```
-
-**Mine your past sessions into memory.** `memesh dream run --from-transcripts` reads this project's Claude Code session transcripts, asks the LLM for the decisions and lessons buried in the conversation, and stages them as proposals — nothing enters your graph automatically. Review each with `memesh dream show <id>` and accept the ones worth keeping. To run it on a schedule, enable `memesh config set transcriptMining true` and point a cron/launchd entry at `memesh dream run --from-transcripts --if-due` — it self-throttles (default once every 24h per project) and stays staging-only. See [API_REFERENCE](docs/api/API_REFERENCE.md#memesh-dream).
-
-### Semantic search / embeddings (optional)
-
-By default MeMesh does **keyword-only** recall (FTS5) — no API key, no model download, nothing leaves your machine. Semantic (meaning-based) search is opt-in and needs an embedder. Point one of these at it:
-
-```bash
-memesh config set embedder.provider ollama          # local, needs `ollama serve`
-# or, for a hosted embedder:
-memesh config set embedder.provider openai
-```
-
-The embedder is configured **independently of the chat LLM** — changing `llm.provider` never silently changes your embeddings. Each provider pins its own model and width (`ollama` → nomic-embed-text at 768, `openai` → text-embedding-3-small at 1536); the model is not separately selectable, because a vector index is fixed at one width and a second model would put vectors from a different embedding space into it.
-
-If you switch to an embedder with a different dimension (e.g. 768 → 1536), **nothing is deleted**. MeMesh keeps the existing index and tells you on open to run `memesh reindex`, which builds the new index beside the old one and switches over only once every memory has a vector — so an interrupted rebuild costs you nothing and resumes where it stopped. During that window semantic search is off and recall runs on keyword search alone; `recall` reports this as `degraded` rather than implying it searched. Supported `embedder.provider` values: `ollama` (local), `openai` (hosted). With none set, recall stays on keyword search.
-
-| | Level 0 (default) | Level 1 (Smart Mode) |
-|---|---|---|
-| **Search** | FTS5 + sqlite-vec, 95.60% R@5 | unchanged — recall is LLM-free at every level |
-| **Auto-capture** | Rule-based patterns | + LLM extracts decisions & lessons |
-| **Auto-tagging** | Manual tags only | + LLM generates tags for new memories |
-| **Failure analysis** | Not available | + LLM converts session errors into structured lessons |
-| **Compression** | Not available | `dream` compress verbose memories |
-| **Cost** | Free, no API key | ~$0.0001 per analysis call (Haiku) |
+MeMesh recall and capture stay local and deterministic: SQLite FTS5 search,
+explicit memory tools, and rule-based hooks. When a digest would help, or useful
+knowledge remains in the visible conversation, an already-running agent can use
+`work_package`. On hosts with interactive prompts, the concise choices are
+**Dispatch agent task**, **Later**, and **Don't suggest again**. The result is
+always pending human review; there is no background model, provider setup,
+scheduled mining, or dashboard-side dispatch.
 
 ---
 
@@ -577,7 +523,7 @@ If you switch to an embedder with a different dimension (e.g. 768 → 1536), **n
 |------|-------------|
 | `work_package` | Prepare one bounded untrusted package: `digest` selects a calendar cluster, `transcript` selects visible turns from the newest project session. An agent submits exactly one strict result or defers; submit only stages pending human review. No hidden reasoning, raw transcript, path, API key, LLM, embedding, or vector data is exposed or used; agents cannot apply or reject, and hashes identify freshness rather than authentication. |
 | `remember` | Store knowledge with observations, relations, and tags |
-| `recall` | FTS5 + sqlite-vec search with multi-factor scoring (relevance, recency, frequency, confidence, recall impact) — no LLM in the hot path |
+| `recall` | Local FTS5 search with multi-factor scoring (relevance, recency, frequency, confidence, recall impact) |
 | `forget` | Soft-archive (never deletes) or remove specific observations |
 | `export` | Back up, migrate, or move memories as JSON between compatible agents |
 | `import` | Import memories with merge strategies (skip / overwrite / append) |
@@ -603,7 +549,7 @@ If you switch to an embedder with a different dimension (e.g. 768 → 1536), **n
            │                 │                 │
            └─────────────────┼─────────────────┘
                              │
-                    SQLite + FTS5 + sqlite-vec
+                    SQLite + FTS5
                     (~/.memesh/knowledge-graph.db)
 ```
 
@@ -653,6 +599,12 @@ Session start surfaces a one-line banner (throttled to once per 24h per version)
 ---
 
 ## Contributing
+
+Found a bug or have a question? Run `memesh feedback --bug`, `--feature`, or
+`--question`. MeMesh previews the body of the public GitHub issue before opening
+your browser. Add `--no-diagnostics` to omit the redacted doctor report and
+anonymous install ID, or `--no-open` to print the URL without launching a browser.
+MeMesh never submits the issue: review and edit the draft in GitHub, then submit it yourself.
 
 ```bash
 git clone https://github.com/PCIRCLE-AI/memesh

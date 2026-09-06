@@ -16,8 +16,8 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 type: z.ZodEnum<{
                     lesson_learned: "lesson_learned";
                     decision: "decision";
-                    fact: "fact";
                     digest: "digest";
+                    fact: "fact";
                 }>;
                 observations: z.ZodArray<z.ZodString>;
                 tags: z.ZodArray<z.ZodString>;
@@ -37,11 +37,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
             }, z.core.$strict>], "kind">;
             action: z.ZodLiteral<"submit">;
         }, z.core.$strict>, z.ZodObject<{
-            reason: z.ZodEnum<{
-                insufficient_evidence: "insufficient_evidence";
-                not_now: "not_now";
-                irrelevant: "irrelevant";
-            }>;
+            reason: z.ZodLiteral<"not_now">;
             package_id: z.ZodString;
             ref: z.ZodDiscriminatedUnion<[z.ZodObject<{
                 kind: z.ZodLiteral<"digest">;

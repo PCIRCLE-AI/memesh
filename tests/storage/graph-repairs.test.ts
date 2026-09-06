@@ -542,7 +542,6 @@ describe('#241 — lessons fused into one -other bucket are split apart', () => 
     expect(notes.join('')).toContain('moved 1 lesson(s)');
     expect(observations(db, `lesson-proj-${lessonSlug('the other')}`)).toEqual(['Error: the other', 'Root cause: a', 'Fix: b', 'Prevention: c']);
     expect(statusOf(db, 'lesson-proj-the-other')).toBe('archived');
-    expect(db.prepare("SELECT value FROM memesh_metadata WHERE key = 'pending_reindex'").get()).toBeDefined();
     closeDatabase();
   });
 
@@ -727,10 +726,10 @@ describe('dropArchivedIndexRows — archived rows leave the FTS index (D12)', ()
     expect(runInvariants().status).toBe(0);
   });
 
-  it('repairs FTS when entities_vec is absent', () => {
+  it('repairs FTS without a vector table', () => {
     seedLeakedArchive();
     const db = repaired();
-    db.exec('DROP TABLE entities_vec');
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'entities_vec'").get()).toBeUndefined();
     db.prepare('DELETE FROM memesh_metadata WHERE key LIKE ?').run(`${ARCHIVED_FTS_ROWS_KEY}%`);
     // Re-leak the FTS row the first open's repair already cleaned, so the FTS
     // half has real work to do on this run.

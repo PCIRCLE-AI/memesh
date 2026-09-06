@@ -133,8 +133,8 @@ export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectName, 
  *
  * Hooks live at `<pkgRoot>/scripts/hooks/<file>.js`, so the path needs
  * three `dirname()` hops to reach `<pkgRoot>`. Centralising this here
- * prevents the off-by-one regression that silently disabled noise
- * compression and LLM failure analysis between 4.0.4–4.1.0 (the inline
+ * prevents the off-by-one regression that silently disabled hook-to-core
+ * imports between 4.0.4–4.1.0 (the inline
  * `dirname(dirname(...))` only reached `<pkgRoot>/scripts`, and the
  * surrounding `catch` swallowed the resulting ENOENT).
  *
@@ -163,7 +163,7 @@ export function resolvePluginRoot(metaUrl) {
  *
  * That error is caught by each caller's surrounding try/catch and only
  * traced to stderr, so on Windows every hook that reaches for a dist module
- * — LLM failure analysis, lesson creation, dream auto-trigger, auto-decay —
+ * — lifecycle reads, lesson creation, and auto-decay —
  * silently did nothing, while macOS/Linux and `memesh doctor` stayed green.
  * A textbook fake-working boundary: the discipline of converting the path
  * (already applied to the install-channel import above via
@@ -363,19 +363,15 @@ export function openHookDb(env = process.env, opts = {}) {
   const dbDir = env.MEMESH_DB_PATH ? dirname(env.MEMESH_DB_PATH) : memeshDir();
   if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
 
-  // `allowExtension` matches src/db.ts: it only permits a later
-  // `enableLoadExtension(true)`, and session-summary.js needs one to load
-  // sqlite-vec through this handle. The switch itself stays off.
-  const db = new MemeshDatabase(dbPath, { allowExtension: true });
+  const db = new MemeshDatabase(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   // A hook waits for a held write lock for less time than Claude Code will
   // wait for the hook.
   //
-  // `MemeshDatabase` sets `busy_timeout = 30000`, and that number is right
-  // for the processes it was chosen for: a 30k-vector `swapVectorGeneration`
-  // holds the write lock for ~9s, and the CLI, the MCP server and the HTTP
-  // server should WAIT for it rather than fail. A hook cannot. Its budget in
+  // `MemeshDatabase` sets `busy_timeout = 30000`, which lets ordinary CLI,
+  // MCP and HTTP operations wait through brief write contention. A hook
+  // cannot use that whole budget. Its timeout in
   // `hooks/hooks.json` is 3s (UserPromptSubmit) to 10s (Stop, PreCompact),
   // so a 30s wait has exactly one possible ending: the harness kills the
   // hook. The capture is lost either way — the difference is that the user
@@ -559,9 +555,8 @@ export { truncateTitle } from './_generated/title.js';
  * as two implementations of the same contract).
  *
  * The caller MUST open its DB with `openHookDb(env, { fts: true })` so the FTS
- * table is guaranteed present. Embeddings + auto-tagging + signal-scoring are
- * deliberately NOT done here: hooks are cheap always-on capture, and those are
- * the heavier, user-initiated `remember` concerns (core owns them).
+ * table is guaranteed present. Signal scoring is deliberately not done here:
+ * hooks stay a cheap always-on capture path and core owns later enrichment.
  *
  * @param {import('./_generated/sqlite.js').MemeshDatabase} db - an open hook DB handle
  * @param {{name: string, type: string, observations?: string[], tags?: string[], title?: string | null, metadata?: Record<string, unknown>}} entity
@@ -601,10 +596,9 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // earlier writer (possibly another host, via MCP) already recorded.
   //
   // title_source: every title a hook writes is machine-derived, so it is
-  // marked 'heuristic'. The mark is what lets a later LLM titling pass
-  // (dreamer backfill) know which titles it may replace — an UNMARKED title
-  // is treated as human-provided and never touched, so omitting the mark
-  // here would make today's date+verb titles permanent.
+  // marked 'heuristic'. The mark distinguishes generated display text from an
+  // unmarked human-provided title, so later reviewed edits can preserve the
+  // ownership boundary.
   const insertMetadata = { ...(metadata ?? {}), provenance: { source_host: 'claude-code' } };
   if (title != null) insertMetadata.title_source = 'heuristic';
   const insertResult = db

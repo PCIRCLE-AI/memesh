@@ -1,16 +1,14 @@
 #!/usr/bin/env node
-import { Command, Option } from 'commander';
+import { Command } from 'commander';
 import { randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { openDatabase, closeDatabase, getDatabase, reindexFts, readVectorGeneration, generationRowIds, discardVectorGeneration, } from '../../db.js';
-import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, reindex, setPinned } from '../../core/operations.js';
-import { readConfig, writeConfig, maskApiKey, detectCapabilities } from '../../core/config.js';
-import { MAX_LANGUAGE_LENGTH, languageValueError } from '../../core/output-language.js';
+import { openDatabase, closeDatabase, getDatabase, reindexFts, } from '../../db.js';
+import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
+import { readConfig, updateConfig } from '../../core/config.js';
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
-import { flushPendingEmbeddings, canRefillVectorIndex } from '../../core/embedder.js';
 import { NAMESPACES } from '../../core/types.js';
 import { assembleBriefing } from '../../core/briefing.js';
 import { inspectHosts, allWired } from '../../core/setup.js';
@@ -37,7 +35,6 @@ async function withDatabase(fn) {
         return await fn();
     }
     finally {
-        await flushPendingEmbeddings();
         closeDatabase();
     }
 }
@@ -243,27 +240,12 @@ program
             console.log(JSON.stringify(conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval }));
         }
         else if (entities.length === 0) {
-            if (query && retrieval.degraded) {
-                console.log('No results found. Semantic search is configured but could not run for this query (provider or index issue) — this was keyword-only. Run `memesh doctor` to check.');
-            }
-            else if (query && retrieval.mode === 'fts') {
-                console.log('No results found. This was a keyword-only search — no semantic search is configured. See `memesh doctor` for Smart Mode.');
-            }
-            else {
-                console.log('No results found.');
-            }
+            console.log(query ? 'No results found in the keyword index.' : 'No results found.');
         }
         else {
-            const allSemantic = query && entities.every((e) => e.match?.source === 'semantic');
-            if (allSemantic) {
-                console.log('No keyword matches. Closest memories by meaning — may be unrelated:');
-            }
             for (const e of entities) {
                 const badge = e.archived ? ' [archived]' : '';
-                const semantic = e.match?.source === 'semantic'
-                    ? ` (~${Math.round((e.match.relevance ?? 0) * 100)}% semantic)`
-                    : '';
-                console.log(`  ${e.name}${badge} (${e.type})${semantic}`);
+                console.log(`  ${e.name}${badge} (${e.type})`);
                 for (const obs of e.observations.slice(0, 3)) {
                     let shown = obs;
                     if (obs.length > 500) {
@@ -280,9 +262,6 @@ program
             }
             const truncatedNote = retrieval.truncated ? ' (limit reached — more may exist)' : '';
             console.log(`\n${entities.length} result(s)${truncatedNote}`);
-            if (retrieval.degraded) {
-                console.log('Warning: semantic search unavailable right now — keyword-only results (degraded). Run `memesh doctor` to see why.');
-            }
             if (conflicts.length > 0) {
                 console.log('\nWarning: Conflicts detected:');
                 for (const c of conflicts) {
@@ -344,54 +323,8 @@ function registerPinCommand(name, description, pinned, onFound) {
         });
     });
 }
-registerPinCommand('pin', 'Protect an entity from the dreamer’s auto-compaction', true, (e) => `📌 Pinned "${e}" — the dreamer will not compact it`);
-registerPinCommand('unpin', 'Allow the dreamer to auto-compact an entity again', false, (e) => `📍 Unpinned "${e}"`);
-program
-    .command('consolidate')
-    .description('(retired) Use `memesh dream` — see the message this prints')
-    .allowUnknownOption()
-    .action(() => {
-    console.error('`memesh consolidate` has been retired.');
-    console.error('');
-    console.error('It rewrote a memory with an LLM summary and deleted the originals on the spot —');
-    console.error('no proposal, no review, and nothing to restore from if the summary was wrong.');
-    console.error('');
-    console.error('`memesh dream` is the reviewed version of the same idea:');
-    console.error('  memesh dream run       propose digests for clusters of noisy memories');
-    console.error('  memesh dream list      see what it proposed');
-    console.error('  memesh dream accept <id> / reject <id>');
-    console.error('');
-    console.error('Nothing is changed until you accept a proposal, and sources are archived');
-    console.error('rather than deleted. It works on episodic memories (commits, session notes)');
-    console.error('and never touches lessons, decisions, architecture notes, or pinned entities —');
-    console.error('so it is not a like-for-like replacement for compressing one named entity.');
-    process.exitCode = 1;
-});
-program
-    .command('verify')
-    .description('(retired) Removed with the agentic-orchestration experiment — see the message this prints')
-    .allowUnknownOption()
-    .action(() => {
-    console.error('`memesh verify` has been retired, along with the agentic-orchestration experiment.');
-    console.error('');
-    console.error('It recorded a verification report for background-agent work. The protocol it');
-    console.error('served was removed without ever leaving opt-in. Run your own verification');
-    console.error('(typecheck / tests / lint) and store conclusions with `memesh remember` if you');
-    console.error('want them remembered. Existing verification_record entities are untouched.');
-    process.exitCode = 1;
-});
-program
-    .command('patterns')
-    .description('(retired) Removed with the agentic-orchestration experiment — see the message this prints')
-    .allowUnknownOption()
-    .action(() => {
-    console.error('`memesh patterns` has been retired, along with the agentic-orchestration experiment.');
-    console.error('');
-    console.error('It displayed the experiment\'s local skill-usage telemetry, which is no longer');
-    console.error('written. A leftover ~/.memesh/skill-usage.jsonl is inert and safe to delete.');
-    console.error('For work-pattern insights, use the `user_patterns` MCP tool or GET /v1/patterns.');
-    process.exitCode = 1;
-});
+registerPinCommand('pin', 'Exclude an entity from digest work packages', true, (e) => `📌 Pinned "${e}" — excluded from digest work packages`);
+registerPinCommand('unpin', 'Allow an entity in digest work packages again', false, (e) => `📍 Unpinned "${e}"`);
 program
     .command('export')
     .description('Export memories as JSON. Defaults to stdout (pipe-friendly); use `-o <file>` to write directly.')
@@ -1113,7 +1046,6 @@ configCmd
     .description('Show current configuration')
     .action(() => {
     const config = readConfig();
-    const caps = detectCapabilities(config);
     console.log('Configuration (~/.memesh/config.json):');
     const rows = buildConfigListing(config);
     if (rows.length === 0) {
@@ -1123,126 +1055,29 @@ configCmd
         for (const { key, value } of rows)
             console.log(`  ${key}: ${value}`);
     }
-    console.log(`\nSearch level: ${caps.searchLevel} (${caps.searchLevel === 1 ? 'Smart Mode' : 'Core'})`);
 });
-const SET_KEY_ALIASES = {
-    'llm.api-key': 'llm.apiKey',
-};
-const ALLOWED_KEYS = new Set([
-    'llm.provider',
-    'llm.apiKey',
-    'llm.model',
-    'embedder.provider',
-    'autoUpdate',
-    'sessionLimit',
-    'autoCapture',
-    'llmFallbacks',
-    'language',
-    'transcriptMining',
-]);
+const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture']);
 const KEY_VALIDATORS = {
-    'llm.provider': (v) => ['anthropic', 'openai', 'ollama'].includes(v) ? null : `must be one of: anthropic, openai, ollama`,
-    'language': (v) => {
-        if (v.trim().length === 0)
-            return 'must not be blank — use `memesh config unset language` to clear it';
-        if (v.length > MAX_LANGUAGE_LENGTH)
-            return `must be ${MAX_LANGUAGE_LENGTH} characters or fewer (a language name or locale code)`;
-        return languageValueError(v);
-    },
-    'embedder.provider': (v) => ['openai', 'ollama'].includes(v) ? null : `must be one of: openai, ollama`,
-    'autoUpdate': (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : `must be one of: off, patch, minor, major`,
-    'autoCapture': (v) => ['true', 'false', '1', '0'].includes(v) ? null : `must be one of: true, false, 1, 0`,
-    'transcriptMining': (v) => ['true', 'false', '1', '0'].includes(v) ? null : `must be one of: true, false, 1, 0`,
-    'llmFallbacks': (v) => {
-        let parsed;
-        try {
-            parsed = JSON.parse(v);
-        }
-        catch {
-            return 'must be a JSON array, e.g. \'[{"provider":"openai","model":"gpt-4o-mini","apiKey":"sk-..."}]\'';
-        }
-        if (!Array.isArray(parsed))
-            return 'must be a JSON ARRAY of provider objects';
-        for (const entry of parsed) {
-            if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-                return 'every entry must be an object like {"provider":"openai"}';
-            }
-            const provider = entry.provider;
-            if (!['anthropic', 'openai', 'ollama'].includes(String(provider))) {
-                return `every entry needs provider = anthropic | openai | ollama (got ${JSON.stringify(provider)})`;
-            }
-        }
-        return null;
-    },
+    autoUpdate: (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : 'must be one of: off, patch, minor, major',
+    autoCapture: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
 };
-function setNested(obj, path, value) {
-    let cur = obj;
-    for (let i = 0; i < path.length - 1; i++) {
-        const part = path[i];
-        if (typeof cur[part] !== 'object' || cur[part] === null) {
-            cur[part] = {};
-        }
-        cur = cur[part];
-    }
-    cur[path[path.length - 1]] = value;
-}
-function getNested(obj, path) {
-    return path.reduce((cur, part) => (cur && typeof cur === 'object' ? cur[part] : undefined), obj);
-}
-const REDACTED = '***';
-function formatConfigValue(key, raw) {
-    if (key.toLowerCase().includes('key'))
-        return REDACTED;
-    if (key === 'llmFallbacks' && Array.isArray(raw)) {
-        const redacted = raw.map((fb) => {
-            if (fb && typeof fb === 'object') {
-                const { apiKey, ...rest } = fb;
-                return apiKey ? { ...rest, apiKey: REDACTED } : rest;
-            }
-            return fb;
-        });
-        return JSON.stringify(redacted);
-    }
-    if (typeof raw === 'object')
-        return JSON.stringify(raw);
-    return String(raw);
-}
 function buildConfigListing(config) {
     const rows = [];
     for (const key of Array.from(ALLOWED_KEYS).sort()) {
-        const raw = getNested(config, key.split('.'));
+        const raw = config[key];
         if (raw === undefined || raw === null)
             continue;
-        rows.push({ key, value: formatConfigValue(key, raw) });
+        rows.push({ key, value: String(raw) });
     }
     return rows;
 }
-function deleteNested(obj, path) {
-    if (path.length === 0)
-        return false;
-    if (path.length === 1) {
-        if (path[0] in obj) {
-            delete obj[path[0]];
-            return true;
-        }
-        return false;
-    }
-    const head = path[0];
-    if (typeof obj[head] !== 'object' || obj[head] === null)
-        return false;
-    const child = obj[head];
-    const removed = deleteNested(child, path.slice(1));
-    if (removed && Object.keys(child).length === 0)
-        delete obj[head];
-    return removed;
-}
 configCmd
     .command('set')
-    .description('Set a config value (e.g. llm.provider, embedder.provider)')
+    .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate)')
     .argument('<key>', 'Config key — see `memesh config list` for valid keys')
     .argument('<value>', 'Config value')
     .action((key, value) => {
-    const canonical = SET_KEY_ALIASES[key] ?? key;
+    const canonical = key;
     if (!ALLOWED_KEYS.has(canonical)) {
         console.error(`Unknown key: ${key}`);
         console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
@@ -1260,42 +1095,30 @@ configCmd
     if (canonical === 'sessionLimit') {
         coerced = wholeNumber('sessionLimit')(value);
     }
-    if (canonical === 'llmFallbacks')
-        coerced = JSON.parse(value);
     if (canonical === 'autoCapture') {
         coerced = value === 'true' || value === '1';
     }
-    if (canonical === 'transcriptMining') {
-        coerced = value === 'true' || value === '1';
-    }
-    const config = readConfig();
-    setNested(config, canonical.split('.'), coerced);
-    writeConfig(config);
-    const displayValue = canonical.toLowerCase().includes('key') ? maskApiKey(String(value)) : String(value);
+    updateConfig({ [canonical]: coerced });
+    const displayValue = String(value);
     console.log(`✅ Set ${canonical} = ${displayValue}`);
-    if (canonical === 'llm.apiKey' && !config.llm?.provider) {
-        console.log('⚠️  No llm.provider is set, so this key is not used yet and LLM features stay off.');
-        console.log('    Set one with: memesh config set llm.provider <anthropic|openai|ollama>');
-    }
 });
 configCmd
     .command('unset')
-    .description('Remove a config value (supports nested keys like llm.apiKey)')
+    .description('Remove a config value (ordinary settings only)')
     .argument('<key>', 'Config key — see `memesh config list` for valid keys')
     .action((key) => {
-    const canonical = SET_KEY_ALIASES[key] ?? key;
+    const canonical = key;
     if (!ALLOWED_KEYS.has(canonical)) {
         console.error(`Unknown key: ${key}`);
         console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
         process.exit(1);
     }
-    const config = readConfig();
-    const removed = deleteNested(config, canonical.split('.'));
+    const removed = canonical in readConfig();
+    updateConfig({ [canonical]: undefined });
     if (!removed) {
         console.log(`(no change — ${canonical} was not set)`);
         return;
     }
-    writeConfig(config);
     console.log(`✅ Removed ${canonical}`);
 });
 program
@@ -1453,77 +1276,12 @@ program
     }
     process.exit(run.status ?? 1);
 });
-program
-    .command('telemetry')
-    .description('Show LLM call telemetry (per-flow scorecard for the last N days)')
-    .option('--window <days>', 'Look-back window in days (default 30)', wholeNumber('--window'), 30)
-    .option('--prune <days>', 'Delete rows older than N days BEFORE rendering (closes v4.2.0 retention gap)', wholeNumber('--prune', 0))
-    .option('--json', 'Output as JSON')
-    .action(async (opts) => {
-    await withDatabase(async () => {
-        const { summariseTelemetry, pruneTelemetry } = await import('../../core/llm-telemetry.js');
-        let pruneResult = null;
-        if (typeof opts.prune === 'number' && Number.isFinite(opts.prune) && opts.prune >= 0) {
-            pruneResult = pruneTelemetry({ olderThanDays: opts.prune });
-        }
-        const summaries = summariseTelemetry(opts.window);
-        if (opts.json) {
-            console.log(JSON.stringify({ pruned: pruneResult, summaries }, null, 2));
-            return;
-        }
-        if (pruneResult) {
-            console.log(`Pruned ${pruneResult.deletedRows} row${pruneResult.deletedRows === 1 ? '' : 's'} older than ${opts.prune} days.`);
-            console.log('');
-        }
-        if (summaries.length === 0) {
-            console.log(`No LLM telemetry recorded in the last ${opts.window} days.`);
-            console.log(`(Smart-Mode flows write rows automatically — run \`memesh dream run\`, \`memesh dream patterns\`, or trigger a session with errors to populate.)`);
-            return;
-        }
-        console.log(`LLM telemetry — last ${opts.window} days`);
-        console.log('');
-        for (const s of summaries) {
-            const successRate = s.total_attempts > 0 ? Math.round((s.successes / s.total_attempts) * 100) : 0;
-            console.log(`▸ ${s.flow}`);
-            console.log(`    calls:        ${s.total_calls} (${s.total_attempts} provider attempts)`);
-            console.log(`    success rate: ${successRate}%  (${s.successes} ok, ${s.failures} failed)`);
-            if (s.fallback_used > 0) {
-                console.log(`    fallback used: ${s.fallback_used} time${s.fallback_used === 1 ? '' : 's'}  ⚠️  primary failed`);
-            }
-            if (s.median_latency_ms != null) {
-                console.log(`    median latency: ${s.median_latency_ms}ms`);
-            }
-            const okFail = (rec) => Object.entries(rec).map(([k, v]) => `${k}=${v.ok}/${v.ok + v.fail}`).join(', ');
-            const providers = okFail(s.by_provider);
-            if (providers)
-                console.log(`    by provider:  ${providers}`);
-            const models = okFail(s.by_model);
-            if (models)
-                console.log(`    by model:     ${models}`);
-            const projects = okFail(s.by_project);
-            if (projects)
-                console.log(`    by project:   ${projects}`);
-            const errors = Object.entries(s.by_error_class);
-            if (errors.length > 0) {
-                const errStr = errors.sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c}=${n}`).join(', ');
-                console.log(`    error classes: ${errStr}`);
-            }
-            if (s.sample_errors.length > 0) {
-                console.log(`    recent errors:`);
-                for (const e of s.sample_errors) {
-                    console.log(`      • [${e.error_class ?? 'unknown'}] ${e.message.slice(0, 100)}`);
-                }
-            }
-            console.log('');
-        }
-    });
-});
 const kgCmd = program
     .command('kg')
     .description('Knowledge graph maintenance');
 kgCmd
     .command('backfill-relations')
-    .description('Propose / apply heuristic relations to connect orphan entities (no LLM)')
+    .description('Propose / apply deterministic relations to connect orphan entities')
     .option('--project <name>', 'Restrict to one project')
     .option('--dry-run', 'Show proposals without writing (default off — use to preview)')
     .option('--max-per-source <n>', 'Max edges per orphan (default 3)', wholeNumber('--max-per-source'), 3)
@@ -1685,7 +1443,6 @@ program
     .description('Verify local install health and show actionable fixes')
     .option('--json', 'Output machine-readable diagnostics as JSON')
     .option('--probe-http', 'Also probe the local HTTP server health endpoint')
-    .option('--probe', 'Make one small live call to the configured LLM to confirm it actually answers')
     .option('--url <url>', 'Base URL for --probe-http', 'http://127.0.0.1:3737')
     .option('--fix', 'Apply the whitelisted fixes doctor prescribes (asks per fix; --yes skips asking)')
     .option('--yes', 'With --fix: apply without asking')
@@ -1695,7 +1452,6 @@ program
         packageRoot,
         packageVersion: pkg.version,
         probeHttp: opts.probeHttp,
-        probeCapabilities: opts.probe,
         httpBaseUrl: opts.url,
     });
     if (opts.fix) {
@@ -1753,7 +1509,6 @@ program
                 packageRoot,
                 packageVersion: pkg.version,
                 probeHttp: false,
-                probeCapabilities: false,
                 httpBaseUrl: opts.url,
             });
             for (const c of result.checks) {
@@ -1779,207 +1534,7 @@ program
         process.exitCode = 1;
     }
 });
-const dreamCmd = program.command('dream').description('Consolidate noisy episodic memories into digests (LLM-driven, opt-in review)');
-dreamCmd
-    .command('run', { isDefault: true })
-    .description('Run a dream pass — propose digests for clusters of compactable entities')
-    .option('--project <name>', 'Restrict to one project')
-    .option('--dry-run', 'Compute proposals without writing to dream_proposals')
-    .option('--max-llm-calls <n>', 'Hard cap on LLM calls (default 100)', wholeNumber('--max-llm-calls'))
-    .option('--window-days <n>', 'Look-back window in days (default 56 = 8 weeks)', wholeNumber('--window-days'))
-    .option('--validate', 'Run a second LLM pass to cross-check each digest against its sources (doubles LLM calls per proposal; surfaces under flow=digest_validator in `memesh telemetry`)')
-    .option('--from-transcripts', 'EXPERIMENTAL: mine Claude Code session transcripts for this project (decisions/lessons/facts hidden in the conversation) and STAGE them as proposals for `dream accept`, instead of clustering existing entities. Scoped to the current project only — --project does not apply here. With --dry-run, lists sessions and conversation-turn counts without calling an LLM.')
-    .option('--if-due', 'For a scheduler (cron/launchd): only mine if `transcriptMining` is enabled in config AND at least --min-interval-hours have passed since this project was last mined; otherwise exit 0 doing nothing. Lets one frequently-firing entry self-throttle. Only meaningful with --from-transcripts.')
-    .option('--min-interval-hours <n>', 'With --if-due: minimum hours between mined runs for this project (default 24).', wholeNumber('--min-interval-hours'))
-    .action(async (opts) => {
-    if (opts.fromTranscripts) {
-        const windowDays = typeof opts.windowDays === 'number' && !Number.isNaN(opts.windowDays) ? opts.windowDays : 3;
-        if (opts.dryRun) {
-            const { scanTranscripts } = await import('../../core/transcript-source.js');
-            const { countConversationTurns } = await import('../../core/transcript-extractor.js');
-            const sessions = scanTranscripts({ windowDays });
-            console.log(`[dry-run] transcript sessions for this project in the last ${windowDays} day(s): ${sessions.length}`);
-            let totalTurns = 0;
-            for (const s of sessions) {
-                const turns = countConversationTurns(s.path);
-                totalTurns += turns;
-                console.log(`  ${s.sessionId}  ${turns} conversation turns  ${s.lineCount} lines  ${(s.sizeBytes / 1024).toFixed(0)}KB  ${s.modifiedAt}`);
-            }
-            console.log(`  total: ${totalTurns} conversation turns across ${sessions.length} session(s)`);
-            console.log('');
-            console.log('Run without --dry-run to extract high-value memories and stage them as proposals.');
-            return;
-        }
-        if (opts.ifDue) {
-            const { isTranscriptMiningEnabled } = await import('../../core/config.js');
-            if (!isTranscriptMiningEnabled(readConfig())) {
-                console.log('Scheduled transcript mining is off (opt-in). Enable it with `memesh config set transcriptMining true`; this scheduled run will then start mining when due.');
-                return;
-            }
-            const { getProjectName } = await import('../../core/paths.js');
-            const { lastTranscriptMineAt, transcriptMiningDue } = await import('../../core/transcript-source.js');
-            const projectKey = getProjectName(process.cwd());
-            const intervalH = typeof opts.minIntervalHours === 'number' && !Number.isNaN(opts.minIntervalHours) ? opts.minIntervalHours : 24;
-            const last = lastTranscriptMineAt(projectKey);
-            if (!transcriptMiningDue(Date.now(), last, intervalH)) {
-                const agoH = last === null ? null : (Date.now() - last) / 3600_000;
-                console.log(`Not due yet: this project was mined ${agoH === null ? 'recently' : `${agoH.toFixed(1)}h ago`}; interval is ${intervalH}h. Nothing to do.`);
-                return;
-            }
-        }
-        if (opts.project) {
-            console.log('note: --project does not scope --from-transcripts — the transcript source is always the current project. Ignoring --project.');
-        }
-        await withDatabase(async () => {
-            const { runTranscriptSource } = await import('../../core/transcript-extractor.js');
-            const { getDatabase } = await import('../../db.js');
-            const cfg = readConfig();
-            const llm = detectCapabilities().llm;
-            if (!llm) {
-                console.error('No LLM configured. Run `memesh config set llm.provider <anthropic|openai|ollama>` first (or set ANTHROPIC_API_KEY / OPENAI_API_KEY).');
-                console.error('LLM is required for `--from-transcripts` because extracting durable memory from prose is a semantic decision, not a rule.');
-                process.exit(1);
-            }
-            const result = await runTranscriptSource(getDatabase(), llm, {
-                windowDays,
-                maxLlmCalls: opts.maxLlmCalls,
-                fallbacks: cfg.llmFallbacks,
-            });
-            const { getProjectName } = await import('../../core/paths.js');
-            const { recordTranscriptMine } = await import('../../core/transcript-source.js');
-            recordTranscriptMine(getProjectName(process.cwd()), Date.now());
-            console.log(`Transcript mining complete in ${result.durationMs}ms`);
-            console.log(`  sessions scanned:    ${result.sessionsScanned}`);
-            console.log(`  LLM calls:           ${result.llmCalls}`);
-            console.log(`  candidates extracted: ${result.candidatesExtracted}`);
-            console.log(`  proposals created:   ${result.proposalsCreated}`);
-            if (result.duplicatesSkipped > 0)
-                console.log(`  duplicates skipped:  ${result.duplicatesSkipped} (already a pending proposal)`);
-            if (result.nearDuplicatesSkipped > 0) {
-                console.log(`  near-duplicates skipped: ${result.nearDuplicatesSkipped} candidate(s) skipped as near-duplicates of existing memories`);
-                for (const d of result.nearDuplicates) {
-                    console.log(`    - "${d.candidateName}" ~= existing "${d.matchedEntityName}" (distance ${d.distance.toFixed(3)})`);
-                }
-            }
-            if (result.secretsDropped > 0)
-                console.log(`  secret-bearing candidates dropped: ${result.secretsDropped}`);
-            if (result.llmFailures > 0)
-                console.log(`  LLM call failures:   ${result.llmFailures} (sessions not mined — retry when the provider is reachable)`);
-            if (result.parseFailures > 0)
-                console.log(`  unparsable replies:  ${result.parseFailures} (chunk reply not valid JSON — likely truncated; those candidates were lost, retry)`);
-            if (result.cappedTurns > 0) {
-                console.log(`  per-turn cap: ${result.cappedTurns} turn(s) were analysed only in part `
-                    + `(the first 4,000 characters); the rest of each was not sent`);
-            }
-            if (result.truncatedTurns > 0) {
-                console.log(`  size-cap truncation: ${result.truncatedTurns} conversation turn(s) beyond the cap were NOT analysed`);
-                for (const t of result.truncatedSessions) {
-                    console.log(`    - session ${t.sessionId}: ${t.truncatedTurns} tail turn(s) not analysed`);
-                }
-            }
-            if (result.skipped.length > 0) {
-                const reasonCounts = new Map();
-                for (const s of result.skipped)
-                    reasonCounts.set(s.reason, (reasonCounts.get(s.reason) ?? 0) + 1);
-                console.log(`  skipped:             ${result.skipped.length}`);
-                for (const [reason, n] of reasonCounts)
-                    console.log(`    - ${reason}${n > 1 ? ` (×${n})` : ''}`);
-            }
-            if (result.proposalsCreated > 0) {
-                console.log('');
-                console.log('Review with: memesh dream list');
-                console.log('Accept:      memesh dream accept <id>');
-            }
-        });
-        return;
-    }
-    await withDatabase(async () => {
-        const { runDreamer } = await import('../../core/dreamer.js');
-        const { getDatabase } = await import('../../db.js');
-        const cfg = readConfig();
-        const llm = detectCapabilities().llm;
-        if (!llm) {
-            console.error('No LLM configured. Run `memesh config set llm.provider <anthropic|openai|ollama>` first (or set ANTHROPIC_API_KEY / OPENAI_API_KEY).');
-            console.error('LLM is required for `memesh dream` because consolidation is a semantic decision, not a rule.');
-            process.exit(1);
-        }
-        const result = await runDreamer(getDatabase(), llm, {
-            project: opts.project,
-            dryRun: !!opts.dryRun,
-            maxLlmCalls: opts.maxLlmCalls,
-            windowDays: opts.windowDays,
-            fallbacks: cfg.llmFallbacks,
-            validateBeforeStage: !!opts.validate,
-        });
-        console.log(`${opts.dryRun ? '[dry-run] ' : ''}Dream pass complete in ${result.durationMs}ms`);
-        console.log(`  clusters scanned: ${result.clustersScanned}`);
-        if (result.clusteringMode) {
-            console.log(`  grouped by:       ${result.clusteringMode === 'semantic' ? 'meaning (embeddings)' : 'calendar week (no embeddings)'}`);
-        }
-        if (result.clusteringNote)
-            console.log(`    note: ${result.clusteringNote}`);
-        console.log(`  LLM calls:        ${result.llmCalls}`);
-        console.log(`  proposals created: ${result.proposalsCreated}`);
-        if (result.skipped.length > 0) {
-            console.log(`  skipped:           ${result.skipped.length}`);
-            const reasonCounts = new Map();
-            for (const s of result.skipped) {
-                reasonCounts.set(s.reason, (reasonCounts.get(s.reason) ?? 0) + 1);
-            }
-            for (const [reason, n] of reasonCounts) {
-                console.log(`    - ${reason}${n > 1 ? ` (×${n})` : ''}`);
-            }
-        }
-        if (!opts.dryRun && result.proposalsCreated > 0) {
-            console.log('');
-            console.log(`Review with: memesh dream list`);
-            console.log(`Accept all:  memesh dream accept --all`);
-        }
-    });
-});
-dreamCmd
-    .command('patterns')
-    .description('Run pattern detector — surface emerging patterns/conventions/repeated mistakes per project (Phase 3)')
-    .option('--project <name>', 'Restrict to one project (default: all projects)')
-    .option('--dry-run', 'Compute proposals without writing to dream_proposals')
-    .option('--max-llm-calls <n>', 'Hard cap on LLM calls (default 10)', wholeNumber('--max-llm-calls'))
-    .option('--window-days <n>', 'Look-back window in days (default 30)', wholeNumber('--window-days'))
-    .option('--min-signal <n>', 'Minimum signal_score to include in scan (default 0.3)', unitFraction('--min-signal'))
-    .action(async (opts) => {
-    await withDatabase(async () => {
-        const { runPatternDetector } = await import('../../core/dreamer.js');
-        const { getDatabase } = await import('../../db.js');
-        const cfg = readConfig();
-        const llm = detectCapabilities().llm;
-        if (!llm) {
-            console.error('No LLM configured. Pattern detection requires an LLM.');
-            console.error('Run `memesh config set llm.provider <anthropic|openai|ollama>` first (or set ANTHROPIC_API_KEY / OPENAI_API_KEY).');
-            process.exit(1);
-        }
-        const result = await runPatternDetector(getDatabase(), llm, {
-            project: opts.project,
-            dryRun: !!opts.dryRun,
-            maxLlmCalls: opts.maxLlmCalls,
-            windowDays: opts.windowDays,
-            minSignal: opts.minSignal,
-            fallbacks: cfg.llmFallbacks,
-        });
-        console.log(`${opts.dryRun ? '[dry-run] ' : ''}Pattern detector complete in ${result.durationMs}ms`);
-        console.log(`  entities scanned: ${result.entitiesScanned}`);
-        console.log(`  LLM calls:        ${result.llmCalls}`);
-        console.log(`  patterns proposed: ${result.proposalsCreated}`);
-        if (result.skipped.length > 0) {
-            console.log(`  skipped:           ${result.skipped.length}`);
-            for (const s of result.skipped.slice(0, 5)) {
-                console.log(`    - ${s.project ?? '?'}: ${s.reason}`);
-            }
-        }
-        if (!opts.dryRun && result.proposalsCreated > 0) {
-            console.log('');
-            console.log(`Review with: memesh dream list`);
-        }
-    });
-});
+const dreamCmd = program.command('dream').description('Review agent-submitted proposals: list, show, accept, or reject');
 dreamCmd
     .command('list')
     .description('List dream proposals (pending by default)')
@@ -2012,49 +1567,6 @@ dreamCmd
             console.log('');
         }
         console.log(`Inspect: memesh dream show <id>   |   Apply: memesh dream accept <id>   |   Reject: memesh dream reject <id>`);
-    });
-});
-dreamCmd
-    .command('conflicts')
-    .description('Judge semantically-close memory pairs for contradiction / supersession / duplication (LLM) and stage relation proposals for review')
-    .option('--max-pairs <n>', 'Judge at most N of the tightest candidate pairs this run (default 20)', wholeNumber('--max-pairs'))
-    .option('--dry-run', 'Show how many candidates are queued without calling an LLM or writing anything')
-    .action(async (opts) => {
-    await withDatabase(async () => {
-        const cfg = readConfig();
-        const llm = detectCapabilities().llm;
-        if (!llm) {
-            console.error('No LLM configured. Run `memesh config set llm.provider <anthropic|openai|ollama>` first (or set ANTHROPIC_API_KEY / OPENAI_API_KEY).');
-            console.error('LLM is required for `memesh dream conflicts` because "do these two entries disagree" is a semantic judgement, not a rule.');
-            process.exit(1);
-        }
-        const { judgeConflicts, CONFLICT_JUDGE_MAX_PAIRS } = await import('../../core/conflict-judge.js');
-        const { getDatabase } = await import('../../db.js');
-        const result = await judgeConflicts(getDatabase(), llm, {
-            maxPairs: typeof opts.maxPairs === 'number' && !Number.isNaN(opts.maxPairs) ? opts.maxPairs : CONFLICT_JUDGE_MAX_PAIRS,
-            dryRun: !!opts.dryRun,
-            fallbacks: cfg.llmFallbacks,
-        });
-        console.log(`${opts.dryRun ? '[dry-run] ' : ''}Conflict pass complete in ${result.durationMs}ms`);
-        console.log(`  candidate pairs available: ${result.candidatesAvailable}`);
-        if (opts.dryRun) {
-            console.log('  (dry run — no LLM called, nothing judged or written)');
-            return;
-        }
-        console.log(`  LLM calls:      ${result.llmCalls}`);
-        console.log(`  judged:         ${result.judged} (${result.unrelated} unrelated, remembered so they are never re-bought)`);
-        console.log(`  staged:         ${result.staged} relation proposal(s)`);
-        if (result.llmFailures > 0) {
-            console.log(`  failed:         ${result.llmFailures} (unparseable or errored LLM responses; those pairs stay at the head of the candidate list and are retried next run)`);
-        }
-        if (result.aborted) {
-            console.error(`  ABORTED after the work above: ${result.aborted}`);
-            process.exit(1);
-        }
-        if (result.staged > 0) {
-            console.log('');
-            console.log('Review: memesh dream list   |   Apply: memesh dream accept <id>   |   Reject: memesh dream reject <id>');
-        }
     });
 });
 dreamCmd
@@ -2318,184 +1830,47 @@ program
     const { command, args } = feedbackBrowserOpenCommand(process.platform, url);
     try {
         const child = spawn(command, args, { stdio: 'ignore', detached: true });
-        child.unref();
-        console.log(`Opened browser to file ${fbType} issue.`);
-        console.log('Edit the title + body before submitting.');
+        const opened = await new Promise((resolve) => {
+            child.once('spawn', () => resolve(true));
+            child.once('error', () => resolve(false));
+        });
+        if (opened) {
+            child.unref();
+            console.log(`Opened browser to file ${fbType} issue.`);
+            console.log('Edit the title + body before submitting.');
+        }
+        else {
+            console.log('Could not open browser. URL:');
+            console.log(url);
+        }
     }
     catch {
         console.log('Could not open browser. URL:');
         console.log(url);
     }
 });
-program
-    .command('reindex')
-    .description('Regenerate vector embeddings for all entities (--fts rebuilds the keyword index instead)')
-    .option('--namespace <namespace>', 'Reindex only entities in this namespace')
-    .option('--fts', 'Rebuild the full-text keyword index instead of the vector index')
-    .option('--discard-generation', 'Throw away a half-built vector index left by an interrupted rebuild, without rebuilding')
+program.command('reindex')
+    .description('Rebuild the full-text keyword index')
+    .requiredOption('--fts', 'Rebuild the full-text keyword index')
     .option('--json', 'Output as JSON')
-    .addOption(new Option('--vectors').hideHelp())
     .action(async (opts) => {
-    if (opts.vectors) {
-        if (opts.json) {
-            console.log(JSON.stringify({
-                refused: true,
-                reason: 'the --vectors flag is retired',
-                fix: 'run plain memesh reindex; to change provider first: memesh config set embedder.provider ollama|openai',
-                indexTouched: false,
-            }));
-            process.exit(1);
-        }
-        console.error('`memesh reindex --vectors` has been retired.');
-        console.error('');
-        console.error('It existed to consent to dropping every stored embedding before a refill.');
-        console.error('A rebuild now happens beside the live index and replaces it only when');
-        console.error('complete, so there is nothing left to consent to.');
-        console.error('');
-        console.error('Run plain `memesh reindex`. To change embedding provider first:');
-        console.error('  memesh config set embedder.provider ollama   (or openai)');
-        process.exit(1);
-    }
-    requireOneOf(opts.namespace, NAMESPACES, '--namespace');
-    if (opts.discardGeneration) {
-        await withDatabase(async () => {
-            const read = readVectorGeneration();
-            const staged = generationRowIds().size;
-            if (read.state === 'none' && staged === 0) {
-                if (opts.json)
-                    console.log(JSON.stringify({ discarded: false, staged: 0 }));
-                else
-                    console.log('Nothing to discard: there is no half-built vector index.');
-                return;
-            }
-            const describe = read.state === 'open'
-                ? `${read.info.dimension}-dim, provider ${read.info.provider}, started ${read.info.startedAt}`
-                : read.state === 'unreadable'
-                    ? `marker unreadable (${read.detail})`
-                    : 'no marker';
-            discardVectorGeneration();
-            if (opts.json) {
-                console.log(JSON.stringify({ discarded: true, staged, generation: read, liveIndexTouched: false }));
-            }
-            else {
-                console.log(`Discarded a half-built vector index: ${staged} staged vectors (${describe}).\n` +
-                    '   Your live index was not touched. Run `memesh reindex` to build a new one.');
-            }
-        });
-        return;
-    }
-    try {
-        if (opts.fts) {
-            await withDatabase(async () => {
-                const { entities } = reindexFts();
-                if (opts.json) {
-                    console.log(JSON.stringify({ rebuilt: 'fts', entities }));
-                }
-                else {
-                    console.log(`✅ Keyword index rebuilt from ${entities} active memories.`);
-                }
-            });
-            return;
-        }
-        if (!opts.namespace && !(await canRefillVectorIndex())) {
-            const embedder = detectCapabilities().embeddings;
-            const written = readConfig().embedder?.provider;
-            const known = embedder === 'openai' || embedder === 'ollama';
-            const invalid = written !== undefined && !known;
-            const unconfigured = written === undefined && !known;
-            const reason = invalid
-                ? `embedder.provider is set to '${written}', which is not a provider MeMesh knows`
-                : unconfigured
-                    ? 'no embedding provider is configured, so there is nothing to build vectors with'
-                    : 'could not produce a test embedding at the configured vector width';
-            const fix = invalid || unconfigured
-                ? (invalid ? 'Set it to one MeMesh knows: ' : 'Pick one first: ') +
-                    '`memesh config set embedder.provider ollama` (local, needs `ollama serve`) ' +
-                    'or `memesh config set embedder.provider openai` (needs OPENAI_API_KEY). Until then, recall ' +
-                    'runs on keyword search, which needs no rebuild.'
-                : 'Check that Ollama is running (or that your OpenAI API key is valid), then run this again. ' +
-                    '`memesh doctor` reports which provider is configured.';
-            if (opts.json) {
-                console.log(JSON.stringify({ refused: true, reason, fix, indexTouched: false }));
-            }
-            else {
-                console.error(`❌ Nothing was rebuilt: ${reason}.\n` +
-                    '   Your existing index is untouched and still answering queries.\n' +
-                    `   ${fix}`);
-            }
-            process.exit(1);
-        }
-        await withDatabase(async () => {
-            const result = await reindex({ namespace: opts.namespace });
-            const incomplete = result.missingVectors > 0
-                || result.failed > 0
-                || result.generationSwapped === false
-                || result.abortedAfter !== null;
-            if (opts.json) {
-                console.log(JSON.stringify(result));
-            }
-            else {
-                console.log(incomplete ? `⚠️  Reindex incomplete:` : `✅ Reindex complete:`);
-                console.log(`   Processed: ${result.processed}`);
-                console.log(`   Embedded:  ${result.embedded}`);
-                console.log(`   Skipped:   ${result.skipped}`);
-                if (incomplete) {
-                    if (result.abortedAfter !== null) {
-                        console.log(`   Stopped early after ${result.abortedAfter} entities: the provider failed ` +
-                            `repeatedly. Everything embedded so far is kept — run this again to continue.`);
-                    }
-                    if (result.generationSwapped === false) {
-                        console.log(`   The new index was NOT switched in, so your existing index is untouched ` +
-                            `and still answering queries.`);
-                    }
-                    if (result.missingVectors > 0) {
-                        console.log(`   Still without a vector: ${result.missingVectors}`);
-                    }
-                    if (result.failed > 0 && result.missingVectors === 0) {
-                        console.log(`   Could not be regenerated: ${result.failed} ` +
-                            `(these still hold their previous embedding)`);
-                    }
-                    for (const [outcome, count] of Object.entries(result.outcomes)) {
-                        if (outcome !== 'stored' && count > 0)
-                            console.log(`     ${outcome}: ${count}`);
-                    }
-                }
-                else if (!result.pendingReindexCleared) {
-                    console.log(`   Note: ${result.missingVectorsDatabaseWide} memories in other namespaces still ` +
-                        `have no vector, so the reindex-needed flag stays set.`);
-                }
-            }
-            if (incomplete)
-                process.exitCode = 1;
-        });
-    }
-    catch (err) {
-        if (err instanceof Error) {
-            if (opts.json)
-                console.log(JSON.stringify({ refused: true, reason: err.message, indexTouched: false }));
-            else
-                console.error(`❌ Reindex failed: ${err.message}`);
-            process.exit(1);
-        }
-        throw err;
-    }
+    await withDatabase(() => {
+        const result = reindexFts();
+        console.log(opts.json ? JSON.stringify(result) : `Keyword index rebuilt (${result.entities} entities).`);
+    });
 });
 program
     .command('status')
-    .description('Show MeMesh status and capabilities')
+    .description('Show MeMesh status')
     .option('--cached', 'Use cached update info only (skip fresh npm lookup)')
     .action(async (opts) => {
     await withDatabase(() => { });
-    const caps = detectCapabilities();
     const { getCurrentInstallChannel, getInstallChannelSupport } = await import('../../core/install-channel.js');
     const install = getCurrentInstallChannel({ packageRoot });
     const installSupport = getInstallChannelSupport(install, packageRoot);
     const { getUpdateCheck, formatUpdateCheckStatus } = await import('../../core/version-check.js');
     const update = await getUpdateCheck(pkg.version, { preferFresh: !opts.cached });
     console.log(`MeMesh v${pkg.version}`);
-    console.log(`Search level: ${caps.searchLevel} (${caps.searchLevel === 1 ? 'Smart Mode' : 'Core'})`);
-    console.log(`Embeddings: ${caps.embeddings}`);
-    console.log(`LLM: ${caps.llm ? `${caps.llm.provider} (${caps.llm.model ?? 'default'})` : 'not configured'}`);
     console.log(`Install method: ${installSupport.label}`);
     for (const line of formatUpdateCheckStatus(update)) {
         console.log(`\n${line}`);

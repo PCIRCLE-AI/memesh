@@ -4,8 +4,8 @@
  *
  * `MemeshDatabase` sets `busy_timeout = 30000`, and for the processes that
  * number was chosen for — the CLI, the MCP server, the HTTP server — it is
- * right: a 30k-vector `swapVectorGeneration` holds the write lock for ~9s and
- * a writer that WAITS is the whole point. A hook is not one of those. Its
+ * right: a long write transaction can hold the lock for seconds and a writer
+ * that WAITS is the whole point. A hook is not one of those. Its
  * budget in `hooks/hooks.json` runs from 3s to 10s, so a 30s wait has one
  * possible ending: the harness kills the hook. The capture is lost either
  * way; the difference is that the user also sees a hook-timeout error, and

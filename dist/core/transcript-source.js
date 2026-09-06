@@ -1,6 +1,44 @@
 import fs from 'fs';
 import path from 'path';
-import { homeDir, memeshDir } from './paths.js';
+import { homeDir } from './paths.js';
+export const MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
+export function readTranscriptSnapshot(transcriptPath, expected) {
+    let fd;
+    try {
+        if (fs.lstatSync(transcriptPath).isSymbolicLink())
+            return null;
+        fd = fs.openSync(transcriptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+        const before = fs.fstatSync(fd);
+        if (!before.isFile() || before.size < 0 || before.size > MAX_TRANSCRIPT_SOURCE_BYTES)
+            return null;
+        const modifiedAt = new Date(before.mtimeMs).toISOString();
+        if (expected && (before.size !== expected.sizeBytes || modifiedAt !== expected.modifiedAt))
+            return null;
+        const bytes = Buffer.allocUnsafe(before.size);
+        let offset = 0;
+        while (offset < bytes.length) {
+            const count = fs.readSync(fd, bytes, offset, bytes.length - offset, offset);
+            if (count === 0)
+                return null;
+            offset += count;
+        }
+        const after = fs.fstatSync(fd);
+        if (after.size !== before.size || after.mtimeMs !== before.mtimeMs)
+            return null;
+        return { bytes, modifiedAt, sizeBytes: before.size };
+    }
+    catch {
+        return null;
+    }
+    finally {
+        if (fd !== undefined) {
+            try {
+                fs.closeSync(fd);
+            }
+            catch { }
+        }
+    }
+}
 export function claudeProjectsDir() {
     const override = process.env.CLAUDE_PROJECTS_DIR;
     if (override && override.trim() !== '')
@@ -59,20 +97,13 @@ export function scanTranscripts(opts = {}) {
         if (!name.endsWith('.jsonl'))
             continue;
         const full = path.join(dir, name);
-        let fd;
-        try {
-            fd = fs.openSync(full, 'r');
-        }
-        catch {
+        const snapshot = readTranscriptSnapshot(full);
+        if (!snapshot)
             continue;
-        }
         try {
-            const stat = fs.fstatSync(fd);
-            if (!stat.isFile())
+            if (Date.parse(snapshot.modifiedAt) < cutoffMs)
                 continue;
-            if (stat.mtimeMs < cutoffMs)
-                continue;
-            const buf = fs.readFileSync(fd);
+            const buf = snapshot.bytes;
             let lineCount = 0;
             for (let i = 0; i < buf.length; i++)
                 if (buf[i] === 0x0a)
@@ -82,62 +113,16 @@ export function scanTranscripts(opts = {}) {
             sessions.push({
                 sessionId: name.replace(/\.jsonl$/, ''),
                 path: full,
-                modifiedAt: new Date(stat.mtimeMs).toISOString(),
+                modifiedAt: snapshot.modifiedAt,
                 lineCount,
-                sizeBytes: stat.size,
+                sizeBytes: snapshot.sizeBytes,
             });
         }
         catch {
             continue;
         }
-        finally {
-            try {
-                fs.closeSync(fd);
-            }
-            catch { }
-        }
     }
     sessions.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
     return sessions;
-}
-export function transcriptMiningStatePath(override) {
-    if (override && override.trim() !== '')
-        return override;
-    return path.join(memeshDir(), 'transcript-mining.json');
-}
-export function lastTranscriptMineAt(projectKey, override) {
-    try {
-        const raw = fs.readFileSync(transcriptMiningStatePath(override), 'utf8');
-        const parsed = JSON.parse(raw);
-        const at = parsed?.projects?.[projectKey];
-        return typeof at === 'number' && Number.isFinite(at) ? at : null;
-    }
-    catch {
-        return null;
-    }
-}
-export function recordTranscriptMine(projectKey, atMs, override) {
-    const target = transcriptMiningStatePath(override);
-    const state = { projects: {} };
-    try {
-        const parsed = JSON.parse(fs.readFileSync(target, 'utf8'));
-        if (parsed && typeof parsed.projects === 'object' && parsed.projects)
-            state.projects = parsed.projects;
-    }
-    catch { }
-    state.projects[projectKey] = atMs;
-    try {
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        fs.writeFileSync(target, JSON.stringify(state, null, 2));
-    }
-    catch { }
-}
-export function transcriptMiningDue(nowMs, lastMs, intervalHours) {
-    if (lastMs === null)
-        return true;
-    if (lastMs > nowMs)
-        return true;
-    const hours = Number.isFinite(intervalHours) ? Math.max(0, intervalHours) : 0;
-    return nowMs - lastMs >= hours * 3600_000;
 }
 //# sourceMappingURL=transcript-source.js.map

@@ -191,11 +191,8 @@ export function toIndexForm(text: string): string {
  * tokenises to nothing and the `MATCH` phrase built from it can never hit a
  * row. That gap was observable — `hasSearchableTerms('ํ')` answered true
  * while `search()` returned 0 for it, and the same for U+0301, U+0951, U+064F,
- * U+17B6 and U+3099 — and it mattered beyond a wasted query: `recallEnhanced`
- * gates the vector supplement on `hasSearchableTerms`, so those queries skipped
- * the keyword result and got semantically-nearest memories instead. That is the
- * "nothing matched dressed as here is what matched" shape the gate exists to
- * prevent, on the one input class it did not cover.
+ * U+17B6 and U+3099. Requiring a real searchable term keeps query construction
+ * aligned with what FTS5 can actually index.
  *
  * Requiring a leading letter or number does not drop marks that belong to a
  * word: `toIndexForm` NFC-normalises first, and in every script where a mark
@@ -253,13 +250,10 @@ export function registerNfcFunction(db: MemeshDatabase): void {
  * Such a query must return no results rather than something that merely looks
  * like results.
  *
- * **One owner, because two places decide this and they disagreed.**
- * `KnowledgeGraph.search()` returned `[]` correctly, and `recallEnhanced()`
- * then ran the vector supplement anyway — it only checked that the query string
- * was truthy. So with embeddings enabled the caller still got up to `limit`
- * semantically-nearest memories for a query that matched nothing: exactly the
- * "here is what matched" / "I found no terms, have these instead" confusion the
- * behaviour change was made to remove, on the path the change did not cover.
+ * Keep this predicate at the shared FTS boundary so every caller agrees that
+ * punctuation-only input has no searchable term. Otherwise one path can
+ * correctly return no matches while another treats the raw non-empty string as
+ * a valid query.
  */
 export function hasSearchableTerms(text: string): boolean {
   return tokenizeQuery(text).length > 0;

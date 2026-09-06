@@ -23,7 +23,14 @@ host is recallable from all of them. Not installed yet? Follow
      field out if it was not said.
 3. **"What do you remember?"** — call `briefing` and relay its content. Do
    not answer from your own conversation context.
-4. **When you need another agent** — to hand off, to ask, to report back —
+4. **When memory could be condensed or recovered from this conversation** —
+   offer one short in-session choice when the host supports interactive prompts:
+   **Dispatch agent task**, **Later**, or **Don't suggest again**. Dispatch means
+   using `work_package` in this already-running agent session; it does not mean
+   the Dashboard can start or wake an agent. Prepare either one calendar-selected
+   digest package or one package from the newest current-project session's visible
+   turns, then submit one bounded result for human review or defer without writing.
+5. **When you need another agent** — to hand off, to ask, to report back —
    first use `message discover` with the exact project when you do not already
    know the recipient. It lists only live registrations and their routing IDs,
    host kind, declared model/current work, generation, and lease; missing
@@ -79,9 +86,8 @@ host is recallable from all of them. Not installed yet? Follow
   before concluding anything.
 - Every recall answer carries a `retrieval` block that says how it was
   produced — read it instead of guessing: `truncated: true` means the
-  window filled and more may exist; `degraded: true` means semantic search
-  is configured but could not run, so you are seeing keyword-only results
-  right now (worth telling the user, and `memesh doctor` explains why).
+  window filled and more may exist. Recall is local FTS5 search; do not
+  describe results as semantic, vector-ranked, or model-generated.
 
 ## What Claude Code already does — do not double-write
 

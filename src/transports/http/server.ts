@@ -689,8 +689,8 @@ app.post('/v1/remember', (req, res) => handlePost(RememberBody, req, res, (data)
 
 // --- Recall ---
 app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (data) => {
-  // recallWithConflicts: FTS5 + sqlite-vec recall + conflict annotation,
-  // owned by core so the transports can't drift on the wrapping rule.
+  // FTS5 recall and conflict annotation are owned by core so transports
+  // cannot drift on the wrapping rule.
   const { entities, conflicts, retrieval } = await recallWithConflicts(data);
   // Always return object envelope {entities, retrieval, conflicts?} to match
   // API_REFERENCE.md and MCP transport's documented guarantee (issue #159);
@@ -705,7 +705,7 @@ app.post('/v1/forget',      (req, res) => handlePost(ForgetBody, req, res, forge
 // mean different things to a script: 404 reads as a typo or a bad base URL and
 // invites a retry, 410 says the resource is gone on purpose and names what to
 // do instead. The tool compressed an entity's observations by deleting them and
-// writing an LLM summary back, with no proposal, no review and no way to
+// writing a generated summary back, with no proposal, no review and no way to
 // recover the originals — see the CHANGELOG entry for what that cost. `dream`
 // does the reviewed version of the same idea.
 //
@@ -936,10 +936,7 @@ app.get('/v1/dream/proposals', (req, res) => {
 // detail view in the Insights tab — listProposals only returns a
 // truncated preview.
 //
-// Validator surfacing channel: when the dreamer was invoked with
-// `validateBeforeStage: true` and the LLM validator returned a 'soften'
-// verdict, `writeProposal` in src/core/dreamer.ts persists the
-// SuspiciousClaim[] onto the JSON blob as `proposed_digest.validation_warnings`.
+// Older proposals may carry validation warnings inside the digest blob.
 // This endpoint JSON-parses the blob and returns it whole, so the
 // `validation_warnings` field passes through untouched and is the
 // channel the dashboard reads to render its "Flagged claims" section.
@@ -950,13 +947,13 @@ app.get('/v1/dream/proposals/:id', (req, res) => {
   if (id === null) return;
   handleGet(res, () => {
     const row = getDatabase().prepare(
-      'SELECT id, project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version, status, reason, created_at, reviewed_at, source_kind, kind FROM dream_proposals WHERE id = ?'
+      'SELECT id, project, cluster_key, source_ids, proposed_digest, prompt_version, status, reason, created_at, reviewed_at, source_kind, kind FROM dream_proposals WHERE id = ?'
     ).get(id) as { proposed_digest: string; source_ids: string; [k: string]: unknown } | undefined;
     if (!row) {
       throw new HttpError(404, 'resource.not-found', `proposal #${id} not found`);
     }
     let digest: unknown = null;
-    let sourceIds: number[] = [];
+    let sourceIds: unknown = [];
     try { digest = JSON.parse(row.proposed_digest); } catch { /* corrupt — surface as null */ }
     try { sourceIds = JSON.parse(row.source_ids); } catch { /* leave empty */ }
     return { ...row, proposed_digest: digest, source_ids: sourceIds };

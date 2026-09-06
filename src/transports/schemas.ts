@@ -83,7 +83,7 @@ export const WorkPackageSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('defer'),
     ...workPackageIdentity,
-    reason: z.enum(['insufficient_evidence', 'not_now', 'irrelevant']),
+    reason: z.literal('not_now'),
   }).strict(),
 ]);
 

@@ -150,13 +150,18 @@ class ActiveRouterHostConnection {
                     buffer = buffer.subarray(newline + 1);
                     if (raw.length === 0 || raw.length > AGENT_ROUTER_MAX_FRAME_BYTES)
                         continue;
-                    let frame;
+                    let parsed;
                     try {
-                        frame = JSON.parse(raw.toString('utf8'));
+                        parsed = JSON.parse(raw.toString('utf8'));
                     }
                     catch {
                         continue;
                     }
+                    if (!isRecord(parsed)) {
+                        socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router frame must be a JSON object.'));
+                        return;
+                    }
+                    const frame = parsed;
                     if (!registrationSettled && isLegacyAgentRouterVersionMismatchResponse(frame)) {
                         finish(new AgentRouterProtocolError('router_version_mismatch', 'router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.'));
                         continue;
@@ -198,6 +203,10 @@ class ActiveRouterHostConnection {
                     }
                     if (frame.type !== 'deliver')
                         continue;
+                    if (!registrationSettled) {
+                        socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router delivered a message before registration completed.'));
+                        return;
+                    }
                     if (!isDelivery(frame, connectionId, generation, this.input.identity)) {
                         socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router frame identity does not match the registered host.'));
                         return;

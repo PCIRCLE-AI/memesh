@@ -1221,9 +1221,9 @@ process.stdin.on('end', async () => {
     } catch (err) {
       // Non-critical — noise compression failed, will retry next session.
       // Trace because this catch previously hid an off-by-one regression
-      // in resolvePluginRoot (4.0.4-4.1.0) that silently disabled both
-      // noise compression AND LLM failure analysis for three minor
-      // releases. A one-line stderr would have surfaced it on day 1.
+      // in resolvePluginRoot (4.0.4-4.1.0) that silently disabled noise
+      // compression for three minor releases. A one-line stderr would have
+      // surfaced it on day 1.
       try { process.stderr.write(`[memesh session-start] noise-compression: ${err?.message || err}\n`); } catch {}
     }
 
@@ -1267,7 +1267,7 @@ process.stdin.on('end', async () => {
  *
  * The shape is asserted by tests/helpers/hook-output-contract.ts.
  */
-const workPackageGuidance = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer the host interactive choice UI: Dispatch agent task (delegate through the host, then submit for human review); Later (defer not_now); Don’t suggest again (stop suggesting for this session only). Never dispatch without the user choosing it. No dashboard dispatch or durable opt-out is implied.';
+const workPackageGuidance = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
 
 function output(text, memoryContext = workPackageGuidance) {
   const payload = { systemMessage: text };

@@ -16,7 +16,7 @@
 
 ---
 
-**MeMesh** 是給 AI 程式開發代理用的**開源本機協作層**：讓 Claude Code、Codex、Cursor、自訂或 Ollama-backed agents 與相容的本機 MCP 用戶端共享記憶、交換耐久化單一收件人訊息，並把有價值的經驗轉成受治理的產品改善提案。全部存在一個 SQLite 檔案裡，不需要 Docker，也不需要雲端。
+**MeMesh** 是給 AI 程式開發代理用的**開源本機協作層**：讓 Claude Code、Codex、Cursor、自訂代理與相容的本機 MCP 用戶端共享記憶、交換耐久化單一收件人訊息，並把有價值的經驗轉成受治理的產品改善提案。全部存在一個 SQLite 檔案裡，不需要 Docker，也不需要雲端。
 
 ### 新的協作入口
 
@@ -59,12 +59,12 @@ memesh doctor        # 端到端驗證這份安裝
 
 - **自動記下來**：hooks 從代理真正做過的事情擷取——session、commit、失敗，不用你手動寫筆記
 - **在需要的時候送回去**：session 開始時、要改檔案之前，把相關記憶放進代理眼前
-- **不讓記憶爛掉**：新的決定會取代舊的，兩筆記憶互相矛盾時由 LLM 判斷並標記出來
+- **不讓記憶爛掉**：用明確的關係標出取代、矛盾與因果，讓知識圖譜維持可信
 
 用 npm 裝，記憶放在 `~/.memesh/knowledge-graph.db`，接上 Claude Code 或任何支援 MCP 的用戶端就能用。
 
 > [!IMPORTANT]
-> **持續開發中的專案** — 功能會持續更新，版本之間可能會有變動。遇到問題或想要新功能，請[開 issue](https://github.com/PCIRCLE-AI/memesh/issues)。
+> **持續開發中的專案** — 功能會持續更新，版本之間可能會有變動。執行 `memesh feedback --bug`、`--feature` 或 `--question`，先準備一份可供檢查的公開 issue 草稿。
 
 ---
 
@@ -175,8 +175,7 @@ npm install -g @pcircle/memesh
 ```
 
 > **首次安裝注意事項（一次性）：**
-> - **不需要編譯器** — 資料庫引擎就是 Node 自己的 `node:sqlite`。負責「用意思搜尋」的 `sqlite-vec` 以預先編譯好的檔案形式提供 macOS（arm64/x64）、Linux（x64/arm64）和 Windows x64；在其他平台它就是不存在，回憶維持關鍵字搜尋。這裡沒有任何東西會執行安裝腳本，所以 `npm install --ignore-scripts` 也能裝出完全可用的 memesh。
-> - **語意搜尋是選用的** — 預設的檢索路徑是關鍵字搜尋（FTS5），不需要模型也不需要下載。以語意（意義）為基礎的搜尋需要一個 embedder：在本地執行 [Ollama](https://ollama.com)，或設定一個雲端 embedder（見下方「嵌入」）。沒有設定時，memesh 只使用關鍵字搜尋。
+> - **不需要編譯器** — 資料庫引擎就是 Node 自己的 `node:sqlite`，回憶使用內建的 FTS5 全文索引。這裡沒有任何東西會執行安裝腳本，所以 `npm install --ignore-scripts` 也能裝出完全可用的 memesh。
 
 ### 第一步半：把 MeMesh 接進 Claude Code（僅 npm 路徑需要）
 
@@ -307,7 +306,7 @@ Claude Code 在 session 開始時自動收到的就是同一個區塊，其他 M
 
 ### 你的資料
 
-- **就一個本機檔案。**所有東西都在 `~/.memesh/knowledge-graph.db` — SQLite、在你的硬碟上。沒有雲端帳號；除非你自己設定雲端 embedder 或 LLM，否則什麼都不會離開你的機器。
+- **就一個本機檔案。**所有東西都在 `~/.memesh/knowledge-graph.db` — SQLite、在你的硬碟上。回憶與規則式擷取不需要供應商、API 金鑰或模型下載。
 - **備份 = 複製那個檔案。**還原 = 複製回去。
 - **隨時暫停擷取**：`export MEMESH_AUTO_CAPTURE=false`。
 - **全部刪除**：移除 `~/.memesh/`。
@@ -424,14 +423,9 @@ MeMesh 的檢索引擎**只用 FTS5**（熱路徑上不使用 LLM、不使用嵌
 |---|---|---|
 | `MEMESH_DB_PATH` | `~/.memesh/knowledge-graph.db` | 覆寫 SQLite 資料庫位置。 |
 | `MEMESH_AUTO_CAPTURE` | `true` | 完全停用自動擷取 hooks（`Stop`、`PreCompact`）。 |
-| `MEMESH_AUTO_DETECT_LLM` | 未設定（自動偵測**開啟**） | 設為 `0` 讓 memesh 不使用它在 shell 環境中找到的 API 金鑰。預設情況下，如果設定了 `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `OLLAMA_HOST` 且你沒有在 `~/.memesh/config.json` 設定供應商，memesh 會用它來跑寫入側的 LLM 功能（整合、經驗提取、自動打標籤、dream）。嵌入不受影響 —— 除非你把 `embedder.provider` 明確設定為 `ollama` 或 `openai`，否則保持僅關鍵字（FTS5）。 |
 | `MEMESH_AUTO_UPDATE` | `off` | 自動更新策略。`off`（預設）永不自動更新；`patch` 允許 `X.Y.Z → X.Y.Z+N`；`minor` 加上 `X.Y.Z → X.Y+1.0`；`major` 允許任何升級。允許時，分離的 `npm install -g` 會在 session 結束時（Stop hook）執行，避免阻塞你的工作 — 結果寫入 `~/.memesh/auto-update.log`。也可在 `~/.memesh/config.json` 中以 `autoUpdate` 設定（環境變數優先）。維護者的 deprecated 警示絕不會覆寫 `off`：請手動更新，或選擇允許該升級的 policy。 |
-| `OPENAI_API_KEY` | 未設定 | 你的 OpenAI 金鑰。除非你設定 `MEMESH_AUTO_DETECT_LLM=0` 或明確設定供應商，否則會自動用於 LLM 功能。 |
-| `OLLAMA_HOST` | `http://localhost:11434` | 使用本地 Ollama 供應商時覆寫 Ollama 的端點。 |
 
 `memesh doctor` 會印出已解析的設定，讓你看到目前實際生效的內容。
-
-**備援 LLM 供應商（Smart Mode）。** 在 dashboard 的 **Settings → 「Fallback providers」** 可以設定一條有順序的備援鏈——當你的主要供應商掛掉時，memesh 會依序改用清單裡的下一個。可以加本機的 [Ollama](https://ollama.com) 備援，或雲端的（OpenAI / Anthropic，需要 API key）。隱私取捨：一旦用到雲端備援，記憶內容（可能是私密的）會被送到那個供應商，所以如果你為了隱私只跑本機，這點要留意。
 
 當 npm 將已安裝版本標為 deprecated（通常是安全公告），下次 session-start 會在前面附上強警示橫幅 `⚠️ MeMesh <ver> is DEPRECATED`，`memesh update-status` 也會持續顯示同一行直到你升級為止。檢查結果會被快取於 `~/.memesh/update-check.<version>.json`，以避免短暫網路失敗讓警示變淡。
 
@@ -443,17 +437,17 @@ MeMesh 的檢索引擎**只用 FTS5**（熱路徑上不使用 LLM、不使用嵌
 
 | 分頁 | 你會看到 |
 |-----|-------------|
-| **Home** | memesh 為你做了什麼 — 以 dreamer 洞察開場：每週摘要和模式提案，一鍵接受／拒絕；完整的分析內容（記憶健康分數、30 天時間線、PM 速度 + KG 連通性、工作模式）收在可展開的區塊裡，需要時再打開 |
-| **Memories** | 整座記憶庫集中在同一個介面 — 即時過濾，按 Enter 由伺服器排名搜尋（全文 + 向量）；範圍籤在工作層（目標／決策／教訓／計畫）、佐證、全部、已歸檔之間切換；叢集組成長條；每列可展開細節（教訓保留結構化的錯誤／根本原因／修復／預防檢視）；歸檔／復原直接在列上操作 |
+| **Home** | 下一個實用動作、等待人類接受／拒絕的工作套件提案，以及需要時才展開的分析資訊 |
+| **Memories** | 整座記憶庫集中在同一個介面 — 即時過濾，按 Enter 進行 FTS5 排名搜尋；範圍籤在工作、佐證、全部、已歸檔之間切換；每列可展開細節並直接歸檔／復原 |
 | **Project** | 單一專案的歷史 — 透過專案選擇器檢視路線圖（階段、里程碑、關鍵教訓） |
 | **Graph** | 互動式力導向知識圖，具有類型篩選、搜尋、自我中心模式、近期熱力圖 |
-| **Settings** | LLM 供應商設定、即時語言選擇器 |
+| **Settings** | 更新策略與狀態，以及立即生效、只存在瀏覽器本機的語言選擇器 |
 
 ---
 
 ## 智慧功能
 
-**🧠 智慧搜尋** — 搜尋「登入安全」並找到關於「OAuth PKCE」的記憶。MeMesh 用 FTS5 + sqlite-vec 在熱路徑上保持 LLM-free，仍能跨同義詞匹配。
+**🧠 快速本機搜尋** — MeMesh 在回憶路徑使用 SQLite FTS5。查詢字詞採 OR 比對，並以近期性、頻率、信心與回憶影響等訊號排名；不會呼叫供應商或模型。
 
 **🌏 支援不用空格分詞的文字** — 中文、日文、韓文、泰文、寮文、高棉文和半形片假名都會拆成相鄰兩字一組來建索引，所以寫成「資料庫遷移前一定要先備份」的記憶，搜尋「備份」就找得到，不必打出一模一樣的全文。寫入和查詢兩邊都會做 NFC 正規化，因此在 macOS 上或用韓文、越南文輸入法打的記憶，兩種寫法都找得到。
 
@@ -461,9 +455,7 @@ MeMesh 的檢索引擎**只用 FTS5**（熱路徑上不使用 LLM、不使用嵌
 
 **🔄 知識演進** — 決策會改變。`forget` 歸檔舊記憶（永不刪除）。`supersedes` 關係連結舊 → 新。你的 AI 總是看到最新版本。
 
-**⚠️ 衝突偵測** — `memesh dream conflicts` 會讓 LLM 判定語意上最接近的記憶配對，找出矛盾、汰換或重複，並把結果暫存成提案。沒有東西會自動套用：你用 `dream list` / `dream show` 檢視，只有被接受的提案才會建立關係 —— 之後每次 `recall` 碰到其中任一筆記憶都會帶上警告。因果關係從不從時間戳推論；判決依據的是記憶內容本身怎麼說。
-
-**🕸️ 知識圖連通性** — `memesh kg backfill-relations --all-rules` 使用標籤共現、專案叢集、會話上下文和名稱相似度連結孤立實體 — 無需 LLM。
+**🕸️ 知識圖連通性** — `memesh kg backfill-relations --all-rules` 使用確定性的標籤共現、專案、會話與名稱相似度規則連結孤立實體。
 
 **📦 個人備份與搬遷** — `memesh export > memesh-backup.json` → 複製到另一台機器 → `memesh import memesh-backup.json`
 匯入的組合保持可搜尋，但 MeMesh 不會自動將匯入的記憶注入 host context，直到你檢查或在本地重新儲存。
@@ -478,31 +470,13 @@ MeMesh 的檢索引擎**只用 FTS5**（熱路徑上不使用 LLM、不使用嵌
 > 「我在 Claude Code 儲存的決策，隔天可以從 Codex 找回來。同一份在地記憶跟著工作走，不會被綁在單一代理上。」
 > — **使用多個程式開發代理的個人開發者**
 
-> 「儀表板顯示我 90% 的記憶是自動生成的對話日誌。我開始有意使用 `remember` 來記錄架構決策。改變了遊戲規則。」
-> — **發現分析面板的開發者**
-
 ---
 
 ## 食譜
 
-### 在矛盾咬你之前先抓到它
+### 把目前工作轉成受審核的記憶
 
-兩個決策，隔了好幾週做的，卻不可能同時為真 — 這正是記憶層存在的目的，就是要抓到這種失敗模式：
-
-```bash
-memesh remember --name retry-policy --type decision \
-  --obs "所有 HTTP client 在請求失敗時都用指數退避重試，最多 5 次。"
-# ...幾週後，有人做了完全相反的決定...
-memesh remember --name retry-policy-v2 --type decision \
-  --obs "HTTP client 絕對不能自動重試 — 立刻失敗並把錯誤丟出來。"
-
-memesh dream conflicts        # 判定器標出這一對，附上判斷理由
-memesh dream show 1           # 看完整的判決、引用的段落，接受後會建立什麼
-memesh dream accept 1         # 由你決定 — 沒有東西會自動連起來
-memesh recall "retry policy"  # → 警告：偵測到衝突
-```
-
-從此之後，任何回憶到這兩個決策之一的代理都會被告知它們互相矛盾 — 而不是自信地引用剛好先找到的那一個。
+請目前專案 session 裡已在執行的 agent 準備一個 `work_package`。它可以依日曆選取一組摘要，或從最新 session 可見的對話輪次準備一個套件，接著提交一份有界結果或選擇延後。提交只會暫存提案：請在儀表板查看完整內容，再由你接受或拒絕。儀表板不能啟動或喚醒 agent。
 
 ### 一份記憶，三個代理
 
@@ -522,43 +496,9 @@ memesh remember --name auth-approach --type decision \
 
 ---
 
-## 解鎖智慧模式（可選）
+## Agent 協助的工作套件
 
-MeMesh 預設離線運作 — 回憶嚴格保持 LLM-free（開箱即用就有 LongMemEval-S 上 95.60% R@5）。只有當你想要在上層加入 LLM 增強的分析流程時，才需要加入 LLM API 金鑰：更聰明的 session 擷取、新記憶的自動標籤、從失敗產生教訓，以及 `dream` 壓縮：
-
-```bash
-memesh config set llm.provider anthropic
-memesh config set llm.api-key sk-ant-...
-```
-
-或使用儀表板 Settings 分頁（視覺化設定）：
-
-```bash
-memesh serve  # 開啟儀表板 → Settings 分頁
-```
-
-**把過去的對話挖成記憶。** `memesh dream run --from-transcripts` 會讀這個專案的 Claude Code 對話記錄，請 LLM 找出藏在對話裡的決策與教訓，再把它們暫存成提案——不會自動寫進你的知識圖譜。用 `memesh dream show <id>` 逐一檢視，挑值得留的 accept。
-
-### 自帶嵌入(可選)
-
-預設情況下 MeMesh 只做**關鍵字**召回(FTS5)—— 無需 API 金鑰,無需下載模型,資料不離開你的機器。語意(以意義為基礎的)搜尋是選用的,需要一個嵌入器。設定其中之一:
-
-```bash
-memesh config set embedder.provider openai          # or: ollama
-```
-
-嵌入器**獨立於對話 LLM** 設定 —— 更改 `llm.provider` 絕不會悄悄改變你的嵌入。每個 provider 自己固定模型與維度(`ollama` → nomic-embed-text 768 維、`openai` → text-embedding-3-small 1536 維);模型不另外提供選項,因為一個向量索引的維度是固定的,換第二個模型會把另一個嵌入空間的向量寫進同一個索引。
-
-如果切換到不同維度(如 768 → 1536),**不會刪掉任何東西**。MeMesh 保留現有索引,並在開啟時提示你執行 `memesh reindex`:新索引會建在舊索引旁邊,等到每一筆記憶都有向量才切換過去 —— 所以重建中途被打斷不會損失任何東西,下次會從斷點繼續。這段期間語意搜尋是關閉的,召回只走關鍵字搜尋;`recall` 會回報 `degraded`,不會假裝搜過了。支援的 `embedder.provider` 取值:`ollama`(本地)、`openai`(託管)。兩者都不設定時,召回保持關鍵字搜尋。
-
-| | 等級 0（預設） | 等級 1（智慧模式） |
-|---|---|---|
-| **搜尋** | FTS5 + sqlite-vec，95.60% R@5 | 不變 — 回憶在每個等級都保持 LLM-free |
-| **自動擷取** | 基於規則的模式 | + LLM 擷取決策與教訓 |
-| **自動標籤** | 僅手動標籤 | + LLM 為新記憶產生標籤 |
-| **失敗分析** | 不可用 | + LLM 將 session 錯誤轉為結構化教訓 |
-| **壓縮** | 不可用 | `dream` 壓縮冗長記憶 |
-| **成本** | 免費，無需 API 金鑰 | 約 $0.0001 / 次分析呼叫（Haiku） |
+MeMesh 的回憶與擷取保持本機且可預測：SQLite FTS5 搜尋、明確的記憶工具，以及規則式 hooks。需要摘要，或可見對話裡仍有值得保留的知識時，已在執行的 agent 可以使用 `work_package`。支援互動提示的 host 會顯示簡短選項：**派遣 agent 任務**、**稍後**、**不要再建議**。結果一律等待人類審核；沒有背景模型、供應商設定、排程挖掘或由儀表板派遣任務。
 
 ---
 
@@ -568,7 +508,7 @@ memesh config set embedder.provider openai          # or: ollama
 |------|--------|
 | `work_package` | 準備一個有界限且不受信任的套件：`digest` 依日曆選取群組，`transcript` 從最新專案工作階段選取可見輪次。agent 只可提交一個嚴格驗證的結果或延後；提交只會暫存為等待人類審核的提案。不會暴露或使用隱藏推理、原始逐字稿、路徑、API 金鑰、LLM、嵌入或向量資料；agent 不能接受或拒絕，雜湊只用來辨識新鮮度而非驗證身份。 |
 | `remember` | 用觀察、關係和標籤儲存知識 |
-| `recall` | FTS5 + sqlite-vec 搜尋，包含多因素評分（相關性、近期性、頻率、信心、回憶影響）— 熱路徑上不使用 LLM |
+| `recall` | 本機 FTS5 搜尋，包含多因素評分（相關性、近期性、頻率、信心、回憶影響） |
 | `forget` | 軟歸檔（永不刪除）或移除特定觀察 |
 | `export` | 以 JSON 備份、搬遷記憶，或在相容代理之間轉移 |
 | `import` | 匯入記憶，包含合併策略（跳過 / 覆寫 / 追加） |
@@ -594,7 +534,7 @@ memesh config set embedder.provider openai          # or: ollama
            │                 │                 │
            └─────────────────┼─────────────────┘
                              │
-                    SQLite + FTS5 + sqlite-vec
+                    SQLite + FTS5
                     (~/.memesh/knowledge-graph.db)
 ```
 
@@ -644,6 +584,8 @@ Session 開始時，有新版本可下載時會跳一行 banner（每版本每 2
 ---
 
 ## 貢獻
+
+遇到 bug 或有問題時，執行 `memesh feedback --bug`、`--feature` 或 `--question`。MeMesh 會先預覽公開 GitHub issue 的內容，再開啟瀏覽器。加上 `--no-diagnostics` 可省略經遮蔽的 doctor 報告與匿名安裝 ID；`--no-open` 則只印出網址。MeMesh 不會自動送出 issue；請先在 GitHub 檢查、編輯，再由你送出。
 
 ```bash
 git clone https://github.com/PCIRCLE-AI/memesh

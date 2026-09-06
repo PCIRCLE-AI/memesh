@@ -4,7 +4,7 @@ import { getProjectName } from './paths.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 
 // =============================================================================
-// Extractor Interface (pluggable — rule-based now, LLM-based later)
+// Rule-based transcript extractor interface.
 // =============================================================================
 
 export interface SessionContext {

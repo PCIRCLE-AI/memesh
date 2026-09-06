@@ -13,7 +13,7 @@ import {
   SQL_NFC_FUNCTION,
 } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
-import { dropEntityFromIndexes, removeVectorRow } from './storage/entity-index.js';
+import { dropEntityFromIndexes } from './storage/entity-index.js';
 
 /**
  * Cap on how many terms of a query reach the FTS5 MATCH expression. Terms are
@@ -293,7 +293,7 @@ export class KnowledgeGraph {
        * `updateEntityMetadata()` call, because the bump decision
        * happens inside this function. The default ('trusted') matches
        * what `buildLocalMetadata()` writes for explicit user
-       * remembers; importer / failure-analyzer paths pass
+       * remembers; importer and accepted-agent proposal paths pass
        * `'untrusted'` to opt out of the bump.
        */
       trustOverride?: 'trusted' | 'untrusted';
@@ -452,12 +452,11 @@ export class KnowledgeGraph {
     // review feedback:
     //
     //   1. First take: bump on every re-call. Codex caught it as a
-    //      pump-attack — every internal caller (auto-tagger, importer,
+    //      pump-attack — every internal caller (importer, repeated hooks,
     //      tight loop) would inflate confidence with no truth value
     //      added.
     //   2. Second take: never bump from createEntity, only from
-    //      explicit `learn`. (A successful `consolidate` also reached
-    //      here until that tool was retired.) Codex caught
+    //      explicit `learn`. Codex caught
     //      THAT as a one-way decay regression for LLM-free installs.
     //   3. Third take: bump on new observations only. Codex caught
     //      THAT as still permitting untrusted sources (importer,
@@ -468,7 +467,7 @@ export class KnowledgeGraph {
     // brand-new observation string, AND (c) the metadata trust signal
     // is 'trusted' (the default for explicit MCP/HTTP/CLI remember
     // calls). Untrusted sources — `importMemories(append/overwrite)`,
-    // `createLesson` (failure-analyzer auto-learned), and any future
+    // `createLesson`, and any future
     // caller that sets `trustOverride: 'untrusted'` — explicitly
     // opt out of confidence lift.
     if (!isNewEntity && !wasArchived) {
@@ -1098,19 +1097,6 @@ export class KnowledgeGraph {
       // Rebuild FTS with empty content (removes old indexed text). title is
       // untouched by this method, so the same value goes in on both sides.
       this.rebuildFts(row.id, name, prevObsText, row.title);
-      // And drop the vector, for the same reason the FTS text is dropped: it
-      // encodes observations that no longer exist. The keyword index was
-      // cleared here from the start; the vector was not, so every caller of
-      // this method — `--merge overwrite` on import, and the memory tool's
-      // `rewriteObservations` — left the entity semantically matching its OLD
-      // text. A memory edited to say the opposite of what it used to say
-      // still came back for the old query, with the new text attached.
-      //
-      // Deleted rather than re-embedded: embedding is a network call and this
-      // is a synchronous graph mutation. NO vector is a state the system
-      // already knows how to see (`countMissingVectors`) and already knows
-      // how to fix (`memesh reindex`); a WRONG vector is neither.
-      removeVectorRow(this.db, row.id);
     })();
   }
 
@@ -1123,18 +1109,14 @@ export class KnowledgeGraph {
 
     // One transaction, because a partial archive is worse than a failed one.
     //
-    // These ran in autocommit. The FTS delete committed, the vector delete
-    // threw `no such module: vec0` (see hasVectorIndex — the catalogue check
-    // could not tell a loaded extension from a leftover table row), and the
-    // status update never ran. The memory was left ACTIVE and unindexed:
+    // These writes used to run in autocommit. If the FTS delete committed and
+    // the status update then failed, the memory was left ACTIVE and unindexed:
     // invisible to keyword search, invisible to the archived-supplement
     // branch (which filters on status='archived'), and invisible to
     // `includeArchived`. Retrying threw again forever. Only `reindex --fts`
     // recovered it, and nothing told the user it existed.
     //
-    // hasVectorIndex now answers the process question, so the throw should
-    // not recur — but the atomicity is what makes a future throw survivable
-    // rather than data-destroying, and that is worth having independently.
+    // Atomicity makes a future throw survivable rather than data-destroying.
     this.db.transaction(() => {
       dropEntityFromIndexes(this.db, row.id, name);
 
@@ -1184,20 +1166,15 @@ export class KnowledgeGraph {
   }
 
   /**
-   * Hard-delete an entity by name. Cleans the FTS5 entry, the
-   * sqlite-vec embedding row, then DELETE FROM entities — the
-   * foreign-key cascade handles observations, tags, and relations.
+   * Hard-delete an entity by name. Cleans the FTS5 entry, then DELETE FROM
+   * entities; the foreign-key cascade handles observations, tags and relations.
    *
    * Prefer `archiveEntity()` for user-facing forget flows: archiving
    * preserves the row for restore + analytics. This hard delete is
    * the right tool only when the entity should not exist at all
    * (e.g. demo cleanup after `memesh demo --reset`).
    *
-   * Both index sides matter: FTS5 is contentless and needs the
-   * original observations to locate its row, and `entities_vec` is
-   * a separate virtual table whose rows are not cascaded by the
-   * `entities` FK — leaving them behind shows up as orphan
-   * embeddings on later vector searches.
+   * FTS5 is contentless and needs the original observations to locate its row.
    */
   deleteEntity(name: string): { deleted: boolean } {
     const row = this.db
@@ -1209,12 +1186,9 @@ export class KnowledgeGraph {
     // Delete FTS entry first (contentless FTS5 requires the original
     // indexed values to find the row — see storage/fts-index.ts).
     // One transaction, same reason as archiveEntity: in autocommit the FTS
-    // delete committed and a throw on the vector delete left the entity row
-    // in place but out of the index — a permanent orphan that no search could
-    // reach and no retry could clear.
+    // delete committed and a later throw left the entity row in place but out
+    // of the index — a permanent orphan that no search could reach.
     this.db.transaction(() => {
-      // Same pair as archiveEntity, through the same owner, so a hard delete
-      // cannot leak orphan embeddings while an archive does not.
       dropEntityFromIndexes(this.db, row.id, name);
 
       // CASCADE handles observations, relations, tags.

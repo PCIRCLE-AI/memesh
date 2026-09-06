@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import { exportOpenAITools } from '../../src/core/schema-export.js';
-import { BriefingSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
+import { BriefingSchema, LearnSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
 import { TOOL_DEFINITIONS } from '../../src/transports/mcp/handlers.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../src/core/agent-messaging.js';
 
@@ -84,6 +86,26 @@ describe('exportOpenAITools', () => {
   it('memesh_learn requires error and fix', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_learn') as any;
     expect(tool.function.parameters.required).toEqual(['error', 'fix']);
+  });
+
+  it('memesh_learn exports the exact strict runtime field names', () => {
+    const exported = tools.find((t: any) => t.function.name === 'memesh_learn') as any;
+    const mcp = TOOL_DEFINITIONS.find((definition) => definition.name === 'learn') as any;
+    const runtimeKeys = Object.keys(LearnSchema.shape);
+
+    expect(Object.keys(exported.function.parameters.properties)).toEqual(runtimeKeys);
+    expect(Object.keys(mcp.inputSchema.properties)).toEqual(runtimeKeys);
+    expect(exported.function.parameters.properties).toHaveProperty('root_cause');
+    expect(exported.function.parameters.properties).not.toHaveProperty('rootCause');
+    expect(mcp.inputSchema.additionalProperties).toBe(false);
+  });
+
+  it('HTTP learn examples use the runtime root_cause field', () => {
+    for (const file of ['docs/platforms/chatgpt.md', 'docs/platforms/universal.md']) {
+      const content = fs.readFileSync(path.resolve(file), 'utf8');
+      expect(content, file).toContain('"root_cause"');
+      expect(content, file).not.toContain('"rootCause"');
+    }
   });
 
   it('memesh_improvement exposes proposal/status only and keeps review authority human', () => {

@@ -3,7 +3,6 @@ import { openDatabase, closeDatabase, getDatabase } from '../src/db.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { getEmbeddingDimension } from '../src/core/config.js';
 
 describe('Feature: Database Management', () => {
   let testDir: string;
@@ -202,52 +201,63 @@ describe('Feature: Database Management', () => {
     });
   });
 
-  describe('Scenario: Vector table setup', () => {
-    it('should have entities_vec virtual table', () => {
+  describe('Scenario: FTS-only schema', () => {
+    it('does not create retired provider, vector, or telemetry tables', () => {
       const db = openDatabase(testDbPath);
-      const tables = db.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='entities_vec'"
-      ).all();
-      expect(tables).toHaveLength(1);
+      const tables = new Set((db.prepare(
+        "SELECT name FROM sqlite_master WHERE type='table'"
+      ).all() as Array<{ name: string }>).map((row) => row.name));
+      for (const retired of [
+        'entities_vec',
+        'entities_vec_next',
+        'entities_vec_next_source',
+        'llm_telemetry',
+        'conflict_judged_pairs',
+      ]) {
+        expect(tables.has(retired), `${retired} must not be created`).toBe(false);
+      }
     });
 
-    it('should accept explicit entity rowids for sqlite-vec storage', () => {
+    it('keeps only current proposal review columns in a fresh database', () => {
       const db = openDatabase(testDbPath);
-      const embedding = new Float32Array(getEmbeddingDimension());
-      embedding.fill(0.01);
-      embedding[0] = 1;
-
-      expect(() => {
-        db.prepare(
-          'INSERT INTO entities_vec (rowid, embedding) VALUES (?, ?)'
-        ).run(1n, Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength));
-      }).not.toThrow();
+      const columns = new Map((db.prepare('PRAGMA table_info(dream_proposals)').all() as Array<{
+        name: string;
+        notnull: number;
+      }>).map((column) => [column.name, column]));
+      expect(columns.get('source_kind')?.notnull).toBe(1);
+      expect(columns.get('kind')?.notnull).toBe(1);
+      expect(columns.has('llm_model')).toBe(false);
+      expect(columns.get('reason')?.notnull).toBe(0);
+      expect(columns.get('reviewed_at')?.notnull).toBe(0);
     });
 
-    it('should support replacing an entity vector via delete then insert', () => {
-      const db = openDatabase(testDbPath);
-      const first = new Float32Array(getEmbeddingDimension());
-      first.fill(0.01);
-      first[0] = 1;
-      const second = new Float32Array(getEmbeddingDimension());
-      second.fill(0.02);
-      second[1] = 1;
+    it('opens a legacy database without reading or deleting retired tables', () => {
+      let db = openDatabase(testDbPath);
+      db.exec('CREATE TABLE entities_vec (rowid INTEGER PRIMARY KEY, embedding BLOB)');
+      db.exec('CREATE TABLE llm_telemetry (id INTEGER PRIMARY KEY, marker TEXT)');
+      db.prepare('INSERT INTO entities_vec (rowid, embedding) VALUES (?, ?)').run(7, new Uint8Array([1, 2]));
+      db.prepare("INSERT INTO llm_telemetry (id, marker) VALUES (9, 'legacy')").run();
+      closeDatabase();
 
-      const writeVector = (embedding: Float32Array) => {
-        db.prepare('DELETE FROM entities_vec WHERE rowid = ?').run(1n);
-        db.prepare('INSERT INTO entities_vec (rowid, embedding) VALUES (?, ?)').run(
-          1n,
-          Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength)
-        );
-      };
+      db = openDatabase(testDbPath);
+      expect((db.prepare('SELECT count(*) AS n FROM entities_vec').get() as { n: number }).n).toBe(1);
+      expect((db.prepare('SELECT marker FROM llm_telemetry WHERE id = 9').get() as { marker: string }).marker).toBe('legacy');
+    });
 
-      expect(() => {
-        writeVector(first);
-        writeVector(second);
-      }).not.toThrow();
+    it('preserves an old proposal model column and value when reopening the database', () => {
+      let db = openDatabase(testDbPath);
+      db.exec('ALTER TABLE dream_proposals ADD COLUMN llm_model TEXT');
+      db.prepare(`
+        INSERT INTO dream_proposals
+          (project, cluster_key, source_ids, proposed_digest, prompt_version, llm_model)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run('legacy-project', 'legacy-cluster', '[]', '{}', 'legacy-v1', 'legacy-model');
+      closeDatabase();
 
-      const count = db.prepare('SELECT count(*) AS count FROM entities_vec').get() as { count: number };
-      expect(count.count).toBe(1);
+      db = openDatabase(testDbPath);
+      expect(db.prepare(
+        'SELECT llm_model FROM dream_proposals WHERE project = ?'
+      ).get('legacy-project')).toEqual({ llm_model: 'legacy-model' });
     });
   });
 

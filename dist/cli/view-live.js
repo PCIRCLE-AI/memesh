@@ -258,11 +258,6 @@ export function generateLiveDashboardHtml() {
     .form-group { margin-bottom: 14px; }
     .form-label { display: block; font-size: 13px; font-weight: 500; color: var(--text-primary); margin-bottom: 5px; }
     .form-hint { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
-    .provider-radio-group { display: flex; gap: 8px; flex-wrap: wrap; }
-    .provider-radio { display: flex; align-items: center; gap: 6px; padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; transition: border-color 0.15s; color: var(--text-secondary); font-size: 13px; }
-    .provider-radio:hover { border-color: var(--accent); color: var(--text-primary); }
-    .provider-radio.selected { border-color: var(--accent); background: var(--accent-glow); color: var(--accent-hover); }
-    .provider-radio input[type=radio] { accent-color: var(--accent); }
     .cap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin-bottom: 16px; }
     .cap-item { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12px; }
     .cap-item .cap-label { color: var(--text-muted); margin-bottom: 2px; }
@@ -277,10 +272,6 @@ export function generateLiveDashboardHtml() {
     .wizard-modal { background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px; max-width: 520px; width: 90%; box-shadow: var(--shadow-lg); }
     .wizard-modal h2 { font-size: 22px; font-weight: 700; margin-bottom: 8px; color: var(--text-primary); letter-spacing: -0.02em; }
     .wizard-modal .subtitle { color: var(--text-secondary); font-size: 14px; margin-bottom: 24px; line-height: 1.6; }
-    .wizard-steps { display: flex; gap: 6px; margin-bottom: 28px; }
-    .wizard-step-dot { flex: 1; height: 3px; background: var(--border); border-radius: 2px; transition: background 0.2s; }
-    .wizard-step-dot.active { background: var(--accent); }
-    .wizard-step-dot.done { background: var(--success); }
     .wizard-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; }
 
     /* Analytics */
@@ -391,8 +382,6 @@ export function generateLiveDashboardHtml() {
   'use strict';
 
   var _currentVersion = '';
-  var _currentSearchLevel = '';
-
   // ---- API ----
   async function apiCall(method, path, body) {
     var controller = new AbortController();
@@ -409,6 +398,35 @@ export function generateLiveDashboardHtml() {
       if (err.name === 'AbortError') throw new Error('Request timed out (10s)');
       throw err;
     }
+  }
+
+  function successData(response, label) {
+    if (!response || response.success !== true) {
+      throw new Error((response && response.error) || ('Failed to load ' + label));
+    }
+    return response.data;
+  }
+
+  function entityList(value, label) {
+    if (!Array.isArray(value)) throw new Error('Invalid ' + label + ' response');
+    return value;
+  }
+
+  function graphData(value) {
+    if (!value || typeof value !== 'object'
+        || !Array.isArray(value.entities) || !Array.isArray(value.relations)) {
+      throw new Error('Invalid graph response');
+    }
+    return value;
+  }
+
+  function configData(response) {
+    var value = successData(response, 'config');
+    if (!value || typeof value !== 'object' || !value.config
+        || typeof value.config !== 'object' || Array.isArray(value.config)) {
+      throw new Error('Invalid config response');
+    }
+    return value.config;
   }
 
   // ---- Theme (dark default, light class toggles light mode) ----
@@ -644,8 +662,10 @@ export function generateLiveDashboardHtml() {
     try {
       var data = await apiCall('POST', '/v1/recall', { query: q, limit: 20 });
       searchResults.textContent = '';
-      if (!data.success) { showError(searchResults, data.error || 'Unknown error'); return; }
-      var entities = Array.isArray(data.data) ? data.data : (data.data.entities || []);
+      var result = successData(data, 'search results');
+      var entities = Array.isArray(result)
+        ? result
+        : entityList(result && result.entities, 'search results');
       if (entities.length === 0) { showPlaceholder(searchResults, 'No results for "' + q + '"'); return; }
       searchResults.appendChild(buildEntityTable(entities, q));
     } catch (err) {
@@ -665,8 +685,7 @@ export function generateLiveDashboardHtml() {
     showSpinner(browseWrap);
     try {
       var data = await apiCall('GET', '/v1/entities?limit=200');
-      if (!data.success) throw new Error(data.error || 'Failed to load entities');
-      allEntities = data.data || [];
+      allEntities = entityList(successData(data, 'entities'), 'entities');
       renderBrowseTable(browseFilter.value);
     } catch (err) {
       showError(browseWrap, err.message);
@@ -696,8 +715,8 @@ export function generateLiveDashboardHtml() {
     showSpinner(wrap);
     try {
       var data = await apiCall('GET', '/v1/graph');
-      if (!data.success) throw new Error(data.error || 'Failed to load graph');
-      renderGraph(data.data.entities || [], data.data.relations || [], wrap);
+      var graph = graphData(successData(data, 'graph'));
+      renderGraph(graph.entities, graph.relations, wrap);
     } catch (err) {
       showError(wrap, err.message);
       graphLoaded = false;
@@ -1115,8 +1134,8 @@ export function generateLiveDashboardHtml() {
     showSpinner(container);
     try {
       var data = await apiCall('GET', '/v1/graph');
-      if (!data.success) throw new Error(data.error || 'Failed to load graph');
-      renderTimeline(data.data.entities || [], data.data.relations || [], container);
+      var graph = graphData(successData(data, 'graph'));
+      renderTimeline(graph.entities, graph.relations, container);
     } catch (err) {
       showError(container, err.message);
       timelineLoaded = false;
@@ -1238,8 +1257,7 @@ export function generateLiveDashboardHtml() {
     showSpinner(tableWrap);
     try {
       var data = await apiCall('GET', '/v1/entities?limit=500&status=all');
-      if (!data.success) throw new Error(data.error || 'Failed to load');
-      allManageEntities = data.data || [];
+      allManageEntities = entityList(successData(data, 'entities'), 'entities');
       renderManageTable();
     } catch (err) {
       showError(tableWrap, err.message);
@@ -1496,7 +1514,7 @@ export function generateLiveDashboardHtml() {
         var title = encodeURIComponent('[' + fbType + '] ' + desc.slice(0, 50));
         var bodyText = '## Description\\n' + desc;
         if (includeSys) {
-          bodyText += '\\n\\n## System Info\\nVersion: ' + _currentVersion + '\\nSearch Level: ' + _currentSearchLevel;
+          bodyText += '\\n\\n## System Info\\nVersion: ' + _currentVersion;
         }
         var body = encodeURIComponent(bodyText);
         window.open('https://github.com/PCIRCLE-AI/memesh/issues/new?title=' + title + '&body=' + body + '&labels=' + labels, '_blank');
@@ -1514,11 +1532,7 @@ export function generateLiveDashboardHtml() {
   })();
 
   // ---- Settings tab ----
-  var settingsLoaded = false;
-
   async function loadSettings() {
-    if (settingsLoaded) return;
-    settingsLoaded = false; // allow re-render on each visit to reflect saved state
     var body = document.getElementById('settings-body');
     body.textContent = '';
 
@@ -1530,14 +1544,19 @@ export function generateLiveDashboardHtml() {
       return;
     }
 
-    var currentConfig = (configRes.success && configRes.data && configRes.data.config) || {};
-    var caps = (configRes.success && configRes.data && configRes.data.capabilities) || {};
+    var currentConfig;
+    try {
+      currentConfig = configData(configRes);
+    } catch (err) {
+      showError(body, 'Failed to load config: ' + err.message);
+      return;
+    }
 
-    // --- Capabilities section ---
+    // --- Status ---
     var capSection = document.createElement('div');
     capSection.className = 'settings-section';
     var capH3 = document.createElement('h3');
-    capH3.textContent = 'Current Capabilities';
+    capH3.textContent = 'Status';
     capSection.appendChild(capH3);
 
     var capGrid = document.createElement('div');
@@ -1562,149 +1581,11 @@ export function generateLiveDashboardHtml() {
       capGrid.appendChild(item);
     }
 
-    var searchLevel = caps.searchLevel !== undefined ? caps.searchLevel : '?';
-    _currentSearchLevel = String(searchLevel);
-    addCap('Search Level', searchLevel === 1 ? 'Smart Mode' : 'Core FTS5', searchLevel === 1);
-    addCap('Embeddings', caps.embeddings, caps.embeddings !== 'tfidf');
-    var llmProvider = (caps.llm && caps.llm.provider) ? caps.llm.provider : 'None';
-    addCap('LLM Provider', llmProvider, !!caps.llm);
-    var llmModel = (caps.llm && caps.llm.model) ? caps.llm.model : '\u2014';
-    addCap('LLM Model', llmModel, !!caps.llm);
+    addCap('Memory engine', 'Local FTS5', true);
+    addCap('Initial setup', currentConfig.setupCompleted ? 'Complete' : 'Not complete', currentConfig.setupCompleted === true);
 
     capSection.appendChild(capGrid);
     body.appendChild(capSection);
-
-    // --- LLM Provider section ---
-    var llmSection = document.createElement('div');
-    llmSection.className = 'settings-section';
-    var llmH3 = document.createElement('h3');
-    llmH3.textContent = 'LLM Provider';
-    llmSection.appendChild(llmH3);
-
-    var providerGroup = document.createElement('div');
-    providerGroup.className = 'form-group';
-    var providerLabel = document.createElement('label');
-    providerLabel.className = 'form-label';
-    providerLabel.textContent = 'Provider';
-    providerGroup.appendChild(providerLabel);
-
-    var radioGroup = document.createElement('div');
-    radioGroup.className = 'provider-radio-group';
-    var currentProvider = (currentConfig.llm && currentConfig.llm.provider) || '';
-
-    ['anthropic', 'openai', 'ollama'].forEach(function (p) {
-      var wrapper = document.createElement('label');
-      wrapper.className = 'provider-radio' + (currentProvider === p ? ' selected' : '');
-
-      var radio = document.createElement('input');
-      radio.type = 'radio';
-      radio.name = 'llm-provider';
-      radio.value = p;
-      if (currentProvider === p) radio.checked = true;
-
-      radio.addEventListener('change', function () {
-        document.querySelectorAll('.provider-radio').forEach(function (el) { el.classList.remove('selected'); });
-        wrapper.classList.add('selected');
-        apiKeyGroup.style.display = p === 'ollama' ? 'none' : 'block';
-        modelGroup.style.display = 'block';
-      });
-
-      wrapper.appendChild(radio);
-      wrapper.appendChild(document.createTextNode(p.charAt(0).toUpperCase() + p.slice(1)));
-      radioGroup.appendChild(wrapper);
-    });
-
-    providerGroup.appendChild(radioGroup);
-    llmSection.appendChild(providerGroup);
-
-    // API Key input
-    var apiKeyGroup = document.createElement('div');
-    apiKeyGroup.className = 'form-group';
-    apiKeyGroup.style.display = currentProvider && currentProvider !== 'ollama' ? 'block' : (currentProvider === 'ollama' ? 'none' : 'none');
-
-    var apiKeyLabel = document.createElement('label');
-    apiKeyLabel.className = 'form-label';
-    apiKeyLabel.textContent = 'API Key';
-    apiKeyGroup.appendChild(apiKeyLabel);
-
-    var apiKeyInput = document.createElement('input');
-    apiKeyInput.type = 'password';
-    apiKeyInput.className = 'search-input';
-    apiKeyInput.placeholder = 'sk-ant-api03-\u2026 or sk-\u2026';
-    apiKeyInput.style.width = '100%';
-    apiKeyInput.autocomplete = 'off';
-    apiKeyGroup.appendChild(apiKeyInput);
-
-    var apiKeyHint = document.createElement('div');
-    apiKeyHint.className = 'form-hint';
-    apiKeyHint.textContent = 'Leave blank to keep existing key. Key is stored in ~/.memesh/config.json (mode 600).';
-    apiKeyGroup.appendChild(apiKeyHint);
-    llmSection.appendChild(apiKeyGroup);
-
-    // Model input
-    var modelGroup = document.createElement('div');
-    modelGroup.className = 'form-group';
-    modelGroup.style.display = currentProvider ? 'block' : 'none';
-
-    var modelLabel = document.createElement('label');
-    modelLabel.className = 'form-label';
-    modelLabel.textContent = 'Model (optional)';
-    modelGroup.appendChild(modelLabel);
-
-    var modelInput = document.createElement('input');
-    modelInput.type = 'text';
-    modelInput.className = 'search-input';
-    modelInput.placeholder = 'e.g. claude-haiku-4-5, gpt-4o-mini, llama3.2';
-    modelInput.style.width = '100%';
-    if (currentConfig.llm && currentConfig.llm.model) modelInput.value = currentConfig.llm.model;
-    modelGroup.appendChild(modelInput);
-    llmSection.appendChild(modelGroup);
-
-    // Save button row
-    var saveRow = document.createElement('div');
-    saveRow.style.display = 'flex';
-    saveRow.style.gap = '10px';
-    saveRow.style.alignItems = 'center';
-    saveRow.style.marginTop = '4px';
-
-    var saveBtn = document.createElement('button');
-    saveBtn.className = 'btn btn-primary btn-sm';
-    saveBtn.textContent = 'Save';
-
-    var saveMsg = document.createElement('span');
-    saveMsg.style.fontSize = '13px';
-    saveMsg.style.color = 'var(--success)';
-
-    saveBtn.addEventListener('click', async function () {
-      var selectedProvider = document.querySelector('input[name=llm-provider]:checked');
-      if (!selectedProvider) { saveMsg.style.color = 'var(--danger)'; saveMsg.textContent = 'Select a provider first.'; return; }
-      var prov = selectedProvider.value;
-      var llmUpdate = { provider: prov };
-      if (modelInput.value.trim()) llmUpdate.model = modelInput.value.trim();
-      if (apiKeyInput.value.trim()) llmUpdate.apiKey = apiKeyInput.value.trim();
-
-      saveBtn.disabled = true;
-      saveBtn.textContent = 'Saving\u2026';
-      try {
-        var res = await apiCall('POST', '/v1/config', { llm: llmUpdate });
-        if (!res.success) throw new Error(res.error || 'Save failed');
-        saveMsg.style.color = 'var(--success)';
-        saveMsg.textContent = 'Saved! Restart the server to apply LLM changes.';
-        apiKeyInput.value = '';
-        settingsLoaded = false; // force re-render on next visit
-      } catch (err) {
-        saveMsg.style.color = 'var(--danger)';
-        saveMsg.textContent = 'Error: ' + err.message;
-      } finally {
-        saveBtn.disabled = false;
-        saveBtn.textContent = 'Save';
-      }
-    });
-
-    saveRow.appendChild(saveBtn);
-    saveRow.appendChild(saveMsg);
-    llmSection.appendChild(saveRow);
-    body.appendChild(llmSection);
 
     // --- General settings section ---
     var genSection = document.createElement('div');
@@ -1731,7 +1612,7 @@ export function generateLiveDashboardHtml() {
     autoLabel.style.fontSize = '13px';
     autoLabel.style.fontWeight = '600';
     autoLabel.style.cursor = 'pointer';
-    autoLabel.textContent = 'Auto-capture (session-start hook)';
+    autoLabel.textContent = 'Auto-capture';
 
     autoGroup.appendChild(autoCheck);
     autoGroup.appendChild(autoLabel);
@@ -1740,8 +1621,62 @@ export function generateLiveDashboardHtml() {
     var autoHint = document.createElement('div');
     autoHint.className = 'form-hint';
     autoHint.style.marginLeft = '28px';
-    autoHint.textContent = 'Automatically recall project memories at the start of each Claude Code session.';
+    autoHint.textContent = 'Automatically load project memories when a supported agent session starts.';
     genSection.appendChild(autoHint);
+
+    // Auto-update policy
+    var updateGroup = document.createElement('div');
+    updateGroup.className = 'form-group';
+    var updateLabel = document.createElement('label');
+    updateLabel.className = 'form-label';
+    updateLabel.htmlFor = 'auto-update';
+    updateLabel.textContent = 'Automatic updates';
+    updateGroup.appendChild(updateLabel);
+
+    var autoUpdateSelect = document.createElement('select');
+    autoUpdateSelect.id = 'auto-update';
+    autoUpdateSelect.className = 'search-input';
+    autoUpdateSelect.style.width = '100%';
+    [
+      ['off', 'Off'],
+      ['patch', 'Patch releases'],
+      ['minor', 'Minor releases'],
+      ['major', 'All releases'],
+    ].forEach(function (option) {
+      var el = document.createElement('option');
+      el.value = option[0];
+      el.textContent = option[1];
+      autoUpdateSelect.appendChild(el);
+    });
+    autoUpdateSelect.value = currentConfig.autoUpdate || 'off';
+    updateGroup.appendChild(autoUpdateSelect);
+    genSection.appendChild(updateGroup);
+
+    // Session memory limit
+    var limitGroup = document.createElement('div');
+    limitGroup.className = 'form-group';
+    var limitLabel = document.createElement('label');
+    limitLabel.className = 'form-label';
+    limitLabel.htmlFor = 'session-limit';
+    limitLabel.textContent = 'Session memory limit';
+    limitGroup.appendChild(limitLabel);
+
+    var limitInput = document.createElement('input');
+    limitInput.id = 'session-limit';
+    limitInput.type = 'number';
+    limitInput.min = '1';
+    limitInput.max = '100';
+    limitInput.step = '1';
+    limitInput.className = 'search-input';
+    limitInput.style.width = '100%';
+    limitInput.value = String(currentConfig.sessionLimit || 10);
+    limitGroup.appendChild(limitInput);
+
+    var limitHint = document.createElement('div');
+    limitHint.className = 'form-hint';
+    limitHint.textContent = 'Number of recent memories loaded for session context (1\u2013100).';
+    limitGroup.appendChild(limitHint);
+    genSection.appendChild(limitGroup);
 
     var genSaveRow = document.createElement('div');
     genSaveRow.style.marginTop = '12px';
@@ -1751,21 +1686,39 @@ export function generateLiveDashboardHtml() {
     genSaveBtn.textContent = 'Save';
 
     var genMsg = document.createElement('span');
+    genMsg.id = 'general-settings-message';
     genMsg.style.fontSize = '13px';
     genMsg.style.marginLeft = '10px';
     genMsg.style.color = 'var(--success)';
+    genMsg.setAttribute('role', 'status');
+    limitInput.setAttribute('aria-describedby', genMsg.id);
 
     genSaveBtn.addEventListener('click', async function () {
+      var sessionLimit = Number(limitInput.value);
+      if (!Number.isInteger(sessionLimit) || sessionLimit < 1 || sessionLimit > 100) {
+        genMsg.style.color = 'var(--danger)';
+        genMsg.setAttribute('role', 'alert');
+        genMsg.textContent = 'Session memory limit must be a whole number from 1 to 100.';
+        limitInput.setAttribute('aria-invalid', 'true');
+        return;
+      }
+      limitInput.removeAttribute('aria-invalid');
       genSaveBtn.disabled = true;
       genSaveBtn.textContent = 'Saving\u2026';
       try {
-        var res = await apiCall('POST', '/v1/config', { autoCapture: autoCheck.checked });
+        var res = await apiCall('POST', '/v1/config', {
+          autoCapture: autoCheck.checked,
+          autoUpdate: autoUpdateSelect.value,
+          sessionLimit: sessionLimit,
+        });
         if (!res.success) throw new Error(res.error || 'Save failed');
         genMsg.style.color = 'var(--success)';
+        genMsg.setAttribute('role', 'status');
         genMsg.textContent = 'Saved!';
         setTimeout(function () { genMsg.textContent = ''; }, 3000);
       } catch (err) {
         genMsg.style.color = 'var(--danger)';
+        genMsg.setAttribute('role', 'alert');
         genMsg.textContent = 'Error: ' + err.message;
       } finally {
         genSaveBtn.disabled = false;
@@ -1779,225 +1732,43 @@ export function generateLiveDashboardHtml() {
     body.appendChild(genSection);
   }
 
-  // ---- Welcome Wizard ----
-  var wizardStep = 0;
-  var wizardProvider = '';
-  var wizardApiKey = '';
-  var wizardModel = '';
-
-  function updateWizardStepDots(totalSteps) {
-    var dotsEl = document.getElementById('wizard-steps');
-    dotsEl.textContent = '';
-    for (var i = 0; i < totalSteps; i++) {
-      var dot = document.createElement('div');
-      dot.className = 'wizard-step-dot' + (i < wizardStep ? ' done' : (i === wizardStep ? ' active' : ''));
-      dotsEl.appendChild(dot);
-    }
-  }
-
-  function renderWizardStep() {
+  // ---- Welcome ----
+  function showWelcomeWizard() {
     var content = document.getElementById('wizard-content');
     var actions = document.getElementById('wizard-actions');
     content.textContent = '';
     actions.textContent = '';
-    updateWizardStepDots(3);
 
-    if (wizardStep === 0) {
-      var title = document.createElement('h2');
-      title.textContent = 'Welcome to MeMesh';
-      content.appendChild(title);
+    var title = document.createElement('h2');
+    title.textContent = 'Welcome to MeMesh';
+    content.appendChild(title);
 
-      var sub = document.createElement('p');
-      sub.className = 'subtitle';
-      sub.textContent = 'MeMesh gives Claude a persistent knowledge graph. Set up an LLM provider to unlock Smart Mode \u2014 semantic search, conflict detection, and knowledge evolution.';
-      content.appendChild(sub);
+    var sub = document.createElement('p');
+    sub.className = 'subtitle';
+    sub.textContent = 'MeMesh keeps shared agent memory on this machine with local FTS5 search and deterministic rules. No external service configuration is needed.';
+    content.appendChild(sub);
 
-      var capList = document.createElement('ul');
-      capList.style.listStyle = 'none';
-      capList.style.marginBottom = '8px';
-      [
-        ['Core FTS5 search \u2014 always available', true],
-        ['Smart Mode (LLM) \u2014 requires API key', false],
-        ['Auto-capture on session start', true],
-      ].forEach(function (item) {
-        var li = document.createElement('li');
-        li.style.cssText = 'display:flex;align-items:center;gap:8px;padding:6px 0;font-size:14px;';
-        var dot = document.createElement('span');
-        dot.className = 'status-dot ' + (item[1] ? 'ok' : 'warn');
-        li.appendChild(dot);
-        li.appendChild(document.createTextNode(String(item[0])));
-        capList.appendChild(li);
-      });
-      content.appendChild(capList);
+    var capList = document.createElement('ul');
+    capList.style.margin = '0 0 8px 20px';
+    [
+      'Remember and recall work across supported agent hosts.',
+      'Auto-capture can load project memories when a supported agent session starts.',
+      'Ask an already-running agent to use work_package when a digest or visible-transcript package would help. The Dashboard reviews staged proposals; it does not run or wake agents.',
+    ].forEach(function (item) {
+      var li = document.createElement('li');
+      li.style.cssText = 'padding:6px 0;font-size:14px;color:var(--text-secondary);';
+      li.textContent = item;
+      capList.appendChild(li);
+    });
+    content.appendChild(capList);
 
-      var skipBtn = document.createElement('button');
-      skipBtn.className = 'btn btn-secondary';
-      skipBtn.textContent = 'Skip for now';
-      skipBtn.addEventListener('click', closeWizard);
+    var doneBtn = document.createElement('button');
+    doneBtn.className = 'btn btn-primary';
+    doneBtn.textContent = 'Open Dashboard';
+    doneBtn.addEventListener('click', closeWizard);
+    actions.appendChild(doneBtn);
 
-      var nextBtn = document.createElement('button');
-      nextBtn.className = 'btn btn-primary';
-      nextBtn.textContent = 'Set up Smart Mode \u2192';
-      nextBtn.addEventListener('click', function () { wizardStep = 1; renderWizardStep(); });
-
-      actions.appendChild(skipBtn);
-      actions.appendChild(nextBtn);
-
-    } else if (wizardStep === 1) {
-      var title2 = document.createElement('h2');
-      title2.textContent = 'Choose a Provider';
-      content.appendChild(title2);
-
-      var sub2 = document.createElement('p');
-      sub2.className = 'subtitle';
-      sub2.textContent = 'Select your LLM provider and enter your API key. Keys are stored locally in ~/.memesh/config.json (mode 600).';
-      content.appendChild(sub2);
-
-      // Provider radios
-      var radioGroupW = document.createElement('div');
-      radioGroupW.className = 'provider-radio-group';
-      radioGroupW.style.marginBottom = '16px';
-
-      ['anthropic', 'openai', 'ollama'].forEach(function (p) {
-        var wrapper = document.createElement('label');
-        wrapper.className = 'provider-radio' + (wizardProvider === p ? ' selected' : '');
-
-        var radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = 'wizard-provider';
-        radio.value = p;
-        if (wizardProvider === p) radio.checked = true;
-
-        radio.addEventListener('change', function () {
-          document.querySelectorAll('.provider-radio').forEach(function (el) { el.classList.remove('selected'); });
-          wrapper.classList.add('selected');
-          wizardProvider = p;
-          keyInput.style.display = p === 'ollama' ? 'none' : 'block';
-          keyLabel.style.display = p === 'ollama' ? 'none' : 'block';
-        });
-
-        wrapper.appendChild(radio);
-        wrapper.appendChild(document.createTextNode(p.charAt(0).toUpperCase() + p.slice(1)));
-        radioGroupW.appendChild(wrapper);
-      });
-      content.appendChild(radioGroupW);
-
-      // API Key
-      var keyLabel = document.createElement('label');
-      keyLabel.className = 'form-label';
-      keyLabel.textContent = 'API Key';
-      keyLabel.style.display = wizardProvider && wizardProvider !== 'ollama' ? 'block' : 'none';
-      content.appendChild(keyLabel);
-
-      var keyInput = document.createElement('input');
-      keyInput.type = 'password';
-      keyInput.className = 'search-input';
-      keyInput.placeholder = 'Paste your API key\u2026';
-      keyInput.style.width = '100%';
-      keyInput.style.marginBottom = '12px';
-      keyInput.style.display = wizardProvider && wizardProvider !== 'ollama' ? 'block' : 'none';
-      keyInput.value = wizardApiKey;
-      keyInput.addEventListener('input', function () { wizardApiKey = keyInput.value; });
-      content.appendChild(keyInput);
-
-      // Error message
-      var errMsg = document.createElement('div');
-      errMsg.style.cssText = 'font-size:13px;color:var(--danger);min-height:18px;margin-bottom:8px;';
-      content.appendChild(errMsg);
-
-      var backBtn = document.createElement('button');
-      backBtn.className = 'btn btn-secondary';
-      backBtn.textContent = '\u2190 Back';
-      backBtn.addEventListener('click', function () { wizardStep = 0; renderWizardStep(); });
-
-      var testBtn = document.createElement('button');
-      testBtn.className = 'btn btn-secondary';
-      testBtn.textContent = 'Test Connection';
-      testBtn.addEventListener('click', async function () {
-        if (!wizardProvider) { errMsg.textContent = 'Select a provider.'; return; }
-        if (wizardProvider !== 'ollama' && !wizardApiKey.trim()) { errMsg.textContent = 'Enter an API key.'; return; }
-        testBtn.disabled = true;
-        testBtn.textContent = 'Testing\u2026';
-        errMsg.textContent = '';
-        try {
-          // Save to config and check capabilities
-          var payload = { llm: { provider: wizardProvider } };
-          if (wizardApiKey.trim()) payload.llm.apiKey = wizardApiKey.trim();
-          var res = await apiCall('POST', '/v1/config', payload);
-          if (!res.success) throw new Error(res.error || 'Config save failed');
-          errMsg.style.color = 'var(--success)';
-          errMsg.textContent = 'Connection config saved!';
-        } catch (err) {
-          errMsg.style.color = 'var(--danger)';
-          errMsg.textContent = 'Error: ' + err.message;
-        } finally {
-          testBtn.disabled = false;
-          testBtn.textContent = 'Test Connection';
-        }
-      });
-
-      var nextBtn2 = document.createElement('button');
-      nextBtn2.className = 'btn btn-primary';
-      nextBtn2.textContent = 'Next \u2192';
-      nextBtn2.addEventListener('click', async function () {
-        if (!wizardProvider) { errMsg.textContent = 'Select a provider.'; return; }
-        nextBtn2.disabled = true;
-        nextBtn2.textContent = 'Saving\u2026';
-        try {
-          var payload2 = { llm: { provider: wizardProvider }, setupCompleted: true };
-          if (wizardApiKey.trim()) payload2.llm.apiKey = wizardApiKey.trim();
-          var res2 = await apiCall('POST', '/v1/config', payload2);
-          if (!res2.success) throw new Error(res2.error || 'Save failed');
-          wizardStep = 2;
-          renderWizardStep();
-        } catch (err) {
-          errMsg.style.color = 'var(--danger)';
-          errMsg.textContent = 'Error: ' + err.message;
-          nextBtn2.disabled = false;
-          nextBtn2.textContent = 'Next \u2192';
-        }
-      });
-
-      actions.appendChild(backBtn);
-      actions.appendChild(testBtn);
-      actions.appendChild(nextBtn2);
-
-    } else if (wizardStep === 2) {
-      var title3 = document.createElement('h2');
-      title3.textContent = "You're all set!";
-      content.appendChild(title3);
-
-      var sub3 = document.createElement('p');
-      sub3.className = 'subtitle';
-      sub3.textContent = 'MeMesh Smart Mode is configured. Restart the server for LLM changes to take effect. Start using the Search and Browse tabs to explore your knowledge graph.';
-      content.appendChild(sub3);
-
-      var tipBox = document.createElement('div');
-      tipBox.style.cssText = 'background:var(--accent-glow);border:1px solid rgba(59,130,246,0.2);border-radius:var(--radius-sm);padding:14px 16px;font-size:13px;line-height:1.6;color:var(--text-secondary);';
-      var tipLines = [
-        '\u2022 Use the Search tab to find anything across all your memories.',
-        '\u2022 Browse tab shows all entities with filter controls.',
-        '\u2022 Settings tab lets you change your provider anytime.',
-      ];
-      tipLines.forEach(function (line) {
-        var p = document.createElement('p');
-        p.textContent = line;
-        tipBox.appendChild(p);
-      });
-      content.appendChild(tipBox);
-
-      var doneBtn = document.createElement('button');
-      doneBtn.className = 'btn btn-primary';
-      doneBtn.textContent = 'Go to Dashboard';
-      doneBtn.addEventListener('click', closeWizard);
-      actions.appendChild(doneBtn);
-    }
-  }
-
-  function showWelcomeWizard() {
-    wizardStep = 0;
     document.getElementById('wizard-overlay').classList.remove('hidden');
-    renderWizardStep();
   }
 
   function closeWizard() {
@@ -2006,7 +1777,7 @@ export function generateLiveDashboardHtml() {
     apiCall('POST', '/v1/config', { setupCompleted: true });
   }
 
-  // Overlay click does NOT close wizard — user must use Skip or complete setup
+  // Overlay click does not close onboarding, preventing accidental dismissal.
   document.getElementById('wizard-overlay').addEventListener('click', function (e) {
     if (e.target === this) {
       // Intentionally do nothing — prevent accidental dismissal
@@ -2142,7 +1913,6 @@ ${bundledD3}
 <!-- Welcome Wizard Modal -->
 <div class="wizard-overlay hidden" id="wizard-overlay">
   <div class="wizard-modal">
-    <div class="wizard-steps" id="wizard-steps"></div>
     <div id="wizard-content"></div>
     <div class="wizard-actions" id="wizard-actions"></div>
   </div>

@@ -14,8 +14,8 @@ import {
 //   1. P1: pluginRoot was `dirname(dirname(fileURLToPath(...)))` — only
 //      two hops, resolves to <pkg>/scripts not <pkg>. Dynamic imports
 //      then look for <pkg>/scripts/dist/db.js (does not exist), the
-//      surrounding catch swallows ENOENT, and weekly noise compression
-//      + LLM failure analysis go silently dead. This test pins three
+//      surrounding catch swallows ENOENT, and database-backed hook work
+//      goes silently dead. This test pins three
 //      hops as the only correct answer for files at scripts/hooks/X.js.
 //
 //   2. P2 (drift): readHookConfig used dirname(MEMESH_DB_PATH) so any
@@ -60,8 +60,8 @@ describe('hook → dist dynamic imports must be Windows-safe', () => {
   // Root cause of a 100%-Windows silent failure: ESM import() takes a URL,
   // and `import(join(pluginRoot, 'dist/db.js'))` passes an absolute path.
   // On POSIX it works by luck (leading '/'); on Windows 'D:\...' is read as
-  // a 'd:' scheme and throws, killing LLM failure analysis, lesson creation,
-  // dream auto-trigger and auto-decay — traced to stderr only, so doctor and
+  // a 'd:' scheme and throws, killing lesson capture, proposal staging and
+  // auto-decay — traced to stderr only, so doctor and
   // CI on macOS/Linux stayed green. This gate makes the discipline structural
   // instead of per-site: any hook that hand-rolls import(join(...)) fails here.
   const hooksDir = path.resolve(__dirname, '..', '..', 'scripts', 'hooks');

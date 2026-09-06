@@ -1,8 +1,6 @@
 /**
- * `memesh config list` must show every settable key, not just llm.* — a user
- * who `config set`s sessionLimit / llmFallbacks / embedder.* used to get
- * "✅ Set" but no trace of it in `list`, which reads as a silent write-drop.
- * And it must never print a raw apiKey (primary or fallback-chain).
+ * `memesh config list` shows every retained settable key and ignores retired
+ * provider/credential keys that may remain in a legacy config file.
  *
  * Spawns the built CLI with HOME pointed at a tmpdir so it reads an isolated
  * config.json (paths.ts is HOME-first).
@@ -33,7 +31,7 @@ describe('memesh config list', () => {
     });
   }
 
-  it('lists every settable key that is present, not just llm.*', () => {
+  it('lists retained keys and ignores retired provider settings', () => {
     const out = runList({
       llm: { provider: 'anthropic', apiKey: 'sk-primary-should-not-print', model: 'claude' },
       sessionLimit: 42,

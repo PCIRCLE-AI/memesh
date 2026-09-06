@@ -650,10 +650,16 @@ if (!hasBearerAuth) {
   );
   let nestedMentions = 0;
   const badNested = [];
+  // Release notes are historical evidence, so commands that were deliberately
+  // retired remain truthful there. Keep this list exact: other invented or
+  // misspelled historical commands must still fail the gate.
+  const retiredHistoricalNested = new Set(['dream run', 'dream conflicts']);
   for (const [label, text] of nestedTargets) {
     for (const m of text.matchAll(nestedRe)) {
       nestedMentions++;
-      if (!childrenOf.get(m[1]).has(m[2])) badNested.push(`${label} -> ${m[0]}`);
+      const pair = `${m[1]} ${m[2]}`;
+      const historicalRetirement = label === 'CHANGELOG.md' && retiredHistoricalNested.has(pair);
+      if (!childrenOf.get(m[1]).has(m[2]) && !historicalRetirement) badNested.push(`${label} -> ${m[0]}`);
     }
   }
   // Zero mentions is not a pass. If the pattern ever stops matching — a doc

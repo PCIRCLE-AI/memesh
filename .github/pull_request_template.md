@@ -21,8 +21,8 @@
 - [ ] CHANGELOG.md updated for this change (under `[Unreleased]` or current `[X.Y.Z]` section)
 - [ ] `docs/ARCHITECTURE.md` updated if module structure or counts changed (incl. version header)
 - [ ] `docs/api/API_REFERENCE.md` updated if MCP / HTTP / CLI surface changed (incl. version header)
-- [ ] `README.md` updated if user-facing features / install / Smart Mode framing changed
-- [ ] README locales (de / vi / th / pt / ja / ko / zh-CN / zh-TW / es / fr) re-synced if `README.md` changed
+- [ ] `README.md` updated if user-facing features, installation, or collaboration framing changed
+- [ ] README locales (`README.de.md` / `README.zh-TW.md`) re-synced if `README.md` changed
 - [ ] Version files (`package.json` + `.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json`) bumped consistently if any version-bumping
 - [ ] `dist/skills-manifest.json` regenerated via `npm run build` (required after ANY change to `.claude-plugin/`, `scripts/hooks/`, `skills/`, or version files)
 - [ ] `memesh doctor` reports `Overall: PASS` (or `PASS_WITH_CONCERNS` only when the WARN is `Update status` — that's expected for an unreleased local version)
@@ -31,11 +31,11 @@
 
 <!-- Concrete evidence that the change works. Cite specific commands / outputs / screenshots. Lower the trust bar — say what you actually ran, not what should happen. -->
 
-- [ ] `npx tsc --noEmit` clean
+- [ ] `npm run typecheck` clean
 - [ ] `npm run build` clean
 - [ ] `npm test -- --run` passing (state count vs baseline if changed)
 - [ ] If hooks were touched: full hook protocol run (real Claude Code Stop / PreToolUse / etc. payload, `memesh doctor` hook-activity check post-install green)
-- [ ] If LLM flows were touched: `memesh telemetry` shows the new flow's rows after a manual run
+- [ ] If work-package or proposal review changed: prepare, submit/defer, and human review paths were replayed
 
 ## Test plan
 

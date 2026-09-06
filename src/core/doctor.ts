@@ -50,21 +50,18 @@ export interface DoctorCheck {
    * True for rows that REPORT a value rather than ASSERT a fact.
    *
    * A doctor row is one of two very different things:
-   *   - an assertion — "the native binding loads", "hooks are wired". It
+   *   - an assertion — "SQLite opens", "hooks are wired". It
    *     makes a claim that the outside world can falsify, so it can fail.
-   *   - an informational row — "your install id is X", "your config names
-   *     ollama". It describes state. It cannot fail, because it is not
+   *   - an informational row — "your install id is X". It describes state. It cannot fail, because it is not
    *     claiming anything is working.
    *
    * Before this flag existed both rendered as `[PASS]` and both counted
    * toward `Overall`, so "13/13 PASS" read as "13 things verified" when
-   * some had verified nothing. The Capabilities row was the worst case: it
-   * was hardcoded to 'pass' and merely echoed config, so an expired API key
-   * or a broken embedder could never move doctor off PASS.
+   * some had verified nothing.
    *
    * Informational rows are excluded from `summarizeOverallStatus` and are
    * rendered as `[INFO]`. If you want a row to be able to fail, it must
-   * probe something — see `inspectEmbeddingProbe`.
+   * probe something.
    */
   informational?: boolean;
   /**
@@ -146,9 +143,7 @@ interface DoctorOptions {
     retention_cutoff?: Date | string;
   };
   /**
-   * Test seam: probe that a database opens and sqlite-vec loads. Default
-   * resolves sqlite-vec from packageRoot the way Node would; tests inject a
-   * stub so the check can be exercised without a real extension.
+   * Test seam: probe that the built-in SQLite runtime can open a database.
    */
   nativeBindingProbeImpl?: (packageRoot: string) => { ok: true } | { ok: false; message: string };
   /**
@@ -511,8 +506,7 @@ function parseJsonFile(
  * aligned for one fact. Merged keeping this row's id (pinned by tests) and
  * the stricter checks: `readConfig()` returns `{}` on ANY read failure —
  * corrupt JSON, a half-written file, EACCES, an array root — so every
- * Smart-Mode setting degrades to a silent no-op; this row makes that state
- * visible.
+ * stored setting degrades to a silent no-op; this row makes that state visible.
  */
 function inspectConfigFile(
   existsSyncImpl: typeof fs.existsSync,

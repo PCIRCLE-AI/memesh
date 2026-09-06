@@ -135,9 +135,8 @@ fabricate a memory or cite a `[mem:id]` that was not actually returned.
 Recall is bounded by `limit` — a small hit count is not a graph-wide count,
 and an empty result is not proof nothing was stored: vary the wording or
 narrow by tag before concluding. Every recall answer includes a `retrieval`
-block — `truncated: true` means the window filled (more may exist);
-`degraded: true` means semantic search could not run and these are
-keyword-only results right now (`memesh doctor` explains why).
+block — `truncated: true` means the window filled (more may exist). Retrieval
+uses the local FTS5 keyword index; it does not call a model or vector service.
 
 ## What's Already Automatic (Claude Code Plugin Hooks)
 
@@ -150,7 +149,7 @@ If MeMesh is installed as a Claude Code plugin, these happen **without any actio
 | **UserPromptSubmit** | When you submit a prompt | Detects "remember this" intent (5 languages) and reminds Claude to use memesh |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
 | **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision if it's worth keeping — once per tool per session |
-| **Stop** | Session ends | Auto-captures session knowledge + runs LLM failure analysis → lessons |
+| **Stop** | Session ends | Auto-captures session knowledge and applies the configured update policy |
 | **PreCompact** | Before context compaction | Saves important knowledge before history is compressed |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
 | **SessionStart (Codex, async)** | A Codex plugin session starts or resumes | Automatically registers that exact live thread for bounded full-message native delivery; a matching owner-private config may override its project/principal |
@@ -227,16 +226,16 @@ memesh forget --name "old-auth-approach"                       # archive the who
 Both are soft (recoverable) — nothing is permanently removed.
 
 ### Memories are getting verbose or stale
-Use the **memesh-review** skill: it analyzes health, finds stale, conflicting
-and redundant memories, and proposes cleanup (including `memesh dream`, the
-reviewed digest pipeline). Do not hand-compress memories yourself.
+Use the **memesh-review** skill: it prepares bounded `work_package` evidence
+for an already-running local agent, then leaves every proposal pending for
+human review. Do not hand-compress memories yourself.
 
 ### Backup, share, health
 ```bash
 memesh export --tag "project:myapp" > memories.json
 memesh import memories.json --merge skip     # skip | overwrite | append
-memesh status                                # version, search level, embeddings
-memesh reindex                               # rebuild embeddings after provider change
+memesh status                                # version, install channel, update state
+memesh reindex --fts                         # rebuild the local keyword index
 ```
 
 ## Memory hygiene

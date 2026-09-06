@@ -1,7 +1,5 @@
 // Visible transcript parsing for bounded agent work packages.
 
-import fs from 'fs';
-
 export interface ConversationTurn {
   role: 'user' | 'assistant';
   text: string;
@@ -72,16 +70,6 @@ function parseConversationContent(content: string): ConversationTurn[] {
   return turns;
 }
 
-function readTranscriptContent(transcriptPath: string): string | null {
-  try {
-    return fs.readFileSync(transcriptPath, 'utf8');
-  } catch {
-    return null;
-  }
-}
-
-export function parseVisibleConversation(transcript: string | Buffer): ConversationTurn[] {
-  if (Buffer.isBuffer(transcript)) return parseConversationContent(transcript.toString('utf8'));
-  const content = readTranscriptContent(transcript);
-  return content === null ? [] : parseConversationContent(content);
+export function parseVisibleConversation(transcript: Buffer): ConversationTurn[] {
+  return parseConversationContent(transcript.toString('utf8'));
 }

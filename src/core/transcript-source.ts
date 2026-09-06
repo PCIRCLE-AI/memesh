@@ -6,6 +6,49 @@ import path from 'path';
 
 import { homeDir } from './paths.js';
 
+// Raw Claude transcripts can contain tool traffic that never enters a work
+// package. Keep reads bounded before parsing; the package itself remains
+// capped at 64 KiB below the transport boundary.
+export const MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
+
+export interface TranscriptSnapshot {
+  bytes: Buffer;
+  modifiedAt: string;
+  sizeBytes: number;
+}
+
+export function readTranscriptSnapshot(
+  transcriptPath: string,
+  expected?: { modifiedAt: string; sizeBytes: number },
+): TranscriptSnapshot | null {
+  let fd: number | undefined;
+  try {
+    if (fs.lstatSync(transcriptPath).isSymbolicLink()) return null;
+    fd = fs.openSync(transcriptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    const before = fs.fstatSync(fd);
+    if (!before.isFile() || before.size < 0 || before.size > MAX_TRANSCRIPT_SOURCE_BYTES) return null;
+    const modifiedAt = new Date(before.mtimeMs).toISOString();
+    if (expected && (before.size !== expected.sizeBytes || modifiedAt !== expected.modifiedAt)) return null;
+
+    const bytes = Buffer.allocUnsafe(before.size);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) return null;
+      offset += count;
+    }
+    const after = fs.fstatSync(fd);
+    if (after.size !== before.size || after.mtimeMs !== before.mtimeMs) return null;
+    return { bytes, modifiedAt, sizeBytes: before.size };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* already closed / gone */ }
+    }
+  }
+}
+
 export function claudeProjectsDir(): string {
   const override = process.env.CLAUDE_PROJECTS_DIR;
   if (override && override.trim() !== '') return override;
@@ -88,27 +131,12 @@ export function scanTranscripts(opts: ScanOptions = {}): TranscriptSession[] {
     if (!name.endsWith('.jsonl')) continue;
     const full = path.join(dir, name);
 
-    // Open ONCE, then stat and read through that same descriptor. Doing
-    // statSync(path) to decide and then readFileSync(path) to use is a
-    // time-of-check-to-time-of-use race (CodeQL js/file-system-race): the
-    // path could point at a different inode between the two calls. Binding
-    // both to one fd means the window check and the byte count describe the
-    // exact same open file, and a symlink swap after open cannot redirect us.
-    let fd: number;
+    const snapshot = readTranscriptSnapshot(full);
+    if (!snapshot) continue;
     try {
-      fd = fs.openSync(full, 'r');
-    } catch {
-      continue; // vanished between readdir and open — skip
-    }
-    try {
-      const stat = fs.fstatSync(fd);
-      if (!stat.isFile()) continue;
-      if (stat.mtimeMs < cutoffMs) continue;
+      if (Date.parse(snapshot.modifiedAt) < cutoffMs) continue;
 
-      // Count newlines off the same fd. readFileSync(fd) reads the already
-      // open descriptor from its current offset to EOF — no second path
-      // resolution, so nothing to race against.
-      const buf = fs.readFileSync(fd);
+      const buf = snapshot.bytes;
       let lineCount = 0;
       for (let i = 0; i < buf.length; i++) if (buf[i] === 0x0a) lineCount++;
 
@@ -127,14 +155,12 @@ export function scanTranscripts(opts: ScanOptions = {}): TranscriptSession[] {
       sessions.push({
         sessionId: name.replace(/\.jsonl$/, ''),
         path: full,
-        modifiedAt: new Date(stat.mtimeMs).toISOString(),
+        modifiedAt: snapshot.modifiedAt,
         lineCount,
-        sizeBytes: stat.size,
+        sizeBytes: snapshot.sizeBytes,
       });
     } catch {
-      continue; // unreadable after open — skip, do not fabricate a count
-    } finally {
-      try { fs.closeSync(fd); } catch { /* already closed / gone */ }
+      continue;
     }
   }
 

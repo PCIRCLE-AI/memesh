@@ -35,8 +35,8 @@ export function isGraphRenderable<T extends Partial<RenderableGraph>>(
  * absence must NOT be defaulted away. `?? {}` would render every badge as
  * zero — "nothing supports this decision" — from a response that never
  * answered the question. Missing counts are a shape mismatch (version skew),
- * which the tab already knows how to report; a fabricated zero is the silent
- * degradation `retrieval.degraded` exists to prevent on the recall side.
+ * which the tab already knows how to report; a fabricated zero would be a
+ * silent false claim.
  */
 export function isWorkGraphRenderable(
   d: Partial<WorkGraphData> | null | undefined,

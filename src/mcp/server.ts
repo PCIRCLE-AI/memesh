@@ -12,7 +12,6 @@ import { fileURLToPath } from 'url';
 import { openDatabase, closeDatabase } from '../db.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { normalizeClientHost } from '../transports/mcp/handlers.js';
-import { logCapabilities } from '../core/config.js';
 
 const packageJsonPath = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -46,7 +45,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 // Start
 async function main() {
   openDatabase();
-  logCapabilities();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

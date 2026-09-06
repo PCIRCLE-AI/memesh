@@ -1,19 +1,16 @@
 // =============================================================================
-// An archived entity is in NEITHER search index — D11 / D12
+// An archived entity is absent from the FTS search index — D12
 // =============================================================================
 //
 // Found by querying the maintainer's real graph, not by reading a diff.
 // At 2136 entities (820 active, 1316 archived):
 //
-//   413 of 1013 vector rows belonged to archived entities. 41 real k-NN
-//       queries spent 290 of 820 top-20 slots — 35.4% — on memories the user
-//       had already put away.
 //   213 archived entities were still in `entities_fts`. `MATCH 'ae83279'`
 //       returned the archived `commit-ae83279`.
 //
-// `archiveEntity` always dropped both rows. `compressWeeklyNoise`, the
-// dreamer's compaction apply and `splitFusedLessons` archived with a bare
-// status UPDATE and dropped neither — and that second defect fed a third: a
+// `archiveEntity` always dropped the row. `compressWeeklyNoise`, proposal
+// application and `splitFusedLessons` archived with a bare status UPDATE and
+// did not — and that defect fed a second:
 // re-remembered entity that still had an FTS row got a SECOND document at the
 // same rowid, because `createEntityInner` skipped the contentless delete for
 // anything `wasArchived` on the reasoning that archiving had already removed
@@ -37,30 +34,7 @@ function ftsRowCount(db: ReturnType<typeof getDatabase>, id: number): number {
   ).c;
 }
 
-function vecRowCount(db: ReturnType<typeof getDatabase>, id: number): number {
-  return (
-    db.prepare('SELECT COUNT(*) AS c FROM entities_vec WHERE rowid = ?').get(BigInt(id)) as {
-      c: number;
-    }
-  ).c;
-}
-
-function seedVector(db: ReturnType<typeof getDatabase>, id: number): void {
-  const dim = (
-    db.prepare("SELECT value FROM memesh_metadata WHERE key = 'embedding_dimension'").get() as
-      | { value: string }
-      | undefined
-  );
-  const width = dim ? parseInt(dim.value, 10) : 384;
-  const v = new Float32Array(width);
-  v[0] = 1;
-  db.prepare('INSERT INTO entities_vec (rowid, embedding) VALUES (?, ?)').run(
-    BigInt(id),
-    Buffer.from(v.buffer, v.byteOffset, v.byteLength),
-  );
-}
-
-describe('compressWeeklyNoise leaves an archived entity in neither index (D11/D12)', () => {
+describe('compressWeeklyNoise removes archived entities from FTS (D12)', () => {
   function seedOldNoise(db: ReturnType<typeof getDatabase>, count: number): void {
     const date = new Date(Date.now() - 2 * 7 * 24 * 60 * 60 * 1000).toISOString();
     const kg = new KnowledgeGraph(db);
@@ -102,25 +76,6 @@ describe('compressWeeklyNoise leaves an archived entity in neither index (D11/D1
     expect(
       db.prepare("SELECT COUNT(*) AS c FROM entities_fts WHERE entities_fts MATCH 'unmistakabletoken0'").get(),
     ).toEqual({ c: 0 });
-  });
-
-  it('removes the vector row, so it stops taking recall slots', () => {
-    const db = getDatabase();
-    db.exec("DELETE FROM memesh_metadata WHERE key = 'last_noise_compress_at'");
-    seedOldNoise(db, 25);
-
-    const id = (db.prepare('SELECT id FROM entities WHERE name = ?').get('commit-noise-0') as {
-      id: number;
-    }).id;
-    // The suite runs with no embedder, so nothing wrote a vector; write one
-    // directly, which is the state a real graph is in when the entity was
-    // remembered while an embedder WAS configured.
-    seedVector(db, id);
-    expect(vecRowCount(db, id)).toBe(1);
-
-    compressWeeklyNoise(db);
-
-    expect(vecRowCount(db, id)).toBe(0);
   });
 
   it('leaves the entities that stayed active fully indexed', () => {

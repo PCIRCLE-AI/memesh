@@ -12,12 +12,11 @@
 //    Miss-detection is the sanctioned `translated === key` check.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/preact';
+import { render, waitFor } from '@testing-library/preact';
 import { api } from '../../dashboard/src/lib/api';
 import { t } from '../../dashboard/src/lib/i18n';
 import { PatternCard } from '../../dashboard/src/components/PatternCard';
 import { InsightsTab } from '../../dashboard/src/components/InsightsTab';
-import { SettingsTab } from '../../dashboard/src/components/SettingsTab';
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -119,8 +118,8 @@ describe('InsightsTab renders a null digest preview as a localised empty state',
           }],
         });
       }
-      // /v1/config capability probe and anything else the tab loads.
-      return jsonResponse({ success: true, data: { capabilities: { llm: { provider: 'anthropic' } } } });
+      // /v1/config and anything else the tab loads.
+      return jsonResponse({ success: true, data: { config: {} } });
     });
 
     const { container } = render(<InsightsTab />);
@@ -129,96 +128,5 @@ describe('InsightsTab renders a null digest preview as a localised empty state',
     });
     expect(container.textContent).toContain(t('insights.noPreview'));
     expect(container.textContent).not.toContain('(empty)');
-  });
-});
-
-// ── SettingsTab: probe errorCode translation + language POST ────────────────
-
-describe('SettingsTab translates config-test probe codes', () => {
-  it('renders settings.testError.auth (with the raw prose as detail) when the probe says auth', async () => {
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (method === 'POST' && url.includes('/v1/config/test')) {
-        return jsonResponse({
-          success: true,
-          data: { valid: false, error: 'Authentication failed — the API key was rejected.', errorCode: 'auth' },
-        });
-      }
-      if (url.includes('/v1/config')) {
-        return jsonResponse({
-          success: true,
-          data: {
-            config: { llm: { provider: 'anthropic' } },
-            capabilities: { searchLevel: 1, llm: { provider: 'anthropic' } },
-          },
-        });
-      }
-      return jsonResponse({ success: true, data: {} });
-    });
-
-    const { container } = render(<SettingsTab locale="en" onLocaleChange={noop} />);
-
-    // Wait for config to load — the apiKey input renders once a non-ollama
-    // provider is selected. The Test button stays disabled until a key is
-    // typed, so enter one before clicking.
-    const keyInput = await waitFor(() => {
-      const input = container.querySelector('input[type="password"]');
-      if (!input) throw new Error('apiKey input not rendered yet');
-      return input as HTMLInputElement;
-    });
-    fireEvent.input(keyInput, { target: { value: 'sk-test-not-a-real-key' } });
-
-    const testButton = Array.from(container.querySelectorAll('button')).find(
-      (b) => b.textContent === t('settings.test') && !(b as HTMLButtonElement).disabled,
-    );
-    expect(testButton, 'enabled Test button not found').toBeDefined();
-    fireEvent.click(testButton!);
-
-    await waitFor(() => {
-      expect(container.textContent).toContain(t('settings.testError.auth'));
-    });
-    // The raw provider prose stays visible as the detail.
-    expect(container.textContent).toContain('the API key was rejected');
-  });
-});
-
-describe('SettingsTab language selector also sets the server output language', () => {
-  it('POSTs { language: <display name> } to /v1/config when the locale changes', async () => {
-    const posts: Array<{ url: string; body: unknown }> = [];
-    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String(input);
-      const method = (init?.method ?? 'GET').toUpperCase();
-      if (method === 'POST' && url.includes('/v1/config')) {
-        posts.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
-        return jsonResponse({ success: true, data: {} });
-      }
-      if (url.includes('/v1/config')) {
-        return jsonResponse({
-          success: true,
-          data: { config: {}, capabilities: { searchLevel: 0 } },
-        });
-      }
-      return jsonResponse({ success: true, data: {} });
-    });
-
-    const { container } = render(<SettingsTab locale="en" onLocaleChange={noop} />);
-
-    // The language <select> is the one carrying the zh-TW option.
-    const select = await waitFor(() => {
-      const sel = Array.from(container.querySelectorAll('select')).find((s) =>
-        Array.from(s.options).some((o) => o.value === 'zh-TW'),
-      );
-      if (!sel) throw new Error('language select not rendered yet');
-      return sel as HTMLSelectElement;
-    });
-
-    fireEvent.change(select, { target: { value: 'zh-TW' } });
-
-    // The POST carries the locale's DISPLAY NAME — it lands inside an LLM
-    // prompt, where '繁體中文' is unambiguous and a bare code is not.
-    await waitFor(() => {
-      expect(posts.some((p) => (p.body as any)?.language === '繁體中文')).toBe(true);
-    });
   });
 });

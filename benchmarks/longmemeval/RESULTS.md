@@ -3,12 +3,10 @@
 **Measured through:** `recallEnhanced()` — the function every transport calls for `recall`.
 **Status:** PUBLIC — recomputed from raw per-question JSON, dataset SHA256 cross-checked.
 
-> **Historical embedder note:** the Mode B/C figures below were measured on the
-> local ONNX `Xenova/all-MiniLM-L6-v2` (384-dim) embedder that MeMesh shipped at
-> the time. That embedder has since been removed — MeMesh now standardises on
-> ollama (nomic-embed-text) — so these Mode B/C numbers are historical for that
-> model and have not been re-measured for the current embedder. Mode A (FTS5)
-> is unaffected.
+> **Historical embedder note:** the Mode B/C figures below were measured on a
+> retired local ONNX vector path. MeMesh now ships FTS5 keyword retrieval only.
+> Those figures are preserved as historical experiment evidence, not as a
+> current product mode. Mode A is the only reproducible current mode.
 
 > See METHODOLOGY.md for technical details. See REPRODUCE.md to run this yourself.
 
@@ -67,11 +65,8 @@ curl -L "https://huggingface.co/datasets/xiaowu0162/longmemeval/resolve/main/lon
 # Build — the runner measures compiled code, so this must run first
 npm run build
 
-# Run the benchmark (Mode A, no embeddings, ~10 seconds)
+# Run the current FTS5 benchmark (~10 seconds)
 npm run bench:longmemeval
-
-# Or with embeddings populated (~14 minutes, downloads the ONNX model once)
-node benchmarks/longmemeval/run.mjs --mode B --dataset /tmp/longmemeval_s.json
 ```
 
 See [REPRODUCE.md](REPRODUCE.md) for the full step-by-step walkthrough.
@@ -91,14 +86,9 @@ API and calls it. No schema, no query builder, no ranking of its own.
 - Seeded through `KnowledgeGraph.createEntity()`, the call `remember()` makes
 - Retrieved through `recallEnhanced()`, the call every transport makes
 
-**Mode definitions** — real product configurations, not adapter strategies:
-- **Mode A:** no embeddings stored. FTS5 + BM25, then the five-factor scorer.
-- **Mode B:** embeddings populated via the product's own `embedAndStore()`, so
-  `recallEnhanced()`'s vector supplement can contribute.
-- **Mode C removed.** It applied a 60/40 weighted fusion that MeMesh has never
-  implemented. Its historical result file is retained.
-
-**Embedding model (Mode B):** Xenova/all-MiniLM-L6-v2 (384 dimensions, ONNX Runtime)
+**Current mode:** Mode A uses FTS5 + BM25, then the five-factor scorer. Mode B
+and Mode C below are retained historical vector experiments and are not
+available in the current product or runner.
 
 **Metric:** R@k = fraction of questions where any answer session appears in top-k results. MRR = mean(1/rank_of_first_answer_session).
 

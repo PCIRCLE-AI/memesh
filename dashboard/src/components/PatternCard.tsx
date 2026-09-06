@@ -1,14 +1,9 @@
 import { t } from '../lib/i18n';
 
-// PatternCard renders the visual surface for a pattern_emergent
-// dream proposal — output from runPatternDetector (Phase 3) in
-// src/core/dreamer.ts. Pattern proposals share the dream_proposals
-// table and accept/reject lifecycle with weekly compaction digests
-// but represent a different signal: an emerging concern the LLM
-// detected across recent project entities, not a successful
-// summary. The amber accent (var(--warning)) intentionally contrasts
-// with the success-green digest card so the user can tell at a glance
-// that this row is a heads-up, not a recap.
+// PatternCard keeps earlier pattern_emergent proposals reviewable after their
+// producer was retired. These already-staged rows share the proposal table and
+// human accept/reject lifecycle with current work packages. The amber accent
+// distinguishes a legacy heads-up from a digest.
 //
 // The action handlers are passed in from InsightsTab so the parent
 // keeps full control of in-flight state, refresh fan-out, and the
@@ -29,11 +24,8 @@ interface PatternProposalSummary {
   created_at: string;
 }
 
-// See InsightsTab's matching ValidationWarning interface — same shape
-// flows through GET /v1/dream/proposals/:id for both digest and
-// pattern_emergent kinds. Absent on patterns generated before the
-// validator wiring landed; the rendering branch below is
-// fully backward-compatible.
+// Older proposal rows can carry warnings in their stored JSON. Keep rendering
+// them so a reviewer does not lose provenance during an upgrade.
 interface ValidationWarning {
   claim: string;
   reason: string;
@@ -47,9 +39,7 @@ interface PatternProposalDetail {
     tags: string[];
     validation_warnings?: ValidationWarning[];
   } | null;
-  source_ids: number[];
-  llm_model: string | null;
-  prompt_version: string;
+  source_ids: number[] | { sessionId: string };
 }
 
 interface PatternCardProps {
@@ -65,7 +55,7 @@ interface PatternCardProps {
   statusLabel: (status: string) => string;
 }
 
-// Severity is surfaced via tags emitted by the LLM; we recognise
+// Severity is surfaced via stored proposal tags; we recognise
 // severity:high|medium|low (matching the project's existing
 // project:foo / lesson:bar tag convention) and fall back to
 // neutral when absent.
@@ -171,13 +161,9 @@ export function PatternCard(props: PatternCardProps) {
 
       {detail && detail.proposed_digest && (
         <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 13 }}>
-          <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>
-            {t('insights.generatedBy')}: <code>{detail.llm_model ?? t('common.unknown')}</code> {' '} {t('insights.promptVersion')}: <code>{detail.prompt_version}</code>
-          </div>
-          {/* Flagged claims — surfaced ABOVE the pattern description
-              so reviewers see validator caveats first. Same channel and
-              shape as InsightsTab; renders only when the validator
-              flagged claims for this proposal. */}
+          <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>{t('insights.reviewSource')}</div>
+          {/* Stored warnings stay above the description so reviewers see
+              caveats before deciding whether to accept the legacy row. */}
           {Array.isArray(detail.proposed_digest.validation_warnings)
             && detail.proposed_digest.validation_warnings.length > 0 && (
             <div
@@ -222,9 +208,11 @@ export function PatternCard(props: PatternCardProps) {
               <span key={tag} class="tag" style={{ marginLeft: 4, fontSize: 11 }}>{tag}</span>
             ))}
           </div>
-          <div style={{ color: 'var(--text-3)', fontSize: 11, marginTop: 6 }}>
-            {t('insights.sourceIds')}: {detail.source_ids.length} ({detail.source_ids.slice(0, 8).join(', ')}{detail.source_ids.length > 8 ? '…' : ''})
-          </div>
+          {Array.isArray(detail.source_ids) && (
+            <div style={{ color: 'var(--text-3)', fontSize: 11, marginTop: 6 }}>
+              {t('insights.sourceIds')}: {detail.source_ids.length} ({detail.source_ids.slice(0, 8).join(', ')}{detail.source_ids.length > 8 ? '…' : ''})
+            </div>
+          )}
         </div>
       )}
     </div>

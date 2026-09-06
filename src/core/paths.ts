@@ -285,7 +285,7 @@ export function _clearProjectNameCache(): void {
  * The one list of secret-shaped patterns, shared by every redactor in the
  * codebase. Three copies used to exist at three different strengths — the
  * transcript scrubber (broadest), this module's egress redactor (middle),
- * and a private one in llm-client (weakest, sk-/Bearer only) — and a
+ * and a private narrower copy — and a
  * cross-model review measured the gap: `github_pat_`, Stripe `sk_live_`,
  * JWTs, npm tokens and private keys sailed through the egress redactor into
  * a public GitHub issue URL. One list means one place to add the next token

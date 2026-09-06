@@ -10,8 +10,8 @@ body:
 
         Before asking, please check:
         - [README.md](https://github.com/PCIRCLE-AI/memesh/blob/main/README.md)
-        - [QUICK_START.md](https://github.com/PCIRCLE-AI/memesh/blob/main/docs/QUICK_START.md)
-        - [COMMANDS.md](https://github.com/PCIRCLE-AI/memesh/blob/main/docs/COMMANDS.md)
+        - [API and CLI reference](https://github.com/PCIRCLE-AI/memesh/blob/main/docs/api/API_REFERENCE.md)
+        - [Platform guides](https://github.com/PCIRCLE-AI/memesh/blob/main/docs/platforms/README.md)
         - [Existing issues](https://github.com/PCIRCLE-AI/memesh/issues)
 
   - type: dropdown
@@ -22,7 +22,7 @@ body:
       options:
         - Installation/Setup
         - MCP Configuration
-        - Tool Usage (buddy-do, buddy-remember, etc.)
+        - MCP tool usage
         - Memory System
         - Troubleshooting
         - Best Practices

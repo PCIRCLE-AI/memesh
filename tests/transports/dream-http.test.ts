@@ -59,8 +59,8 @@ describe('HTTP Transport: POST /v1/dream/proposals/:id/accept', () => {
     const { getDatabase } = await import('../../src/db.js');
     const db = getDatabase();
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES ('memesh', '2026-W19', ?, ?, 'ollama/fake', 'v1')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', '2026-W19', ?, ?, 'v1')
     `).run(
       JSON.stringify([999901, 999902]), // no such entities — the digest can claim nothing
       JSON.stringify({ name: 'http-empty-digest', type: 'digest', observations: ['s'], tags: ['digest'] })

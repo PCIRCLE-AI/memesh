@@ -1,49 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { createLesson, createExplicitLesson, inferErrorPattern, lessonSlug } from '../../src/core/lesson-engine.js';
+import { createExplicitLesson, inferErrorPattern, lessonSlug } from '../../src/core/lesson-engine.js';
 import { getDatabase } from '../../src/db.js';
 import { recall } from '../../src/core/operations.js';
-import type { StructuredLesson } from '../../src/core/failure-analyzer.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 useTestDatabase('memesh-lesson-');
 
-describe('createLesson', () => {
-  const mockLesson: StructuredLesson = {
-    error: 'TypeError: Cannot read property of null',
-    rootCause: 'Missing null check on API response',
-    fix: 'Added optional chaining',
-    prevention: 'Always validate API responses',
-    errorPattern: 'null-reference',
-    fixPattern: 'defensive-coding',
-    severity: 'major',
-  };
-
-  it('creates a lesson_learned entity', () => {
-    const result = createLesson(mockLesson, 'myapp');
-    expect(result.name).toBe('lesson-myapp-null-reference');
-    expect(result.isNew).toBe(true);
-  });
-
-  it('creates entity with correct tags', () => {
-    createLesson(mockLesson, 'myapp');
-    const entities = recall({ tag: 'error-pattern:null-reference' });
-    expect(entities.length).toBeGreaterThanOrEqual(1);
-    expect(entities[0].type).toBe('lesson_learned');
-    expect(entities[0].tags).toContain('source:auto-learned');
-    expect(entities[0].tags).toContain('severity:major');
-  });
-
-  it('marks auto-learned lessons as untrusted (anti trust-laundering)', () => {
-    // F2 fix: lessons paraphrased by an LLM from session-transcript errors
-    // must not be `trusted`, otherwise a malicious dependency printing
-    // prompt-injection error text gets surfaced as authoritative guidance.
-    createLesson(mockLesson, 'myapp');
-    const entities = recall({ tag: 'error-pattern:null-reference' });
-    const meta = entities[0].metadata as { trust?: string; provenance?: { source?: string } } | undefined;
-    expect(meta?.trust).toBe('untrusted');
-    expect(meta?.provenance?.source).toBe('auto-learned');
-  });
-
+describe('createExplicitLesson', () => {
   it('marks explicit lessons (user-typed) as trusted', () => {
     // The `learn` MCP tool / createExplicitLesson path is user-supplied
     // text, so it remains `trusted` and IS surfaced at session-start.
@@ -54,17 +17,6 @@ describe('createLesson', () => {
     expect(meta?.trust).toBe('trusted');
   });
 
-  it('appends observations on duplicate error pattern (upsert)', () => {
-    createLesson(mockLesson, 'myapp');
-    const result2 = createLesson({ ...mockLesson, fix: 'Better fix applied' }, 'myapp');
-    expect(result2.isNew).toBe(false);
-
-    const entities = recall({ tag: 'error-pattern:null-reference' });
-    expect(entities[0].observations.length).toBe(8); // 4 + 4 appended
-  });
-});
-
-describe('createExplicitLesson', () => {
   it('creates lesson from user input', () => {
     const result = createExplicitLesson('Test failure', 'Fixed assertion', 'myapp');
     expect(result.name).toContain('lesson-myapp-');

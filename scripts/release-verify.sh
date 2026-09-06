@@ -3,11 +3,10 @@
 #
 # Use:
 #   bash scripts/release-verify.sh                    # full pass
-#   bash scripts/release-verify.sh --skip-llm-probe   # skip live LLM call (CI without secrets)
 #   bash scripts/release-verify.sh --quick            # build + tests only (no smoke / install probe)
 #
 # Exit code:
-#   0 — every gate passed; safe to tag/release
+#   0 — this script's checks passed; release authorization is separate
 #   1 — at least one gate failed; do NOT publish
 #
 # This is the "verify before update" rule (per user directive,
@@ -21,11 +20,9 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
-SKIP_LLM_PROBE=0
 QUICK=0
 for arg in "$@"; do
   case "$arg" in
-    --skip-llm-probe) SKIP_LLM_PROBE=1 ;;
     --quick)          QUICK=1 ;;
     -h|--help)
       sed -n '2,18p' "$0"
@@ -61,9 +58,9 @@ gate_build() { npm run build >/dev/null 2>&1; }
 # Run a command against a throwaway HOME, with the memesh env overrides cleared.
 #
 # This replaced editing the maintainer's real ~/.memesh/config.json and putting
-# it back with an EXIT trap — which parked the only copy of live API keys in a
+# it back with an EXIT trap — which parked the only copy of live config in a
 # world-readable /tmp file, where a SIGKILL, a crash between the two writes or a
-# /tmp sweep lost them. A throwaway HOME has no config to strip, so there is
+# /tmp sweep lost it. A throwaway HOME has no config to strip, so there is
 # nothing to restore and nothing to lose.
 #
 # HOME alone is NOT isolation. `src/core/paths.ts` resolves MEMESH_DIR and
@@ -79,7 +76,7 @@ gate_build() { npm run build >/dev/null 2>&1; }
 # One helper rather than one copy per gate, because the copy was the bug: the
 # commit that isolated the test suite stopped one gate short, and `doctor`
 # — which calls openDatabase(), and so runs schema migrations, the FTS rebuild
-# and the telemetry prune — kept running against the real database as a side
+# and the FTS migration — kept running against the real database as a side
 # effect of a *verification* script.
 with_throwaway_home() {
   local throwaway_home rc
@@ -112,7 +109,7 @@ gate_full_test_suite() {
 
 gate_doctor_runs() {
   # Isolated: `doctor` calls openDatabase(), which runs schema migrations, the
-  # FTS segmentation rebuild and the 24h telemetry prune. Unisolated, a
+  # FTS segmentation rebuild. Unisolated, a
   # verification script mutated the maintainer's real knowledge-graph.db.
   # Measured under a throwaway HOME: overall PASS_WITH_CONCERNS with zero
   # `fail` checks (only "Hook activity" and "Update status" warn), so the
@@ -179,33 +176,6 @@ gate_demo_seed_idempotent() {
   return $rc
 }
 
-gate_llm_probe_optional() {
-  if [ "$SKIP_LLM_PROBE" = 1 ]; then
-    echo "  (skipped via --skip-llm-probe)"
-    return 0
-  fi
-  REPO_ROOT="$REPO_ROOT" node --input-type=module -e "
-    import { join } from 'path';
-    import { pathToFileURL } from 'url';
-    const root = process.env.REPO_ROOT;
-    // ESM import() takes a URL; a bare Windows path (D:\\...) is rejected as
-    // an unknown 'd:' scheme. pathToFileURL keeps this cross-platform.
-    const imp = (rel) => import(pathToFileURL(join(root, rel)).href);
-    const { readConfig } = await imp('dist/core/config.js');
-    const cfg = readConfig();
-    if (!cfg.llm) { console.log('no LLM configured — skip'); process.exit(0); }
-    const { callLLM } = await imp('dist/core/llm-client.js');
-    try {
-      const text = await callLLM('Reply with PONG only.', cfg.llm, { maxTokens: 5 });
-      if (typeof text !== 'string' || text.length === 0) { console.error('empty LLM response'); process.exit(1); }
-      console.log('LLM responded:', text.trim().slice(0, 20));
-    } catch (e) {
-      console.error('LLM probe failed:', e.message);
-      process.exit(1);
-    }
-  " 2>&1 | head -3
-}
-
 echo "release-verify @ $(date)"
 echo "repo: $REPO_ROOT"
 
@@ -216,9 +186,8 @@ if [ "$QUICK" = 0 ]; then
   run_gate "full vitest suite (throwaway HOME, no real config)" gate_full_test_suite
   run_gate "memesh doctor — overall status not FAIL" gate_doctor_runs
   run_gate "memesh install-hooks --dry-run" gate_install_hooks_dryrun
-  run_gate "memesh feedback URL build" gate_feedback_url_builds
+  run_gate "feedback draft URL build (no browser/submission)" gate_feedback_url_builds
   run_gate "demo seed idempotency" gate_demo_seed_idempotent
-  run_gate "LLM live probe (optional)" gate_llm_probe_optional
 fi
 
 echo ""
@@ -231,4 +200,4 @@ if [ "$FAILED" -gt 0 ]; then
   echo "DO NOT release. Fix the gates above and re-run."
   exit 1
 fi
-echo "✅ All release gates passed. Safe to tag + npm publish."
+echo "✅ This script's checks passed. Tag, release, and publish authorization is not implied."

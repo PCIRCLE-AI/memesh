@@ -22,7 +22,7 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
   // Only named fixture settings reach the child; no ambient provider configuration.
   const env = {
     HOME: runtime, USERPROFILE: runtime, MEMESH_DIR: runtime,
-    MEMESH_DB_PATH: dbPath, MEMESH_AUTO_DETECT_LLM: '0',
+    MEMESH_DB_PATH: dbPath,
     PATH: path.dirname(process.execPath),
   };
   const client = new Client({ name: 'work-package-runtime-test', version: '1' });
@@ -173,10 +173,10 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     try {
       const rows = db.prepare('SELECT * FROM dream_proposals').all() as Array<Record<string, unknown>>;
       expect(rows).toHaveLength(2);
-      expect(rows[0]).toMatchObject({ id: staged.data.proposal_id, project, status: 'pending', llm_model: null, prompt_version: 'work-package-v1' });
+      expect(rows[0]).toMatchObject({ id: staged.data.proposal_id, project, status: 'pending', prompt_version: 'work-package-v1' });
       expect(JSON.parse(rows[0].source_ids as string)).toEqual(pkg.ref.source_ids);
       expect(JSON.parse(rows[0].proposed_digest as string)).toMatchObject({ ...result, work_package: { id: pkg.id, ref: pkg.ref } });
-      expect(rows[1]).toMatchObject({ id: transcriptStaged.data.proposal_id, project: transcriptProject, status: 'pending', source_kind: 'transcript', kind: 'digest', llm_model: null, prompt_version: 'work-package-v1' });
+      expect(rows[1]).toMatchObject({ id: transcriptStaged.data.proposal_id, project: transcriptProject, status: 'pending', source_kind: 'transcript', kind: 'digest', prompt_version: 'work-package-v1' });
       expect(JSON.parse(rows[1].source_ids as string)).toEqual({ sessionId: 'runtime-session' });
       expect(JSON.parse(rows[1].proposed_digest as string)).toMatchObject({ ...transcriptResult, work_package: { id: transcriptPackage.id, ref: transcriptPackage.ref } });
       expect(db.prepare("SELECT count(*) AS n FROM entities WHERE status = 'active'").get()).toMatchObject({ n: 5 });

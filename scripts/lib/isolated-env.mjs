@@ -1,15 +1,13 @@
 /**
  * Build the environment a child process spawned by a release/packaging
  * script should run under: a test-owned HOME/USERPROFILE/MEMESH_DIR/
- * MEMESH_DB_PATH, provider auto-detection turned off, and every provider
- * credential/endpoint variable that could turn it back on stripped from
- * what would otherwise be a full `...baseEnv` spread.
+ * MEMESH_DB_PATH, with common credential variables stripped from what would
+ * otherwise be a full `...baseEnv` spread.
  *
  * Originally written only for `scripts/dashboard-e2e-smoke.mjs` (GitHub
  * issue #271: the packaged Dashboard E2E gave the child runtime an isolated
- * MEMESH_DB_PATH but otherwise spread the maintainer's real process.env, so
- * a shell with a configured provider made the "isolated" server start in
- * Smart Mode against a real LLM). Moved here when `scripts/smoke-packed-
+ * MEMESH_DB_PATH but otherwise spread the maintainer's real process.env).
+ * Moved here when `scripts/smoke-packed-
  * artifact.mjs` needed the identical isolation for the same reason: its
  * `nativeEnv` set MEMESH_DIR but left MEMESH_DB_PATH to leak through from
  * `...process.env`, so an ambient MEMESH_DB_PATH sent the installed
@@ -25,11 +23,8 @@
  * pin this isolation as a regression test, without spawning `npm pack`,
  * installing a tarball, or launching a browser.
  *
- * The stripped names are exactly what `src/core/config.ts`'s `detectFromEnv`
- * reads (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OLLAMA_HOST`) plus
- * `MEMESH_AUTO_DETECT_LLM` itself. Keeping the two lists in lockstep is the
- * point: a name added to one without the other is exactly the gap GitHub
- * issue #271 found.
+ * Secret stripping is defensive test isolation; the product does not read or
+ * manage these credentials.
  */
 export function buildIsolatedRuntimeEnv(baseEnv, { runtimeHome, memeshDir, dbPath }) {
   const isolatedEnv = {
@@ -38,7 +33,6 @@ export function buildIsolatedRuntimeEnv(baseEnv, { runtimeHome, memeshDir, dbPat
     USERPROFILE: runtimeHome,
     MEMESH_DIR: memeshDir,
     MEMESH_DB_PATH: dbPath,
-    MEMESH_AUTO_DETECT_LLM: '0',
   };
   delete isolatedEnv.ANTHROPIC_API_KEY;
   delete isolatedEnv.OPENAI_API_KEY;
@@ -64,14 +58,8 @@ export function buildIsolatedRuntimeEnv(baseEnv, { runtimeHome, memeshDir, dbPat
  * sent a mutation run, or an injection measurement, at the real graph — while
  * each script's own comments promised isolation.
  *
- * One difference from the runtime variant, and it is deliberate: this one does
- * NOT pin `MEMESH_AUTO_DETECT_LLM=0`. Removing the credentials already leaves
- * auto-detection nothing to find, and pinning the flag additionally disables
- * `tests/fixtures/isolated-provider-env.probe.test.ts`'s "still permits an
- * intentional in-test provider fixture" case, which sets `OPENAI_API_KEY`
- * inside the test on purpose. Measured, not reasoned: pinning it turned that
- * test red. A packaged smoke has no such fixtures, so the runtime variant
- * keeps the belt-and-braces flag.
+ * It also strips the same common credential variables as the packaged runtime
+ * so test children cannot inherit owner-controlled secrets by accident.
  */
 export function buildIsolatedSuiteEnv(baseEnv, { runtimeHome }) {
   const isolatedEnv = {

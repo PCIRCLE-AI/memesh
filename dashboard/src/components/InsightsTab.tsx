@@ -6,12 +6,9 @@ import { relativeDate } from '../lib/entity-display';
 import { PatternCard } from './PatternCard';
 import type { JSX } from 'preact';
 
-// Insights tab — surfaces what memesh has automatically generated for
-// the user (LLM-driven dreamer + pattern detector output) and routes
-// the propose / accept / reject lifecycle through the dashboard
-// instead of the CLI-only `memesh dream list`. The backend endpoints
-// (GET /v1/dream/proposals[/:id], POST .../accept, POST .../reject)
-// landed in commit 883abd4d.
+// Review proposals that an agent or deterministic rule already staged.
+// The Dashboard owns no generation path: it lists, expands, accepts, or
+// rejects through the existing proposal endpoints.
 //
 // Two proposal kinds share the same lifecycle and table but render
 // differently:
@@ -37,18 +34,12 @@ interface ProposalSummary {
   // model still get autocomplete for known values.
   status: ProposalStatus;
   created_at: string;
-  // Server returns 'digest' or 'pattern_emergent'. We accept any
-  // string at the runtime boundary so unknown future kinds render as
-  // a digest (the safe default) rather than crashing the tab.
   kind?: string;
+  source_kind?: string;
 }
 
-// Surfaced when the dreamer was run with `validateBeforeStage: true`
-// and the LLM validator returned a 'soften' verdict. Stored on the
-// proposed_digest JSON blob in dream_proposals; passes through GET
-// /v1/dream/proposals/:id untouched. Absent on validator-pass digests
-// and on every digest produced before the validator wiring landed —
-// the rendering branch is fully backward-compatible.
+// Older persisted proposals may carry validation warnings in the digest
+// blob. Keep rendering them without retaining the retired validator runtime.
 interface ValidationWarning {
   claim: string;
   reason: string;
@@ -65,21 +56,13 @@ interface ProposalDetail {
     tags: string[];
     validation_warnings?: ValidationWarning[];
   } | null;
-  source_ids: number[];
-  llm_model: string | null;
-  prompt_version: string;
+  source_ids: number[] | { sessionId: string };
   status: ProposalStatus;
   reason: string | null;
   created_at: string;
   reviewed_at: string | null;
   kind?: string;
   source_kind?: string;
-}
-
-interface DreamRunResult {
-  proposalsCreated: number;
-  llmCalls: number;
-  skipped: Array<{ reason: string; code?: 'provider_error' }>;
 }
 
 // Proposal timestamps arrive in SQLite's 'YYYY-MM-DD HH:MM:SS' UTC form,
@@ -131,7 +114,7 @@ export function InsightsTab({
   onStateChange,
 }: {
   dataRevision?: number;
-  onStateChange?: (state: { pendingCount: number; llmConfigured: boolean | null; loading: boolean; failed: boolean }) => void;
+  onStateChange?: (state: { pendingCount: number; loading: boolean; failed: boolean }) => void;
 }) {
   // Fetch ALL proposals once and filter client-side. The hero stat
   // row needs cross-status counts, so a server-side filter would
@@ -144,13 +127,6 @@ export function InsightsTab({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [proposalLoadFailed, setProposalLoadFailed] = useState(false);
-  const [configLoadFailed, setConfigLoadFailed] = useState(false);
-  const [runNotice, setRunNotice] = useState('');
-  // Whether the user has any LLM provider configured. Without one, the
-  // dreamer / pattern detector NEVER produce proposals — so the empty
-  // state should point the user to Settings rather than suggesting
-  // they "run `memesh dream run`" (which would also no-op).
-  const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
   // Set-based in-flight tracking. The earlier scalar `busyId` had a
   // race: clicking accept on A then accept on B before A's
   // `await refresh()` resolved would let B's `setBusyId(B)` overwrite
@@ -159,14 +135,7 @@ export function InsightsTab({
   // remove in the matching finally, so two concurrent ops can each
   // own their own button-disabled state.
   const [inFlight, setInFlight] = useState<Set<number>>(new Set());
-  // Dream-run trigger state for the hero buttons. Two distinct flags
-  // so the user sees which mode they kicked off (plain vs +validate)
-  // — collapsing both into a single `dreamRunning` boolean would
-  // disable BOTH buttons during a fast click and obscure which was
-  // pressed. `null` = idle.
-  const [dreamRunning, setDreamRunning] = useState<'plain' | 'validate' | null>(null);
   const refreshGen = useRef(0);
-  const configGen = useRef(0);
 
   const refresh = useCallback(async () => {
     const gen = ++refreshGen.current;
@@ -201,21 +170,6 @@ export function InsightsTab({
   }, []);
 
   useEffect(() => { refresh(); }, [refresh, dataRevision]);
-
-  // One-shot capability probe — answers "is the empty-state
-  // 'configure your LLM' or 'run dream run'?".
-  useEffect(() => {
-    const gen = ++configGen.current;
-    setConfigLoadFailed(false);
-    api<{ capabilities?: { llm?: { provider?: string } | null } }>('GET', '/v1/config')
-      .then((d) => { if (gen === configGen.current) setLlmConfigured(!!d?.capabilities?.llm); })
-      .catch((e) => {
-        if (gen !== configGen.current) return;
-        console.warn('[memesh dashboard] /v1/config failed to refresh:', e);
-        setConfigLoadFailed(true);
-        setError(failureMessage(classifyLoadError(e)));
-      });
-  }, [dataRevision]);
 
   const proposals = filter === 'all' ? allProposals : allProposals.filter(p => p.status === filter);
 
@@ -263,13 +217,9 @@ export function InsightsTab({
     }
   }, []);
 
-  // Confirmed, because rejection is one click and permanent. The dreamer
-  // deliberately never re-proposes a rejected cluster (dreamer.ts:226) — that
-  // is what the status is FOR — and there is no un-reject on any surface. So
-  // a mis-click on a ghost button destroys a digest the user paid an LLM call
-  // for, with nothing to undo it. The sibling irreversible action in this
-  // dashboard, `OnboardingBanner.runReset`, already confirms; accept does not
-  // and should not, because an accepted memory can be forgotten.
+  // Rejection is one click and permanent, so it remains confirmed. Acceptance
+  // is exposed only after the complete proposal detail has loaded below: a
+  // truncated card preview is not the human-review boundary.
   const reject = useCallback(async (id: number) => {
     if (!confirm(t('insights.rejectConfirm'))) return;
     markBusy(id);
@@ -283,85 +233,30 @@ export function InsightsTab({
     }
   }, []);
 
-  // Trigger a dreamer pass on demand. `mode === 'validate'` plumbs the
-  // optional second LLM call through `digest-validator.ts`. Bounded to
-  // maxLlmCalls=3 from the dashboard so a casual click can't burn a
-  // whole hour of LLM budget — power users still have the CLI for
-  // larger passes (`memesh dream run --max-llm-calls 50 --validate`).
-  const runDream = useCallback(async (mode: 'plain' | 'validate') => {
-    setDreamRunning(mode);
-    setError('');
-    setRunNotice('');
-    try {
-      const result = await api<DreamRunResult>('POST', '/v1/dream/run', {
-        maxLlmCalls: 3,
-        validate: mode === 'validate',
-      });
-      window.dispatchEvent(new Event('memesh:data-changed'));
-      await refresh();
-      const providerErrors = result.skipped.filter((entry) => entry.code === 'provider_error');
-      if (providerErrors.length > 0) {
-        setError(t('insights.runProviderError', {
-          error: providerErrors.slice(0, 3).map((entry) => entry.reason).join(' · '),
-        }));
-      } else if (result.proposalsCreated === 0) {
-        setRunNotice(t('insights.runNoResult'));
-      } else {
-        setRunNotice(t('insights.runCreated', { count: result.proposalsCreated }));
-      }
-    } catch (e) {
-      setError(actionFailureMessage(e));
-    } finally {
-      setDreamRunning(null);
-    }
-  }, [refresh]);
-
   const pendingCount = allProposals.filter(p => p.status === 'pending').length;
   const appliedCount = allProposals.filter(p => p.status === 'applied').length;
   const rejectedCount = allProposals.filter(p => p.status === 'rejected').length;
 
   useEffect(() => {
-    onStateChange?.({ pendingCount, llmConfigured, loading, failed: proposalLoadFailed || configLoadFailed });
-  }, [configLoadFailed, llmConfigured, loading, onStateChange, pendingCount, proposalLoadFailed]);
+    onStateChange?.({ pendingCount, loading, failed: proposalLoadFailed });
+  }, [loading, onStateChange, pendingCount, proposalLoadFailed]);
 
   return (
     <div id="home-insights" tabIndex={-1} style={{ display: 'flex', flexDirection: 'column', gap: 16, scrollMarginTop: 12 }}>
       {/* Hero — what memesh did for you */}
       <div class="card" style={{ padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-          <h2 style={{ margin: 0, fontSize: 18 }}>{t('insights.title')}</h2>
-          <span style={{ color: 'var(--text-2)', fontSize: 13 }}>{t('insights.subtitle')}</span>
+          <h2 style={{ margin: 0, fontSize: 18 }}>{t('insights.reviewTitle')}</h2>
+          <span style={{ color: 'var(--text-2)', fontSize: 13 }}>{t('insights.reviewSubtitle')}</span>
         </div>
+        <p style={{ margin: '8px 0 0', color: 'var(--text-2)', fontSize: 12, lineHeight: 1.5 }}>
+          {t('insights.reviewBoundary')}
+        </p>
         <div style={{ marginTop: 10, display: 'flex', gap: 16, flexWrap: 'wrap', color: 'var(--text-2)', fontSize: 13 }}>
           <span><strong style={{ color: 'var(--life)', fontFamily: 'var(--mono)' }}>{pendingCount}</strong> {t('insights.statPending')}</span>
           <span><strong style={{ fontFamily: 'var(--mono)' }}>{appliedCount}</strong> {t('insights.statApplied')}</span>
           <span><strong style={{ fontFamily: 'var(--mono)' }}>{rejectedCount}</strong> {t('insights.statRejected')}</span>
         </div>
-        {/* On-demand dream run — closes the v4.2.0 known limitation that
-            forced users to drop into a CLI for `memesh dream run --validate`.
-            Only enabled when the LLM probe came back with a configured
-            provider; without one, runDreamer no-ops anyway and we show
-            the empty-state's "configure your LLM" hint instead. */}
-        {llmConfigured && (
-          <div style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button
-              class="btn btn-primary"
-              onClick={() => runDream('plain')}
-              disabled={dreamRunning !== null}
-              aria-busy={dreamRunning === 'plain'}
-            >
-              {dreamRunning === 'plain' ? `${t('insights.runDream')}…` : t('insights.runDream')}
-            </button>
-            <button
-              class="btn btn-ghost"
-              onClick={() => runDream('validate')}
-              disabled={dreamRunning !== null}
-              aria-busy={dreamRunning === 'validate'}
-            >
-              {dreamRunning === 'validate' ? `${t('insights.runDreamWithValidate')}…` : t('insights.runDreamWithValidate')}
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Filter tabs */}
@@ -391,15 +286,10 @@ export function InsightsTab({
       </div>
 
       {error && <div class="card" role="alert" style={{ padding: 12, color: 'var(--danger)' }}>{error}</div>}
-      {runNotice && <div class="card" role="status" style={{ padding: 12, color: 'var(--life)' }}>{runNotice}</div>}
       {loading && <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('insights.loading')}</div>}
       {!loading && proposals.length === 0 && (
         <div class="card" style={{ padding: 16, textAlign: 'center', color: 'var(--text-2)' }}>
-          {filter !== 'pending'
-            ? t('insights.emptyOther')
-            : llmConfigured === false
-              ? t('insights.emptyNoLlm')
-              : t('insights.emptyPending')}
+          {filter !== 'pending' ? t('insights.emptyOther') : t('insights.emptyPending')}
         </div>
       )}
 
@@ -445,6 +335,11 @@ export function InsightsTab({
                   <span style={{ fontWeight: 600 }}>{p.digest_name}</span>
                   <span class="tag" style={{ fontSize: 11 }}>{p.project}</span>
                   <span class="tag" style={{ fontSize: 11 }}>{p.cluster_key}</span>
+                  {p.kind === 'digest' && p.source_kind && (
+                    <span class="tag" style={{ fontSize: 11 }}>
+                      {p.source_kind === 'transcript' ? t('insights.source.transcript') : t('insights.source.calendar')}
+                    </span>
+                  )}
                   {p.kind === 'product_improvement' && (
                     <code class="tag" style={{ fontSize: 11 }}>product_improvement</code>
                   )}
@@ -471,7 +366,7 @@ export function InsightsTab({
                 >
                   {isExpanded ? t('insights.collapse') : t('insights.viewDetail')}
                 </button>
-                {isPending && (
+                {isPending && isExpanded && detail && (
                   <>
                     <button class="btn btn-primary" onClick={() => accept(p.id)} disabled={isBusy}>
                       {isBusy ? t('insights.applying') : t('insights.accept')}
@@ -501,9 +396,7 @@ export function InsightsTab({
                 ? [rel.b?.name, rel.a?.name] : [rel.a?.name, rel.b?.name];
               return (
                 <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 13 }}>
-                  <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>
-                    {t('insights.generatedBy')}: <code>{detail.llm_model ?? t('common.unknown')}</code> · {t('insights.promptVersion')}: <code>{detail.prompt_version}</code>
-                  </div>
+                  <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>{t('insights.reviewSource')}</div>
                   <div style={{ marginBottom: 8 }}>
                     <strong>{rel.verdict}</strong>
                     {rel.severity && <span class="tag" style={{ marginLeft: 8, fontSize: 11 }}>{rel.severity}</span>}
@@ -538,9 +431,7 @@ export function InsightsTab({
               };
               return (
                 <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 13 }}>
-                  <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>
-                    {t('insights.generatedBy')}: <code>{detail.llm_model ?? t('common.unknown')}</code> · {t('insights.promptVersion')}: <code>{detail.prompt_version}</code>
-                  </div>
+                  <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>{t('insights.reviewSource')}</div>
                   <div style={{ marginBottom: 8 }}>
                     <span class="tag" style={{ fontSize: 11 }}>{g.guard?.tool}</span>
                     <span style={{ marginLeft: 8, color: 'var(--text-3)', fontSize: 11 }}>{t('guard.sourceLesson')}:</span>{' '}
@@ -580,15 +471,11 @@ export function InsightsTab({
                   ? <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}><code>product_improvement</code></div>
                   : (
                     <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>
-                      {t('insights.generatedBy')}: <code>{detail.llm_model ?? t('common.unknown')}</code> · {t('insights.promptVersion')}: <code>{detail.prompt_version}</code>
+                      {detail.source_kind === 'transcript' ? t('insights.source.transcript') : t('insights.source.calendar')}
                     </div>
                   )}
-                {/* Flagged claims — only present when the dreamer was run
-                    with --validate AND the validator returned 'soften'.
-                    Renders ABOVE observations so the reviewer reads the
-                    caveats before the digest text. Absent/empty array
-                    skips this block entirely, preserving the original
-                    layout for digests without validator output. */}
+                {/* Legacy flagged claims render above observations so the
+                    reviewer sees their caveats before the digest text. */}
                 {Array.isArray(detail.proposed_digest.validation_warnings)
                   && detail.proposed_digest.validation_warnings.length > 0 && (
                   <div
@@ -633,9 +520,11 @@ export function InsightsTab({
                     <span key={tag} class="tag" style={{ marginLeft: 4, fontSize: 11 }}>{tag}</span>
                   ))}
                 </div>
-                <div style={{ color: 'var(--text-3)', fontSize: 11, marginTop: 6 }}>
-                  {t('insights.sourceIds')}: {t('insights.entitiesCount', { n: detail.source_ids.length })} ({detail.source_ids.slice(0, 8).join(', ')}{detail.source_ids.length > 8 ? '…' : ''})
-                </div>
+                {Array.isArray(detail.source_ids) && (
+                  <div style={{ color: 'var(--text-3)', fontSize: 11, marginTop: 6 }}>
+                    {t('insights.sourceIds')}: {t('insights.entitiesCount', { n: detail.source_ids.length })} ({detail.source_ids.slice(0, 8).join(', ')}{detail.source_ids.length > 8 ? '…' : ''})
+                  </div>
+                )}
               </div>
             )}
           </div>

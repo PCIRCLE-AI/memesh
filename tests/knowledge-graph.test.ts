@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { openDatabase, closeDatabase } from '../src/db.js';
 import { KnowledgeGraph } from '../src/knowledge-graph.js';
 import type { CreateEntityInput } from '../src/knowledge-graph.js';
-import { getEmbeddingDimension } from '../src/core/config.js';
 import { MemeshDatabase as Database } from '../src/storage/sqlite.js';
 import fs from 'fs';
 import path from 'path';
@@ -479,24 +478,6 @@ describe('Feature: Knowledge Graph', () => {
 
       const results = kg.search('REST');
       expect(results).toEqual([]);
-    });
-
-    it('should remove archived entity from vector index', () => {
-      const id = kg.createEntity('OldDesign', 'decision', {
-        observations: ['Use REST API'],
-      });
-      const embedding = new Float32Array(getEmbeddingDimension());
-      embedding.fill(0.01);
-      embedding[0] = 1;
-
-      db.prepare(
-        'INSERT INTO entities_vec (rowid, embedding) VALUES (?, ?)'
-      ).run(BigInt(id), Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength));
-
-      kg.archiveEntity('OldDesign');
-
-      const count = db.prepare('SELECT count(*) AS count FROM entities_vec').get() as { count: number };
-      expect(count.count).toBe(0);
     });
 
     it('should return { archived: false } for non-existent entity', () => {

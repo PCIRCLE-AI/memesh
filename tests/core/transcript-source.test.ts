@@ -11,6 +11,7 @@ import {
   projectTranscriptSlug,
   scanTranscripts,
   claudeProjectsDir,
+  MAX_TRANSCRIPT_SOURCE_BYTES,
   recordedCwd,
 } from '../../src/core/transcript-source.js';
 
@@ -197,6 +198,25 @@ describe('transcript-source discovery', () => {
 
   it('returns [] (never throws) when the project has no transcript dir', () => {
     expect(scanTranscripts({ cwd: '/proj/never-seen', windowDays: 3 })).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not follow transcript symlinks outside the project directory', () => {
+    const cwd = '/proj/symlink-boundary';
+    const dir = path.join(root, projectTranscriptSlug(cwd));
+    fs.mkdirSync(dir, { recursive: true });
+    const outside = path.join(root, 'outside.jsonl');
+    fs.writeFileSync(outside, `${JSON.stringify({ cwd })}\n`);
+    fs.symlinkSync(outside, path.join(dir, 'linked.jsonl'));
+
+    expect(scanTranscripts({ cwd })).toEqual([]);
+  });
+
+  it('rejects an oversized sparse transcript before allocating or parsing it', () => {
+    const cwd = '/proj/oversized';
+    const file = seedSession(cwd, 'too-large', 1, 0);
+    fs.truncateSync(file, MAX_TRANSCRIPT_SOURCE_BYTES + 1);
+
+    expect(scanTranscripts({ cwd })).toEqual([]);
   });
 
   it('skips an unreadable file rather than fabricating a line count', () => {

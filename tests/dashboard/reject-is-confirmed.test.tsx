@@ -5,7 +5,7 @@
 // The dreamer deliberately never re-proposes a rejected cluster — that is
 // what the status is for (`dreamer.ts:226`) — and no surface offers an
 // un-reject. So a mis-click on a ghost-styled button next to the primary
-// action destroys a digest the user paid an LLM call to produce, silently.
+// action irreversibly rejects reviewed agent work, silently.
 //
 // The sibling irreversible action in this dashboard, `OnboardingBanner`'s
 // demo reset, already asks first. Accept deliberately does not: an accepted
@@ -17,12 +17,28 @@ import { InsightsTab } from '../../dashboard/src/components/InsightsTab';
 
 const PROPOSAL = {
   id: 7,
+  project: 'memesh',
+  cluster_key: 'memesh::review-7',
+  source_count: 2,
+  digest_name: 'a proposed digest',
+  digest_observations_preview: 'the digest body',
   kind: 'digest',
+  source_kind: 'entities',
   status: 'pending',
-  title: 'a proposed digest',
-  content: 'the digest body',
-  source_ids: [1, 2],
   created_at: '2026-08-24T00:00:00Z',
+};
+
+const DETAIL = {
+  ...PROPOSAL,
+  source_ids: [1, 2],
+  proposed_digest: {
+    name: PROPOSAL.digest_name,
+    type: 'digest',
+    observations: ['the digest body'],
+    tags: ['project:memesh'],
+  },
+  reason: null,
+  reviewed_at: null,
 };
 
 /** Answer the tab's own GETs; record every POST it attempts. */
@@ -31,10 +47,11 @@ function stubApi(posts: string[]) {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
     if (method === 'POST') posts.push(url);
-    // `api()` unwraps to `json.data`, and the proposals route answers with
-    // the array itself. `/v1/config` wants an object; both land here, and
-    // only the proposals shape has to be right for this file.
-    const data = url.includes('/v1/dream/proposals') ? [PROPOSAL] : { capabilities: {} };
+    let data: unknown;
+    if (method === 'POST') data = { id: 7, status: url.endsWith('/accept') ? 'applied' : 'rejected' };
+    else if (url.endsWith('/v1/dream/proposals/7')) data = DETAIL;
+    else if (url.includes('/v1/dream/proposals')) data = [PROPOSAL];
+    else data = { config: {} };
     return Promise.resolve(
       new Response(
         JSON.stringify({ success: true, data }),
@@ -47,10 +64,12 @@ function stubApi(posts: string[]) {
 async function renderWithProposal(posts: string[]) {
   stubApi(posts);
   const view = render(<InsightsTab />);
-  // Wait for the row itself, not for its title: the card renders the
-  // proposal id and its actions, and the title only appears once expanded.
+  // Review actions must not exist until the full proposal is loaded.
   await waitFor(() => {
     expect(view.container.textContent ?? '', 'the proposal row never rendered').toContain('#7');
+  });
+  fireEvent.click(view.getByRole('button', { name: 'View detail' }));
+  await waitFor(() => {
     rejectButton(view.container);
   });
   return view;

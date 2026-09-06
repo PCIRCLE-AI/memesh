@@ -156,13 +156,9 @@ function parseTranscript(transcriptPath) {
             const text = typeof block.content === 'string'
               ? block.content
               : JSON.stringify(block.content);
-            // Same reason as the bash branch, and one more: this array is
-            // ALSO the payload `analyzeFailure` sends to the configured LLM
-            // provider. A failed request that echoes its own Authorization
-            // header — the ordinary shape of an auth error — would be stored
-            // and then transmitted off the machine. Redacted once here, at
-            // the point the text enters the process, so every downstream use
-            // inherits it.
+            // Same reason as the bash branch: a failed request may echo its
+            // own Authorization header. Redact once, where text enters the
+            // process, so every downstream use inherits it.
             errorsEncountered.push(redactSecrets(text).slice(0, 200));
           }
         }
@@ -311,33 +307,12 @@ process.stdin.on('end', async () => {
     // healthy exit, so it MUST stamp (see stampHookRunOnly).
     if (toolCallCount < 3) { stampHookRunOnly(process.env, 'session-summary'); return exit0(); }
 
-    // Hoisted to outer-try scope so the LLM failure-analysis block
-    // below (which runs AFTER db.close()) can reference it. Earlier
-    // version defined projectName inside the inner try-finally and the
-    // LLM path threw `projectName is not defined` silently — caught by
-    // the LLM try/catch but logged to stderr. Result: lesson_learned
-    // creation never actually happened in production.
     const projectName = getProjectName(cwd);
 
     // Open DB via shared helper — applies SCHEMA_SQL + status migration.
     // { fts: true } guarantees the entities_fts table exists so captureEntity()
     // can keep it in sync — session-insight memories must be FTS-recallable.
     //
-    // sqlite-vec is NOT loaded here, and used to be. The comment said it was
-    // needed "for embedding-aware recall-effectiveness tracking" — but this
-    // hook runs exactly two statements, `PRAGMA table_info(entities)` and
-    // `SELECT id FROM entities WHERE name = ?`, and `captureEntity` in
-    // _shared.js touches no vectors either. Nothing here has ever used the
-    // extension.
-    //
-    // It was not free. sqlite-vec ships its engine as a per-platform file
-    // through optionalDependencies, and on a platform it does not publish the
-    // load threw — past the `require` guard, which never fired because the JS
-    // wrapper resolves fine and the throw happens later inside
-    // `sqliteVec.load()`. Measured with the platform binary hidden: the whole
-    // Stop capture vanished (0 entities against a control run's 1) and the
-    // user got a `Require stack:` dump on stderr. An extension nobody calls
-    // was silently costing every session on those platforms its memory.
     const { db } = openHookDb(process.env, { fts: true });
     let writeFailed = false;
     try {
@@ -604,10 +579,9 @@ process.stdin.on('end', async () => {
   } catch (err) {
     // Never crash Claude Code — leave a trace for debugging.
     //
-    // Every error is traced now. There used to be a suppression branch for a
-    // `skip-session-capture:` sentinel, thrown when sqlite-vec was missing —
-    // an extension this hook never used. The thrower is gone, so the branch
-    // could only ever hide a real error from here on.
+    // Every error is traced. A retired suppression sentinel once hid setup
+    // failures from this hook; with that branch gone, real capture errors stay
+    // visible without crashing the host session.
     try { process.stderr.write(`[memesh session-summary] ${err?.message || err}\n`); } catch {}
   }
 
@@ -634,31 +608,6 @@ process.stdin.on('end', async () => {
 function exit0() {
   process.exit(0);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 /**
  * Attachment record types Claude Code uses to persist a hook's own output
  * into the transcript. Anything memesh injected reaches the transcript

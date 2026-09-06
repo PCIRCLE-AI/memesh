@@ -1,6 +1,4 @@
-// dreamer — LLM cluster compactor (#39 Phase 2). Tests cover the
-// LLM-independent paths: cluster detection, idempotency, apply/reject,
-// safety guards. The LLM call itself is mocked via the dryRun path.
+// Agent work-package proposal staging and human review.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -50,7 +48,7 @@ describe('dreamer', () => {
 
   it('apply: a digest whose name collides never merges into the memory already there', async () => {
     // `createEntity` uses INSERT OR IGNORE, so a taken name meant the insert
-    // was SKIPPED: none of the digest metadata was written, the LLM's
+    // was SKIPPED: none of the digest metadata was written, the submitted
     // observations appended to the user's own memory, and this transaction
     // went on to archive the sources under it — reporting success. The
     // extraction prompt asks for short slug names, which is exactly the shape
@@ -59,7 +57,7 @@ describe('dreamer', () => {
     const { applyProposal } = await import('../../src/core/dreamer.js');
     const sourceIds = seedCommits(5);
 
-    // A memory the USER wrote, under a name a model might well choose.
+    // A memory the USER wrote, under a name an agent might well choose.
     kg.createEntity('auth-decisions', 'decision', {
       observations: ['we chose OAuth 2.0 with PKCE'],
     });
@@ -67,11 +65,11 @@ describe('dreamer', () => {
     expect(before?.observations, 'fixture: the user memory was not created').toHaveLength(1);
 
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES ('memesh', '2026-W19', ?, ?, 'ollama/fake', 'v1')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', '2026-W19', ?, ?, 'v1')
     `).run(JSON.stringify(sourceIds), JSON.stringify({
       name: 'auth-decisions', type: 'digest',
-      observations: ['a model-written summary of five commits'], tags: ['digest'],
+      observations: ['an agent-written summary of five commits'], tags: ['digest'],
     }));
     const proposalId = (db.prepare(
       "SELECT id FROM dream_proposals WHERE status='pending' ORDER BY id DESC",
@@ -90,7 +88,7 @@ describe('dreamer', () => {
       .not.toBe('auth-decisions');
     const digest = kg.getEntity(result.digestEntityName);
     expect(digest, 'the digest was not created at all').toBeTruthy();
-    expect(digest?.observations).toEqual(['a model-written summary of five commits']);
+    expect(digest?.observations).toEqual(['an agent-written summary of five commits']);
     expect(digest?.metadata?.proposal_id, 'the digest metadata was never written').toBe(proposalId);
   });
 
@@ -100,8 +98,8 @@ describe('dreamer', () => {
     const { applyProposal } = await import('../../src/core/dreamer.js');
     const sourceIds = seedCommits(5);
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES ('memesh', '2026-W20', ?, ?, 'ollama/fake', 'v1')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', '2026-W20', ?, ?, 'v1')
     `).run(JSON.stringify(sourceIds), JSON.stringify({
       name: 'a-free-name', type: 'digest', observations: ['a summary'], tags: ['digest'],
     }));
@@ -123,8 +121,8 @@ describe('dreamer', () => {
     const sourceIds = seedCommits(6);
     const stage = (name: string, ids: number[]) => {
       db.prepare(`
-        INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-        VALUES ('memesh', '2026-W19', ?, ?, 'ollama/fake', 'v1')
+        INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+        VALUES ('memesh', '2026-W19', ?, ?, 'v1')
       `).run(JSON.stringify(ids), JSON.stringify({
         name, type: 'digest', observations: ['a consolidated summary of the work'], tags: ['digest'],
       }));
@@ -179,8 +177,8 @@ describe('dreamer', () => {
     for (const id of sourceIds) expect(ftsRowCount(id), 'fixture: source not indexed').toBe(1);
 
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES ('memesh', '2026-W21', ?, ?, 'ollama/fake', 'v1')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', '2026-W21', ?, ?, 'v1')
     `).run(JSON.stringify(sourceIds), JSON.stringify({
       name: 'digest-index-hygiene', type: 'digest',
       observations: ['a consolidated summary of five commits'], tags: ['digest'],
@@ -218,8 +216,8 @@ describe('dreamer', () => {
     const sourceIds = seedCommits(4);
     const stage = (name: string) => {
       db.prepare(`
-        INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-        VALUES ('memesh', '2026-W19', ?, ?, 'ollama/fake', 'v1')
+        INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+        VALUES ('memesh', '2026-W19', ?, ?, 'v1')
       `).run(JSON.stringify(sourceIds), JSON.stringify({
         name, type: 'digest', observations: ['a consolidated summary of the work'], tags: ['digest'],
       }));
@@ -239,8 +237,8 @@ describe('dreamer', () => {
       'a digest that claimed nothing was still written to the graph'
     ).toBeUndefined();
 
-    // …and it must not stay pending, or every later run retries it at the cost
-    // of one LLM call, forever.
+    // …and it must not stay pending, or every later review keeps retrying an
+    // application that can never succeed.
     const after = db.prepare('SELECT status, reason FROM dream_proposals WHERE id = ?').get(secondId) as { status: string; reason: string | null };
     expect(after.status, 'a proposal that can never apply was left pending').toBe('rejected');
     expect(after.reason).toMatch(/already summarised/);
@@ -259,7 +257,7 @@ describe('dreamer', () => {
     // found or not pending", something else settled the row. A bare catch also
     // swallowed SQLITE_BUSY and disk-full, and then let an error escape whose
     // text promised the proposal would not be retried — while it sat there
-    // pending, retried by every later run at one LLM call each.
+    // pending and retried by every later review.
     //
     // The write failure is injected with a trigger because nothing in a
     // single-process suite can make this UPDATE fail for real: the abort fires
@@ -268,8 +266,8 @@ describe('dreamer', () => {
     const { applyProposal } = await import('../../src/core/dreamer.js');
     const sourceIds = seedCommits(3);
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES ('memesh', '2026-W19', ?, ?, 'ollama/fake', 'v1')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', '2026-W19', ?, ?, 'v1')
     `).run(JSON.stringify(sourceIds), JSON.stringify({
       name: 'digest-unrejectable', type: 'digest', observations: ['a summary'], tags: ['digest'],
     }));
@@ -308,8 +306,8 @@ describe('dreamer', () => {
     const { applyProposal } = await import('../../src/core/dreamer.js');
     const sourceIds = seedCommits(3);
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES ('memesh', '2026-W19', ?, ?, 'ollama/fake', 'v1')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', '2026-W19', ?, ?, 'v1')
     `).run(JSON.stringify(sourceIds), JSON.stringify({
       name: 'digest-of-the-forgotten', type: 'digest', observations: ['a summary'], tags: ['digest'],
     }));
@@ -336,8 +334,8 @@ describe('dreamer', () => {
     const sourceIds = seedCommits(4);
     const stage = (name: string, ids: number[]) => {
       db.prepare(`
-        INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-        VALUES ('memesh', '2026-W19', ?, ?, 'ollama/fake', 'v1')
+        INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+        VALUES ('memesh', '2026-W19', ?, ?, 'v1')
       `).run(JSON.stringify(ids), JSON.stringify({
         name, type: 'digest', observations: ['a consolidated summary of the work'], tags: ['digest'],
       }));
@@ -372,8 +370,8 @@ describe('dreamer', () => {
     const { applyProposal } = await import('../../src/core/dreamer.js');
     const sourceIds = seedCommits(4);
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES ('memesh', 'pattern:2026-W19', ?, ?, 'ollama/fake', 'v1')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', 'pattern:2026-W19', ?, ?, 'v1')
     `).run(JSON.stringify(sourceIds), JSON.stringify({
       name: 'pattern-with-no-evidence',
       type: 'pattern_emergent',
@@ -402,8 +400,8 @@ describe('dreamer', () => {
     const { applyProposal } = await import('../../src/core/dreamer.js');
     const sourceIds = seedCommits(6);
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES ('memesh', '2026-W19', ?, ?, 'ollama/fake', 'v1')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', '2026-W19', ?, ?, 'v1')
     `).run(JSON.stringify(sourceIds), JSON.stringify({
       name: 'digest-raced', type: 'digest', observations: ['summary'], tags: ['digest'],
     }));
@@ -417,10 +415,10 @@ describe('dreamer', () => {
   it('apply: writes a digest entity, soft-archives sources, links via metadata.compacted_into', async () => {
     const { applyProposal } = await import('../../src/core/dreamer.js');
     const sourceIds = seedCommits(6);
-    // Manually insert a pending proposal (simulates LLM output)
+    // Manually insert a pending staged proposal
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES (?, ?, ?, ?, ?)
     `).run(
       'memesh',
       '2026-W19',
@@ -431,7 +429,6 @@ describe('dreamer', () => {
         observations: ['Consolidated 6 commits implementing the feature thing across week 19'],
         tags: ['digest', 'project:memesh', 'week:2026-W19'],
       }),
-      'ollama/fake',
       'v1',
     );
     const proposalRow = db.prepare("SELECT id FROM dream_proposals WHERE status='pending'").get() as { id: number };
@@ -466,11 +463,11 @@ describe('dreamer', () => {
     const { rejectProposal } = await import('../../src/core/dreamer.js');
     const sourceIds = seedCommits(6);
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES (?, ?, ?, ?, ?)
     `).run('memesh', '2026-W19', JSON.stringify(sourceIds), JSON.stringify({
       name: 'bad-digest', type: 'digest', observations: ['nope'], tags: [],
-    }), 'ollama/fake', 'v1');
+    }), 'v1');
     const proposalRow = db.prepare("SELECT id FROM dream_proposals WHERE status='pending'").get() as { id: number };
 
     rejectProposal(db, proposalRow.id, 'incoherent grouping');
@@ -496,8 +493,8 @@ describe('dreamer', () => {
     const sourceIds = seedCommits(4);
 
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES (?, ?, ?, ?, ?)
     `).run(
       'memesh',
       'pattern:2026-05-08',
@@ -508,7 +505,6 @@ describe('dreamer', () => {
         observations: ['Pattern: every commit touching X also touches Y'],
         tags: ['pattern_emergent', 'project:memesh'],
       }),
-      'ollama/fake',
       'v1',
     );
     const proposalRow = db.prepare("SELECT id FROM dream_proposals WHERE status='pending'").get() as { id: number };
@@ -548,11 +544,11 @@ describe('dreamer', () => {
     // content, and no locale could translate it. null is the honest value.
     const { listProposals } = await import('../../src/core/dreamer.js');
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES (?, ?, ?, ?, ?)
     `).run('memesh', '2026-W30', '[1,2]',
       JSON.stringify({ name: 'no-observations', type: 'digest', observations: [], tags: [] }),
-      'ollama/fake', 'v1');
+      'v1');
 
     const rows = listProposals(db, 'pending');
     expect(rows).toHaveLength(1);
@@ -563,21 +559,21 @@ describe('dreamer', () => {
   it('listProposals still returns the truncated first observation when one exists', async () => {
     const { listProposals } = await import('../../src/core/dreamer.js');
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES (?, ?, ?, ?, ?)
     `).run('memesh', '2026-W31', '[3,4]',
       JSON.stringify({ name: 'has-observations', type: 'digest', observations: ['x'.repeat(200)], tags: [] }),
-      'ollama/fake', 'v1');
+      'v1');
 
     const rows = listProposals(db, 'pending');
     expect(rows[0].digest_observations_preview).toBe('x'.repeat(120));
   });
 
   // -------------------------------------------------------------------------
-  // Provenance: a dreamer entity is LLM-generated text
+  // Provenance: a dreamer entity contains untrusted agent-submitted text
   //
   // `createLesson` marks the identical threat model `untrusted` and its header
-  // says why: an LLM paraphrase of a session transcript, which may carry text
+  // says why: an agent paraphrase of a session transcript, which may carry text
   // a dependency or a PR title printed. The dreamer is the same class and was
   // the only generation path that never set the marker — and BOTH consumers of
   // that marker default to allow when it is absent, so both are checked here.
@@ -592,11 +588,11 @@ describe('dreamer', () => {
     const sourceIds = seedCommits(4);
 
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES (?, ?, ?, ?, ?)
     `).run('memesh', 'memesh::wk-19', JSON.stringify(sourceIds),
       JSON.stringify({ name: 'wk-19-digest', type: 'digest', observations: ['Summary of the week'], tags: ['digest'] }),
-      'ollama/fake', 'v1');
+      'v1');
     const proposal = db.prepare("SELECT id FROM dream_proposals WHERE status='pending'").get() as { id: number };
 
     applyProposal(db, proposal.id, kg);
@@ -633,11 +629,11 @@ describe('dreamer', () => {
     const sourceIds = seedCommits(4);
 
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES (?, ?, ?, ?, ?)
     `).run('memesh', 'pattern:2026-08-03', JSON.stringify(sourceIds),
       JSON.stringify({ name: 'pattern-thing', type: 'pattern_emergent', observations: ['A pattern'], tags: ['pattern_emergent'] }),
-      'ollama/fake', 'v1');
+      'v1');
     const proposal = db.prepare("SELECT id FROM dream_proposals WHERE status='pending'").get() as { id: number };
 
     applyProposal(db, proposal.id, kg);
@@ -646,7 +642,7 @@ describe('dreamer', () => {
     expect(isTrustedForAutoContext(row.metadata)).toBe(true);
   });
 
-  it('does not let the model lift a digest\'s confidence on re-apply', async () => {
+  it('does not let submitted text lift a digest\'s confidence on re-apply', async () => {
     // The write-side half of the policy, which auto-context eligibility
     // moving did NOT change. knowledge-graph's confidence bump reads
     // `trustOverride ?? metadata.trust` and treats a missing value as
@@ -661,11 +657,11 @@ describe('dreamer', () => {
 
     function stage(observations: string[], ids: number[]): number {
       db.prepare(`
-        INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+        VALUES (?, ?, ?, ?, ?)
       `).run('memesh', 'memesh::wk-20', JSON.stringify(ids),
         JSON.stringify({ name: 'repeat-digest', type: 'digest', observations, tags: ['digest'] }),
-        'ollama/fake', 'v1');
+        'v1');
       return (db.prepare("SELECT id FROM dream_proposals WHERE status='pending' ORDER BY id DESC").get() as { id: number }).id;
     }
 
@@ -674,33 +670,89 @@ describe('dreamer', () => {
     applyProposal(db, stage(['a brand new summary line'], sourceIds.slice(4)), kg);
 
     const after = db.prepare('SELECT confidence AS c FROM entities WHERE name = ?').get('repeat-digest') as { c: number };
-    expect(after.c, 'LLM-generated text lifted its own confidence').toBeCloseTo(0.5, 5);
+    expect(after.c, 'agent-submitted text lifted its own confidence').toBeCloseTo(0.5, 5);
   });
 
-  it('files a digest under the cluster\'s project, not one the model named', async () => {
-    // `digest.tags` comes back from the LLM and `project:` is what tag-filtered
+  it('files a digest under the cluster\'s project, not one the agent named', async () => {
+    // `digest.tags` comes back from the agent and `project:` is what tag-filtered
     // recall routes on, so a tag lifted out of injected source text could file
     // the digest under someone else's project.
     const { applyProposal } = await import('../../src/core/dreamer.js');
     const sourceIds = seedCommits(4);
 
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES (?, ?, ?, ?, ?)
     `).run('memesh', 'memesh::wk-21', JSON.stringify(sourceIds),
       JSON.stringify({
         name: 'misfiled-digest', type: 'digest', observations: ['x'],
         tags: ['digest', 'project:someone-elses-project', 'topic:auth'],
       }),
-      'ollama/fake', 'v1');
+      'v1');
     const proposal = db.prepare("SELECT id FROM dream_proposals WHERE status='pending'").get() as { id: number };
 
     applyProposal(db, proposal.id, kg);
 
     const entity = db.prepare('SELECT id FROM entities WHERE name = ?').get('misfiled-digest') as { id: number };
     const tags = (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(entity.id) as Array<{ tag: string }>).map(r => r.tag);
-    expect(tags, 'the model routed the digest into another project').not.toContain('project:someone-elses-project');
+    expect(tags, 'the agent routed the digest into another project').not.toContain('project:someone-elses-project');
     expect(tags).toContain('project:memesh');
     expect(tags, 'descriptive tags were thrown away along with the routing one').toContain('topic:auth');
+  });
+
+  it('transcript apply cannot overwrite a rejection that lands after the pending read', async () => {
+    const { applyProposal } = await import('../../src/core/dreamer.js');
+    db.prepare(`
+      INSERT INTO dream_proposals
+        (project, cluster_key, source_ids, proposed_digest, prompt_version, source_kind, kind)
+      VALUES (?, ?, ?, ?, 'work-package-v1', 'transcript', 'digest')
+    `).run(
+      'memesh',
+      'transcript:session-race',
+      JSON.stringify({ sessionId: 'session-race' }),
+      JSON.stringify({
+        name: 'raced-transcript-memory',
+        type: 'decision',
+        observations: ['Use the smaller implementation.'],
+        tags: ['decision'],
+      }),
+    );
+    const proposal = db.prepare(
+      "SELECT id FROM dream_proposals WHERE status = 'pending' ORDER BY id DESC",
+    ).get() as { id: number };
+
+    // The facade settles the row after applyProposal's outer pending SELECT
+    // but before applyTranscriptProposal starts its transaction. This is the
+    // exact race window the inner status-guard must close.
+    const racingDb = new Proxy(db, {
+      get(target, property, receiver) {
+        if (property === 'transaction') {
+          return (body: () => unknown) => {
+            const transaction = target.transaction(body);
+            const run = (...args: unknown[]) => {
+              target.prepare(
+                "UPDATE dream_proposals SET status = 'rejected', reason = 'other reviewer' WHERE id = ? AND status = 'pending'",
+              ).run(proposal.id);
+              return transaction(...args);
+            };
+            run.immediate = (...args: unknown[]) => {
+              target.prepare(
+                "UPDATE dream_proposals SET status = 'rejected', reason = 'other reviewer' WHERE id = ? AND status = 'pending'",
+              ).run(proposal.id);
+              return transaction.immediate(...args);
+            };
+            return run;
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+
+    expect(() => applyProposal(racingDb, proposal.id, kg)).toThrow(/reviewed concurrently/);
+    expect(db.prepare('SELECT status, reason FROM dream_proposals WHERE id = ?').get(proposal.id))
+      .toEqual({ status: 'rejected', reason: 'other reviewer' });
+    expect(db.prepare("SELECT id FROM entities WHERE name = 'raced-transcript-memory'").get())
+      .toBeUndefined();
   });
 });

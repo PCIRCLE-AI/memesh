@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 const script = path.resolve('scripts/check-readme-tool-parity.mjs');
 const dirs: string[] = [];
 const names = [
-  'remember', 'recall', 'forget', 'export', 'import', 'learn',
+  'work_package', 'remember', 'recall', 'forget', 'export', 'import', 'learn',
   'task_state', 'briefing', 'user_patterns', 'improvement', 'message',
 ];
 
@@ -44,10 +44,10 @@ function fixture(): string {
   const digest = (surface: string) => surfaceDigest(sourceDigest, surface);
   const table = ['| Tool | Description |', '|---|---|', ...names.map(name => `| \`${name}\` | ${name} documentation |`)].join('\n');
   for (const file of ['README.md', 'README.zh-TW.md', 'README.de.md']) {
-    write(root, file, `## All 11 Tools\n\n${table}\n\n---\n`);
+    write(root, file, `## All 12 Tools\n\n${table}\n\n---\n`);
   }
-  write(root, 'AGENTS.md', `## All 11 MCP tools\n\n${table}\n\n## Next\n`);
-  write(root, 'skills/memesh/SKILL.md', `## All 11 MCP tools\n\n${table}\n\n## Next\n`);
+  write(root, 'AGENTS.md', `## All 12 MCP tools\n\n${table}\n\n## Next\n`);
+  write(root, 'skills/memesh/SKILL.md', `## All 12 MCP tools\n\n${table}\n\n## Next\n`);
   const apiTools = names.map(name => `### ${name}\n\n${name} API description.\n`).join('\n');
   write(root, 'docs/api/API_REFERENCE.md', `## Tools\n\n${apiTools}\n## HTTP\n`);
   const overview = names.map(name => `\`${name}\``).join(', ');
@@ -74,10 +74,10 @@ function run(root: string) {
 
 describe('MCP agent-facing documentation parity gate', () => {
   it('accepts one described row or API section for every canonical tool', () => {
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(12);
     const result = run(fixture());
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('PASS (11 tools across 7 agent-facing documents');
+    expect(result.stdout).toContain('PASS (12 tools across 7 agent-facing documents');
   });
 
   it.each([

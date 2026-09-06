@@ -1,5 +1,5 @@
 /**
- * Three PASSes doctor gave for things it had not checked.
+ * Two PASSes doctor gave for things it had not checked.
  *
  * These run the built CLI against a real database in a throwaway HOME,
  * deliberately, because each defect was invisible to a stub:
@@ -13,11 +13,6 @@
  *       (`lesson_learned`) is what `memesh learn` writes — a command the user
  *       types. Measured on a brand-new HOME with no `.claude` directory at
  *       all: one hand-typed `learn` produced the PASS.
- *   C2  `config set llm.apiKey` with no `llm.provider` left `status` printing
- *       `LLM: undefined (undefined)` and every LLM feature a silent no-op.
- *       The doctor stub for hook-activity asserts on SQL text and never
- *       executes it, so a predicate change is exactly what it cannot see.
- *
  * Each case asserts the honest verdict AND its opposite, so a doctor that
  * simply stopped emitting the row would fail here rather than pass.
  */
@@ -32,8 +27,8 @@ const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', '
 let home: string;
 
 function runCli(args: string[]): { stdout: string; stderr: string; exitCode: number } {
-  // Provider credentials in the developer's own shell are auto-detected by
-  // design, which would mask the "no provider configured" cases below.
+  // Keep this throwaway-HOME test isolated from unrelated credential-shaped
+  // variables in the developer's shell, even though current MeMesh ignores them.
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home };
   for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST']) delete env[key];
 

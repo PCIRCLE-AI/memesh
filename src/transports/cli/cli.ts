@@ -9,7 +9,7 @@ import {
   openDatabase, closeDatabase, getDatabase, reindexFts,
 } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
-import { readConfig, writeConfig } from '../../core/config.js';
+import { readConfig, updateConfig } from '../../core/config.js';
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
@@ -386,8 +386,8 @@ program
   .action(async (query, opts) => {
     requireOneOf(opts.namespace, NAMESPACES, '--namespace');
     await withDatabase(async () => {
-      // recallWithConflicts: FTS5 + sqlite-vec recall + conflict annotation,
-      // owned by core so the transports can't drift on the wrapping rule.
+      // FTS5 recall and conflict annotation are owned by core so transports
+      // cannot drift on the wrapping rule.
       const { entities, conflicts, retrieval } = await recallWithConflicts({
         query: query || undefined,
         tag: opts.tag,
@@ -401,8 +401,8 @@ program
         // One envelope shape, always — the old output was a bare array
         // normally and an object when conflicts existed, so every consumer
         // had to special-case it; and it had nowhere to carry `retrieval`,
-        // which is the point (a degraded or limit-full recall must say so
-        // in-band). MCP and HTTP already answer with this object envelope.
+        // which is the point (a limit-full recall must say so in-band). MCP
+        // and HTTP already answer with this object envelope.
         console.log(JSON.stringify(
           conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval },
         ));
@@ -1365,10 +1365,7 @@ configCmd
   .action(() => {
     const config = readConfig();
     console.log('Configuration (~/.memesh/config.json):');
-    // Iterate ALLOWED_KEYS (the single source of truth for settable keys) so
-    // `list` and `set` can't drift — previously `list` hard-coded only the
-    // three llm.* keys, so a user who set sessionLimit / llmFallbacks /
-    // embedder.* got "✅ Set" but saw no trace of it here.
+    // Iterate ALLOWED_KEYS so `list` and `set` cannot drift.
     const rows = buildConfigListing(config as unknown as Record<string, unknown>);
     if (rows.length === 0) {
       console.log('  (no keys set — all defaults)');
@@ -1431,9 +1428,7 @@ configCmd
     if (canonical === 'autoCapture') {
       coerced = value === 'true' || value === '1';
     }
-    const config = readConfig() as Record<string, unknown>;
-    config[canonical] = coerced;
-    writeConfig(config as never);
+    updateConfig({ [canonical]: coerced } as never);
     const displayValue = String(value);
     console.log(`✅ Set ${canonical} = ${displayValue}`);
 
@@ -1450,14 +1445,12 @@ configCmd
       console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
       process.exit(1);
     }
-    const config = readConfig() as Record<string, unknown>;
-    const removed = canonical in config;
-    delete config[canonical];
+    const removed = canonical in readConfig();
+    updateConfig({ [canonical]: undefined } as never);
     if (!removed) {
       console.log(`(no change — ${canonical} was not set)`);
       return;
     }
-    writeConfig(config as never);
     console.log(`✅ Removed ${canonical}`);
   });
 
@@ -1673,7 +1666,7 @@ program
 // --- kg backfill ---
 //
 // Heuristic relation backfill — fixes the orphan-entity problem in
-// the KG without an LLM call. Two rules: tag co-occurrence (≥ 2
+// the KG using deterministic rules. Two rules: tag co-occurrence (≥ 2
 // shared topical tags → `related-to`) and project clustering
 // (orphan lesson / decision in project X → `belongs-to-project`
 // edge to the most-recent release / feature in that project).
@@ -1683,7 +1676,7 @@ const kgCmd = program
 
 kgCmd
   .command('backfill-relations')
-  .description('Propose / apply heuristic relations to connect orphan entities (no LLM)')
+  .description('Propose / apply deterministic relations to connect orphan entities')
   .option('--project <name>', 'Restrict to one project')
   .option('--dry-run', 'Show proposals without writing (default off — use to preview)')
   .option('--max-per-source <n>', 'Max edges per orphan (default 3)', wholeNumber('--max-per-source'), 3)
@@ -1875,10 +1868,8 @@ program
     // diagnosing branch in doctor.ts, never parsed from the human fix text.
     // The whitelist is deliberately short: hook wiring (installHooks backs
     // up settings.json and refuses on plugin machines), the keyword-index
-    // rebuild (free, local), and the db chmod. NOT here on purpose:
-    // `memesh reindex` (vector_index) re-embeds the whole database — on a
-    // paid provider that costs real money — and the rm/mv database branches
-    // destroy or move user data. Those stay human decisions.
+    // rebuild (free, local), and the db chmod. Destructive database repair
+    // branches remain human decisions.
     if (opts.fix) {
       // The dispatch is a Record, not an if-chain, so a fourth fixId added
       // in doctor.ts fails to COMPILE here instead of prompting the user
@@ -1925,9 +1916,8 @@ program
 
         // The verdict is a fresh doctor run, not trust in the fixes (the
         // inspectors are module-private, so re-run + diff beats an export
-        // refactor). Probes are FORCED OFF here whatever the original flags
-        // said: no whitelisted fix can change what a live embedding/HTTP probe
-        // answers, and --probe --fix would otherwise run the embedding call twice.
+        // refactor). Probes are forced off because none of these local fixes
+        // can change a live HTTP result.
         // The diff is scoped to fixable checks for the same reason — a
         // "probe: pass → skipped" flip would be noise from the re-run's own
         // flags, not a fix taking effect.
@@ -1974,11 +1964,9 @@ program
 
 // --- proposal review ---
 //
-// `memesh dream` — runs the dreamer on recent episodic clusters,
-// writes pending proposals to dream_proposals (NEVER touches source
-// entities). User reviews via `memesh dream list` + `dream accept`
-// or `dream reject`. Mirrors Mem0's 4-op + Graphiti's
-// invalidate-don't-delete + Anthropic AutoDream's safety promise.
+// `memesh dream` is the compatibility name for reviewing proposals already
+// staged by an agent work package or deterministic rule. It never generates
+// a proposal or invokes a model.
 const dreamCmd = program.command('dream').description('Review agent-submitted proposals: list, show, accept, or reject');
 
 dreamCmd
@@ -2004,8 +1992,8 @@ dreamCmd
       for (const p of proposals) {
         // Label transcript-sourced proposals distinctly so a reviewer knows a
         // digest was mined from a session's conversation, not clustered from
-        // existing entities — and conflict-judge proposals, whose acceptance
-        // creates a relation instead of an entity.
+        // existing entities — and retained legacy relation proposals, whose
+        // acceptance creates a relation instead of an entity.
         const srcLabel = p.kind === 'relation' ? ' (conflict)'
           : p.kind === 'product_improvement' ? ' (product improvement)'
             : p.source_kind === 'transcript' ? ' (transcript)' : '';
@@ -2261,8 +2249,8 @@ program
 //
 // CLI counterpart to the dashboard FeedbackWidget. Builds the same
 // pre-filled GitHub issue URL (title + body + labels) and opens it
-// in the default browser. Same transparency contract: install_id
-// and doctor diagnostics are only included when the user opts in.
+// in the default browser. The command previews the public body; diagnostics
+// are included by default and can be omitted with --no-diagnostics.
 program
   .command('feedback')
   .description('Open a pre-filled GitHub issue (bug / feature / question) with optional diagnostics')
@@ -2339,9 +2327,18 @@ program
     const { command, args } = feedbackBrowserOpenCommand(process.platform, url);
     try {
       const child = spawn(command, args, { stdio: 'ignore', detached: true });
-      child.unref();
-      console.log(`Opened browser to file ${fbType} issue.`);
-      console.log('Edit the title + body before submitting.');
+      const opened = await new Promise<boolean>((resolve) => {
+        child.once('spawn', () => resolve(true));
+        child.once('error', () => resolve(false));
+      });
+      if (opened) {
+        child.unref();
+        console.log(`Opened browser to file ${fbType} issue.`);
+        console.log('Edit the title + body before submitting.');
+      } else {
+        console.log('Could not open browser. URL:');
+        console.log(url);
+      }
     } catch {
       console.log('Could not open browser. URL:');
       console.log(url);

@@ -1,11 +1,9 @@
-import { getDatabase } from '../db.js';
-import type { EmbedOutcome } from './embedder.js';
 import type { RememberInput, RememberResult, RecallInput, ForgetInput, ForgetResult, LearnInput, LearnResult, Entity } from './types.js';
 export declare function remember(args: RememberInput): RememberResult;
 export declare function recall(args: RecallInput): Entity[];
 export interface RetrievalMeta {
-    mode: 'fts' | 'hybrid';
-    degraded: boolean;
+    mode: 'fts';
+    degraded: false;
     truncated: boolean;
 }
 export declare function recallEnhanced(args: RecallInput): Promise<{
@@ -25,26 +23,4 @@ export declare function setPinned(name: string, pinned: boolean): {
     pinned: boolean | null;
     found: boolean;
 };
-export interface ReindexResult {
-    processed: number;
-    embedded: number;
-    skipped: number;
-    outcomes: Record<EmbedOutcome | 'entity_missing' | 'nothing_to_embed' | 'already_staged', number>;
-    failed: number;
-    missingVectors: number;
-    missingVectorsDatabaseWide: number;
-    pendingReindexCleared: boolean;
-    generationSwapped: boolean | null;
-    abortedAfter: number | null;
-}
-export interface ReindexProgress {
-    processed: number;
-    total: number;
-}
-export interface ReindexOptions {
-    namespace?: string;
-    onProgress?: (progress: ReindexProgress) => void;
-}
-export declare function countMissingVectors(db: ReturnType<typeof getDatabase>, namespace?: string): number;
-export declare function reindex(opts?: ReindexOptions): Promise<ReindexResult>;
 //# sourceMappingURL=operations.d.ts.map

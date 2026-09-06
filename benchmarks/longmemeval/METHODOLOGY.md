@@ -87,13 +87,11 @@ Reproducing it is not possible from the current adapter, which is the point.
 
 ### 2.4 Modes
 
-Modes now name real product configurations, not adapter-internal strategies:
+Only Mode A remains a current product configuration:
 
-- **Mode A** — no embeddings stored. `recallEnhanced()` runs FTS5 + BM25 and its
-  vector supplement finds nothing to add.
-- **Mode B** — embeddings populated with `Xenova/all-MiniLM-L6-v2` (384-dim, the
-  model MeMesh's local embedder uses) through the product's own
-  `embedAndStore()`, so `recallEnhanced()`'s vector supplement can contribute.
+- **Mode A** — `recallEnhanced()` runs FTS5 + BM25.
+- **Mode B (historical)** — measured the retired ONNX/vector supplement. It is
+  preserved only in old result artifacts and cannot be run by the current adapter.
 
 **Mode C has been removed.** It applied a 60/40 weighted FTS+vector fusion that
 exists nowhere in MeMesh — it was an adapter experiment. There was no product
@@ -101,12 +99,10 @@ behaviour for it to measure. Its historical result file is retained.
 
 ### 2.5 Score Fusion
 
-Fusion is whatever `recallEnhanced()` does; the adapter does not compute scores.
-As shipped, that is: FTS5 hits ordered by BM25 and graded by position, vector
-hits appended with `vectorSimilarity(distance)` = `max(0, 1 - distance / 2)`,
-cut off at `MAX_VECTOR_DISTANCE = 1.30`, then the whole set ranked by the
-five-factor scorer (relevance 0.30, recency 0.25, frequency 0.18, confidence
-0.17, recall-impact 0.10).
+The current adapter does not compute scores. The shipped path uses FTS5 hits
+ordered by BM25 and then the five-factor scorer (relevance 0.30, recency 0.25,
+frequency 0.18, confidence 0.17, recall-impact 0.10). Historical Mode B/C
+result files document their retired vector fusion separately.
 
 ### 2.6 Ranking and Metrics
 
@@ -163,7 +159,7 @@ fresh corpus, under a keyword-retrieval task.
 - **Session truncation at 8000 chars**: Long sessions are truncated. Some answer sessions may have the relevant information in the second half.
 - **FTS5 query quality**: OR-joining individual keywords is not optimal BM25. Proximity operators or phrase matching would likely do better. This item used to sit here as an *adapter* limitation — while the shipped `search()` was AND-joining and would have been listed as a far worse limitation had anyone measured it. A limitation described next to a number it does not apply to is how a divergence stays invisible; the adapter and the product now share one implementation, so anything listed here applies to both.
 - **MiniLM-L6 embedding quality**: The 384-dim model is too small for indirect semantic matching. Vocabulary mismatches (e.g., session uses "Dr. Patel" instead of "doctor") are not recovered by this model.
-- **Mode B's vector supplement reaches the ranker and still changes nothing at the cut-off**: `vectorSearch()` used to filter hits at `MAX_VECTOR_DISTANCE = 1` while sqlite-vec returns L2 distances around 1.2–1.4 for related text, so nearly every vector hit was discarded and Mode B came out identical to Mode A to sixteen decimal places. The cut-off is now 1.30 and 14 of 500 result lists differ between the modes — but R@5 and R@10 are unchanged, and only two questions move the position of the correct session, both outside the top 10 (RESULTS.md). Read Mode B as "embeddings are not what is carrying this score", not as "embeddings are switched off". The number is reported as measured rather than adjusted.
+- **Historical Mode B's vector supplement reached the ranker and still changed nothing at the cut-off**: the retired `vectorSearch()` path filtered hits at `MAX_VECTOR_DISTANCE = 1` before the historical experiment raised it to 1.30. Fourteen of 500 result lists differed, but R@5 and R@10 were unchanged; only two correct sessions moved, both outside the top 10 (RESULTS.md). This describes the archived experiment, not current product behavior.
 
 ### 4.3 Comparison Limitations
 

@@ -20,10 +20,7 @@
 //
 // It runs with MEMESH_DIR/MEMESH_DB_PATH pointed at a throwaway directory it
 // creates and removes. Nothing it spawns is allowed to touch a real
-// ~/.memesh, and nothing it spawns is allowed to make a network call:
-// MEMESH_AUTO_UPDATE=0 and MEMESH_AUTO_DETECT_LLM=0 keep it hermetic and
-// keep a developer's real OPENAI_API_KEY/ANTHROPIC_API_KEY out of a
-// subprocess this gate spawns.
+// ~/.memesh, and nothing it spawns is allowed to update the installed package.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -280,7 +277,6 @@ async function main() {
     MEMESH_DIR: memeshDir,
     MEMESH_DB_PATH: memeshDbPath,
     MEMESH_AUTO_UPDATE: '0',
-    MEMESH_AUTO_DETECT_LLM: '0',
   };
   delete baseEnv.MEMESH_HOST_CONFIG;
 

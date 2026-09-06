@@ -62,7 +62,7 @@ describe('issue #235 — explicit external handoffs', () => {
   it('keeps Doctor diagnostics available when GitHub is blocked and exposes retry plus copy', async () => {
     vi.spyOn(globalThis, 'fetch').mockResolvedValue(response({
       status: 'FAIL',
-      checks: [{ id: 'llm', label: 'LLM', status: 'fail', summary: 'Provider unavailable', fix: 'Run `memesh doctor --probe`.' }],
+      checks: [{ id: 'database', label: 'Database', status: 'fail', summary: 'Database is not writable', fix: 'Check the database path and rerun `memesh doctor`.' }],
     }));
     const open = vi.spyOn(window, 'open').mockReturnValue(null);
     const writeText = vi.fn().mockResolvedValue(undefined);

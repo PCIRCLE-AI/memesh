@@ -39,8 +39,6 @@ describe('transcript-extractor: parsing', () => {
       { role: 'assistant', text: '第二個可見文字區塊' },
       { role: 'user', text: '使用者最後一句：再見' },
     ];
-    expect(parseVisibleConversation(path)).toEqual(expected);
-
     const snapshot = readFileSync(path);
     rmSync(path);
     expect(parseVisibleConversation(snapshot)).toEqual(expected);
@@ -57,6 +55,6 @@ describe('transcript-extractor: parsing', () => {
       { type: 'assistant', content: [{ type: 'text', text: 'Visible assistant answer' }] },
     ]);
     const expected = [{ role: 'user', text: 'Genuine user text' }, { role: 'assistant', text: 'Visible assistant answer' }];
-    expect(parseVisibleConversation(path)).toEqual(expected);
+    expect(parseVisibleConversation(readFileSync(path))).toEqual(expected);
   });
 });

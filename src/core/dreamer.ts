@@ -4,11 +4,9 @@ import type { MemeshDatabase } from '../storage/sqlite.js';
 
 import { createHash } from 'node:crypto';
 
-import fs from 'node:fs';
-
 import { getProjectName, redactSecrets } from './paths.js';
 
-import { scanTranscripts, transcriptMatchesProject } from './transcript-source.js';
+import { readTranscriptSnapshot, scanTranscripts, transcriptMatchesProject } from './transcript-source.js';
 
 import { parseVisibleConversation } from './transcript-extractor.js';
 
@@ -39,18 +37,6 @@ const COMPACTABLE_TYPES = new Set([
   'weekly_summary',
 ]);
 
-export const PROTECTED_TYPES = new Set([
-  'lesson_learned',
-  'decision',
-  'architecture',
-  'architecture_decision',
-  'pattern',
-  'technical_pattern',
-  'best_practice',
-  'release',
-  'plan',
-]);
-
 type EntityRow = {
   id: number;
   name: string;
@@ -64,9 +50,6 @@ interface ClusteredEntity {
   name: string;
   type: string;
   created_at: string;
-  signal_score: number;
-  consolidation_depth: number;
-  pinned: boolean;
   observations: string[];
 }
 
@@ -93,7 +76,7 @@ interface Cluster {
   entities: ClusteredEntity[];
 }
 
-function digestCandidates(db: MemeshDatabase, opts: { project: string }): Array<{ project: string; entity: ClusteredEntity }> {
+function digestCandidates(db: MemeshDatabase, project: string): ClusteredEntity[] {
   const windowDays = COMPACT_TIME_WINDOW_DAYS * 8;
   const cutoff = new Date(Date.now() - windowDays * 86400_000).toISOString();
 
@@ -109,10 +92,9 @@ function digestCandidates(db: MemeshDatabase, opts: { project: string }): Array<
 
   // Candidates first, grouping second. The two were one loop, which is why
   // the grouping rule was whatever the loop key happened to be.
-  const candidates: Array<{ project: string; entity: ClusteredEntity }> = [];
+  const candidates: ClusteredEntity[] = [];
   for (const row of rows) {
     if (!COMPACTABLE_TYPES.has(row.type)) continue;
-    if (PROTECTED_TYPES.has(row.type)) continue;
 
     let metadata: Record<string, unknown>;
     try { metadata = row.metadata ? JSON.parse(row.metadata) : {}; } catch { metadata = {}; }
@@ -125,23 +107,15 @@ function digestCandidates(db: MemeshDatabase, opts: { project: string }): Array<
     if (signal < COMPACT_MIN_SIGNAL || signal > COMPACT_MAX_SIGNAL) continue;
 
     const tags = (tagStmt.all(row.id) as Array<{ tag: string }>).map(t => t.tag);
-    const projectTag = tags.find(t => t.startsWith('project:')) ?? null;
-    const project = opts.project ?? (projectTag?.slice('project:'.length) ?? '_unscoped');
-    if (opts.project && projectTag !== `project:${opts.project}`) continue;
+    if (!tags.includes(`project:${project}`)) continue;
 
     const observations = (obsStmt.all(row.id) as Array<{ content: string }>).map(o => o.content);
     candidates.push({
-      project,
-      entity: {
-        id: row.id,
-        name: row.name,
-        type: row.type,
-        created_at: row.created_at,
-        signal_score: signal,
-        consolidation_depth: depth,
-        pinned,
-        observations,
-      },
+      id: row.id,
+      name: row.name,
+      type: row.type,
+      created_at: row.created_at,
+      observations,
     });
   }
 
@@ -202,8 +176,8 @@ function relatedPendingProposals(db: MemeshDatabase, cluster: Cluster): boolean 
 function writeProposal(db: MemeshDatabase, cluster: Cluster, digest: ProposedDigest): number {
   const sourceIds = cluster.entities.map(e => e.id).sort((a, b) => a - b);
   const inserted = db.prepare(`
-    INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-    VALUES (?, ?, ?, ?, NULL, 'work-package-v1')
+    INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+    VALUES (?, ?, ?, ?, 'work-package-v1')
   `).run(cluster.project, cluster.key, JSON.stringify(sourceIds), JSON.stringify(digest));
   return Number(inserted.lastInsertRowid);
 }
@@ -216,7 +190,7 @@ type WorkPackageInput =
       | { kind: 'transcript'; project: string; session_id: string; modified_at: string; source_hash: string };
   } & (
     | { action: 'submit'; result: ProposedDigest & { type: 'digest' | 'decision' | 'lesson_learned' | 'fact' } }
-    | { action: 'defer'; reason: 'insufficient_evidence' | 'not_now' | 'irrelevant' }
+    | { action: 'defer'; reason: 'not_now' }
   ));
 
 type WorkPackageRef = Extract<WorkPackageInput, { action: 'submit' | 'defer' }>['ref'];
@@ -277,21 +251,11 @@ export function executeWorkPackage(db: MemeshDatabase, input: WorkPackageInput):
         if (!session.sessionId.trim() || session.sessionId.length > 255) continue;
         if (input.action !== 'prepare' && (input.ref.kind !== 'transcript' || input.ref.session_id !== session.sessionId)) continue;
         if (represented.get(project, `transcript:${session.sessionId}`, session.sessionId)) continue;
-        let bytes: Buffer;
-        let turns: ReturnType<typeof parseVisibleConversation>;
-        let fd: number | undefined;
-        try {
-          fd = fs.openSync(session.path, 'r');
-          const before = fs.fstatSync(fd);
-          if (!before.isFile() || new Date(before.mtimeMs).toISOString() !== session.modifiedAt) continue;
-          bytes = fs.readFileSync(fd);
-          const after = fs.fstatSync(fd);
-          if (before.mtimeMs !== after.mtimeMs || before.size !== after.size || bytes.length !== after.size) continue;
-          if (!transcriptMatchesProject(bytes, cwd)) continue;
-          // The visible conversation and its SHA-256 consume this same byte snapshot.
-          turns = parseVisibleConversation(bytes).map(turn => ({ ...turn, text: redactSecrets(turn.text) }));
-        } catch { continue; }
-        finally { if (fd !== undefined) fs.closeSync(fd); }
+        const snapshot = readTranscriptSnapshot(session.path, session);
+        if (!snapshot || !transcriptMatchesProject(snapshot.bytes, cwd)) continue;
+        // The visible conversation and its SHA-256 consume this same byte snapshot.
+        const turns = parseVisibleConversation(snapshot.bytes)
+          .map(turn => ({ ...turn, text: redactSecrets(turn.text) }));
         const sources: typeof turns = [];
         let sourceBytes = 2;
         // Prefer recent visible turns, retaining their original chronological order.
@@ -304,7 +268,7 @@ export function executeWorkPackage(db: MemeshDatabase, input: WorkPackageInput):
         sources.reverse();
         if (sources.length === 0) continue;
         const ref = { kind: 'transcript' as const, project, session_id: session.sessionId,
-          modified_at: session.modifiedAt, source_hash: createHash('sha256').update(bytes).digest('hex') };
+          modified_at: session.modifiedAt, source_hash: createHash('sha256').update(snapshot.bytes).digest('hex') };
         const id = hash({ version: 'work-package-v1', ref });
         const pkg = {
           id, ref, sources,
@@ -319,8 +283,8 @@ export function executeWorkPackage(db: MemeshDatabase, input: WorkPackageInput):
         if (input.action === 'defer') return { status: 'deferred', durable_change: false, available_action: [] };
         const proposed = { ...input.result, work_package: { id, ref, result_hash: hash(input.result) } };
         const inserted = db.prepare(`INSERT INTO dream_proposals
-          (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version, source_kind, kind)
-          VALUES (?, ?, ?, ?, NULL, 'work-package-v1', 'transcript', 'digest')`).run(
+          (project, cluster_key, source_ids, proposed_digest, prompt_version, source_kind, kind)
+          VALUES (?, ?, ?, ?, 'work-package-v1', 'transcript', 'digest')`).run(
           project, `transcript:${session.sessionId}`, JSON.stringify({ sessionId: session.sessionId }), JSON.stringify(proposed));
         return { status: 'staged', proposal_id: Number(inserted.lastInsertRowid), proposal_status: 'pending', review_authority: 'human', available_action: [] };
       }
@@ -331,7 +295,7 @@ export function executeWorkPackage(db: MemeshDatabase, input: WorkPackageInput):
 
     const entityIdentity = db.prepare('SELECT created_at, metadata, namespace FROM entities WHERE id = ?');
     const entityTags = db.prepare('SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag');
-    const candidates = digestCandidates(db, { project }).map(c => c.entity);
+    const candidates = digestCandidates(db, project);
     const clusters = [...groupByIsoWeek(candidates)].map(([key, entities]) => ({ project, key, entities }));
     for (const cluster of clusters) {
       if (cluster.entities.length < COMPACT_MIN_CLUSTER_SIZE || cluster.entities.length > 100) continue;
@@ -572,7 +536,7 @@ function applyTranscriptProposal(
   const digest = JSON.parse(row.proposed_digest) as ProposedDigest;
   let source: unknown = null;
   try { source = JSON.parse(row.source_ids); } catch { /* keep null */ }
-  // Routing tag comes from the cluster/proposal, never the model — a
+  // Routing tag comes from the cluster/proposal, never the agent result — a
   // `project:` tag lifted from injected transcript text must not re-file the
   // memory under another project.
   const tags = [
@@ -583,7 +547,7 @@ function applyTranscriptProposal(
   // knowledge-graph.ts): if an entity with this name already exists, the
   // insert is skipped, the `trust: 'untrusted'` / `source_kind` metadata is
   // NEVER written, and the new observations merge into the existing row — so
-  // untrusted, LLM-paraphrased transcript text would inherit a TRUSTED
+  // untrusted, agent-generated transcript text would inherit a TRUSTED
   // entity's standing and become eligible for unprompted auto-context
   // injection, defeating the whole trust stamp. The extraction prompt asks for
   // short slug names, which collide easily. If the name is already taken (any
@@ -592,6 +556,12 @@ function applyTranscriptProposal(
   // so createEntity always inserts a FRESH, untrusted row and never merges.
   const entityName = collisionSafeName(db, digest.name, 'transcript', row.id);
   const tx = db.transaction(() => {
+    const updated = db.prepare(
+      "UPDATE dream_proposals SET status = 'applied', reviewed_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'",
+    ).run(row.id);
+    if (Number(updated.changes) !== 1) {
+      throw new Error(`proposal #${row.id} was reviewed concurrently — no longer pending`);
+    }
     kg.createEntity(entityName, digest.type, {
       observations: digest.observations,
       tags,
@@ -614,9 +584,8 @@ function applyTranscriptProposal(
         kind: 'transcript_memory',
       },
     });
-    db.prepare("UPDATE dream_proposals SET status = 'applied', reviewed_at = CURRENT_TIMESTAMP WHERE id = ?").run(row.id);
   });
-  tx();
+  tx.immediate();
   return {
     proposalId: row.id,
     // Report the name actually written (possibly collision-suffixed) so the
@@ -682,8 +651,8 @@ export function applyProposal(
   // proposed entity is the discriminator.
   const isPattern = digest.type === 'pattern_emergent';
 
-  // Which project this belongs to is decided by the cluster, not by the model.
-  // `digest.tags` comes back from the LLM, and a `project:` tag is what
+  // Which project this belongs to is decided by the cluster, not by the agent.
+  // `digest.tags` comes back from the work-package result, and a `project:` tag is what
   // tag-filtered recall routes on — so a tag lifted out of injected source text
   // could file the digest under someone else's project. Descriptive tags are
   // kept; the routing one is replaced with the cluster's own. (`metadata.project`
@@ -705,8 +674,8 @@ export function applyProposal(
   //
   // On this path the consequences are worse than on the transcript one,
   // because this transaction goes on to ARCHIVE the sources. A digest whose
-  // model-chosen slug happened to match a memory the user wrote by hand
-  // appended LLM prose to it, recorded none of `source_ids`, `proposal_id`
+  // agent-chosen slug happened to match a memory the user wrote by hand
+  // appended generated prose to it, recorded none of `source_ids`, `proposal_id`
   // or `signal_score`, archived up to five of the user's memories under it,
   // and reported success. The extraction prompt asks for short slug names,
   // which is exactly the shape that collides.
@@ -724,7 +693,7 @@ export function applyProposal(
       // `trustOverride ?? metadata.trust` for the confidence-bump gate, so
       // dropping the key without this line would have let a re-applied digest
       // lift its own confidence — caught by
-      // `tests/core/dreamer.test.ts > does not let the model lift a digest's
+      // `tests/core/dreamer.test.ts > does not let generated content lift a digest's
       // confidence on re-apply`, which is why that test exists.
       trustOverride: 'untrusted',
       metadata: {
@@ -735,7 +704,7 @@ export function applyProposal(
         project: row.project,
         // NO `metadata.trust` marker here, deliberately — and this is a
         // REVERSAL of the marker this block used to write. The reasoning it
-        // carried (LLM text paraphrased from commits/transcripts can carry
+        // carried (generated text paraphrased from commits/transcripts can carry
         // whatever a dependency or PR title printed) is sound about the
         // SOURCE, but it gated the wrong door, and the cost was measured on a
         // real graph before changing it:
@@ -755,7 +724,7 @@ export function applyProposal(
         // marker never separated reviewed from unreviewed content.
         //
         // Two policies were being set with one key. The write-side one is
-        // KEPT via `trustOverride` above (a dreamed re-assertion must not lift
+        // KEPT via `trustOverride` above (a generated re-assertion must not lift
         // confidence). The read-side one — eligibility for unprompted
         // injection — now follows human acceptance, which is the review the
         // fence was standing in for. Import (`serializer.ts`) and auto-learned
@@ -808,10 +777,9 @@ export function applyProposal(
       const taken: number[] = [];
       for (const sourceId of sourceIds) {
         // `name` is selected because archiving must also take the source out
-        // of both search indexes, and a contentless FTS5 delete needs the
+        // of the search index, and a contentless FTS5 delete needs the
         // name that was indexed. This loop used to run the status UPDATE
-        // alone, leaving a compacted source matching keyword search and
-        // occupying vector-search slots that belong to live memories.
+        // alone, leaving a compacted source matching keyword search.
         const sourceRow = db.prepare('SELECT name, metadata FROM entities WHERE id = ?').get(sourceId) as { name: string; metadata: string | null } | undefined;
         if (!sourceRow) { missingSources++; continue; }
         let meta: Record<string, unknown>;
@@ -868,7 +836,7 @@ export function applyProposal(
     // Throwing rolls the whole transaction back, so the digest entity is never
     // written; the caller then rejects the proposal outside the transaction,
     // because a proposal that can never claim anything must not stay pending
-    // and be retried — at one LLM call each time — forever.
+    // and be retried forever.
     const claimed = isPattern ? linked : ownedSourceIds.length;
     if (claimed === 0) {
       // The reason is stored on the proposal row and shown by `dream list` and
@@ -887,7 +855,7 @@ export function applyProposal(
     }
 
     // `AND status = 'pending'` — the check that let us in here ran in a SELECT
-    // outside this transaction, so a concurrent `dream run` that superseded
+    // outside this transaction, so a concurrent proposal writer that superseded
     // the row could land in between and have its rejection overwritten by
     // 'applied' while the reason column still read "Superseded by…".
     // `rejectProposal` has carried this predicate since it shipped; the apply
@@ -930,7 +898,7 @@ export function applyProposal(
         if (!/not found or not pending/.test(msg)) {
           throw new Error(
             `proposal #${err.proposalId} claimed nothing (${err.reason}), and marking it ` +
-              `rejected failed too: ${msg}. It is still pending and the next dream run will retry it.`,
+              `rejected failed too: ${msg}. It is still pending for a later retry.`,
             { cause: rejectErr }
           );
         }

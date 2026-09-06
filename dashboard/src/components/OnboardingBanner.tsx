@@ -16,8 +16,8 @@ interface SeedResult {
 }
 
 /**
- * SDD plan SPEC-4: a fresh install with 0 memories renders empty
- * charts in every tab — first-impression confusion. This banner
+ * A fresh install with 0 memories renders empty charts in every tab.
+ * This banner
  * surfaces above the tab nav whenever `entity_count === 0` AND the
  * user has not previously dismissed it.
  *
@@ -136,8 +136,8 @@ export function OnboardingBanner({ health }: Props) {
       {showOnboarding && (
         <ul style={{ fontSize: 11, lineHeight: 1.55, color: 'var(--text-3)', margin: '6px 0 0', paddingLeft: 18 }}>
           <li>{t('onboarding.coreHint')}</li>
-          <li>{t('onboarding.semanticHint')}</li>
-          <li>{t('onboarding.llmHint')}</li>
+          <li>{t('onboarding.searchHint')}</li>
+          <li>{t('onboarding.reviewHint')}</li>
         </ul>
       )}
 

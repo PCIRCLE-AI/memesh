@@ -3,11 +3,10 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
-import { openDatabase, closeDatabase, getDatabase, getStoredEmbeddingDimension, getPendingReindexInfo, readVectorGeneration, } from '../../db.js';
-import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, reindex, countMissingVectors, } from '../../core/operations.js';
+import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
+import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
-import { logCapabilities, readConfig, updateConfig, detectCapabilities, getEmbeddingDimension, } from '../../core/config.js';
-import { languageValueError } from '../../core/output-language.js';
+import { readConfig, updateConfig, } from '../../core/config.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -405,199 +404,16 @@ app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => 
 app.post('/v1/verify', (_req, res) => {
     res.status(410).json({ success: false, errorCode: 'route.retired', error: RETIRED_ROUTES['/v1/verify'] });
 });
-const API_KEY_MASK = '***';
-function maskLlmSecrets(obj) {
-    const masked = { ...obj };
-    if (masked.llm?.apiKey) {
-        masked.llm = { ...masked.llm, apiKey: API_KEY_MASK };
-    }
-    if (Array.isArray(masked.llmFallbacks) && masked.llmFallbacks.length > 0) {
-        masked.llmFallbacks = masked.llmFallbacks.map(fb => fb?.apiKey ? { ...fb, apiKey: API_KEY_MASK } : fb);
-    }
-    return masked;
-}
-function preserveFallbackApiKeys(incoming, stored) {
-    return incoming.map((entry) => {
-        const { keepKeyFrom, ...clean } = entry;
-        if (clean.apiKey === API_KEY_MASK)
-            delete clean.apiKey;
-        if (clean.apiKey)
-            return clean;
-        if (typeof keepKeyFrom === 'number' && stored && keepKeyFrom >= 0 && keepKeyFrom < stored.length) {
-            const src = stored[keepKeyFrom];
-            if (src && src.provider === clean.provider && src.apiKey) {
-                return { ...clean, apiKey: src.apiKey };
-            }
-        }
-        return clean;
-    });
-}
-app.get('/v1/config', (_req, res) => handleGet(res, () => {
-    const config = readConfig();
-    const caps = detectCapabilities(config);
-    return { config: maskLlmSecrets(config), capabilities: maskLlmSecrets(caps) };
-}));
+app.get('/v1/config', (_req, res) => handleGet(res, () => ({
+    config: ConfigBody.strip().parse(readConfig()),
+})));
 const ConfigBody = z.object({
-    llm: z.union([
-        z.object({
-            provider: z.enum(['anthropic', 'openai', 'ollama']),
-            model: z.string().optional(),
-            apiKey: z.string().optional(),
-        }),
-        z.null(),
-    ]).optional(),
-    llmFallbacks: z.array(z.object({
-        provider: z.enum(['anthropic', 'openai', 'ollama']),
-        model: z.string().optional(),
-        apiKey: z.string().optional(),
-        keepKeyFrom: z.number().int().nonnegative().nullable().optional(),
-    })).optional(),
-    embedder: z.union([
-        z.object({ provider: z.enum(['openai', 'ollama']) }),
-        z.null(),
-    ]).optional(),
     autoCapture: z.boolean().optional(),
     sessionLimit: z.number().int().min(1).max(100).optional(),
     autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
-    language: z.string().trim().min(1).max(60)
-        .refine((v) => languageValueError(v) === null, {
-        message: 'language must not contain line breaks or other control characters',
-    })
-        .optional(),
     setupCompleted: z.boolean().optional(),
 }).strict();
-app.post('/v1/config', (req, res) => handlePost(ConfigBody, req, res, (data) => {
-    const before = readConfig();
-    if (data.embedder !== undefined && reindexJob?.state === 'running') {
-        throw new Error('The search index is being rebuilt. Wait for it to finish before changing the embedding provider.');
-    }
-    if (data.llm && data.llm.apiKey === API_KEY_MASK) {
-        if (before.llm && before.llm.provider === data.llm.provider && before.llm.apiKey) {
-            data.llm.apiKey = before.llm.apiKey;
-        }
-        else {
-            delete data.llm.apiKey;
-        }
-    }
-    if (data.llmFallbacks) {
-        data.llmFallbacks = preserveFallbackApiKeys(data.llmFallbacks, before.llmFallbacks);
-    }
-    const updated = updateConfig(data);
-    if (data.embedder && before.embedder?.provider !== data.embedder.provider) {
-        reindexJob = null;
-    }
-    return maskLlmSecrets(updated);
-}));
-let reindexJob = null;
-function safeReindexDiagnostic(message) {
-    return redactUserPaths(redactSecrets(message));
-}
-function reindexStatus() {
-    const config = readConfig();
-    const embeddings = detectCapabilities(config).embeddings;
-    const configuredProvider = embeddings === 'openai' || embeddings === 'ollama'
-        ? embeddings
-        : null;
-    const pendingReindex = getPendingReindexInfo();
-    const generationRead = readVectorGeneration();
-    const generation = generationRead.state === 'unreadable'
-        ? { ...generationRead, detail: safeReindexDiagnostic(generationRead.detail) }
-        : generationRead;
-    const configuredDimension = getEmbeddingDimension(config);
-    const storedDimension = getStoredEmbeddingDimension();
-    const missingVectors = countMissingVectors(getDatabase());
-    const retryNeeded = pendingReindex !== null
-        || generation.state !== 'none'
-        || configuredDimension !== storedDimension
-        || missingVectors > 0;
-    const status = reindexJob?.state === 'running'
-        ? 'running'
-        : reindexJob?.state === 'failed'
-            ? 'failed'
-            : retryNeeded
-                ? 'retry-needed'
-                : reindexJob?.state === 'succeeded'
-                    ? 'succeeded'
-                    : 'idle';
-    return {
-        status,
-        job: reindexJob === null ? null : {
-            id: reindexJob.id,
-            state: reindexJob.state,
-            processed: reindexJob.processed,
-            total: reindexJob.total,
-            startedAt: reindexJob.startedAt,
-            finishedAt: reindexJob.finishedAt,
-        },
-        configuredProvider,
-        configuredDimension,
-        storedDimension,
-        pendingReindex,
-        missingVectors,
-        generation,
-        result: reindexJob?.result ?? null,
-        error: reindexJob?.error ?? null,
-    };
-}
-app.get('/v1/reindex', (_req, res) => handleGet(res, reindexStatus));
-app.post('/v1/reindex', (_req, res) => {
-    if (reindexJob?.state !== 'running') {
-        reindexJob = {
-            id: randomBytes(8).toString('hex'),
-            state: 'running',
-            processed: 0,
-            total: 0,
-            startedAt: new Date().toISOString(),
-            finishedAt: null,
-            result: null,
-            error: null,
-        };
-        const job = reindexJob;
-        void reindex({
-            onProgress: ({ processed, total }) => {
-                job.processed = processed;
-                job.total = total;
-            },
-        }).then((result) => {
-            job.result = result;
-            const incomplete = result.failed > 0 || result.generationSwapped === false;
-            job.state = incomplete ? 'failed' : 'succeeded';
-            if (incomplete) {
-                job.error = 'The new search index is incomplete. The previous index is still active; retry the rebuild.';
-            }
-            job.finishedAt = new Date().toISOString();
-        }).catch((err) => {
-            job.state = 'failed';
-            job.error = safeReindexDiagnostic(err instanceof Error ? err.message : 'The rebuild failed.');
-            job.finishedAt = new Date().toISOString();
-        });
-    }
-    res.status(202).json({ success: true, data: reindexStatus() });
-});
-const ConfigTestBody = z.object({
-    provider: z.enum(['anthropic', 'openai', 'ollama']),
-    apiKey: z.string().max(500).optional(),
-    host: z.string().max(500).optional(),
-    model: z.string().min(1).max(200).optional(),
-    fallbackIndex: z.number().int().nonnegative().optional(),
-});
-app.post('/v1/config/test', (req, res) => handlePost(ConfigTestBody, req, res, async (data) => {
-    const { probeProvider } = await import('../../core/llm-validator.js');
-    const { provider, host, model, fallbackIndex } = data;
-    let { apiKey } = data;
-    if (!apiKey && (provider === 'anthropic' || provider === 'openai')) {
-        const existing = readConfig();
-        if (typeof fallbackIndex === 'number') {
-            const fb = existing.llmFallbacks?.[fallbackIndex];
-            if (fb && fb.provider === provider && fb.apiKey)
-                apiKey = fb.apiKey;
-        }
-        else if (existing.llm?.provider === provider && existing.llm.apiKey) {
-            apiKey = existing.llm.apiKey;
-        }
-    }
-    return probeProvider(provider, apiKey, host, model);
-}, { errorStatus: 500, errorCode: 'server.internal' }));
+app.post('/v1/config', (req, res) => handlePost(ConfigBody, req, res, (data) => ConfigBody.strip().parse(updateConfig(data))));
 app.get('/v1/update-status', (req, res) => handleGet(res, async () => {
     const cached = req.query.cached === '1' || req.query.cached === 'true';
     const install = getCurrentInstallChannel({ packageRoot });
@@ -672,18 +488,6 @@ app.post('/v1/demo/reset', (_req, res) => handleGet(res, async () => {
 }));
 app.get('/v1/projects', (_req, res) => handleGet(res, () => computeProjects(getDatabase())));
 app.get('/v1/patterns', (_req, res) => handleGet(res, () => computePatterns(getDatabase())));
-const TelemetryQuerySchema = z.object({
-    window: z.coerce.number().int().min(1).max(365).default(30),
-});
-app.get('/v1/telemetry', (req, res) => {
-    const query = parseQuery(TelemetryQuerySchema, req, res);
-    if (!query)
-        return;
-    handleGet(res, async () => {
-        const { summariseTelemetry } = await import('../../core/llm-telemetry.js');
-        return { window_days: query.window, summaries: summariseTelemetry(query.window) };
-    });
-});
 const DreamProposalsQuerySchema = z.object({
     status: z.enum(['pending', 'applied', 'rejected', 'all']).default('pending'),
 });
@@ -704,7 +508,7 @@ app.get('/v1/dream/proposals/:id', (req, res) => {
     if (id === null)
         return;
     handleGet(res, () => {
-        const row = getDatabase().prepare('SELECT id, project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version, status, reason, created_at, reviewed_at, source_kind, kind FROM dream_proposals WHERE id = ?').get(id);
+        const row = getDatabase().prepare('SELECT id, project, cluster_key, source_ids, proposed_digest, prompt_version, status, reason, created_at, reviewed_at, source_kind, kind FROM dream_proposals WHERE id = ?').get(id);
         if (!row) {
             throw new HttpError(404, 'resource.not-found', `proposal #${id} not found`);
         }
@@ -721,27 +525,6 @@ app.get('/v1/dream/proposals/:id', (req, res) => {
         return { ...row, proposed_digest: digest, source_ids: sourceIds };
     });
 });
-const DreamRunBody = z.object({
-    project: z.string().min(1).max(100).optional(),
-    windowDays: z.number().int().min(1).max(90).default(14),
-    maxLlmCalls: z.number().int().min(1).max(20).default(5),
-    validate: z.boolean().default(false),
-});
-app.post('/v1/dream/run', (req, res) => handlePost(DreamRunBody, req, res, async (data) => {
-    const { runDreamer } = await import('../../core/dreamer.js');
-    const caps = detectCapabilities();
-    const llm = caps.llm;
-    if (!llm) {
-        throw new HttpError(400, 'llm.not-configured', 'No LLM configured — dream run requires Smart Mode. Configure a provider in Settings.');
-    }
-    return runDreamer(getDatabase(), llm, {
-        project: data.project,
-        windowDays: data.windowDays,
-        maxLlmCalls: data.maxLlmCalls,
-        fallbacks: caps.llmFallbacks,
-        validateBeforeStage: data.validate,
-    });
-}, { allowEmptyBody: true, errorStatus: 500, errorCode: 'server.internal' }));
 app.post('/v1/dream/proposals/:id/accept', (req, res) => {
     const id = requireIdParam(req, res);
     if (id === null)
@@ -882,7 +665,6 @@ export function startServer(host = HOST, port = PORT, opts) {
         console.error('  memesh (will create a fresh database)\n');
         throw new Error(`Database initialization failed: ${message}`, { cause: err });
     }
-    logCapabilities();
     const injectedUpdateSeam = Boolean(opts?.updateCheckImpl || opts?.lastUpdateCheckImpl);
     const updateCheckWanted = opts?.autoUpdateCheck === true || injectedUpdateSeam;
     if (updateCheckWanted && !process.env.MEMESH_SKIP_UPDATE_CHECK) {

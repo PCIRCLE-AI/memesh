@@ -12,8 +12,7 @@ import { t, getLocale } from '../lib/i18n';
  * **Not measured is not zero.** A tile whose instrument has never run says
  * so, in words, in `--neutral-soft`. It never renders 0, because 0 is a
  * measurement — "we looked and found none" — and printing it from an
- * absence claims an observation nobody made. This is the same rule
- * `retrieval.degraded` enforces on the recall side.
+ * absence claims an observation nobody made.
  *
  * **A number arrives with its denominator.** "5 critical lessons" is a
  * different claim from "5 of the 12 that anyone has classified", and on a

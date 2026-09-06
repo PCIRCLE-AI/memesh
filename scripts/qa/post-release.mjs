@@ -200,7 +200,6 @@ function isolatedDataEnv(baseEnv, dataDir) {
     MEMESH_DIR: dataDir,
     MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'),
     MEMESH_AUTO_CAPTURE: 'false',
-    MEMESH_AUTO_DETECT_LLM: '0',
   };
 }
 

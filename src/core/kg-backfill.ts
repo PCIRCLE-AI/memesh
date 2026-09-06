@@ -1,13 +1,10 @@
 // =============================================================================
-// Knowledge-graph relation backfill — non-LLM heuristics
+// Knowledge-graph relation backfill — deterministic heuristics
 // =============================================================================
 //
 // Diagnostic at session start: 1191 of 1328 active entities (89.7%)
-// had zero relations. Auto-tagger and dreamer both build relations
-// IN PRINCIPLE but only when LLM is available AND on entities they
-// process — the long tail of pre-existing entities never gets touched.
-// This module fills the gap with cheap, deterministic heuristics that
-// run without any LLM:
+// had zero relations. This module fills the gap with cheap deterministic
+// heuristics that also cover pre-existing entities:
 //
 //   1. tag co-occurrence: two active entities sharing ≥ 2 topical
 //      tags get a `related-to` edge.
@@ -22,8 +19,7 @@
 //   entity that shares them produces a cartesian explosion (644 x 644
 //   = 207k edges from session_end alone). The TOPICAL_TAG filter
 //   keeps:
-//     - tags starting with `topic:` or `tech:` (auto-tagger
-//       canonical prefixes — see src/core/auto-tagger.ts)
+//     - tags starting with the established `topic:` or `tech:` prefixes
 //     - bare tags that are not in the bookkeeping blocklist
 //   and rejects everything else.
 
@@ -33,9 +29,8 @@ import { WORK_LAYER_TYPES, EVIDENCE_LAYER_TYPES } from './work-topology.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 
 const SYSTEM_TAG_PREFIXES = [
-  // `cluster:` is the dreamer's digest label. It replaced `week:` when
-  // clustering moved from ISO weeks to embedding distance; `week:` stays for
-  // digests written before that. Both are bookkeeping, not topics — without
+  // `cluster:` and `week:` are legacy digest labels. Both remain
+  // bookkeeping, not topics — without
   // the prefix here `isTopicalTag` falls through to the bare-tag branch and
   // starts drawing relations between digests that merely share a label.
   'project:', 'week:', 'cluster:', 'severity:', 'scope:', 'source:', 'date:',

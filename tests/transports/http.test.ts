@@ -218,23 +218,17 @@ describe('HTTP Transport: POST /v1/recall', () => {
     const found = res.body.data.entities.find((e: any) => e.name === 'recall-target');
     expect(found).toBeDefined();
     // R2: every recall envelope reports how it was answered.
-    expect(['fts', 'hybrid']).toContain(res.body.data.retrieval.mode);
-    expect(typeof res.body.data.retrieval.degraded).toBe('boolean');
+    expect(res.body.data.retrieval.mode).toBe('fts');
+    expect(res.body.data.retrieval.degraded).toBe(false);
     expect(typeof res.body.data.retrieval.truncated).toBe('boolean');
   });
 
-  it('returns array (possibly empty) for no-match query', async () => {
-    // Recall supplements FTS5 with sqlite-vec when a neural embedder is
-    // available, so a query that misses FTS5 can still surface near-neighbour
-    // entities under the MAX_VECTOR_DISTANCE threshold. Asserting toHaveLength(0)
-    // is brittle in that path — the API contract here is "always return a
-    // valid JSON object {entities: [...]} envelope, never a 500" and a generous
-    // upper bound on count.
+  it('returns an empty array for a no-match query', async () => {
     const res = await req('POST', '/v1/recall', { query: 'no-match-xyz-999' });
     expect(res.status).toBe(200);
     expect(res.body.data.entities).toBeDefined();
     expect(Array.isArray(res.body.data.entities)).toBe(true);
-    expect(res.body.data.entities.length).toBeLessThanOrEqual(20);
+    expect(res.body.data.entities).toEqual([]);
     for (const e of res.body.data.entities) {
       expect(typeof e.name).toBe('string');
       expect(typeof e.type).toBe('string');

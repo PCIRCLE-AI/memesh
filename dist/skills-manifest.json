@@ -58,8 +58,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "ad77ca38267c0192640b2b48627f56ccc16bdd9759506eddae8c99d386257786",
-      "bytes": 24956
+      "sha256": "214266259d5aff576997bfffddf699f05804f0957c48355f8fa15892fce7b888",
+      "bytes": 24862
     },
     {
       "path": "scripts/hooks/_generated/sqlite.js",
@@ -88,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "3e3418b25247ad8f5008b240edce996362ad531643eeafe28129737853b1e01f",
-      "bytes": 43569
+      "sha256": "9c26746a196b043a591a9c04dd88bdccf819c922590b082a764d376267ab6c86",
+      "bytes": 43011
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
@@ -118,13 +118,13 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "9883ce003e9fa4326cfd71699d56365d6ec72e9f866b27566067c9d0c871b9b0",
-      "bytes": 62069
+      "sha256": "10bac8f99e129ecff575eb70baf629d0f892c1ea1d9c4813443094a65aaebeb0",
+      "bytes": 62528
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "71c9a38f7b1c0b3f84ec8f51d5b5c79e9cca5bb6ae84b72d2b6bccc77f0fd38d",
-      "bytes": 49691
+      "sha256": "e6489ebc35aa02b357bc528c476ab7eedfdf644acde2c2df4cb738cce473bef1",
+      "bytes": 32534
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
@@ -133,13 +133,13 @@
     },
     {
       "path": "skills/memesh-review/SKILL.md",
-      "sha256": "64231229f814fc29c4d8e98b72ebf855c443bea923cc3f2f29d5fa9949a317ea",
-      "bytes": 3750
+      "sha256": "f26a8c7a4b2f21b5939d0470dd89113944326a4a9adbcd6717f8deddf1c11248",
+      "bytes": 3878
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "23009308df1b422f0ec2b4285cbe34adf4b44a1c43f9ba7b6ee2a101a3b9b050",
-      "bytes": 18158
+      "sha256": "39003640c12a7bd7db3fb4e80196e5299f7e5bfe0fbd6ae5738b0b4fa1c94fc9",
+      "bytes": 18099
     }
   ]
 }

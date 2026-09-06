@@ -1,13 +1,8 @@
 /**
  * The release scripts must not touch the maintainer's real data to do their job.
  *
- * `release-verify.sh` used to strip the `llm` block out of
- * `~/.memesh/config.json` so the suite would run without credentials, park the
- * only copy of live API keys in a world-readable `/tmp` file, and rely on an
- * EXIT trap to put them back. A SIGKILL, a crash between the two writes, or a
- * `/tmp` sweep lost them. What the suite needs is an environment with NO LLM
- * credentials — not this machine's environment minus its credentials — so it
- * now runs under a throwaway HOME, which has no config to strip.
+ * A release check once rewrote `~/.memesh/config.json` and relied on an EXIT
+ * trap to restore it. The suite now runs under a throwaway HOME instead.
  *
  * This is a shell script, so there is no unit to call. The assertions are
  * structural, and they are the ones that matter: the regression is not "the
@@ -24,6 +19,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { buildIsolatedRuntimeEnv, buildIsolatedSuiteEnv } from '../scripts/lib/isolated-env.mjs';
+import { findOrphanedTypeScriptOutputs } from '../scripts/check-generated-mirror.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -139,6 +135,37 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       text.slice(buildCatchStart, buildCatchEnd),
       'a failed build no longer fails the gate: it falls through to the diff, which is empty on any tree whose committed output already matches HEAD',
     ).toContain('process.exit(1)');
+  });
+
+  it('the build-output gate detects compiler artifacts whose source module was deleted', () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-generated-parity-'));
+    try {
+      fs.mkdirSync(path.join(fixture, 'src/core'), { recursive: true });
+      fs.mkdirSync(path.join(fixture, 'dist/core'), { recursive: true });
+      fs.mkdirSync(path.join(fixture, 'dist/cli/assets'), { recursive: true });
+      fs.writeFileSync(path.join(fixture, 'src/core/kept.ts'), 'export const kept = true;\n');
+      for (const family of ['kept', 'deleted']) {
+        for (const suffix of ['.js', '.js.map', '.d.ts', '.d.ts.map']) {
+          fs.writeFileSync(path.join(fixture, 'dist/core', `${family}${suffix}`), 'generated');
+        }
+      }
+      fs.writeFileSync(path.join(fixture, 'dist/cli/assets/d3.v7.min.js'), 'asset');
+      fs.writeFileSync(path.join(fixture, 'dist/skills-manifest.json'), '{}');
+
+      expect(findOrphanedTypeScriptOutputs(fixture)).toEqual([{
+        family: 'core/deleted',
+        files: [
+          'core/deleted.d.ts', 'core/deleted.d.ts.map',
+          'core/deleted.js', 'core/deleted.js.map',
+        ],
+      }]);
+      for (const file of fs.readdirSync(path.join(fixture, 'dist/core'))) {
+        if (file.startsWith('deleted.')) fs.rmSync(path.join(fixture, 'dist/core', file));
+      }
+      expect(findOrphanedTypeScriptOutputs(fixture)).toEqual([]);
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it('installs dashboard deps from the lockfile, not the ranges', () => {
@@ -290,7 +317,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     const releaseJob = ci.match(/\n {2}release-verify:\n[\s\S]*?(?=\n {2}[A-Za-z0-9_-]+:\n|$)/)?.[0] ?? '';
     expect(releaseJob).not.toBe('');
     expect(releaseJob).toMatch(/timeout-minutes:\s*40/);
-    expect(releaseJob).toContain('bash scripts/release-verify.sh --skip-llm-probe');
+    expect(releaseJob).toContain('bash scripts/release-verify.sh');
+    expect(releaseJob).not.toContain('--skip-llm-probe');
     expect(releaseJob).not.toContain('--quick');
   });
 
@@ -483,52 +511,9 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(text).not.toMatch(/MEMESH_DB_PATH:/);
   });
 
-  it('removes ambient provider settings without printing their values', () => {
-    const providerKeys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST'];
-    // The deletions used to be inlined here; they now live in the one helper
-    // every isolating script shares. The spawn below is the assertion that
-    // actually matters either way — it runs the real runner with sentinel
-    // credentials exported and proves none of them reach the child.
-    const lib = read('scripts/lib/isolated-env.mjs');
-    for (const key of providerKeys) {
-      expect(lib).toContain(`delete isolatedEnv.${key}`);
-    }
-
-    const sentinels = {
-      ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
-      OPENAI_API_KEY: 'ambient-openai-sentinel',
-      OLLAMA_HOST: 'http://ambient-ollama.invalid',
-    };
-    const result = spawnSync(
-      process.execPath,
-      [
-        path.join(repoRoot, 'scripts/run-tests-isolated.mjs'),
-        'tests/fixtures/isolated-provider-env.probe.test.ts',
-        '--maxWorkers=1',
-      ],
-      {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          ...sentinels,
-          MEMESH_PROVIDER_ISOLATION_PROBE: '1',
-        },
-      },
-    );
-    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-    expect(result.status, output).toBe(0);
-    for (const value of Object.values(sentinels)) {
-      expect(output).not.toContain(value);
-    }
-  });
-
-  it('buildIsolatedRuntimeEnv strips provider variables, and every packaged/dashboard smoke that spawns the runtime uses it', () => {
-    // GitHub issue #271: the packaged Dashboard E2E gave the child runtime
-    // an isolated MEMESH_DB_PATH but otherwise spread the maintainer's real
-    // process.env, so a shell with a configured provider made the "isolated"
-    // server start in Smart Mode against a real LLM. buildIsolatedRuntimeEnv
-    // is the fix, extracted into a pure function (scripts/lib/isolated-env.mjs,
+  it('buildIsolatedRuntimeEnv strips common credentials, and every packaged/dashboard smoke uses it', () => {
+    // buildIsolatedRuntimeEnv is extracted into a pure function
+    // (scripts/lib/isolated-env.mjs,
     // shared by both smokes) so this test can call it directly instead of
     // running the full smoke (npm pack + install + Playwright).
     //
@@ -542,23 +527,10 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     // `router.token`. Moving the helper to scripts/lib/ and asserting every
     // smoke imports it (below) is what keeps this from drifting apart again.
 
-    // Derive the provider variable list from detectFromEnv() itself, rather
-    // than re-typing it here, so a provider added to config.ts without
-    // updating the shared helper's delete list fails this test instead of
-    // leaking silently. Falls back to nothing if the function is ever
-    // rewritten in a way the regex can't follow — the assertions right
-    // after this catch that case loudly instead of the loop passing
-    // vacuously over an empty list.
-    const configSource = read('src/core/config.ts');
-    const detectFromEnvBody = configSource.match(/function detectFromEnv\(\)[^{]*\{([\s\S]*?)\n\}/)?.[1] ?? '';
-    const providerKeys = [...new Set(
-      [...detectFromEnvBody.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1])
-    )];
-    expect(providerKeys.length).toBeGreaterThan(0);
-    expect(providerKeys).toEqual(expect.arrayContaining(['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST']));
+    const credentialKeys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST'];
 
     const libSource = read('scripts/lib/isolated-env.mjs');
-    for (const key of providerKeys) {
+    for (const key of credentialKeys) {
       expect(libSource).toContain(`delete isolatedEnv.${key}`);
     }
 
@@ -636,7 +608,6 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       OLLAMA_HOST: 'http://ambient-ollama.invalid',
       OPENAI_API_KEY: 'ambient-openai-sentinel',
       ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
-      MEMESH_AUTO_DETECT_LLM: '1',
     };
 
     // Nothing about building this env should print anything — the isolated
@@ -659,19 +630,15 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(env.USERPROFILE).toBe(paths.runtimeHome);
     expect(env.MEMESH_DIR).toBe(paths.memeshDir);
     expect(env.MEMESH_DB_PATH).toBe(paths.dbPath);
-    expect(env.MEMESH_AUTO_DETECT_LLM).toBe('0');
-
-    // Every provider variable detectFromEnv() reads is gone, not merely
-    // overwritten. Asserted key by key (never the whole `env` object) so a
+    // Common credential variables are gone, not merely overwritten. Asserted
+    // key by key (never the whole `env` object) so a
     // failure here can never print a sentinel — or, on a real machine, a
     // real credential — into the test log.
-    for (const key of providerKeys) {
+    for (const key of credentialKeys) {
       expect(env[key]).toBeUndefined();
     }
 
-    // This isolates the provider surface, not the whole environment —
-    // unrelated ambient state (PATH, needed to spawn npm/node at all)
-    // still passes through.
+    // Unrelated ambient state (PATH, needed to spawn npm/node) still passes through.
     expect(env.PATH).toBe(pollutedBaseEnv.PATH);
   });
 

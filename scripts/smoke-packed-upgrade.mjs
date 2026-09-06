@@ -57,7 +57,6 @@ function isolatedNpmEnv({ home, memeshDir, prefix, cache, userconfig }) {
     HOME: home,
     MEMESH_DIR: memeshDir,
     MEMESH_AUTO_CAPTURE: 'false',
-    MEMESH_AUTO_DETECT_LLM: '0',
     npm_config_prefix: prefix,
     npm_config_cache: cache,
     npm_config_userconfig: userconfig,
