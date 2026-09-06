@@ -5,7 +5,7 @@ import path from 'path';
 import { openDatabase, closeDatabase, getDatabase } from '../src/db.js';
 import { KnowledgeGraph } from '../src/knowledge-graph.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
-import { applyProposal, getProposalDetail, listProposals } from '../src/core/dreamer.js';
+import { applyProposal, getProposalDetail, listProposals, runDreamer } from '../src/core/dreamer.js';
 import * as llmClient from '../src/core/llm-client.js';
 import * as embedder from '../src/core/embedder.js';
 import * as vectorIndex from '../src/storage/vector-index.js';
@@ -307,6 +307,83 @@ describe('work_package', () => {
     expect(db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(containedId)).toEqual(containedRow);
     expect(db.prepare('SELECT status FROM dream_proposals WHERE id = ?').get(containedId)).toMatchObject({ status: 'pending' });
     expect(db.prepare("SELECT count(*) AS n FROM dream_proposals WHERE status = 'pending'").get()).toMatchObject({ n: 1 });
+  });
+
+  it('legacy dreamer rechecks pending MCP work after awaiting its provider', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const db = getDatabase();
+    let entered!: () => void;
+    let release!: (output: string) => void;
+    const providerEntered = new Promise<void>(resolve => { entered = resolve; });
+    const providerOutput = new Promise<string>(resolve => { release = resolve; });
+    const provider = vi.spyOn(llmClient, 'callLLM').mockImplementation(() => {
+      entered();
+      return providerOutput;
+    });
+    const network = vi.fn(() => { throw new Error('unexpected network request'); });
+    vi.stubGlobal('fetch', network);
+    const running = runDreamer(db, { provider: 'ollama', model: 'synthetic-local' }, { project: 'work-project' });
+    try {
+      await providerEntered;
+      const staged = payload(await submit(pkg));
+      expect(staged.status).toBe('staged');
+      const before = db.prepare('SELECT * FROM dream_proposals').all();
+      // Only statements after the MCP submission belong to the final legacy stage.
+      const exec = vi.spyOn(db, 'exec');
+      release(JSON.stringify({ action: 'ADD', digest: result }));
+      const dreamed = await running;
+      expect(dreamed.proposalsCreated).toBe(0);
+      expect(dreamed.llmCalls).toBe(1);
+      expect(dreamed.skipped.some(skip => skip.reason.includes('appeared during generation'))).toBe(true);
+      expect(exec).toHaveBeenCalledWith('BEGIN IMMEDIATE');
+      expect(db.prepare('SELECT * FROM dream_proposals').all()).toEqual(before);
+      expect(db.prepare('SELECT status, prompt_version FROM dream_proposals').all()).toEqual([
+        { status: 'pending', prompt_version: 'work-package-v1' },
+      ]);
+      expect(provider).toHaveBeenCalledTimes(1);
+      expect(network).not.toHaveBeenCalled();
+    } finally {
+      release(JSON.stringify({ action: 'NOOP' }));
+      await running;
+    }
+  });
+
+  it.each([false, true])('legacy dreamer preserves pending work-package review when a cluster grows (identical recovery: %s)', async (recovery) => {
+    const ids = seed();
+    const db = getDatabase();
+    const staged = payload(await submit((await prepare()).package));
+    const original = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(staged.proposal_id);
+    const sixth = new KnowledgeGraph(db).createEntity('work-project-commit-5', 'commit', {
+      observations: ['Parser cleanup step 5 completed.'], tags: ['project:work-project'],
+    });
+    let narrowerLegacyId: number | undefined;
+    if (recovery) {
+      const insert = db.prepare(`INSERT INTO dream_proposals
+        (project, cluster_key, source_ids, proposed_digest, prompt_version)
+        VALUES ('work-project', 'legacy-recovery', ?, ?, 'v1')`);
+      insert.run(JSON.stringify([...ids, sixth]), JSON.stringify(result));
+      narrowerLegacyId = Number(insert.run(JSON.stringify(ids.slice(0, 2)), JSON.stringify(result)).lastInsertRowid);
+    }
+    const rowsBefore = db.prepare('SELECT count(*) AS n FROM dream_proposals').get();
+    const provider = vi.spyOn(llmClient, 'callLLM').mockResolvedValue(JSON.stringify({ action: 'ADD', digest: result }));
+    const network = vi.fn(() => { throw new Error('unexpected network request'); });
+    vi.stubGlobal('fetch', network);
+    const dreamed = await runDreamer(db, { provider: 'ollama', model: 'synthetic-local' }, { project: 'work-project' });
+    expect(dreamed.proposalsCreated).toBe(0);
+    expect(dreamed.llmCalls).toBe(0);
+    expect(provider).not.toHaveBeenCalled();
+    expect(network).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(staged.proposal_id)).toEqual(original);
+    expect(db.prepare('SELECT status FROM dream_proposals WHERE id = ?').get(staged.proposal_id)).toMatchObject({ status: 'pending' });
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual(rowsBefore);
+    if (recovery) {
+      expect(dreamed.skipped.some(skip => skip.reason.includes('pending proposal already exists'))).toBe(true);
+      // Legacy recovery still retires legacy subsets; the human-owned package is excluded.
+      expect(db.prepare('SELECT status FROM dream_proposals WHERE id = ?').get(narrowerLegacyId!)).toMatchObject({ status: 'rejected' });
+    } else {
+      expect(dreamed.skipped.some(skip => skip.reason.includes('overlaps pending proposal'))).toBe(true);
+    }
   });
 });
 

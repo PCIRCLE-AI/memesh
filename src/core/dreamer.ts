@@ -394,10 +394,24 @@ export async function runDreamer(
       // that self-rejection and, once the predicate became strict, did nothing
       // but disable superseding on the default install: measured, three runs
       // left three pending proposals and paid an LLM call for each.
-      db.transaction(() => {
+      const staged = db.transaction(() => {
+        // A different MCP process may have staged work while generation or
+        // validation awaited its provider. Hold the write lock through this
+        // final check and insertion so neither can race a new submission.
+        const blocking = relatedPendingProposals(db, cluster).filter(r => r.kind !== 'contained');
+        if (blocking.length > 0) {
+          result.skipped.push({
+            reason: `pending proposal ${blocking.map(r => `#${r.id}`).join(', ')} appeared during generation — review it before generating a replacement`,
+            project: cluster.project,
+            clusterKey: cluster.key,
+          });
+          return false;
+        }
         writeProposal(db, cluster, digest, llm, validationWarnings);
         retired += retireSupersededBy(db, cluster);
-      })();
+        return true;
+      }).immediate();
+      if (!staged) continue;
     }
     result.proposalsCreated++;
   }
@@ -798,10 +812,12 @@ function isoWeekKey(d: Date): string {
  */
 function retireSupersededBy(db: MemeshDatabase, cluster: Cluster): number {
   const covered = new Set(cluster.entities.map(e => e.id));
+  // Human-owned work packages remain pending even during identical-cluster recovery.
   const rows = db.prepare(
     `SELECT id, source_ids FROM dream_proposals
      WHERE status = 'pending'
        AND project = ?
+       AND COALESCE(prompt_version, '') != 'work-package-v1'
        AND (source_kind IS NULL OR source_kind = 'entities')
        AND cluster_key NOT LIKE 'pattern:%'
        AND kind != 'relation'`
@@ -844,9 +860,9 @@ function retireSupersededBy(db: MemeshDatabase, cluster: Cluster): number {
  * `identical`   — the same entries; the pending one already IS the answer.
  * `contained`   — the pending one covers strictly fewer entries, so a digest
  *                 for this cluster supersedes it (see `retireSupersededBy`).
- * `overlapping` — they share entries but neither contains the other, or the
- *                 pending one covers MORE. Nothing here can decide that
- *                 safely, so it is surfaced instead.
+ * `overlapping` — shared entries that cannot be replaced automatically: partial
+ *                 overlap, a larger pending proposal, or a contained work
+ *                 package whose disposition belongs to the human reviewer.
  */
 type ProposalRelation = { kind: 'identical' | 'contained' | 'overlapping'; id: number };
 
@@ -863,12 +879,12 @@ function relatedPendingProposals(db: MemeshDatabase, cluster: Cluster): Proposal
   // conflict judge) carry a two-id array that would read as a tiny digest
   // here — hence the kind guard in the query.
   const rows = db.prepare(
-    `SELECT id, source_ids FROM dream_proposals
+    `SELECT id, source_ids, prompt_version FROM dream_proposals
      WHERE project = ? AND status = 'pending'
        AND (source_kind IS NULL OR source_kind = 'entities')
        AND cluster_key NOT LIKE 'pattern:%'
        AND kind != 'relation'`
-  ).all(cluster.project) as Array<{ id: number; source_ids: string }>;
+  ).all(cluster.project) as Array<{ id: number; source_ids: string; prompt_version: string | null }>;
 
   const out: ProposalRelation[] = [];
   for (const row of rows) {
@@ -881,7 +897,7 @@ function relatedPendingProposals(db: MemeshDatabase, cluster: Cluster): Proposal
     if (shared.length === 0) continue;
     if (numeric.length === sourceIds.length && shared.length === sourceIds.length) {
       out.push({ kind: 'identical', id: row.id });
-    } else if (shared.length === numeric.length) {
+    } else if (shared.length === numeric.length && row.prompt_version !== 'work-package-v1') {
       out.push({ kind: 'contained', id: row.id });
     } else {
       out.push({ kind: 'overlapping', id: row.id });
