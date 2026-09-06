@@ -122,7 +122,7 @@ export function main() {
 
   let diff;
   try {
-    diff = execFileSync('git', ['--no-pager', 'diff', '--stat', '--', ...BUILD_OUTPUTS], {
+    diff = execFileSync('git', ['--no-pager', 'diff', '--stat', 'HEAD', '--', ...BUILD_OUTPUTS], {
       encoding: 'utf8',
     });
   } catch (err) {

@@ -385,7 +385,10 @@ function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cac
       `failed auto-update did not name the stage it failed at: ${failed.stderr}`);
     assert.equal(fs.existsSync(autoUpdate.lockPath), false, 'failed auto-update left its lock behind');
   } else {
-    npmGlobalInstall(path.join(rowRoot, `not-a-memesh-v${candidateVersion}-candidate.tgz`), prefix, env, true);
+    const invalidCandidate = path.join(rowRoot, `invalid-memesh-v${candidateVersion}-candidate.tgz`);
+    fs.copyFileSync(candidateTarball, invalidCandidate);
+    fs.truncateSync(invalidCandidate, 64);
+    npmGlobalInstall(invalidCandidate, prefix, env, true);
   }
   installed = readInstalledPackage(prefix, env);
   assert.equal(installed.packageJson.version, candidateVersion,

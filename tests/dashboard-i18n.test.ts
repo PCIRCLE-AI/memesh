@@ -6,20 +6,6 @@ import { DERIVED_RELATION_TYPES } from '../src/core/kg-backfill.js';
 
 const i18nSource = readFileSync('dashboard/src/lib/i18n.ts', 'utf8');
 
-function parseTranslationKeys(): Map<string, Set<string>> {
-  const locales = new Map<string, Set<string>>();
-  const localeBlocks = i18nSource.matchAll(/\n {2}('[^']+'|\w+): \{([\s\S]*?)\n {2}\}/g);
-
-  for (const match of localeBlocks) {
-    const locale = match[1].replaceAll("'", '');
-    const body = match[2];
-    const keys = new Set([...body.matchAll(/'([^']+)':/g)].map((keyMatch) => keyMatch[1]));
-    locales.set(locale, keys);
-  }
-
-  return locales;
-}
-
 /**
  * Every locale's key AND value, so a test can compare what a locale SAYS and
  * not only which keys it declares.
@@ -36,13 +22,19 @@ function parseTranslationEntries(): Map<string, Map<string, string>> {
   for (const match of localeBlocks) {
     const locale = match[1].replaceAll("'", '');
     const entries = new Map<string, string>();
-    for (const entry of match[2].matchAll(/'([^']+)': ('(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`),?\n/g)) {
+    for (const entry of match[2].matchAll(/'([^']+)': ('(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`),?(?:\n|$)/g)) {
       entries.set(entry[1], entry[2].slice(1, -1));
     }
     locales.set(locale, entries);
   }
 
   return locales;
+}
+
+function parseTranslationKeys(): Map<string, Set<string>> {
+  return new Map(
+    [...parseTranslationEntries()].map(([locale, entries]) => [locale, new Set(entries.keys())]),
+  );
 }
 
 function parseNamedLocales(): string[] {
@@ -100,13 +92,15 @@ describe('dashboard i18n', () => {
   });
 
   it('keeps every locale in key parity with English', () => {
-    const locales = parseTranslationKeys();
-    const englishKeys = locales.get('en');
-    expect(englishKeys).toBeDefined();
+    const locales = parseTranslationEntries();
+    const english = locales.get('en');
+    expect(english).toBeDefined();
+    const englishKeys = new Set(english!.keys());
 
-    for (const [locale, keys] of locales) {
-      const missing = [...englishKeys!].filter((key) => !keys.has(key));
-      const extra = [...keys].filter((key) => !englishKeys!.has(key));
+    for (const [locale, entries] of locales) {
+      const keys = new Set(entries.keys());
+      const missing = [...englishKeys].filter((key) => !keys.has(key));
+      const extra = [...keys].filter((key) => !englishKeys.has(key));
 
       expect({ locale, missing, extra }).toEqual({ locale, missing: [], extra: [] });
     }
@@ -144,7 +138,7 @@ describe('dashboard i18n', () => {
   });
 
   it('has labels for every translated locale', () => {
-    const translatedLocales = [...parseTranslationKeys().keys()].sort();
+    const translatedLocales = [...parseTranslationEntries().keys()].sort();
     const namedLocales = parseNamedLocales().sort();
 
     expect(namedLocales).toEqual(translatedLocales);

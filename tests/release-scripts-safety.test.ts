@@ -111,6 +111,10 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(buildAt, 'the gate does not run the build').toBeGreaterThan(-1);
     expect(diffAt, 'the gate does not diff the build outputs').toBeGreaterThan(-1);
     expect(buildAt, 'the gate diffs before it builds').toBeLessThan(diffAt);
+    expect(
+      text.slice(diffAt, diffAt + 120),
+      'the gate compares only working tree to index, so staged generated output can false-green',
+    ).toContain("'HEAD'");
     // A failed build must fail the gate. Reporting "output is current" because
     // the compiler crashed is the same class of lie one level up.
     //
@@ -288,6 +292,9 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(upgrade).toContain('auto-update-runner.mjs');
     expect(upgrade).toContain('SUCCESS target=${candidateVersion} installed=${candidateVersion}');
     expect(upgrade).toContain('MEMESH_UPGRADE_FORCE_FAILURE');
+    expect(upgrade).toContain('fs.copyFileSync(candidateTarball, invalidCandidate)');
+    expect(upgrade).toContain('fs.truncateSync(invalidCandidate');
+    expect(upgrade).not.toContain('not-a-memesh-v${candidateVersion}-candidate.tgz');
     expect(read('.github/workflows/ci.yml')).toContain('run: npm run test:packaged:upgrade');
   });
 
