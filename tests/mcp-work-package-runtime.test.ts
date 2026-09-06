@@ -8,11 +8,14 @@ import { execFileSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
+import { getProjectName } from '../src/core/paths.js';
+import { projectTranscriptSlug } from '../src/core/transcript-source.js';
 
-it('stages a digest through the actual MCP stdio process and preserves read-only deferral', async () => {
+it('stages digest and visible transcript work through the actual MCP stdio process with read-only deferral', async () => {
   const repo = fileURLToPath(new URL('../', import.meta.url));
   const require = createRequire(import.meta.url);
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-work-package-'));
+  const runtimeCwd = fs.realpathSync(runtime);
   const dbPath = path.join(runtime, 'memory.db');
   const project = 'mcp-runtime-digest';
   // Only named fixture settings reach the child; no ambient provider configuration.
@@ -26,7 +29,7 @@ it('stages a digest through the actual MCP stdio process and preserves read-only
     // Reuse the absolute executable of the pinned verification runner.
     command: process.execPath,
     args: [path.join(runtime, 'dist/mcp/server.js')],
-    cwd: runtime, env, stderr: 'pipe',
+    cwd: runtimeCwd, env, stderr: 'pipe',
   });
   const call = async (name: string, args: Record<string, unknown>) => {
     const response = await client.callTool({ name, arguments: args }, undefined, { timeout: 5000 });
@@ -55,7 +58,7 @@ it('stages a digest through the actual MCP stdio process and preserves read-only
     expect(client.getServerVersion()?.name).toBe('memesh');
     const { tools } = await client.listTools();
     const definition = tools.find(tool => tool.name === 'work_package');
-    expect(definition?.description).toContain('digest-only');
+    expect(definition?.description).toContain('transcript');
 
     for (let i = 0; i < 5; i++) {
       const remembered = await call('remember', {
@@ -96,15 +99,43 @@ it('stages a digest through the actual MCP stdio process and preserves read-only
     const staged = await call('work_package', { action: 'submit', package_id: pkg.id, ref: pkg.ref, result });
     expect(staged.response.isError).not.toBe(true);
     expect(staged.data).toMatchObject({ status: 'staged', proposal_status: 'pending', review_authority: 'human' });
+
+    const transcriptProject = getProjectName(runtimeCwd);
+    const transcriptDir = path.join(runtime, '.claude/projects', projectTranscriptSlug(runtimeCwd));
+    fs.mkdirSync(transcriptDir, { recursive: true });
+    fs.writeFileSync(path.join(transcriptDir, 'runtime-session.jsonl'), [
+      { type: 'user', cwd: runtimeCwd, message: { content: 'Use the smaller parser.' } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'RUNTIME_PRIVATE' }, { type: 'text', text: 'The smaller parser satisfies our requirements.' }, { type: 'tool_use', input: 'RUNTIME_TOOL' }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n'));
+    const transcript = await call('work_package', { action: 'prepare', kind: 'transcript', project: transcriptProject });
+    expect(transcript.response.isError).not.toBe(true);
+    expect(transcript.data.status).toBe('available');
+    const transcriptPackage = transcript.data.package;
+    expect(transcriptPackage.ref).toMatchObject({ kind: 'transcript', project: transcriptProject, session_id: 'runtime-session' });
+    expect(transcriptPackage.sources).toEqual([{ role: 'user', text: 'Use the smaller parser.' }, { role: 'assistant', text: 'The smaller parser satisfies our requirements.' }]);
+    expect(transcriptPackage.coverage).toEqual({ truncated: false, total_turns: 2, included_turns: 2 });
+    expect(JSON.stringify(transcriptPackage)).not.toMatch(/RUNTIME_PRIVATE|RUNTIME_TOOL/);
+    expect(transcriptPackage.ref).not.toHaveProperty('path');
+    const transcriptDeferred = await call('work_package', { action: 'defer', package_id: transcriptPackage.id, ref: transcriptPackage.ref, reason: 'not_now' });
+    expect(transcriptDeferred.data).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
+    expect(proposalCount()).toMatchObject({ n: 1 });
+    expect((await call('work_package', { action: 'prepare', kind: 'transcript', project: transcriptProject })).data.package).toEqual(transcriptPackage);
+    const transcriptResult = { name: 'runtime-parser-decision', type: 'decision', observations: ['Use the smaller parser.'], tags: ['parser'] };
+    const transcriptStaged = await call('work_package', { action: 'submit', package_id: transcriptPackage.id, ref: transcriptPackage.ref, result: transcriptResult });
+    expect(transcriptStaged.response.isError).not.toBe(true);
+    expect(transcriptStaged.data).toMatchObject({ status: 'staged', proposal_status: 'pending' });
     await client.close();
     expect(transport.pid).toBeNull();
     const db = new MemeshDatabase(dbPath, { readOnly: true });
     try {
       const rows = db.prepare('SELECT * FROM dream_proposals').all() as Array<Record<string, unknown>>;
-      expect(rows).toHaveLength(1);
+      expect(rows).toHaveLength(2);
       expect(rows[0]).toMatchObject({ id: staged.data.proposal_id, project, status: 'pending', llm_model: null, prompt_version: 'work-package-v1' });
       expect(JSON.parse(rows[0].source_ids as string)).toEqual(pkg.ref.source_ids);
       expect(JSON.parse(rows[0].proposed_digest as string)).toMatchObject({ ...result, work_package: { id: pkg.id, ref: pkg.ref } });
+      expect(rows[1]).toMatchObject({ id: transcriptStaged.data.proposal_id, project: transcriptProject, status: 'pending', source_kind: 'transcript', kind: 'digest', llm_model: null, prompt_version: 'work-package-v1' });
+      expect(JSON.parse(rows[1].source_ids as string)).toEqual({ sessionId: 'runtime-session' });
+      expect(JSON.parse(rows[1].proposed_digest as string)).toMatchObject({ ...transcriptResult, work_package: { id: transcriptPackage.id, ref: transcriptPackage.ref } });
       expect(db.prepare("SELECT count(*) AS n FROM entities WHERE status = 'active'").get()).toMatchObject({ n: 5 });
     } finally { db.close(); }
   } finally {

@@ -31,7 +31,7 @@ export function scrubSecrets(text) {
     return out;
 }
 const META_USER_PREFIX = /^<(local-command|command-name|command-message|command-args|bash-input|bash-stdout|bash-stderr|user-memory-input|system-reminder)/;
-function textFromAssistantBlocks(content) {
+function textFromAssistantBlocks(content, visibleOnly) {
     if (!Array.isArray(content))
         return [];
     const out = [];
@@ -41,7 +41,7 @@ function textFromAssistantBlocks(content) {
         const b = block;
         if (b.type === 'text' && typeof b.text === 'string' && b.text.trim())
             out.push(b.text.trim());
-        else if (b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim())
+        else if (!visibleOnly && b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim())
             out.push(b.thinking.trim());
     }
     return out;
@@ -66,15 +66,8 @@ function textFromUserContent(content) {
     }
     return [];
 }
-export function parseConversation(transcriptPath) {
+function parseConversationContent(content, visibleOnly) {
     const turns = [];
-    let content;
-    try {
-        content = fs.readFileSync(transcriptPath, 'utf8');
-    }
-    catch {
-        return turns;
-    }
     for (const line of content.split('\n')) {
         if (!line.trim())
             continue;
@@ -86,7 +79,7 @@ export function parseConversation(transcriptPath) {
             continue;
         }
         if (entry.type === 'assistant') {
-            for (const text of textFromAssistantBlocks(entry.message?.content)) {
+            for (const text of textFromAssistantBlocks(entry.message?.content, visibleOnly)) {
                 turns.push({ role: 'assistant', text });
             }
         }
@@ -97,6 +90,24 @@ export function parseConversation(transcriptPath) {
         }
     }
     return turns;
+}
+function readTranscriptContent(transcriptPath) {
+    try {
+        return fs.readFileSync(transcriptPath, 'utf8');
+    }
+    catch {
+        return null;
+    }
+}
+export function parseConversation(transcriptPath) {
+    const content = readTranscriptContent(transcriptPath);
+    return content === null ? [] : parseConversationContent(content, false);
+}
+export function parseVisibleConversation(transcript) {
+    if (Buffer.isBuffer(transcript))
+        return parseConversationContent(transcript.toString('utf8'), true);
+    const content = readTranscriptContent(transcript);
+    return content === null ? [] : parseConversationContent(content, true);
 }
 export function countConversationTurns(transcriptPath) {
     return parseConversation(transcriptPath).length;

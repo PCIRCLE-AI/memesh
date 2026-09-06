@@ -575,7 +575,7 @@ If you switch to an embedder with a different dimension (e.g. 768 → 1536), **n
 
 | Tool | What it does |
 |------|-------------|
-| `work_package` | Prepare one bounded, calendar-selected untrusted digest package; submit one strictly validated digest for pending human review, or defer without durable change. Agents cannot apply or reject it; package hashes identify freshness, not authentication |
+| `work_package` | Prepare one bounded untrusted package: `digest` selects a calendar cluster, `transcript` selects visible turns from the newest project session. An agent submits exactly one strict result or defers; submit only stages pending human review. No hidden reasoning, raw transcript, path, API key, LLM, embedding, or vector data is exposed or used; agents cannot apply or reject, and hashes identify freshness rather than authentication. |
 | `remember` | Store knowledge with observations, relations, and tags |
 | `recall` | FTS5 + sqlite-vec search with multi-factor scoring (relevance, recency, frequency, confidence, recall impact) — no LLM in the hot path |
 | `forget` | Soft-archive (never deletes) or remove specific observations |

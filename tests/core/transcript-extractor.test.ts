@@ -6,11 +6,12 @@
 // ~/.claude/projects is never read.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, utimesSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   parseConversation,
+  parseVisibleConversation,
   countConversationTurns,
   buildExtractionPrompt,
   extractMemoriesFromTranscript,
@@ -96,6 +97,34 @@ describe('transcript-extractor: parsing', () => {
       'assistant:Assistant reply',
       'user:Second user message',
     ]);
+  });
+
+  it('returns only visible UTF-8 user and assistant text in order when explicitly requested', () => {
+    const path = writeTranscript(tmp, 'visible', [
+      { type: 'user', content: '使用者的第一句：你好' },
+      { type: 'assistant', content: [
+        { type: 'thinking', thinking: 'hidden reasoning' },
+        { type: 'text', text: '助手可見回覆：您好' },
+        { type: 'tool_use', name: 'Bash', input: { command: 'echo hidden' } },
+        { type: 'text', text: '第二個可見文字區塊' },
+      ] },
+      { type: 'user', content: [{ type: 'tool_result', content: 'hidden tool result' }] },
+      { type: 'user', content: '<command-message>hidden command scaffolding</command-message>' },
+      { type: 'user', content: [{ type: 'text', text: '使用者最後一句：再見' }] },
+    ]);
+    writeFileSync(path, `${readFileSync(path, 'utf8')}not valid json\n`);
+
+    const expected = [
+      { role: 'user', text: '使用者的第一句：你好' },
+      { role: 'assistant', text: '助手可見回覆：您好' },
+      { role: 'assistant', text: '第二個可見文字區塊' },
+      { role: 'user', text: '使用者最後一句：再見' },
+    ];
+    expect(parseVisibleConversation(path)).toEqual(expected);
+
+    const snapshot = readFileSync(path);
+    rmSync(path);
+    expect(parseVisibleConversation(snapshot)).toEqual(expected);
   });
 
   it('countConversationTurns is a cheap turn count and never throws on a missing file', () => {

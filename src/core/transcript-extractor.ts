@@ -178,17 +178,18 @@ interface RawEntry {
 // User `content` strings that are Claude Code scaffolding, not real user prose.
 const META_USER_PREFIX = /^<(local-command|command-name|command-message|command-args|bash-input|bash-stdout|bash-stderr|user-memory-input|system-reminder)/;
 
-function textFromAssistantBlocks(content: unknown): string[] {
+function textFromAssistantBlocks(content: unknown, visibleOnly: boolean): string[] {
   if (!Array.isArray(content)) return [];
   const out: string[] = [];
   for (const block of content) {
     if (!block || typeof block !== 'object') continue;
     const b = block as { type?: string; text?: unknown; thinking?: unknown };
-    // Only the model's own words — text (visible answer) and thinking
-    // (reasoning, which is where "why" lives). tool_use / server_tool_use /
-    // tool_result carry mechanics the hook already mines; skip them.
+    // `text` is visible to the user. Existing transcript mining also includes
+    // private thinking unless a caller explicitly asks for visible-only text.
+    // tool_use / server_tool_use / tool_result carry mechanics the hook already
+    // mines; skip them in both modes.
     if (b.type === 'text' && typeof b.text === 'string' && b.text.trim()) out.push(b.text.trim());
-    else if (b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim()) out.push(b.thinking.trim());
+    else if (!visibleOnly && b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim()) out.push(b.thinking.trim());
   }
   return out;
 }
@@ -214,20 +215,11 @@ function textFromUserContent(content: unknown): string[] {
 }
 
 /**
- * Parse a session JSONL into ordered conversation turns (user prose + assistant
- * reasoning), dropping tool mechanics and command scaffolding. Chronological —
- * the order the lines appear in the file is the order they happened, which the
- * contradiction guard relies on. Defensive: unreadable file or bad line yields
- * fewer turns, never an exception.
+ * Parse session JSONL content into ordered conversation turns (user prose +
+ * assistant reasoning), dropping tool mechanics and command scaffolding.
  */
-export function parseConversation(transcriptPath: string): ConversationTurn[] {
+function parseConversationContent(content: string, visibleOnly: boolean): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
-  let content: string;
-  try {
-    content = fs.readFileSync(transcriptPath, 'utf8');
-  } catch {
-    return turns; // absent / unreadable — a discovery step must not throw
-  }
   for (const line of content.split('\n')) {
     if (!line.trim()) continue;
     let entry: RawEntry;
@@ -237,7 +229,7 @@ export function parseConversation(transcriptPath: string): ConversationTurn[] {
       continue; // one bad line must not abort the transcript
     }
     if (entry.type === 'assistant') {
-      for (const text of textFromAssistantBlocks(entry.message?.content)) {
+      for (const text of textFromAssistantBlocks(entry.message?.content, visibleOnly)) {
         turns.push({ role: 'assistant', text });
       }
     } else if (entry.type === 'user') {
@@ -247,6 +239,28 @@ export function parseConversation(transcriptPath: string): ConversationTurn[] {
     }
   }
   return turns;
+}
+
+function readTranscriptContent(transcriptPath: string): string | null {
+  try {
+    return fs.readFileSync(transcriptPath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** Parse a transcript path defensively; unreadable files or bad lines yield
+ * fewer turns, never an exception. */
+export function parseConversation(transcriptPath: string): ConversationTurn[] {
+  const content = readTranscriptContent(transcriptPath);
+  return content === null ? [] : parseConversationContent(content, false);
+}
+
+/** Parse only prose actually visible to the user, in transcript order. */
+export function parseVisibleConversation(transcript: string | Buffer): ConversationTurn[] {
+  if (Buffer.isBuffer(transcript)) return parseConversationContent(transcript.toString('utf8'), true);
+  const content = readTranscriptContent(transcript);
+  return content === null ? [] : parseConversationContent(content, true);
 }
 
 /** Cheap count of conversation turns for `--dry-run` — real, unambiguous, no

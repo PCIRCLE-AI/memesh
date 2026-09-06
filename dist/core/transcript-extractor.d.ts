@@ -11,6 +11,7 @@ export interface ConversationTurn {
     text: string;
 }
 export declare function parseConversation(transcriptPath: string): ConversationTurn[];
+export declare function parseVisibleConversation(transcript: string | Buffer): ConversationTurn[];
 export declare function countConversationTurns(transcriptPath: string): number;
 export declare function buildExtractionPrompt(turns: ConversationTurn[], projectLabel: string, priorDecisions?: string[]): string;
 export interface ExtractOptions {

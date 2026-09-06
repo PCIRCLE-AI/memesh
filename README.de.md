@@ -557,7 +557,7 @@ Wechselst du zu einer anderen Dimension (z. B. 768 → 1536), wird **nichts gel�
 
 | Tool | Was es tut |
 |------|-------------|
-| `work_package` | Ein begrenztes, kalenderausgewähltes nicht vertrauenswürdiges Digest-Paket vorbereiten; ein streng validiertes Digest zur ausstehenden menschlichen Prüfung einreichen oder ohne dauerhafte Änderung zurückstellen. Agenten können es nicht annehmen oder ablehnen; Paket-Hashes kennzeichnen Aktualität, nicht Authentifizierung |
+| `work_package` | Ein begrenztes, nicht vertrauenswürdiges Paket vorbereiten: `digest` wählt einen Kalender-Cluster, `transcript` sichtbare Züge der neuesten Projektsitzung. Ein Agent reicht genau ein strikt validiertes Ergebnis ein oder stellt zurück; die Einreichung stellt nur zur menschlichen Prüfung bereit. Es werden weder verborgenes Denken, Rohtranskript, Pfad, API-Schlüssel, LLM-, Embedding- noch Vektordaten offengelegt oder verwendet; Agenten können nicht annehmen oder ablehnen, und Hashes kennzeichnen Aktualität statt Authentifizierung. |
 | `remember` | Wissen mit Beobachtungen, Relationen und Tags speichern |
 | `recall` | FTS5 + sqlite-vec Suche mit Multi-Faktor-Bewertung (Relevanz, Aktualität, Häufigkeit, Konfidenz, Abruf-Auswirkung) — kein LLM auf dem Hot Path |
 | `forget` | Soft-Archivierung (löscht nie) oder entfernt spezifische Beobachtungen |

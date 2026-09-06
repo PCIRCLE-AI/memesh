@@ -5,7 +5,10 @@ import path from 'path';
 import { openDatabase, closeDatabase, getDatabase } from '../src/db.js';
 import { KnowledgeGraph } from '../src/knowledge-graph.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
-import { applyProposal, getProposalDetail, listProposals, runDreamer } from '../src/core/dreamer.js';
+import { getProjectName } from '../src/core/paths.js';
+import { projectTranscriptSlug } from '../src/core/transcript-source.js';
+import { createHash } from 'node:crypto';
+import { applyProposal, executeWorkPackage, getProposalDetail, listProposals, runDreamer } from '../src/core/dreamer.js';
 import * as llmClient from '../src/core/llm-client.js';
 import * as embedder from '../src/core/embedder.js';
 import * as vectorIndex from '../src/storage/vector-index.js';
@@ -37,6 +40,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   closeDatabase();
   if (previousMemeshDir === undefined) delete process.env.MEMESH_DIR;
   else process.env.MEMESH_DIR = previousMemeshDir;
@@ -58,13 +62,14 @@ describe('work_package', () => {
   });
   const snapshot = () => getDatabase().prepare('SELECT total_changes() AS changes').get();
 
-  it('publishes digest-only actions with strict nested schemas and structured failures', async () => {
+  it('publishes digest/transcript actions with strict nested schemas and structured failures', async () => {
     const tool = TOOL_DEFINITIONS.find(t => t.name === 'work_package')!;
-    expect(tool.description).toContain('digest-only');
+    expect(tool.description).toContain('transcript');
     const schema = tool.inputSchema as any;
     expect(schema.oneOf).toHaveLength(3);
     expect(schema.oneOf.every((s: any) => s.additionalProperties === false)).toBe(true);
-    expect(schema.oneOf[1].properties.ref.additionalProperties).toBe(false);
+    expect(schema.oneOf[0].properties.kind.enum).toEqual(['digest', 'transcript']);
+    expect(schema.oneOf[1].properties.ref.oneOf.every((ref: any) => ref.additionalProperties === false)).toBe(true);
     expect(schema.oneOf[1].properties.result.additionalProperties).toBe(false);
     for (const input of [
       { action: 'prepare', project: 'work-project', kind: 'pattern' },
@@ -200,6 +205,47 @@ describe('work_package', () => {
     expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'forever' })).isError).toBe(true);
     getDatabase().prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(pkg.ref.source_ids[0]);
     expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })).isError).toBe(true);
+  });
+
+  it('replays an already submitted package for defer without durable changes', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const staged = payload(await submit(pkg));
+    const db = getDatabase();
+    for (const status of ['pending', 'applied', 'rejected']) {
+      db.prepare('UPDATE dream_proposals SET status = ? WHERE id = ?').run(status, staged.proposal_id);
+      const before = snapshot();
+      const deferred = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+      expect(payload(deferred)).toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: status, available_action: [] });
+      expect(snapshot()).toEqual(before);
+    }
+  });
+
+  it('does not treat ref key order as freshness or replay identity', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const ref = {
+      source_hash: pkg.ref.source_hash,
+      source_ids: pkg.ref.source_ids,
+      project: pkg.ref.project,
+      kind: 'digest' as const,
+    };
+    const defer = { action: 'defer' as const, package_id: pkg.id, ref, reason: 'not_now' as const };
+    expect(executeWorkPackage(getDatabase(), defer)).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
+    const staged = payload(await submit(pkg));
+    expect(executeWorkPackage(getDatabase(), defer)).toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'pending', available_action: [] });
+  });
+
+  it('reports unexpected work-package failures through the shared handler error path', async () => {
+    const db = getDatabase();
+    const prepare = vi.spyOn(db, 'prepare').mockImplementation(() => { throw new Error('test database failure'); });
+    try {
+      const response = await handleTool('work_package', { action: 'prepare', kind: 'digest', project: 'work-project' });
+      expect(response.isError).toBe(true);
+      expect(response.content).toEqual([{ type: 'text', text: 'Tool "work_package" failed: test database failure' }]);
+    } finally {
+      prepare.mockRestore();
+    }
   });
 
   it('prepares and defers without transactions while an independent connection holds the write lock', async () => {
@@ -384,6 +430,203 @@ describe('work_package', () => {
     } else {
       expect(dreamed.skipped.some(skip => skip.reason.includes('overlaps pending proposal'))).toBe(true);
     }
+  });
+});
+
+describe('transcript work_package', () => {
+  let project: string;
+  let transcriptDir: string;
+  const digest = { name: 'transcript-decision', type: 'decision', observations: ['Use the parser selected in the discussion.'], tags: ['parser'] };
+  const payload = (response: Awaited<ReturnType<typeof handleTool>>) => JSON.parse(response.content[0].text);
+  const prepare = async () => payload(await handleTool('work_package', { action: 'prepare', kind: 'transcript', project }));
+  const submit = (pkg: any, result = digest, extra: Record<string, unknown> = {}) => handleTool('work_package', {
+    action: 'submit', package_id: pkg.id, ref: pkg.ref, result, ...extra,
+  });
+  const writeSession = (id: string, entries: unknown[], modified = new Date(Date.now() - 1000)) => {
+    const file = path.join(transcriptDir, `${id}.jsonl`);
+    fs.writeFileSync(file, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    fs.utimesSync(file, modified, modified);
+    return file;
+  };
+  const user = (text: string, cwd = tmpDir) => ({ type: 'user', cwd, message: { role: 'user', content: text } });
+
+  beforeEach(() => {
+    vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    project = getProjectName(tmpDir);
+    vi.stubEnv('CLAUDE_PROJECTS_DIR', path.join(tmpDir, 'transcripts'));
+    transcriptDir = path.join(tmpDir, 'transcripts', projectTranscriptSlug(tmpDir));
+    fs.mkdirSync(transcriptDir, { recursive: true });
+  });
+
+  it('selects newest same-project sessions with deterministic tie-break and excludes hidden/tool content', async () => {
+    writeSession('older', [user('Older conversation')], new Date(Date.now() - 4000));
+    const newest = new Date(Date.now() - 1000);
+    writeSession('b-session', [user('Tie-break second')], newest);
+    const file = writeSession('a-session', [
+      user('Choose a parser'),
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'PRIVATE_THOUGHT' }, { type: 'tool_use', input: 'TOOL_INPUT' }, { type: 'text', text: 'Use the simpler parser.' }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', content: 'TOOL_OUTPUT' }] } },
+    ], newest);
+    writeSession('wrong-project', [user('FOREIGN_DATA', path.join(tmpDir, 'sibling'))], new Date());
+    const available = await prepare();
+    expect(available.status).toBe('available');
+    expect(available.package.ref.session_id).toBe('a-session');
+    expect(available.package.ref.source_hash).toBe(createHash('sha256').update(fs.readFileSync(file)).digest('hex'));
+    expect(available.package.sources).toEqual([{ role: 'user', text: 'Choose a parser' }, { role: 'assistant', text: 'Use the simpler parser.' }]);
+    expect(available.package.coverage).toEqual({ truncated: false, total_turns: 2, included_turns: 2 });
+    expect(JSON.stringify(available)).not.toMatch(/PRIVATE_THOUGHT|TOOL_INPUT|TOOL_OUTPUT|FOREIGN_DATA/);
+    expect(available.package.ref).not.toHaveProperty('path');
+    expect(await prepare()).toEqual(available);
+    // Legacy transcript rows also reserve their session, regardless of status or key label.
+    const db = getDatabase();
+    const legacy = db.prepare(`INSERT INTO dream_proposals
+      (project, cluster_key, source_ids, proposed_digest, prompt_version, source_kind)
+      VALUES (?, 'legacy-label', ?, '{}', 'transcript-v1', 'transcript')`).run(project, JSON.stringify({ sessionId: 'a-session' }));
+    for (const status of ['pending', 'applied', 'rejected']) {
+      db.prepare('UPDATE dream_proposals SET status = ? WHERE id = ?').run(status, legacy.lastInsertRowid);
+      expect((await prepare()).package.ref.session_id).toBe('b-session');
+    }
+  });
+
+  it('skips a transcript that becomes unreadable after discovery', async () => {
+    writeSession('older-readable', [user('Use the readable fallback session.')], new Date(Date.now() - 4000));
+    const newest = writeSession('newest-unreadable', [user('This session disappears during selection.')]);
+    const realOpen = fs.openSync;
+    let newestOpens = 0;
+    const opened = vi.spyOn(fs, 'openSync').mockImplementation(((file: fs.PathLike, flags: fs.OpenMode) => {
+      if (String(file) === newest && ++newestOpens === 2) {
+        throw Object.assign(new Error('gone after discovery'), { code: 'ENOENT' });
+      }
+      return realOpen(file, flags);
+    }) as typeof fs.openSync);
+    try {
+      const available = await prepare();
+      expect(available.package.ref.session_id).toBe('older-readable');
+      expect(newestOpens).toBe(2);
+    } finally {
+      opened.mockRestore();
+    }
+  });
+
+  it('clips turns and bytes explicitly while preserving chronological order and skips unusable sessions', async () => {
+    writeSession('many-turns', Array.from({ length: 120 }, (_, i) => user(`visible-${i}`)));
+    let pkg = (await prepare()).package;
+    expect(pkg.sources).toHaveLength(100);
+    expect(pkg.sources[0].text).toBe('visible-20');
+    expect(pkg.sources[99].text).toBe('visible-119');
+    expect(pkg.coverage).toEqual({ truncated: true, total_turns: 120, included_turns: 100 });
+    writeSession('many-turns', Array.from({ length: 30 }, (_, i) => user(`${i}:` + '界'.repeat(3000))));
+    pkg = (await prepare()).package;
+    expect(Buffer.byteLength(JSON.stringify(pkg.sources))).toBeLessThanOrEqual(49152);
+    expect(Buffer.byteLength(JSON.stringify(pkg))).toBeLessThanOrEqual(65536);
+    expect(pkg.coverage.truncated).toBe(true);
+    expect(pkg.coverage.total_turns).toBe(30);
+    expect(pkg.sources.map((turn: any) => Number(turn.text.split(':')[0]))).toEqual([25, 26, 27, 28, 29]);
+    writeSession('many-turns', [user('x'.repeat(60000))]);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    writeSession('many-turns', [{ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'private only' }] } }]);
+    writeSession('', [user('No usable session identity')]);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+  });
+
+  it('prepares/defers without transactions and never enters generation, vectors, embeddings, messages or network', async () => {
+    writeSession('offline', [user('One supported decision')]);
+    const db = getDatabase();
+    const forbidden = () => { throw new Error('forbidden provider path'); };
+    const spies = [vi.spyOn(llmClient, 'callLLM').mockImplementation(forbidden),
+      vi.spyOn(embedder, 'embedText').mockImplementation(forbidden), vi.spyOn(embedder, 'vectorSearch').mockImplementation(forbidden),
+      vi.spyOn(embedder, 'scheduleEmbedAndStore').mockImplementation(forbidden),
+      vi.spyOn(vectorIndex, 'hasVectorIndex').mockImplementation(forbidden),
+      vi.spyOn(agentMessaging, 'sendAgentMessage').mockImplementation(forbidden), vi.fn(forbidden)];
+    vi.stubGlobal('fetch', spies[spies.length - 1]);
+    const transaction = vi.spyOn(db, 'transaction').mockImplementation(forbidden);
+    const before = db.prepare('SELECT total_changes() AS n').get();
+    const pkg = (await prepare()).package;
+    expect(pkg).toBeDefined();
+    const deferred = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+    expect(payload(deferred)).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
+    expect((await prepare()).package).toEqual(pkg);
+    expect(transaction).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
+    transaction.mockRestore();
+    expect((await submit(pkg)).isError).toBeUndefined();
+    spies.forEach(spy => expect(spy).not.toHaveBeenCalled());
+  });
+
+  it.each(['decision', 'lesson_learned', 'fact'])('stages one %s and preserves human additive apply plus all-status replay', async (type) => {
+    const file = writeSession('review-session', [user('The visible evidence supports this memory.')]);
+    const bytes = fs.readFileSync(file);
+    const pkg = (await prepare()).package;
+    const output = { ...digest, type };
+    const staged = payload(await submit(pkg, output));
+    const db = getDatabase();
+    const row = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(staged.proposal_id) as any;
+    expect(row).toMatchObject({ project, status: 'pending', source_kind: 'transcript', kind: 'digest', cluster_key: 'transcript:review-session', llm_model: null, prompt_version: 'work-package-v1' });
+    expect(JSON.parse(row.proposed_digest)).toMatchObject({ ...output, work_package: { id: pkg.id, ref: pkg.ref } });
+    expect(db.prepare('SELECT count(*) AS n FROM entities').get()).toMatchObject({ n: 0 });
+    expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'pending' });
+    const deferBefore = db.prepare('SELECT total_changes() AS n').get();
+    expect(payload(await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
+      .toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'pending', available_action: [] });
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(deferBefore);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    const kg = new KnowledgeGraph(db);
+    const create = vi.spyOn(kg, 'createEntity');
+    expect(applyProposal(db, staged.proposal_id, kg).sourcesArchived).toBe(0);
+    expect(create).toHaveBeenCalledWith(output.name, type, expect.objectContaining({ trustOverride: 'untrusted' }));
+    expect(db.prepare('SELECT type, status FROM entities').all()).toEqual([{ type, status: 'active' }]);
+    expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'applied' });
+    expect(payload(await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
+      .toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'applied', available_action: [] });
+    db.prepare("UPDATE dream_proposals SET status = 'rejected' WHERE id = ?").run(staged.proposal_id);
+    expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'rejected' });
+    expect(payload(await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
+      .toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'rejected', available_action: [] });
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    const conflict = await submit(pkg, { ...output, observations: ['Different result'] });
+    expect(conflict.isError).toBe(true);
+    expect(payload(conflict).error).toBe('submission_conflict');
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 1 });
+    expect(fs.readFileSync(file)).toEqual(bytes);
+    writeSession('review-session', [user('Changed after human review')]);
+    expect((await submit(pkg, output)).isError).toBe(true);
+  });
+
+  it('rejects path injection, unknown fields, wrong kinds, tags, secrets and oversized output without writes', async () => {
+    writeSession('strict', [user('Visible evidence')]);
+    const pkg = (await prepare()).package;
+    const invalid = [
+      { extra: true }, { ref: { ...pkg.ref, path: '/not-authorized' } }, { ref: { ...pkg.ref, source_ids: [1] } },
+      { result: { ...digest, type: 'digest' } }, { result: { ...digest, type: 'pattern' } },
+      { result: { ...digest, extra: true } }, { result: { ...digest, observations: [] } },
+      { result: { ...digest, tags: ['project:forged'] } }, { result: { ...digest, tags: [] } },
+      { result: { ...digest, observations: ['sk-' + 'a'.repeat(40)] } },
+      { result: { ...digest, observations: ['界'.repeat(3000), '界'.repeat(3000)] } },
+    ];
+    const db = getDatabase();
+    const before = db.prepare('SELECT total_changes() AS n').get();
+    for (const extra of invalid) expect((await submit(pkg, digest, extra)).isError).toBe(true);
+    expect((await handleTool('work_package', { action: 'prepare', kind: 'transcript', project, path: 'forged' })).isError).toBe(true);
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
+  });
+
+  it('revalidates pathless project/session/content/mtime/hash references for submit and defer', async () => {
+    const file = writeSession('fresh', [user('Original content')]);
+    const pkg = (await prepare()).package;
+    const db = getDatabase();
+    const before = db.prepare('SELECT total_changes() AS n').get();
+    for (const ref of [{ ...pkg.ref, project: 'other' }, { ...pkg.ref, session_id: 'missing' },
+      { ...pkg.ref, modified_at: new Date(0).toISOString() }, { ...pkg.ref, source_hash: '0'.repeat(64) }]) {
+      expect((await submit(pkg, digest, { ref })).isError).toBe(true);
+      expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref, reason: 'not_now' })).isError).toBe(true);
+    }
+    expect((await submit({ ...pkg, id: '0'.repeat(64) })).isError).toBe(true);
+    writeSession('fresh', [user('Changed content')], new Date(pkg.ref.modified_at));
+    expect((await submit(pkg)).isError).toBe(true);
+    const updated = (await prepare()).package;
+    fs.utimesSync(file, new Date(), new Date());
+    expect((await submit(updated)).isError).toBe(true);
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
   });
 });
 

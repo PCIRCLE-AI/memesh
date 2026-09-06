@@ -48,7 +48,10 @@ describe('exportOpenAITools', () => {
     expect(parameters).toEqual({ type: 'object', ...z.toJSONSchema(WorkPackageSchema) });
     expect(parameters.oneOf.map((variant: any) => variant.properties.action.const)).toEqual(['prepare', 'submit', 'defer']);
     expect(parameters.oneOf.every((variant: any) => variant.additionalProperties === false)).toBe(true);
-    expect(parameters.oneOf[1].properties.ref.additionalProperties).toBe(false);
+    expect(parameters.oneOf[0].properties.kind.enum).toEqual(['digest', 'transcript']);
+    expect(parameters.oneOf[1].properties.ref.oneOf.map((ref: any) => ref.properties.kind.const)).toEqual(['digest', 'transcript']);
+    expect(parameters.oneOf[1].properties.ref.oneOf.every((ref: any) => ref.additionalProperties === false)).toBe(true);
+    expect(parameters.oneOf[1].properties.result.properties.type.enum).toEqual(['digest', 'decision', 'lesson_learned', 'fact']);
     expect(parameters.oneOf[1].properties.result.additionalProperties).toBe(false);
   });
 
@@ -178,7 +181,9 @@ describe('exportOpenAITools', () => {
       const t = tool as any;
       for (const schema of objectVariants(t.function.parameters)) {
         for (const [key, value] of Object.entries(schema.properties)) {
-          expect((value as any).type, `${t.function.name}.${key} should have a type`).toBeDefined();
+          for (const variant of objectVariants(value)) {
+            expect(variant.type, `${t.function.name}.${key} should have a type`).toBeDefined();
+          }
         }
       }
     }

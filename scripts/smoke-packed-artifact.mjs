@@ -301,7 +301,7 @@ try {
   const names = listed.tools.map((tool) => tool.name).sort();
   assert.deepEqual(
     names,
-    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'recall', 'remember', 'task_state', 'user_patterns'],
+    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'recall', 'remember', 'task_state', 'user_patterns', 'work_package'],
     'installed MCP server exposed an unexpected tool surface'
   );
 

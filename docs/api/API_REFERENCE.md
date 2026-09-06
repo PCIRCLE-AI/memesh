@@ -16,7 +16,23 @@ MeMesh exposes 12 tools via MCP.
 
 ### work_package
 
-Prepare one bounded calendar-selected untrusted digest package, submit one strictly validated digest into pending human review, or defer without durable change. Agents cannot apply or reject packages; package hashes identify freshness, not authentication.
+Prepare one bounded untrusted package, submit exactly one strictly validated result into pending human review, or defer without durable change. `kind: "digest"` selects a calendar cluster; `kind: "transcript"` selects visible turns from the newest available session for the current project. The same tool and existing proposal review path handle both kinds: this adds no relation kind and no second API or UI path.
+
+`prepare` returns at most one package (or `none_available`). The agent must either submit one result bound to the returned `package_id` and `ref`, or defer with a listed reason. `submit` only stages a `pending` proposal for human review; agents cannot apply or reject it. A package is untrusted evidence, and its hash identifies source freshness rather than authentication.
+
+Transcript packages carry only visible user/assistant text, in chronological order, and disclose clipping through `coverage`. They never include hidden reasoning, tool inputs or outputs, a raw transcript, or a transcript path. Neither kind exposes or uses an API key, LLM, embedding, or vector data; no provider is called.
+
+**Input schema:**
+
+| Action | Required fields | Strict result / behavior |
+|--------|-----------------|--------------------------|
+| `prepare` | `project`, `kind` (`"digest"` or `"transcript"`) | Returns one bounded package or `none_available`; unknown fields are rejected. |
+| `submit` | `package_id`, matching `ref`, `result` | One result only. A digest package accepts `type: "digest"`; a transcript package accepts `"decision"`, `"lesson_learned"`, or `"fact"`. Results need a name, 1–100 observations, and 1–50 non-`project:` tags; the encoded result is capped at 16 KiB. |
+| `defer` | `package_id`, matching `ref`, `reason` | Reason is `insufficient_evidence`, `not_now`, or `irrelevant`; this makes no durable change. |
+
+The `ref` is strict and kind-specific. A digest ref has `project`, sorted unique `source_ids`, and `source_hash`; a transcript ref has `project`, `session_id`, `modified_at`, and `source_hash`. Transcript paths are server-resolved and are never input or output. Changed, forged, stale, or mismatched references fail without staging a proposal.
+
+**Responses:** `prepare` returns `{ status: "available", package, available_action: [{ action: "submit", actor: "agent" }, { action: "defer", actor: "agent" }] }`; `submit` returns `{ status: "staged", proposal_id, proposal_status: "pending", review_authority: "human" }`; and `defer` returns `{ status: "deferred", durable_change: false }`. Replaying the identical submission reports the existing proposal; it does not create another one.
 
 ### remember
 

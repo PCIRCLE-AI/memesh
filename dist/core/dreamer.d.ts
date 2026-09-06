@@ -32,6 +32,34 @@ interface ProposedDigest {
     tags: string[];
 }
 export declare function runDreamer(db: MemeshDatabase, llm: LLMConfig | null | undefined, opts?: DreamerOptions): Promise<DreamerResult>;
+type WorkPackageInput = {
+    action: 'prepare';
+    project: string;
+    kind: 'digest' | 'transcript';
+} | ({
+    package_id: string;
+    ref: {
+        kind: 'digest';
+        project: string;
+        source_ids: number[];
+        source_hash: string;
+    } | {
+        kind: 'transcript';
+        project: string;
+        session_id: string;
+        modified_at: string;
+        source_hash: string;
+    };
+} & ({
+    action: 'submit';
+    result: ProposedDigest & {
+        type: 'digest' | 'decision' | 'lesson_learned' | 'fact';
+    };
+} | {
+    action: 'defer';
+    reason: 'insufficient_evidence' | 'not_now' | 'irrelevant';
+}));
+export declare function executeWorkPackage(db: MemeshDatabase, input: WorkPackageInput): Record<string, unknown>;
 export interface PatternDetectorOptions {
     project?: string;
     dryRun?: boolean;
