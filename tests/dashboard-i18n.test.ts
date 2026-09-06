@@ -490,4 +490,26 @@ describe('dashboard i18n', () => {
     const missing = [...new Set(codes)].filter((code) => !englishKeys!.has(`doctor.msg.${code}.summary`));
     expect(missing, 'warn/fail variants with no translation catalogue entry').toEqual([]);
   });
+
+  it('keeps telemetry failure remediation flow-specific and outside doctor probes in every locale', () => {
+    const key = 'doctor.msg.llm-telemetry.silent-failure.fix';
+    const entries = parseTranslationEntries();
+    const doctorSrc = readFileSync('src/core/doctor.ts', 'utf8');
+    const healthStart = doctorSrc.indexOf('function inspectLlmTelemetryHealth(');
+    const healthEnd = doctorSrc.indexOf('\nfunction ', healthStart + 1);
+    const healthSource = doctorSrc.slice(healthStart, healthEnd);
+
+    expect(healthStart, 'doctor.ts no longer contains the telemetry health check').toBeGreaterThanOrEqual(0);
+    expect(healthEnd, 'doctor.ts no longer has a boundary after the telemetry health check').toBeGreaterThan(healthStart);
+    expect(healthSource).toContain('memesh telemetry --flow <flow>');
+    expect(healthSource).not.toContain('memesh doctor --probe');
+
+    for (const [locale, values] of entries) {
+      const fix = values.get(key);
+      expect(fix, `${locale}: missing telemetry failure remediation`).toBeDefined();
+      expect(fix, `${locale}: remediation must select a failing flow`).toContain('memesh telemetry --flow <flow>');
+      expect(fix, `${locale}: remediation must point outside MeMesh`).toContain('MeMesh');
+      expect(fix, `${locale}: doctor probes do not test chat flows`).not.toContain('--probe');
+    }
+  });
 });

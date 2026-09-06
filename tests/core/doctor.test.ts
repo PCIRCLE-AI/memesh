@@ -4026,6 +4026,16 @@ describe('Claude Channel registration diagnostic', () => {
     expect(channelRow(result)).toMatchObject({ status: 'pass', informational: true });
   });
 
+  it.skipIf(process.platform === 'win32')('rejects an executable whose only execute bit is not usable by its owner', async () => {
+    const target = channelTarget('configured.json');
+    const command = channelCommand('memesh-host-claude', 0o001);
+    const result = await runChannelCase(
+      { mcpServers: { 'memesh-channel': { command, args: ['--config', target] } } }, { path: target },
+    );
+    expect(channelRow(result)).toMatchObject({ status: 'warn' });
+    expect(channelRow(result)?.summary).toMatch(/command or --config declaration is malformed/i);
+  });
+
   it.skipIf(process.platform === 'win32')('rejects relative, lookalike, missing, broken, directory, and non-executable absolute commands', async () => {
     const target = channelTarget('configured.json');
     const missingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));

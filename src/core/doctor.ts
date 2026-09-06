@@ -2234,7 +2234,9 @@ function isClaudeChannelCommand(command: unknown): boolean {
   try {
     const target = fs.realpathSync(command);
     const stat = fs.statSync(target);
-    return stat.isFile() && (stat.mode & 0o111) !== 0;
+    if (!stat.isFile()) return false;
+    fs.accessSync(target, fs.constants.X_OK);
+    return true;
   } catch {
     return false;
   }
@@ -3062,8 +3064,8 @@ function inspectLlmTelemetryHealth(
       'warn',
       `${broken.length} AI-backed feature${broken.length === 1 ? '' : 's'} failed every call in the last `
         + `${windowDays} days: ${detail}. Those features are silently doing nothing.`,
-      'Run `memesh telemetry` for the full per-flow detail, then check the model/provider configured for '
-        + 'the failing flow. `memesh doctor --probe` confirms whether it answers a live call.',
+      'Run `memesh telemetry --flow <flow>` for that flow\'s detail, then check its provider and network '
+        + 'configuration outside MeMesh.',
       { code: 'llm-telemetry.silent-failure', params: { count: broken.length, detail, windowDays } },
     );
   }
