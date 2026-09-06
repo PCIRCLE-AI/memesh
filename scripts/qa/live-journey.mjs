@@ -72,6 +72,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getProjectName } from '../../dist/core/paths.js';
@@ -607,7 +608,7 @@ export function assertNoHostOutcomeReceipts(receipts, expected) {
  * invocations. Extra, duplicate, crossed, or rewritten envelopes all fail.
  *
  * @param {unknown[]} invocations task-owned codex queue records
- * @param {Array<{sessionId: string, messageId: string, deliveryId: string}>} messages
+ * @param {Array<{sessionId: string, messageId: string, deliveryId: string, project: string, sender: string, contentType: string, payload: unknown, fetched?: unknown}>} messages
  */
 export function assertExactCodexQueueRouting(invocations, messages) {
   if (!Array.isArray(invocations) || invocations.length !== messages.length) {
@@ -627,11 +628,55 @@ export function assertExactCodexQueueRouting(invocations, messages) {
     if (serialized?.message_type !== 'memesh_message'
       || serialized?.delivery_id !== message.deliveryId
       || envelope?.message_id !== message.messageId
-      || envelope?.recipient !== message.sessionId) {
+      || envelope?.project !== message.project
+      || envelope?.sender !== message.sender
+      || envelope?.recipient !== message.sessionId
+      || envelope?.target_kind !== 'session'
+      || envelope?.content_type !== message.contentType
+      || !isDeepStrictEqual(envelope?.payload, message.payload)
+      || (message.fetched !== undefined && !isDeepStrictEqual(envelope, message.fetched))) {
       throw new Error(`The native queue envelope crossed exact-session boundaries: ${JSON.stringify(serialized)}.`);
     }
     return { message, invocation, envelope };
   });
+}
+
+/**
+ * Require the recipient MCP client to read back the exact durable envelope.
+ * The delivery id is checked separately against both the send response and
+ * native queue record because fetch intentionally omits delivery bookkeeping.
+ *
+ * @param {unknown} fetched parsed `message fetch` response
+ * @param {{messageId: string, project: string, sender: string, recipient: string, contentType: string, payload: unknown}} expected
+ */
+export function assertMcpFetchedMessage(fetched, expected) {
+  if (fetched === null || typeof fetched !== 'object') throw new Error('MCP fetch returned no JSON object.');
+  const record = /** @type {Record<string, unknown>} */ (fetched);
+  if (record.message_id !== expected.messageId
+    || record.project !== expected.project
+    || record.sender !== expected.sender
+    || record.recipient !== expected.recipient
+    || record.target_kind !== 'session'
+    || record.content_type !== expected.contentType
+    || !isDeepStrictEqual(record.payload, expected.payload)) {
+    throw new Error(`MCP fetch returned an identity-, scope-, or payload-mismatched message: ${JSON.stringify(record)}.`);
+  }
+  return record;
+}
+
+/** @param {unknown} result @param {{label: string, error: RegExp, sentinel: string}} expected */
+export function assertMcpDenied(result, expected) {
+  const record = result !== null && typeof result === 'object'
+    ? /** @type {Record<string, unknown>} */ (result)
+    : {};
+  const text = Array.isArray(record.content)
+    ? record.content.filter((block) => block?.type === 'text').map((block) => block.text).join('\n')
+    : '';
+  if (record.isError !== true || !expected.error.test(text)) {
+    throw new Error(`${expected.label} did not fail with the expected MCP error: ${text || '<empty>'}`);
+  }
+  if (text.includes(expected.sentinel)) throw new Error(`${expected.label} leaked the private payload sentinel.`);
+  return text;
 }
 
 /**
@@ -893,8 +938,8 @@ class Journey {
     return this.cliJson(['message', 'discover', '--project', this.project]);
   }
 
-  async mcpDiscover(expected) {
-    const clients = [0, 1].map((index) => new Client({ name: `live-journey-discover-${index}`, version: '1.0.0' }));
+  async withMcpClients(expected, scenario) {
+    const clients = [0, 1].map((index) => new Client({ name: `live-journey-message-${index}`, version: '1.0.0' }));
     const transports = clients.map(() => new StdioClientTransport({
       command: process.execPath,
       args: [dist('dist/mcp/server.js')],
@@ -906,7 +951,7 @@ class Journey {
         name: 'message',
         arguments: { action: 'discover', project: this.project, limit: 50 },
       })));
-      return results.map((result, index) => {
+      const discoveries = results.map((result, index) => {
         if (result?.isError) throw new Error(`Packaged MCP discover client ${index + 1} returned an error.`);
         const text = result?.content?.find((block) => block?.type === 'text')?.text;
         if (typeof text !== 'string') throw new Error(`Packaged MCP discover client ${index + 1} returned no JSON text.`);
@@ -914,9 +959,21 @@ class Journey {
         try { discovered = JSON.parse(text); } catch { throw new Error(`Packaged MCP discover client ${index + 1} returned invalid JSON.`); }
         return assertMcpDiscoverCards(discovered, expected);
       });
+      return { discoveries, result: await scenario(clients) };
     } finally {
       await Promise.all(clients.map((client) => client.close()));
     }
+  }
+
+  async mcpJson(client, arguments_, label) {
+    const result = await client.callTool({ name: 'message', arguments: arguments_ });
+    if (result?.isError) {
+      const text = result?.content?.find((block) => block?.type === 'text')?.text;
+      throw new Error(`${label} returned an MCP error: ${typeof text === 'string' ? text : '<empty>'}`);
+    }
+    const text = result?.content?.find((block) => block?.type === 'text')?.text;
+    if (typeof text !== 'string') throw new Error(`${label} returned no JSON text.`);
+    try { return JSON.parse(text); } catch { throw new Error(`${label} returned invalid JSON.`); }
   }
 
   watch(recipient) {
@@ -1493,26 +1550,100 @@ async function runCodexSessionAutoRegistration(journey) {
     })),
   });
 
-  const mcpDiscoveries = await journey.mcpDiscover([
+  const mcpRun = await journey.withMcpClients([
     { session_id: firstCard.session_id, principal_id: firstCard.principal_id, project: firstCard.project },
     { session_id: secondCard.session_id, principal_id: secondCard.principal_id, project: secondCard.project },
-  ]);
+  ], async ([clientA, clientB]) => {
+    const sentinel = `codex-auto-mcp-a-to-b-${randomUUID().slice(0, 8)}`;
+    const payload = {
+      qa_sentinel: sentinel,
+      instruction: 'No action required. MeMesh owner-run live journey check; run no commands.',
+    };
+    const sender = firstCard.principal_id;
+    const sentResult = await journey.mcpJson(clientA, {
+      action: 'send', project: journey.project, sender, recipient: secondThreadId,
+      target_kind: 'session', idempotency_key: sentinel, payload,
+      content_type: 'application/json', privacy: 'private',
+    }, 'Packaged MCP client A send');
+    const accepted = assertNativeAccepted(sentResult, {
+      adapterKind: 'codex-cli-queue', recipient: secondThreadId,
+    });
+    const fetched = await journey.mcpJson(clientB, {
+      action: 'fetch', project: journey.project, recipient: secondThreadId,
+      target_kind: 'session', message_id: accepted.messageId,
+    }, 'Packaged MCP client B fetch');
+    const exactFetched = assertMcpFetchedMessage(fetched, {
+      messageId: accepted.messageId, project: journey.project, sender,
+      recipient: secondThreadId, contentType: 'application/json', payload,
+    });
+
+    const deniedFetches = [
+      ['wrong project', { project: `${journey.project}-wrong`, recipient: secondThreadId, target_kind: 'session' }],
+      ['wrong recipient', { project: journey.project, recipient: threadId, target_kind: 'session' }],
+      ['wrong target kind', { project: journey.project, recipient: secondThreadId, target_kind: 'principal' }],
+    ];
+    for (const [label, scope] of deniedFetches) {
+      const denied = await clientB.callTool({
+        name: 'message', arguments: { action: 'fetch', ...scope, message_id: accepted.messageId },
+      });
+      assertMcpDenied(denied, { label: `MCP client B ${label} fetch`, error: /not available/i, sentinel });
+    }
+
+    const inventedSentinel = `codex-auto-invented-${randomUUID().slice(0, 8)}`;
+    const invented = await clientA.callTool({
+      name: 'message',
+      arguments: {
+        action: 'send', project: journey.project, sender,
+        recipient: `01a0${randomUUID().slice(4)}`, target_kind: 'session',
+        idempotency_key: inventedSentinel, payload: { qa_sentinel: inventedSentinel },
+        content_type: 'application/json', privacy: 'private',
+      },
+    });
+    assertMcpDenied(invented, {
+      label: 'MCP client A invented-recipient send', error: /recipient_unavailable/, sentinel: inventedSentinel,
+    });
+    return {
+      sent: {
+        sessionId: secondThreadId, sentinel, project: journey.project, sender,
+        contentType: 'application/json', payload, fetched: exactFetched, ...accepted,
+      },
+      deniedFetchScopes: deniedFetches.map(([label]) => label),
+      inventedRecipientFailedClosed: true,
+    };
+  });
   await journey.assertLegacyRouterUntouched();
-  journey.step('two independent packaged MCP clients concurrently discovered the same live cards', {
-    client_results: mcpDiscoveries.map((cards) => cards.map((card) => ({
+  journey.step('two packaged MCP clients stayed connected through discover and A-to-B send/fetch', {
+    client_results: mcpRun.discoveries.map((cards) => cards.map((card) => ({
       session_id: card.session_id,
       principal_id: card.principal_id,
       generation: card.generation,
     }))),
+    message_id: mcpRun.result.sent.messageId,
+    delivery_id: mcpRun.result.sent.deliveryId,
+    recipient: mcpRun.result.sent.sessionId,
+    sentinel: mcpRun.result.sent.sentinel,
+    denied_fetch_scopes: mcpRun.result.deniedFetchScopes,
+    invented_recipient_failed_closed: mcpRun.result.inventedRecipientFailedClosed,
     legacy_socket_retained: true,
   });
 
-  const sent = [];
-  for (const [sessionId, label] of [[threadId, 'first'], [secondThreadId, 'second']]) {
-    const sentinel = `codex-auto-${label}-${randomUUID().slice(0, 8)}`;
-    const message = journey.sendAccepted(sessionId, sentinel, sentinel, 'codex-cli-queue');
-    sent.push({ sessionId, sentinel, ...message });
-  }
+  const cliSentinel = `codex-auto-first-${randomUUID().slice(0, 8)}`;
+  const cliPayload = {
+    qa_sentinel: cliSentinel,
+    instruction: 'No action required. MeMesh owner-run live journey check; run no commands.',
+  };
+  const sent = [
+    mcpRun.result.sent,
+    {
+      sessionId: threadId,
+      sentinel: cliSentinel,
+      project: journey.project,
+      sender: 'memesh-live-journey-harness',
+      contentType: 'application/json',
+      payload: cliPayload,
+      ...journey.sendAccepted(threadId, cliSentinel, cliSentinel, 'codex-cli-queue'),
+    },
+  ];
   for (const { message, invocation } of assertExactCodexQueueRouting(
     journey.readCodexQueueInvocations(), sent,
   )) {

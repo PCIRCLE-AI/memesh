@@ -36,6 +36,8 @@ import {
   assertNoHostOutcomeReceipts,
   assertIntakeReceipt,
   assertMcpDiscoverCards,
+  assertMcpDenied,
+  assertMcpFetchedMessage,
   assertNativeAccepted,
   assertNotCi,
   assertSupportedPlatform,
@@ -637,15 +639,23 @@ describe('assertNoHostOutcomeReceipts', () => {
 
 describe('assertExactCodexQueueRouting', () => {
   const messages = [
-    { sessionId: 'thread-a', messageId: 'message-a', deliveryId: 'delivery-a' },
-    { sessionId: 'thread-b', messageId: 'message-b', deliveryId: 'delivery-b' },
+    { sessionId: 'thread-a', messageId: 'message-a', deliveryId: 'delivery-a', project: 'project', sender: 'sender-a', contentType: 'application/json', payload: { qa_sentinel: 'sentinel-a' } },
+    { sessionId: 'thread-b', messageId: 'message-b', deliveryId: 'delivery-b', project: 'project', sender: 'sender-b', contentType: 'application/json', payload: { qa_sentinel: 'sentinel-b' } },
   ];
   const invocation = (message: (typeof messages)[number]) => ({
     thread_id: message.sessionId,
     serialized_message: JSON.stringify({
       message_type: 'memesh_message',
       delivery_id: message.deliveryId,
-      envelope: { message_id: message.messageId, recipient: message.sessionId },
+      envelope: {
+        message_id: message.messageId,
+        project: message.project,
+        sender: message.sender,
+        recipient: message.sessionId,
+        target_kind: 'session',
+        content_type: message.contentType,
+        payload: message.payload,
+      },
     }),
   });
 
@@ -664,6 +674,58 @@ describe('assertExactCodexQueueRouting', () => {
       invocation(messages[0]),
       { ...invocation(messages[1]), thread_id: 'thread-b', serialized_message: invocation(messages[0]).serialized_message },
     ], messages)).toThrow(/crossed exact-session boundaries/);
+  });
+
+  it('rejects a native envelope whose private payload differs despite matching ids', () => {
+    const wrongPayload = invocation(messages[0]);
+    const serialized = JSON.parse(wrongPayload.serialized_message);
+    serialized.envelope.payload = { qa_sentinel: 'wrong' };
+    wrongPayload.serialized_message = JSON.stringify(serialized);
+    expect(() => assertExactCodexQueueRouting([
+      wrongPayload, invocation(messages[1]),
+    ], messages)).toThrow(/crossed exact-session boundaries/);
+  });
+});
+
+describe('MCP message readback and access denial', () => {
+  const expected = {
+    messageId: MESSAGE_ID,
+    project: 'memesh-live-journey',
+    sender: 'codex-thread-a',
+    recipient: THREAD,
+    contentType: 'application/json',
+    payload: { qa_sentinel: SENTINEL, body: 'unpredictable payload' },
+  };
+  const fetched = {
+    message_id: expected.messageId,
+    project: expected.project,
+    sender: expected.sender,
+    recipient: expected.recipient,
+    target_kind: 'session',
+    content_type: expected.contentType,
+    payload: expected.payload,
+  };
+
+  it('accepts only an exact project, recipient, content type, and payload readback', () => {
+    expect(assertMcpFetchedMessage(fetched, expected)).toMatchObject(fetched);
+  });
+
+  it('rejects matching ids with the wrong project, recipient, or payload', () => {
+    expect(() => assertMcpFetchedMessage({ ...fetched, project: 'wrong' }, expected)).toThrow(/scope.*payload-mismatched/);
+    expect(() => assertMcpFetchedMessage({ ...fetched, recipient: 'wrong' }, expected)).toThrow(/scope.*payload-mismatched/);
+    expect(() => assertMcpFetchedMessage({ ...fetched, payload: { qa_sentinel: 'wrong' } }, expected)).toThrow(/scope.*payload-mismatched/);
+  });
+
+  it('requires explicit MCP failure without echoing the private sentinel', () => {
+    const denied = { isError: true, content: [{ type: 'text', text: 'Agent message is not available.' }] };
+    expect(assertMcpDenied(denied, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL }))
+      .toContain('not available');
+    expect(() => assertMcpDenied({ ...denied, isError: false }, {
+      label: 'wrong scope', error: /not available/, sentinel: SENTINEL,
+    })).toThrow(/did not fail/);
+    expect(() => assertMcpDenied({
+      isError: true, content: [{ type: 'text', text: `not available: ${SENTINEL}` }],
+    }, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL })).toThrow(/leaked/);
   });
 });
 
