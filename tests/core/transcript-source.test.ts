@@ -42,7 +42,7 @@ function seedSession(cwd: string, sessionId: string, lines: number, ageDays: num
   const dir = path.join(root, projectTranscriptSlug(cwd));
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${sessionId}.jsonl`);
-  fs.writeFileSync(file, Array.from({ length: lines }, (_, i) => `{"i":${i}}`).join('\n') + '\n');
+  fs.writeFileSync(file, Array.from({ length: lines }, (_, i) => JSON.stringify({ i, cwd })).join('\n') + '\n');
   const t = Date.now() - ageDays * 86400_000;
   fs.utimesSync(file, new Date(t), new Date(t));
   return file;
@@ -84,6 +84,22 @@ describe('work-package source boundary', () => {
       sources: [{ role: 'user', text: 'Visible fixture ***REDACTED***' }],
     });
     expect(JSON.stringify(response)).not.toContain(secret);
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
+  });
+
+  it('rejects cwd-less foreign work-package content under a colliding project slug', () => {
+    cwd = path.join(root, 'my-project');
+    const foreign = path.join(root, 'my_project');
+    fs.mkdirSync(cwd);
+    fs.mkdirSync(foreign);
+    vi.mocked(process.cwd).mockReturnValue(cwd);
+    project = getProjectName(cwd);
+    expect(projectTranscriptSlug(cwd)).toBe(projectTranscriptSlug(foreign));
+    const file = seedSession(foreign, 'cwd-less-foreign', 1, 0);
+    fs.writeFileSync(file, JSON.stringify({ type: 'user', message: { content: 'FOREIGN_PRIVATE_TEXT' } }));
+    const response = prepare();
+    expect(response).toEqual({ status: 'none_available', selection_mode: 'newest_session', available_action: [] });
+    expect(JSON.stringify(response)).not.toContain('FOREIGN_PRIVATE_TEXT');
     expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
   });
 
@@ -253,7 +269,7 @@ describe('transcript-source slug-collision guard', () => {
       JSON.stringify({ type: 'user', cwd: '/p/my-project', text: 'hi' }),
     ].join('\n');
     expect(recordedCwd(text)).toBe('/p/my-project');
-    // No cwd anywhere → null (best-effort; can't verify, so scan includes it).
+    // No cwd anywhere → null: discovery cannot verify project ownership.
     expect(recordedCwd(JSON.stringify({ type: 'user', text: 'hi' }))).toBe(null);
   });
 
@@ -270,10 +286,11 @@ describe('transcript-source slug-collision guard', () => {
     expect(underscore.map((s) => s.sessionId)).toEqual(['underscore-sess']);
   });
 
-  it('a session with NO recorded cwd is still included (best-effort, cannot verify)', () => {
-    seedWithCwd('/p/solo', 'no-cwd-sess', null);
-    const found = scanTranscripts({ cwd: '/p/solo', windowDays: 3 });
-    expect(found.map((s) => s.sessionId)).toEqual(['no-cwd-sess']);
+  it('rejects cwd-less sessions for both projects under a colliding slug', () => {
+    expect(projectTranscriptSlug('/p/my-project')).toBe(projectTranscriptSlug('/p/my_project'));
+    seedWithCwd('/p/my_project', 'no-cwd-sess', null);
+    expect(scanTranscripts({ cwd: '/p/my-project', windowDays: 3 })).toEqual([]);
+    expect(scanTranscripts({ cwd: '/p/my_project', windowDays: 3 })).toEqual([]);
   });
 
   it('normalises both sides of the cwd compare so a cosmetic difference is not a false skip', () => {

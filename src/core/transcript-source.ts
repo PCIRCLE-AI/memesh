@@ -99,7 +99,7 @@ function sameProjectPath(a: string, b: string): boolean {
 /** Check project identity on the same byte snapshot the caller will consume. */
 export function transcriptMatchesProject(bytes: Buffer, cwd: string): boolean {
   const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString('utf8'));
-  return sessionCwd === null || sameProjectPath(sessionCwd, cwd);
+  return sessionCwd !== null && sameProjectPath(sessionCwd, cwd);
 }
 
 export interface TranscriptSession {

@@ -39,7 +39,7 @@ function sameProjectPath(a, b) {
 }
 export function transcriptMatchesProject(bytes, cwd) {
     const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString('utf8'));
-    return sessionCwd === null || sameProjectPath(sessionCwd, cwd);
+    return sessionCwd !== null && sameProjectPath(sessionCwd, cwd);
 }
 export function scanTranscripts(opts = {}) {
     const cwd = opts.cwd && opts.cwd.length > 0 ? opts.cwd : process.cwd();

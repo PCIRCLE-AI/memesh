@@ -55,9 +55,9 @@ function stubLLM(text: string): void {
 }
 
 /** Write a JSONL transcript from a list of {type, content} entries. */
-function writeTranscript(dir: string, sessionId: string, entries: Array<{ type: string; content: unknown }>): string {
+function writeTranscript(dir: string, sessionId: string, entries: Array<{ type: string; content: unknown }>, cwd?: string): string {
   const path = join(dir, `${sessionId}.jsonl`);
-  const lines = entries.map((e) => JSON.stringify({ type: e.type, message: { role: e.type, content: e.content } }));
+  const lines = entries.map((e) => JSON.stringify({ type: e.type, cwd, message: { role: e.type, content: e.content } }));
   writeFileSync(path, lines.join('\n') + '\n');
   const now = Date.now();
   utimesSync(path, new Date(now), new Date(now));
@@ -627,7 +627,7 @@ describe('transcript-extractor: orchestrator end-to-end', () => {
   function seedSessionFile(): void {
     const dir = join(projectsDir, projectTranscriptSlug(cwd));
     mkdirSync(dir, { recursive: true });
-    writeTranscript(dir, 'sess-run', CONTRADICTION_ENTRIES);
+    writeTranscript(dir, 'sess-run', CONTRADICTION_ENTRIES, cwd);
   }
 
   it('scans → extracts → stages, and is idempotent on re-run', async () => {
@@ -707,7 +707,7 @@ describe('transcript-extractor: orchestrator end-to-end', () => {
         ? `Turn ${i}: a sentence about the parser decision worth some length.`
         : [{ type: 'text', text: `Turn ${i}: reasoning about the parser decision, some length.` }],
     }));
-    writeTranscript(dir, 'sess-big', entries);
+    writeTranscript(dir, 'sess-big', entries, cwd);
     stubLLM(JSON.stringify([]));
     const res = await runTranscriptSource(db, FAKE_LLM, { cwd, windowDays: 3, chunkCharBudget: 80 });
     expect(res.truncatedTurns).toBeGreaterThan(0);
