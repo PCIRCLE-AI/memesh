@@ -51,7 +51,7 @@ function seed(fn: (db: Db) => void): void {
   const db = openDatabase(dbPath);
   fn(db);
   db.prepare(
-    'DELETE FROM memesh_metadata WHERE key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ?',
+    'DELETE FROM memesh_metadata WHERE key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ?',
   ).run(
     `${SESSION_DEDUPE_KEY}%`,
     `${ZERO_EDIT_RETRACT_KEY}%`,
