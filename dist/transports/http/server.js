@@ -358,9 +358,11 @@ app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (dat
     return conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval };
 }));
 app.post('/v1/forget', (req, res) => handlePost(ForgetBody, req, res, forget));
-app.post('/v1/consolidate', (_req, res) => {
-    res.status(410).json({ success: false, errorCode: 'route.retired', error: RETIRED_ROUTES['/v1/consolidate'] });
-});
+for (const [retiredRoute, error] of Object.entries(RETIRED_ROUTES)) {
+    app.post(retiredRoute, (_req, res) => {
+        res.status(410).json({ success: false, errorCode: 'route.retired', error });
+    });
+}
 app.post('/v1/export', (req, res) => handlePost(ExportBody, req, res, exportMemories));
 app.post('/v1/import', (req, res) => handlePost(ImportBody, req, res, importMemories));
 app.post('/v1/learn', (req, res) => handlePost(LearnBody, req, res, (data) => learn({ ...data, sourceHost: 'http' })));
@@ -401,9 +403,6 @@ app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => 
         limit: data.limit,
     });
 }));
-app.post('/v1/verify', (_req, res) => {
-    res.status(410).json({ success: false, errorCode: 'route.retired', error: RETIRED_ROUTES['/v1/verify'] });
-});
 app.get('/v1/config', (_req, res) => handleGet(res, () => ({
     config: ConfigBody.strip().parse(readConfig()),
 })));

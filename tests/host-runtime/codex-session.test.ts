@@ -142,6 +142,41 @@ describe('ordinary Codex session companion', () => {
     expect(identity).not.toHaveProperty('work_summary');
   });
 
+  it.skipIf(process.platform === 'win32')('ignores a deleted legacy workspace before reading its stale token file', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const deletedWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-deleted-'));
+    fs.rmSync(deletedWorkspace, { recursive: true });
+    const connect = vi.fn(async () => ({ connection_id: 'automatic', generation: 1, close: async () => undefined }));
+
+    await startCodexSessionCompanion(
+      { ...config, workspace: deletedWorkspace, token_file: path.join(deletedWorkspace, 'missing.token') },
+      hook,
+      { PLUGIN_ROOT: '/plugin' },
+      { connect: connect as never },
+    );
+
+    expect(connect).toHaveBeenCalledWith(expect.objectContaining({
+      socket_path: path.join(dataDir, 'agent-router-v2.sock'),
+      identity: expect.objectContaining({
+        project: getProjectName(config.workspace as string),
+        principal_id: `codex-thread-${threadId}`,
+      }),
+    }));
+  });
+
+  it.skipIf(process.platform === 'win32')('still rejects a missing token for the matching explicit workspace', async () => {
+    const { config, hook } = fixture();
+    const missingToken = path.join(config.workspace as string, 'missing.token');
+    const connect = vi.fn();
+
+    await expect(startCodexSessionCompanion(
+      { ...config, token_file: missingToken }, hook, { PLUGIN_ROOT: '/plugin' }, { connect: connect as never },
+    )).rejects.toMatchObject({ code: 'ENOENT' });
+
+    expect(connect).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['wrong event', { hook_event_name: 'PreCompact' }, { PLUGIN_ROOT: '/plugin' }],
     ['no hook identity', { session_id: undefined }, { PLUGIN_ROOT: '/plugin' }],
@@ -221,20 +256,22 @@ describe('ordinary Codex session companion', () => {
     expect(fs.existsSync(dataDir)).toBe(false);
   });
 
-  it.skipIf(process.platform === 'win32')('does not bypass an insecure explicit override from another workspace', async () => {
+  it.skipIf(process.platform === 'win32')('does not inspect an unrelated workspace token before automatic registration', async () => {
     const { config, hook } = fixture();
     const dataDir = automaticDataDir(config.workspace as string);
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-other-'));
     tempDirs.push(other);
     fs.chmodSync(config.token_file as string, 0o644);
-    const connect = vi.fn();
+    const connect = vi.fn(async () => ({ connection_id: 'automatic', generation: 1, close: async () => undefined }));
 
-    await expect(startCodexSessionCompanion(
+    await startCodexSessionCompanion(
       config, { ...hook, cwd: other }, { PLUGIN_ROOT: '/plugin' }, { connect: connect as never },
-    )).rejects.toThrow(/router token file must be owner-private/i);
+    );
 
-    expect(connect).not.toHaveBeenCalled();
-    expect(fs.existsSync(dataDir)).toBe(false);
+    expect(connect).toHaveBeenCalledWith(expect.objectContaining({
+      socket_path: path.join(dataDir, 'agent-router-v2.sock'),
+      identity: expect.objectContaining({ project: getProjectName(other) }),
+    }));
   });
 
   it.runIf(process.platform === 'win32')('fails closed before connecting to the router', async () => {

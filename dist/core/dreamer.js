@@ -185,7 +185,7 @@ export function executeWorkPackage(db, input) {
                 for (let i = turns.length - 1; i >= 0 && sources.length < 100; i--) {
                     const size = Buffer.byteLength(JSON.stringify(turns[i])) + (sources.length > 0 ? 1 : 0);
                     if (sourceBytes + size > 49152)
-                        continue;
+                        break;
                     sources.push(turns[i]);
                     sourceBytes += size;
                 }

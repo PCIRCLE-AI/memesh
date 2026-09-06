@@ -24,8 +24,9 @@ host is recallable from all of them. Not installed yet? Follow
 3. **"What do you remember?"** — call `briefing` and relay its content. Do
    not answer from your own conversation context.
 4. **When memory could be condensed or recovered from this conversation** —
-   offer one short in-session choice when the host supports interactive prompts:
-   **Dispatch agent task**, **Later**, or **Don't suggest again this session**.
+   when the host supports interactive prompts, offer concise choices in the
+   user's conversation language, such as **Dispatch agent task**, **Later**, or
+   **Don't suggest again this session**.
    The last choice suppresses only this session's prompt; it does not create a
    durable opt-out. Dispatch means
    using `work_package` in this already-running agent session; it does not mean

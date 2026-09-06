@@ -124,6 +124,13 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     expect(invalid.response.isError).toBe(true);
     expect(invalid.data.error).toBe('invalid_input');
     expect(proposalCount()).toMatchObject({ n: 0 });
+    const secretShaped = await call('work_package', {
+      action: 'submit', package_id: pkg.id, ref: pkg.ref,
+      result: { ...result, observations: [`Synthetic credential ${secret}`] },
+    });
+    expect(secretShaped.response.isError).toBe(true);
+    expect(secretShaped.data.error).toBe('secret_shaped_result');
+    expect(proposalCount()).toMatchObject({ n: 0 });
     const staged = await call('work_package', { action: 'submit', package_id: pkg.id, ref: pkg.ref, result });
     expect(staged.response.isError).not.toBe(true);
     expect(staged.data).toMatchObject({ status: 'staged', proposal_status: 'pending', review_authority: 'human' });
@@ -147,6 +154,41 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     expect(JSON.stringify(transcriptPackage)).not.toMatch(/RUNTIME_PRIVATE|RUNTIME_TOOL|RUNTIME_SCAFFOLDING/);
     expect(JSON.stringify(transcriptPackage)).not.toContain(secret);
     expect(transcriptPackage.ref).not.toHaveProperty('path');
+    const projectMismatch = await call('work_package', {
+      action: 'submit', package_id: transcriptPackage.id,
+      ref: { ...transcriptPackage.ref, project: `${transcriptProject}-foreign` }, result: {
+        name: 'must-not-stage', type: 'decision', observations: ['Bound to the wrong project.'], tags: ['parser'],
+      },
+    });
+    expect(projectMismatch.response.isError).toBe(true);
+    expect(projectMismatch.data.error).toBe('project_mismatch');
+    expect(proposalCount()).toMatchObject({ n: 1 });
+
+    const boundedPath = path.join(transcriptDir, 'bounded-session.jsonl');
+    const writeBoundedSession = (entries: unknown[], modifiedMs: number) => {
+      fs.writeFileSync(boundedPath, entries.map(entry => JSON.stringify(entry)).join('\n'));
+      fs.utimesSync(boundedPath, new Date(modifiedMs), new Date(modifiedMs));
+    };
+    const oversizedTurn = { type: 'user', cwd: runtimeCwd, message: { content: 'x'.repeat(50000) } };
+    const later = Date.now() + 60_000;
+    writeBoundedSession([
+      { type: 'user', cwd: runtimeCwd, message: { content: 'Older turn must not cross the gap.' } },
+      oversizedTurn,
+    ], later);
+    const oversizedNewest = await call('work_package', { action: 'prepare', kind: 'transcript', project: transcriptProject });
+    expect(oversizedNewest.data.package.ref.session_id).toBe('runtime-session');
+    expect(oversizedNewest.data.package).toEqual(transcriptPackage);
+
+    writeBoundedSession([
+      { type: 'user', cwd: runtimeCwd, message: { content: 'Older turn must not cross the gap.' } },
+      oversizedTurn,
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'Newest bounded turn.' }] } },
+    ], later + 1000);
+    const bounded = await call('work_package', { action: 'prepare', kind: 'transcript', project: transcriptProject });
+    expect(bounded.data.package.ref.session_id).toBe('bounded-session');
+    expect(bounded.data.package.sources).toEqual([{ role: 'assistant', text: 'Newest bounded turn.' }]);
+    expect(bounded.data.package.coverage).toEqual({ truncated: true, total_turns: 3, included_turns: 1 });
+    fs.unlinkSync(boundedPath);
     const transcriptDeferred = await call('work_package', { action: 'defer', package_id: transcriptPackage.id, ref: transcriptPackage.ref, reason: 'not_now' });
     expect(transcriptDeferred.data).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
     expect(proposalCount()).toMatchObject({ n: 1 });

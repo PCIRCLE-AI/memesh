@@ -122,6 +122,10 @@ function configuredCodexSessionConfig(
   session: ValidCodexSessionStart,
   realpath: typeof fs.realpathSync,
 ): ResolvedCodexSessionConfig {
+  const configuredWorkspace = resolveConfiguredWorkspace(config.workspace, realpath);
+  if (configuredWorkspace === null || configuredWorkspace !== session.workspace) {
+    return automaticCodexSessionConfig(session);
+  }
   const resolved: ResolvedCodexSessionConfig = {
     router_socket: normalizeConfiguredRouterSocket(config.router_socket),
     auth_token: readTokenFile(config.token_file),
@@ -130,9 +134,22 @@ function configuredCodexSessionConfig(
     ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
     ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
   };
-  const configuredWorkspace = requiredExistingDirectory(config.workspace, 'workspace', realpath);
-  if (configuredWorkspace !== session.workspace) return automaticCodexSessionConfig(session);
   return resolved;
+}
+
+function resolveConfiguredWorkspace(
+  value: unknown,
+  realpath: typeof fs.realpathSync,
+): string | null {
+  const workspace = requiredAbsolutePath(value, 'workspace');
+  try {
+    const resolved = realpath(workspace);
+    if (!fs.statSync(resolved).isDirectory()) throw new Error('workspace must be a directory.');
+    return resolved;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 function automaticCodexSessionConfig(session: ValidCodexSessionStart): ResolvedCodexSessionConfig {

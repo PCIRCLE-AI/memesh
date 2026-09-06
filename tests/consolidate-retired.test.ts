@@ -44,17 +44,8 @@ describe('consolidate is retired', () => {
     expect(fs.existsSync(path.join(repoRoot, 'src/core/consolidator.ts'))).toBe(false);
   });
 
-  it('answers POST /v1/consolidate with 410, not 404', () => {
-    // 404 invites a retry against a different base URL; 410 says the resource
-    // is gone on purpose. A script author reads the difference.
-    const server = fs.readFileSync(path.join(repoRoot, 'src/transports/http/server.ts'), 'utf8');
-    const route = server.slice(server.indexOf("app.post('/v1/consolidate'"));
-    expect(route.slice(0, 600), 'the retired endpoint no longer answers 410').toContain('status(410)');
-    // The message lives in RETIRED_ROUTES (one module feeds both the server
-    // and the route test); assert the data says where to go, and that the
-    // registration actually sends that data.
+  it('keeps a migration signpost for POST /v1/consolidate', () => {
     expect(RETIRED_ROUTES['/v1/consolidate'], 'the 410 body does not name the alternative').toContain('work_package');
-    expect(route.slice(0, 600), 'the registration no longer sends the RETIRED_ROUTES message').toContain("RETIRED_ROUTES['/v1/consolidate']");
   });
 });
 

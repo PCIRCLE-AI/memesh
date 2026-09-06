@@ -67,12 +67,8 @@ describe('verify_agent_work and the orchestration surfaces are retired', () => {
     }
   });
 
-  it('answers POST /v1/verify with 410, not 404', () => {
-    const server = fs.readFileSync(path.join(repoRoot, 'src/transports/http/server.ts'), 'utf8');
-    const route = server.slice(server.indexOf("app.post('/v1/verify'"));
-    expect(route.slice(0, 400), 'the retired endpoint no longer answers 410').toContain('status(410)');
+  it('keeps a migration signpost for POST /v1/verify', () => {
     expect(RETIRED_ROUTES['/v1/verify'], 'the 410 body does not name an alternative').toContain('/v1/remember');
-    expect(route.slice(0, 400), 'the registration no longer sends the RETIRED_ROUTES message').toContain("RETIRED_ROUTES['/v1/verify']");
   });
 
   it('config no longer accepts the removed flag', () => {

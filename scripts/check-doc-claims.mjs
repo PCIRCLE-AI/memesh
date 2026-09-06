@@ -316,8 +316,13 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
 // ARCHITECTURE.md carried "~32 endpoints" in the module list and "17 endpoints"
 // in the transport section — one file, one fact, two numbers, and the wrong one
 // off by fifteen. The count is stated once now, and checked here.
-const routesInCode = (read('src/transports/http/server.ts').match(/^app\.(get|post|put|delete|patch)\(/gm) ?? [])
-  .length;
+const httpServerSource = read('src/transports/http/server.ts');
+const retiredRoutePaths = [...read('src/transports/http/retired-routes.ts').matchAll(/^\s*'(\/v1\/[^']+)':/gm)]
+  .map(m => m[1]);
+const registersRetiredRouteMap = /Object\.entries\(RETIRED_ROUTES\)/.test(httpServerSource)
+  && /app\.post\(retiredRoute,/.test(httpServerSource);
+const routesInCode = (httpServerSource.match(/^app\.(get|post|put|delete|patch)\(/gm) ?? []).length
+  + (registersRetiredRouteMap ? retiredRoutePaths.length : 0);
 const archRoutes = read('docs/ARCHITECTURE.md').match(/default port 3737, (\d+) endpoints/);
 if (routesInCode < 1) fail('found no routes in http/server.ts — the pattern stopped matching');
 else if (!archRoutes) fail('docs/ARCHITECTURE.md no longer states its endpoint count');
@@ -355,9 +360,12 @@ else ok(`${readmes.length} READMEs state no hardcoded test count`);
 // would be invisible here. The floor below (< 20 fails) catches wholesale
 // extraction rot but not one such route; if a multi-line registration ever
 // appears, widen this rather than trusting it.
-const routePaths = [...read('src/transports/http/server.ts').matchAll(/^app\.(?:get|post|put|delete|patch)\((['"`])([^'"`]+)\1/gm)]
-  .map(m => m[2])
-  .filter(p => p.startsWith('/v1/'));
+const routePaths = [
+  ...[...httpServerSource.matchAll(/^app\.(?:get|post|put|delete|patch)\((['"`])([^'"`]+)\1/gm)]
+    .map(m => m[2])
+    .filter(p => p.startsWith('/v1/')),
+  ...(registersRetiredRouteMap ? retiredRoutePaths : []),
+];
 if (routePaths.length < 20) fail(`route extraction found only ${routePaths.length} /v1 paths — the pattern stopped matching`);
 else {
   const apiRef = read('docs/api/API_REFERENCE.md');

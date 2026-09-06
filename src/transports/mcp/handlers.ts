@@ -413,7 +413,9 @@ function stripNullProps(value: unknown): unknown {
   return value;
 }
 
-function parseOrFail<T>(schema: z.ZodType<T>, args: unknown): { ok: true; data: T } | { ok: false; result: ToolResult } {
+function parseOrFail<T>(schema: z.ZodType<T>, args: unknown):
+  | { ok: true; data: T }
+  | { ok: false; message: string; result: ToolResult } {
   const raw = args === undefined || args === null ? {} : args;
 
   // Unknown keys are rejected BEFORE any null-stripping.
@@ -433,9 +435,11 @@ function parseOrFail<T>(schema: z.ZodType<T>, args: unknown): { ok: true; data: 
   if (!strictPass.success) {
     const unknownKeys = strictPass.error.issues.filter((i) => i.code === 'unrecognized_keys');
     if (unknownKeys.length > 0) {
+      const message = unknownKeys.map(formatIssue).join('; ');
       return {
         ok: false,
-        result: fail(unknownKeys.map(formatIssue).join('; ')),
+        message,
+        result: fail(message),
       };
     }
   }
@@ -446,7 +450,7 @@ function parseOrFail<T>(schema: z.ZodType<T>, args: unknown): { ok: true; data: 
       parsed.error instanceof z.ZodError
         ? parsed.error.issues.map(formatIssue).join('; ')
         : String(parsed.error);
-    return { ok: false, result: fail(message) };
+    return { ok: false, message, result: fail(message) };
   }
   return { ok: true, data: parsed.data };
 }
@@ -484,8 +488,13 @@ export async function handleTool(
 ): Promise<ToolResult> {
   try {
     if (name === 'work_package') {
-      const parsed = WorkPackageSchema.safeParse(args);
-      if (!parsed.success) return { ...ok({ status: 'error', error: 'invalid_input', available_action: [] }), isError: true };
+      const parsed = parseOrFail(WorkPackageSchema, args);
+      if (!parsed.ok) {
+        return {
+          ...ok({ status: 'error', error: 'invalid_input', detail: parsed.message, available_action: [] }),
+          isError: true,
+        };
+      }
       const result = executeWorkPackage(getDatabase(), parsed.data);
       return result.status === 'error' ? { ...ok(result), isError: true } : ok(result);
     }

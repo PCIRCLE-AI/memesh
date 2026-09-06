@@ -510,8 +510,9 @@ consequences attached — reasoning you can follow, not just text that matched.
 MeMesh recall and capture stay local and deterministic: SQLite FTS5 search,
 explicit memory tools, and rule-based hooks. When a digest would help, or useful
 knowledge remains in the visible conversation, an already-running agent can use
-`work_package`. On hosts with interactive prompts, the concise choices are
-**Dispatch agent task**, **Later**, and **Don't suggest again this session**.
+`work_package`. On hosts with interactive prompts, the agent may offer concise
+localized choices such as **Dispatch agent task**, **Later**, and **Don't
+suggest again this session**.
 The last choice suppresses only this session's prompt; it does not create a
 durable opt-out. The result is always pending human review; there is no
 background model, provider setup, scheduled mining, or dashboard-side dispatch.

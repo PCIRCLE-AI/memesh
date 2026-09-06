@@ -701,20 +701,11 @@ app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (dat
 // --- Forget / Consolidate / Export / Import / Learn / Verify ---
 // All 6 follow the same shape; handlePost above does the heavy lifting.
 app.post('/v1/forget',      (req, res) => handlePost(ForgetBody, req, res, forget));
-// `/v1/consolidate` is retired, and answers 410 rather than 404 because the two
-// mean different things to a script: 404 reads as a typo or a bad base URL and
-// invites a retry, 410 says the resource is gone on purpose and names what to
-// do instead. The tool compressed an entity's observations by deleting them and
-// writing a generated summary back, with no proposal, no review and no way to
-// recover the originals — see the CHANGELOG entry for what that cost. `dream`
-// does the reviewed version of the same idea.
-//
-// Deletable at the next major, once no caller can plausibly still be pointing
-// here. Until then this line is the only thing standing between a script and a
-// silent 404.
-app.post('/v1/consolidate', (_req, res) => {
-  res.status(410).json({ success: false, errorCode: 'route.retired' satisfies ErrorCode, error: RETIRED_ROUTES['/v1/consolidate'] });
-});
+for (const [retiredRoute, error] of Object.entries(RETIRED_ROUTES)) {
+  app.post(retiredRoute, (_req, res) => {
+    res.status(410).json({ success: false, errorCode: 'route.retired' satisfies ErrorCode, error });
+  });
+}
 app.post('/v1/export',      (req, res) => handlePost(ExportBody, req, res, exportMemories));
 app.post('/v1/import',      (req, res) => handlePost(ImportBody, req, res, importMemories));
 app.post('/v1/learn',       (req, res) => handlePost(LearnBody, req, res, (data) => learn({ ...data, sourceHost: 'http' })));
@@ -766,10 +757,6 @@ app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => 
     limit: data.limit,
   });
 }));
-app.post('/v1/verify', (_req, res) => {
-  res.status(410).json({ success: false, errorCode: 'route.retired' satisfies ErrorCode, error: RETIRED_ROUTES['/v1/verify'] });
-});
-
 app.get('/v1/config', (_req, res) => handleGet(res, () => ({
   config: ConfigBody.strip().parse(readConfig()),
 })));

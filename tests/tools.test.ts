@@ -57,7 +57,7 @@ describe('work_package', () => {
   });
   const snapshot = () => getDatabase().prepare('SELECT total_changes() AS changes').get();
 
-  it('publishes digest/transcript actions with strict nested schemas and structured failures', async () => {
+  it('publishes digest/transcript actions with strict nested schemas and actionable structured failures', async () => {
     const tool = TOOL_DEFINITIONS.find(t => t.name === 'work_package')!;
     expect(tool.description).toContain('transcript');
     const schema = tool.inputSchema as any;
@@ -74,8 +74,12 @@ describe('work_package', () => {
     ]) {
       const response = await handleTool('work_package', input);
       expect(response.isError).toBe(true);
-      expect(payload(response)).toMatchObject({ error: 'invalid_input' });
+      expect(payload(response)).toMatchObject({ error: 'invalid_input', detail: expect.any(String) });
     }
+    const misspelled = payload(await handleTool('work_package', {
+      action: 'defer', package_Id: '0'.repeat(64), ref: {}, reason: 'not_now',
+    }));
+    expect(misspelled.detail).toContain('package_Id');
   });
 
   it('returns one deterministic complete calendar package, or none, without writes', async () => {

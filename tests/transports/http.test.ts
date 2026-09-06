@@ -453,6 +453,14 @@ describe('HTTP Transport: stable errorCode on error envelopes', () => {
     expect(res.body.errorCode).toBe('route.retired');
   });
 
+  it('the retired /v1/verify route carries route.retired on its 410', async () => {
+    const res = await req('POST', '/v1/verify', {});
+    expect(res.status).toBe(410);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error).toContain('/v1/remember');
+    expect(res.body.errorCode).toBe('route.retired');
+  });
+
   it('an unknown route carries route.not-found (legacy `code` field preserved)', async () => {
     const res = await req('GET', '/v1/definitely-not-a-route');
     expect(res.status).toBe(404);

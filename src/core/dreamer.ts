@@ -261,7 +261,7 @@ export function executeWorkPackage(db: MemeshDatabase, input: WorkPackageInput):
         // Prefer recent visible turns, retaining their original chronological order.
         for (let i = turns.length - 1; i >= 0 && sources.length < 100; i--) {
           const size = Buffer.byteLength(JSON.stringify(turns[i])) + (sources.length > 0 ? 1 : 0);
-          if (sourceBytes + size > 49152) continue;
+          if (sourceBytes + size > 49152) break;
           sources.push(turns[i]);
           sourceBytes += size;
         }
