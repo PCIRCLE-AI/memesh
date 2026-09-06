@@ -86,20 +86,20 @@
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C7 README.md:376": {
+    "C7 README.md:384": {
       "class": "SAFE-LINKED-MEASUREMENT",
       "reason": "The benchmark percentage links to the public dataset and repository reproduction procedure.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-06 after Codex zero-config install docs shifted the unchanged statement"
     },
-    "C7 README.md:382": {
+    "C7 README.md:390": {
       "class": "SAFE-LINKED-MEASUREMENT",
       "reason": "The result percentage links directly to the checked-in benchmark results and reproduction commands.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-06 after Codex zero-config install docs shifted the unchanged statement"
     },
-    "C7 README.md:400": {
+    "C7 README.md:408": {
       "class": "SAFE-SOURCE-PINNED",
       "reason": "The five supported intent languages are enumerated in user-prompt-intent.js and covered by its focused tests.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-06 after Codex zero-config install docs shifted the unchanged statement"
     },
     "C1 tests/cli-agent-message-ingress.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
