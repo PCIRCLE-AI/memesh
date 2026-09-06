@@ -197,6 +197,12 @@ describe('--help', () => {
     expect(helpText()).toMatch(/fresh HOME.*fake `codex queue`/);
   });
 
+  it('pins router socket and token state inside the task-owned journey directory', () => {
+    const source = fs.readFileSync(path.resolve('scripts/qa/live-journey.mjs'), 'utf8');
+    expect(source).toMatch(/MEMESH_ROUTER_SOCKET:\s*this\.socketPath/);
+    expect(source).toMatch(/MEMESH_ROUTER_TOKEN_FILE:\s*path\.join\(this\.memeshDir, 'router\.token'\)/);
+  });
+
   it('warns that the launched Claude session is outside the isolation', () => {
     const text = helpText();
     expect(text).toMatch(/OUTSIDE the temporary-directory isolation/);

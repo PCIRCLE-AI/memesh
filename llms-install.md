@@ -125,10 +125,12 @@ from an active ordinary session.
 For an ordinary active local Codex session, install and enable the MeMesh
 Codex plugin (Option A), which supplies the packaged SessionStart hook. On the
 next startup or resume, that thread registers automatically under the current
-project with a thread-scoped principal. Verify live presence with:
+project with a thread-scoped principal. First read the exact automatic project
+value, then copy its `project` field into the discover command:
 
 ```bash
-memesh message discover --project my-project
+memesh briefing --json
+memesh message discover --project '<project from briefing>'
 ```
 
 No manual host setup is required. If one exact workspace needs a stable named

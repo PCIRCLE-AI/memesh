@@ -830,7 +830,16 @@ class Journey {
       error: Object.freeze({ code: 'unsupported_type', message: 'Unsupported router frame type.' }),
     });
     fs.mkdirSync(this.memeshDir, { recursive: true, mode: 0o700 });
-    this.env = { ...process.env, MEMESH_DIR: this.memeshDir, MEMESH_DB_PATH: this.dbPath };
+    // Every process in the journey must use this run's router state. Inheriting
+    // owner-selected endpoint overrides could make an otherwise isolated run
+    // contact a real router or create its token outside the temporary tree.
+    this.env = {
+      ...process.env,
+      MEMESH_DIR: this.memeshDir,
+      MEMESH_DB_PATH: this.dbPath,
+      MEMESH_ROUTER_SOCKET: this.socketPath,
+      MEMESH_ROUTER_TOKEN_FILE: path.join(this.memeshDir, 'router.token'),
+    };
     if (options.mode === 'codex-session-auto-registration') {
       this.home = path.join(this.dir, 'home');
       fs.mkdirSync(this.home, { recursive: true, mode: 0o700 });
