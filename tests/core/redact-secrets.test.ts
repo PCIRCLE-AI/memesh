@@ -175,7 +175,6 @@ describe('the pattern list is safe for the transcript drop gate too', () => {
   it.each(negatives.map((line) => [line.slice(0, 44), line]))(
     'does not drop %s…',
     (_label, line) => {
-      expect(redactSecrets(line) !== line).toBe(false);
       expect(redactSecrets(line)).toBe(line);
     },
   );

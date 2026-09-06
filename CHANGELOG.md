@@ -13,7 +13,9 @@ All notable changes to MeMesh are documented here.
   `work_package`; submission stages a proposal for human review. The Dashboard
   lists, expands, accepts, or rejects proposals that are already staged and
   cannot start or wake an agent. Dashboard settings retain update policy and
-  interface locale.
+  interface locale. After an upgrade, `memesh doctor` safely names any retired
+  provider-related top-level config keys that still remain on disk without
+  reading, printing, or automatically deleting their values.
 
 ## [4.8.5] — 2026-09-05
 

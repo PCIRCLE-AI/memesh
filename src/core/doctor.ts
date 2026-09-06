@@ -5,7 +5,7 @@ import net from 'node:net';
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { execFileSync } from 'child_process';
-import { getConfigPath, readConfig } from './config.js';
+import { findRetiredConfigKeys, getConfigPath, readConfig } from './config.js';
 import {
   openDatabase, closeDatabase, isDatabaseOpen,
 } from '../db.js';
@@ -529,6 +529,23 @@ function inspectConfigFile(
         `${configPath} parsed but is not a JSON object — every setting is being ignored.`,
         `Fix or remove ${configPath}, then re-run memesh doctor.`,
         { code: 'config-parse.not-object', params: { path: configPath } },
+      );
+    }
+    const retiredKeys = findRetiredConfigKeys(parsed);
+    if (retiredKeys.length > 0) {
+      const keys = retiredKeys.join(', ');
+      return createCheck(
+        'config',
+        'Config',
+        'warn',
+        `${configPath} is valid JSON but still contains ${retiredKeys.length} retired top-level setting(s) (${keys}). ` +
+          'This version ignores them, but legacy provider credentials or settings may remain on disk.',
+        `Review ${configPath} locally and remove only those retired top-level keys. ` +
+          'Do not paste the file into an issue because it may contain credentials. Then run memesh doctor again.',
+        {
+          code: 'config-parse.retired-settings',
+          params: { path: configPath, count: retiredKeys.length, keys },
+        },
       );
     }
     return createCheck('config', 'Config', 'pass', `${configPath} is valid JSON and its settings are in effect.`);

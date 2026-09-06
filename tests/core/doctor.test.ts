@@ -12,11 +12,26 @@ function runDoctor(options: Parameters<typeof runDoctorImpl>[0]) {
   return runDoctorImpl({ pluginCacheDiscoveryImpl: () => [], ...options });
 }
 
-it('keeps retired provider diagnostics absent with legacy provider config and no network', async () => {
+it('warns about retired config keys without exposing or changing their values', async () => {
   const root = createPackageRoot();
   tempRoots.push(root);
   const configPath = path.join(root, 'config.json');
-  writeJson(configPath, { llm: { provider: 'ollama' }, embedder: { provider: 'ollama' }, transcriptMining: true });
+  const marker = createHash('sha256').update(`${root}:retired-config-marker`).digest('hex');
+  writeJson(configPath, {
+    llm: { provider: 'openai', apiKey: marker },
+    llmFallbacks: [{ provider: 'anthropic', apiKey: marker }],
+    embedder: { provider: 'openai', credentials: { apiKey: marker } },
+    language: 'zh-TW',
+    transcriptMining: true,
+    autoCapture: false,
+    sessionLimit: 17,
+    autoUpdate: 'off',
+    setupCompleted: true,
+    futureSetting: { keep: true },
+  });
+  if (process.platform !== 'win32') fs.chmodSync(configPath, 0o640);
+  const beforeDigest = createHash('sha256').update(fs.readFileSync(configPath)).digest('hex');
+  const beforeMode = fs.statSync(configPath).mode & 0o777;
   const noFetch = vi.fn(() => { throw new Error('unexpected network'); });
   vi.stubGlobal('fetch', noFetch);
   try {
@@ -32,9 +47,41 @@ it('keeps retired provider diagnostics absent with legacy provider config and no
       resolveShellMemeshImpl: () => null,
       fetchImpl: noFetch as typeof fetch,
     });
+    const serialized = JSON.stringify(result);
+    expect(serialized.includes(marker)).toBe(false);
+    expect(formatDoctorReport(result, '4.0.3').join('\n').includes(marker)).toBe(false);
+    const configCheck = result.checks.find(check => check.id === 'config');
+    expect(configCheck).toMatchObject({
+      status: 'warn',
+      code: 'config-parse.retired-settings',
+      params: {
+        count: 5,
+        keys: 'llm, llmFallbacks, embedder, language, transcriptMining',
+      },
+    });
+    expect(configCheck?.fixId).toBeUndefined();
     for (const check of result.checks) expect(check.id).not.toMatch(/vector|embedding|telemetry|transcript.min|^capabilities$/);
     expect(result.checks.some(check => check.id === 'native-binding')).toBe(true);
     expect(noFetch).not.toHaveBeenCalled();
+
+    const after = fs.readFileSync(configPath);
+    expect(createHash('sha256').update(after).digest('hex')).toBe(beforeDigest);
+    expect(after.toString('utf8').includes(marker)).toBe(true);
+    expect(fs.statSync(configPath).mode & 0o777).toBe(beforeMode);
+    const preserved = JSON.parse(after.toString('utf8'));
+    expect({
+      autoCapture: preserved.autoCapture,
+      sessionLimit: preserved.sessionLimit,
+      autoUpdate: preserved.autoUpdate,
+      setupCompleted: preserved.setupCompleted,
+      futureSetting: preserved.futureSetting,
+    }).toEqual({
+      autoCapture: false,
+      sessionLimit: 17,
+      autoUpdate: 'off',
+      setupCompleted: true,
+      futureSetting: { keep: true },
+    });
   } finally { vi.unstubAllGlobals(); }
 });
 
@@ -296,9 +343,7 @@ describe('doctor', () => {
     tempRoots.push(packageRoot);
 
     const configPath = path.join(packageRoot, 'config.json');
-    writeJson(configPath, {
-      llm: { provider: 'anthropic', model: 'claude-3-5-haiku-latest' },
-    });
+    writeJson(configPath, { autoUpdate: 'off' });
 
     // The new hook-wiring check (added for #25) needs a marker
     // file at MEMESH_DIR/install-hooks.json AND a memesh-attributed

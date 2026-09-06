@@ -429,6 +429,13 @@ All configuration is via environment variables. Defaults are local-only and zero
 
 `memesh doctor` prints the resolved configuration so you can see what's active.
 
+If you upgraded from a release that stored `llm`, `llmFallbacks`, `embedder`,
+`language`, or `transcriptMining` in `~/.memesh/config.json`, `memesh doctor`
+warns that those retired top-level keys remain on disk. MeMesh ignores them
+and never prints their values or deletes them automatically. Review the file
+locally, remove only the named keys, and do not paste the file into an issue
+because it may contain old provider credentials.
+
 When npm flags an installed version as deprecated (typically a security advisory), the next session-start prepends a strong `⚠️ MeMesh <ver> is DEPRECATED` banner and `memesh update-status` surfaces the same line until you upgrade. The check is cached at `~/.memesh/update-check.<version>.json` so a transient network failure can't dim the warning.
 
 ---

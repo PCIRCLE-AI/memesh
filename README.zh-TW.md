@@ -435,6 +435,12 @@ MeMesh 的檢索引擎**只用 FTS5**（熱路徑上不使用 LLM、不使用嵌
 
 `memesh doctor` 會印出已解析的設定，讓你看到目前實際生效的內容。
 
+如果你從曾把 `llm`、`llmFallbacks`、`embedder`、`language` 或
+`transcriptMining` 寫入 `~/.memesh/config.json` 的版本升級，`memesh doctor`
+會警告這些已停用的頂層鍵仍留在磁碟。MeMesh 會忽略它們，不會顯示其值，
+也不會自動刪除。請只在本機檢查該檔案並移除警告列出的鍵；檔案可能含有
+舊版服務供應商憑證，請勿貼到 issue。
+
 當 npm 將已安裝版本標為 deprecated（通常是安全公告），下次 session-start 會在前面附上強警示橫幅 `⚠️ MeMesh <ver> is DEPRECATED`，`memesh update-status` 也會持續顯示同一行直到你升級為止。檢查結果會被快取於 `~/.memesh/update-check.<version>.json`，以避免短暫網路失敗讓警示變淡。
 
 ---

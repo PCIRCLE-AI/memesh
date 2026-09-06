@@ -2,13 +2,14 @@ import fs from 'fs';
 import path from 'path';
 import { memeshDir } from './paths.js';
 const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'setupCompleted'];
-const RETIRED_CONFIG_KEYS = new Set([
+export const RETIRED_CONFIG_KEYS = [
     'llm',
     'llmFallbacks',
     'embedder',
     'language',
     'transcriptMining',
-]);
+];
+const RETIRED_CONFIG_KEY_SET = new Set(RETIRED_CONFIG_KEYS);
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 function configDir() {
@@ -63,6 +64,10 @@ function selectConfig(raw) {
         config.setupCompleted = raw.setupCompleted;
     return config;
 }
+export function findRetiredConfigKeys(raw) {
+    const present = new Set(Object.keys(raw));
+    return RETIRED_CONFIG_KEYS.filter((key) => present.has(key));
+}
 export function readConfigResult() {
     const result = readRawConfigResult();
     return { config: selectConfig(result.raw), state: result.state };
@@ -97,7 +102,7 @@ export function updateConfig(partial) {
     const result = readRawConfigResult();
     if (result.state === 'unreadable')
         throw new ConfigUnreadableError(configFilePath());
-    const raw = Object.fromEntries(Object.entries(result.raw).filter(([key]) => !RETIRED_CONFIG_KEYS.has(key)));
+    const raw = Object.fromEntries(Object.entries(result.raw).filter(([key]) => !RETIRED_CONFIG_KEY_SET.has(key)));
     for (const key of CONFIG_KEYS) {
         if (!Object.prototype.hasOwnProperty.call(partial, key))
             continue;

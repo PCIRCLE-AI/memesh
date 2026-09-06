@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   ConfigUnreadableError,
+  findRetiredConfigKeys,
   getConfigDir,
   getConfigPath,
   readConfig,
@@ -35,6 +36,25 @@ describe('FTS-only config', () => {
   it('treats an absent file as an empty supported configuration', () => {
     expect(readConfigResult()).toEqual({ config: {}, state: 'absent' });
     expect(readConfig()).toEqual({});
+  });
+
+  it('detects retired top-level names without reading their values', () => {
+    const raw: Record<string, unknown> = {
+      futureSetting: { llm: { apiKey: 'nested-extension-value' } },
+    };
+    for (const key of ['llm', 'llmFallbacks', 'embedder', 'language', 'transcriptMining']) {
+      Object.defineProperty(raw, key, {
+        enumerable: true,
+        get: () => { throw new Error(`read retired value: ${key}`); },
+      });
+    }
+
+    expect(findRetiredConfigKeys(raw)).toEqual([
+      'llm', 'llmFallbacks', 'embedder', 'language', 'transcriptMining',
+    ]);
+    expect(findRetiredConfigKeys({
+      futureSetting: { llm: { apiKey: 'nested-extension-value' } },
+    })).toEqual([]);
   });
 
   it('round-trips only the four retained settings', () => {

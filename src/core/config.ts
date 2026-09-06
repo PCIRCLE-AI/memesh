@@ -10,13 +10,15 @@ export interface MeMeshConfig {
 }
 
 const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'setupCompleted'] as const;
-const RETIRED_CONFIG_KEYS = new Set([
+export const RETIRED_CONFIG_KEYS = [
   'llm',
   'llmFallbacks',
   'embedder',
   'language',
   'transcriptMining',
-]);
+] as const;
+const RETIRED_CONFIG_KEY_SET = new Set<string>(RETIRED_CONFIG_KEYS);
+export type RetiredConfigKey = typeof RETIRED_CONFIG_KEYS[number];
 type RawConfig = Record<string, unknown>;
 
 const PRIVATE_DIR_MODE = 0o700;
@@ -91,6 +93,16 @@ function selectConfig(raw: RawConfig): MeMeshConfig {
   return config;
 }
 
+/**
+ * Return only known retired top-level key names. Object.keys deliberately
+ * avoids reading their values: legacy provider objects can still contain
+ * credentials, and diagnostics must never inspect or print them.
+ */
+export function findRetiredConfigKeys(raw: object): RetiredConfigKey[] {
+  const present = new Set(Object.keys(raw));
+  return RETIRED_CONFIG_KEYS.filter((key) => present.has(key));
+}
+
 export function readConfigResult(): ConfigReadResult {
   const result = readRawConfigResult();
   return { config: selectConfig(result.raw), state: result.state };
@@ -136,7 +148,7 @@ export function updateConfig(partial: Partial<MeMeshConfig>): MeMeshConfig {
   const result = readRawConfigResult();
   if (result.state === 'unreadable') throw new ConfigUnreadableError(configFilePath());
   const raw: RawConfig = Object.fromEntries(
-    Object.entries(result.raw).filter(([key]) => !RETIRED_CONFIG_KEYS.has(key)),
+    Object.entries(result.raw).filter(([key]) => !RETIRED_CONFIG_KEY_SET.has(key)),
   );
   for (const key of CONFIG_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(partial, key)) continue;

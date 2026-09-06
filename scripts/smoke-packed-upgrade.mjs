@@ -264,6 +264,23 @@ function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cac
   const oldMcpEntry = installedEntry(installed.packageRoot, 'dist/mcp/server.js');
   assert.equal(run(process.execPath, [oldCliEntry, '--version'], { cwd: installed.packageRoot, env }).trim(), fromVersion);
   runMcp(oldMcpEntry, installed.packageRoot, env, 'seed', ['remember', 'recall']);
+  const retiredConfigMarker = crypto.randomBytes(32).toString('hex');
+  const configPath = path.join(memeshDir, 'config.json');
+  fs.writeFileSync(configPath, JSON.stringify({
+    llm: { provider: 'openai', apiKey: retiredConfigMarker },
+    llmFallbacks: [{ provider: 'anthropic', apiKey: retiredConfigMarker }],
+    embedder: { provider: 'openai', credentials: { apiKey: retiredConfigMarker } },
+    language: 'zh-TW',
+    transcriptMining: true,
+    autoCapture: false,
+    sessionLimit: 17,
+    autoUpdate: 'off',
+    setupCompleted: true,
+    futureSetting: { keep: true },
+  }, null, 2), { mode: 0o640 });
+  if (process.platform !== 'win32') fs.chmodSync(configPath, 0o640);
+  const configDigestBeforeUpgrade = sha256(configPath);
+  const configModeBeforeUpgrade = fs.statSync(configPath).mode & 0o777;
   console.log(`baseline: version=${installed.packageJson.version} package=${installed.packageRoot}`);
 
   const autoUpdate = process.platform === 'win32'
@@ -281,8 +298,53 @@ function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cac
   assert.equal(run(process.execPath, [candidateCliEntry, '--version'], { cwd: installed.packageRoot, env }).trim(), candidateVersion);
   assert.match(run(process.execPath, [candidateCliEntry, '--help'], { cwd: installed.packageRoot, env }), /remember/,
     'candidate CLI help is not readable');
-  const doctor = JSON.parse(run(process.execPath, [candidateCliEntry, 'doctor', '--json'], { cwd: installed.packageRoot, env }));
+  const doctorOutput = run(process.execPath, [candidateCliEntry, 'doctor', '--json'], { cwd: installed.packageRoot, env });
+  assert.equal(
+    doctorOutput.includes(retiredConfigMarker),
+    false,
+    'candidate doctor exposed a retired config value',
+  );
+  const doctor = JSON.parse(doctorOutput);
   assert.ok(Array.isArray(doctor.checks), 'candidate doctor output is not readable JSON diagnostics');
+  const configCheck = doctor.checks.find((check) => check.id === 'config');
+  assert.deepEqual(
+    {
+      status: configCheck?.status,
+      code: configCheck?.code,
+      fixId: configCheck?.fixId,
+      count: configCheck?.params?.count,
+      keys: configCheck?.params?.keys,
+    },
+    {
+      status: 'warn',
+      code: 'config-parse.retired-settings',
+      fixId: undefined,
+      count: 5,
+      keys: 'llm, llmFallbacks, embedder, language, transcriptMining',
+    },
+    'candidate doctor did not diagnose every retired top-level config key',
+  );
+  assert.equal(sha256(configPath), configDigestBeforeUpgrade,
+    'candidate diagnostics changed the legacy config instead of remaining read-only');
+  assert.equal(fs.statSync(configPath).mode & 0o777, configModeBeforeUpgrade,
+    'candidate diagnostics changed the legacy config mode');
+  const preservedConfigText = fs.readFileSync(configPath, 'utf8');
+  assert.equal(preservedConfigText.includes(retiredConfigMarker), true,
+    'the read-only diagnostic unexpectedly removed retired config state');
+  const preservedConfig = JSON.parse(preservedConfigText);
+  assert.deepEqual({
+    autoCapture: preservedConfig.autoCapture,
+    sessionLimit: preservedConfig.sessionLimit,
+    autoUpdate: preservedConfig.autoUpdate,
+    setupCompleted: preservedConfig.setupCompleted,
+    futureSetting: preservedConfig.futureSetting,
+  }, {
+    autoCapture: false,
+    sessionLimit: 17,
+    autoUpdate: 'off',
+    setupCompleted: true,
+    futureSetting: { keep: true },
+  }, 'candidate diagnostics did not preserve active and unknown extension settings');
 
   for (const requiredFile of [
     'package.json',

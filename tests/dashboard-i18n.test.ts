@@ -472,6 +472,20 @@ describe('dashboard i18n', () => {
     expect(missing, 'warn/fail variants with no translation catalogue entry').toEqual([]);
   });
 
+  it('keeps the retired-config warning parameters complete in every locale', () => {
+    const entries = parseTranslationEntries();
+    for (const [locale, values] of entries) {
+      const summary = values.get('doctor.msg.config-parse.retired-settings.summary');
+      const fix = values.get('doctor.msg.config-parse.retired-settings.fix');
+      expect(summary, `${locale}: missing retired-config summary`).toBeDefined();
+      expect(fix, `${locale}: missing retired-config fix`).toBeDefined();
+      expect([...summary!.matchAll(/\{([a-z]+)\}/g)].map((match) => match[1]).sort(), locale)
+        .toEqual(['count', 'keys', 'path']);
+      expect([...fix!.matchAll(/\{([a-z]+)\}/g)].map((match) => match[1]).sort(), locale)
+        .toEqual(['path']);
+    }
+  });
+
   it('does not retain translations for removed live-chat doctor checks', () => {
     const retiredKeys = [
       'doctor.label.llm_probe',

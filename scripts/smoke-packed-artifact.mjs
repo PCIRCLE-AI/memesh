@@ -105,6 +105,7 @@ const requiredFiles = [
   'dist/host-runtime/router-client.js',
   'dist/host-runtime/config.js',
   'dist/host-runtime/codex.js',
+  'dist/host-runtime/codex-session.js',
   'dist/host-runtime/claude.js',
   'dist/host-runtime/acp.js',
   // Dist — dashboard assets
@@ -610,6 +611,22 @@ async function waitFor(condition, description, timeoutMs = 5_000) {
   throw new Error(`Timed out waiting for ${description}`);
 }
 
+async function stopChild(child, timeoutMs = 5_000) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  child.kill('SIGTERM');
+  const stopped = await Promise.race([
+    exited.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
+  if (stopped) return;
+  child.kill('SIGKILL');
+  await Promise.race([
+    exited,
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
 function installedBin(name) {
   return path.join(consumerDir, 'node_modules', '.bin', process.platform === 'win32' ? `${name}.cmd` : name);
 }
@@ -647,8 +664,10 @@ if (process.platform !== 'win32') {
   const nativeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-'));
   const nativeDir = path.join(nativeHome, '.memesh');
   const nativeDbPath = path.join(nativeDir, 'knowledge-graph.db');
-  const routerSocket = path.join(nativeDir, 'router.sock');
-  const routerToken = path.join(nativeDir, 'router.token');
+  // These are the automatic Codex SessionStart companion defaults, so the
+  // installed companion and the installed router meet without host config.
+  const routerSocket = path.join(nativeDir, 'agent-router-v2.sock');
+  const routerToken = path.join(nativeDir, 'agent-router.token');
   const fakeBin = path.join(nativeHome, 'bin');
   const queueCapture = path.join(nativeHome, 'codex-queue.json');
   fs.mkdirSync(fakeBin, { recursive: true });
@@ -694,6 +713,8 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
   router.once('exit', (code, signal) => { routerExit = { code, signal }; });
 
   let host;
+  let companionA;
+  let companionB;
   try {
     await waitFor(
       () => fs.existsSync(routerSocket) || routerExit !== null,
@@ -900,9 +921,151 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
       'message', 'storage', 'report', '--cutoff', '2026-01-01T00:00:00.000Z',
     ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' }));
     assert.equal(afterQuota.message_count, 2, 'installed quota rejection left a partial message');
+
+    // The queue/host stub above proves the adapter contract in isolation. The
+    // two children below are the actual packaged Codex SessionStart companion
+    // runtime: each owns a distinct exact-session identity on this router.
+    const sessionA = '11a041b4-5c67-75b3-9505-4e33d7942b8e';
+    const sessionB = '22a041b4-5c67-75b3-9505-4e33d7942b8e';
+    const startCompanion = (sessionId) => {
+      const child = spawn(process.execPath, [path.join(installedRoot, 'dist', 'host-runtime', 'codex-session.js')], {
+        cwd: consumerDir,
+        env: { ...nativeEnv, PLUGIN_ROOT: installedRoot },
+        stdio: ['pipe', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.stdin.end(JSON.stringify({
+        hook_event_name: 'SessionStart',
+        source: 'startup',
+        session_id: sessionId,
+        cwd: consumerDir,
+      }));
+      return { child, stderr: () => stderr };
+    };
+    companionA = startCompanion(sessionA);
+    companionB = startCompanion(sessionB);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(companionA.child.exitCode, null, `first installed Codex SessionStart companion exited during registration: ${companionA.stderr()}`);
+    assert.equal(companionB.child.exitCode, null, `second installed Codex SessionStart companion exited during registration: ${companionB.stderr()}`);
+
+    // The earlier CLI dispatch has already been fully asserted, so a fresh
+    // capture makes this exchange's exact recipient observable by itself.
+    fs.unlinkSync(queueCapture);
+    const mcpExchange = JSON.parse(execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import assert from 'node:assert/strict';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { getProjectName } from ${JSON.stringify(pathToFileURL(path.join(installedRoot, 'dist', 'core', 'paths.js')).href)};
+
+const project = getProjectName(${JSON.stringify(consumerDir)});
+const sessionA = ${JSON.stringify(sessionA)};
+const sessionB = ${JSON.stringify(sessionB)};
+const expected = [
+  { session_id: sessionA, principal_id: 'codex-thread-' + sessionA, project },
+  { session_id: sessionB, principal_id: 'codex-thread-' + sessionB, project },
+];
+const serverParameters = {
+  command: process.execPath,
+  args: [${JSON.stringify(protocolServer)}],
+  env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false' },
+};
+const transportA = new StdioClientTransport(serverParameters);
+const transportB = new StdioClientTransport(serverParameters);
+const clientA = new Client({ name: 'packaged-native-mcp-client-a', version: '1.0.0' });
+const clientB = new Client({ name: 'packaged-native-mcp-client-b', version: '1.0.0' });
+
+async function messageJson(client, arguments_, label) {
+  const result = await client.callTool({ name: 'message', arguments: arguments_ });
+  assert.notEqual(result.isError, true, label + ' returned an MCP error: ' + JSON.stringify(result.content));
+  const text = result.content.find((block) => block.type === 'text')?.text;
+  assert.equal(typeof text, 'string', label + ' returned no JSON text');
+  return JSON.parse(text);
+}
+
+function hasExpectedCards(result) {
+  const cards = Array.isArray(result.cards) ? result.cards.filter((card) => card?.host_kind === 'codex') : [];
+  return expected.every((wanted) => cards.some((card) => (
+    card.session_id === wanted.session_id
+    && card.principal_id === wanted.principal_id
+    && card.project === wanted.project
+  )));
+}
+
+try {
+  await Promise.all([clientA.connect(transportA), clientB.connect(transportB)]);
+  assert.ok(Number.isInteger(transportA.pid) && transportA.pid > 0, 'MCP client A did not start a server process');
+  assert.ok(Number.isInteger(transportB.pid) && transportB.pid > 0, 'MCP client B did not start a server process');
+  assert.notEqual(transportA.pid, transportB.pid, 'MCP clients unexpectedly share one server process');
+
+  let discoveredA;
+  let discoveredB;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    [discoveredA, discoveredB] = await Promise.all([
+      messageJson(clientA, { action: 'discover', project, limit: 50 }, 'MCP client A discover'),
+      messageJson(clientB, { action: 'discover', project, limit: 50 }, 'MCP client B discover'),
+    ]);
+    if (hasExpectedCards(discoveredA) && hasExpectedCards(discoveredB)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(hasExpectedCards(discoveredA), 'MCP client A could not discover both Codex SessionStart companions');
+  assert.ok(hasExpectedCards(discoveredB), 'MCP client B could not discover both Codex SessionStart companions');
+
+  const payload = { marker: 'packaged-native-mcp-a-to-b' };
+  const sent = await messageJson(clientA, {
+    action: 'send', project, sender: 'codex-thread-' + sessionA,
+    recipient: sessionB, target_kind: 'session', idempotency_key: 'packaged-native-mcp-a-to-b',
+    payload, content_type: 'application/json', privacy: 'private',
+  }, 'MCP client A exact-session send');
+  assert.equal(sent.native_delivery?.status, 'native_accepted', 'MCP exact-session send returned before native acceptance');
+  assert.equal(sent.native_delivery?.adapter_kind, 'codex-cli-queue', 'MCP exact-session send used the wrong native adapter');
+  assert.equal(sent.recipient, sessionB, 'MCP exact-session send returned a different recipient');
+
+  const fetched = await messageJson(clientB, {
+    action: 'fetch', project, recipient: sessionB, target_kind: 'session', message_id: sent.message_id,
+  }, 'MCP client B exact-session fetch');
+  assert.deepEqual(fetched.payload, payload, 'MCP client B fetched a payload different from client A sent');
+
+  const denied = await clientB.callTool({ name: 'message', arguments: {
+    action: 'fetch', project, recipient: sessionA, target_kind: 'session', message_id: sent.message_id,
+  }});
+  assert.equal(denied.isError, true, 'MCP client B cross-session fetch was accepted');
+  assert.doesNotMatch(JSON.stringify(denied), /packaged-native-mcp-a-to-b/, 'cross-session fetch leaked the private payload');
+
+  process.stdout.write(JSON.stringify({ project, sender: sent.sender, recipient: sessionB, message_id: sent.message_id, delivery_id: sent.delivery_id, payload }) + '\\n');
+} finally {
+  await Promise.all([clientA.close(), clientB.close()]);
+}
+`,
+      ],
+      { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' },
+    ));
+    assert.equal(companionA.child.exitCode, null, `first installed Codex SessionStart companion exited: ${companionA.stderr()}`);
+    assert.equal(companionB.child.exitCode, null, `second installed Codex SessionStart companion exited: ${companionB.stderr()}`);
+    await waitFor(() => fs.existsSync(queueCapture), 'MCP A-to-B native queue dispatch');
+    const mcpQueued = JSON.parse(fs.readFileSync(queueCapture, 'utf8'));
+    assert.equal(mcpQueued.thread_id, sessionB, 'MCP A-to-B queue dispatch targeted the wrong Codex session');
+    assert.equal(mcpQueued.message.delivery_id, mcpExchange.delivery_id, 'MCP A-to-B queue dispatch used the wrong delivery');
+    assert.deepEqual(mcpQueued.message.envelope.payload, mcpExchange.payload, 'MCP A-to-B queue dispatch lost the exact payload');
+    const mcpAccepted = readHostAcceptance(nativeDbPath, mcpExchange.delivery_id);
+    assert.equal(mcpAccepted.attempts, 1, 'MCP A-to-B dispatch did not persist exactly one attempt');
+    assert.equal(mcpAccepted.acceptance?.adapter_kind, 'codex-cli-queue', 'MCP A-to-B dispatch did not persist host_accept');
+    const mcpReceipts = JSON.parse(execFileSync(installedBin('memesh'), [
+      'message', 'receipts', '--project', mcpExchange.project,
+      '--recipient', mcpExchange.recipient, '--message-id', mcpExchange.message_id,
+    ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' }));
+    assert.ok(mcpReceipts.some((receipt) => receipt.receipt_kind === 'host_accept'), 'MCP A-to-B receipt readback omitted host_accept');
+    assert.equal(mcpReceipts.some((receipt) => receipt.receipt_kind === 'ack'), false, 'MCP fetch or native dispatch implicitly acknowledged the message');
+    assert.equal(mcpReceipts.some((receipt) => receipt.receipt_kind === 'disposition'), false, 'MCP fetch or native dispatch implicitly set workflow disposition');
   } finally {
-    if (host && !host.killed) host.kill('SIGTERM');
-    if (!router.killed) router.kill('SIGTERM');
+    await Promise.all([stopChild(companionA?.child), stopChild(companionB?.child), stopChild(host)]);
+    await stopChild(router);
     fs.rmSync(nativeHome, { recursive: true, force: true });
   }
 }

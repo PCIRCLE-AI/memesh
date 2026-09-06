@@ -17,23 +17,6 @@ const PROJECT_SCOPED_MCP_PATHS = ['.mcp.json'];
 interface McpServer {
   command?: unknown;
   args?: unknown;
-  cwd?: unknown;
-}
-
-function codexMcpServer(config: unknown): McpServer {
-  const record = (config ?? {}) as Record<string, unknown>;
-  if (
-    typeof record.mcpServers !== 'object'
-    || record.mcpServers === null
-    || Array.isArray(record.mcpServers)
-  ) {
-    throw new Error('Codex MCP manifest must wrap server entries in `mcpServers`.');
-  }
-  const server = (record.mcpServers as Record<string, unknown>).memesh;
-  if (typeof server !== 'object' || server === null || Array.isArray(server)) {
-    throw new Error('Codex MCP manifest must declare `mcpServers.memesh`.');
-  }
-  return server as McpServer;
 }
 
 /**
@@ -202,7 +185,7 @@ describe('Codex and Claude plugin MCP manifests', () => {
       fs.readFileSync(path.join(repoRoot, codexPlugin.mcpServers), 'utf8'),
     );
     expect(Object.keys(codexManifest)).toEqual(['mcpServers']);
-    const codexServer = codexMcpServer(codexManifest);
+    const codexServer = codexManifest.mcpServers.memesh;
     expect(codexServer).toEqual({
       command: 'node',
       args: ['./dist/mcp/server.js'],
@@ -215,13 +198,4 @@ describe('Codex and Claude plugin MCP manifests', () => {
     expect(fs.existsSync(path.resolve(repoRoot, codexServer.cwd as string, codexTarget))).toBe(true);
   });
 
-  it('rejects the malformed direct server map that the old cache shipped', () => {
-    expect(() => codexMcpServer({
-      memesh: {
-        command: 'node',
-        args: ['./dist/mcp/server.js'],
-        cwd: '.',
-      },
-    })).toThrow(/wrap server entries in `mcpServers`/);
-  });
 });

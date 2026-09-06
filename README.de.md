@@ -426,6 +426,14 @@ Die gesamte Konfiguration erfolgt über Umgebungsvariablen. Die Standardwerte si
 
 `memesh doctor` gibt die aufgelöste Konfiguration aus, sodass Sie sehen, was aktiv ist.
 
+Wenn Sie von einer Version aktualisiert haben, die `llm`, `llmFallbacks`,
+`embedder`, `language` oder `transcriptMining` in `~/.memesh/config.json`
+gespeichert hat, warnt `memesh doctor`, dass diese nicht mehr unterstützten
+Schlüssel noch auf dem Datenträger liegen. MeMesh ignoriert sie, zeigt ihre
+Werte nie an und löscht sie nicht automatisch. Prüfen Sie die Datei nur lokal,
+entfernen Sie ausschließlich die genannten Schlüssel und fügen Sie die Datei
+nicht in ein Issue ein, da sie alte Anbieterzugangsdaten enthalten kann.
+
 Wenn npm eine installierte Version als veraltet kennzeichnet (typischerweise eine Sicherheitswarnung), stellt der nächste Session-Start ein deutliches `⚠️ MeMesh <ver> is DEPRECATED`-Banner voran und `memesh update-status` zeigt dieselbe Zeile, bis Sie aktualisiert haben. Die Prüfung wird unter `~/.memesh/update-check.<version>.json` zwischengespeichert, sodass ein vorübergehender Netzwerkfehler die Warnung nicht abschwächen kann.
 
 ---
