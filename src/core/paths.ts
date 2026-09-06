@@ -165,7 +165,10 @@ function resolveProjectIdentity(cwd: string): string {
   const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
   if (remote) {
     const locator = canonicalRemoteLocator(remote);
-    if (locator) return projectIdentity(path.posix.basename(locator), locator);
+    if (locator) {
+      const label = path.posix.basename(locator).replace(/\.git$/i, '');
+      return projectIdentity(label, locator);
+    }
   }
   const root = tryGit(cwd, ['rev-parse', '--show-toplevel']);
   // A linked worktree has its own top-level path but shares the primary
@@ -259,14 +262,15 @@ export function canonicalRemoteLocator(remote: string): string | null {
     transport = remotePath.startsWith('/') ? 'ssh-absolute' : 'ssh-relative';
   }
 
-  const normalizedPath = remotePath
-    .replace(/^\/+|\/+$/g, '')
-    .replace(/\.git$/i, '');
-  if (!host || !normalizedPath) return null;
+  const pathWithoutSlashes = remotePath.replace(/^\/+|\/+$/g, '');
+  if (!host || !pathWithoutSlashes) return null;
   const endpoint = `${host}${port ? `:${port}` : ''}`;
   const standardGithub = host === 'github.com'
     && port === ''
     && (transport === 'https' || ((transport === 'ssh-relative' || transport === 'ssh-absolute') && user === 'git'));
+  const normalizedPath = standardGithub
+    ? pathWithoutSlashes.replace(/\.git$/i, '')
+    : pathWithoutSlashes;
   if (standardGithub) return `${endpoint}/${normalizedPath}`;
   const authority = transport.startsWith('ssh-') && user ? `${user}@${endpoint}` : endpoint;
   return `${transport}://${authority}/${normalizedPath}`;

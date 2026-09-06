@@ -40,13 +40,13 @@ describe('canonicalRemoteLocator', () => {
     ['ssh://git@GITHUB.COM/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
     ['ssh://git@github.com:22/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
     ['https://github.com:443/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
-    ['https://user:secret@host.example/Owner/Repo.git', 'https://host.example/Owner/Repo'],
-    ['ssh://git@host.example:2222/Owner/Repo.git', 'ssh-absolute://git@host.example:2222/Owner/Repo'],
-    ['https://host.example:8443/Owner/Repo.git', 'https://host.example:8443/Owner/Repo'],
-    ['alice@git.example:repo.git', 'ssh-relative://alice@git.example/repo'],
-    ['bob@git.example:repo.git', 'ssh-relative://bob@git.example/repo'],
-    ['alice@git.example:/repo.git', 'ssh-absolute://alice@git.example/repo'],
-    ['ssh://alice@git.example/repo.git', 'ssh-absolute://alice@git.example/repo'],
+    ['https://user:secret@host.example/Owner/Repo.git', 'https://host.example/Owner/Repo.git'],
+    ['ssh://git@host.example:2222/Owner/Repo.git', 'ssh-absolute://git@host.example:2222/Owner/Repo.git'],
+    ['https://host.example:8443/Owner/Repo.git', 'https://host.example:8443/Owner/Repo.git'],
+    ['alice@git.example:repo.git', 'ssh-relative://alice@git.example/repo.git'],
+    ['bob@git.example:repo.git', 'ssh-relative://bob@git.example/repo.git'],
+    ['alice@git.example:/repo.git', 'ssh-absolute://alice@git.example/repo.git'],
+    ['ssh://alice@git.example/repo.git', 'ssh-absolute://alice@git.example/repo.git'],
   ];
   for (const [url, expected] of cases) {
     it(`${url} → ${expected}`, () => {
@@ -122,6 +122,15 @@ describe('getProjectName — layered git identity', () => {
       getProjectName(relativeBob),
       getProjectName(absoluteAlice),
     ]).size).toBe(3);
+  });
+
+  it('keeps distinct generic SSH paths that differ only by .git isolated', () => {
+    const withoutSuffix = makeRepo('alice@git.example:/srv/repo');
+    const withSuffix = makeRepo('alice@git.example:/srv/repo.git');
+    created.push(withoutSuffix, withSuffix);
+    expect(getProjectName(withoutSuffix)).toMatch(/^repo~[0-9a-f]{32}$/);
+    expect(getProjectName(withSuffix)).toMatch(/^repo~[0-9a-f]{32}$/);
+    expect(getProjectName(withoutSuffix)).not.toBe(getProjectName(withSuffix));
   });
 
   it('one remote identity converges across root, subdir, symlink, and git worktree', () => {
