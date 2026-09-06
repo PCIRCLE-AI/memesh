@@ -788,6 +788,16 @@ async function stopChild(child, timeoutMs = 10_000) {
 }
 
 /** One live-journey run: owns the temp directories, the child processes and the report. */
+export function buildJourneyEnv(baseEnv, { memeshDir, dbPath, socketPath }) {
+  return {
+    ...baseEnv,
+    MEMESH_DIR: memeshDir,
+    MEMESH_DB_PATH: dbPath,
+    MEMESH_ROUTER_SOCKET: socketPath,
+    MEMESH_ROUTER_TOKEN_FILE: path.join(memeshDir, 'router.token'),
+  };
+}
+
 class Journey {
   constructor(options) {
     this.options = options;
@@ -833,13 +843,11 @@ class Journey {
     // Every process in the journey must use this run's router state. Inheriting
     // owner-selected endpoint overrides could make an otherwise isolated run
     // contact a real router or create its token outside the temporary tree.
-    this.env = {
-      ...process.env,
-      MEMESH_DIR: this.memeshDir,
-      MEMESH_DB_PATH: this.dbPath,
-      MEMESH_ROUTER_SOCKET: this.socketPath,
-      MEMESH_ROUTER_TOKEN_FILE: path.join(this.memeshDir, 'router.token'),
-    };
+    this.env = buildJourneyEnv(process.env, {
+      memeshDir: this.memeshDir,
+      dbPath: this.dbPath,
+      socketPath: this.socketPath,
+    });
     if (options.mode === 'codex-session-auto-registration') {
       this.home = path.join(this.dir, 'home');
       fs.mkdirSync(this.home, { recursive: true, mode: 0o700 });

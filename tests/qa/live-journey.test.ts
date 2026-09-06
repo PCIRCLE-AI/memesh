@@ -43,6 +43,7 @@ import {
   assertRecipientUnavailable,
   assertSocketPathFits,
   awaitSessionDisconnect,
+  buildJourneyEnv,
   collectCodexAgentMessages,
   findIntakeReceipt,
   findLiveCards,
@@ -198,9 +199,16 @@ describe('--help', () => {
   });
 
   it('pins router socket and token state inside the task-owned journey directory', () => {
-    const source = fs.readFileSync(path.resolve('scripts/qa/live-journey.mjs'), 'utf8');
-    expect(source).toMatch(/MEMESH_ROUTER_SOCKET:\s*this\.socketPath/);
-    expect(source).toMatch(/MEMESH_ROUTER_TOKEN_FILE:\s*path\.join\(this\.memeshDir, 'router\.token'\)/);
+    const env = buildJourneyEnv({
+      MEMESH_ROUTER_SOCKET: '/owner/router.sock',
+      MEMESH_ROUTER_TOKEN_FILE: '/owner/router.token',
+    }, {
+      memeshDir: '/task/memesh',
+      dbPath: '/task/memesh/knowledge-graph.db',
+      socketPath: '/task/memesh/agent-router-v2.sock',
+    });
+    expect(env.MEMESH_ROUTER_SOCKET).toBe('/task/memesh/agent-router-v2.sock');
+    expect(env.MEMESH_ROUTER_TOKEN_FILE).toBe('/task/memesh/router.token');
   });
 
   it('warns that the launched Claude session is outside the isolation', () => {
