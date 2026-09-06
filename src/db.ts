@@ -234,6 +234,11 @@ function migrateToCurrentSchema(db: MemeshDatabase, resolvedPath: string): void 
   // recall from bad to zero while English kept working — a silent regression.
   ensureFtsSegmentation(db);
 
+  // One-shot repair for FTS rows written before archived entities were removed
+  // from the keyword index. It rebuilds from active entities only and has no
+  // dependency on sqlite-vec.
+  dropArchivedIndexRows(db);
+
   // Load sqlite-vec extension for vector similarity search.
   //
   // node:sqlite gates extension loading twice — `allowExtension` at open time
@@ -289,18 +294,6 @@ function migrateToCurrentSchema(db: MemeshDatabase, resolvedPath: string): void 
     ensureVecTable(db, resolvedPath, targetDim, dimensionKnown);
   }
 
-  // The one repair that must run AFTER the block above rather than beside the
-  // others up top: it deletes rows from `entities_vec`, which does not exist as
-  // a queryable table until sqlite-vec has loaded and `ensureVecTable` has run.
-  //
-  // Deliberately not conditional on `vectorIndexAvailable`: its FTS half is
-  // always runnable, and its vector half asks `hasVectorIndex` for itself. See
-  // `dropArchivedIndexRows` for why the two halves carry separate markers.
-  //
-  // Also after `splitFusedLessons`, which archives emptied lesson buckets and —
-  // running before the extension load — cannot drop their vectors itself. On a
-  // graph that needs both, this pass cleans up after it in the same open.
-  dropArchivedIndexRows(db);
 }
 
 // FTS_SEGMENTATION_VERSION, runOnceMigration, isTransientDbError,
