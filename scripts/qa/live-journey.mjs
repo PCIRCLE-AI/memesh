@@ -725,6 +725,25 @@ export function assertMcpDiscoverCards(discovered, expected) {
   return cards;
 }
 
+/** Require an MCP-only control to prove that MCP transport processes register no hosts. */
+export function assertNoLiveRegistrations(discovered) {
+  const cards = discovered !== null && typeof discovered === 'object'
+    ? /** @type {Record<string, unknown>} */ (discovered).cards
+    : undefined;
+  if (!Array.isArray(cards) || cards.length !== 0) {
+    throw new Error(`MCP-only control created or observed ${Array.isArray(cards) ? cards.length : 'an invalid number of'} live registrations.`);
+  }
+  return cards;
+}
+
+/** Fail if an async SessionStart companion has already terminated. */
+export function assertCompanionRunning(companion, label) {
+  if (companion.exitCode !== null || companion.signalCode !== null) {
+    throw new Error(`${label} exited before its live registration was verified.`);
+  }
+  return companion;
+}
+
 /**
  * Wait for one live host session to leave the router directory.
  *
@@ -940,7 +959,7 @@ class Journey {
     return this.cliJson(['message', 'discover', '--project', this.project]);
   }
 
-  async withMcpClients(expected, scenario) {
+  async withMcpClients(expected, scenario, beforeDiscover = async () => undefined) {
     const clients = [0, 1].map((index) => new Client({ name: `live-journey-message-${index}`, version: '1.0.0' }));
     const transports = clients.map(() => new StdioClientTransport({
       command: process.execPath,
@@ -949,13 +968,14 @@ class Journey {
     }));
     try {
       await Promise.all(clients.map((client, index) => client.connect(transports[index])));
+      const setup = await beforeDiscover(clients);
       const results = await Promise.all(clients.map((client, index) => this.mcpJson(
         client,
         { action: 'discover', project: this.project, limit: 50 },
         `Packaged MCP discover client ${index + 1}`,
       )));
       const discoveries = results.map((result) => assertMcpDiscoverCards(result, expected));
-      return { discoveries, result: await scenario(clients) };
+      return { discoveries, setup, result: await scenario(clients, setup) };
     } finally {
       await Promise.all(clients.map((client) => client.close()));
     }
@@ -1506,50 +1526,13 @@ async function runCodexSessionAutoRegistration(journey) {
   const secondThreadId = '01a0' + randomUUID().slice(4);
   journey.trackLiveSession(threadId);
   journey.trackLiveSession(secondThreadId);
-  const firstCompanion = journey.startCodexCompanion(threadId, workspace, 'codex-session-auto-1.log');
-  journey.startCodexCompanion(secondThreadId, workspace, 'codex-session-auto-2.log');
-  journey.step('packaged codex-session received a valid startup payload', {
-    hook_event_name: 'SessionStart',
-    source: 'startup',
-    session_ids: [threadId, secondThreadId],
-    cwd: workspace,
-    config_present: fs.existsSync(configPath),
-  });
-
-  const cards = await journey.until(
-    'The two automatic Codex SessionStart companions never registered as distinct exact sessions',
-    () => {
-      const found = findLiveCards(journey.discover(), { hostKind: 'codex' });
-      if (found.length < 2) return false;
-      const selected = found.filter((card) => card.session_id === threadId || card.session_id === secondThreadId);
-      return selected.length === 2 ? selected : false;
-    },
-    15_000,
-  );
-  for (const card of cards) {
-    if (card.host_kind !== 'codex' || card.project !== journey.project || card.principal_id !== `codex-thread-${card.session_id}`) {
-      throw new Error(`Automatic Codex registration returned the wrong live card: ${JSON.stringify(card)}.`);
-    }
-  }
-  const firstCard = cards.find((card) => card.session_id === threadId);
-  const secondCard = cards.find((card) => card.session_id === secondThreadId);
-  if (!firstCard || !secondCard || firstCard.principal_id === secondCard.principal_id) {
-    throw new Error(`Automatic Codex sessions did not keep distinct thread-scoped identities: ${JSON.stringify(cards)}.`);
-  }
-  journey.step('discover returned two distinct exact automatic Codex sessions/cards', {
-    sessions: cards.map((card) => ({
-      session_id: card.session_id,
-      principal_id: card.principal_id,
-      host_kind: card.host_kind,
-      project: card.project,
-      generation: card.generation,
-    })),
-  });
-
-  const mcpRun = await journey.withMcpClients([
-    { session_id: firstCard.session_id, principal_id: firstCard.principal_id, project: firstCard.project },
-    { session_id: secondCard.session_id, principal_id: secondCard.principal_id, project: secondCard.project },
-  ], async ([clientA, clientB]) => {
+  const expectedCards = [threadId, secondThreadId].map((sessionId) => ({
+    session_id: sessionId,
+    principal_id: `codex-thread-${sessionId}`,
+    project: journey.project,
+  }));
+  const mcpRun = await journey.withMcpClients(expectedCards, async ([clientA, clientB], setup) => {
+    const { firstCard } = setup;
     const sentinel = `codex-auto-mcp-a-to-b-${randomUUID().slice(0, 8)}`;
     const payload = {
       qa_sentinel: sentinel,
@@ -1606,7 +1589,56 @@ async function runCodexSessionAutoRegistration(journey) {
       deniedFetchScopes: deniedFetches.map(([label]) => label),
       inventedRecipientFailedClosed: true,
     };
+  }, async (clients) => {
+    const controls = await Promise.all(clients.map((client, index) => journey.mcpJson(
+      client,
+      { action: 'discover', project: journey.project, limit: 50 },
+      `MCP-only control client ${index + 1}`,
+    )));
+    controls.forEach(assertNoLiveRegistrations);
+    journey.step('two connected MCP servers alone created zero host registrations', {
+      client_registration_counts: controls.map((result) => result.cards.length),
+      config_present: fs.existsSync(configPath),
+    });
+
+    const firstCompanion = journey.startCodexCompanion(threadId, workspace, 'codex-session-auto-1.log');
+    const secondCompanion = journey.startCodexCompanion(secondThreadId, workspace, 'codex-session-auto-2.log');
+    const cards = await journey.until(
+      'The two automatic Codex SessionStart companions never registered as distinct exact sessions',
+      () => {
+        const found = findLiveCards(journey.discover(), { hostKind: 'codex' });
+        if (found.length < 2) return false;
+        const selected = found.filter((card) => card.session_id === threadId || card.session_id === secondThreadId);
+        return selected.length === 2 ? selected : false;
+      },
+      15_000,
+    );
+    assertCompanionRunning(firstCompanion, 'First packaged Codex SessionStart companion');
+    assertCompanionRunning(secondCompanion, 'Second packaged Codex SessionStart companion');
+    if (fs.existsSync(configPath)) {
+      throw new Error('Automatic Codex SessionStart registration unexpectedly created hosts/codex-session.json.');
+    }
+    const firstCard = cards.find((card) => card.session_id === threadId);
+    const secondCard = cards.find((card) => card.session_id === secondThreadId);
+    if (!firstCard || !secondCard || firstCard.principal_id === secondCard.principal_id) {
+      throw new Error(`Automatic Codex sessions did not keep distinct thread-scoped identities: ${JSON.stringify(cards)}.`);
+    }
+    journey.step('packaged SessionStart companions remained alive, registered, and discoverable without host config', {
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+      cwd: workspace,
+      config_present: false,
+      sessions: cards.map((card) => ({
+        session_id: card.session_id,
+        principal_id: card.principal_id,
+        host_kind: card.host_kind,
+        project: card.project,
+        generation: card.generation,
+      })),
+    });
+    return { firstCard, firstCompanion };
   });
+  const { firstCard, firstCompanion } = mcpRun.setup;
   await journey.assertLegacyRouterUntouched();
   journey.step('two packaged MCP clients stayed connected through discover and A-to-B send/fetch', {
     client_results: mcpRun.discoveries.map((cards) => cards.map((card) => ({

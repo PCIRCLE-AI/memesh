@@ -30,6 +30,7 @@ import {
   REQUIRED_DIST,
   assertCodexRanNoCommands,
   assertCodexReply,
+  assertCompanionRunning,
   assertDistPresent,
   assertExactCodexQueueRouting,
   assertHostAcceptOnly,
@@ -39,6 +40,7 @@ import {
   assertMcpDenied,
   assertMcpFetchedMessage,
   assertNativeAccepted,
+  assertNoLiveRegistrations,
   assertNotCi,
   assertSupportedPlatform,
   assertOutsideOwnerMemesh,
@@ -753,6 +755,23 @@ describe('assertMcpDiscoverCards', () => {
     expect(() => assertMcpDiscoverCards({
       cards: [{ ...expected[0], host_kind: 'codex' }, { ...expected[0], host_kind: 'codex' }],
     }, expected)).toThrow(/identity-mismatched/);
+  });
+});
+
+describe('ordinary MCP registration boundary', () => {
+  it('accepts only a discover result with zero live registrations', () => {
+    expect(assertNoLiveRegistrations({ cards: [] })).toEqual([]);
+    expect(() => assertNoLiveRegistrations({ cards: [{ host_kind: 'codex' }] }))
+      .toThrow(/MCP-only control created or observed 1 live registrations/);
+    expect(() => assertNoLiveRegistrations({})).toThrow(/invalid number/);
+  });
+
+  it('rejects a SessionStart companion that exited before registration readback', () => {
+    expect(() => assertCompanionRunning({ exitCode: null, signalCode: null }, 'companion')).not.toThrow();
+    expect(() => assertCompanionRunning({ exitCode: 0, signalCode: null }, 'companion'))
+      .toThrow(/exited before its live registration was verified/);
+    expect(() => assertCompanionRunning({ exitCode: null, signalCode: 'SIGTERM' }, 'companion'))
+      .toThrow(/exited before its live registration was verified/);
   });
 });
 
