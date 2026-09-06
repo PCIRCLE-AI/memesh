@@ -2226,6 +2226,20 @@ function annotateNpmGlobalPluginCacheVersion(
   return amended;
 }
 
+function isClaudeChannelCommand(command: unknown): boolean {
+  if (command === 'memesh-host-claude') return true;
+  if (typeof command !== 'string' || !path.isAbsolute(command) || path.basename(command) !== 'memesh-host-claude') {
+    return false;
+  }
+  try {
+    const target = fs.realpathSync(command);
+    const stat = fs.statSync(target);
+    return stat.isFile() && (stat.mode & 0o111) !== 0;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Inspect Claude's user-scoped MCP registration without treating transport
  * initialization or router state as channel admission. The user-scope
@@ -2294,14 +2308,15 @@ function inspectClaudeChannelRegistration(
       targetConfigValid = false;
     }
   }
-  const coherent = command === 'memesh-host-claude'
+  const commandValid = isClaudeChannelCommand(command);
+  const coherent = commandValid
     && args !== null
     && args.length === 2
     && configIndex === 0
     && target !== null
     && targetConfigValid;
   if (!coherent) {
-    const reason = command !== 'memesh-host-claude' || args === null || configIndex !== 0 || target === null
+    const reason = !commandValid || args === null || configIndex !== 0 || target === null
       ? 'the command or --config declaration is malformed'
       : 'the declared owner config target is missing, insecure, malformed, or incomplete';
     return createCheck(

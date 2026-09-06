@@ -3915,6 +3915,28 @@ describe('Claude Channel registration diagnostic', () => {
     return path.join(root, name);
   }
 
+  function channelCommand(name: string, mode = 0o700) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));
+    tempRoots.push(root);
+    const command = path.join(root, name);
+    fs.writeFileSync(command, '#!/bin/sh\n');
+    fs.chmodSync(command, mode);
+    return command;
+  }
+
+  function npmStyleChannelCommand(targetName: string) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));
+    tempRoots.push(root);
+    const target = path.join(root, 'node_modules', 'memesh', 'bin', targetName);
+    const command = path.join(root, 'node_modules', '.bin', 'memesh-host-claude');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.mkdirSync(path.dirname(command), { recursive: true });
+    fs.writeFileSync(target, '#!/bin/sh\n');
+    fs.chmodSync(target, 0o700);
+    fs.symlinkSync(target, command);
+    return command;
+  }
+
   async function withPlatform<T>(platform: NodeJS.Platform, run: () => Promise<T>): Promise<T> {
     const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
     Object.defineProperty(process, 'platform', { ...descriptor, value: platform });
@@ -3984,6 +4006,53 @@ describe('Claude Channel registration diagnostic', () => {
     expect(row).toMatchObject({ status: 'pass', informational: true });
     expect(row.summary).toMatch(/CONFIGURED/);
     expect(row.summary).toMatch(/admission.*not verified/i);
+  });
+
+  it.skipIf(process.platform === 'win32')('accepts an absolute executable named memesh-host-claude', async () => {
+    const target = channelTarget('configured.json');
+    const command = channelCommand('memesh-host-claude');
+    const result = await runChannelCase(
+      { mcpServers: { 'memesh-channel': { command, args: ['--config', target] } } }, { path: target },
+    );
+    expect(channelRow(result)).toMatchObject({ status: 'pass', informational: true });
+  });
+
+  it.skipIf(process.platform === 'win32')('accepts the npm-style memesh-host-claude symlink when its executable target has another basename', async () => {
+    const target = channelTarget('configured.json');
+    const command = npmStyleChannelCommand('claude-channel-runner.js');
+    const result = await runChannelCase(
+      { mcpServers: { 'memesh-channel': { command, args: ['--config', target] } } }, { path: target },
+    );
+    expect(channelRow(result)).toMatchObject({ status: 'pass', informational: true });
+  });
+
+  it.skipIf(process.platform === 'win32')('rejects relative, lookalike, missing, broken, directory, and non-executable absolute commands', async () => {
+    const target = channelTarget('configured.json');
+    const missingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));
+    const brokenRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));
+    const directoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));
+    tempRoots.push(missingRoot, brokenRoot, directoryRoot);
+    const missing = path.join(missingRoot, 'memesh-host-claude');
+    const broken = path.join(brokenRoot, 'memesh-host-claude');
+    fs.symlinkSync(path.join(brokenRoot, 'missing-target'), broken);
+    const directory = path.join(directoryRoot, 'memesh-host-claude');
+    fs.mkdirSync(directory);
+    const commands = [
+      './memesh-host-claude',
+      channelCommand('evil-memesh-host-claude'),
+      missing,
+      broken,
+      directory,
+      channelCommand('memesh-host-claude', 0o600),
+    ];
+
+    for (const command of commands) {
+      const result = await runChannelCase(
+        { mcpServers: { 'memesh-channel': { command, args: ['--config', target] } } }, { path: target },
+      );
+      expect(channelRow(result)).toMatchObject({ status: 'warn' });
+      expect(channelRow(result)?.summary).toMatch(/command or --config declaration is malformed/i);
+    }
   });
 
   it('WARNs when the declared target content is malformed or incomplete', async () => {
