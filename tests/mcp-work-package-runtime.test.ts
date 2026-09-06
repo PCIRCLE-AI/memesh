@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
@@ -52,6 +52,30 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     { cwd: repo, env, timeout: 20000, stdio: 'pipe' });
     fs.copyFileSync(path.join(repo, 'package.json'), path.join(runtime, 'package.json'));
     fs.symlinkSync(path.join(repo, 'node_modules'), path.join(runtime, 'node_modules'), 'dir');
+    const cli = (args: string[]) => spawnSync(process.execPath, [path.join(runtime, 'dist/transports/cli/cli.js'), ...args], {
+      cwd: runtimeCwd, env, encoding: 'utf8', timeout: 5000,
+    });
+    const help = cli(['--help']);
+    expect(help.status, help.stderr).toBe(0);
+    expect(help.stdout).not.toMatch(/^ {2}(?:telemetry|consolidate|patterns|verify)\b/m);
+    expect(cli(['pin', '--help']).status).toBe(0);
+    expect(cli(['unpin', '--help']).status).toBe(0);
+    const dreamHelp = cli(['dream', '--help']);
+    expect(dreamHelp.status, dreamHelp.stderr).toBe(0);
+    expect(dreamHelp.stdout).toMatch(/list/);
+    expect(dreamHelp.stdout).toMatch(/show/);
+    expect(dreamHelp.stdout).toMatch(/accept/);
+    expect(dreamHelp.stdout).toMatch(/reject/);
+    expect(dreamHelp.stdout).not.toMatch(/\b(?:run|patterns|conflicts)\b/);
+    for (const args of [['dream', 'run'], ['dream', 'patterns'], ['dream', 'conflicts'], ['telemetry'], ['consolidate'], ['patterns'], ['verify'], ['doctor', '--probe'], ['reindex']]) {
+      const rejected = cli(args);
+      expect(rejected.status, `${args.join(' ')}: ${rejected.stdout} ${rejected.stderr}`).not.toBe(0);
+    }
+    for (const key of ['llm.provider', 'embedder.provider', 'language', 'transcriptMining']) {
+      const rejected = cli(['config', 'set', key, 'removed']);
+      expect(rejected.status, rejected.stderr).toBe(1);
+    }
+    expect(fs.existsSync(path.join(runtime, 'config.json'))).toBe(false);
     await client.connect(transport, { timeout: 5000 });
     const childPid = transport.pid;
     expect(childPid).toBeTypeOf('number');
@@ -142,6 +166,9 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     expect(proposalCount()).toMatchObject({ n: 2 });
     await client.close();
     expect(transport.pid).toBeNull();
+    const reindexed = cli(['reindex', '--fts', '--json']);
+    expect(reindexed.status, reindexed.stderr).toBe(0);
+    expect(JSON.parse(reindexed.stdout).entities).toBe(5);
     const db = new MemeshDatabase(dbPath, { readOnly: true });
     try {
       const rows = db.prepare('SELECT * FROM dream_proposals').all() as Array<Record<string, unknown>>;

@@ -164,31 +164,3 @@ describe('doctor: auto-capture activity (C5)', () => {
     expect(activity.summary).toMatch(/session-summary hook last ran/);
   });
 });
-
-describe('config: an API key with no provider (C2)', () => {
-  it('says so at the moment it is set', () => {
-    const r = runCli(['config', 'set', 'llm.apiKey', 'sk-test-not-a-real-key']);
-    expect(r.exitCode).toBe(0);
-    expect(r.stdout).toContain('No llm.provider is set');
-    expect(r.stdout).toMatch(/config set llm\.provider/);
-  });
-
-  it('does not report an LLM that cannot be called', () => {
-    runCli(['config', 'set', 'llm.apiKey', 'sk-test-not-a-real-key']);
-
-    // `status` printed `LLM: undefined (undefined)` — a configured-looking
-    // line for a provider that does not exist.
-    const status = runCli(['status']);
-    expect(status.stdout).not.toContain('undefined');
-    expect(status.stdout).toMatch(/LLM: not configured/);
-
-    // …and it reports one once a provider is named, so this is not just
-    // "never report an LLM". No model was set, and that is a normal setup —
-    // the provider default applies — so the line must say `default`, not the
-    // word `undefined`.
-    runCli(['config', 'set', 'llm.provider', 'anthropic']);
-    const after = runCli(['status']);
-    expect(after.stdout).toMatch(/LLM: anthropic \(default\)/);
-    expect(after.stdout).not.toContain('undefined');
-  });
-});

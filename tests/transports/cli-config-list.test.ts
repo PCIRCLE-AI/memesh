@@ -46,8 +46,8 @@ describe('memesh config list', () => {
     expect(out).toContain('sessionLimit: 42');
     expect(out).toContain('autoCapture: false');
     expect(out).toContain('autoUpdate: patch');
-    expect(out).toContain('llmFallbacks');
-    expect(out).toContain('llm.provider: anthropic');
+    expect(out).not.toContain('llmFallbacks');
+    expect(out).not.toContain('llm.provider');
   });
 
   it('fully redacts apiKeys — no key bytes at all, primary or fallback chain', () => {
@@ -57,7 +57,7 @@ describe('memesh config list', () => {
     });
     // Not even the first-4/last-4 fragments maskApiKey would reveal.
     expect(out).not.toMatch(/sk-p|rint|sk-f|9876|abcd|wxyz/);
-    expect(out).toContain('llm.apiKey: ***');
+    expect(out).not.toContain('llm.apiKey');
   });
 
   it('says nothing is set when the config is empty', () => {

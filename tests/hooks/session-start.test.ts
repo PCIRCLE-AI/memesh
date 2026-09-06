@@ -306,11 +306,18 @@ describe('Feature: Session Start Hook', () => {
       expect(occurrences).toBe(1);
     });
 
-    it('omits hookSpecificOutput entirely when there is no database', () => {
+    it('offers session-scoped host-native work-package choices even without a database', () => {
       const output = runHook({ cwd: '/tmp/myproject' });
       // Nothing recalled means nothing to inject — emitting an empty
       // additionalContext would waste a context slot on every fresh install.
-      expect(output.hookSpecificOutput).toBeUndefined();
+      const guidance = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      expect(guidance).toContain('work_package prepare');
+      expect(guidance).toContain('host interactive choice UI');
+      expect(guidance).toContain('Dispatch agent task');
+      expect(guidance).toContain('Later');
+      expect(guidance).toContain('Don’t suggest again');
+      expect(guidance).toContain('this session only');
+      expect(guidance).toContain('Never dispatch without the user choosing it');
       expect(output.systemMessage).toBeTruthy();
     });
   });

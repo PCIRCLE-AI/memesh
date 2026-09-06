@@ -6,25 +6,37 @@ import { execFileSync } from 'child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { formatDoctorReport, hoursSince, runDoctor as runDoctorImpl } from '../../src/core/doctor.js';
 import type { UpdateCheck } from '../../src/core/version-check.js';
-import type { Capabilities } from '../../src/core/config.js';
 
-/**
- * Stand-in for the real embedder. 768 dims = nomic-embed-text's output.
- *
- * Every doctor test MUST inject this. The real `embedText()` makes a live
- * provider call (ollama socket / openai HTTP), which a diagnostic test must
- * not depend on. A deterministic stub keeps the probe rows testable offline.
- */
-const stubEmbedText = async (): Promise<Float32Array> => new Float32Array(768);
-
-/**
- * All tests go through this wrapper so no call site can accidentally reach
- * the real embedder. A test that wants different embedding behaviour passes
- * its own `embedTextImpl` — the spread means it wins.
- */
+/** Keep filesystem discovery confined to explicit test fixtures. */
 function runDoctor(options: Parameters<typeof runDoctorImpl>[0]) {
-  return runDoctorImpl({ embedTextImpl: stubEmbedText, pluginCacheDiscoveryImpl: () => [], ...options });
+  return runDoctorImpl({ pluginCacheDiscoveryImpl: () => [], ...options });
 }
+
+it('keeps retired provider diagnostics absent with legacy provider config and no network', async () => {
+  const root = createPackageRoot();
+  tempRoots.push(root);
+  const configPath = path.join(root, 'config.json');
+  writeJson(configPath, { llm: { provider: 'ollama' }, embedder: { provider: 'ollama' }, transcriptMining: true });
+  const noFetch = vi.fn(() => { throw new Error('unexpected network'); });
+  vi.stubGlobal('fetch', noFetch);
+  try {
+    const result = await runDoctor({
+      packageRoot: root, packageVersion: '4.0.3',
+      openDatabaseImpl: () => makeDatabase(0) as never,
+      closeDatabaseImpl: () => undefined,
+      getConfigPathImpl: () => configPath,
+      getUpdateCheckImpl: async () => makeUpdateCheck(),
+      getCurrentInstallChannelImpl: () => 'npm-global',
+      getInstallChannelSupportImpl: () => ({ label: 'npm global', canSelfUpdate: false }) as never,
+      nativeBindingProbeImpl: () => ({ ok: true }),
+      resolveShellMemeshImpl: () => null,
+      fetchImpl: noFetch as typeof fetch,
+    });
+    for (const check of result.checks) expect(check.id).not.toMatch(/vector|embedding|telemetry|transcript.min|^capabilities$/);
+    expect(result.checks.some(check => check.id === 'native-binding')).toBe(true);
+    expect(noFetch).not.toHaveBeenCalled();
+  } finally { vi.unstubAllGlobals(); }
+});
 
 function makeUpdateCheck(overrides: Partial<UpdateCheck> = {}): UpdateCheck {
   return {
@@ -309,27 +321,6 @@ afterEach(() => {
   }
 });
 
-// The doctor's capability stubs used to be object literals missing four of
-// `Capabilities`' required fields. They compiled only because nothing type
-// -checked this file: `tsconfig.json`'s exclude carries `**/*.test.ts`, so
-// `npm run typecheck` skipped every test in the repository. A stub narrower
-// than the interface it stands in for is a stub that stops standing in for it
-// the moment doctor reads one of the missing fields.
-function caps(overrides: Partial<Capabilities> = {}): Capabilities {
-  return {
-    fts5: true,
-    vectorSearch: true,
-    scoring: true,
-    knowledgeEvolution: true,
-    embeddings: 'ollama',
-    llm: null,
-    llmSource: 'none',
-    llmFallbacks: [],
-    searchLevel: 0,
-    ...overrides,
-  };
-}
-
 describe('doctor', () => {
   it('reports PASS when local install checks all succeed', async () => {
     const packageRoot = createPackageRoot();
@@ -370,11 +361,6 @@ describe('doctor', () => {
       httpBaseUrl: 'http://127.0.0.1:3737',
       openDatabaseImpl: () => makeDatabase(7) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({
-        searchLevel: 1,
-        llm: { provider: 'anthropic', model: 'claude-3-5-haiku-latest' },
-        embeddings: 'openai',
-      }),
       getConfigPathImpl: () => configPath,
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -431,11 +417,6 @@ describe('doctor', () => {
       packageVersion: '4.0.3',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({
-        searchLevel: 0,
-        llm: null,
-        embeddings: 'tfidf',
-      }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck({
         latestVersion: null,
@@ -484,7 +465,6 @@ describe('doctor', () => {
       packageVersion: '4.7.1',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => null,
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -502,85 +482,6 @@ describe('doctor', () => {
     expect(updateCheck?.status, `a fresh install should not warn: ${updateCheck?.summary}`).toBe('pass');
   });
 
-  it('the Config row agrees with the Capabilities row when an env key enables Smart Mode', async () => {
-    // QA on the packaged CLI: with NO config file and an API key in the shell —
-    // a common developer setup — the Config row said "MeMesh will run in Core
-    // mode" while the Capabilities row two sections later said "Search level 1
-    // (Smart Mode)". One report, two answers. The Config check used to hardcode
-    // Core mode whenever the file was absent, never asking the detector that
-    // the Capabilities row already consulted. The dream gate had fixed this
-    // same pattern; doctor's own check had not.
-    const packageRoot = createPackageRoot();
-    const memeshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-smart-'));
-    tempRoots.push(memeshDir);
-    const originalMemeshDir = process.env.MEMESH_DIR;
-    process.env.MEMESH_DIR = memeshDir;
-
-    const result = await runDoctor({
-      packageRoot,
-      packageVersion: '4.0.3',
-      openDatabaseImpl: () => makeDatabase() as never,
-      closeDatabaseImpl: () => undefined,
-      // Env-detected Smart Mode: a key is present, no file names a provider.
-      detectCapabilitiesImpl: () => caps({
-        searchLevel: 1,
-        llm: { provider: 'openai', model: 'gpt-4o-mini', apiKey: 'sk-test' },
-        embeddings: 'tfidf',
-      }),
-      // The file does NOT exist — that is the whole scenario.
-      getConfigPathImpl: () => path.join(memeshDir, 'config.json'),
-      getUpdateCheckImpl: async () => makeUpdateCheck({
-        latestVersion: null, checkSucceeded: false, freshness: 'unavailable',
-        lastSuccessfulCheckAt: null, lastError: 'registry offline',
-      }),
-      getCurrentInstallChannelImpl: () => 'source-checkout',
-      getInstallChannelSupportImpl: () => ({
-        channel: 'source-checkout', label: 'source checkout', canSelfUpdate: false,
-        recommendedCommand: null, guidance: 'Update this source checkout from its repository and rebuild it.',
-      }),
-      nativeBindingProbeImpl: () => ({ ok: true }),
-    });
-
-    if (originalMemeshDir === undefined) delete process.env.MEMESH_DIR;
-    else process.env.MEMESH_DIR = originalMemeshDir;
-
-    const config = result.checks.find((check) => check.id === 'config');
-    expect(config?.status).toBe('pass');
-    expect(config?.summary, 'the Config row still claims Core mode while the detector says Smart Mode')
-      .not.toContain('Core mode');
-    // Pin the TRUTH of the sentence, not only the absence of the old one. The
-    // first version said "an API key in the environment" — a mutation replacing
-    // that phrase with nonsense survived, because only 'Smart Mode' was asserted.
-    expect(config?.summary, 'the row must name the provider the environment supplied')
-      .toContain('names openai');
-    expect(config?.summary).toContain('via its API key');
-  });
-
-  it('the Config row names OLLAMA_HOST, not an API key, when that is what enabled Smart Mode', async () => {
-    // Review finding: OLLAMA_HOST yields a provider with NO apiKey, and the
-    // sentence sent the user hunting for a key that does not exist.
-    const packageRoot = createPackageRoot();
-    const memeshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-ollama-'));
-    tempRoots.push(memeshDir);
-    const originalMemeshDir = process.env.MEMESH_DIR;
-    process.env.MEMESH_DIR = memeshDir;
-    const result = await runDoctor({
-      packageRoot, packageVersion: '4.0.3',
-      openDatabaseImpl: () => makeDatabase() as never, closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, llm: { provider: 'ollama', model: 'llama3.2' }, embeddings: 'tfidf' }),
-      getConfigPathImpl: () => path.join(memeshDir, 'config.json'),
-      getUpdateCheckImpl: async () => makeUpdateCheck({ latestVersion: null, checkSucceeded: false, freshness: 'unavailable', lastSuccessfulCheckAt: null, lastError: 'registry offline' }),
-      getCurrentInstallChannelImpl: () => 'source-checkout',
-      getInstallChannelSupportImpl: () => ({ channel: 'source-checkout', label: 'source checkout', canSelfUpdate: false, recommendedCommand: null, guidance: 'Update this source checkout from its repository and rebuild it.' }),
-      nativeBindingProbeImpl: () => ({ ok: true }),
-    });
-    if (originalMemeshDir === undefined) delete process.env.MEMESH_DIR; else process.env.MEMESH_DIR = originalMemeshDir;
-    const config = result.checks.find((check) => check.id === 'config');
-    expect(config?.summary, 'told the user an API key enabled Smart Mode when OLLAMA_HOST did').not.toContain('API key');
-    expect(config?.summary).toContain('names ollama');
-    expect(config?.summary).toContain('via OLLAMA_HOST');
-  });
-
   it('reports a count for an unsegmented index and leaks no memory text', async () => {
     // Only the MESSAGE. Whether the check FINDS anything is pinned against a
     // real FTS5 index in `tests/fts-segmentation-doctor.test.ts` — see the
@@ -593,11 +494,6 @@ describe('doctor', () => {
       packageVersion: '4.0.3',
       openDatabaseImpl: () => makeDatabase(3, { unsegmentedCount: 4 }) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({
-        searchLevel: 0,
-        llm: null,
-        embeddings: 'tfidf',
-      }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -636,11 +532,6 @@ describe('doctor', () => {
       packageVersion: '4.0.3',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({
-        searchLevel: 0,
-        llm: null,
-        embeddings: 'tfidf',
-      }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -689,7 +580,6 @@ describe('doctor', () => {
       packageVersion: '4.2.5',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -730,7 +620,6 @@ describe('doctor', () => {
       packageVersion: '4.2.5',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -768,7 +657,6 @@ describe('doctor', () => {
       packageVersion: '4.2.5',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'source-checkout',
@@ -808,7 +696,6 @@ describe('doctor', () => {
       packageVersion: '4.2.5',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -843,7 +730,6 @@ describe('doctor', () => {
       packageVersion: '4.2.5',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -877,7 +763,6 @@ describe('doctor', () => {
       packageVersion: '4.2.5',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -917,11 +802,6 @@ describe('doctor', () => {
       packageVersion: '4.0.3',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({
-        searchLevel: 0,
-        llm: null,
-        embeddings: 'tfidf',
-      }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -951,11 +831,6 @@ describe('doctor', () => {
       packageVersion: '4.0.3',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({
-        searchLevel: 0,
-        llm: null,
-        embeddings: 'tfidf',
-      }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -990,7 +865,6 @@ describe('doctor', () => {
       packageVersion: '4.0.3',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -1016,7 +890,6 @@ describe('doctor', () => {
       packageVersion: '4.0.3',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -1046,7 +919,6 @@ describe('doctor', () => {
       packageVersion: '4.1.1',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck({
         currentVersion: '4.1.1',
@@ -1090,7 +962,6 @@ describe('doctor', () => {
       packageVersion: '4.1.1',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck({
         currentVersion: '4.1.1',
@@ -1138,7 +1009,6 @@ describe('doctor', () => {
       packageVersion: '4.1.2',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck({
         currentVersion: '4.1.2',
@@ -1182,7 +1052,6 @@ describe('doctor', () => {
       packageVersion: '4.1.2',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck({
         currentVersion: '4.1.2',
@@ -1225,7 +1094,6 @@ describe('doctor', () => {
       packageVersion: '4.8.2',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck({
         currentVersion: '4.8.2',
@@ -1260,7 +1128,6 @@ describe('doctor', () => {
       packageVersion: '4.8.2',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck({
         currentVersion: '4.8.2',
@@ -1337,7 +1204,6 @@ describe('doctor', () => {
       packageVersion: '4.1.4',
       openDatabaseImpl: () => makeDatabase(0) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -1365,7 +1231,6 @@ describe('doctor', () => {
       packageVersion: '4.1.4',
       openDatabaseImpl: () => makeDatabase(0) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -1408,7 +1273,6 @@ describe('doctor', () => {
       packageVersion: '4.1.4',
       openDatabaseImpl: () => makeDatabase(0) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -1440,7 +1304,6 @@ describe('doctor', () => {
       packageVersion: '4.1.4',
       openDatabaseImpl: () => makeDatabase(0) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -1493,7 +1356,6 @@ describe('doctor', () => {
       packageVersion: '4.1.4',
       openDatabaseImpl: () => makeDatabase(5) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -1537,7 +1399,6 @@ describe('doctor', () => {
       packageVersion: '4.1.4',
       openDatabaseImpl: () => makeDatabase(0) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -1571,7 +1432,6 @@ describe('doctor', () => {
       packageVersion: '4.1.4',
       openDatabaseImpl: () => database as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global' as const,
@@ -1627,32 +1487,6 @@ describe('doctor', () => {
     const result = await runDoctor(args);
     return { result, activity: result.checks.find(c => c.id === 'hook-activity')! };
   }
-
-  it('llm-telemetry health: a telemetry table doctor cannot read is not a finding, and not a crash', async () => {
-    // inspectLlmTelemetryHealth swallows the read failure and returns
-    // undefined: a database from before `llm_telemetry` existed has nothing
-    // to diagnose, and reporting it as broken — or letting the throw escape
-    // into runDoctor's outer catch, which would print it as a database
-    // failure — would both be claims about a table nobody read. Every other
-    // test in this file gives the stub an empty table, so this branch had no
-    // test that could go red until this one.
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-    const { result } = await activityCheck(
-      hookActivityDoctorArgs(packageRoot, makeDatabase(0, { telemetryUnreadable: true })),
-    );
-    expect(result.checks.some(c => c.code === 'llm-telemetry.silent-failure')).toBe(false);
-    const leaked = result.checks.filter(c => /llm_telemetry/.test(`${c.summary} ${c.fix ?? ''}`));
-    expect(leaked.map(c => c.id), 'the read failure must not surface as any check').toEqual([]);
-    // The discriminating assertion: `database` is pushed 'pass' before this
-    // health check runs, then `dbChecks.length = 0` in runDoctor's outer
-    // catch would silently replace it with a 'fail' row if this function's
-    // local catch ever let the read failure escape instead of swallowing
-    // it — the two assertions above stay green even then, because the
-    // outer catch's diagnosis branches on file existence, not on this
-    // error's message, so neither ever mentions "llm_telemetry".
-    expect(result.checks.find(c => c.id === 'database')?.status).toBe('pass');
-  });
 
   it('hook-activity: the 24h count and the since-tracking count are different questions', async () => {
     // Three probes shared one canned answer in this fixture, so a row that
@@ -2392,7 +2226,6 @@ describe('README locale parity (doctor sub-check)', () => {
       packageVersion: '4.2.3',
       openDatabaseImpl: () => makeDatabase(3) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'source-checkout',
@@ -2511,7 +2344,6 @@ describe('Install ID (doctor sub-check)', () => {
         packageVersion: '4.7.1',
         openDatabaseImpl: () => makeDatabase(3) as never,
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'ollama' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => 'source-checkout',
@@ -2547,7 +2379,6 @@ describe('database failure diagnostics (F15)', () => {
         packageVersion: '4.1.4',
         openDatabaseImpl: () => { throw new Error('SQLITE_CANTOPEN'); },
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => 'npm-global',
@@ -2594,7 +2425,6 @@ describe('database failure diagnostics (F15)', () => {
         packageVersion: '4.1.4',
         openDatabaseImpl: () => { throw new Error('SQLITE_NOTADB'); },
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => 'npm-global',
@@ -2634,7 +2464,6 @@ describe('database failure diagnostics (F15)', () => {
         packageVersion: '4.1.4',
         openDatabaseImpl: () => { throw new Error('SQLITE_CANTOPEN'); },
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => 'npm-global',
@@ -2675,7 +2504,6 @@ describe('database failure diagnostics (F15)', () => {
         packageVersion: '4.1.4',
         openDatabaseImpl: () => { throw new Error('SQLITE_CORRUPT'); },
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => 'npm-global',
@@ -2718,8 +2546,7 @@ describe('database lifecycle preservation (F16 — regression)', () => {
       packageVersion: '4.1.4',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => { closeCallCount++; },
-      isDatabaseOpenImpl: () => true, // ← simulates server-mode: db already open
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
+      isDatabaseOpenImpl: () => true,
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -2746,8 +2573,7 @@ describe('database lifecycle preservation (F16 — regression)', () => {
       packageVersion: '4.1.4',
       openDatabaseImpl: () => makeDatabase() as never,
       closeDatabaseImpl: () => { closeCallCount++; },
-      isDatabaseOpenImpl: () => false, // ← simulates CLI mode: doctor opens db itself
-      detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
+      isDatabaseOpenImpl: () => false,
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -2763,136 +2589,6 @@ describe('database lifecycle preservation (F16 — regression)', () => {
   });
 });
 
-describe('SQLite and vector-search probe', () => {
-  it('a sqlite-vec that will not load is a WARNING, not a failure', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-
-    const result = await runDoctor({
-      packageRoot,
-      packageVersion: '4.2.5',
-      openDatabaseImpl: () => makeDatabase(1) as never,
-      closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
-      getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
-      getUpdateCheckImpl: async () => makeUpdateCheck(),
-      getCurrentInstallChannelImpl: () => 'plugin-marketplace',
-      getInstallChannelSupportImpl: () => ({
-        channel: 'plugin-marketplace',
-        label: 'Claude Code plugin marketplace',
-        canSelfUpdate: false,
-        recommendedCommand: 'memesh upgrade-plugin',
-        guidance: '',
-      }),
-      nativeBindingProbeImpl: () => ({ ok: false, message: 'vec0.dylib could not be loaded' }),
-    });
-
-    const bindingCheck = result.checks.find((c) => c.id === 'native-binding');
-    expect(bindingCheck).toBeDefined();
-    // `warn`, deliberately. sqlite-vec is a supplement: memesh stores and
-    // recalls perfectly well without it, on keyword search. Reporting `fail`
-    // makes `memesh doctor` exit 1, which breaks every CI step, container
-    // healthcheck and install script that gates on it — on a platform this
-    // project documents as supported.
-    expect(bindingCheck?.status).toBe('warn');
-    expect(bindingCheck?.summary).toContain('sqlite-vec could not be loaded');
-    // Says what the user LOSES, not just that something broke.
-    expect(bindingCheck?.summary).toContain('still saved');
-    expect(bindingCheck?.fix).toContain('npm install --omit=dev');
-    expect(result.status, 'a supplement being absent must not fail the run').not.toBe('FAIL');
-  });
-
-  it('an unresolvable sqlite-vec warns, and names the install command', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-
-    const result = await runDoctor({
-      packageRoot,
-      packageVersion: '4.2.5',
-      openDatabaseImpl: () => makeDatabase(1) as never,
-      closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
-      getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
-      getUpdateCheckImpl: async () => makeUpdateCheck(),
-      getCurrentInstallChannelImpl: () => 'npm-global',
-      getInstallChannelSupportImpl: () => ({
-        channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
-        recommendedCommand: 'memesh update', guidance: '',
-      }),
-      nativeBindingProbeImpl: () => ({
-        ok: false,
-        message: "Cannot find module 'sqlite-vec' — code: MODULE_NOT_FOUND",
-      }),
-    });
-
-    const bindingCheck = result.checks.find((c) => c.id === 'native-binding');
-    expect(bindingCheck?.status).toBe('warn');
-    expect(bindingCheck?.summary).toContain('not installed');
-    expect(bindingCheck?.fix).toContain('npm install');
-  });
-
-  it('a Node too old to load extensions FAILS, and says to upgrade Node', async () => {
-    // The one case in this row that really is fatal, and the one that used to
-    // be misdiagnosed: node:sqlite exists from Node 22.5 but its extension
-    // methods only landed in 22.13, so an old runtime yields
-    // "enableLoadExtension is not a function" — which matched neither
-    // classification branch and got reported as a missing sqlite-vec, sending
-    // the user to reinstall a package that was never the problem.
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-
-    const result = await runDoctor({
-      packageRoot,
-      packageVersion: '4.2.5',
-      openDatabaseImpl: () => makeDatabase(1) as never,
-      closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
-      getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
-      getUpdateCheckImpl: async () => makeUpdateCheck(),
-      getCurrentInstallChannelImpl: () => 'npm-global',
-      getInstallChannelSupportImpl: () => ({
-        channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
-        recommendedCommand: 'memesh update', guidance: '',
-      }),
-      nativeBindingProbeImpl: () => ({
-        ok: false,
-        message: 'memesh:node-sqlite-too-old: node:sqlite in v22.12.0 has no enableLoadExtension',
-      }),
-    });
-
-    const bindingCheck = result.checks.find((c) => c.id === 'native-binding');
-    expect(bindingCheck?.status).toBe('fail');
-    expect(bindingCheck?.summary).toContain('22.13');
-    expect(bindingCheck?.fix, 'sent the user to reinstall a package instead of upgrading Node')
-      .toContain('Upgrade Node');
-    expect(bindingCheck?.fix).not.toContain('npm install');
-  });
-
-  it('reports PASS when the probe succeeds (database opens + sqlite-vec loads)', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-
-    const result = await runDoctor({
-      packageRoot,
-      packageVersion: '4.2.5',
-      openDatabaseImpl: () => makeDatabase(1) as never,
-      closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
-      getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
-      getUpdateCheckImpl: async () => makeUpdateCheck(),
-      getCurrentInstallChannelImpl: () => 'npm-global',
-      getInstallChannelSupportImpl: () => ({
-        channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
-        recommendedCommand: 'memesh update', guidance: '',
-      }),
-      nativeBindingProbeImpl: () => ({ ok: true }),
-    });
-
-    const bindingCheck = result.checks.find((c) => c.id === 'native-binding');
-    expect(bindingCheck?.status).toBe('pass');
-  });
-});
-
 describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
   it('WARNs when plugin-marketplace install has no shell-PATH memesh', async () => {
     const packageRoot = createPackageRoot();
@@ -2903,7 +2599,6 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       packageVersion: '4.2.6',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -2951,7 +2646,6 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
         packageVersion,
         openDatabaseImpl: () => makeDatabase(1) as never,
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -3061,7 +2755,6 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
         packageVersion: '4.8.2',
         openDatabaseImpl: () => makeDatabase(1) as never,
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => channel,
@@ -3083,7 +2776,6 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
         packageVersion: '4.8.2',
         openDatabaseImpl: () => makeDatabase(1) as never,
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => 'npm-global',
@@ -3161,7 +2853,6 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
           packageVersion: '4.8.2',
           openDatabaseImpl: () => makeDatabase(1) as never,
           closeDatabaseImpl: () => undefined,
-          detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
           getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
           getUpdateCheckImpl: async () => makeUpdateCheck(),
           getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -3336,7 +3027,6 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
         packageVersion: '4.8.2',
         openDatabaseImpl: () => makeDatabase(1) as never,
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -3676,7 +3366,6 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       packageVersion: '4.2.6',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'plugin-marketplace',
@@ -3702,7 +3391,6 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       packageVersion: '4.2.6',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -3727,7 +3415,6 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       packageVersion: '4.2.6',
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'source-checkout',
@@ -3769,7 +3456,6 @@ describe('npm-global vs. discovered plugin-cache version skew (F3/F5)', () => {
       packageVersion,
       openDatabaseImpl: () => makeDatabase(1) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -3890,7 +3576,6 @@ describe('Claude Channel registration diagnostic', () => {
         packageVersion: '4.8.2',
         openDatabaseImpl: () => makeDatabase(1) as never,
         closeDatabaseImpl: () => undefined,
-        detectCapabilitiesImpl: () => caps({ searchLevel: 1, embeddings: 'ollama' }),
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
         getCurrentInstallChannelImpl: () => 'plugin-marketplace' as const,
@@ -4087,7 +3772,7 @@ describe('Claude Channel registration diagnostic', () => {
     tempRoots.push(path.dirname(path.dirname(path.dirname(path.dirname(packageRoot)))));
     const result = await runDoctor({
       packageRoot, packageVersion: '4.8.2', openDatabaseImpl: () => makeDatabase(1) as never,
-      closeDatabaseImpl: () => undefined, detectCapabilitiesImpl: () => caps({ searchLevel: 1 }),
+      closeDatabaseImpl: () => undefined,
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'), getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'plugin-marketplace' as const,
       getInstallChannelSupportImpl: () => ({ channel: 'plugin-marketplace' as const, label: 'Codex plugin', canSelfUpdate: false, recommendedCommand: '', guidance: '' }),
@@ -4095,187 +3780,6 @@ describe('Claude Channel registration diagnostic', () => {
       nativeBindingProbeImpl: () => ({ ok: true }), resolveShellMemeshImpl: () => null,
     });
     expect(channelRow(result)).toBeUndefined();
-  });
-});
-
-/**
- * The embedding probe row.
- *
- * Every embedder is now a live provider call (ollama socket / openai HTTP), so
- * the contract is: never probe without `--probe` (a diagnostic must not make a
- * billed or network call on its own), and when it does probe, report the real
- * outcome — pass, empty (degraded to FTS5), or threw — never a silent green.
- * Keyword-only (tfidf) is informational, not a failure.
- */
-describe('doctor: embeddings probe', () => {
-  function baseOptions(packageRoot: string, embeddings: Capabilities['embeddings']) {
-    return {
-      packageRoot,
-      packageVersion: '4.2.7',
-      openDatabaseImpl: () => makeDatabase(3) as never,
-      closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, llm: null, embeddings }),
-      getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
-      getUpdateCheckImpl: async () => makeUpdateCheck(),
-      getCurrentInstallChannelImpl: () => 'source-checkout',
-      getInstallChannelSupportImpl: () => ({
-        channel: 'source-checkout', label: 'source checkout', canSelfUpdate: false,
-        recommendedCommand: null, guidance: '',
-      }),
-      nativeBindingProbeImpl: () => ({ ok: true }),
-    } as unknown as Parameters<typeof runDoctorImpl>[0];
-  }
-
-  /** Isolate MEMESH_DIR so each probe test sees only what we put there. */
-  function withMemeshDir(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-embed-probe-'));
-    tempRoots.push(dir);
-    memeshDirOverrides.push(process.env.MEMESH_DIR);
-    process.env.MEMESH_DIR = dir;
-    return dir;
-  }
-
-  const memeshDirOverrides: (string | undefined)[] = [];
-
-  afterEach(() => {
-    for (const prev of memeshDirOverrides.splice(0)) {
-      if (prev === undefined) delete process.env.MEMESH_DIR;
-      else process.env.MEMESH_DIR = prev;
-    }
-  });
-
-  function findProbe(result: { checks: { id: string }[] }) {
-    return result.checks.find((c) => c.id === 'embeddings_probe') as
-      | { id: string; status: string; summary: string; fix?: string; informational?: boolean }
-      | undefined;
-  }
-
-  it('does NOT probe a local ollama embedder without --probe (network call)', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-    withMemeshDir();
-
-    let called = 0;
-    const result = await runDoctorImpl({
-      ...baseOptions(packageRoot, 'ollama'),
-      embedTextImpl: async () => { called++; return new Float32Array(768); },
-    });
-
-    const check = findProbe(result)!;
-    expect(called).toBe(0);
-    expect(check.informational).toBe(true);
-    expect(check.summary).toContain('NOT VERIFIED');
-    expect(check.fix).toContain('--probe');
-  });
-
-  it('does NOT bill the user: a BYOK provider is not probed without --probe', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-    withMemeshDir();
-
-    let called = 0;
-    const result = await runDoctorImpl({
-      ...baseOptions(packageRoot, 'openai'),
-      embedTextImpl: async () => { called++; return new Float32Array(1536); },
-    });
-
-    const check = findProbe(result)!;
-    expect(called).toBe(0);
-    expect(check.informational).toBe(true);
-    expect(check.summary).toContain('NOT VERIFIED');
-    expect(check.fix).toContain('memesh doctor --probe');
-  });
-
-  it('probes a BYOK provider once --probe is given', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-    withMemeshDir();
-
-    let called = 0;
-    const result = await runDoctorImpl({
-      ...baseOptions(packageRoot, 'openai'),
-      probeCapabilities: true,
-      embedTextImpl: async () => { called++; return new Float32Array(1536); },
-    });
-
-    const check = findProbe(result)!;
-    expect(called).toBe(1);
-    expect(check.status).toBe('pass');
-    expect(check.informational).toBeFalsy();
-    expect(check.summary).toContain('1536-dim');
-  });
-
-  it('warns when a probed embedder returns nothing (the silent-degradation case)', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-    withMemeshDir();
-
-    const result = await runDoctorImpl({
-      ...baseOptions(packageRoot, 'openai'),
-      probeCapabilities: true,
-      embedTextImpl: async () => null,
-    });
-
-    const check = findProbe(result)!;
-    expect(check.status).toBe('warn');
-    expect(check.informational).toBeFalsy();
-    expect(check.summary).toContain('returned nothing');
-  });
-
-  it('warns when a probed embedder throws', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-    withMemeshDir();
-
-    const result = await runDoctorImpl({
-      ...baseOptions(packageRoot, 'openai'),
-      probeCapabilities: true,
-      embedTextImpl: async () => { throw new Error('401 invalid api key'); },
-    });
-
-    const check = findProbe(result)!;
-    expect(check.status).toBe('warn');
-    expect(check.summary).toContain('401 invalid api key');
-  });
-
-  it('warns when a probed embedder does not answer before the timeout', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-    withMemeshDir();
-    vi.useFakeTimers();
-
-    try {
-      const pending = runDoctorImpl({
-        ...baseOptions(packageRoot, 'openai'),
-        probeCapabilities: true,
-        embedTextImpl: async () => await new Promise<Float32Array | null>(() => undefined),
-      });
-      await vi.advanceTimersByTimeAsync(15_000);
-
-      const check = findProbe(await pending)!;
-      expect(check.status).toBe('warn');
-      expect(check.summary).toContain('no response within 15s');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('reports no-embedder as informational, not as a failure', async () => {
-    const packageRoot = createPackageRoot();
-    tempRoots.push(packageRoot);
-    withMemeshDir();
-
-    let called = 0;
-    const result = await runDoctorImpl({
-      ...baseOptions(packageRoot, 'tfidf'),
-      embedTextImpl: async () => { called++; return new Float32Array(384); },
-    });
-
-    const check = findProbe(result)!;
-    expect(called).toBe(0);
-    expect(check.informational).toBe(true);
-    expect(check.status).toBe('pass');
-    expect(check.summary).toContain('FTS5');
   });
 });
 
@@ -4334,7 +3838,6 @@ describe('doctor rows that had no assertion', () => {
       packageVersion: '4.6.2',
       openDatabaseImpl: () => makeDatabase(3) as never,
       closeDatabaseImpl: () => undefined,
-      detectCapabilitiesImpl: () => caps({ searchLevel: 1, llm: null, embeddings: 'ollama' }),
       getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
       getUpdateCheckImpl: async () => makeUpdateCheck(),
       getCurrentInstallChannelImpl: () => 'npm-global',
@@ -4442,42 +3945,6 @@ describe('doctor rows that had no assertion', () => {
     });
   });
 
-  describe('configured LLM capability', () => {
-    it('never makes a chat-provider request or emits an llm probe row, even with --probe', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-
-      const originalFetch = globalThis.fetch;
-      let networkCalls = 0;
-      let embeddingCalls = 0;
-      globalThis.fetch = (async () => {
-        networkCalls++;
-        throw new Error('unexpected doctor provider request');
-      }) as typeof fetch;
-
-      try {
-        const result = await runDoctorImpl(options(packageRoot, {
-          probeCapabilities: true,
-          detectCapabilitiesImpl: () => caps({
-            llm: { provider: 'openai', model: 'gpt-4o-mini', apiKey: 'test-only-key' },
-            embeddings: 'openai',
-          }),
-          embedTextImpl: async () => {
-            embeddingCalls++;
-            return new Float32Array(1536);
-          },
-        }));
-
-        expect(embeddingCalls, '--probe stopped exercising the embedding capability').toBe(1);
-        expect(networkCalls, 'doctor made a chat-provider network request').toBe(0);
-        expect(result.checks.filter((check) => check.id === 'llm_probe')).toHaveLength(0);
-      } finally {
-        globalThis.fetch = originalFetch;
-      }
-    });
-  });
-
   describe('install-channel', () => {
     it('warns when the install method cannot be identified', async () => {
       const packageRoot = createPackageRoot();
@@ -4507,60 +3974,6 @@ describe('doctor rows that had no assertion', () => {
       expect(check.code, 'a healthy install carried a warning code').toBeUndefined();
       expect(check.fix, 'a passing row offered a remedy for nothing').toBeUndefined();
       expect(check.summary).toContain('npm global');
-    });
-  });
-
-  describe('capabilities', () => {
-    it('reports configured values only, and cannot fail — the row this rule was written for', async () => {
-      // From `DoctorCheck.informational`'s own docstring: this row was
-      // hardcoded to 'pass' and merely echoed config, so an expired key could
-      // never move doctor off PASS.
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-
-      const check = row(await runDoctorImpl(options(packageRoot)), 'capabilities');
-      expect(check.informational).toBe(true);
-      expect(check.summary).toContain('Smart Mode');
-      expect(check.summary).toContain('Configured values only');
-    });
-
-    it('names Core — not Smart Mode — at search level 0', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-
-      const check = row(await runDoctorImpl(options(packageRoot, {
-        detectCapabilitiesImpl: () => caps({ searchLevel: 0, llm: null, embeddings: 'tfidf' }),
-      })), 'capabilities');
-      expect(check.summary).toContain('Core');
-      expect(check.summary).not.toContain('Smart Mode');
-    });
-  });
-
-  describe('transcript-mining', () => {
-    it('says OFF and how to turn it on, without treating off as a fault', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-      setEnv('MEMESH_TRANSCRIPT_MINING', '0');
-
-      const check = row(await runDoctorImpl(options(packageRoot)), 'transcript-mining');
-      expect(check.informational, 'an opt-in feature being off is not a fault').toBe(true);
-      expect(check.summary).toContain('Off (opt-in)');
-      expect(check.summary).toContain('memesh config set transcriptMining true');
-    });
-
-    it('changes what it says once it is on', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-      setEnv('MEMESH_TRANSCRIPT_MINING', '1');
-
-      const check = row(await runDoctorImpl(options(packageRoot)), 'transcript-mining');
-      expect(check.informational).toBe(true);
-      expect(check.summary, 'the row reads identically whether mining is on or off')
-        .not.toContain('Off (opt-in)');
     });
   });
 

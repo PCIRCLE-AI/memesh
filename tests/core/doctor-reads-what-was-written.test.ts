@@ -33,7 +33,6 @@ import path from 'path';
 import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { classifyBump } from '../../src/core/updater.js';
-import { parseValidatorResponse } from '../../src/core/digest-validator.js';
 
 describe('a newer version is recognised past the first two-digit component', () => {
   it('sees 4.6.10 as an upgrade over 4.6.9, where a string compare does not', () => {
@@ -49,28 +48,6 @@ describe('a newer version is recognised past the first two-digit component', () 
     // which is the bug the string compare was introduced to fix.
     expect(classifyBump('4.7.0', '4.6.9')).toBeNull();
     expect(classifyBump('4.6.9', '4.6.9')).toBeNull();
-  });
-});
-
-describe('an unreadable validator answer is not an approval', () => {
-  it('reports unavailable for prose', () => {
-    expect(parseValidatorResponse('sorry, I cannot do that').status).toBe('unavailable');
-  });
-
-  it('reports unavailable for JSON that names no verdict', () => {
-    expect(parseValidatorResponse('{"suspicious": []}').status).toBe('unavailable');
-  });
-
-  it('still approves a body that says pass — the anti-vacuity half', () => {
-    expect(parseValidatorResponse('{"verdict": "pass", "suspicious": []}').status).toBe('pass');
-  });
-
-  it('still rejects a body that says reject WITH evidence', () => {
-    const result = parseValidatorResponse(
-      '{"verdict": "reject", "suspicious": [{"claim": "it doubled throughput", "reason": "no source says so"}]}',
-    );
-    expect(result.status).toBe('reject');
-    expect(result.suspiciousClaims).toHaveLength(1);
   });
 });
 

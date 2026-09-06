@@ -172,20 +172,6 @@ describe('CLI: flags reject values they do not understand', () => {
       expect(runCli(['export', '-o', out]).exitCode).toBe(0);
       expect(fs.existsSync(out)).toBe(true);
     });
-
-    it('`telemetry --window abc` says it needs a number', () => {
-      const r = runCli(['telemetry', '--window', 'abc']);
-      expect(r.exitCode).toBe(1);
-      // The message now comes from `wholeNumber`, the one coercion every
-      // numeric flag in the CLI shares, rather than from a guard this
-      // command carried alone.
-      expect(r.stderr + r.stdout).toContain('--window needs a whole number');
-      expect(r.stderr).not.toContain('RangeError');
-    });
-
-    it('`telemetry --window 7` still runs', () => {
-      expect(runCli(['telemetry', '--window', '7']).exitCode).toBe(0);
-    });
   });
 
   describe('forget says which thing was missing', () => {

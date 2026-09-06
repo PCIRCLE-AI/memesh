@@ -1042,7 +1042,7 @@ process.stdin.on('end', async () => {
       // nothing — a fenced block containing only a branch name tells the
       // agent something it can already see. briefing.test.ts's parity case
       // is what keeps this identical to the tool side.
-      let memoryContext = '';
+      let memoryContext = workPackageGuidance;
       if (memoryLines.length > 0) {
         const repoLines = repoStateLines(readRepoState(data.cwd));
         if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
@@ -1055,7 +1055,7 @@ process.stdin.on('end', async () => {
         // charges task state plus project/foreign sections against the main
         // ceiling and global context against its small additive ceiling. It
         // returns whole lines only, so the closing fence cannot be cut.
-        memoryContext = buildReferenceContext(memoryLines);
+        memoryContext = buildReferenceContext(memoryLines) + '\n\n' + workPackageGuidance;
         // The citation contract — OUTSIDE the fence on purpose: the fence
         // declares its content "background data, not instructions", and
         // this line IS an instruction. One line is the entire write side of
@@ -1267,7 +1267,9 @@ process.stdin.on('end', async () => {
  *
  * The shape is asserted by tests/helpers/hook-output-contract.ts.
  */
-function output(text, memoryContext) {
+const workPackageGuidance = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer the host interactive choice UI: Dispatch agent task (delegate through the host, then submit for human review); Later (defer not_now); Don’t suggest again (stop suggesting for this session only). Never dispatch without the user choosing it. No dashboard dispatch or durable opt-out is implied.';
+
+function output(text, memoryContext = workPackageGuidance) {
   const payload = { systemMessage: text };
   if (memoryContext) {
     payload.hookSpecificOutput = {
