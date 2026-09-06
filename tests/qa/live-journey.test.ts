@@ -208,7 +208,7 @@ describe('--help', () => {
       socketPath: '/task/memesh/agent-router-v2.sock',
     });
     expect(env.MEMESH_ROUTER_SOCKET).toBe('/task/memesh/agent-router-v2.sock');
-    expect(env.MEMESH_ROUTER_TOKEN_FILE).toBe('/task/memesh/router.token');
+    expect(env.MEMESH_ROUTER_TOKEN_FILE).toBe('/task/memesh/agent-router.token');
   });
 
   it('warns that the launched Claude session is outside the isolation', () => {

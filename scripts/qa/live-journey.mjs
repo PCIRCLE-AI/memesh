@@ -794,7 +794,7 @@ export function buildJourneyEnv(baseEnv, { memeshDir, dbPath, socketPath }) {
     MEMESH_DIR: memeshDir,
     MEMESH_DB_PATH: dbPath,
     MEMESH_ROUTER_SOCKET: socketPath,
-    MEMESH_ROUTER_TOKEN_FILE: path.join(memeshDir, 'router.token'),
+    MEMESH_ROUTER_TOKEN_FILE: path.join(memeshDir, 'agent-router.token'),
   };
 }
 
