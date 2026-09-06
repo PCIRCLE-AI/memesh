@@ -212,13 +212,16 @@ function tryGit(cwd: string, args: string[]): string | null {
 }
 
 /**
- * Canonicalize an ordinary network git remote to `host[:port]/full/path`.
- * Scheme and user-info are intentionally absent: HTTPS, SSH URL and SCP
- * spellings of the same standard endpoint converge without leaking credentials.
- * Host case is DNS-insensitive; path case is preserved because repository
- * namespaces may be case-sensitive. URL parsing drops default ports while
- * retaining non-default ports. Local/file remotes return null and use the
- * repository-root identity instead.
+ * Canonicalize a network git remote without retaining a password.
+ *
+ * Only standard GitHub HTTPS and `git@github.com` SSH spellings are known to
+ * identify the same repository, so they converge. For a generic SSH host the
+ * login and path mode are part of the repository locator: `alice@host:repo`
+ * is relative to Alice's home, while `alice@host:/repo` is absolute, and Bob's
+ * home may contain another repository with the same name. Other URL schemes
+ * remain explicit rather than being guessed equivalent. Host case is
+ * DNS-insensitive; repository path case is preserved. Local/file remotes
+ * return null and use the repository-root identity instead.
  */
 export function canonicalRemoteLocator(remote: string): string | null {
   const value = remote.trim();
@@ -227,7 +230,9 @@ export function canonicalRemoteLocator(remote: string): string | null {
 
   let host: string;
   let port = '';
+  let user = '';
   let remotePath: string;
+  let transport: string;
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) {
     let parsed: URL;
     try {
@@ -240,19 +245,31 @@ export function canonicalRemoteLocator(remote: string): string | null {
     port = parsed.port;
     const protocol = parsed.protocol.toLowerCase();
     if ((protocol === 'ssh:' || protocol === 'git+ssh:') && port === '22') port = '';
+    user = parsed.username;
     remotePath = parsed.pathname;
+    transport = protocol === 'ssh:' || protocol === 'git+ssh:'
+      ? 'ssh-absolute'
+      : protocol.slice(0, -1);
   } else {
-    const scp = /^(?:[^@]+@)?(\[[^\]]+\]|[^:/]+):(.+)$/.exec(value);
+    const scp = /^(?:([^@]+)@)?(\[[^\]]+\]|[^:/]+):(.+)$/.exec(value);
     if (!scp) return null;
-    host = scp[1].toLowerCase();
-    remotePath = scp[2];
+    user = scp[1] ?? '';
+    host = scp[2].toLowerCase();
+    remotePath = scp[3];
+    transport = remotePath.startsWith('/') ? 'ssh-absolute' : 'ssh-relative';
   }
 
   const normalizedPath = remotePath
     .replace(/^\/+|\/+$/g, '')
     .replace(/\.git$/i, '');
   if (!host || !normalizedPath) return null;
-  return `${host}${port ? `:${port}` : ''}/${normalizedPath}`;
+  const endpoint = `${host}${port ? `:${port}` : ''}`;
+  const standardGithub = host === 'github.com'
+    && port === ''
+    && (transport === 'https' || ((transport === 'ssh-relative' || transport === 'ssh-absolute') && user === 'git'));
+  if (standardGithub) return `${endpoint}/${normalizedPath}`;
+  const authority = transport.startsWith('ssh-') && user ? `${user}@${endpoint}` : endpoint;
+  return `${transport}://${authority}/${normalizedPath}`;
 }
 
 /** Test seam: clear the per-cwd resolution cache between cases. */

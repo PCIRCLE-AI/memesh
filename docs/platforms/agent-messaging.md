@@ -109,12 +109,14 @@ thread-scoped principal. Use `message discover` to obtain the exact live session
 ID. No manual `agent setup` is required.
 
 The automatic project is a readable repo label plus a 32-hex identity suffix.
-For a network Git remote, the suffix covers its credential-free host and full
-namespace; otherwise it covers the native real path. This keeps the same repo
-together across subdirectories, symlinks, remote-backed clones, and linked
-worktrees without letting two unrelated repos named `shared` discover or receive
-each other's messages. `memesh briefing` in that workspace reports the exact
-project value.
+For a network Git remote, the suffix covers a password-free locator; otherwise
+it covers the native real path. Standard GitHub HTTPS and SSH spellings
+converge. Generic SSH locators keep the login and whether the repository path is
+absolute or relative to that login's home, preventing distinct accounts or
+paths from sharing one scope. This keeps the same repo together across
+subdirectories, symlinks, remote-backed clones, and linked worktrees without
+letting two unrelated repos named `shared` discover or receive each other's
+messages. `memesh briefing` in that workspace reports the exact project value.
 
 If one workspace needs a stable named principal across different threads, run
 `memesh agent setup codex-session --project my-project --principal codex-reviewer

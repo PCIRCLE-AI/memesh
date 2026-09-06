@@ -106,7 +106,9 @@ export function canonicalRemoteLocator(remote) {
         return null;
     let host;
     let port = '';
+    let user = '';
     let remotePath;
+    let transport;
     if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) {
         let parsed;
         try {
@@ -122,21 +124,34 @@ export function canonicalRemoteLocator(remote) {
         const protocol = parsed.protocol.toLowerCase();
         if ((protocol === 'ssh:' || protocol === 'git+ssh:') && port === '22')
             port = '';
+        user = parsed.username;
         remotePath = parsed.pathname;
+        transport = protocol === 'ssh:' || protocol === 'git+ssh:'
+            ? 'ssh-absolute'
+            : protocol.slice(0, -1);
     }
     else {
-        const scp = /^(?:[^@]+@)?(\[[^\]]+\]|[^:/]+):(.+)$/.exec(value);
+        const scp = /^(?:([^@]+)@)?(\[[^\]]+\]|[^:/]+):(.+)$/.exec(value);
         if (!scp)
             return null;
-        host = scp[1].toLowerCase();
-        remotePath = scp[2];
+        user = scp[1] ?? '';
+        host = scp[2].toLowerCase();
+        remotePath = scp[3];
+        transport = remotePath.startsWith('/') ? 'ssh-absolute' : 'ssh-relative';
     }
     const normalizedPath = remotePath
         .replace(/^\/+|\/+$/g, '')
         .replace(/\.git$/i, '');
     if (!host || !normalizedPath)
         return null;
-    return `${host}${port ? `:${port}` : ''}/${normalizedPath}`;
+    const endpoint = `${host}${port ? `:${port}` : ''}`;
+    const standardGithub = host === 'github.com'
+        && port === ''
+        && (transport === 'https' || ((transport === 'ssh-relative' || transport === 'ssh-absolute') && user === 'git'));
+    if (standardGithub)
+        return `${endpoint}/${normalizedPath}`;
+    const authority = transport.startsWith('ssh-') && user ? `${user}@${endpoint}` : endpoint;
+    return `${transport}://${authority}/${normalizedPath}`;
 }
 export function _clearProjectNameCache() {
     projectNameCache.clear();

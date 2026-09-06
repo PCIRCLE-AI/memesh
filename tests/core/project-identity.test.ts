@@ -40,9 +40,13 @@ describe('canonicalRemoteLocator', () => {
     ['ssh://git@GITHUB.COM/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
     ['ssh://git@github.com:22/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
     ['https://github.com:443/PCIRCLE-AI/memesh-llm-memory.git', 'github.com/PCIRCLE-AI/memesh-llm-memory'],
-    ['https://user:secret@host.example/Owner/Repo.git', 'host.example/Owner/Repo'],
-    ['ssh://git@host.example:2222/Owner/Repo.git', 'host.example:2222/Owner/Repo'],
-    ['https://host.example:8443/Owner/Repo.git', 'host.example:8443/Owner/Repo'],
+    ['https://user:secret@host.example/Owner/Repo.git', 'https://host.example/Owner/Repo'],
+    ['ssh://git@host.example:2222/Owner/Repo.git', 'ssh-absolute://git@host.example:2222/Owner/Repo'],
+    ['https://host.example:8443/Owner/Repo.git', 'https://host.example:8443/Owner/Repo'],
+    ['alice@git.example:repo.git', 'ssh-relative://alice@git.example/repo'],
+    ['bob@git.example:repo.git', 'ssh-relative://bob@git.example/repo'],
+    ['alice@git.example:/repo.git', 'ssh-absolute://alice@git.example/repo'],
+    ['ssh://alice@git.example/repo.git', 'ssh-absolute://alice@git.example/repo'],
   ];
   for (const [url, expected] of cases) {
     it(`${url} → ${expected}`, () => {
@@ -106,6 +110,18 @@ describe('getProjectName — layered git identity', () => {
     const ssh = makeRepo('git@GITHUB.COM:Owner/CaseSensitiveRepo.git');
     created.push(https, ssh);
     expect(getProjectName(https)).toBe(getProjectName(ssh));
+  });
+
+  it('keeps generic SSH users and relative-vs-absolute repository paths isolated', () => {
+    const relativeAlice = makeRepo('alice@git.example:repo.git');
+    const relativeBob = makeRepo('bob@git.example:repo.git');
+    const absoluteAlice = makeRepo('alice@git.example:/repo.git');
+    created.push(relativeAlice, relativeBob, absoluteAlice);
+    expect(new Set([
+      getProjectName(relativeAlice),
+      getProjectName(relativeBob),
+      getProjectName(absoluteAlice),
+    ]).size).toBe(3);
   });
 
   it('one remote identity converges across root, subdir, symlink, and git worktree', () => {
