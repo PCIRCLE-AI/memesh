@@ -2113,6 +2113,7 @@ async function main() {
     };
     if (options.out) {
       const target = path.resolve(options.out);
+      fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
       fs.writeFileSync(target, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
       process.stdout.write(`\nReport: ${target}\n`);
     } else {
