@@ -43,7 +43,7 @@
 // this file called either — available, but not required, which is a check
 // that gets skipped exactly when a release is rushed. This file now runs
 // `qa:pre-release` itself and blocks on its real exit code, and requires a
-// `qa:live-journey` receipt for THIS exact commit (either host) before it
+// `qa:live-journey` receipts for BOTH hosts on THIS exact commit before it
 // will proceed. See the "G4" comment further down for the mechanics.
 
 import fs from 'node:fs';
@@ -196,10 +196,9 @@ const qaPreReleaseStatus = qaPreReleaseResult.status;
 
 // `qa:live-journey` needs a Codex login or a person at an interactive Claude
 // Code session — nothing this script can open itself, so this stays
-// receipt-based. `--host codex --out .qa/codex-report.json` (or `claude`)
-// writes a `memesh-live-journey/v1` report; any ONE of the two hosts is
-// accepted; the check is which is on-disk, current-revision and PASS, not a
-// fixed host, because only Codex can be driven unattended today.
+// receipt-based. Each host writes its own `memesh-live-journey/v2` report.
+// Both are required because one host's delivery path says nothing about the
+// other's registration, native adapter, model visibility, or disconnect path.
 const liveJourneyCandidates = LIVE_JOURNEY_RECEIPT_PATHS.map(({ host, relativePath }) => {
   const receiptPath = path.join(repoRoot, relativePath);
   try {
@@ -246,10 +245,12 @@ console.log(`  commit:      ${headSha ? headSha.slice(0, 8) : '(unknown)'}`);
 console.log(`  notes:       ${notesFile ?? `CHANGELOG.md [${pkgVersion}]`} (${notes ? notes.length : 0} chars)`);
 console.log(`  qa:pre-release: ${qaPreReleaseStatus === 0 ? 'PASS' : `FAIL (exit ${qaPreReleaseStatus ?? '(could not run)'})`}`);
 {
-  const liveJourney = findUsableLiveJourneyReceipt(liveJourneyCandidates, headSha);
-  console.log(
-    `  live-journey: ${liveJourney.ok ? `PASS (${liveJourney.usable.host}, ${liveJourney.usable.path})` : 'no usable receipt — see blockers below if any'}`
-  );
+  for (const required of LIVE_JOURNEY_RECEIPT_PATHS) {
+    const liveJourney = findUsableLiveJourneyReceipt(liveJourneyCandidates, headSha, required.host);
+    console.log(
+      `  live-journey (${required.host}): ${liveJourney.ok ? `PASS (${liveJourney.usable.path})` : 'no usable receipt — see blockers below if any'}`
+    );
+  }
 }
 
 // Print the head of the body BEFORE acting, in both paths. The default source

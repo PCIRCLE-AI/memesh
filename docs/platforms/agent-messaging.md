@@ -240,14 +240,22 @@ close that gap by requiring evidence that could only have come out of a running
 model.
 
 ```bash
-TMPDIR=/private/tmp npm run qa:live-journey -- --host codex  --out .qa/codex-report.json
+TMPDIR=/private/tmp npm run qa:live-journey -- --host codex  --out .qa/codex-model-report.json
 TMPDIR=/private/tmp npm run qa:live-journey -- --host claude --out .qa/claude-report.json
 ```
 
-`.qa/` is where `npm run release:finish` looks for these reports (any ONE
-host's PASS, against the exact commit being released, is enough — see
-`scripts/lib/release-preconditions.mjs`'s `findUsableLiveJourneyReceipt`). The
-directory is gitignored; a report is owner-machine evidence, never shipped.
+`.qa/` is where `npm run release:finish` looks for release receipts. Codex and
+Claude are separate delivery claims, so **both** must PASS within 24 hours
+against the exact clean commit being released, with current `dist/`, ordered
+lifecycle steps, lease renewal, model-visible evidence, and the stopped-session
+failure path. The installed Codex receipt also requires actual plugin
+SessionStart loading and a resume that supersedes the prior generation.
+One host can never satisfy the other host's gate. The Codex release receipt is
+`.qa/codex-report.json`, produced by the installed-plugin SessionStart lifecycle
+harness; the `--host codex` command above deliberately writes a different
+model-path report because it injects SessionStart into the companion itself and
+does not prove that the Codex plugin loader ran. The directory is gitignored;
+reports are owner-machine evidence, never shipped.
 
 `TMPDIR` is not decoration on macOS. The router's Unix socket lives beside the
 database inside the temporary directory, and `AF_UNIX` caps a socket path at
@@ -292,13 +300,24 @@ identifiers off disk instead of out of the envelope. The Codex workspace is a
 separate temporary tree for the same reason — the database and this run's own
 logs are not one `..` away from it. The check then stops the companion and requires the next send to return
 `recipient_unavailable` while `message fetch` still returns the payload.
+Before delivery it waits for `lease_expires_at_ms` to advance, proving at least
+one real heartbeat rather than accepting the initial registration alone.
+Its v2 report labels registration as `harness_injected_session_start` with
+`plugin_loader_verified: false`; `release:finish` rejects that report as proof
+of automatic installed-plugin registration.
 
 **`--host claude`** starts the router, runs `memesh agent setup claude`, writes
 a temporary MCP config, and prints the exact interactive launch command — which
 includes `--setting-sources ""` so that no user, project, or local settings
-file is loaded. The operator runs it, confirms with `/mcp` and `/hooks` that
-only the two servers from `--mcp-config` are present, and then types nothing. The check waits for the session to appear
-in `message discover`, sends one exact-session message, and then waits for an
+file is loaded. That option did not suppress all `[User]` hooks in a live Claude
+Code 2.1.263 check, so it is not treated as plugin isolation. The operator runs
+the command, checks `/mcp` and `/hooks` for any installed MeMesh plugin hook or
+extra MeMesh MCP server, leaves the Claude session idle, and types the exact
+confirmation token in the runner terminal. Other non-MeMesh hooks are outside
+this check. The token records operator attestation, not programmatic inspection;
+any other input or EOF fails before the nonce is generated or sent. Only then
+does the runner wait for `lease_expires_at_ms` to advance, send one
+exact-session message, and wait for an
 `intake` receipt on that message whose actor is that session — the model must
 call `intake` itself, which is what makes the proof model-visible rather than
 transport-visible. The operator is then asked to exit the session, and the same
@@ -328,8 +347,10 @@ The limitations these checks always declare:
   rejected, an empty list is not), but it is not verified to exclude
   plugin-provided hooks or MCP servers. A MeMesh plugin hook running in that
   session inherits no `MEMESH_DIR` and would write the owner's real
-  `~/.memesh`. The operator is told to confirm with `/mcp` and `/hooks` first,
-  and the check cannot observe whether they did.
+  `~/.memesh`. Before nonce generation or send, the runner requires the exact
+  confirmation token after the operator checks `/mcp` and `/hooks`. This is a
+  recorded human attestation, not a machine inspection; inability to identify
+  whether an entry comes from MeMesh means the operator must stop the run.
 - `--host codex` creates one throwaway thread in the owner's Codex rollout
   store and queues one message into it. That is session state, not
   configuration; nothing outside the temporary directory is otherwise written.

@@ -28,6 +28,7 @@ import {
   DEFAULT_WAIT_MS,
   MAX_SOCKET_PATH_BYTES,
   REQUIRED_DIST,
+  assertClaudePluginIsolationConfirmation,
   assertCodexRanNoCommands,
   assertCodexReply,
   assertCompanionRunning,
@@ -56,8 +57,15 @@ import {
   parseArgs,
   parseCodexThreadId,
   realpathAsFarAsPossible,
+  requestClaudePluginIsolationConfirmation,
   shouldRemoveWorkingDirectories,
 } from '../../scripts/qa/live-journey.mjs';
+import {
+  CLAUDE_PLUGIN_ISOLATION_CONFIRMATION,
+  LIVE_JOURNEY_SCHEMA_VERSION,
+  REQUIRED_LIVE_JOURNEY_STEPS,
+  REQUIRED_REGISTRATION_EVIDENCE,
+} from '../../scripts/lib/live-journey-contract.mjs';
 
 const THREAD = '01a05ead-98e8-7091-a770-81f7339d3b29';
 const MESSAGE_ID = 'b234ba88-fe4b-4f75-98b2-259c17097f41';
@@ -220,10 +228,66 @@ describe('--help', () => {
     expect(text).toMatch(/OUTSIDE the temporary-directory isolation/);
     expect(text).toMatch(/would write the REAL ~\/\.memesh/);
     expect(text).toMatch(/\/hooks and \/mcp/);
+    expect(text).toContain(CLAUDE_PLUGIN_ISOLATION_CONFIRMATION);
+    expect(text).toMatch(/operator attestation, not programmatic inspection/i);
+    expect(text).toMatch(/before the nonce is generated or sent/i);
   });
 
   it('names the invocation that was actually verified', () => {
     expect(helpText()).toMatch(/TMPDIR=\/private\/tmp npm run qa:live-journey/);
+  });
+});
+
+describe('Claude plugin-isolation confirmation', () => {
+  it('accepts only the exact token and labels the result as operator attestation', () => {
+    expect(assertClaudePluginIsolationConfirmation(CLAUDE_PLUGIN_ISOLATION_CONFIRMATION)).toEqual({
+      kind: 'operator_attestation',
+      scope: 'installed MeMesh plugin hooks and MCP servers only',
+      confirmed: true,
+      programmatic_inspection: false,
+    });
+  });
+
+  it.each([
+    null,
+    '',
+    'NO',
+    ` ${CLAUDE_PLUGIN_ISOLATION_CONFIRMATION}`,
+    `${CLAUDE_PLUGIN_ISOLATION_CONFIRMATION} `,
+    'MEMESH_PLUGIN_ISOLATION_CONFIRM',
+  ])('rejects non-exact confirmation %j before nonce send', value => {
+    expect(() => assertClaudePluginIsolationConfirmation(value)).toThrow(/nonce was not generated or sent/);
+  });
+
+  it('fails closed when the operator input ends', async () => {
+    await expect(requestClaudePluginIsolationConfirmation(async () => {
+      throw new Error('EOF');
+    })).rejects.toThrow(/ended before input.*nonce was not generated or sent/);
+  });
+});
+
+describe('live-journey report contract', () => {
+  it('uses v2 and requires distinct model-visible and stopped-session steps for both real hosts', () => {
+    expect(LIVE_JOURNEY_SCHEMA_VERSION).toBe('memesh-live-journey/v2');
+    for (const host of ['codex', 'claude'] as const) {
+      expect(REQUIRED_LIVE_JOURNEY_STEPS[host].some(name => name.includes('model-visible'))).toBe(true);
+      expect(REQUIRED_LIVE_JOURNEY_STEPS[host]).toContain(
+        'a send to the stopped session fails closed and the durable row survives',
+      );
+    }
+    expect(REQUIRED_REGISTRATION_EVIDENCE.codex).toEqual({
+      source: 'codex_plugin_session_start',
+      plugin_loader_verified: true,
+    });
+    expect(REQUIRED_REGISTRATION_EVIDENCE.claude).toEqual({
+      source: 'interactive_development_channel',
+      operator_attestation_recorded: true,
+    });
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain('Codex lease renewed before expiry');
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain(
+      'Codex resume registration superseded the prior generation',
+    );
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.claude).toContain('Claude lease renewed before expiry');
   });
 });
 

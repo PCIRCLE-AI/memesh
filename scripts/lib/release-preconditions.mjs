@@ -19,6 +19,14 @@
 // locally without cutting a real release, so the only way both directions get
 // pinned is to hand the decision its inputs.
 
+import {
+  LIVE_JOURNEY_SCHEMA_VERSION,
+  LIVE_JOURNEY_MAX_AGE_MS,
+  LIVE_JOURNEY_CLOCK_SKEW_MS,
+  REQUIRED_LIVE_JOURNEY_STEPS,
+  REQUIRED_REGISTRATION_EVIDENCE,
+} from './live-journey-contract.mjs';
+
 /**
  * Every input is tri-state on purpose: `null` means "could not read it", and
  * every `null` blocks. Absence is not evidence — a shallow clone reporting no
@@ -164,16 +172,19 @@ export function checkReleasePreconditions({
     );
   }
 
-  const liveJourney = findUsableLiveJourneyReceipt(liveJourneyCandidates, headSha);
-  if (!liveJourney.ok) {
-    blockers.push(
-      'no usable `npm run qa:live-journey` receipt for this exact commit — run ' +
-        `\`npm run qa:live-journey -- --host codex --out ${LIVE_JOURNEY_RECEIPT_PATHS[0].relativePath}\` ` +
-        '(or `--host claude` from an interactive Claude Code session) first. ' +
-        (Array.isArray(liveJourneyCandidates) && liveJourneyCandidates.length > 0
-          ? `Checked: ${liveJourney.reasons.join('; ')}`
-          : 'No candidates were even checked — this is a caller bug, not a missing receipt.')
-    );
+  for (const required of LIVE_JOURNEY_RECEIPT_PATHS) {
+    const liveJourney = findUsableLiveJourneyReceipt(liveJourneyCandidates, headSha, required.host);
+    if (!liveJourney.ok) {
+      const action = required.host === 'claude'
+        ? `run \`npm run qa:live-journey -- --host claude --out ${required.relativePath}\``
+        : `run the installed Codex plugin SessionStart lifecycle harness and write ${required.relativePath}`;
+      blockers.push(
+        `no usable ${required.host} live-journey receipt for this exact commit — ${action} first. ` +
+          (Array.isArray(liveJourneyCandidates) && liveJourneyCandidates.length > 0
+            ? `Checked: ${liveJourney.reasons.join('; ')}`
+            : 'No candidates were even checked — this is a caller bug, not a missing receipt.')
+      );
+    }
   }
 
   return { ok: blockers.length === 0, blockers };
@@ -186,9 +197,8 @@ export function checkReleasePreconditions({
 /**
  * Where `finish-release.mjs` looks for a `qa:live-journey` report, relative to
  * the repo root. `npm run qa:live-journey -- --host <host> --out <relativePath>`
- * writes exactly this shape. Order does not encode preference — either host
- * satisfies the gate — it only fixes which command this file's own messages
- * suggest first.
+ * writes exactly this shape. Both hosts satisfy separate release claims, so
+ * both reports are required. Order only fixes release-command display order.
  */
 export const LIVE_JOURNEY_RECEIPT_PATHS = [
   { host: 'codex', relativePath: '.qa/codex-report.json' },
@@ -196,10 +206,9 @@ export const LIVE_JOURNEY_RECEIPT_PATHS = [
 ];
 
 /**
- * Is any ONE of the candidate `qa:live-journey` reports usable as proof for
- * THIS release? Any host qualifies — only the Codex path can be driven
- * unattended today, but nothing here prefers it over a Claude-host receipt a
- * human actually produced.
+ * Is one exact host's `qa:live-journey` report usable as proof for THIS
+ * release? `checkReleasePreconditions` calls this once per required host;
+ * success for one host cannot satisfy the other host's claim.
  *
  * A receipt is usable only if it is readable, is the report shape
  * `live-journey.mjs` actually emits, passed, was not run against a dirty
@@ -208,23 +217,53 @@ export const LIVE_JOURNEY_RECEIPT_PATHS = [
  *
  * @param {LiveJourneyCandidate[]} candidates
  * @param {string|null} headSha
+ * @param {'codex'|'claude'|null} requiredHost
  * @returns {{ok: boolean, usable: LiveJourneyCandidate|null, reasons: string[]}}
  */
-export function findUsableLiveJourneyReceipt(candidates, headSha) {
+export function findUsableLiveJourneyReceipt(candidates, headSha, requiredHost = null) {
   const reasons = [];
   if (!Array.isArray(candidates) || candidates.length === 0) return { ok: false, usable: null, reasons };
   if (!headSha) {
     return { ok: false, usable: null, reasons: ['HEAD sha is unknown, so no receipt could be matched to it'] };
   }
-  for (const candidate of candidates) {
+  const scopedCandidates = requiredHost === null
+    ? candidates
+    : candidates.filter(candidate => candidate.host === requiredHost);
+  if (scopedCandidates.length === 0) {
+    return { ok: false, usable: null, reasons: [`no ${requiredHost} report candidate was provided`] };
+  }
+  for (const candidate of scopedCandidates) {
     const label = `${candidate.path} (${candidate.host})`;
     if (!candidate.report) {
       reasons.push(`${label}: ${candidate.readError === 'not found' ? 'not found' : `unreadable — ${candidate.readError}`}`);
       continue;
     }
     const report = candidate.report;
-    if (report.schema_version !== 'memesh-live-journey/v1') {
-      reasons.push(`${label}: not a memesh-live-journey/v1 report`);
+    if (report.schema_version !== LIVE_JOURNEY_SCHEMA_VERSION) {
+      reasons.push(`${label}: not a ${LIVE_JOURNEY_SCHEMA_VERSION} report`);
+      continue;
+    }
+    if (report.host !== candidate.host || (requiredHost !== null && report.host !== requiredHost)) {
+      reasons.push(`${label}: report host ${JSON.stringify(report.host ?? null)} does not match the required host`);
+      continue;
+    }
+    if (report.mode !== null) {
+      reasons.push(`${label}: mode ${JSON.stringify(report.mode)} is not a real-host journey`);
+      continue;
+    }
+    const requiredRegistration = REQUIRED_REGISTRATION_EVIDENCE[report.host];
+    if (!requiredRegistration) {
+      reasons.push(`${label}: host has no release registration contract`);
+      continue;
+    }
+    const registrationMismatch = Object.entries(requiredRegistration)
+      .find(([key, value]) => report.registration_evidence?.[key] !== value);
+    if (registrationMismatch) {
+      const [key, value] = registrationMismatch;
+      reasons.push(
+        `${label}: registration_evidence.${key} must be ${JSON.stringify(value)}, got `
+        + JSON.stringify(report.registration_evidence?.[key] ?? null),
+      );
       continue;
     }
     if (report.verdict !== 'PASS') {
@@ -235,10 +274,50 @@ export function findUsableLiveJourneyReceipt(candidates, headSha) {
       reasons.push(`${label}: ran against a dirty working tree, so it does not describe one commit`);
       continue;
     }
+    if (report.dist_stale !== false) {
+      reasons.push(`${label}: dist_stale is not false, so the built artifact is missing or stale`);
+      continue;
+    }
     if (report.revision !== headSha) {
       reasons.push(
         `${label}: revision ${String(report.revision ?? '?').slice(0, 8)} does not match HEAD ${headSha.slice(0, 8)}`
       );
+      continue;
+    }
+    const startedAt = Date.parse(report.started_at);
+    const finishedAt = Date.parse(report.finished_at);
+    const now = Date.now();
+    if (!Number.isFinite(startedAt) || !Number.isFinite(finishedAt) || startedAt > finishedAt) {
+      reasons.push(`${label}: started_at and finished_at are missing, invalid, or reversed`);
+      continue;
+    }
+    if (finishedAt > now + LIVE_JOURNEY_CLOCK_SKEW_MS) {
+      reasons.push(`${label}: finished_at is implausibly in the future`);
+      continue;
+    }
+    if (now - finishedAt > LIVE_JOURNEY_MAX_AGE_MS) {
+      reasons.push(`${label}: report is older than 24 hours`);
+      continue;
+    }
+    if (!Array.isArray(report.steps)) {
+      reasons.push(`${label}: steps are missing`);
+      continue;
+    }
+    const failedStep = report.steps.find(step => step?.status !== 'PASS');
+    if (failedStep) {
+      reasons.push(`${label}: step ${JSON.stringify(failedStep.name ?? null)} is not PASS`);
+      continue;
+    }
+    const requiredSteps = REQUIRED_LIVE_JOURNEY_STEPS[report.host];
+    let previousIndex = -1;
+    const missingOrOutOfOrder = [];
+    for (const name of requiredSteps) {
+      const index = report.steps.findIndex((step, stepIndex) => stepIndex > previousIndex && step?.name === name);
+      if (index === -1) missingOrOutOfOrder.push(name);
+      else previousIndex = index;
+    }
+    if (missingOrOutOfOrder.length > 0) {
+      reasons.push(`${label}: missing or out-of-order required steps: ${missingOrOutOfOrder.join(', ')}`);
       continue;
     }
     return { ok: true, usable: candidate, reasons };

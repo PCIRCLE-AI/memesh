@@ -48,6 +48,7 @@ A release is one operation, not three commands:
 ```bash
 git checkout main && git pull        # the release PR is already merged
 npm run qa:pre-release               # the enumerable gates, in one door
+# Produce fresh .qa/codex-report.json and .qa/claude-report.json receipts.
 npm run release:finish -- --dry-run  # what it would do, or every reason it refuses
 npm run release:finish
 npm run qa:post-release              # after the publish workflow is green
@@ -57,6 +58,17 @@ npm run qa:post-release              # after the publish workflow is green
 `audit:memory`, prints each step's real exit code, and ends with the list of
 checks it could not run — the interactive live journey among them. It is not a
 substitute for reading that list.
+
+`release:finish` requires separate v2 live receipts for both hosts on the exact
+clean commit, produced within the previous 24 hours. The Claude receipt comes
+from `npm run qa:live-journey -- --host claude --out
+.qa/claude-report.json`. The Codex receipt must come from an installed-plugin
+SessionStart lifecycle run and include registration, lease renewal, resume-
+generation supersession, model-visible delivery, disconnect, and durable
+offline fallback. The ordinary `--host codex` journey injects the SessionStart
+payload itself; it is useful model-path evidence but deliberately cannot
+satisfy the installed-plugin release gate. See
+[`docs/platforms/agent-messaging.md`](docs/platforms/agent-messaging.md#repeatable-owner-run-live-checks).
 
 `npm run qa:post-release` is the half a fresh-clone gate cannot do: it asks the
 registry whether the version is really published and really `latest`, installs

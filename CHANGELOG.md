@@ -131,14 +131,20 @@ All notable changes to MeMesh are documented here.
   a receipt cannot substitute here because it can go stale the moment the next
   commit lands. `qa:live-journey` cannot run unattended — it needs a Codex
   login or a person at an interactive Claude Code session — so it stays
-  receipt-based: `npm run qa:live-journey -- --host codex|claude --out
-  .qa/<host>-report.json` writes a report, and `release:finish` requires ONE
-  of the two hosts' reports to be readable, `verdict: "PASS"`, recorded
-  against a clean tree, and naming this exact commit — an older PASS proves an
-  earlier revision, not this one. Neither host is preferred; only Codex can be
-  driven unattended today, but a human-run Claude receipt satisfies the gate
-  exactly as well. `.qa/` is gitignored — a receipt is owner-machine evidence,
-  never shipped.
+  receipt-based. The Claude command writes `.qa/claude-report.json`; the
+  installed Codex plugin lifecycle harness writes `.qa/codex-report.json`.
+  The existing harness-injected `--host codex` journey remains useful model-
+  path evidence but is not plugin-loader proof. `release:finish` now requires
+  BOTH Codex and Claude reports to be readable v2 receipts, PASS
+  within 24 hours on the same clean commit with current `dist/`, and contain
+  ordered lease-renewal, model-visible and stopped-session steps. The Codex
+  receipt must name actual plugin SessionStart loading plus resume-generation
+  supersession; the existing harness-injected model path is labelled and
+  rejected for that claim. One host no longer substitutes for
+  the other. The Claude runner also requires an exact operator confirmation
+  token after `/mcp` and `/hooks` inspection; absent or malformed confirmation
+  fails before nonce generation or send. `.qa/` is gitignored — receipts are
+  owner-machine evidence, never shipped.
 
 - **The packed-upgrade gate derives its upgrade paths instead of pinning
   them.** `scripts/smoke-packed-upgrade.mjs` named both ends by hand

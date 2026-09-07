@@ -71,17 +71,49 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
+import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getProjectName } from '../../dist/core/paths.js';
+import {
+  CLAUDE_PLUGIN_ISOLATION_CONFIRMATION,
+  LIVE_JOURNEY_SCHEMA_VERSION,
+} from '../lib/live-journey-contract.mjs';
 
 export const PROJECT = 'memesh-live-journey';
 export const DEFAULT_WAIT_MS = 300_000;
 
 /** AF_UNIX `sun_path` is 104 bytes on macOS; the router's socket must fit. */
 export const MAX_SOCKET_PATH_BYTES = 103;
+
+export function assertClaudePluginIsolationConfirmation(value) {
+  if (value !== CLAUDE_PLUGIN_ISOLATION_CONFIRMATION) {
+    throw new Error(
+      `Claude plugin isolation was not confirmed with the exact token ${CLAUDE_PLUGIN_ISOLATION_CONFIRMATION}; `
+      + 'the nonce was not generated or sent.',
+    );
+  }
+  return {
+    kind: 'operator_attestation',
+    scope: 'installed MeMesh plugin hooks and MCP servers only',
+    confirmed: true,
+    programmatic_inspection: false,
+  };
+}
+
+export async function requestClaudePluginIsolationConfirmation(ask) {
+  let value;
+  try {
+    value = await ask(
+      `After checking /mcp and /hooks, type exactly ${CLAUDE_PLUGIN_ISOLATION_CONFIRMATION}: `,
+    );
+  } catch {
+    throw new Error('Claude plugin isolation confirmation ended before input; the nonce was not generated or sent.');
+  }
+  return assertClaudePluginIsolationConfirmation(value);
+}
 
 /**
  * `codex exec --json` item types this check tolerates on the proof turn.
@@ -158,7 +190,10 @@ export function helpText() {
     '    The printed command passes --setting-sources "" so no settings file is loaded, but',
     '    that is NOT verified to exclude plugin-provided hooks or MCP servers. A plugin hook',
     '    running there inherits no MEMESH_DIR and would write the REAL ~/.memesh. Confirm',
-    '    with /hooks and /mcp that only the two servers from --mcp-config are loaded.',
+    '    with /hooks and /mcp that no installed MeMesh plugin hook or extra MeMesh MCP',
+    `    server is loaded, then type ${CLAUDE_PLUGIN_ISOLATION_CONFIRMATION} in this runner.`,
+    '    This is operator attestation, not programmatic inspection. Any other input or EOF',
+    '    fails before the nonce is generated or sent. Other non-MeMesh hooks are out of scope.',
   ].join('\n');
 }
 
@@ -873,6 +908,7 @@ class Journey {
     this.companions = [];
     this.liveSessionIds = new Set();
     this.lastDurableMessageId = null;
+    this.registrationEvidence = null;
     this.keptForSafety = false;
     this.home = null;
     this.codexQueueLog = null;
@@ -1374,6 +1410,10 @@ async function runCodex(journey) {
     codex_version: version.stdout.trim(),
     login_status_exit_code: login.status,
   });
+  journey.registrationEvidence = {
+    source: 'harness_injected_session_start',
+    plugin_loader_verified: false,
+  };
 
   journey.startRouter();
   await journey.waitForRouterSocket();
@@ -1428,6 +1468,20 @@ async function runCodex(journey) {
     principal_id: card.principal_id,
     host_kind: card.host_kind,
     generation: card.generation,
+  });
+
+  const renewedCard = await journey.until(
+    'The Codex lease did not renew before its initial expiry',
+    () => {
+      const current = findLiveCards(journey.discover(), { sessionId: threadId })[0];
+      return current && current.lease_expires_at_ms > card.lease_expires_at_ms ? current : false;
+    },
+    45_000,
+  );
+  journey.step('Codex lease renewed before expiry', {
+    session_id: threadId,
+    initial_lease_expires_at_ms: card.lease_expires_at_ms,
+    renewed_lease_expires_at_ms: renewedCard.lease_expires_at_ms,
   });
 
   const sentinel = `codex-${randomUUID().slice(0, 8)}`;
@@ -1757,6 +1811,10 @@ async function runClaude(journey, waitMs) {
     throw new Error('`claude` is not on PATH. This check needs Claude Code installed.');
   }
   journey.step('claude precondition', { claude_version: version.stdout.trim() });
+  journey.registrationEvidence = {
+    source: 'interactive_development_channel',
+    operator_attestation_recorded: false,
+  };
 
   journey.startRouter();
   await journey.waitForRouterSocket();
@@ -1807,8 +1865,10 @@ async function runClaude(journey, waitMs) {
     '  hook running there inherits no MEMESH_DIR and would write the REAL ~/.memesh.',
     '  If either shows the plugin, stop: quit the session and disable the plugin first.',
     '',
-    '  Otherwise TYPE NOTHING. Leave the session sitting at its prompt. This check is',
-    '  measuring what the session does on its own when an envelope arrives.',
+    '  If those checks pass, leave the Claude session sitting at its prompt and return',
+    '  to THIS runner terminal. Type the exact confirmation token it requests. This is',
+    '  operator attestation, not programmatic inspection. Other non-MeMesh hooks are',
+    '  outside this check. Any other input or EOF fails before a nonce is generated or sent.',
     '',
   ].join('\n'));
 
@@ -1827,6 +1887,33 @@ async function runClaude(journey, waitMs) {
     launch_command: launch,
     operator_prompt: 'none-instructed',
   });
+
+  const renewedCard = await journey.until(
+    'The Claude lease did not renew before its initial expiry',
+    () => {
+      const current = findLiveCards(journey.discover(), { sessionId: card.session_id })[0];
+      return current && current.lease_expires_at_ms > card.lease_expires_at_ms ? current : false;
+    },
+    45_000,
+  );
+  journey.step('Claude lease renewed before expiry', {
+    session_id: card.session_id,
+    initial_lease_expires_at_ms: card.lease_expires_at_ms,
+    renewed_lease_expires_at_ms: renewedCard.lease_expires_at_ms,
+  });
+
+  const terminal = createInterface({ input: process.stdin, output: process.stdout });
+  let isolationAttestation;
+  try {
+    isolationAttestation = await requestClaudePluginIsolationConfirmation(
+      (prompt) => terminal.question(prompt),
+    );
+  } finally {
+    terminal.close();
+  }
+  journey.step('operator attested that no installed MeMesh plugin hook or MCP server was present',
+    isolationAttestation);
+  journey.registrationEvidence.operator_attestation_recorded = true;
 
   const sentinel = `claude-${randomUUID().slice(0, 8)}`;
   const sent = journey.sendAccepted(card.session_id, sentinel, sentinel, 'claude-channel');
@@ -1871,8 +1958,9 @@ async function runClaude(journey, waitMs) {
     'The interactive Claude session is NOT inside this check\'s isolation. The printed command passes '
     + '--setting-sources "" so no settings file loads, but that is not verified to exclude plugin-provided '
     + 'hooks or MCP servers; a MeMesh plugin hook running in that session inherits no MEMESH_DIR and would '
-    + 'write the owner\'s real ~/.memesh. The operator is told to confirm with /mcp and /hooks first, and '
-    + 'this check cannot observe whether they did.',
+    + 'write the owner\'s real ~/.memesh. The runner requires an exact confirmation token before generating '
+    + 'or sending the nonce. That records operator attestation, not programmatic inspection; other non-MeMesh '
+    + 'hooks are outside its scope.',
   );
   journey.note(
     'The operator is instructed to type nothing, but this check cannot observe whether anything was typed. '
@@ -1937,13 +2025,14 @@ async function main() {
 
   const emitReport = (failureText) => {
     const report = {
-      schema_version: 'memesh-live-journey/v1',
+      schema_version: LIVE_JOURNEY_SCHEMA_VERSION,
       revision,
       dirty,
       dist_stale: distStale,
       host: options.host,
       mode: options.mode,
       project: journey.project,
+      registration_evidence: journey.registrationEvidence,
       started_at: startedAt,
       finished_at: new Date().toISOString(),
       verdict: failureText === null ? 'PASS' : 'FAIL',
