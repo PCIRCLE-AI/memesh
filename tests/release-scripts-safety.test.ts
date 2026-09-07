@@ -376,28 +376,62 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         for (const extension of ['.js', '.js.map', '.d.ts', '.d.ts.map']) write(`dist/host-runtime/${runtime}${extension}`);
       }
       const codexSession = "CODEX_THREAD_ID hook_event_name !== 'SessionStart' adapter_kind: 'codex-cli-queue' automaticCodexSessionConfig readCodexSessionConfigIfPresent codex-thread-${session.threadId}";
-      write('src/host-runtime/codex-session.ts', codexSession);
+      write('src/host-runtime/codex-session.ts', codexSession + [
+        "\nif (hookInput.hook_event_name !== 'SessionStart') return null;",
+        "if (hookInput.source !== 'startup' && hookInput.source !== 'resume') return null;",
+        "const identity = { session_instance_id: session.threadId, adapter_kind: 'codex-cli-queue' };",
+      ].join('\n'));
       write('dist/host-runtime/codex-session.js', codexSession);
+      write('tests/host-runtime/codex-session.test.ts', 'automatically registers an ordinary SessionStart without writing a host config accepts a resume SessionStart for automatic registration');
+      write('tests/core/agent-router.test.ts', 'never reroutes or later replays an exact-session delivery and drains principal pending after router restart');
       write('src/host-runtime/acp.ts', 'session_update_file O_NOFOLLOW');
       write('dist/host-runtime/acp.js', 'session_update_file O_NOFOLLOW');
       write('docs/api/API_REFERENCE.md', actions.join(' ') + ' principal session generation host_kind work_summary lease_expires_at_ms Local Cloud message storage storage_quota_exceeded');
-      write('docs/platforms/agent-messaging.md', 'principal session generation host_kind work_summary lease_expires_at_ms exact-session principal target Local Cloud Bounded storage and audit retention');
-      write('skills/memesh/SKILL.md', 'message polling active compatible managed host stopped, missing, or replaced session message storage report');
-      write('llms-install.md', '22.13.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report');
+      const canonicalMessageDoc = [
+        '# Message contract',
+        'principal session generation host_kind work_summary lease_expires_at_ms exact-session principal target Local Cloud Bounded storage and audit retention',
+        '### Ordinary active Codex CLI session',
+        'An ordinary local Codex session requires the MeMesh Codex plugin and packaged SessionStart integration. Each startup or resumed thread then registers automatically under the current project with a thread-scoped principal.',
+        "This guide's supported documented path is ordinary Codex CLI `SessionStart`. Codex Desktop or an unattached task is not user-visible native-delivery evidence unless that exact live session registers with the router and the result is directly verified. This is a scope boundary for evidence, not a claim that Codex Desktop is universally unsupported.",
+        'If the target Codex session is stopped, missing, disconnected, or no longer matches its configured workspace, MeMesh does not start or replace it. It reports recipient_unavailable. Exact-session failures are not automatically replayed through the native channel on a later registration; the sender must retry deliberately if live delivery is still wanted.',
+        '## Other path',
+      ].join('\n');
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc);
+      write('skills/memesh/SKILL.md', [
+        '# Skill',
+        '## Durable messages and active-host delivery',
+        'message polling. On this host, an ordinary Codex CLI session with the MeMesh plugin can register automatically at SessionStart. Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`. Do not promise a stopped, missing, or replaced session will wake: a failed exact-session native delivery is not replayed automatically. message storage report',
+      ].join('\n'));
+      write('llms-install.md', [
+        '# Install',
+        '## 2. Terminal / CLI (npm global)',
+        '22.13.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report. The ordinary Codex path below is the documented native local wakeup path.',
+        'If the session is stopped, missing, or disconnected, MeMesh neither starts nor replaces it. Failed exact-session native delivery is not replayed automatically after a later registration; the sender must retry deliberately.',
+        '## 3. Codex CLI',
+      ].join('\n'));
       write('README.md', [
+        '# README',
+        '## The fine print',
         'message registers automatically no manual `agent setup` is required without polling or a human reminder stopped, missing, or disconnected Codex session message storage report',
         'untrusted JSON-encoded payload is limited to 65,536 UTF-8 bytes (64 KiB); intake, acknowledgement, and workflow disposition are separate facts.',
         'The complete native envelope is limited to 16,384 bytes (16 KiB); native_message_too_large and recipient_unavailable are distinct. Principal targets retain durable store-and-forward behavior.',
+        'With the plugin, each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity, and a failed exact-session native delivery is not replayed automatically; the sender must retry deliberately. Do not assume Codex Desktop or an unattached task registers unless that exact running session appears in `message discover`.',
       ].join('\n'));
       write('README.zh-TW.md', [
+        '# README',
+        '## 細節',
         'message 自動以 thread-scoped identity 註冊 不需要手動執行 `agent setup` 沒有輪詢或人工提醒 停止、缺失或斷線 message storage report',
         'JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload；intake、acknowledgement 與 workflow disposition 分開記錄。',
         '完整 native envelope 不超過 16,384 bytes（16 KiB）；native_message_too_large 與 recipient_unavailable 分開回報。Principal target 保留 durable store-and-forward。',
+        '具有有效 identity 並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊。失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試。不要假設 Codex Desktop 或未連接的 task 已註冊，除非確切 session 出現在 `message discover`。',
       ].join('\n'));
       write('README.de.md', [
+        '# README',
+        '## Das Kleingedruckte',
         'message registriert sich ein manuelles `agent setup` ist nicht erforderlich ohne Polling oder menschliche Erinnerung gestoppte, fehlende oder getrennte Codex-Session message storage report',
         'Beim nicht vertrauenswürdigen, JSON-kodierten Payload gelten 65.536 UTF-8-Bytes (64 KiB); Intake, Bestätigung und Workflow-Status werden getrennt protokollieren.',
         'Die vollständige native Envelope ist auf 16.384 Bytes (16 KiB) begrenzt; native_message_too_large und recipient_unavailable bleiben getrennt. Principal-Ziele behalten Durable Store-and-Forward.',
+        'Mit dem Plugin registriert sich jeder gestartete oder fortgesetzte gewöhnliche Codex-CLI-Thread mit gültiger Thread-Identität und vorhandenem Arbeitsverzeichnis automatisch mit einer threadbezogenen Identität, und eine fehlgeschlagene native Exact-Session-Zustellung wird nicht automatisch wiederholt, der Absender muss bewusst erneut senden. Nimm bei Codex Desktop oder einem nicht angehängten Task keine Registrierung an, sofern er nicht in `message discover` erscheint.',
       ].join('\n'));
       write('.claude-plugin/mcp.json', 'memesh ${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js');
       write('.claude-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.claude-plugin/mcp.json"');
@@ -417,7 +451,21 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         },
       }));
       const pass = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(pass.status).toBe(0);
+      expect(pass.status, pass.stderr).toBe(0);
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace('registers automatically', 'does not register automatically'));
+      const negatedRegistration = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+      expect(negatedRegistration.status).toBe(1);
+      expect(negatedRegistration.stderr).toContain('positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract');
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace('not automatically replayed', 'automatically replayed'));
+      const negatedNoReplay = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+      expect(negatedNoReplay.status).toBe(1);
+      expect(negatedNoReplay.stderr).toContain('positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract');
+      const desktopSentence = "This guide's supported documented path is ordinary Codex CLI `SessionStart`. Codex Desktop or an unattached task is not user-visible native-delivery evidence unless that exact live session registers with the router and the result is directly verified. This is a scope boundary for evidence, not a claim that Codex Desktop is universally unsupported.";
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace(desktopSentence, '').replace('## Other path', `## Other path\n${desktopSentence}`));
+      const relocatedDesktopBoundary = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+      expect(relocatedDesktopBoundary.status).toBe(1);
+      expect(relocatedDesktopBoundary.stderr).toContain('positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract');
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc);
       write('src/transports/mcp/handlers.ts', "name: 'message' name === 'message' MessageSchema executeAgentMessageAction");
       const missingPublicTargetKind = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
       expect(missingPublicTargetKind.status).toBe(1);

@@ -1,5 +1,6 @@
 // =============================================================================
-// Analytics — health score + timeline + value metrics + cleanup suggestions
+// Analytics — health score/factors, memory-loop metric, timeline, age matrix,
+// and knowledge radar.
 // =============================================================================
 //
 // Used by the HTTP /v1/analytics route. Pure read-only aggregation.

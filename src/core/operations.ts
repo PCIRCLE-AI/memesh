@@ -74,6 +74,19 @@ function buildRelevanceMap(entities: Entity[]): Map<string, number> {
 export function remember(args: RememberInput): RememberResult {
   const db = getDatabase();
   const kg = new KnowledgeGraph(db);
+  // `remember` is one logical write: the source entity (including metadata),
+  // every accepted relation, and every superseded target must either all land
+  // or all roll back. The narrower KnowledgeGraph transactions protect their
+  // own rows, but without this outer boundary a failure while archiving a
+  // superseded target left the new source and relation committed.
+  return db.transaction(() => rememberInTransaction(args, db, kg)).immediate();
+}
+
+function rememberInTransaction(
+  args: RememberInput,
+  db: ReturnType<typeof getDatabase>,
+  kg: KnowledgeGraph,
+): RememberResult {
   // Only existence + namespace are consumed below — a full kg.getEntity()
   // here cost 4 queries (entity, observations, tags, relations) with the
   // observation text materialized and thrown away, on the write hot path

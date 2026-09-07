@@ -254,138 +254,151 @@ export function importMemories(args: ImportInput): ImportResult {
       continue;
     }
     try {
-      const existing = kg.getEntity(entity.name);
-      // The import never read a title, because the export never wrote one —
-      // the two halves of the same gap, and together they made every
-      // export→import a silent rename of each memory to its slug-shaped
-      // `name`. Read defensively, the way describeInvalidEntity reads the rest
-      // of the bundle: this is a FILE, possibly written by a memesh that had
-      // no titles at all, so the field is present-or-not rather than
-      // guaranteed. Absent, blank or non-string becomes `undefined`, which is
-      // createEntity's "leave whatever title is already there alone" — an
-      // older bundle's missing title must not wipe one off a memory the
-      // importer already had. `truncateTitle` because this is a generator-side
-      // writer with nobody to bounce bad input back to (schemas.ts REJECTS
-      // over-long titles; createEntity itself caps nothing), and one
-      // hand-edited 10,000-character title should not become a stored one.
-      const bundledTitle = (entity as Record<string, unknown>).title;
-      const title = typeof bundledTitle === 'string' && bundledTitle.trim().length > 0
-        ? truncateTitle(bundledTitle)
-        : undefined;
-      // The caller's `--namespace` override applies to everything, existing
-      // entities included — that is what "force all imported entities into
-      // this namespace" means. The namespace stored IN the bundle only places
-      // entities the import creates: a bundle should not be able to relocate a
-      // memory you already had, which for `append` would silently move it out
-      // of the scope you keep it in.
-      const namespace = args.namespace ?? (existing ? undefined : (entity.namespace || 'personal'));
-      const importedMetadata = buildImportedMetadata(existing?.metadata as EntityMetadata | undefined, {
-        bundled: (entity as { metadata?: Record<string, unknown> }).metadata,
-        exportedAt: args.data.exported_at,
-        importVersion: args.data.version,
-        mergeStrategy: args.merge_strategy,
-      });
+      // One bundle entry is one commit unit. `createEntity`,
+      // `clearEntityData`, and `archiveEntity` are each atomic internally,
+      // but import composes them with metadata/time/status restoration. A
+      // failure in the last step used to commit the successful prefix: an
+      // archived bundle entry whose FTS delete failed remained as an ACTIVE
+      // entity, and its relation had already been queued for the second pass.
+      // The outer transaction makes the composition atomic; the returned
+      // outcome keeps JS counters and pending relations outside that boundary
+      // so they describe committed units only.
+      const outcome = db.transaction(() => {
+        const existing = kg.getEntity(entity.name);
+        // The import never read a title, because the export never wrote one —
+        // the two halves of the same gap, and together they made every
+        // export→import a silent rename of each memory to its slug-shaped
+        // `name`. Read defensively, the way describeInvalidEntity reads the rest
+        // of the bundle: this is a FILE, possibly written by a memesh that had
+        // no titles at all, so the field is present-or-not rather than
+        // guaranteed. Absent, blank or non-string becomes `undefined`, which is
+        // createEntity's "leave whatever title is already there alone" — an
+        // older bundle's missing title must not wipe one off a memory the
+        // importer already had. `truncateTitle` because this is a generator-side
+        // writer with nobody to bounce bad input back to (schemas.ts REJECTS
+        // over-long titles; createEntity itself caps nothing), and one
+        // hand-edited 10,000-character title should not become a stored one.
+        const bundledTitle = (entity as Record<string, unknown>).title;
+        const title = typeof bundledTitle === 'string' && bundledTitle.trim().length > 0
+          ? truncateTitle(bundledTitle)
+          : undefined;
+        // The caller's `--namespace` override applies to everything, existing
+        // entities included — that is what "force all imported entities into
+        // this namespace" means. The namespace stored IN the bundle only places
+        // entities the import creates: a bundle should not be able to relocate a
+        // memory you already had, which for `append` would silently move it out
+        // of the scope you keep it in.
+        const namespace = args.namespace ?? (existing ? undefined : (entity.namespace || 'personal'));
+        const importedMetadata = buildImportedMetadata(existing?.metadata as EntityMetadata | undefined, {
+          bundled: (entity as { metadata?: Record<string, unknown> }).metadata,
+          exportedAt: args.data.exported_at,
+          importVersion: args.data.version,
+          mergeStrategy: args.merge_strategy,
+        });
 
-      if (existing) {
-        if (args.merge_strategy === 'skip') {
-          skipped++;
-          continue;
+        if (existing) {
+          if (args.merge_strategy === 'skip') return { kind: 'skipped' } as const;
+          if (args.merge_strategy === 'append') {
+            // Exact-text dedupe against what the entity already has.
+            // `createEntity` INSERTs every observation it is handed with no
+            // dedupe of its own — correct for `remember`, where a caller
+            // stating the same fact again may be a deliberate re-assertion,
+            // but wrong for import, whose whole point is merging a bundle
+            // that may already have been imported once (the same backup
+            // restored twice, or two bundles that share entities). Without
+            // this, re-running `import --merge append` on the same file
+            // grows every shared entity's observation list without bound —
+            // dogfooded: the same sentence duplicated on every re-run.
+            const existingText = new Set(existing.observations);
+            const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
+            // Pass trustOverride directly so the createEntity confidence-
+            // bump gate denies the lift on untrusted imports. Codex
+            // caught a P1 where the trust value was being set via
+            // updateEntityMetadata AFTER createEntity returned, so the
+            // gate read undefined → defaulted to trusted → bumped.
+            kg.createEntity(entity.name, entity.type, {
+              title,
+              observations: newObservations,
+              tags: entity.tags,
+              namespace,
+              trustOverride: 'untrusted',
+            });
+            // MERGE, never replace. An updater that ignores `current` rebuilds the
+            // column from a snapshot taken before `createEntity` ran, discarding
+            // whatever it just wrote — which now includes the
+            // `previous_namespace` breadcrumb recorded when `--namespace` moves an
+            // entity that already exists. Import is the one path where losing that
+            // matters most: it moves entities in bulk, so a user cannot possibly
+            // remember where each one came from.
+            kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+            return { kind: 'appended' } as const;
+          }
+          // overwrite: clear existing data, then re-populate below
+          kg.clearEntityData(entity.name);
         }
-        if (args.merge_strategy === 'append') {
-          // Exact-text dedupe against what the entity already has.
-          // `createEntity` INSERTs every observation it is handed with no
-          // dedupe of its own — correct for `remember`, where a caller
-          // stating the same fact again may be a deliberate re-assertion,
-          // but wrong for import, whose whole point is merging a bundle
-          // that may already have been imported once (the same backup
-          // restored twice, or two bundles that share entities). Without
-          // this, re-running `import --merge append` on the same file
-          // grows every shared entity's observation list without bound —
-          // dogfooded: the same sentence duplicated on every re-run.
-          const existingText = new Set(existing.observations);
-          const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
-          // Pass trustOverride directly so the createEntity confidence-
-          // bump gate denies the lift on untrusted imports. Codex
-          // caught a P1 where the trust value was being set via
-          // updateEntityMetadata AFTER createEntity returned, so the
-          // gate read undefined → defaulted to trusted → bumped.
-          kg.createEntity(entity.name, entity.type, {
-            title,
-            observations: newObservations,
-            tags: entity.tags,
-            namespace,
-            trustOverride: 'untrusted',
-          });
-          // MERGE, never replace. An updater that ignores `current` rebuilds the
-          // column from a snapshot taken before `createEntity` ran, discarding
-          // whatever it just wrote — which now includes the
-          // `previous_namespace` breadcrumb recorded when `--namespace` moves an
-          // entity that already exists. Import is the one path where losing that
-          // matters most: it moves entities in bulk, so a user cannot possibly
-          // remember where each one came from.
+
+        kg.createEntity(entity.name, entity.type, {
+          title,
+          observations: entity.observations,
+          tags: entity.tags,
+          metadata: importedMetadata,
+          namespace,
+          trustOverride: 'untrusted',
+        });
+        if (existing) {
           kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-          appended++;
-          continue;
         }
-        // overwrite: clear existing data, then re-populate below
-        kg.clearEntityData(entity.name);
-      }
 
-      kg.createEntity(entity.name, entity.type, {
-        title,
-        observations: entity.observations,
-        tags: entity.tags,
-        metadata: importedMetadata,
-        namespace,
-        trustOverride: 'untrusted',
-      });
-      if (existing) {
-        kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-      }
-
-      // Relations are DEFERRED to a second pass. They used to be created
-      // here, inside the per-entity loop, with the comment "target may not
-      // have been imported yet — skip silently". That is not an edge case,
-      // it is the ordinary outcome: `export` writes newest-first
-      // (`ORDER BY id DESC`) and a relation almost always points from a
-      // newer memory to an older one, so the target is still further down
-      // the file. A backup of a graph with relations therefore restored
-      // with NONE of them, reporting "Imported: N" and nothing else.
-      for (const rel of entity.relations || []) {
-        pendingRelations.push({ from: entity.name, to: rel.to, type: rel.type });
-      }
-
-      // `created_at` and `status`, restored only for entities this import
-      // CREATED. An entity the importer already had keeps its own creation
-      // time and its own archived-or-not state: a bundle may bring memories,
-      // never rewrite the history of one you already keep.
-      //
-      // The timestamp is accepted only if `parseSqliteUtcMs` vouches for it.
-      // That parser exists because a value it cannot read is a value nothing
-      // downstream can order (see `kg-backfill` Rule 5), and it also closes
-      // the door on a hand-edited bundle stamping a memory in the future,
-      // where a negative age passes every recency check.
-      if (!existing) {
-        const bundledCreatedAt = (entity as { created_at?: unknown }).created_at;
-        const bundledMs = typeof bundledCreatedAt === 'string'
-          ? parseSqliteUtcMs(bundledCreatedAt)
-          : null;
-        if (bundledMs !== null) {
-          // Stored in the COLUMN's format, not the bundle's. `parseSqliteUtcMs`
-          // accepts either separator, so a bundle carrying `...T...` validates
-          // and would be written back verbatim — recreating the two-format
-          // column that `demo.ts` was just fixed to stop producing, and that
-          // every `datetime(col)` workaround downstream exists to survive.
-          // One writer, one format.
-          setCreatedAt.run(new Date(bundledMs).toISOString().replace('T', ' ').slice(0, 19), entity.name);
+        // `created_at` and `status`, restored only for entities this import
+        // CREATED. An entity the importer already had keeps its own creation
+        // time and its own archived-or-not state: a bundle may bring memories,
+        // never rewrite the history of one you already keep.
+        //
+        // The timestamp is accepted only if `parseSqliteUtcMs` vouches for it.
+        // That parser exists because a value it cannot read is a value nothing
+        // downstream can order (see `kg-backfill` Rule 5), and it also closes
+        // the door on a hand-edited bundle stamping a memory in the future,
+        // where a negative age passes every recency check.
+        if (!existing) {
+          const bundledCreatedAt = (entity as { created_at?: unknown }).created_at;
+          const bundledMs = typeof bundledCreatedAt === 'string'
+            ? parseSqliteUtcMs(bundledCreatedAt)
+            : null;
+          if (bundledMs !== null) {
+            // Stored in the COLUMN's format, not the bundle's. `parseSqliteUtcMs`
+            // accepts either separator, so a bundle carrying `...T...` validates
+            // and would be written back verbatim — recreating the two-format
+            // column that `demo.ts` was just fixed to stop producing, and that
+            // every `datetime(col)` workaround downstream exists to survive.
+            // One writer, one format.
+            setCreatedAt.run(new Date(bundledMs).toISOString().replace('T', ' ').slice(0, 19), entity.name);
+          }
+          if ((entity as { status?: unknown }).status === 'archived') {
+            kg.archiveEntity(entity.name);
+          }
         }
-        if ((entity as { status?: unknown }).status === 'archived') {
-          kg.archiveEntity(entity.name);
-        }
-      }
 
-      imported++;
-      if (existing) overwritten++;
+        return {
+          kind: 'imported',
+          overwritten: Boolean(existing),
+          // Relations are DEFERRED to a second pass. Return them only after
+          // this transaction commits; queuing them in the transaction body
+          // would leave JS state behind after SQLite rolls back.
+          relations: (entity.relations || []).map((rel) => ({
+            from: entity.name,
+            to: rel.to,
+            type: rel.type,
+          })),
+        } as const;
+      }).immediate();
+
+      if (outcome.kind === 'skipped') skipped++;
+      else if (outcome.kind === 'appended') appended++;
+      else {
+        pendingRelations.push(...outcome.relations);
+        imported++;
+        if (outcome.overwritten) overwritten++;
+      }
     } catch (err) {
       errors.push(`${entity.name}: ${err instanceof Error ? err.message : String(err)}`);
     }

@@ -24,6 +24,9 @@ function buildRelevanceMap(entities) {
 export function remember(args) {
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
+    return db.transaction(() => rememberInTransaction(args, db, kg)).immediate();
+}
+function rememberInTransaction(args, db, kg) {
     const existing = db
         .prepare('SELECT id, namespace FROM entities WHERE name = ?')
         .get(args.name);

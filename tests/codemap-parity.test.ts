@@ -53,6 +53,8 @@ function fixture(): string {
     if (file.endsWith('/')) fs.mkdirSync(path.join(root, file), { recursive: true });
     else write(root, file);
   }
+  write(root, 'src/cli/view-live.ts');
+  write(root, 'src/core/dreamer.ts', 'export function executeWorkPackage() {}\n');
   write(root, 'hooks/hooks.json', JSON.stringify({
     hooks: {
       PreToolUse: [{ hooks: hookFiles.slice(0, 2).map(command => ({ command: `\${CLAUDE_PLUGIN_ROOT}/${command}` })) }],
@@ -77,6 +79,10 @@ function fixture(): string {
   write(root, 'CODEMAP.md', [
     '# CODEMAP', '', '**Version**: 4.8.1', '',
     '## Start here (entry points)', '', '| You run… | Entry point |', '|---|---|', ...entryRows, '', '---', '',
+    '## Directory map', '', '```', 'src/', '└── cli/             # view-live.ts + assets/ (dashboard fallback, NOT a transport)', '```', '', '---', '',
+    '## Feature → file index', '', '### Agent-assisted work packages + human review',
+    '- Calendar-cluster or visible-transcript package preparation and strict submission → `src/core/dreamer.ts` (`executeWorkPackage`)', '',
+    '### Project identity + tags', '',
     '### Durable local agent messaging + active-host delivery', ...messaging.map(file => `- \`${file}\``), '',
     '### Hook commands (`hooks/hooks.json`)', '', '| Command | Fires on | Does |', '|---|---|---|', ...hookRows, '', '---',
   ].join('\n'));
@@ -99,7 +105,7 @@ describe('CODEMAP pre-release parity gate', () => {
     expect(Object.keys(bins)).toHaveLength(8);
     const result = run(fixture());
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('PASS (8 bins, 4 hook commands, 6 messaging anchors)');
+    expect(result.stdout).toContain('PASS (8 bins, 4 hook commands, 1 src/cli TypeScript files, 6 messaging anchors)');
   });
 
   it.each([
@@ -109,6 +115,8 @@ describe('CODEMAP pre-release parity gate', () => {
     ['messaging', (text: string) => text.replace(/^- `src\/core\/agent-router\.ts`\n/m, ''), 'omits messaging architecture anchor'],
     ['extra hook', (text: string) => text.replace('| `guard-check.js` | event | purpose |', '| `guard-check.js` | event | purpose |\n| `obsolete.js` | event | purpose |'), 'extra=[obsolete.js]'],
     ['extra messaging anchor', (text: string) => text.replace('- `src/core/agent-router.ts`', '- `src/core/agent-router.ts`\n- `CODEMAP.md`'), 'extra=[CODEMAP.md]'],
+    ['stale src/cli file', (text: string) => text.replace('view-live.ts + assets/', 'view.ts + view-live.ts + assets/'), 'extra=[view.ts]'],
+    ['work-package symbol', (text: string) => text.replace('`executeWorkPackage`', '`workPackage`'), 'work-package symbol is not exported'],
   ])('rejects %s drift', (_label, mutate, expected) => {
     const root = fixture();
     const file = path.join(root, 'CODEMAP.md');
@@ -132,5 +140,21 @@ describe('CODEMAP pre-release parity gate', () => {
     const result = run(root);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(expected);
+  });
+
+  it('rejects a source-side src/cli file that the directory map omits', () => {
+    const root = fixture();
+    write(root, 'src/cli/inspect.ts');
+    const result = run(root);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('missing=[inspect.ts]');
+  });
+
+  it('rejects a removed source-side work-package export', () => {
+    const root = fixture();
+    write(root, 'src/core/dreamer.ts', 'export function renamedWorkPackage() {}\n');
+    const result = run(root);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('work-package symbol is not exported');
   });
 });

@@ -3,9 +3,9 @@
 Hermes Agent has a **first-party, documented plugin system for external memory
 providers** — `agent.memory_provider.MemoryProvider` (ABC), activated via
 convention-based discovery under `plugins/memory/<name>/`. This is not a
-generic HTTP/CLI bridge situation like ChatGPT or Gemini: Hermes ships seven
-providers this way already (honcho, mem0, hindsight, holographic, retaindb,
-byterover, openviking, supermemory), and MeMesh can be added as an eighth,
+generic HTTP/CLI bridge situation like ChatGPT or Gemini: Hermes ships
+multiple providers this way already (honcho, mem0, hindsight, holographic,
+retaindb, byterover, openviking, supermemory), and MeMesh can be added alongside them,
 with automatic per-turn recall/write — no core Hermes file needs editing.
 
 This guide is written from a working integration built and verified live
@@ -60,12 +60,13 @@ positional arg skips the picker) — this writes `memory.provider: memesh` to
 
 ## Pitfalls found the hard way (all reproduced and fixed in a live session)
 
-1. **`POST /v1/recall`'s `data` field is a bare array**, not the
-   `{"entities": [...]}` object MeMesh's own `docs/api/API_REFERENCE.md`
-   documents. Confirmed on 4.5.1, with and without a `query`. Filed upstream:
-   [PCIRCLE-AI/memesh#159](https://github.com/PCIRCLE-AI/memesh/issues/159).
-   **Any HTTP integration must handle both shapes defensively** until this is
-   resolved — don't trust the doc's example verbatim.
+1. **Older MeMesh releases returned a different recall shape.** MeMesh 4.5.1
+   returned a bare array in `data`; current releases return the documented
+   `{ "entities": [...], "retrieval": {...}, "conflicts"?: [...] }` envelope.
+   [PCIRCLE-AI/memesh#159](https://github.com/PCIRCLE-AI/memesh/issues/159)
+   records the resolved historical defect. Integrations that must support
+   4.5.1 can accept both shapes; integrations targeting current MeMesh should
+   use the object envelope from the API reference.
 
 2. **PATH, not code, is the usual "provider shows unavailable" cause.**
    `is_available()`'s `shutil.which("memesh")` depends on the *systemd

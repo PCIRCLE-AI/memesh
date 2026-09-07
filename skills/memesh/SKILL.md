@@ -87,7 +87,7 @@ Use the routing and identity fields returned by `fetch`. A reply has this shape 
 }
 ```
 
-An active compatible managed host can receive a native push, which removes polling for that live delivery. One-time provider enablement and a MeMesh-managed Codex app-server or Claude Channel may be required; ordinary unattached sessions are presence-only/inbound-unavailable. The bundled Gemini ACP adapter is experimental protocol-development code, not a release-gated native-wakeup provider. Adapter imports and a live router socket do not prove host registration or `host_accept`. Do not promise that a stopped, missing, or replaced session will wake up: it is not resumed or silently rerouted. Use the stable principal for logical routing, and an exact session/generation only when delivery must not move to a replacement connection. Local owns durable storage and host-native delivery; Cloud relay, A2A, SSE, discovery, or fetch is not host delivery.
+On macOS and Linux, an ordinary Codex CLI session with the MeMesh plugin can register automatically at SessionStart and receive a native push while that exact session is active. Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`. Separate managed Codex app-server and Claude Channel paths may require one-time owner setup. The bundled Gemini ACP adapter is experimental protocol-development code, not a release-gated native-wakeup provider. Adapter imports and a live router socket do not prove host registration or `host_accept`. Do not promise that a stopped, missing, or replaced session will wake up: it is not resumed or silently rerouted, and a failed exact-session native delivery is not replayed automatically. Use the stable principal for logical routing, and an exact session/generation only when delivery must not move to a replacement connection. Local owns durable storage and host-native delivery; Cloud relay, A2A, SSE, discovery, or fetch is not host delivery.
 
 Durable audit does not mean unbounded silent growth. Owners can inspect it with `memesh message storage report --cutoff <ISO timestamp>`, preview bounded terminal-payload tombstones with `memesh message storage prune --cutoff <ISO timestamp>`, and explicitly add `--apply`. Never prune unresolved/offline-pending work. `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES` is an optional owner policy; there is no default quota or automatic pruning.
 
@@ -138,9 +138,9 @@ narrow by tag before concluding. Every recall answer includes a `retrieval`
 block — `truncated: true` means the window filled (more may exist). Retrieval
 uses the local FTS5 keyword index; it does not call a model or vector service.
 
-## What's Already Automatic (Claude Code Plugin Hooks)
+## What's Already Automatic (Plugin Hooks)
 
-If MeMesh is installed as a Claude Code plugin, these happen **without any action from you**:
+With the Claude Code plugin, the first eight rows happen **without any action from you**. The final row is the separate Codex plugin SessionStart companion:
 
 | Hook | When | What it does |
 |------|------|-------------|
@@ -152,7 +152,7 @@ If MeMesh is installed as a Claude Code plugin, these happen **without any actio
 | **Stop** | Session ends | Auto-captures session knowledge and applies the configured update policy |
 | **PreCompact** | Before context compaction | Saves important knowledge before history is compressed |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
-| **SessionStart (Codex, async)** | A Codex plugin session starts or resumes | Automatically registers that exact live thread for bounded full-message native delivery; a matching owner-private config may override its project/principal |
+| **SessionStart (Codex, async)** | An ordinary Codex CLI plugin session starts or resumes | Automatically registers that eligible exact live thread for bounded full-message native delivery; a matching owner-private config may override its project/principal |
 
 Because of the SessionStart hook: **in Claude Code, do NOT call `briefing` at
 session start — it is already in your context.** Call it only mid-session

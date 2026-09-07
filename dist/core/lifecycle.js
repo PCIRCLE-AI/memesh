@@ -79,61 +79,67 @@ export function compressWeeklyNoise(db) {
     ORDER BY week
   `).all(...noiseTypeValues, cutoff, NOISE_THRESHOLD);
     let totalCompressed = 0;
-    for (const { week, count } of weekGroups) {
-        const entities = db.prepare(`
-      SELECT e.id, e.name, e.type
-      FROM entities e
-      WHERE e.type IN (${noiseTypePlaceholders})
-        AND e.status = 'active'
-        AND strftime('%Y-W%W', e.created_at) = ?
-        AND e.created_at < datetime(?)
-    `).all(...noiseTypeValues, week, cutoff);
-        if (entities.length === 0)
-            continue;
-        const typeCounts = new Map();
-        for (const e of entities) {
-            typeCounts.set(e.type, (typeCounts.get(e.type) || 0) + 1);
-        }
-        const typeBreakdown = Array.from(typeCounts.entries())
-            .map(([t, c]) => `${c} ${t}`)
-            .join(', ');
+    let weeksProcessed = 0;
+    for (const { week } of weekGroups) {
         const summaryName = `weekly-summary-${week}`;
-        const existing = db.prepare('SELECT id FROM entities WHERE name = ?').get(summaryName);
-        if (existing) {
-            kg.createEntity(summaryName, 'weekly-summary', {
-                observations: [`+${entities.length} entities archived (${typeBreakdown})`],
-                trustOverride: 'untrusted',
-            });
-        }
-        else {
-            const title = `${week} — ${entities.length} entities compressed`;
-            const obsText = `${week}: ${count} auto-tracked entities compressed (${typeBreakdown})`;
-            const entityIdPlaceholders = entities.map(() => '?').join(',');
-            const projectTags = db.prepare(`
-        SELECT DISTINCT t.tag FROM tags t
-        JOIN entities e ON e.id = t.entity_id
-        WHERE e.id IN (${entityIdPlaceholders})
-          AND t.tag LIKE 'project:%'
-      `).all(...entities.map(e => e.id));
-            kg.createEntity(summaryName, 'weekly-summary', {
-                title,
-                metadata: { title_source: 'heuristic' },
-                observations: [obsText],
-                tags: [...projectTags.map((t) => t.tag), 'source:noise-filter'],
-                trustOverride: 'untrusted',
-            });
-        }
-        const archiveOne = db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?");
-        db.transaction(() => {
+        const archiveWeek = db.transaction(() => {
+            const entities = db.prepare(`
+        SELECT e.id, e.name, e.type
+        FROM entities e
+        WHERE e.type IN (${noiseTypePlaceholders})
+          AND e.status = 'active'
+          AND strftime('%Y-W%W', e.created_at) = ?
+          AND e.created_at < datetime(?)
+      `).all(...noiseTypeValues, week, cutoff);
+            if (entities.length < NOISE_THRESHOLD)
+                return 0;
+            const typeCounts = new Map();
+            for (const e of entities) {
+                typeCounts.set(e.type, (typeCounts.get(e.type) || 0) + 1);
+            }
+            const typeBreakdown = Array.from(typeCounts.entries())
+                .map(([t, c]) => `${c} ${t}`)
+                .join(', ');
+            const existing = db.prepare('SELECT id FROM entities WHERE name = ?').get(summaryName);
+            if (existing) {
+                kg.createEntity(summaryName, 'weekly-summary', {
+                    observations: [`+${entities.length} entities archived (${typeBreakdown})`],
+                    trustOverride: 'untrusted',
+                });
+            }
+            else {
+                const title = `${week} — ${entities.length} entities compressed`;
+                const obsText = `${week}: ${entities.length} auto-tracked entities compressed (${typeBreakdown})`;
+                const entityIdPlaceholders = entities.map(() => '?').join(',');
+                const projectTags = db.prepare(`
+          SELECT DISTINCT t.tag FROM tags t
+          JOIN entities e ON e.id = t.entity_id
+          WHERE e.id IN (${entityIdPlaceholders})
+            AND t.tag LIKE 'project:%'
+        `).all(...entities.map(e => e.id));
+                kg.createEntity(summaryName, 'weekly-summary', {
+                    title,
+                    metadata: { title_source: 'heuristic' },
+                    observations: [obsText],
+                    tags: [...projectTags.map((t) => t.tag), 'source:noise-filter'],
+                    trustOverride: 'untrusted',
+                });
+            }
+            const archiveOne = db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?");
             for (const e of entities) {
                 dropEntityFromIndexes(db, e.id, e.name);
                 archiveOne.run(e.id);
             }
-        })();
-        totalCompressed += entities.length;
+            return entities.length;
+        });
+        const compressedThisWeek = archiveWeek.immediate();
+        if (compressedThisWeek > 0) {
+            totalCompressed += compressedThisWeek;
+            weeksProcessed++;
+        }
     }
     db.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES ('last_noise_compress_at', ?)").run(new Date().toISOString());
-    return { compressed: totalCompressed, weeksProcessed: weekGroups.length };
+    return { compressed: totalCompressed, weeksProcessed };
 }
 export { PRESERVED_TYPES, NOISE_TYPES };
 //# sourceMappingURL=lifecycle.js.map

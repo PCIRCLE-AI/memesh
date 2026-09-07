@@ -75,14 +75,13 @@ export function removeFromFts(db, entityId, name, prevObsText, prevTitle) {
         db.prepare("INSERT INTO entities_fts (entities_fts, rowid, name, observations) VALUES('delete', ?, ?, ?)").run(entityId, toIndexForm(name), toIndexForm(foldTitleIntoObservations(prevTitle, prevObsText)));
     }
     catch (err) {
-        if (isBenignFtsDeleteError(err))
-            return;
-        process.stderr.write(`[memesh fts-index] removeFromFts(rowid=${entityId}) failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        try {
+            process.stderr.write(`[memesh fts-index] removeFromFts(rowid=${entityId}) failed: ${err instanceof Error ? err.message : String(err)}\n`);
+        }
+        catch {
+        }
+        throw err;
     }
-}
-function isBenignFtsDeleteError(err) {
-    const msg = err?.message ?? '';
-    return /no such rowid|values do not match|no such row\b/i.test(msg);
 }
 export function joinIndexedObservations(contents) {
     return contents.join(' ');

@@ -13,7 +13,7 @@
 // The two had drifted: the harness OR-joined query terms and ordered by BM25
 // `rank` while the shipped `search()` AND-joined and ordered by `e.id DESC`,
 // so the same 500 questions scored 95.40% here and 5.20% through the product.
-// See CHANGELOG [Unreleased] / PR #78. Results produced before that fix are
+// See CHANGELOG [4.2.11] / PRs #78-#79. Results produced before that fix are
 // kept in `results/` for history and are labelled `harness_reimplementation`.
 //
 // Usage:

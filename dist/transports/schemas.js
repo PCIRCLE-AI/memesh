@@ -34,6 +34,7 @@ const workPackageIdentity = {
     package_id: z.string().regex(/^[a-f0-9]{64}$/),
     ref: z.discriminatedUnion('kind', [digestWorkPackageRef, transcriptWorkPackageRef]),
 };
+const WORK_PACKAGE_RESULT_MAX_BYTES = 16 * 1024;
 export const WorkPackageSchema = z.discriminatedUnion('action', [
     z.object({ action: z.literal('prepare'), project: workPackageText, kind: z.enum(['digest', 'transcript']) }).strict(),
     z.object({
@@ -44,7 +45,7 @@ export const WorkPackageSchema = z.discriminatedUnion('action', [
             type: z.enum(['digest', 'decision', 'lesson_learned', 'fact']),
             observations: z.array(observationField).min(1).max(100),
             tags: z.array(workPackageText.refine(tag => !tag.startsWith('project:'), 'project tags are server-owned')).min(1).max(50),
-        }).strict().refine(result => Buffer.byteLength(JSON.stringify(result), 'utf8') <= 16384, 'output_too_large'),
+        }).strict().refine(result => Buffer.byteLength(JSON.stringify(result), 'utf8') <= WORK_PACKAGE_RESULT_MAX_BYTES, 'output_too_large'),
     }).strict().refine(input => (input.ref.kind === 'digest') === (input.result.type === 'digest'), 'result type must match work kind'),
     z.object({
         action: z.literal('defer'),

@@ -194,7 +194,7 @@ export function seedDemo(
       }
       return n;
     });
-    return { inserted: 0, removed: removeAll(rows.map((r) => r.name)) };
+    return { inserted: 0, removed: removeAll.immediate(rows.map((r) => r.name)) };
   }
 
   const kg = new KnowledgeGraph(db);
@@ -250,7 +250,7 @@ export function seedDemo(
         if (!demoNames.has(from) || !demoNames.has(to)) continue;
         kg.createRelation(from, to, type);
       }
-    })();
+    }).immediate();
   }
   return { inserted, removed: 0 };
 }

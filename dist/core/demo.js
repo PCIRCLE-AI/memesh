@@ -84,7 +84,7 @@ export function seedDemo(db, opts = {}) {
             }
             return n;
         });
-        return { inserted: 0, removed: removeAll(rows.map((r) => r.name)) };
+        return { inserted: 0, removed: removeAll.immediate(rows.map((r) => r.name)) };
     }
     const kg = new KnowledgeGraph(db);
     let inserted = 0;
@@ -115,7 +115,7 @@ export function seedDemo(db, opts = {}) {
                     continue;
                 kg.createRelation(from, to, type);
             }
-        })();
+        }).immediate();
     }
     return { inserted, removed: 0 };
 }

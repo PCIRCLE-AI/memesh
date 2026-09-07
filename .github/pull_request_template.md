@@ -23,7 +23,7 @@
 - [ ] `docs/api/API_REFERENCE.md` updated if MCP / HTTP / CLI surface changed (incl. version header)
 - [ ] `README.md` updated if user-facing features, installation, or collaboration framing changed
 - [ ] README locales (`README.de.md` / `README.zh-TW.md`) re-synced if `README.md` changed
-- [ ] Version files (`package.json` + `.claude-plugin/plugin.json` + `.claude-plugin/marketplace.json`) bumped consistently if any version-bumping
+- [ ] Version anchors listed in `CONTRIBUTING.md` updated consistently if bumping a version
 - [ ] `dist/skills-manifest.json` regenerated via `npm run build` (required after ANY change to `.claude-plugin/`, `scripts/hooks/`, `skills/`, or version files)
 - [ ] `memesh doctor` reports `Overall: PASS` (or `PASS_WITH_CONCERNS` only when the WARN is `Update status` — that's expected for an unreleased local version)
 
@@ -33,7 +33,7 @@
 
 - [ ] `npm run typecheck` clean
 - [ ] `npm run build` clean
-- [ ] `npm test -- --run` passing (state count vs baseline if changed)
+- [ ] `node scripts/run-tests-isolated.mjs` passing (report the actual exit code)
 - [ ] If hooks were touched: full hook protocol run (real Claude Code Stop / PreToolUse / etc. payload, `memesh doctor` hook-activity check post-install green)
 - [ ] If work-package or proposal review changed: prepare, submit/defer, and human review paths were replayed
 

@@ -9,6 +9,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { markdownSection } from './lib/markdown-section.mjs';
 
 const ACTIONS = ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts'];
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -37,6 +38,19 @@ const requireAbsent = (relative, why) => {
 const requirePattern = (relative, pattern, description) => {
   const text = read(relative);
   if (!pattern.test(text)) missing.push(`${relative} (missing ${description})`);
+};
+const requireSectionText = (relative, heading, needles, description) => {
+  const section = markdownSection(read(relative), heading);
+  if (section === null) {
+    missing.push(`${relative} (missing section ${JSON.stringify(heading)})`);
+    return;
+  }
+  const normalized = section.replace(/\s+/g, ' ').trim();
+  for (const needle of needles) {
+    if (!normalized.includes(needle)) {
+      missing.push(`${relative} section ${JSON.stringify(heading)} (missing ${description}: ${JSON.stringify(needle)})`);
+    }
+  }
 };
 const requirePackageBin = (name, target) => {
   const packageJson = JSON.parse(read('package.json'));
@@ -127,6 +141,23 @@ requireText('dist/host-runtime/codex-session.js', [
   'CODEX_THREAD_ID', "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
   'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent', 'codex-thread-${session.threadId}',
 ]);
+requirePattern(
+  'src/host-runtime/codex-session.ts',
+  /hookInput\.hook_event_name !== 'SessionStart'[\s\S]{0,180}?hookInput\.source !== 'startup' && hookInput\.source !== 'resume'/,
+  'ordinary Codex startup/resume SessionStart validation',
+);
+requirePattern(
+  'src/host-runtime/codex-session.ts',
+  /session_instance_id: session\.threadId,\s*adapter_kind: 'codex-cli-queue'/,
+  'ordinary Codex exact thread bound to the native queue adapter',
+);
+requireText('tests/host-runtime/codex-session.test.ts', [
+  'automatically registers an ordinary SessionStart without writing a host config',
+  'accepts a resume SessionStart for automatic registration',
+]);
+requireText('tests/core/agent-router.test.ts', [
+  'never reroutes or later replays an exact-session delivery and drains principal pending after router restart',
+]);
 requireText('src/transports/cli/cli.ts', [
   "'codex-session'", "mode: host === 'codex-session'", "'ordinary-session-native-queue'",
 ]);
@@ -188,7 +219,28 @@ requireText('docs/platforms/agent-messaging.md', [
   'principal', 'session', 'generation', 'host_kind', 'work_summary', 'lease_expires_at_ms',
   'exact-session', 'principal target', 'Local', 'Cloud', 'Bounded storage and audit retention',
 ]);
-requireText('skills/memesh/SKILL.md', ['message', 'polling', 'active compatible managed host', 'stopped, missing, or replaced session', 'message storage report']);
+requireSectionText(
+  'docs/platforms/agent-messaging.md',
+  'Ordinary active Codex CLI session',
+  [
+    'Each startup or resumed thread then registers automatically under the current project with a thread-scoped principal.',
+    'Codex Desktop or an unattached task is not user-visible native-delivery evidence unless that exact live session registers with the router and the result is directly verified.',
+    'This is a scope boundary for evidence, not a claim that Codex Desktop is universally unsupported.',
+    'If the target Codex session is stopped, missing, disconnected, or no longer matches its configured workspace, MeMesh does not start or replace it.',
+    'Exact-session failures are not automatically replayed through the native channel on a later registration; the sender must retry deliberately if live delivery is still wanted.',
+  ],
+  'positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract',
+);
+requireSectionText(
+  'skills/memesh/SKILL.md',
+  'Durable messages and active-host delivery',
+  [
+    'an ordinary Codex CLI session with the MeMesh plugin can register automatically at SessionStart',
+    'Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`',
+    'a failed exact-session native delivery is not replayed automatically',
+  ],
+  'qualified ordinary-CLI, Desktop, and no-replay summary',
+);
 requireText('.claude-plugin/mcp.json', ['memesh', '${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js']);
 requireText('.claude-plugin/plugin.json', ['"name": "memesh"', '"version"', '"mcpServers": "./.claude-plugin/mcp.json"']);
 requireAbsent(
@@ -215,6 +267,16 @@ requireText('llms-install.md', [
   '22.13.0', 'memesh doctor', 'message', 'memesh-router',
   'memesh-host-codex', 'memesh-host-claude', 'memesh-host-acp', '--config', 'message storage report',
 ]);
+requireSectionText(
+  'llms-install.md',
+  '2. Terminal / CLI (npm global)',
+  [
+    'The ordinary Codex path below is the documented native local wakeup path',
+    'If the session is stopped, missing, or disconnected, MeMesh neither starts nor replaces it',
+    'Failed exact-session native delivery is not replayed automatically after a later registration; the sender must retry deliberately.',
+  ],
+  'qualified ordinary-CLI and no-replay install contract',
+);
 requireText('README.md', [
   'message', 'registers automatically', 'no manual `agent setup` is required', 'without polling or a human reminder',
   'stopped, missing, or disconnected Codex session', 'message storage report', '64 KiB', '16 KiB',
@@ -238,15 +300,45 @@ requirePattern(
   /untrusted JSON-encoded payload[^\n]*65,536 UTF-8 bytes \(64 KiB\)[^\n]*acknowledgement[^\n]*workflow disposition[^\n]*separate facts[\s\S]{0,900}?complete native envelope[^\n]*16,384 bytes \(16 KiB\)[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal targets retain durable store-and-forward behavior/,
   'durable=64 KiB, native=16 KiB, and separate lifecycle facts in the collaboration narrative',
 );
+requireSectionText(
+  'README.md',
+  'The fine print',
+  [
+    'each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity',
+    'a failed exact-session native delivery is not replayed automatically; the sender must retry deliberately',
+    'Do not assume Codex Desktop or an unattached task registers unless that exact running session appears in `message discover`',
+  ],
+  'qualified ordinary-CLI registration, no-replay, and Desktop evidence boundary',
+);
 requirePattern(
   'README.zh-TW.md',
   /JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload[^\n]*acknowledgement[^\n]*workflow disposition[^\n]*分開記錄[\s\S]{0,1000}?完整 native envelope[^\n]*16,384 bytes（16 KiB）[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal target[^\n]*durable store-and-forward/,
   'durable=64 KiB, native=16 KiB, and separate lifecycle facts in the Traditional Chinese collaboration narrative',
 );
+requireSectionText(
+  'README.zh-TW.md',
+  '細節',
+  [
+    '並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊',
+    '失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試',
+    '不要假設 Codex Desktop 或未連接的 task 已註冊',
+  ],
+  'qualified ordinary-CLI registration, no-replay, and Desktop evidence boundary in Traditional Chinese',
+);
 requirePattern(
   'README.de.md',
   /nicht vertrauenswürdigen, JSON-kodierten Payload[^\n]*65\.536 UTF-8-Bytes \(64 KiB\)[^\n]*Intake[^\n]*Bestätigung[^\n]*Workflow-Status[^\n]*getrennt protokollieren[\s\S]{0,1000}?vollständige native Envelope[^\n]*16\.384 Bytes \(16 KiB\)[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal-Ziele[^\n]*Durable Store-and-Forward/,
   'durable=64 KiB, native=16 KiB, and separate lifecycle facts in the German collaboration narrative',
+);
+requireSectionText(
+  'README.de.md',
+  'Das Kleingedruckte',
+  [
+    'jeder gestartete oder fortgesetzte gewöhnliche Codex-CLI-Thread mit gültiger Thread-Identität und vorhandenem Arbeitsverzeichnis automatisch mit einer threadbezogenen Identität',
+    'eine fehlgeschlagene native Exact-Session-Zustellung wird nicht automatisch wiederholt, der Absender muss bewusst erneut senden',
+    'Nimm bei Codex Desktop oder einem nicht angehängten Task keine Registrierung an',
+  ],
+  'qualified ordinary-CLI registration, no-replay, and Desktop evidence boundary in German',
 );
 const packageJsonText = read('package.json');
 for (const token of ['">=22.13.0"', 'check-agent-message-sync.mjs', 'test:packaged']) {

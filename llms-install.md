@@ -157,7 +157,8 @@ same-user process inspection may observe it while the queue command runs; do
 not send secrets through the native path. If the session is stopped, missing,
 or disconnected, MeMesh neither starts nor replaces it; the durable inbox remains
 available to scoped fetch, cursor recovery, `poll`, and `memesh message watch`
-for audit and diagnosis.
+for audit and diagnosis. Failed exact-session native delivery is not replayed
+automatically after a later registration; the sender must retry deliberately.
 
 The following are separate managed-host paths:
 
@@ -242,12 +243,12 @@ This writes `[mcp_servers.memesh]` into `~/.codex/config.toml`.
 
 ### Refresh a stale plugin cache
 
-If the configured marketplace snapshot is stale, refresh it and reinstall the
-plugin:
+If the configured marketplace snapshot is stale, refresh it and re-stage the
+plugin. `codex plugin add` replaces the installed cache atomically, so do not
+remove the working plugin first:
 
 ```
 codex plugin marketplace upgrade pcircle-memesh
-codex plugin remove memesh
 codex plugin add memesh@pcircle-memesh
 ```
 

@@ -344,7 +344,7 @@ function rewriteObservations(
       tags: entity.tags,
       namespace: entity.namespace,
     });
-  })();
+  }).immediate();
 }
 
 /** Reject a write that would push the memory past the size cap. */
@@ -611,29 +611,8 @@ function renamePath(oldRaw: unknown, newRaw: unknown): MemoryToolResult {
     );
   }
 
-  const kg = graph();
-  const source = findEntity(kg, from.namespace, from.name);
-  if (!source) return err(`Error: The path ${String(oldRaw)} does not exist`);
-  if (findEntity(kg, to.namespace, to.name)) {
-    return err(`Error: The destination ${String(newRaw)} already exists`);
-  }
-  // Checked across ALL namespaces, not just the destination's: entity names are
-  // unique database-wide, so a name taken in `team` would make a rename into
-  // `personal` fail at the storage layer with a constraint error instead of the
-  // message the contract specifies.
-  if (kg.getEntity(to.name)) {
-    return err(
-      `Error: The destination ${String(newRaw)} already exists in another namespace. ` +
-        `Memory names are unique across namespaces.`
-    );
-  }
-
   const db = getDatabase();
-  const entityId = source.id as number;
-  // indexedObservationText, not source.observations.join(' '): the delete
-  // below must match the indexed bytes, and the owner composes them with an
-  // explicit ORDER BY instead of whatever order getEntity hydrated in.
-  const obsText = indexedObservationText(db, entityId);
+  const kg = graph();
 
   // A rename changes the NAME. Observations and tags are untouched, so nothing
   // here rewrites them — the only thing that has to move is the FTS row, whose
@@ -663,7 +642,31 @@ function renamePath(oldRaw: unknown, newRaw: unknown): MemoryToolResult {
   // red on a completely ordinary operation, because a memory the user had put
   // away came right back into keyword search. Renaming a memory is not a
   // statement that it should be un-archived.
-  db.transaction(() => {
+  return db.transaction(() => {
+    // Resolve both endpoints and the exact indexed bytes only after BEGIN
+    // IMMEDIATE. A source snapshot taken before the write lock allowed another
+    // connection to append or rename in between, making the contentless FTS
+    // delete use stale text and leave permanent old-name tokens behind.
+    const source = findEntity(kg, from.namespace, from.name);
+    if (!source) return err(`Error: The path ${String(oldRaw)} does not exist`);
+    if (findEntity(kg, to.namespace, to.name)) {
+      return err(`Error: The destination ${String(newRaw)} already exists`);
+    }
+    // Checked across ALL namespaces, not just the destination's: entity names
+    // are unique database-wide, so a name taken in `team` would otherwise fail
+    // at the storage layer instead of returning the contract error.
+    if (kg.getEntity(to.name)) {
+      return err(
+        `Error: The destination ${String(newRaw)} already exists in another namespace. ` +
+          `Memory names are unique across namespaces.`
+      );
+    }
+
+    const entityId = source.id as number;
+    // indexedObservationText, not source.observations.join(' '): this must
+    // match the indexed bytes and has an explicit insertion order.
+    const obsText = indexedObservationText(db, entityId);
+
     // Rename never touches title — same value goes in on both sides, same
     // symmetric-match rule as everywhere else that maintains this index.
     removeFromFts(db, entityId, source.name, obsText, source.title);
@@ -672,9 +675,8 @@ function renamePath(oldRaw: unknown, newRaw: unknown): MemoryToolResult {
     if (!source.archived) {
       insertFtsRow(db, entityId, to.name, obsText, source.title);
     }
-  })();
-
-  return ok(`Successfully renamed ${String(oldRaw)} to ${String(newRaw)}`);
+    return ok(`Successfully renamed ${String(oldRaw)} to ${String(newRaw)}`);
+  }).immediate();
 }
 
 // --- Entry point -------------------------------------------------------------

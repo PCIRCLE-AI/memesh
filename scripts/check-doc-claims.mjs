@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
-// Every claim the public documents make about the code, checked against the
-// code. Replaces `scripts/verify-docs-sync.sh`, for two reasons.
+// Selected public source-backed claims, checked against the code. Replaces
+// `scripts/verify-docs-sync.sh`, for two reasons.
 //
 // FIRST, AND THE ONE THAT MATTERS: nothing ran it. Not CI, not
 // `npm run verify:release`, not `scripts/release-verify.sh`, not a
@@ -41,8 +41,12 @@ import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { listHookFiles } from './lib/hook-files.mjs';
 import { statesTestCount } from './lib/test-count-claim.mjs';
+import { checkTranscriptDiscoveryContract } from './lib/transcript-doc-contract.mjs';
+import { checkCurrentDocumentationContracts } from './lib/current-doc-contract.mjs';
 
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const rootOption = process.argv.indexOf('--root');
+const repoRoot = rootOption === -1 ? defaultRoot : path.resolve(process.argv[rootOption + 1] ?? '');
 const read = p => fs.readFileSync(path.join(repoRoot, p), 'utf8');
 
 const failures = [];
@@ -217,22 +221,20 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
     }
   }
 
-  // (a3) ARCHITECTURE.md's top-level CLI command count. Stated for four
-  // releases with nothing checking it; the orchestration removal shifted it
-  // and the stale number shipped. Top-level = `program.command('name')` at
-  // statement start (subcommands hang off configCmd/kgCmd/dreamCmd instead)
-  // plus the three named group commands.
-  const cliSrc = read('src/transports/cli/cli.ts');
-  const topLevel = (cliSrc.match(/^program\s*\n\s*\.command\('/gm) ?? []).length
-    + (cliSrc.match(/= program\.command\('/g) ?? []).length
-    // group commands declared as `const xCmd = program\n  .command('x')`
-    + (cliSrc.match(/= program\s*\n\s*\.command\('/g) ?? []).length;
-  const archCli = read('docs/ARCHITECTURE.md').match(/(\d+) top-level commands/);
-  if (topLevel < 10) fail(`CLI top-level command extraction matched only ${topLevel} — the pattern stopped matching`);
-  else if (!archCli) fail('docs/ARCHITECTURE.md no longer states the top-level CLI command count');
-  else if (Number(archCli[1]) !== topLevel)
-    fail(`docs/ARCHITECTURE.md says ${archCli[1]} top-level commands, cli.ts registers ${topLevel}`);
-  else ok(`ARCHITECTURE.md agrees on ${topLevel} top-level CLI commands`);
+  // The transcript selector's safety bounds are part of the public work_package
+  // contract. Derive them from the implementation so the API reference cannot
+  // quietly advertise a wider or narrower file-reading boundary.
+  const transcriptContract = checkTranscriptDiscoveryContract(
+    read('src/core/transcript-source.ts'),
+    read('src/core/dreamer.ts'),
+    read('src/transports/schemas.ts'),
+    read('docs/api/API_REFERENCE.md'),
+  );
+  if (!transcriptContract.ok) fail(transcriptContract.error);
+  else {
+    const { windowDays, candidates, sourceMiB, scanMiB } = transcriptContract.bounds;
+    ok(`API_REFERENCE transcript bounds match source (${windowDays}d/${candidates}/${sourceMiB} MiB/${scanMiB} MiB)`);
+  }
 
   // (b) README's search-scoring weights vs DEFAULT_WEIGHTS.
   const scoring = read('src/core/scoring.ts');
@@ -311,24 +313,27 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
   }
 }
 
-// --- 4. HTTP endpoint count --------------------------------------------------
-//
-// ARCHITECTURE.md carried "~32 endpoints" in the module list and "17 endpoints"
-// in the transport section — one file, one fact, two numbers, and the wrong one
-// off by fifteen. The count is stated once now, and checked here.
-const httpServerSource = read('src/transports/http/server.ts');
-const retiredRoutePaths = [...read('src/transports/http/retired-routes.ts').matchAll(/^\s*'(\/v1\/[^']+)':/gm)]
-  .map(m => m[1]);
-const registersRetiredRouteMap = /Object\.entries\(RETIRED_ROUTES\)/.test(httpServerSource)
-  && /app\.post\(retiredRoute,/.test(httpServerSource);
-const routesInCode = (httpServerSource.match(/^app\.(get|post|put|delete|patch)\(/gm) ?? []).length
-  + (registersRetiredRouteMap ? retiredRoutePaths.length : 0);
-const archRoutes = read('docs/ARCHITECTURE.md').match(/default port 3737, (\d+) endpoints/);
-if (routesInCode < 1) fail('found no routes in http/server.ts — the pattern stopped matching');
-else if (!archRoutes) fail('docs/ARCHITECTURE.md no longer states its endpoint count');
-else if (Number(archRoutes[1]) !== routesInCode)
-  fail(`server.ts registers ${routesInCode} routes, ARCHITECTURE.md says ${archRoutes[1]}`);
-else ok(`server.ts and ARCHITECTURE.md agree on ${routesInCode} HTTP endpoints`);
+// --- 4. Current public contracts that previously passed while false ---------
+const currentDocs = checkCurrentDocumentationContracts({
+  architecture: read('docs/ARCHITECTURE.md'),
+  handlers: read('src/transports/mcp/handlers.ts'),
+  httpServer: read('src/transports/http/server.ts'),
+  retiredRoutes: read('src/transports/http/retired-routes.ts'),
+  operations: read('src/core/operations.ts'),
+  apiReference: read('docs/api/API_REFERENCE.md'),
+  methodology: read('benchmarks/longmemeval/METHODOLOGY.md'),
+  benchmarkResults: read('benchmarks/longmemeval/RESULTS.md'),
+  benchmarkResultsReadme: read('benchmarks/longmemeval/results/README.md'),
+  reproduce: read('benchmarks/longmemeval/REPRODUCE.md'),
+  changelog: read('CHANGELOG.md'),
+  packageJson: pkg,
+  knowledgeGraph: read('src/knowledge-graph.ts'),
+  analytics: read('src/core/analytics.ts'),
+});
+for (const error of currentDocs.errors) fail(error);
+if (currentDocs.errors.length === 0) {
+  ok(`${currentDocs.toolCount} MCP handler rows, ${currentDocs.routeCount} /v1 routes + ${currentDocs.webRouteCount} web routes, config/analytics/forget/benchmark contracts match source`);
+}
 
 // --- 5. No README may state a test count -------------------------------------
 //
@@ -347,32 +352,6 @@ if (readmes.length === 0) fail('no README*.md found — this check stopped looki
 const withCounts = readmes.filter(f => statesTestCount(read(f)));
 if (withCounts.length) fail(`README(s) state a hardcoded test count: ${withCounts.join(', ')}`);
 else ok(`${readmes.length} READMEs state no hardcoded test count`);
-
-// --- 4b. Every registered HTTP route is documented ---------------------------
-//
-// Four registered routes (/v1/doctor, /v1/projects, /v1/demo/seed,
-// /v1/demo/reset) went completely undocumented while the dashboard called
-// three of them on every load. A count (check 4) cannot see that — it says how
-// many routes exist, not which ones the reference forgot. This walks the
-// registrations and requires each path to appear in API_REFERENCE.md.
-// Line-anchored on purpose and by limitation: a registration whose path sits
-// on its own line (app.post followed by a newline before the path literal)
-// would be invisible here. The floor below (< 20 fails) catches wholesale
-// extraction rot but not one such route; if a multi-line registration ever
-// appears, widen this rather than trusting it.
-const routePaths = [
-  ...[...httpServerSource.matchAll(/^app\.(?:get|post|put|delete|patch)\((['"`])([^'"`]+)\1/gm)]
-    .map(m => m[2])
-    .filter(p => p.startsWith('/v1/')),
-  ...(registersRetiredRouteMap ? retiredRoutePaths : []),
-];
-if (routePaths.length < 20) fail(`route extraction found only ${routePaths.length} /v1 paths — the pattern stopped matching`);
-else {
-  const apiRef = read('docs/api/API_REFERENCE.md');
-  const undocumented = routePaths.filter(p => !apiRef.includes(p));
-  if (undocumented.length) fail(`registered but absent from API_REFERENCE.md: ${[...new Set(undocumented)].join(', ')}`);
-  else ok(`all ${new Set(routePaths).size} registered /v1 routes appear in API_REFERENCE.md`);
-}
 
 // --- 6. Deprecated terms -----------------------------------------------------
 const searched = ['docs/ARCHITECTURE.md', 'docs/api/API_REFERENCE.md', 'skills/memesh/SKILL.md', ...readmes];
@@ -767,7 +746,7 @@ console.log('Doc claims audit:');
 for (const n of notes) console.log('  ' + n);
 
 if (failures.length === 0) {
-  console.log('\n✓ Every documented claim matches the code.');
+  console.log('\n✓ All source-backed documentation contracts checked by this audit match the code.');
   process.exit(0);
 }
 console.error('\n✗ Doc claims FAILED:');

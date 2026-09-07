@@ -81,10 +81,10 @@
       "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/operations.ts:120": {
+    "C5 src/core/operations.ts:133": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement"
     },
     "C1 tests/cli-agent-message-ingress.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
@@ -230,6 +230,11 @@
       "class": "WIRING-PIN",
       "reason": "reads cli.ts to assert each behavioural relation type has a flag whose help carries the consequence — the flags' behaviour is tested against a real database in tests/cli/remember-relations.test.ts",
       "triaged": "2026-08-10 (P7 batch 2)"
+    },
+    "C6 tests/transcript-doc-contract.test.ts": {
+      "class": "SOURCE-CONTRACT-PIN",
+      "reason": "The source files are data inputs to the same shared contract predicate used by check-doc-claims, and mutation cases prove it rejects missing, relocated, negated, or source-drifted documentation. It verifies documentation synchronization, not runtime behavior.",
+      "triaged": "2026-09-07 v4.9.0 documentation contract audit"
     },
     "C5 src/core/serializer.ts:47": {
       "class": "SAFE-ACCUMULATOR",
@@ -411,15 +416,15 @@
       "reason": "`input.commits ?? []` — WhySchema documents commits as optional (a caller without a working tree resolves none); the result carries commits: [] visibly, and every real gap in the chain is a typed abstention, never a default.",
       "triaged": "2026-08-16 (UX-3 memesh why); re-keyed 2026-08-24 (M-07: file_not_found abstention + why.ts imports added above; statements byte-identical, classification unchanged)"
     },
-    "C5 src/core/serializer.ts:354": {
+    "C5 src/core/serializer.ts:387": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "`relations` is optional on the imported bundle entry; empty means none to re-create. Newly visible after the C5 `||` regex fix.",
-      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-08-24 (M-05/M-06/M-18 batch: --obs validation, zero-hit retrieval-mode message, import overwritten-counter/dedupe added above; statements byte-identical, classification unchanged)"
+      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-08-24 (M-05/M-06/M-18 batch: --obs validation, zero-hit retrieval-mode message, import overwritten-counter/dedupe added above; statements byte-identical, classification unchanged); re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement"
     },
-    "C5 src/core/serializer.ts:306": {
+    "C5 src/core/serializer.ts:313": {
       "class": "SAFE-GUARDED",
       "reason": "entity.observations can be genuinely undefined for a raw import bundle — describeInvalidEntity (this file) explicitly permits the field to be absent, only rejecting it if present-and-not-an-array. The ?? [] covers that documented-optional case, not a hidden failure.",
-      "triaged": "2026-08-24"
+      "triaged": "2026-08-24; re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement"
     },
     "C5 src/core/agent-router.ts:843": {
       "class": "SAFE-BY-CONSTRUCTION",

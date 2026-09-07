@@ -6,9 +6,13 @@ import { validateGuardSpec } from './guards.js';
 import { dropEntityFromIndexes } from '../storage/entity-index.js';
 import { PRODUCT_IMPROVEMENT_KIND, readProductImprovementPayload, readProductImprovementSourceIds, } from './product-improvements.js';
 const COMPACT_MIN_CLUSTER_SIZE = 5;
+const COMPACT_MAX_CLUSTER_SIZE = 100;
 const COMPACT_TIME_WINDOW_DAYS = 7;
 const COMPACT_MIN_SIGNAL = 0.2;
 const COMPACT_MAX_SIGNAL = 0.7;
+const TRANSCRIPT_PACKAGE_MAX_TURNS = 100;
+const TRANSCRIPT_PACKAGE_SOURCE_BYTES = 48 * 1024;
+const WORK_PACKAGE_MAX_BYTES = 64 * 1024;
 const COMPACTABLE_TYPES = new Set([
     'commit',
     'session_keypoint',
@@ -197,9 +201,9 @@ export function executeWorkPackage(db, input, context = {}) {
                     .map(turn => ({ ...turn, text: redactSecrets(turn.text) }));
                 const sources = [];
                 let sourceBytes = 2;
-                for (let i = turns.length - 1; i >= 0 && sources.length < 100; i--) {
+                for (let i = turns.length - 1; i >= 0 && sources.length < TRANSCRIPT_PACKAGE_MAX_TURNS; i--) {
                     const size = Buffer.byteLength(JSON.stringify(turns[i])) + (sources.length > 0 ? 1 : 0);
-                    if (sourceBytes + size > 49152)
+                    if (sourceBytes + size > TRANSCRIPT_PACKAGE_SOURCE_BYTES)
                         break;
                     sources.push(turns[i]);
                     sourceBytes += size;
@@ -219,7 +223,7 @@ export function executeWorkPackage(db, input, context = {}) {
                     coverage: { truncated: sources.length < turns.length, total_turns: turns.length, included_turns: sources.length },
                     trust: 'untrusted', selection_mode: 'newest_session',
                 };
-                if (Buffer.byteLength(JSON.stringify(pkg)) > 65536)
+                if (Buffer.byteLength(JSON.stringify(pkg)) > WORK_PACKAGE_MAX_BYTES)
                     continue;
                 if (input.action !== 'prepare' && (input.package_id !== id || !sameWorkPackageRef(input.ref, ref)))
                     continue;
@@ -250,7 +254,7 @@ export function executeWorkPackage(db, input, context = {}) {
         const candidates = digestCandidates(db, project);
         const clusters = [...groupByIsoWeek(candidates)].map(([key, entities]) => ({ project, key, entities }));
         for (const cluster of clusters) {
-            if (cluster.entities.length < COMPACT_MIN_CLUSTER_SIZE || cluster.entities.length > 100)
+            if (cluster.entities.length < COMPACT_MIN_CLUSTER_SIZE || cluster.entities.length > COMPACT_MAX_CLUSTER_SIZE)
                 continue;
             const sources = [...cluster.entities].sort((a, b) => a.id - b.id)
                 .map(({ id, name, type, observations }) => ({ id, name, type, observations }));
@@ -270,7 +274,7 @@ export function executeWorkPackage(db, input, context = {}) {
                 limits: { max_output_bytes: 16384, max_results: 1 },
                 coverage: { truncated: false }, trust: 'untrusted', selection_mode: 'calendar',
             };
-            if (Buffer.byteLength(JSON.stringify(pkg), 'utf8') > 65536)
+            if (Buffer.byteLength(JSON.stringify(pkg), 'utf8') > WORK_PACKAGE_MAX_BYTES)
                 continue;
             if (input.action !== 'prepare' && (id !== input.package_id || !sameWorkPackageRef(ref, input.ref)))
                 continue;
@@ -384,7 +388,7 @@ function applyRelationProposal(db, row) {
         }
         db.prepare('INSERT OR IGNORE INTO relations (from_entity_id, to_entity_id, relation_type) VALUES (?, ?, ?)').run(from.id, to.id, payload.relation_type);
     });
-    tx();
+    tx.immediate();
     return {
         proposalId: row.id,
         digestEntityName: `${from.name} —${payload.relation_type}→ ${to.name}`,
@@ -562,7 +566,7 @@ export function applyProposal(db, proposalId, kg) {
     });
     let out;
     try {
-        out = tx();
+        out = tx.immediate();
     }
     catch (err) {
         if (err instanceof NothingToClaimError) {
@@ -789,7 +793,7 @@ function applyGuardProposal(db, row) {
             throw new Error(`proposal #${row.id} was reviewed concurrently — no longer pending`);
         }
     });
-    tx();
+    tx.immediate();
     return {
         proposalId: row.id,
         digestEntityName: `guard on ${lessonName}`,

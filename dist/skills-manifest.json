@@ -48,8 +48,8 @@
     },
     {
       "path": "scripts/hooks/_generated/fts-index.js",
-      "sha256": "a5700dca90523758cbd5ea00ea5f9a6ea6a0e33fc340de87246c6f67cccc1811",
-      "bytes": 4232
+      "sha256": "c6134e5cff944b86903859b789a3f1273df36d232ed219288fe4648a72e2b63f",
+      "bytes": 4094
     },
     {
       "path": "scripts/hooks/_generated/guards.js",
@@ -143,8 +143,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "e475e97e01fb6aa4307b5523dcdcffcf72f24e4d5974ef1d656e156d3fbcf36c",
-      "bytes": 18244
+      "sha256": "a5e3783381f995be151a93aa41285a9f949b7c52f301ce89ddc548db31e3dade",
+      "bytes": 18513
     }
   ]
 }

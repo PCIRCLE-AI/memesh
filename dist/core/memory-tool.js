@@ -128,7 +128,7 @@ function rewriteObservations(kg, entity, observations) {
             tags: entity.tags,
             namespace: entity.namespace,
         });
-    })();
+    }).immediate();
 }
 function tooLarge(body, path) {
     const bytes = Buffer.byteLength(body, 'utf8');
@@ -301,29 +301,29 @@ function renamePath(oldRaw, newRaw) {
         return err(`Error: rename moves one memory to another memory path. ` +
             `${MEMORY_ROOT} and its namespaces cannot be renamed.`);
     }
-    const kg = graph();
-    const source = findEntity(kg, from.namespace, from.name);
-    if (!source)
-        return err(`Error: The path ${String(oldRaw)} does not exist`);
-    if (findEntity(kg, to.namespace, to.name)) {
-        return err(`Error: The destination ${String(newRaw)} already exists`);
-    }
-    if (kg.getEntity(to.name)) {
-        return err(`Error: The destination ${String(newRaw)} already exists in another namespace. ` +
-            `Memory names are unique across namespaces.`);
-    }
     const db = getDatabase();
-    const entityId = source.id;
-    const obsText = indexedObservationText(db, entityId);
-    db.transaction(() => {
+    const kg = graph();
+    return db.transaction(() => {
+        const source = findEntity(kg, from.namespace, from.name);
+        if (!source)
+            return err(`Error: The path ${String(oldRaw)} does not exist`);
+        if (findEntity(kg, to.namespace, to.name)) {
+            return err(`Error: The destination ${String(newRaw)} already exists`);
+        }
+        if (kg.getEntity(to.name)) {
+            return err(`Error: The destination ${String(newRaw)} already exists in another namespace. ` +
+                `Memory names are unique across namespaces.`);
+        }
+        const entityId = source.id;
+        const obsText = indexedObservationText(db, entityId);
         removeFromFts(db, entityId, source.name, obsText, source.title);
         db.prepare('UPDATE entities SET name = ?, namespace = ? WHERE id = ?')
             .run(to.name, to.namespace, entityId);
         if (!source.archived) {
             insertFtsRow(db, entityId, to.name, obsText, source.title);
         }
-    })();
-    return ok(`Successfully renamed ${String(oldRaw)} to ${String(newRaw)}`);
+        return ok(`Successfully renamed ${String(oldRaw)} to ${String(newRaw)}`);
+    }).immediate();
 }
 export function handleMemoryCommand(input) {
     if (typeof input !== 'object' || input === null) {

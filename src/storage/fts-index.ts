@@ -320,19 +320,10 @@ function foldTitleIntoObservations(
  * previously-indexed name + observation text (and title, if the row had
  * one) — that's what FTS5 requires to find the row in `content=''` mode.
  *
- * Best-effort: this function MUST NOT throw, because callers (e.g.
- * `archiveEntity`, `rebuildFts`) treat FTS maintenance as a side
- * concern of the primary DB write — failing the whole operation
- * because the index is wedged would lose user data on the entities
- * table. But the prior implementation swallowed *every* exception
- * silently, including real DB faults (lock contention, disk full,
- * schema corruption), which let the index drift out of sync with
- * the entities table with no operator signal.
- *
- * Now we still never throw, but we log a single-line warning to
- * stderr for any error that isn't the documented "no row to delete"
- * benign case (FTS5 'delete' is idempotent for missing rowids — that
- * one is genuinely safe to ignore).
+ * The precheck below makes an absent FTS row an idempotent no-op. Once a row
+ * exists, a failed delete is not benign: every production caller encloses the
+ * source and index writes in one transaction, so this function logs and
+ * rethrows the database error to make that transaction roll back.
  */
 export function removeFromFts(
   db: MemeshDatabase,
@@ -352,12 +343,9 @@ export function removeFromFts(
     // malformed`. Measured on SQLite 3.51.3 (Node 22+): insert one row, delete
     // it correctly, delete it again — the second delete throws exactly that.
     //
-    // The comment on `isBenignFtsDeleteError` below describes an older
-    // SQLite's "no such rowid" error, which 3.51 does not raise; and "disk
-    // image is malformed" is deliberately NOT in its benign set, because on
-    // every other path it means real corruption. So the miss cannot be
-    // absorbed after the fact — it has to be avoided, here, once, for every
-    // caller.
+    // Older SQLite builds can report a "no such rowid"-style error, while
+    // 3.51 does not. Neither is a safe post-hoc benign classifier after this
+    // positive check; the miss must be avoided here, before the delete.
     //
     // This is what makes it safe for `createEntityInner` to ask for the delete
     // unconditionally, which is what closes the double-INSERT it used to make
@@ -379,50 +367,19 @@ export function removeFromFts(
       toIndexForm(foldTitleIntoObservations(prevTitle, prevObsText)),
     );
   } catch (err) {
-    if (isBenignFtsDeleteError(err)) return;
-    // Real failure — log so an operator sees the index drift signal
-    // instead of discovering it later via stale search results.
-    process.stderr.write(
-      `[memesh fts-index] removeFromFts(rowid=${entityId}) failed: ${err instanceof Error ? err.message : String(err)}\n`
-    );
+    // The row-count guard above owns the only benign case: no indexed row.
+    // Once a row exists, every delete failure means its postings may remain.
+    // Surface that failure so the caller's transaction can roll back the
+    // source-row mutation instead of committing source/index divergence.
+    try {
+      process.stderr.write(
+        `[memesh fts-index] removeFromFts(rowid=${entityId}) failed: ${err instanceof Error ? err.message : String(err)}\n`
+      );
+    } catch {
+      // A broken diagnostic stream must not replace the database error.
+    }
+    throw err;
   }
-}
-
-/**
- * FTS5 contentless `'delete'` raises SQLITE_ERROR with a "no such rowid"
- * style message when the indexed (name, observations) values don't match
- * what the index has stored for the rowid. That's still benign in our
- * schema: the entity either was never indexed (e.g. status='archived'
- * from migration) or was already cleaned up by a prior call. We treat
- * those as no-ops.
- *
- * **Measured caveat, SQLite 3.51.3 (Node 22+): it does not raise that.**
- * A delete for a rowid that was never indexed throws nothing at all, and a
- * SECOND delete of the same (rowid, text) throws `database disk image is
- * malformed` — which this classifier deliberately does not absorb, and
- * rightly so. So the "no such rowid" branch below is dead on current SQLite
- * and the miss cannot be handled after the fact; `removeFromFts` now checks
- * that the rowid is indexed BEFORE issuing the delete. The patterns are kept
- * for older SQLite builds, not relied on.
- *
- * "database disk image is malformed" is a DIFFERENT failure class — real
- * corruption, not a values mismatch — and this schema's delete path
- * cannot produce it as the benign case above; see the classifier's own
- * exclusion list below, which is what actually runs.
- *
- * Anything else — disk full, locked DB, malformed schema, foreign-key
- * cascade failure — should reach the operator.
- */
-function isBenignFtsDeleteError(err: unknown): boolean {
-  const msg = (err as { message?: string })?.message ?? '';
-  // "no such rowid" — FTS row never existed, idempotent delete.
-  // "values do not match" / "no such row" — caller's recorded values
-  //    drifted from what FTS stored (entity edited outside the helper);
-  //    rebuildFts will reindex the row anyway.
-  // We deliberately do NOT classify "database is locked", "disk I/O",
-  // "disk image is malformed", or "no such table" as benign. Those
-  // are real DB faults the operator must see.
-  return /no such rowid|values do not match|no such row\b/i.test(msg);
 }
 
 /**

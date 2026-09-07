@@ -24952,15 +24952,13 @@ function removeFromFts(db2, entityId, name, prevObsText, prevTitle) {
       return;
     db2.prepare("INSERT INTO entities_fts (entities_fts, rowid, name, observations) VALUES('delete', ?, ?, ?)").run(entityId, toIndexForm(name), toIndexForm(foldTitleIntoObservations(prevTitle, prevObsText)));
   } catch (err) {
-    if (isBenignFtsDeleteError(err))
-      return;
-    process.stderr.write(`[memesh fts-index] removeFromFts(rowid=${entityId}) failed: ${err instanceof Error ? err.message : String(err)}
+    try {
+      process.stderr.write(`[memesh fts-index] removeFromFts(rowid=${entityId}) failed: ${err instanceof Error ? err.message : String(err)}
 `);
+    } catch {
+    }
+    throw err;
   }
-}
-function isBenignFtsDeleteError(err) {
-  const msg = err?.message ?? "";
-  return /no such rowid|values do not match|no such row\b/i.test(msg);
 }
 function joinIndexedObservations(contents) {
   return contents.join(" ");
@@ -25473,49 +25471,59 @@ var KnowledgeGraph = class {
     return results;
   }
   clearEntityData(name) {
-    const row = this.db.prepare("SELECT id, title FROM entities WHERE name = ?").get(name);
-    if (!row)
-      return;
-    const prevObsText = indexedObservationText(this.db, row.id);
     this.db.transaction(() => {
+      const row = this.db.prepare("SELECT id, title FROM entities WHERE name = ?").get(name);
+      if (!row)
+        return;
+      const prevObsText = indexedObservationText(this.db, row.id);
       this.db.prepare("DELETE FROM observations WHERE entity_id = ?").run(row.id);
       this.db.prepare("DELETE FROM tags WHERE entity_id = ?").run(row.id);
       this.rebuildFts(row.id, name, prevObsText, row.title);
-    })();
+    }).immediate();
   }
   archiveEntity(name) {
-    const row = this.db.prepare("SELECT id, status, title FROM entities WHERE name = ?").get(name);
-    if (!row)
-      return { archived: false };
-    this.db.transaction(() => {
-      dropEntityFromIndexes(this.db, row.id, name);
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT id, name, status FROM entities WHERE name = ?").get(name);
+      if (!row)
+        return { archived: false };
+      dropEntityFromIndexes(this.db, row.id, row.name);
       this.db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(row.id);
+      return { archived: true, name: row.name, previousStatus: row.status };
     }).immediate();
-    return { archived: true, name, previousStatus: row.status };
   }
   removeObservation(entityName, observationContent) {
-    const row = this.db.prepare("SELECT id, title FROM entities WHERE name = ?").get(entityName);
-    if (!row)
-      return { removed: false, remainingObservations: 0, entityFound: false };
-    const prevObs = this.db.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(row.id);
-    const prevObsText = joinIndexedObservations(prevObs.map((o) => o.content));
-    const deleteResult = this.db.prepare("DELETE FROM observations WHERE entity_id = ? AND content = ?").run(row.id, observationContent);
-    if (deleteResult.changes === 0) {
-      return { removed: false, remainingObservations: prevObs.length, entityFound: true };
-    }
-    this.rebuildFts(row.id, entityName, prevObsText, row.title);
-    const remaining = this.db.prepare("SELECT COUNT(*) as c FROM observations WHERE entity_id = ?").get(row.id);
-    return { removed: true, remainingObservations: remaining.c, entityFound: true };
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT id, title, status FROM entities WHERE name = ?").get(entityName);
+      if (!row)
+        return { removed: false, remainingObservations: 0, entityFound: false };
+      const prevObs = this.db.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(row.id);
+      const prevObsText = joinIndexedObservations(prevObs.map((o) => o.content));
+      const deleteResult = this.db.prepare(`DELETE FROM observations
+          WHERE id = (
+            SELECT id FROM observations
+            WHERE entity_id = ? AND content = ?
+            ORDER BY id
+            LIMIT 1
+          )`).run(row.id, observationContent);
+      if (deleteResult.changes === 0) {
+        return { removed: false, remainingObservations: prevObs.length, entityFound: true };
+      }
+      if (row.status !== "archived") {
+        this.rebuildFts(row.id, entityName, prevObsText, row.title);
+      }
+      const remaining = this.db.prepare("SELECT COUNT(*) as c FROM observations WHERE entity_id = ?").get(row.id);
+      return { removed: true, remainingObservations: remaining.c, entityFound: true };
+    }).immediate();
   }
   deleteEntity(name) {
-    const row = this.db.prepare("SELECT id, title FROM entities WHERE name = ?").get(name);
-    if (!row)
-      return { deleted: false };
-    this.db.transaction(() => {
-      dropEntityFromIndexes(this.db, row.id, name);
+    return this.db.transaction(() => {
+      const row = this.db.prepare("SELECT id, name FROM entities WHERE name = ?").get(name);
+      if (!row)
+        return { deleted: false };
+      dropEntityFromIndexes(this.db, row.id, row.name);
       this.db.prepare("DELETE FROM entities WHERE id = ?").run(row.id);
+      return { deleted: true };
     }).immediate();
-    return { deleted: true };
   }
   parseMetadata(rawMetadata) {
     if (!rawMetadata)
@@ -27018,64 +27026,76 @@ function importMemories(args) {
       continue;
     }
     try {
-      const existing = kg.getEntity(entity.name);
-      const bundledTitle = entity.title;
-      const title = typeof bundledTitle === "string" && bundledTitle.trim().length > 0 ? truncateTitle(bundledTitle) : void 0;
-      const namespace = args.namespace ?? (existing ? void 0 : entity.namespace || "personal");
-      const importedMetadata = buildImportedMetadata(existing?.metadata, {
-        bundled: entity.metadata,
-        exportedAt: args.data.exported_at,
-        importVersion: args.data.version,
-        mergeStrategy: args.merge_strategy
-      });
-      if (existing) {
-        if (args.merge_strategy === "skip") {
-          skipped++;
-          continue;
+      const outcome = db2.transaction(() => {
+        const existing = kg.getEntity(entity.name);
+        const bundledTitle = entity.title;
+        const title = typeof bundledTitle === "string" && bundledTitle.trim().length > 0 ? truncateTitle(bundledTitle) : void 0;
+        const namespace = args.namespace ?? (existing ? void 0 : entity.namespace || "personal");
+        const importedMetadata = buildImportedMetadata(existing?.metadata, {
+          bundled: entity.metadata,
+          exportedAt: args.data.exported_at,
+          importVersion: args.data.version,
+          mergeStrategy: args.merge_strategy
+        });
+        if (existing) {
+          if (args.merge_strategy === "skip")
+            return { kind: "skipped" };
+          if (args.merge_strategy === "append") {
+            const existingText = new Set(existing.observations);
+            const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
+            kg.createEntity(entity.name, entity.type, {
+              title,
+              observations: newObservations,
+              tags: entity.tags,
+              namespace,
+              trustOverride: "untrusted"
+            });
+            kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+            return { kind: "appended" };
+          }
+          kg.clearEntityData(entity.name);
         }
-        if (args.merge_strategy === "append") {
-          const existingText = new Set(existing.observations);
-          const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
-          kg.createEntity(entity.name, entity.type, {
-            title,
-            observations: newObservations,
-            tags: entity.tags,
-            namespace,
-            trustOverride: "untrusted"
-          });
+        kg.createEntity(entity.name, entity.type, {
+          title,
+          observations: entity.observations,
+          tags: entity.tags,
+          metadata: importedMetadata,
+          namespace,
+          trustOverride: "untrusted"
+        });
+        if (existing) {
           kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-          appended++;
-          continue;
         }
-        kg.clearEntityData(entity.name);
-      }
-      kg.createEntity(entity.name, entity.type, {
-        title,
-        observations: entity.observations,
-        tags: entity.tags,
-        metadata: importedMetadata,
-        namespace,
-        trustOverride: "untrusted"
-      });
-      if (existing) {
-        kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-      }
-      for (const rel of entity.relations || []) {
-        pendingRelations.push({ from: entity.name, to: rel.to, type: rel.type });
-      }
-      if (!existing) {
-        const bundledCreatedAt = entity.created_at;
-        const bundledMs = typeof bundledCreatedAt === "string" ? parseSqliteUtcMs(bundledCreatedAt) : null;
-        if (bundledMs !== null) {
-          setCreatedAt.run(new Date(bundledMs).toISOString().replace("T", " ").slice(0, 19), entity.name);
+        if (!existing) {
+          const bundledCreatedAt = entity.created_at;
+          const bundledMs = typeof bundledCreatedAt === "string" ? parseSqliteUtcMs(bundledCreatedAt) : null;
+          if (bundledMs !== null) {
+            setCreatedAt.run(new Date(bundledMs).toISOString().replace("T", " ").slice(0, 19), entity.name);
+          }
+          if (entity.status === "archived") {
+            kg.archiveEntity(entity.name);
+          }
         }
-        if (entity.status === "archived") {
-          kg.archiveEntity(entity.name);
-        }
+        return {
+          kind: "imported",
+          overwritten: Boolean(existing),
+          relations: (entity.relations || []).map((rel) => ({
+            from: entity.name,
+            to: rel.to,
+            type: rel.type
+          }))
+        };
+      }).immediate();
+      if (outcome.kind === "skipped")
+        skipped++;
+      else if (outcome.kind === "appended")
+        appended++;
+      else {
+        pendingRelations.push(...outcome.relations);
+        imported++;
+        if (outcome.overwritten)
+          overwritten++;
       }
-      imported++;
-      if (existing)
-        overwritten++;
     } catch (err) {
       errors.push(`${entity.name}: ${err instanceof Error ? err.message : String(err)}`);
     }
@@ -27116,6 +27136,9 @@ function buildRelevanceMap(entities) {
 function remember(args) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
+  return db2.transaction(() => rememberInTransaction(args, db2, kg)).immediate();
+}
+function rememberInTransaction(args, db2, kg) {
   const existing = db2.prepare("SELECT id, namespace FROM entities WHERE name = ?").get(args.name);
   const entityId = kg.createEntity(args.name, args.type, {
     observations: args.observations,
@@ -27657,9 +27680,13 @@ function getProductImprovementStatus(db2, proposalId) {
 
 // dist/core/dreamer.js
 var COMPACT_MIN_CLUSTER_SIZE = 5;
+var COMPACT_MAX_CLUSTER_SIZE = 100;
 var COMPACT_TIME_WINDOW_DAYS = 7;
 var COMPACT_MIN_SIGNAL = 0.2;
 var COMPACT_MAX_SIGNAL = 0.7;
+var TRANSCRIPT_PACKAGE_MAX_TURNS = 100;
+var TRANSCRIPT_PACKAGE_SOURCE_BYTES = 48 * 1024;
+var WORK_PACKAGE_MAX_BYTES = 64 * 1024;
 var COMPACTABLE_TYPES = /* @__PURE__ */ new Set([
   "commit",
   "session_keypoint",
@@ -27836,9 +27863,9 @@ function executeWorkPackage(db2, input, context = {}) {
         const turns = parseVisibleConversation(snapshot.bytes).map((turn) => ({ ...turn, text: redactSecrets(turn.text) }));
         const sources = [];
         let sourceBytes = 2;
-        for (let i = turns.length - 1; i >= 0 && sources.length < 100; i--) {
+        for (let i = turns.length - 1; i >= 0 && sources.length < TRANSCRIPT_PACKAGE_MAX_TURNS; i--) {
           const size = Buffer.byteLength(JSON.stringify(turns[i])) + (sources.length > 0 ? 1 : 0);
-          if (sourceBytes + size > 49152)
+          if (sourceBytes + size > TRANSCRIPT_PACKAGE_SOURCE_BYTES)
             break;
           sources.push(turns[i]);
           sourceBytes += size;
@@ -27866,7 +27893,7 @@ function executeWorkPackage(db2, input, context = {}) {
           trust: "untrusted",
           selection_mode: "newest_session"
         };
-        if (Buffer.byteLength(JSON.stringify(pkg)) > 65536)
+        if (Buffer.byteLength(JSON.stringify(pkg)) > WORK_PACKAGE_MAX_BYTES)
           continue;
         if (input.action !== "prepare" && (input.package_id !== id || !sameWorkPackageRef(input.ref, ref)))
           continue;
@@ -27895,7 +27922,7 @@ function executeWorkPackage(db2, input, context = {}) {
     const candidates = digestCandidates(db2, project);
     const clusters = [...groupByIsoWeek(candidates)].map(([key, entities]) => ({ project, key, entities }));
     for (const cluster of clusters) {
-      if (cluster.entities.length < COMPACT_MIN_CLUSTER_SIZE || cluster.entities.length > 100)
+      if (cluster.entities.length < COMPACT_MIN_CLUSTER_SIZE || cluster.entities.length > COMPACT_MAX_CLUSTER_SIZE)
         continue;
       const sources = [...cluster.entities].sort((a, b) => a.id - b.id).map(({ id: id2, name, type, observations }) => ({ id: id2, name, type, observations }));
       const identity = sources.map((source) => ({
@@ -27920,7 +27947,7 @@ function executeWorkPackage(db2, input, context = {}) {
         trust: "untrusted",
         selection_mode: "calendar"
       };
-      if (Buffer.byteLength(JSON.stringify(pkg), "utf8") > 65536)
+      if (Buffer.byteLength(JSON.stringify(pkg), "utf8") > WORK_PACKAGE_MAX_BYTES)
         continue;
       if (input.action !== "prepare" && (id !== input.package_id || !sameWorkPackageRef(ref, input.ref)))
         continue;
@@ -29383,6 +29410,7 @@ var workPackageIdentity = {
   package_id: external_exports.string().regex(/^[a-f0-9]{64}$/),
   ref: external_exports.discriminatedUnion("kind", [digestWorkPackageRef, transcriptWorkPackageRef])
 };
+var WORK_PACKAGE_RESULT_MAX_BYTES = 16 * 1024;
 var WorkPackageSchema = external_exports.discriminatedUnion("action", [
   external_exports.object({ action: external_exports.literal("prepare"), project: workPackageText, kind: external_exports.enum(["digest", "transcript"]) }).strict(),
   external_exports.object({
@@ -29393,7 +29421,7 @@ var WorkPackageSchema = external_exports.discriminatedUnion("action", [
       type: external_exports.enum(["digest", "decision", "lesson_learned", "fact"]),
       observations: external_exports.array(observationField).min(1).max(100),
       tags: external_exports.array(workPackageText.refine((tag) => !tag.startsWith("project:"), "project tags are server-owned")).min(1).max(50)
-    }).strict().refine((result) => Buffer.byteLength(JSON.stringify(result), "utf8") <= 16384, "output_too_large")
+    }).strict().refine((result) => Buffer.byteLength(JSON.stringify(result), "utf8") <= WORK_PACKAGE_RESULT_MAX_BYTES, "output_too_large")
   }).strict().refine((input) => input.ref.kind === "digest" === (input.result.type === "digest"), "result type must match work kind"),
   external_exports.object({
     action: external_exports.literal("defer"),

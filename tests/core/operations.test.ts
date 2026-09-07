@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { remember, recall, forget, learn, importMemories, setPinned } from '../../src/core/operations.js';
 import { getDatabase } from '../../src/db.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
@@ -164,6 +164,65 @@ describe('Core Operations: remember', () => {
     const found = all.find(e => e.name === 'v1');
     expect(found).toBeDefined();
     expect(found?.archived).toBe(true);
+  });
+
+  it('rolls back source, relation, and target archive when the FTS delete fails', () => {
+    remember({
+      name: 'atomic-old',
+      type: 'decision',
+      observations: ['quokka legacy choice'],
+    });
+
+    const db = getDatabase();
+    const old = db
+      .prepare('SELECT id, status FROM entities WHERE name = ?')
+      .get('atomic-old') as { id: number; status: string };
+    expect(old.status).toBe('active');
+    expect(
+      db.prepare('SELECT COUNT(*) AS c FROM entities_fts WHERE rowid = ?').get(old.id),
+    ).toEqual({ c: 1 });
+
+    let injected = false;
+    const realPrepare = db.prepare.bind(db);
+    (db as { prepare: typeof db.prepare }).prepare = ((sql: string) => {
+      if (!injected && /INSERT INTO entities_fts \(entities_fts, rowid/.test(sql)) {
+        injected = true;
+        throw new Error('injected supersede FTS delete failure');
+      }
+      return realPrepare(sql);
+    }) as typeof db.prepare;
+    const warnings: string[] = [];
+    const stderr = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        warnings.push(String(chunk));
+        return true;
+      });
+
+    try {
+      expect(() => remember({
+        name: 'atomic-new',
+        type: 'decision',
+        observations: ['replacement choice'],
+        relations: [{ to: 'atomic-old', type: 'supersedes' }],
+      })).toThrow('injected supersede FTS delete failure');
+    } finally {
+      stderr.mockRestore();
+      (db as { prepare: typeof db.prepare }).prepare = realPrepare;
+    }
+
+    expect(injected).toBe(true);
+    expect(warnings.some((warning) => warning.includes('removeFromFts'))).toBe(true);
+    expect(
+      db.prepare('SELECT status FROM entities WHERE id = ?').get(old.id),
+    ).toEqual({ status: 'active' });
+    expect(
+      db.prepare('SELECT COUNT(*) AS c FROM entities_fts WHERE rowid = ?').get(old.id),
+    ).toEqual({ c: 1 });
+    expect(db.prepare('SELECT id FROM entities WHERE name = ?').get('atomic-new')).toBeUndefined();
+    expect(db.prepare('SELECT COUNT(*) AS c FROM relations').get()).toEqual({ c: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS c FROM entities_fts').get()).toEqual({ c: 1 });
+    expect(recall({ query: 'quokka' }).map((entity) => entity.name)).toEqual(['atomic-old']);
   });
 
   it('promotes imported memories back to trusted after local remember', () => {

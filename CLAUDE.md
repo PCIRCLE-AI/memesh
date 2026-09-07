@@ -80,8 +80,8 @@ side of it.
 
 Do not report a test result, a CI status or a benchmark number you did not
 produce in this session. Paste the runner's actual output. `npm run verify:release` is the same gate the publish path runs, and
-`scripts/check-doc-claims.mjs` — which it calls — checks every claim the public
-documents make about the code.
+`scripts/check-doc-claims.mjs` — which it calls — checks selected source-derived
+documentation contracts. Other descriptions still need source-backed review.
 
 **Read the exit code, not a grep of the output.** `cmd 2>&1 | grep …` returns
 *grep's* status and hides every line the pattern misses. Vitest prints
@@ -170,8 +170,9 @@ Rules that hold in both modes:
   release notes. The repository carries only what reproduces shipped
   behaviour: source, tests, schemas, configuration, and the public docs
   above. (This is also why this file is a pointer.)
-- **Docs move with the change** — a capability the docs do not describe, or
-  describe wrongly, fails `check-doc-claims` and is not done.
+- **Docs move with the change** — selected source-derived contracts are enforced
+  by `check-doc-claims`; the rest still require source-backed review. A
+  capability the docs omit or describe wrongly is not done.
 
 ### Git
 

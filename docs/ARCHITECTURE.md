@@ -59,19 +59,19 @@ MeMesh separates concerns into two layers:
 - `operations.ts` — `remember`, `recall`, `forget`, `export`, `import` as pure functions called by all transports
 - `agent-messaging.ts` — transactional exact-recipient messages, opaque cursors, bounded waits, payload fetch, a 64 KiB JSON-encoded durable payload cap, and independent receipt facts
 - `agent-router.ts` — owner-private local routing from a durable message event to an eligible active host adapter, plus a bounded project-scoped directory of live registrations; native delivery carries one untrusted full envelope capped at 16 KiB, including routing metadata and payload
-- `config.ts` — local config management; exports `logCapabilities()` for startup logging
+- `config.ts` — owner-local configuration reads and partial updates for the retained non-model settings
 - `paths.ts` — centralised filesystem path resolution (HOME-first override; shared with hooks via a build-generated copy in `scripts/hooks/_generated/`)
 - `scoring.ts` — multi-factor scoring engine: weights search relevance, recency, frequency, confidence, recall-impact; exports `rankEntities()` used by all recall paths
 - `dreamer.ts` — work-package preparation plus the shared proposal list/detail/accept/reject lifecycle. Digest candidates use deterministic calendar buckets; transcript packages expose only bounded visible turns from the newest Claude Code session under the host-provided MCP workspace root. Submission retains those redacted turns for review, stages one proposal, and never applies it.
-- `kg-backfill.ts` — deterministic relation backfill: 4 rules (tag co-occurrence, project clustering, session co-occurrence, name-token similarity)
+- `kg-backfill.ts` — deterministic relation backfill: 5 rules (tag co-occurrence, project clustering, session co-occurrence, name-token similarity, and evidence-to-work linking)
 - `project-tags.ts` — list / merge / rename `project:<name>` tags AND the `project` scope column of the durable-message tables, in one transaction (heals tags mis-homed before git-based project identity, and the split inboxes that go with them); backs `memesh kg rename-project`
 - `agent-scope-id.ts` — the canonical form (Unicode NFC + trim) and fail-closed validation for durable-message scope identifiers (`project`, `recipient`, `actor`), plus the one list of columns that hold them; imported by the transport boundary and core write path, and mirrored by the read-only `scripts/audit/memory-invariants.mjs` detector. Historical ambiguous identities are preserved until an owner supplies a mapping.
 - `version-check.ts` — npm registry version check for update notifications
 - `why.ts` — file attribution (`memesh why` / `POST /v1/why`): a git half (`resolveFileCommits`, CLI-only — the HTTP route never shells out) and a DB half (`explainCommits`) joining full SHAs to the abbreviated-hash `commit-*` entity names, walking `metadata.session_id` to session entities, and collecting `file:<basename>`-tagged memories; every gap is a typed abstention
 
 **Transports** (`src/transports/`) — thin adapters that expose core operations:
-- `cli/cli.ts` — Commander CLI (`memesh` command, 25 top-level commands; `message`, `agent`, `config`, `kg`, and `dream` have subcommands)
-- `http/server.ts` — Express REST API server (`memesh serve`, default port 3737, 32 endpoints, bearer-auth gate when bound non-loopback)
+- `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, and `dream` have subcommands)
+- `http/server.ts` — Express server (`memesh serve`, default port 3737): 30 `/v1` endpoints including two retired 410 routes, plus `/dashboard` and `/favicon.ico`; bearer-auth gate when bound non-loopback
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that records cooperative transport provenance (not authenticated human/model identity) and never turns a read into a receipt
 - `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
 
@@ -87,7 +87,7 @@ src/
 │   ├── types.ts           # Shared types (zero external deps)
 │   ├── operations.ts      # remember/recall/forget/learn + re-exports export/import
 │   ├── serializer.ts      # Export/import memory snapshots (extracted from operations)
-│   ├── config.ts          # Local config management + logCapabilities()
+│   ├── config.ts          # Owner-local reads and safe partial updates for retained non-model settings
 │   ├── paths.ts           # Centralised path helpers (homeDir, memeshDir, getDbPath, getProjectName)
 │   ├── scoring.ts         # Multi-factor scoring engine (rankEntities) + SESSION_START_WEIGHT_RATIO
 │   ├── extractor.ts       # Deterministic session knowledge extraction
@@ -109,7 +109,7 @@ src/
 ├── host-adapters/         # Native Claude/Codex adapters; ACP remains experimental and not release-gated
 ├── host-runtime/          # Private-router connection and managed host runtime
 ├── mcp/
-│   ├── server.ts          # MCP stdio server (logs capabilities on startup)
+│   ├── server.ts          # MCP stdio server (opens the database and registers tool handlers)
 │   └── tools.ts           # Re-export shim → transports/mcp/handlers.ts
 └── transports/
     ├── schemas.ts         # Shared Zod validation schemas (single source of truth)
@@ -132,7 +132,7 @@ src/
 
 **operations.ts** — Pure functions implementing `remember`, `recall`, `forget`, `learn`, and others. All three transports delegate here — no transport-specific logic leaks into business logic.
 
-**config.ts** — Local config management. `logCapabilities()` reports non-secret runtime capabilities to stderr on server startup (safe for MCP stdio transport). The on-disk config path is resolved lazily via `paths.ts:memeshDir()` so HOME-first override works in hermetic Windows tests.
+**config.ts** — Owner-local configuration management for `autoCapture`, `sessionLimit`, `autoUpdate`, and `setupCompleted`. Reads select only those retained fields; partial updates preserve unknown or retired top-level data without reading or printing credential values, and refuse to overwrite an unreadable file. The on-disk config path is resolved lazily via `paths.ts:memeshDir()` so HOME-first override works in hermetic Windows tests.
 
 **paths.ts** — Centralised filesystem path resolution. Exports `homeDir()` (HOME-env-first override for testability), `memeshDir()` (MEMESH_DIR > `<home>/.memesh`), `getDbPath()` (MEMESH_DB_PATH > `<memeshDir>/knowledge-graph.db`), `getMemeshDirFromDbPath()` (parent dir of active DB file, used for sibling state files), and `getProjectName(cwdInput?)`. Automatic project identity is `<readable repo label>~<32 hex>`: the suffix hashes a password-free remote locator when a network remote exists, otherwise the native real path of the primary Git root or non-Git directory. Standard GitHub HTTPS and `git@github.com` spellings converge; generic SSH locators retain the login, absolute-versus-home-relative path semantics, and literal `.git` suffix so distinct repositories do not collide. This keeps one repo stable across clones, subdirectories, symlinks, and linked worktrees while isolating unrelated same-basename repositories. Results are resolved once per cwd and cached. Replaces 10+ inline `process.env.MEMESH_DB_PATH ?? path.join(os.homedir(), …)` patterns that had subtly different fallbacks. Hooks run the always-on capture path even when `dist/` is absent or stale (plugin-marketplace `--ignore-scripts`; source pull before build), so they cannot import the main `dist/` tree at will. Because `paths.ts` and `src/storage/fts-index.ts` are runtime-leaf modules, `npm run build` copies their compiled output to `scripts/hooks/_generated/` (via `scripts/generate-hook-core.mjs`); `_shared.js` imports that committed, version-locked copy. This replaces the former hand-mirror (the source of the P0 FTS drift): the copy is byte-locked to core and gated three ways — a CI `git diff` on rebuild, `tests/hooks/mirror-parity.test.ts`, and the `memesh doctor` manifest.
 
@@ -147,7 +147,7 @@ vector supplement, or model-powered query expansion to configure or diagnose.
 
 **patterns.ts** — User work patterns computation (shared by MCP `user_patterns` tool and HTTP `GET /v1/patterns`). `computePatterns()` queries the database for work schedule (hour/day distribution), tool preferences, focus areas, workflow metrics, strengths, and learning areas. Accepts optional `categories` filter array.
 
-**memory-tool.ts** — Executes Anthropic's `memory_20250818` tool against the knowledge graph. The tool is client-side: Claude requests file operations and the application performs them, and Anthropic's contract states that `/memories` is "a prefix that your handler maps onto real storage, such as a per-user directory or keys in a database". Here that storage is MeMesh, so a model using the plain Messages API gets search, ranking, decay, relations and namespaces underneath a file-shaped view. Each entity renders as one file whose lines are its observations, **ordered by observation id** — insertion order, never score, because `view` and the edit that follows it are separate turns and a hook writing in between would otherwise move the lines the model just read. Deliberately not a tenth MCP tool: the MCP surface serves an agent that already speaks MeMesh, this serves an application that speaks only the Messages API.
+**memory-tool.ts** — Executes Anthropic's `memory_20250818` tool against the knowledge graph. The tool is client-side: Claude requests file operations and the application performs them, and Anthropic's contract states that `/memories` is "a prefix that your handler maps onto real storage, such as a per-user directory or keys in a database". Here that storage is MeMesh, so a model using the plain Messages API gets search, ranking, decay, relations and namespaces underneath a file-shaped view. Each entity renders as one file whose lines are its observations, **ordered by observation id** — insertion order, never score, because `view` and the edit that follows it are separate turns and a hook writing in between would otherwise move the lines the model just read. Deliberately not an MCP tool: the MCP surface serves an agent that already speaks MeMesh, while this serves an application that speaks only the Messages API.
 
 **version-check.ts** — Queries the npm registry for the latest `@pcircle/memesh` version and emits an update notification if the installed version is behind.
 
@@ -196,8 +196,9 @@ Thin adapter: imports shared Zod schemas from `transports/schemas.ts`, validates
 
 | Tool | Schema | Handler |
 |------|--------|---------|
+| `work_package` | WorkPackageSchema | Delegates to `core/dreamer.executeWorkPackage()` with the MCP client's bounded workspace-root context |
 | `remember` | RememberSchema | Delegates to `operations.remember()` |
-| `recall` | RecallSchema | Delegates to `operations.recallEnhanced()` |
+| `recall` | RecallSchema | Delegates to `operations.recallWithConflicts()` (backed by `recallEnhanced()`) |
 | `forget` | ForgetSchema | Delegates to `operations.forget()` |
 | `export` | ExportSchema | Delegates to `operations.exportMemories()` |
 | `import` | ImportSchema | Delegates to `operations.importMemories()` |
@@ -210,7 +211,7 @@ Thin adapter: imports shared Zod schemas from `transports/schemas.ts`, validates
 
 ### transports/http/server.ts -- HTTP REST API Server
 
-Express server exposed via `memesh serve` (default port 3737; the endpoint count is stated once, in the module list above, and checked against `server.ts` by `scripts/check-doc-claims.mjs`). Delegates all operations to `core/operations`. Includes `GET /v1/analytics` for computed health score, 30-day timeline, value metrics, and cleanup suggestions. See [HTTP REST API](#http-rest-api) in the API Reference.
+Express server exposed via `memesh serve` (default port 3737; the endpoint count is stated once, in the module list above, and checked against `server.ts` by `scripts/check-doc-claims.mjs`). Delegates product operations to the shared core modules. `GET /v1/analytics` returns the health score and factors, memory-loop metric, critical-lesson counts, citation compliance, 30-day timeline, age matrix, and knowledge radar. See [HTTP REST API](api/API_REFERENCE.md#http-rest-api) in the API Reference.
 
 ### transports/cli/cli.ts -- CLI
 
@@ -291,7 +292,7 @@ Tool call: recall({query, tag, limit})
      -> KnowledgeGraph.search() — FTS5 keyword match
      -> rankEntities() applies multi-factor scoring (relevance, recency, frequency, confidence, impact)
      -> KnowledgeGraph.findConflicts() checks for contradicts relations among results
-  -> If conflicts: return {entities, conflicts}; else return Entity[]
+  -> Return {entities, retrieval}; add conflicts only when non-empty (never a bare array)
 ```
 
 ### Prepare agent-assisted memory (`work_package`)
@@ -313,18 +314,21 @@ the host supports choices, it may offer **Dispatch agent task**, **Later**, or
 **Don't suggest again**. The Dashboard cannot wake or dispatch an agent; it
 only reviews proposals that are already staged.
 
-### Delete knowledge (forget)
+### Archive knowledge or remove one observation (`forget`)
 
 ```
-Tool call: forget({name})
+Tool call: forget({name, observation?})
   -> Zod validation (ForgetSchema)
-  -> KnowledgeGraph.deleteEntity(name)
-     -> SELECT entity by name (return false if not found)
-     -> SELECT all observations for entity (needed for FTS5 delete)
-     -> Delete FTS5 entry (contentless delete requires original indexed values)
-     -> DELETE FROM entities (CASCADE handles observations, relations, tags)
-  -> Return {deleted: true/false}
+  -> with observation: KnowledgeGraph.removeObservation(name, observation)
+     -> Remove only the matching observation and rebuild that entity's FTS entry
+     -> Return {observation_removed, remaining_observations, entity_found}
+  -> without observation: KnowledgeGraph.archiveEntity(name)
+     -> Mark the entity archived and remove it from the active FTS index
+     -> Return {archived: true/false}
 ```
+
+`forget` never permanently deletes the entity. Archived rows remain recoverable
+and can still be included by the explicit archived-search path.
 
 ---
 
@@ -354,7 +358,7 @@ Foreign key cascades: deleting an entity automatically deletes its observations,
 
 ## Hook Architecture
 
-Hooks are defined in `hooks/hooks.json` and executed by Claude Code at specific lifecycle events.
+Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecycle events, while the separate Codex SessionStart companion registers eligible ordinary Codex CLI sessions.
 
 ### Hook Commands (9 hooks)
 
@@ -368,7 +372,7 @@ Hooks are defined in `hooks/hooks.json` and executed by Claude Code at specific 
 | pre-compact.js | PreCompact | Save knowledge before compaction |
 | user-prompt-intent.js | UserPromptSubmit | Detect "remember" intent (5 languages: en, es, fr, pt, zh-TW) and remind Claude to use mcp__memesh__remember |
 | guard-check.js | PreToolUse (Bash) | Fire accepted lesson-guards against the command about to run (warn-only; fires counted) |
-| codex-session.js | SessionStart (startup/resume, async) | Automatically register the exact live Codex thread on the current protocol-versioned router endpoint for bounded full-message native delivery; a matching owner-private config optionally overrides its project/principal |
+| codex-session.js | Codex SessionStart (startup/resume, async) | Automatically register an eligible exact live ordinary Codex CLI thread on the current protocol-versioned router endpoint for bounded full-message native delivery; a matching owner-private config optionally overrides its project/principal |
 
 ### Pre-Edit Recall (`scripts/hooks/pre-edit-recall.js`)
 
@@ -405,7 +409,7 @@ Hooks are defined in `hooks/hooks.json` and executed by Claude Code at specific 
 
 - **Trigger**: `Stop` event (when Claude finishes responding)
 - **Matcher**: `*` (all sessions)
-- **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) with deterministic rules and stores it as entities in the knowledge graph. It also reads `~/.memesh/last-session-injected.json` to track recall effectiveness — updates `recall_hits` (entity name found in transcript) or `recall_misses` (not found). Opt-out via `MEMESH_AUTO_CAPTURE=false`
+- **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) with deterministic rules and stores it as entities in the knowledge graph. It reads the newest exact-project injection record under the database directory's `sessions/` folder, strips hook-output echoes, and increments `recall_hits` only for explicit `[mem:id]` citations that match entities injected into that session. `recall_misses` stays unchanged because absence of a citation is not proof that the memory was unused. Opt-out via `MEMESH_AUTO_CAPTURE=false`
 
 ### Pre-Compact (`scripts/hooks/pre-compact.js`)
 
@@ -443,16 +447,16 @@ MeMesh supports three integration tiers:
 |------|--------|--------------------|
 | **Native plugin** | Claude Code | Plugin (`.claude-plugin/plugin.json` + 8 lifecycle hooks) |
 | | Hermes Agent | Native `MemoryProvider` plugin (Python ABC, convention-based discovery) |
-| | OpenClaw | Native memory-capability plugin (TypeScript, `api.registerMemoryCapability()`) |
+| | OpenClaw | Source-only native memory-capability plugin (TypeScript, `api.registerMemoryCapability()`); not published or runtime-verified |
 | **MCP server** | Claude Managed Agents | MCP connector (beta, via session config) |
 | | Claude Desktop | MCP server config |
 | | Codex CLI | Plugin-managed MCP server (`dist/mcp/server.js`), or manual `memesh-mcp` client config |
 | | Gemini CLI | MCP server (`memesh-mcp` in client config) |
 | | Cursor | MCP server (`memesh-mcp` in client config) |
 | | Custom apps | Direct stdio MCP connection |
-| **HTTP API** | Custom apps/scripts | HTTP REST API (`memesh serve`, 32 endpoints) |
+| **HTTP API** | Custom apps/scripts | `memesh serve`: documented `/v1` routes, plus `/dashboard` and `/favicon.ico` |
 
-See [docs/platforms/](../platforms/) for platform-specific integration guides.
+See [docs/platforms/](platforms/) for platform-specific integration guides.
 
 ### Anthropic API Feature Alignment
 
@@ -567,7 +571,7 @@ Session with errors
 
 ```
 type: "lesson_learned"
-name: "lesson-{project}-{errorPattern}" (upsert-safe; explicit `learn` without errorPattern → "lesson-{project}-{error-slug}")
+name: "lesson-{project}-{errorPattern}" (upsert-safe; explicit `learn` without errorPattern → "lesson-{project}-{readable-prefix}-{digest}")
 observations:
   - "Error: <what went wrong>"
   - "Root cause: <why>"

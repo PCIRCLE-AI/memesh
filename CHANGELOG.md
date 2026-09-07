@@ -6,10 +6,13 @@ All notable changes to MeMesh are documented here.
 
 ### Added
 
-- **Codex sessions now register automatically for exact-session delivery.**
-  Plugin startup and resume create thread-scoped live registrations on the
-  private local router, allowing an eligible active session to receive one
-  bounded native message while the durable inbox remains the recovery path.
+- **Automatic exact-session registration support for eligible ordinary Codex CLI plugin sessions.**
+  The packaged SessionStart companion accepts startup and resume on macOS or Linux,
+  creates a thread-scoped registration on the private local router, and allows an
+  eligible active session to receive one bounded native message while the durable
+  inbox remains the recovery path. The companion, manifest, and packaged harness are
+  release-gated; an actual Codex plugin-loader invocation remains a separate runtime
+  receipt and is not implied by those checks.
   Native acceptance, durable fetch, acknowledgement, and final disposition
   remain separate states with explicit size and unavailable-recipient errors.
 
@@ -31,6 +34,21 @@ All notable changes to MeMesh are documented here.
   fails closed when the workspace is missing or ambiguous. A staged proposal
   retains its bounded redacted turns and coverage so the Dashboard reviewer
   can compare the proposed memory with the evidence before accepting it.
+
+### Fixed
+
+- **Observation-level forget is atomic and preserves archived-index exclusion.**
+  Removing one observation now updates its source row and the contentless FTS5
+  index in one immediate transaction, so an index failure rolls the observation
+  deletion back. Removing an observation from an archived entity no longer
+  recreates a keyword-index row for that entity. Repeated identical observation
+  text removes one deterministic earliest row rather than every match. Real FTS
+  delete failures now also roll back the complete supersession, archived import,
+  or per-week noise-compression unit instead of leaving partial source state.
+  Clear, archive, hard-delete, memory rename, and weekly compression now resolve
+  the authoritative entity name and indexed observation text only after their
+  immediate write transaction begins, preventing a concurrent process from
+  leaving stale contentless-FTS tokens behind.
 
 ## [4.8.5] — 2026-09-05
 

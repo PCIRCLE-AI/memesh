@@ -89,7 +89,7 @@ Before deploying to production:
 - [x] Cooldown implementation reviewed (APPROPRIATE)
 - [ ] Test with live OpenClaw instance
 - [ ] Run A/B test (plugin on vs off) to verify no unintended side effects
-- [ ] Review MeMesh HTTP API auth model - see [API_REFERENCE.md](../../docs/api/API_REFERENCE.md#authentication) (currently assumes localhost-only)
+- [ ] Review the deployment's MeMesh HTTP API auth model — see [API_REFERENCE.md](../../docs/api/API_REFERENCE.md#authentication) (loopback needs no token; non-loopback requires bearer auth)
 - [ ] Consider rate limiting per agent (optional - cooldown provides basic protection)
 - [ ] Add audit logging for all memory operations (optional - implement at MeMesh API level)
 - [ ] Document security assumptions in deployment docs

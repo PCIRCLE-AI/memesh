@@ -1,6 +1,6 @@
 # Reproducing the MeMesh LongMemEval Benchmark
 
-Anyone — journalist, competitor, researcher — can reproduce these results in under 10 commands. Total time: ~10 seconds.
+Anyone — journalist, competitor, researcher — can reproduce these results in under 10 commands. Setup and dataset-download time varies; the benchmark execution itself is about 10 seconds on the reference run.
 
 The runner calls MeMesh's shipped retrieval path (`recallEnhanced()`), so what
 you measure here is what a `recall` call does. That was not true before 2026-07;
@@ -8,7 +8,7 @@ see RESULTS.md if you are comparing against an older figure.
 
 ## Prerequisites
 
-- Node.js >= 20.0.0
+- Node.js >= 22.13.0
 - ~500MB disk space (dataset)
 
 ## Step-by-step

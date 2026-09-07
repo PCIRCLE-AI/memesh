@@ -105,7 +105,7 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
 - **PostToolUse (ExitPlanMode|AskUserQuestion)** reminds you to `remember` a
   decision just made — once per tool per session. It only reminds; unlike
   the hooks above, it writes nothing to the graph itself.
-- **Stop** captures session knowledge and turns failures into lessons.
+- **Stop** captures bounded session evidence, including observed error/fix signals.
 - **PreCompact** saves important knowledge before history is compressed.
 - **UserPromptSubmit** detects "remember this" intent in the prompt.
 - **PreToolUse (Bash)** fires accepted lesson-guards: a fenced warning
@@ -123,12 +123,16 @@ actually get stored.
 On a host with no hooks (Gemini CLI, Cursor, an MCP-only setup, …) the loop is
 fully manual, and it is worth running.
 
-Codex CLI can be either. Wired as an MCP server it has no hooks, like the
-above. Installed as a plugin (`codex plugin add memesh@pcircle-memesh`) it
-reads the same `hooks/hooks.json` manifest Claude Code does and runs the same
-hook scripts, so the topology is injected for you there too. If you are unsure
-which one you are in, `memesh doctor` names it: the "Hooks wired into Claude
-Code" row says which plugin runtime it found.
+Codex CLI can be either. Wired only as an MCP server it has no hooks, so call
+`briefing` yourself. Installed as a plugin
+(`codex plugin add memesh@pcircle-memesh`) it wires the MCP server and the
+separate SessionStart companion. On macOS or Linux, an eligible ordinary Codex
+CLI startup or resume registers that exact active thread for native delivery.
+The companion does not run Claude Code's eight capture/recall hooks or prove
+that topology was injected. Do not assume Codex Desktop or an unattached task
+registered; confirm the exact live session with `message discover`.
+`memesh doctor` reports installation and local integration health, but it does
+not prove host acceptance or model-visible delivery.
 
 ## Working on this repository (contributing agents)
 

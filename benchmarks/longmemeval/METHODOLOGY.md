@@ -33,7 +33,7 @@ The adapter (`benchmarks/longmemeval/run.mjs`) maps the LongMemEval question for
 > **This changed in 2026-07, and the change matters for how you read older results.**
 > Until then the adapter carried its own `CREATE TABLE`, its own FTS5 query
 > construction and its own ranking. It measured that reimplementation, not the
-> product — and the two had drifted. §2.3 below used to document an OR-joined
+> product — and the two had drifted. [§2.3 below](#23-fts5-query-construction) used to document an OR-joined
 > query builder that only the adapter had; the shipped `search()` AND-joined its
 > terms and ordered by `e.id DESC` instead of by BM25 `rank`. On the same 500
 > questions the adapter scored 95.40% R@5 and the shipped path scored **5.20%**,
@@ -43,8 +43,8 @@ The adapter (`benchmarks/longmemeval/run.mjs`) maps the LongMemEval question for
 > no marker of their own. Which file measured what is recorded in
 > [`results/README.md`](results/README.md); files produced by the current runner
 > are the ones whose `run_info.measures` reads `"shipped_recall_path"`. The older
-> files do not describe the product at any version. See CHANGELOG `[Unreleased]`
-> and PR #78.
+> files do not describe the product at any version. See
+> [CHANGELOG 4.2.11](../../CHANGELOG.md#4211--2026-08-03) and PRs #78–#79.
 
 Key design decisions:
 
@@ -65,17 +65,20 @@ For each question, all haystack sessions are indexed as MeMesh entities:
 
 The adapter does not build the query. It passes the question text to
 `recallEnhanced()` unchanged, and `KnowledgeGraph.search()` turns it into an
-FTS5 expression via `buildQueryTerms()`:
+FTS5 expression via `buildMatchExpression()`:
 
-1. Normalize to NFC
-2. Split on `[^\p{L}\p{N}\p{M}]+` — the boundaries FTS5's own `unicode61`
-   tokenizer uses, so the query is cut the same way the index was
-3. Take up to `MAX_QUERY_TERMS` (32) terms
-4. Quote each term and join with `OR`
+1. Normalize to NFC, then segment unspaced scripts into the same bigram form
+   stored in the index.
+2. `tokenizeQuery()` keeps terms that begin with a Unicode letter or number and
+   may continue with letters, numbers, or combining marks.
+3. On corpora with at least 25 active rows, discard terms present in more than
+   50% of rows; if every term is common, retain the single rarest one.
+4. After that document-frequency guard, take up to `MAX_QUERY_TERMS` (32),
+   quote each survivor, and join them with `OR`.
 5. Order the matches by FTS5 `rank` (BM25) before `LIMIT`, then rank the
    survivors with the five-factor scorer
 
-Example: "How many properties did I view before making an offer?" →
+Example when the document-frequency guard removes none: "How many properties did I view before making an offer?" →
 `"How" OR "many" OR "properties" OR "did" OR "I" OR "view" OR "before" OR "making" OR "an" OR "offer"`
 
 The FTS5 tokenizer uses `unicode61 remove_diacritics 1` to normalize accented characters.
@@ -128,8 +131,9 @@ five-factor scorer. What it does not cover is everything a memory layer does
   unevenly accessed, and those factors then decide real orderings.
 - **Corpus scale.** Each haystack is ~50 sessions. Real bases are thousands of
   entities, where `LIMIT` binds much harder and term frequency behaves differently.
-- **Everything that is not retrieval**: auto-capture, consolidation, knowledge
-  evolution and conflict detection, auto-tagging, relation traversal.
+- **Everything that is not retrieval**: deterministic hook capture,
+  work-package preparation and staging, human proposal review, knowledge
+  evolution and conflict detection, and relation backfill/traversal.
 - **Answer correctness.** No LLM answers anything. The score is whether the
   session containing the answer came back, not whether the answer is right.
 

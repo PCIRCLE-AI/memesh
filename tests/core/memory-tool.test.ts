@@ -19,12 +19,13 @@
  *   3. The six commands, each against the database rather than against a
  *      return value.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
+import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import {
   handleMemoryCommand,
   MEMORY_TOOL_DEFINITION,
@@ -195,6 +196,43 @@ describe('Feature: memory_20250818 over the knowledge graph', () => {
 
       expect(observationsOf('multi'), 'a memory was split in half at a line boundary')
         .toEqual(['line one\nline two', 'inserted', 'a second memory']);
+    });
+
+    it('starts the observation rewrite with an immediate outer transaction', () => {
+      seed('locked-edit', ['first', 'second']);
+      const db = getDatabase();
+      const originalTransaction = db.transaction.bind(db);
+      const modes: string[] = [];
+      const transaction = vi.spyOn(db, 'transaction').mockImplementation((body) => {
+        const inner = originalTransaction(body);
+        const wrapped = ((...args: unknown[]) => {
+          modes.push('deferred');
+          return inner(...args);
+        }) as typeof inner;
+        wrapped.immediate = (...args: unknown[]) => {
+          modes.push('immediate');
+          return inner.immediate(...args);
+        };
+        return wrapped;
+      });
+
+      try {
+        const result = handleMemoryCommand({
+          command: 'insert',
+          path: file('locked-edit'),
+          insert_line: 1,
+          insert_text: 'between',
+        });
+        expect(result.isError).toBe(false);
+      } finally {
+        transaction.mockRestore();
+      }
+
+      expect(modes[0]).toBe('immediate');
+      // Nested createEntity still uses its normal savepoint wrapper. The first
+      // mode is the lock boundary that matters: once the outer transaction is
+      // immediate, nested wrappers cannot reopen a deferred top-level unit.
+      expect(observationsOf('locked-edit')).toEqual(['first', 'between', 'second']);
     });
   });
 
@@ -516,6 +554,50 @@ describe('Feature: memory_20250818 over the knowledge graph', () => {
       // Contentless FTS5 punishes a delete issued with the wrong text by
       // leaving the index inconsistent, and that damage is invisible until a
       // later query returns nothing. Ask the table directly.
+      expect(() =>
+        getDatabase().exec("INSERT INTO entities_fts(entities_fts) VALUES('integrity-check')")
+      ).not.toThrow();
+    });
+
+    it('takes the source and FTS snapshot only after the immediate rename transaction begins', () => {
+      seed('obsoleteoldtoken', ['alphaold']);
+      const db = getDatabase();
+      const originalTransaction = db.transaction.bind(db);
+      let injected = false;
+      const transaction = vi.spyOn(db, 'transaction').mockImplementation((body) => {
+        if (!injected) {
+          injected = true;
+          const other = new Database(path.join(dir, 'test.db'));
+          try {
+            other.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+            new KnowledgeGraph(other).createEntity('obsoleteoldtoken', 'note', {
+              observations: ['betanew'],
+              namespace: 'personal',
+            });
+          } finally {
+            other.close();
+          }
+        }
+        return originalTransaction(body);
+      });
+
+      let result;
+      try {
+        result = handleMemoryCommand({
+          command: 'rename',
+          old_path: file('obsoleteoldtoken'),
+          new_path: file('currentnewtoken'),
+        });
+      } finally {
+        transaction.mockRestore();
+      }
+
+      expect(injected).toBe(true);
+      expect(result!.isError).toBe(false);
+      expect(observationsOf('currentnewtoken')).toEqual(['alphaold', 'betanew']);
+      const kg = new KnowledgeGraph(getDatabase());
+      expect(kg.search('betanew').map((entity) => entity.name)).toEqual(['currentnewtoken']);
+      expect(kg.search('obsoleteoldtoken')).toEqual([]);
       expect(() =>
         getDatabase().exec("INSERT INTO entities_fts(entities_fts) VALUES('integrity-check')")
       ).not.toThrow();

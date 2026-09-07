@@ -20,10 +20,11 @@ import { describe, it, expect, vi } from 'vitest';
 import { getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { compressWeeklyNoise } from '../../src/core/lifecycle.js';
-import { removeFromFts } from '../../src/storage/fts-index.js';
+import { indexedObservationText, insertFtsRow, removeFromFts } from '../../src/storage/fts-index.js';
+import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
-useTestDatabase('memesh-archived-index-');
+const fixture = useTestDatabase('memesh-archived-index-');
 
 /** Rows the keyword index holds for an entity id. Contentless FTS5 hides its
  *  columns but not its rowids, so this counts DOCUMENTS, which is the unit the
@@ -100,6 +101,106 @@ describe('compressWeeklyNoise removes archived entities from FTS (D12)', () => {
     expect(kg.search('survivortoken')).toHaveLength(1);
     expect(kg.search('survivortoken').map((e) => e.name)).toEqual(['decision-keep-me']);
   });
+
+  it('rolls back the weekly summary and every source when one FTS archive delete fails', () => {
+    const db = getDatabase();
+    db.exec("DELETE FROM memesh_metadata WHERE key = 'last_noise_compress_at'");
+    seedOldNoise(db, 25);
+
+    let injected = false;
+    const failingDb = new Proxy(db, {
+      get(target, prop) {
+        if (prop === 'prepare') return (sql: string) => {
+          if (!injected && /INSERT INTO entities_fts \(entities_fts, rowid/.test(sql)) {
+            injected = true;
+            throw new Error('injected archive FTS delete failure');
+          }
+          return target.prepare(sql);
+        };
+        const value = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as typeof db;
+    const warnings: string[] = [];
+    const spy = vi
+      .spyOn(process.stderr, 'write')
+      .mockImplementation((chunk: string | Uint8Array) => {
+        warnings.push(String(chunk));
+        return true;
+      });
+
+    try {
+      expect(() => compressWeeklyNoise(failingDb)).toThrow('injected archive FTS delete failure');
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(injected).toBe(true);
+    expect(warnings.some((warning) => warning.includes('removeFromFts'))).toBe(true);
+    expect(db.prepare("SELECT COUNT(*) AS c FROM entities WHERE type = 'weekly-summary'").get())
+      .toEqual({ c: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS c FROM entities WHERE type = 'commit' AND status = 'active'").get())
+      .toEqual({ c: 25 });
+    expect(db.prepare(`SELECT COUNT(*) AS c FROM entities_fts f
+      JOIN entities e ON e.id = f.rowid
+      WHERE e.type = 'commit' AND e.status = 'active'`).get()).toEqual({ c: 25 });
+    expect(db.prepare("SELECT value FROM memesh_metadata WHERE key = 'last_noise_compress_at'").get())
+      .toBeUndefined();
+  });
+
+  it('selects each weekly source only after its immediate archive transaction begins', () => {
+    const db = getDatabase();
+    db.exec("DELETE FROM memesh_metadata WHERE key = 'last_noise_compress_at'");
+    seedOldNoise(db, 25);
+    const originalTransaction = db.transaction.bind(db);
+    let injected = false;
+    const racingDb = new Proxy(db, {
+      get(target, prop) {
+        if (prop === 'transaction') return (body: () => unknown) => {
+          if (!injected) {
+            injected = true;
+            const other = new Database(fixture.dbPath);
+            try {
+              const from = 'commit-noise-0';
+              const to = 'commit-noise-renamed';
+              const row = other.prepare('SELECT id, title FROM entities WHERE name = ?').get(from) as {
+                id: number;
+                title: string | null;
+              };
+              const observations = indexedObservationText(other, row.id);
+              other.transaction(() => {
+                removeFromFts(other, row.id, from, observations, row.title);
+                other.prepare('UPDATE entities SET name = ? WHERE id = ?').run(to, row.id);
+                insertFtsRow(other, row.id, to, observations, row.title);
+              }).immediate();
+            } finally {
+              other.close();
+            }
+          }
+          return originalTransaction(body);
+        };
+        const value = Reflect.get(target, prop);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as typeof db;
+
+    const result = compressWeeklyNoise(racingDb);
+
+    expect(injected).toBe(true);
+    expect(result.compressed).toBe(25);
+    const renamed = db.prepare('SELECT id, status FROM entities WHERE name = ?').get(
+      'commit-noise-renamed',
+    ) as { id: number; status: string };
+    expect(renamed.status).toBe('archived');
+    expect(ftsRowCount(db, renamed.id)).toBe(0);
+    expect(
+      db.prepare("SELECT COUNT(*) AS c FROM entities_fts WHERE entities_fts MATCH 'renamed'").get(),
+      'the concurrent new-name token remained in the contentless index',
+    ).toEqual({ c: 0 });
+    expect(() =>
+      db.exec("INSERT INTO entities_fts(entities_fts) VALUES('integrity-check')")
+    ).not.toThrow();
+  });
 });
 
 describe('a re-remembered archived entity is searchable exactly once (D12)', () => {
@@ -157,10 +258,10 @@ describe('a re-remembered archived entity is searchable exactly once (D12)', () 
   });
 
   it('still works for an entity archived the clean way (no FTS row to delete)', () => {
-    // `removeFromFts` classes "no such rowid" as benign, so reading the
-    // previous text unconditionally must not break the path that already
-    // removed the row. Without this, the fix would trade one defect for a
-    // stderr warning on every re-remember of a properly archived memory.
+    // `removeFromFts` prechecks for an absent row, so reading the previous text
+    // unconditionally must not break the path that already removed the row.
+    // Without this, the fix would trade one defect for a stderr warning on
+    // every re-remember of a properly archived memory.
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
     kg.createEntity('note-clean', 'note', { observations: ['cleanpathtoken here'] });
@@ -202,12 +303,9 @@ describe('the contentless delete never runs without a row to delete', () => {
     removeFromFts(db, id, 'note-guarded', 'guardedtoken body', null);
     expect(ftsRowCount(db, id)).toBe(0);
 
-    // Asserted on stderr, not on a throw: `removeFromFts` is best-effort and
-    // swallows its own errors by contract (an index fault must not fail the
-    // user's write), so `not.toThrow()` passes whether the guard is there or
-    // not. The single warning line it writes for a non-benign error is the
-    // deterministic signal — and "database disk image is malformed" is
-    // deliberately NOT in the benign set.
+    // The precheck owns the idempotent no-row case. A genuine delete failure
+    // would be logged and rethrown so a caller transaction can roll back, but
+    // this second call never issues the contentless FTS delete at all.
     const warnings: string[] = [];
     const spy = vi
       .spyOn(process.stderr, 'write')

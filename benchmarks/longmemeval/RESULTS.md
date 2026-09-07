@@ -41,9 +41,10 @@ question, retrieve the relevant session(s) from a haystack of ~50 sessions.
 
 What that number is not: it is a keyword-retrieval score on a small, fresh
 corpus. Every database is new, so recency, frequency and recall-impact are
-uniform and only relevance does any work. Nothing here tests auto-capture,
-consolidation, knowledge evolution, or whether an answer is correct. See
-METHODOLOGY.md §3 — which used to claim this benchmark was a "conservative lower
+uniform and only relevance does any work. Nothing here tests deterministic
+hook capture, work-package staging, human proposal review, knowledge evolution,
+or whether an answer is correct. See
+[METHODOLOGY.md §3](METHODOLOGY.md#3-what-this-benchmark-does-and-does-not-cover) — which used to claim this benchmark was a "conservative lower
 bound" on production quality, a claim the 5.20% measurement disproved.
 
 Against published baselines (Supermemory ~82%, Zep 63.8%, Mem0 49%) and within
@@ -149,7 +150,7 @@ Dataset SHA256 `08d8dad4...` verified against the on-disk file and against
    recency, frequency, confidence and recall-impact are uniform across
    candidates and only the 0.30 relevance factor distinguishes anything. Those
    four factors matter in an aged memory base; this benchmark cannot see them.
-3. **What the number does not cover** is in METHODOLOGY.md §3 — and that section
+3. **What the number does not cover** is in [METHODOLOGY.md §3](METHODOLOGY.md#3-what-this-benchmark-does-and-does-not-cover) — and that section
    used to draw the opposite conclusion, calling this a "conservative lower
    bound" on production quality. It was not.
 
@@ -200,7 +201,8 @@ Dataset SHA256 `08d8dad4...` verified against the on-disk file and against
 - **Scale.** ~50 sessions per question. A real base is thousands, where `LIMIT`
   binds harder and term frequencies differ.
 - Cross-entity linking and knowledge graph retrieval.
-- Auto-capture, consolidation, knowledge evolution, conflict detection.
+- Deterministic hook capture, work-package staging, human proposal review,
+  knowledge evolution, conflict detection, and relation backfill/traversal.
 - Whether an answer is correct. No LLM answers anything here.
 
 Earlier versions of this section said the omitted scoring factors and LLM query
@@ -217,7 +219,7 @@ returned zero results**, and 18 of the 22 had the right session somewhere in the
 returned set, below position 5. The remaining 4 fell outside the top 10.
 Vocabulary mismatch is the recurring cause — the question's words do not appear
 in the session that answers it. The retired vector experiment tested that gap
-and did not improve the cut-off metrics (see METHODOLOGY.md §4.2). Current
+and did not improve the cut-off metrics (see [METHODOLOGY.md §4.2](METHODOLOGY.md#42-adapter-limitations)). Current
 MeMesh recall is FTS5-only.
 
 ### Dataset note

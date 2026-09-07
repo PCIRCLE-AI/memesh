@@ -107,6 +107,25 @@ const expectedArchitectureHooks = hookCommands.map((command) => (
 ));
 checkExact('docs/ARCHITECTURE.md hook commands', architectureHookNames, expectedArchitectureHooks);
 
+const cliSourceFiles = fs.readdirSync(path.join(root, 'src/cli'), { withFileTypes: true })
+  .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+  .map((entry) => entry.name)
+  .sort();
+const cliDirectoryLine = codemap.match(/^[├└]── cli\/\s+#\s+(.+)$/m)?.[1] ?? '';
+if (!cliDirectoryLine) errors.push('CODEMAP.md directory map has no src/cli entry');
+const documentedCliSources = [...cliDirectoryLine.matchAll(/(?:^|[ +])([A-Za-z0-9_-]+\.ts)(?=$|[ +])/g)]
+  .map((match) => match[1]);
+checkExact('CODEMAP.md src/cli TypeScript files', documentedCliSources, cliSourceFiles);
+
+const workPackageSection = codemap.match(/### Agent-assisted work packages \+ human review([\s\S]*?)(?=\n### )/m)?.[1] ?? '';
+if (!workPackageSection) errors.push('CODEMAP.md has no bounded agent-assisted work-package section');
+const documentedWorkPackageSymbol = workPackageSection.match(/`src\/core\/dreamer\.ts` \(`([A-Za-z0-9_]+)`\)/)?.[1];
+if (!documentedWorkPackageSymbol) {
+  errors.push('CODEMAP.md work-package section does not name its dreamer.ts export');
+} else if (!new RegExp(`export (?:async )?function ${documentedWorkPackageSymbol}\\b`).test(read('src/core/dreamer.ts'))) {
+  errors.push(`CODEMAP.md work-package symbol is not exported by src/core/dreamer.ts: ${documentedWorkPackageSymbol}`);
+}
+
 const messagingAnchors = [
   'src/core/agent-messaging.ts',
   'src/core/agent-router.ts',
@@ -148,5 +167,5 @@ if (errors.length) {
 }
 
 process.stdout.write(
-  `codemap-parity: PASS (${bins.length} bins, ${hookCommands.length} hook commands, ${messagingAnchors.length} messaging anchors)\n`,
+  `codemap-parity: PASS (${bins.length} bins, ${hookCommands.length} hook commands, ${cliSourceFiles.length} src/cli TypeScript files, ${messagingAnchors.length} messaging anchors)\n`,
 );

@@ -14,7 +14,7 @@ If your goal is cross-agent collaboration rather than memory alone, start with t
 | **Codex CLI** | Plugin (SessionStart + MCP, wired automatically) | `codex plugin marketplace add PCIRCLE-AI/memesh` → `codex plugin add memesh@pcircle-memesh`; global `memesh-mcp` remains a manual alternative | See root [README](../../README.md) |
 | **Gemini CLI** | MCP Server | `gemini mcp add -s user memesh memesh-mcp` (needs `npm install -g @pcircle/memesh`) | See root [README](../../README.md) |
 | **Other MCP coding agents (Cursor, Cline…)** | MCP Server | Point the client at `memesh-mcp` | See root [README](../../README.md) |
-| **Local agent messaging across hosts** | MCP / HTTP / CLI; bridge where required | Explicit exact-recipient local messaging today; host push/resume remains adapter work | [agent-messaging.md](./agent-messaging.md) |
+| **Local agent messaging across hosts** | MCP / HTTP / CLI; native path where documented | Explicit exact-recipient local messaging today; ordinary Codex CLI has active-session native delivery, while other host behavior remains adapter-specific | [agent-messaging.md](./agent-messaging.md) |
 | **Hermes Agent (NousResearch)** | Native `MemoryProvider` plugin | Drop `plugins/memory/memesh/` into a Hermes Agent checkout; `hermes memory setup memesh` | [hermes-agent.md](./hermes-agent.md) |
 | **OpenClaw** | Native memory plugin (source; not live-tested or published) | `openclaw plugins install @pcircle/openclaw-memory-memesh` when published, or drop into OpenClaw checkout; configure `plugins.slots.memory` | [openclaw.md](./openclaw.md) |
 | **Custom apps / scripts** | HTTP API | Run `memesh serve` and call `/v1/*` | [universal.md](./universal.md) |
@@ -119,7 +119,7 @@ Use MCP mode when the client supports MCP. Use HTTP mode when you control a loca
 ## 📚 Platform-Specific Guides
 
 - **[Hermes Agent (NousResearch)](./hermes-agent.md)** - Native `MemoryProvider` plugin, on par with MCP mode
-- **[OpenClaw](./openclaw.md)** - Native memory plugin (TypeScript), same tier as Hermes
+- **[OpenClaw](./openclaw.md)** - Source-only native memory plugin (TypeScript); not published or live-tested
 - **[Local Agent Messaging Guide](./agent-messaging.md)** - Durable local message lifecycle, recovery semantics, limits, and host matrix
 - **[ChatGPT / Custom GPTs](./chatgpt.md)** - HTTP API with custom instructions
 - **[Google Gemini](./gemini.md)** - HTTP API with system instructions
@@ -160,7 +160,7 @@ Use MCP mode when the client supports MCP. Use HTTP mode when you control a loca
 **MCP client not seeing tools**:
 - Verify the client is configured to run `memesh-mcp`
 - Run `memesh doctor` to verify the plugin MCP manifest (`.claude-plugin/mcp.json`), hooks, dashboard assets, local database, and install method
-- Run `memesh status` to confirm capabilities and update state
+- Run `memesh status` to confirm the install method and update state
 - Check the client logs for MCP server startup errors
 
 ---

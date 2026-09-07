@@ -4,7 +4,7 @@
 **Version**: 4.9.0
 **Compatibility**: Works with Claude Code plugins, Claude Managed Agents (via MCP connector), and any MCP-compatible client.
 
-**Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin) and OpenClaw (TypeScript memory-capability plugin) — same tier as their built-in backends, not HTTP bridges. See [docs/platforms/](../platforms/) for platform-specific guides.
+**Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
 
 ---
 
@@ -18,9 +18,13 @@ MeMesh exposes 12 tools via MCP.
 
 Prepare one bounded untrusted package, submit exactly one strictly validated result into pending human review, or defer without durable change. `kind: "digest"` selects a calendar cluster; `kind: "transcript"` selects visible turns from the newest Claude Code session associated with the client's single matching MCP workspace root. The same tool and existing proposal review path handle both kinds: this adds no relation kind and no second API or UI path.
 
-`prepare` returns at most one package (or `none_available`). The agent must either submit one result bound to the returned `package_id` and `ref`, or defer with a listed reason. `submit` only stages a `pending` proposal for human review; agents cannot apply or reject it. A package is untrusted evidence, and its hash identifies source freshness rather than authentication.
+`prepare` returns at most one package (or `none_available`). The agent must either submit one result bound to the returned `package_id` and `ref`, or defer with a listed reason. `submit` only stages a `pending` proposal for human review; agents cannot apply or reject it. A package is untrusted evidence, and its hash identifies source freshness rather than authentication. A transcript package selects the newest eligible session that is not already represented by a proposal.
 
 Transcript packages require the MCP client to support `roots/list` and supply exactly one canonical directory whose MeMesh project identity matches `project`. Missing, malformed, non-matching, or multiple matching roots fail closed as `workspace_unavailable` or `workspace_ambiguous`. Packages carry only visible user/assistant text, in chronological order, identify their source as `claude-code`, and disclose clipping through `coverage`. They never include hidden reasoning, tool inputs or outputs, a raw transcript, or a transcript file path. Neither kind exposes or uses an API key, LLM, embedding, or vector data; no provider is called.
+
+Transcript discovery considers files modified within the last 3 days. It refuses a directory with more than 256 transcript candidates, skips any individual source larger than 8 MiB, and returns `none_available` when eligible scan input exceeds 16 MiB. A transcript without a recorded cwd, or whose cwd does not match the selected workspace, is ineligible. From the selected transcript, the package retains at most the 100 most recent visible turns in chronological order and at most 48 KiB of serialized source turns. The complete returned package is capped at 64 KiB; the submitted result has its separate 16 KiB cap.
+
+Digest discovery considers the last 56 days of active, same-project evidence with these exact entity types: `commit`, `session_keypoint`, `session-insight`, `workflow_checkpoint`, `weekly-summary`, `weekly_summary`. It excludes pinned or already-compacted rows, consolidation depth 1 or greater, and signal scores outside 0.2–0.7. Candidates are grouped by ISO week; only complete groups of 5–100 sources whose returned package fits 64 KiB are eligible.
 
 **Input schema:**
 
@@ -735,6 +739,8 @@ Start: `memesh serve` (default: `localhost:3737`)
 
 Safety note: non-loopback binds are blocked by default. To expose the HTTP server beyond the local machine, you must pass `memesh serve --host 0.0.0.0 --allow-remote` or set `MEMESH_HTTP_ALLOW_REMOTE=true`.
 
+### Authentication
+
 **Authentication on a remote bind.** A non-loopback bind requires a bearer token on every `/v1` request — MeMesh generates one before it starts listening, so there is no unauthenticated window:
 
 | | |
@@ -776,24 +782,27 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/export | Export memories as JSON bundle |
 | POST | /v1/import | Import memories from JSON bundle with merge strategy |
 | POST | /v1/learn | Record structured lesson from mistake or discovery |
+| POST | /v1/message | Run one durable-message lifecycle action using the same schema as the MCP `message` tool |
 | POST | /v1/why | File attribution: join caller-resolved commit hashes to commit entities, their sessions, and file-tag memories |
 | GET | /v1/entities | List entities (pagination); supports `?type=<type>` and `?limit=<n>` |
 | GET | /v1/entities/:name | Get single entity |
-| GET | /v1/config | Get current config and detected capabilities |
+| GET | /v1/config | Get current supported non-model config fields |
 | GET | /v1/update-status | Current/latest package version, freshness state, and update guidance |
 | POST | /v1/config | Save supported non-model config fields as a partial update |
 | GET | /v1/stats | Aggregate counts: entities, observations, relations, tags; type/tag/status distributions |
 | GET | /v1/graph | Signal entities (all non-noise types) + up to 200 recent noise entities + all relations |
-| GET | /v1/graph?layer=work | The work layer only: decisions, lessons, plans — plus per-node evidence counts |
-| GET | /v1/graph/evidence?node=NAME | The evidence supporting one work node, loaded on drill-down |
-| GET | /v1/analytics | Health score, memory-loop metric, 30-day timeline, ageMatrix, knowledgeRadar |
+| GET | /v1/graph/evidence | Evidence supporting one work node; requires the `node` query parameter |
+| GET | /v1/analytics | Health score/factors, memory-loop metric, criticalLessons, citationCompliance, 30-day timeline, ageMatrix, knowledgeRadar |
+| GET | /v1/analytics/pm | Project-management velocity, flow, operational signals, and recommendations |
 | GET | /v1/patterns | User work patterns: schedule, tools, focus areas, workflow, strengths, learning |
+| GET | /v1/dream/proposals | List staged proposals for human review |
+| GET | /v1/dream/proposals/:id | Read one proposal and its retained evidence detail |
+| POST | /v1/dream/proposals/:id/accept | Human review action: accept and apply one pending proposal |
+| POST | /v1/dream/proposals/:id/reject | Human review action: reject one pending proposal |
 | POST | /v1/verify | **Retired** — answers `410 Gone`. Removed with the agentic-orchestration experiment. |
 | POST | /v1/demo/seed | Insert the demo tour dataset (entities tagged `metadata.demo = true`) |
 | POST | /v1/demo/reset | Remove every demo entity; all-or-nothing transaction |
 | GET | /v1/projects | Distinct projects from `project:*` tags and name-prefix heuristics, with per-project counts |
-| GET | /dashboard | Interactive web dashboard (HTML) |
-
 All responses: `{ success: true, data: ... }` or `{ success: false, errorCode: "...", error: "..." }`
 
 ### Stable error codes
@@ -843,7 +852,8 @@ already running locally, where it could open the database directly.
 
 ### GET /v1/config
 
-Returns the current non-model configuration and local capabilities.
+Returns the current supported non-model configuration fields that are present.
+Capability diagnosis belongs to `GET /v1/doctor`, not this response.
 
 **Response**:
 
@@ -853,14 +863,9 @@ Returns the current non-model configuration and local capabilities.
   "data": {
     "config": {
       "autoCapture": true,
-      "autoUpdate": true,
+      "autoUpdate": "minor",
       "sessionLimit": 20,
       "setupCompleted": true
-    },
-    "capabilities": {
-      "fts5": true,
-      "scoring": true,
-      "knowledgeEvolution": true
     }
   }
 }
@@ -881,13 +886,13 @@ Use `?cached=1` to read the cached state only. Without it, MeMesh prefers a fres
 {
   "success": true,
   "data": {
-    "currentVersion": "4.2.10",
-    "latestVersion": "4.2.11",
-    "checkedAt": "2026-04-24T10:15:00.000Z",
-    "lastAttemptAt": "2026-04-24T10:15:00.000Z",
-    "lastSuccessfulCheckAt": "2026-04-24T10:00:00.000Z",
+    "currentVersion": "4.9.0",
+    "latestVersion": "4.9.0",
+    "checkedAt": "2026-09-07T10:15:00.000Z",
+    "lastAttemptAt": "2026-09-07T10:15:00.000Z",
+    "lastSuccessfulCheckAt": "2026-09-07T10:00:00.000Z",
     "lastError": "npm unavailable",
-    "updateAvailable": true,
+    "updateAvailable": false,
     "checkSucceeded": false,
     "source": "cache",
     "freshness": "cached",
@@ -1021,13 +1026,15 @@ Returns computed analytics insights for the memory database.
   "data": {
     "healthScore": 72,
     "healthFactors": {
-      "activity": 50,
-      "quality": 80,
-      "freshness": 60,
-      "lessons": 100
+      "activity": { "score": 20, "weight": 30, "detail": "2/3 active entities accessed in last 30 days" },
+      "quality": { "score": 24, "weight": 30, "detail": "4/5 active entities with confidence > 0.7" },
+      "freshness": { "score": 8, "weight": 20, "detail": "2 new entities this week" },
+      "lessons": { "score": 20, "weight": 20, "detail": "5 lessons learned" }
     },
+    "criticalLessons": { "critical": 2, "severityTagged": 6, "total": 14 },
+    "citationCompliance": null,
     "timeline": [
-      { "day": "2026-04-01", "created": 5, "recalled": 12 }
+      { "date": "2026-09-01", "created": 5, "recalled": 12 }
     ],
     "loopMetric": {
       "reusedThisWeek": 12,
@@ -1046,7 +1053,7 @@ Returns computed analytics insights for the memory database.
 }
 ```
 
-> `valueMetrics`, `recallEffectiveness`, and `cleanup` were removed — they were computed on every request but never rendered by any dashboard component. The dashboard reads `healthScore`, `healthFactors`, `loopMetric`, `timeline`, `ageMatrix`, and `knowledgeRadar`.
+> `valueMetrics`, `recallEffectiveness`, and `cleanup` were removed — they were computed on every request but never rendered by any dashboard component. The dashboard reads `healthScore`, `healthFactors`, `loopMetric`, `criticalLessons`, `citationCompliance`, `timeline`, `ageMatrix`, and `knowledgeRadar`.
 
 **Health Score Algorithm:**
 - Activity (30%): percentage of active entities accessed in last 30 days
@@ -1454,7 +1461,8 @@ A Python SDK used to ship in this repository, and this page told you to
 `pip install memesh`. It was never published — PyPI answers 404 for that name —
 no workflow built it, no CI ran its tests, and it still called
 `POST /v1/consolidate`, which has answered `410 Gone` since 4.2.11. It is
-removed rather than repaired: an unpublished client covering 7 of 32 endpoints
+removed rather than repaired: an unpublished client covering only seven of the
+then-available HTTP routes
 is a promise this project was not keeping.
 
 ---

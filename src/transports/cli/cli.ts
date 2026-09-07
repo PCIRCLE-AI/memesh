@@ -2361,7 +2361,7 @@ program
   .description('Show MeMesh status')
   .option('--cached', 'Use cached update info only (skip fresh npm lookup)')
   .action(async (opts) => {
-    // Every other line below reports on capabilities, install channel and
+    // Every other line below reports on the install channel and
     // the update check — none of which touch the database — so a corrupt
     // or unreadable file was invisible here and `status` printed as though
     // everything were fine. `withDatabase` is the one open every other

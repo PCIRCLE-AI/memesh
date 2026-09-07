@@ -86,4 +86,5 @@ the adapter did, not as a statement about any version of MeMesh.
 `mode-C-*` additionally measured a 60/40 weighted FTS+vector fusion that MeMesh
 never implemented.
 
-See `../METHODOLOGY.md` §2 and CHANGELOG `[Unreleased]` / PR #78.
+See [METHODOLOGY §2](../METHODOLOGY.md#2-adapter-architecture) and
+[CHANGELOG 4.2.11](../../../CHANGELOG.md#4211--2026-08-03) / PRs #78–#79.
