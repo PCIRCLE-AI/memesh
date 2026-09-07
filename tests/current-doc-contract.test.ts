@@ -44,7 +44,7 @@ describe('current source-backed documentation contracts', () => {
     ['duplicate architecture route count', { architecture: `${baseline.architecture}\n30 \`/v1\` endpoints including two retired 410 routes\n` }, 'exactly once'],
     ['config capabilities return', { apiReference: baseline.apiReference.replace('"config": {', '"capabilities": {},\n    "config": {') }, 'data.config'],
     ['config enum type', { apiReference: baseline.apiReference.replace('"autoUpdate": "minor"', '"autoUpdate": true') }, 'autoUpdate'],
-    ['analytics factor type', { apiReference: baseline.apiReference.replace('"activity": { "score": 50, "weight": 30, "detail": "50% accessed in the last 30 days" }', '"activity": 50') }, 'healthFactors.activity'],
+    ['analytics factor type', { apiReference: baseline.apiReference.replace(/"activity": \{ "score": \d+, "weight": \d+, "detail": "[^"\n]+" \}/, '"activity": 50') }, 'healthFactors.activity'],
     ['analytics timeline key', { apiReference: baseline.apiReference.replace('{ "date": "2026-09-01", "created": 5, "recalled": 12 }', '{ "day": "2026-09-01", "created": 5, "recalled": 12 }') }, 'timeline'],
     ['analytics aliased return key', { analytics: baseline.analytics.replace('    knowledgeRadar,', '    knowledgeRadar,\n    extraField: true,') }, 'top-level keys differ'],
     ['nonexistent benchmark symbol', { methodology: baseline.methodology.replaceAll('buildMatchExpression()', 'buildQueryTerms()') }, 'buildMatchExpression'],
