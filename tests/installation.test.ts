@@ -205,6 +205,11 @@ describe('Installation Verification', () => {
       expect(install).toContain('No manual host setup is required');
       expect(guide).toContain('No manual `agent setup` is required');
       expect(guide).toContain('stopped, missing, disconnected, or replaced');
+      for (const document of [install, guide]) {
+        expect(document).toContain('complete `project`');
+        expect(document).toContain('memesh briefing --json');
+        expect(document).toContain('repository basename');
+      }
     });
   });
 

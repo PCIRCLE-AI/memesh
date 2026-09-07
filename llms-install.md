@@ -162,6 +162,12 @@ automatically after a later registration; the sender must retry deliberately.
 
 The following are separate managed-host paths:
 
+When pairing Claude Channel with an automatically registered Codex session,
+copy the complete `project` value from `memesh briefing --json` into the Claude
+setup command. Do not substitute the repository basename: automatic project
+identities include a collision-resistant suffix, and different project strings
+cannot discover or natively route to each other.
+
 ```bash
 memesh agent setup codex --project my-project --principal codex-recipient --workspace "$PWD"
 memesh-host-codex --config "$HOME/.memesh/hosts/codex.json"

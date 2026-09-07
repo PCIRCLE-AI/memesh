@@ -99,6 +99,11 @@ Optional declarations can be persisted with `--model <id>` and
 `--work-summary <text>` (each is capped at 200 characters); no defaults are guessed.
 For ordinary Codex only, `memesh agent setup codex-session ...` is an optional
 workspace-specific stable-principal override, not an activation prerequisite.
+When pairing Claude Channel with an automatically registered Codex session,
+use the complete `project` field returned by `memesh briefing --json` in the
+Claude setup command. A repository basename is not equivalent to the automatic
+collision-resistant project identity, and different project strings cannot
+discover or natively route to each other.
 
 ### Ordinary active Codex CLI session
 
