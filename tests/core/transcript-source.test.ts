@@ -191,6 +191,25 @@ describe('work-package source boundary', () => {
     expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
     expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 1 });
   });
+
+  it('revalidates the current transcript workspace boundary before revealing an existing proposal', () => {
+    writeSession(cwd, 'Use the smaller parser.');
+    const pkg = prepare().package as { id: string; ref: Extract<WorkPackageInput, { action: 'submit' }>['ref'] };
+    const submit = { action: 'submit' as const, package_id: pkg.id, ref: pkg.ref, result };
+    expect(execute(submit)).toMatchObject({ status: 'staged' });
+
+    const sameProjectElsewhere = path.join(root, 'elsewhere', project);
+    fs.mkdirSync(sameProjectElsewhere, { recursive: true });
+    const replay = (context: Parameters<typeof executeWorkPackage>[2]) => executeWorkPackage(db, submit, context);
+
+    expect(replay({})).toMatchObject({ status: 'error', error: 'workspace_unavailable' });
+    expect(replay({ transcriptWorkspaceError: 'workspace_unavailable' }))
+      .toMatchObject({ status: 'error', error: 'workspace_unavailable' });
+    expect(replay({ transcriptWorkspaceError: 'workspace_ambiguous' }))
+      .toMatchObject({ status: 'error', error: 'workspace_ambiguous' });
+    expect(replay({ transcriptWorkspace: fs.realpathSync(sameProjectElsewhere) }))
+      .toMatchObject({ status: 'error', error: 'project_mismatch' });
+  });
 });
 
 describe('transcript-source discovery', () => {

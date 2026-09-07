@@ -27334,8 +27334,8 @@ function transcriptMatchesProject(bytes, cwd) {
   const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString("utf8"));
   return sessionCwd !== null && sameProjectPath(sessionCwd, cwd);
 }
-function scanTranscripts(opts = {}) {
-  const cwd = opts.cwd && opts.cwd.length > 0 ? opts.cwd : process.cwd();
+function scanTranscripts(opts) {
+  const cwd = opts.cwd;
   const windowDays = opts.windowDays ?? 3;
   const now = opts.now ?? /* @__PURE__ */ new Date();
   const cutoffMs = now.getTime() - windowDays * 864e5;
@@ -27787,6 +27787,21 @@ function executeWorkPackage(db2, input, context = {}) {
       if (submitted && [submitted.name, ...submitted.observations, ...submitted.tags].some((s) => redactSecrets(s) !== s)) {
         return failure("secret_shaped_result");
       }
+    }
+    const cwd = kind === "transcript" ? context.transcriptWorkspace : void 0;
+    if (kind === "transcript" && context.transcriptWorkspaceError) {
+      return failure(context.transcriptWorkspaceError);
+    }
+    if (kind === "transcript" && !cwd)
+      return failure("workspace_unavailable");
+    if (cwd && project !== getProjectName(cwd))
+      return failure("project_mismatch");
+    const workspaceHash = cwd ? hash2({ version: "workspace-v1", workspace: cwd }) : void 0;
+    if (workspaceHash && input.action !== "prepare" && input.ref.kind === "transcript" && input.ref.workspace_hash !== workspaceHash) {
+      return failure("stale_package");
+    }
+    if (input.action !== "prepare") {
+      const submitted = input.action === "submit" ? input.result : void 0;
       const prior = db2.prepare(`
         SELECT id, status, proposed_digest FROM dream_proposals
         WHERE project = ? AND prompt_version = 'work-package-v1'
@@ -27801,18 +27816,6 @@ function executeWorkPackage(db2, input, context = {}) {
           return failure("submission_conflict");
         return { status: "existing", proposal_id: prior.id, proposal_status: prior.status, available_action: [] };
       }
-    }
-    const cwd = kind === "transcript" ? context.transcriptWorkspace : void 0;
-    if (kind === "transcript" && context.transcriptWorkspaceError) {
-      return failure(context.transcriptWorkspaceError);
-    }
-    if (kind === "transcript" && !cwd)
-      return failure("workspace_unavailable");
-    if (cwd && project !== getProjectName(cwd))
-      return failure("project_mismatch");
-    const workspaceHash = cwd ? hash2({ version: "workspace-v1", workspace: cwd }) : void 0;
-    if (workspaceHash && input.action !== "prepare" && input.ref.kind === "transcript" && input.ref.workspace_hash !== workspaceHash) {
-      return failure("stale_package");
     }
     if (cwd) {
       const represented = db2.prepare(`SELECT 1 FROM dream_proposals

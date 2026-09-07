@@ -350,7 +350,17 @@ async function main() {
                 observations: ['A local agent staged this visible transcript finding.'],
                 tags: ['project:dashboard-e2e'],
               },
-              source_ids: { sessionId: 'dashboard-e2e-session' },
+              source_ids: {
+                sessionId: 'dashboard-e2e-session',
+                source: { host: 'claude-code', scope: 'mcp-workspace-root' },
+                workspaceHash: 'a'.repeat(64),
+                coverage: { truncated: true, total_turns: 3, included_turns: 2 },
+                sources: [
+                  { role: 'user', text: 'Visible redacted evidence: ***REDACTED***' },
+                  { role: 'assistant', text: 'Bounded transcript conclusion.' },
+                ],
+                trust: 'untrusted',
+              },
               reason: null,
               reviewed_at: null,
             },
@@ -368,7 +378,6 @@ async function main() {
       await reviewPage.goto(`${dashboardUrl}?tab=Home`, { waitUntil: 'networkidle' });
       await expectVisible(reviewPage, 'Staged memory proposals');
       await expectVisible(reviewPage, 'The Dashboard reviews proposals that are already staged');
-      await expectVisible(reviewPage, 'Visible transcript');
       await expectVisible(reviewPage, 'dashboard-e2e-work-package');
       const acceptButton = reviewPage.getByRole('button', { name: 'Accept', exact: true });
       assert.equal(
@@ -385,6 +394,12 @@ async function main() {
       );
       releaseDetailResponse();
       await expectVisible(reviewPage, 'A local agent staged this visible transcript finding.');
+      const transcriptEvidence = reviewPage.getByTestId('transcript-source-evidence');
+      await transcriptEvidence.waitFor({ state: 'visible', timeout: 10000 });
+      await transcriptEvidence.getByText('Visible redacted evidence: ***REDACTED***', { exact: true })
+        .waitFor({ state: 'visible', timeout: 10000 });
+      await transcriptEvidence.getByText('Bounded transcript conclusion.', { exact: true })
+        .waitFor({ state: 'visible', timeout: 10000 });
       assert.equal(await acceptButton.isVisible(), true, 'Accept must appear after full proposal detail loads');
       assert.equal(await acceptButton.isEnabled(), true, 'Accept must be enabled after full proposal detail loads');
 

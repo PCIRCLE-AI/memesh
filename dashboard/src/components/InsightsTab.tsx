@@ -560,7 +560,7 @@ export function InsightsTab({
                   </div>
                 )}
                 {isTranscriptSourceEvidence(detail.source_ids) && (
-                  <div data-testid="transcript-source-evidence" style={{ marginTop: 12, padding: 10, background: 'var(--bg-2)', borderRadius: 8 }}>
+                  <div data-testid="transcript-source-evidence" style={{ marginTop: 12, padding: 10, background: 'var(--bg-2)', borderRadius: 'var(--radius)' }}>
                     <div style={{ color: 'var(--text-2)', fontSize: 12, marginBottom: 6 }}>
                       <strong>{t('insights.source.transcript')}</strong>{' '}
                       <code>{detail.source_ids.source.host}</code> · <code>{detail.source_ids.sessionId}</code> ·{' '}

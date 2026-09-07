@@ -27,9 +27,9 @@ export interface TranscriptSession {
     changedAtNanoseconds: string;
 }
 export interface ScanOptions {
-    cwd?: string;
+    cwd: string;
     windowDays?: number;
     now?: Date;
 }
-export declare function scanTranscripts(opts?: ScanOptions): TranscriptSession[];
+export declare function scanTranscripts(opts: ScanOptions): TranscriptSession[];
 //# sourceMappingURL=transcript-source.d.ts.map

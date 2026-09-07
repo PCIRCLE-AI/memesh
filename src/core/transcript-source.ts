@@ -143,16 +143,16 @@ export interface TranscriptSession {
 }
 
 export interface ScanOptions {
-  /** Project cwd whose transcripts to find. Defaults to process.cwd(). */
-  cwd?: string;
+  /** Project cwd whose transcripts to find. */
+  cwd: string;
   /** Only sessions modified within this many days. Default 3 (72h). */
   windowDays?: number;
   /** Test seam. */
   now?: Date;
 }
 
-export function scanTranscripts(opts: ScanOptions = {}): TranscriptSession[] {
-  const cwd = opts.cwd && opts.cwd.length > 0 ? opts.cwd : process.cwd();
+export function scanTranscripts(opts: ScanOptions): TranscriptSession[] {
+  const cwd = opts.cwd;
   const windowDays = opts.windowDays ?? 3;
   const now = opts.now ?? new Date();
   const cutoffMs = now.getTime() - windowDays * 86400_000;

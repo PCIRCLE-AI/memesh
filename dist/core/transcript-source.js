@@ -97,8 +97,8 @@ export function transcriptMatchesProject(bytes, cwd) {
     const sessionCwd = recordedCwd(bytes.subarray(0, 65536).toString('utf8'));
     return sessionCwd !== null && sameProjectPath(sessionCwd, cwd);
 }
-export function scanTranscripts(opts = {}) {
-    const cwd = opts.cwd && opts.cwd.length > 0 ? opts.cwd : process.cwd();
+export function scanTranscripts(opts) {
+    const cwd = opts.cwd;
     const windowDays = opts.windowDays ?? 3;
     const now = opts.now ?? new Date();
     const cutoffMs = now.getTime() - windowDays * 86400_000;

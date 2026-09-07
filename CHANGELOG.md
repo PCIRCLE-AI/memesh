@@ -2,7 +2,16 @@
 
 All notable changes to MeMesh are documented here.
 
-## [Unreleased]
+## [4.9.0] — 2026-09-07
+
+### Added
+
+- **Codex sessions now register automatically for exact-session delivery.**
+  Plugin startup and resume create thread-scoped live registrations on the
+  private local router, allowing an eligible active session to receive one
+  bounded native message while the durable inbox remains the recovery path.
+  Native acceptance, durable fetch, acknowledgement, and final disposition
+  remain separate states with explicit size and unavailable-recipient errors.
 
 ### Changed
 
