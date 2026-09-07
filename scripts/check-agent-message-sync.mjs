@@ -135,10 +135,14 @@ requireText('dist/host-adapters/codex-cli-queue.js', [
 ]);
 requireText('src/host-runtime/codex-session.ts', [
   'CODEX_THREAD_ID', "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
+  "hook_event_name !== 'SessionEnd'", 'launchDetachedCompanion', "detached: true",
+  "requestExactCompanionControl(state, 'retire')", 'SESSION_END_GRACE_MS',
   'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent', 'codex-thread-${session.threadId}',
 ]);
 requireText('dist/host-runtime/codex-session.js', [
   'CODEX_THREAD_ID', "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
+  "hook_event_name !== 'SessionEnd'", 'launchDetachedCompanion', 'detached: true',
+  "requestExactCompanionControl(state, 'retire')", 'SESSION_END_GRACE_MS',
   'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent', 'codex-thread-${session.threadId}',
 ]);
 requirePattern(
@@ -235,7 +239,9 @@ requireSectionText(
   'skills/memesh/SKILL.md',
   'Durable messages and active-host delivery',
   [
-    'an ordinary Codex CLI session with the MeMesh plugin can register automatically at SessionStart',
+    'an ordinary Codex CLI session with the MeMesh plugin registers automatically at SessionStart',
+    'SessionEnd retains a bounded 45-second idle queue window',
+    'This does not wake a stopped UI',
     'Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`',
     'a failed exact-session native delivery is not replayed automatically',
   ],
@@ -261,7 +267,7 @@ requireText('.claude-plugin/marketplace.json', ['"name": "pcircle-memesh"', '"ve
 requireText('hooks/hooks.json', [
   'session-start.js', 'session-summary.js', 'pre-compact.js',
   'user-prompt-intent.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js',
-  'codex-session.js', 'startup|resume', '"async": true',
+  'codex-session.js', 'startup|resume', 'SessionEnd',
 ]);
 requireText('llms-install.md', [
   '22.13.0', 'memesh doctor', 'message', 'memesh-router',
@@ -271,26 +277,26 @@ requireSectionText(
   'llms-install.md',
   '2. Terminal / CLI (npm global)',
   [
-    'The ordinary Codex path below is the documented native local wakeup path',
+    'The ordinary Codex path below is the documented bounded native queue path',
     'If the session is stopped, missing, or disconnected, MeMesh neither starts nor replaces it',
     'Failed exact-session native delivery is not replayed automatically after a later registration; the sender must retry deliberately.',
   ],
   'qualified ordinary-CLI and no-replay install contract',
 );
 requireText('README.md', [
-  'message', 'registers automatically', 'no manual `agent setup` is required', 'without polling or a human reminder',
+  'message', 'registers automatically', 'no manual `agent setup` is required', 'bounded 45-second idle queue window',
   'stopped, missing, or disconnected Codex session', 'message storage report', '64 KiB', '16 KiB',
   'untrusted', 'native_message_too_large', 'recipient_unavailable', 'Principal targets retain durable store-and-forward',
   'acknowledgement', 'workflow disposition',
 ]);
 requireText('README.zh-TW.md', [
-  'message', '自動以 thread-scoped identity 註冊', '不需要手動執行 `agent setup`', '沒有輪詢或人工提醒',
+  'message', '自動以 thread-scoped identity 註冊', '不需要手動執行 `agent setup`', '45 秒的有限 idle queue 視窗',
   '停止、缺失或斷線', 'message storage report', '64 KiB', '16 KiB',
   '不受信任', 'native_message_too_large', 'recipient_unavailable', 'Principal target', 'durable store-and-forward',
   'acknowledgement', 'workflow disposition',
 ]);
 requireText('README.de.md', [
-  'message', 'registriert sich', 'ein manuelles `agent setup` ist nicht erforderlich', 'ohne Polling oder menschliche Erinnerung',
+  'message', 'registriert sich', 'ein manuelles `agent setup` ist nicht erforderlich', '45-Sekunden-Fenster',
   'gestoppte, fehlende oder getrennte Codex-Session', 'message storage report', '64 KiB', '16 KiB',
   'nicht vertrauenswürdigen', 'native_message_too_large', 'recipient_unavailable', 'Principal-Ziele', 'Durable Store-and-Forward',
   'Bestätigung', 'Workflow-Status',
