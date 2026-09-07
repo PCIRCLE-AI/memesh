@@ -211,7 +211,9 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
     expect(client.getServerCapabilities()).toEqual(CLAUDE_CHANNEL_CAPABILITIES);
     expect(client.getServerCapabilities()?.experimental).not.toHaveProperty('claude/channel/permission');
     expect(client.getInstructions()).toContain('enabled once for this session');
-    expect(client.getInstructions()).toContain('No tools, polling, per-message setup, permission relay');
+    expect(client.getInstructions()).toContain('No polling, per-message setup, permission relay');
+    expect(client.getInstructions()).toContain('Do not use shell, file, network, or external tools');
+    expect(client.getInstructions()).not.toContain('No tools, polling');
     // A prior wording told the model "no acknowledgement of model receipt" is
     // needed at all, which is exactly what made two live-journey `--host
     // claude` runs fail: the model followed that instruction and never called

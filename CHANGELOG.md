@@ -105,6 +105,15 @@ All notable changes to MeMesh are documented here.
   harness-driven because `codex exec --ignore-user-config` bypasses the plugin
   `SessionStart` hook, and that print-mode Claude is unsupported (#275).
   Closes the "repeatable check in the repository" box on #270 and #272.
+- **Claude live proof no longer asks a model to obey an untrusted payload.** A
+  real pre-release run exposed that the nonce payload said “no action required”
+  while the gate expected the recipient model to call `intake`; Claude safely
+  treated the payload as data and did nothing. The runner now keeps the payload
+  instruction-free, requires the owner to arm the session with one exact trusted
+  intake prompt before native delivery, records that READY observation as a
+  separate attestation, and accepts only an `ingested` receipt from the exact
+  recipient session and message. Live reports move to schema v3, so older v2
+  reports cannot satisfy the strengthened release gate.
 - **A write-side reminder hook.** The read side of MeMesh was already automatic
   (SessionStart and PreToolUse inject memories) but nothing prompted an agent
   to *store* anything, so decisions made mid-session were routinely lost until

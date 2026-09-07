@@ -1,12 +1,17 @@
-export const LIVE_JOURNEY_SCHEMA_VERSION = 'memesh-live-journey/v2';
+export const LIVE_JOURNEY_SCHEMA_VERSION = 'memesh-live-journey/v3';
 export const LIVE_JOURNEY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const LIVE_JOURNEY_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 export const CLAUDE_PLUGIN_ISOLATION_CONFIRMATION = 'MEMESH_PLUGIN_ISOLATION_CONFIRMED';
+export const CLAUDE_MODEL_INTAKE_ARMING_CONFIRMATION = 'MEMESH_MODEL_INTAKE_ARMED';
 
 export const REQUIRED_REGISTRATION_EVIDENCE = Object.freeze({
   codex: Object.freeze({ source: 'codex_plugin_session_start', plugin_loader_verified: true }),
-  claude: Object.freeze({ source: 'interactive_development_channel', operator_attestation_recorded: true }),
+  claude: Object.freeze({
+    source: 'interactive_development_channel',
+    operator_attestation_recorded: true,
+    trusted_instruction_attested: true,
+  }),
 });
 
 export const REQUIRED_LIVE_JOURNEY_STEPS = Object.freeze({
@@ -30,6 +35,7 @@ export const REQUIRED_LIVE_JOURNEY_STEPS = Object.freeze({
     'interactive Claude session registered on the channel',
     'Claude lease renewed before expiry',
     'operator attested that no installed MeMesh plugin hook or MCP server was present',
+    'operator attested that the trusted intake prompt was submitted and READY observed',
     'exact-session send accepted by the claude-channel adapter',
     'the Claude model called intake itself (model-visible proof)',
     'session disconnected and left the router directory',

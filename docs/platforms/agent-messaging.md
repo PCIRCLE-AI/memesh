@@ -308,20 +308,24 @@ of automatic installed-plugin registration.
 
 **`--host claude`** starts the router, runs `memesh agent setup claude`, writes
 a temporary MCP config, and prints the exact interactive launch command — which
-includes `--setting-sources ""` so that no user, project, or local settings
-file is loaded. That option did not suppress all `[User]` hooks in a live Claude
-Code 2.1.263 check, so it is not treated as plugin isolation. The operator runs
+includes `--setting-sources ""` to request no user, project, or local settings
+source. That option did not suppress all `[User]` hooks in a live Claude Code
+2.1.263 check, so it is not treated as plugin isolation. The operator runs
 the command, checks `/mcp` and `/hooks` for any installed MeMesh plugin hook or
-extra MeMesh MCP server, leaves the Claude session idle, and types the exact
-confirmation token in the runner terminal. Other non-MeMesh hooks are outside
-this check. The token records operator attestation, not programmatic inspection;
-any other input or EOF fails before the nonce is generated or sent. Only then
-does the runner wait for `lease_expires_at_ms` to advance, send one
-exact-session message, and wait for an
+extra MeMesh MCP server, and types the exact isolation confirmation token in the
+runner terminal. Other non-MeMesh hooks are outside this check. The token records
+operator attestation, not programmatic inspection. The runner then prints one
+trusted owner prompt: the operator submits it in Claude and confirms only after
+Claude replies `READY_FOR_UNTRUSTED_INTAKE`. That second attestation must also
+precede nonce generation. Only then does the runner wait for
+`lease_expires_at_ms` to advance, send one inert exact-session payload containing
+only its purpose and nonce, and wait for an
 `intake` receipt on that message whose actor is that session — the model must
-call `intake` itself, which is what makes the proof model-visible rather than
-transport-visible. The operator is then asked to exit the session, and the same
-fail-closed assertion runs.
+call `intake` under the prior trusted instruction, which is what makes the proof
+model-visible rather than transport-visible without treating the untrusted
+payload as instructions. The operator is then asked to exit the session, and
+the same fail-closed assertion runs. A reminder entered only after delivery is
+diagnostic and cannot satisfy this release receipt.
 
 Print mode (`claude -p`) is **not supported** and is deliberately not
 exercised. A print-mode session does not surface `memesh-channel` notifications
@@ -354,9 +358,12 @@ The limitations these checks always declare:
 - `--host codex` creates one throwaway thread in the owner's Codex rollout
   store and queues one message into it. That is session state, not
   configuration; nothing outside the temporary directory is otherwise written.
-- The Claude operator is told to type nothing, but the check cannot observe
-  whether anything was typed. The intake receipt proves the model called
-  `intake` in that session; it does not prove it did so unprompted.
+- Before delivery, the Claude operator submits one exact trusted intake prompt
+  and attests that its READY reply was observed. The runner cannot inspect that
+  UI exchange. After delivery the operator is told to type nothing, but the
+  runner cannot observe whether that instruction was followed. The intake
+  receipt proves the model called `intake` in that session after native
+  notification; it does not prove the operator followed either instruction.
 - The Claude intake receipt is matched on its `actor`, which `intake` sets from
   the caller's `recipient`. The model must intake under its own session id; an
   intake recorded against the principal id would not match, and the check would

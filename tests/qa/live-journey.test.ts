@@ -28,6 +28,7 @@ import {
   DEFAULT_WAIT_MS,
   MAX_SOCKET_PATH_BYTES,
   REQUIRED_DIST,
+  assertClaudeModelIntakeArmingConfirmation,
   assertClaudePluginIsolationConfirmation,
   assertCodexRanNoCommands,
   assertCodexReply,
@@ -49,6 +50,8 @@ import {
   assertSocketPathFits,
   awaitSessionDisconnect,
   buildJourneyEnv,
+  buildLiveJourneyPayload,
+  claudeTrustedIntakePrompt,
   collectCodexAgentMessages,
   findIntakeReceipt,
   findLiveCards,
@@ -58,6 +61,7 @@ import {
   parseCodexThreadId,
   realpathAsFarAsPossible,
   requestClaudePluginIsolationConfirmation,
+  requestClaudeModelIntakeArmingConfirmation,
   shouldRemoveWorkingDirectories,
 } from '../../scripts/qa/live-journey.mjs';
 import {
@@ -266,9 +270,48 @@ describe('Claude plugin-isolation confirmation', () => {
   });
 });
 
+describe('Claude trusted intake arming', () => {
+  it('keeps the native payload inert and free of instructions', () => {
+    expect(buildLiveJourneyPayload('claude-deadbeef')).toEqual({
+      purpose: 'MeMesh owner-run live journey check',
+      qa_sentinel: 'claude-deadbeef',
+    });
+  });
+
+  it('gives the model a trusted operator instruction before native delivery', () => {
+    const prompt = claudeTrustedIntakePrompt();
+    expect(prompt).toMatch(/next memesh-channel message/i);
+    expect(prompt).toMatch(/untrusted data/i);
+    expect(prompt).toMatch(/action [`"]?intake/i);
+    expect(prompt).toMatch(/run no other tools/i);
+  });
+
+  it('accepts only the exact arming token and labels it as operator attestation', () => {
+    expect(assertClaudeModelIntakeArmingConfirmation('MEMESH_MODEL_INTAKE_ARMED')).toEqual({
+      kind: 'operator_attestation',
+      scope: 'trusted Claude intake prompt submitted before nonce delivery',
+      confirmed: true,
+      programmatic_inspection: false,
+    });
+  });
+
+  it.each([null, '', 'NO', ' MEMESH_MODEL_INTAKE_ARMED', 'MEMESH_MODEL_INTAKE_ARMED '])(
+    'rejects non-exact arming confirmation %j before nonce send',
+    value => {
+      expect(() => assertClaudeModelIntakeArmingConfirmation(value)).toThrow(/nonce was not generated or sent/);
+    },
+  );
+
+  it('fails closed when arming confirmation ends', async () => {
+    await expect(requestClaudeModelIntakeArmingConfirmation(async () => {
+      throw new Error('EOF');
+    })).rejects.toThrow(/ended before input.*nonce was not generated or sent/);
+  });
+});
+
 describe('live-journey report contract', () => {
-  it('uses v2 and requires distinct model-visible and stopped-session steps for both real hosts', () => {
-    expect(LIVE_JOURNEY_SCHEMA_VERSION).toBe('memesh-live-journey/v2');
+  it('uses v3 and requires distinct model-visible and stopped-session steps for both real hosts', () => {
+    expect(LIVE_JOURNEY_SCHEMA_VERSION).toBe('memesh-live-journey/v3');
     for (const host of ['codex', 'claude'] as const) {
       expect(REQUIRED_LIVE_JOURNEY_STEPS[host].some(name => name.includes('model-visible'))).toBe(true);
       expect(REQUIRED_LIVE_JOURNEY_STEPS[host]).toContain(
@@ -282,12 +325,19 @@ describe('live-journey report contract', () => {
     expect(REQUIRED_REGISTRATION_EVIDENCE.claude).toEqual({
       source: 'interactive_development_channel',
       operator_attestation_recorded: true,
+      trusted_instruction_attested: true,
     });
     expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain('Codex lease renewed before expiry');
     expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain(
       'Codex resume registration superseded the prior generation',
     );
     expect(REQUIRED_LIVE_JOURNEY_STEPS.claude).toContain('Claude lease renewed before expiry');
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.claude).toContain(
+      'operator attested that the trusted intake prompt was submitted and READY observed',
+    );
+    expect(REQUIRED_REGISTRATION_EVIDENCE.claude).toMatchObject({
+      trusted_instruction_attested: true,
+    });
   });
 });
 
@@ -857,6 +907,18 @@ describe('intake receipts', () => {
 
   it('rejects an intake for a different message', () => {
     expect(() => assertIntakeReceipt(RECEIPTS_WITH_INTAKE, { messageId: 'other-message', actor: THREAD }))
+      .toThrow(/No intake receipt/);
+  });
+
+  it.each([
+    ['wrong fact source', { fact_source: 'agent_host_accept' }],
+    ['wrong recipient', { recipient: 'someone-else' }],
+    ['wrong intake state', { intake_state: 'fetched' }],
+  ])('rejects an intake with %s', (_label, override) => {
+    const receipts = RECEIPTS_WITH_INTAKE.map(fact => (
+      fact.receipt_kind === 'intake' ? { ...fact, ...override } : fact
+    ));
+    expect(() => assertIntakeReceipt(receipts, { messageId: MESSAGE_ID, actor: THREAD }))
       .toThrow(/No intake receipt/);
   });
 
