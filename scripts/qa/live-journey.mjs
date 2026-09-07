@@ -199,7 +199,7 @@ export function helpText() {
     '  npm run qa:live-journey -- --codex-session-auto-registration [--out report.json] [--keep]',
     '',
     'Verified invocation on macOS (the socket path must fit AF_UNIX sun_path):',
-    '  TMPDIR=/private/tmp npm run qa:live-journey -- --host codex --out report.json',
+    '  TMPDIR=/private/tmp npm run qa:live-journey -- --host codex --codex-home <isolated-home> --out report.json',
     '',
     'Options:',
     '  --host <codex|claude>  Which live path to exercise. Required unless using the bounded',

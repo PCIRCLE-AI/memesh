@@ -59,15 +59,16 @@ npm run qa:post-release              # after the publish workflow is green
 checks it could not run — the interactive live journey among them. It is not a
 substitute for reading that list.
 
-`release:finish` requires separate v2 live receipts for both hosts on the exact
+`release:finish` requires separate v3 live receipts for both hosts on the exact
 clean commit, produced within the previous 24 hours. The Claude receipt comes
 from `npm run qa:live-journey -- --host claude --out
 .qa/claude-report.json`. The Codex receipt must come from an installed-plugin
 SessionStart lifecycle run and include registration, lease renewal, resume-
 generation supersession, model-visible delivery, disconnect, and durable
-offline fallback. The ordinary `--host codex` journey injects the SessionStart
-payload itself; it is useful model-path evidence but deliberately cannot
-satisfy the installed-plugin release gate. See
+offline fallback. The ordinary `--host codex` journey installs the candidate
+plugin into a caller-created disposable authenticated `CODEX_HOME`, verifies
+the installed cache bytes, and exercises its real SessionStart/SessionEnd
+lifecycle; the narrower account-free harness mode cannot satisfy that gate. See
 [`docs/platforms/agent-messaging.md`](docs/platforms/agent-messaging.md#repeatable-owner-run-live-checks).
 
 `npm run qa:post-release` is the half a fresh-clone gate cannot do: it asks the

@@ -247,7 +247,9 @@ describe('--help', () => {
   });
 
   it('names the invocation that was actually verified', () => {
-    expect(helpText()).toMatch(/TMPDIR=\/private\/tmp npm run qa:live-journey/);
+    expect(helpText()).toMatch(
+      /TMPDIR=\/private\/tmp npm run qa:live-journey -- --host codex --codex-home <isolated-home>/,
+    );
   });
 });
 

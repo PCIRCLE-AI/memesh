@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,14 +11,39 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const temporaryDirectories: string[] = [];
 const children: ChildProcess[] = [];
 const routerSockets: string[] = [];
+const companionStates: string[] = [];
 
 afterEach(async () => {
   for (const child of children.splice(0)) await stop(child);
+  for (const statePath of companionStates.splice(0)) await terminateCompanionAt(statePath);
   for (const socketPath of routerSockets.splice(0)) await stopRouterAt(socketPath);
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+async function terminateCompanionAt(statePath: string): Promise<void> {
+  if (!fs.existsSync(statePath)) return;
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
+    token: string;
+    control_socket: string;
+  };
+  await new Promise<void>((resolve, reject) => {
+    const socket = net.createConnection(state.control_socket);
+    let response = '';
+    socket.setEncoding('utf8');
+    socket.setTimeout(2_000, () => socket.destroy(new Error('Timed out stopping packaged Codex companion.')));
+    socket.on('data', chunk => { response += chunk; });
+    socket.once('error', reject);
+    socket.once('close', hadError => {
+      if (hadError) return;
+      if (response.trim() !== 'terminated') return reject(new Error(`Packaged Codex companion rejected termination: ${response.trim()}`));
+      resolve();
+    });
+    socket.once('connect', () => socket.end(`${JSON.stringify({ action: 'terminate', token: state.token })}\n`));
+  });
+  await waitFor(() => !fs.existsSync(statePath), 'the packaged Codex companion lifecycle state to disappear');
+}
 
 function waitFor(predicate: () => boolean, description: string): Promise<void> {
   const deadline = Date.now() + 10_000;
@@ -84,6 +110,7 @@ describe('Codex plugin fresh consumer', () => {
     const dbPath = path.join(dataDirectory, 'knowledge-graph.db');
     const socketPath = path.join(dataDirectory, 'agent-router-v2.sock');
     const tokenPath = path.join(dataDirectory, 'agent-router.token');
+    const statePath = path.join(dataDirectory, 'runtime', 'codex-session', '01a041b4-5c67-75b3-9505-4e33d7942b8e.json');
     const environment: NodeJS.ProcessEnv = {
       PATH: process.env.PATH,
       HOME: path.join(pluginRoot, 'home'),
@@ -105,6 +132,7 @@ describe('Codex plugin fresh consumer', () => {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     children.push(companion);
+    companionStates.push(statePath);
     routerSockets.push(socketPath);
     let companionStderr = '';
     companion.stderr!.setEncoding('utf8');
@@ -116,8 +144,11 @@ describe('Codex plugin fresh consumer', () => {
       cwd: pluginRoot,
     }));
 
-    await waitFor(() => fs.existsSync(socketPath) || companion.exitCode !== null, 'the SessionStart-spawned router socket');
-    expect(companion.exitCode, companionStderr).toBeNull();
+    await waitFor(() => companion.exitCode !== null, 'the short SessionStart launcher to exit');
+    expect(companion.exitCode, companionStderr).toBe(0);
+    await waitFor(() => fs.existsSync(socketPath) && fs.existsSync(statePath), 'the detached companion lifecycle state and router socket');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as { pid: number };
+    expect(state.pid).not.toBe(companion.pid);
     await waitFor(() => {
       if (!fs.existsSync(dbPath)) return false;
       const database = new MemeshDatabase(dbPath);
@@ -132,9 +163,11 @@ describe('Codex plugin fresh consumer', () => {
         database.close();
       }
     }, 'the packaged SessionStart companion to register with the router');
-    expect(companion.exitCode).toBeNull();
+    expect(companion.exitCode).toBe(0);
     expect(companionStderr).toBe('');
     expect(fs.existsSync(path.join(dataDirectory, 'hosts', 'codex-session.json'))).toBe(false);
+    await terminateCompanionAt(statePath);
+    companionStates.splice(companionStates.indexOf(statePath), 1);
   });
 
   it('declares the bundled MCP server for a zero-config Codex plugin install', () => {
