@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -627,6 +628,31 @@ async function stopChild(child, timeoutMs = 5_000) {
   ]);
 }
 
+async function terminateCodexCompanion(statePath) {
+  if (!statePath || !fs.existsSync(statePath)) return;
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  assert.equal(typeof state.token, 'string', 'packaged Codex companion state omitted its control token');
+  assert.equal(typeof state.control_socket, 'string', 'packaged Codex companion state omitted its control socket');
+  await new Promise((resolve, reject) => {
+    const socket = net.createConnection(state.control_socket);
+    let response = '';
+    socket.setEncoding('utf8');
+    socket.setTimeout(2_000, () => socket.destroy(new Error('Timed out stopping packaged Codex companion.')));
+    socket.on('data', (chunk) => { response += chunk; });
+    socket.once('error', reject);
+    socket.once('close', (hadError) => {
+      if (hadError) return;
+      if (response.trim() !== 'terminated') {
+        reject(new Error(`Packaged Codex companion rejected termination: ${response.trim()}`));
+        return;
+      }
+      resolve();
+    });
+    socket.once('connect', () => socket.end(`${JSON.stringify({ action: 'terminate', token: state.token })}\n`));
+  });
+  await waitFor(() => !fs.existsSync(statePath), 'the packaged Codex companion lifecycle state to disappear');
+}
+
 function installedBin(name) {
   return path.join(consumerDir, 'node_modules', '.bin', process.platform === 'win32' ? `${name}.cmd` : name);
 }
@@ -715,6 +741,9 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
   let host;
   let companionA;
   let companionB;
+  const sessionA = '11a041b4-5c67-75b3-9505-4e33d7942b8e';
+  const sessionB = '22a041b4-5c67-75b3-9505-4e33d7942b8e';
+  const companionState = (sessionId) => path.join(nativeDir, 'runtime', 'codex-session', `${sessionId}.json`);
   try {
     await waitFor(
       () => fs.existsSync(routerSocket) || routerExit !== null,
@@ -925,8 +954,6 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
     // The queue/host stub above proves the adapter contract in isolation. The
     // two children below are the actual packaged Codex SessionStart companion
     // runtime: each owns a distinct exact-session identity on this router.
-    const sessionA = '11a041b4-5c67-75b3-9505-4e33d7942b8e';
-    const sessionB = '22a041b4-5c67-75b3-9505-4e33d7942b8e';
     const startCompanion = (sessionId) => {
       const child = spawn(process.execPath, [path.join(installedRoot, 'dist', 'host-runtime', 'codex-session.js')], {
         cwd: consumerDir,
@@ -946,9 +973,14 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
     };
     companionA = startCompanion(sessionA);
     companionB = startCompanion(sessionB);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.equal(companionA.child.exitCode, null, `first installed Codex SessionStart companion exited during registration: ${companionA.stderr()}`);
-    assert.equal(companionB.child.exitCode, null, `second installed Codex SessionStart companion exited during registration: ${companionB.stderr()}`);
+    await Promise.all([
+      waitFor(() => fs.existsSync(companionState(sessionA)), 'the first installed Codex companion lifecycle state'),
+      waitFor(() => fs.existsSync(companionState(sessionB)), 'the second installed Codex companion lifecycle state'),
+      waitFor(() => companionA.child.exitCode !== null, 'the first installed Codex SessionStart launcher to exit'),
+      waitFor(() => companionB.child.exitCode !== null, 'the second installed Codex SessionStart launcher to exit'),
+    ]);
+    assert.equal(companionA.child.exitCode, 0, `first installed Codex SessionStart launcher failed: ${companionA.stderr()}`);
+    assert.equal(companionB.child.exitCode, 0, `second installed Codex SessionStart launcher failed: ${companionB.stderr()}`);
 
     // The earlier CLI dispatch has already been fully asserted, so a fresh
     // capture makes this exchange's exact recipient observable by itself.
@@ -1046,8 +1078,6 @@ try {
       ],
       { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' },
     ));
-    assert.equal(companionA.child.exitCode, null, `first installed Codex SessionStart companion exited: ${companionA.stderr()}`);
-    assert.equal(companionB.child.exitCode, null, `second installed Codex SessionStart companion exited: ${companionB.stderr()}`);
     await waitFor(() => fs.existsSync(queueCapture), 'MCP A-to-B native queue dispatch');
     const mcpQueued = JSON.parse(fs.readFileSync(queueCapture, 'utf8'));
     assert.equal(mcpQueued.thread_id, sessionB, 'MCP A-to-B queue dispatch targeted the wrong Codex session');
@@ -1064,6 +1094,10 @@ try {
     assert.equal(mcpReceipts.some((receipt) => receipt.receipt_kind === 'ack'), false, 'MCP fetch or native dispatch implicitly acknowledged the message');
     assert.equal(mcpReceipts.some((receipt) => receipt.receipt_kind === 'disposition'), false, 'MCP fetch or native dispatch implicitly set workflow disposition');
   } finally {
+    await Promise.all([
+      terminateCodexCompanion(companionState(sessionA)),
+      terminateCodexCompanion(companionState(sessionB)),
+    ]);
     await Promise.all([stopChild(companionA?.child), stopChild(companionB?.child), stopChild(host)]);
     await stopChild(router);
     fs.rmSync(nativeHome, { recursive: true, force: true });
