@@ -73,6 +73,7 @@ for (const matchers of Object.values(hooks.hooks ?? {})) {
   }
 }
 if (hookCommands.length === 0) errors.push('hooks/hooks.json yielded no hook commands');
+const uniqueHookCommands = [...new Set(hookCommands)];
 const hookTable = codemap.match(/### Hook commands \(`hooks\/hooks\.json`\)([\s\S]*?)\n---/m)?.[1] ?? '';
 if (!hookTable) errors.push('CODEMAP.md has no bounded hook-command table');
 // The hook count in the heading is not re-derived here — check-doc-claims.mjs
@@ -81,7 +82,7 @@ if (!hookTable) errors.push('CODEMAP.md has no bounded hook-command table');
 // every time a hook is added or removed.
 const architectureHooks = architecture.match(/### Hook Commands \(\d+ hooks?\)([\s\S]*?)(?=\n### )/m)?.[1] ?? '';
 if (!architectureHooks) errors.push('docs/ARCHITECTURE.md has no bounded hook-command table under a `### Hook Commands (N hooks)` heading');
-for (const command of hookCommands) {
+for (const command of uniqueHookCommands) {
   if (!exists(command)) errors.push(`hooks/hooks.json maps to a missing source command: ${command}`);
   const documented = command.startsWith('scripts/hooks/') ? path.basename(command) : command;
   if (!hookTable.includes(`\`${documented}\``)) errors.push(`CODEMAP.md hook table omits ${documented}`);
@@ -93,14 +94,14 @@ for (const command of hookCommands) {
   }
 }
 const codemapHookNames = [...hookTable.matchAll(/^\|\s*`([^`]+)`\s*\|/gm)].map((match) => match[1]);
-const expectedCodemapHooks = hookCommands.map((command) => (
+const expectedCodemapHooks = uniqueHookCommands.map((command) => (
   command.startsWith('scripts/hooks/') ? path.basename(command) : command
 ));
 checkExact('CODEMAP.md hook commands', codemapHookNames, expectedCodemapHooks);
 const architectureHookNames = [...architectureHooks.matchAll(/^\|\s*([^|]+?)\s*\|/gm)]
   .map((match) => match[1].trim())
   .filter((name) => name !== 'Hook' && !/^-+$/.test(name));
-const expectedArchitectureHooks = hookCommands.map((command) => (
+const expectedArchitectureHooks = uniqueHookCommands.map((command) => (
   command.startsWith('src/host-runtime/')
     ? path.basename(command).replace(/\.ts$/, '.js')
     : path.basename(command)

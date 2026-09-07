@@ -102,7 +102,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `session-start.js` | SessionStart | inject top-N memories (additionalContext), banner, lesson warnings, auto-update |
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
-| `src/host-runtime/codex-session.ts` | SessionStart | automatically register the exact Codex thread on the current protocol-versioned router endpoint; apply a matching optional identity override |
+| `src/host-runtime/codex-session.ts` | SessionStart / SessionEnd | launch, supersede, and retire the detached exact-thread companion; apply a matching optional identity override |
 | `session-summary.js` | Stop | deterministic session capture |
 | `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
