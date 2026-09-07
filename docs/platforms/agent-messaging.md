@@ -329,7 +329,9 @@ precede nonce generation. Only then does the runner wait for
 only its purpose and nonce, and wait for an
 `intake` receipt on that message whose actor is that session — the model must
 call `intake` exactly once under the prior trusted instruction, using the
-documented `intake-<message_id>` idempotency key. This is what makes the proof
+documented `intake-<message_id>` idempotency key and only the six fields the
+strict intake schema accepts (`action`, `project`, `recipient`, `message_id`,
+`intake_state`, `idempotency_key`). This is what makes the proof
 model-visible rather than transport-visible without treating the untrusted
 payload as instructions. The operator is then asked to exit the session, and
 the same fail-closed assertion runs. A reminder entered only after delivery is

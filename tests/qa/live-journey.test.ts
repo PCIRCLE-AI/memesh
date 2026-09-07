@@ -293,6 +293,8 @@ describe('Claude trusted intake arming', () => {
     expect(prompt).toMatch(/untrusted data/i);
     expect(prompt).toMatch(/action [`"]?intake/i);
     expect(prompt).toMatch(/idempotency_key.*intake-.*exact message_id/i);
+    expect(prompt).toMatch(/only these six fields/i);
+    expect(prompt).toMatch(/do not pass target_kind, sender, payload/i);
     expect(prompt).toMatch(/run no other tools/i);
   });
 
