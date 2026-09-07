@@ -42,7 +42,7 @@ MeMesh 幫它記住。Claude Code hooks 會記錄並還原日常工作脈絡；�
 
 左邊是自動記錄（對話、commit、修掉的錯誤），右邊是適時提醒（開新對話時、改檔案之前），中間是存放決定、教訓與關聯的那個檔案。
 
-- **在適當時機記錄、提醒與防護。** MeMesh 的 Claude Code 與 Codex 整合共提供 **10 個 hook**：其中 8 個 Claude Code hook 分別在開新對話、改檔案前、`git commit` 後、計畫核准或你回答問題後、Claude 停下來時、對話被壓縮前、你說「記下來」時（聽得懂 5 種語言），以及執行可能重犯已接受教訓的危險指令前運作。計畫/問題與「記下來」hook 只會提醒 agent 呼叫 `remember`；另一組 Codex SessionStart/SessionEnd lifecycle 會註冊並退場符合資格的一般 Codex CLI session。
+- **在適當時機記錄、提醒與防護。** MeMesh 的 Claude Code 與 Codex 整合共提供 **9 個 hook command**：其中 8 個 Claude Code hook 分別在開新對話、改檔案前、`git commit` 後、計畫核准或你回答問題後、Claude 停下來時、對話被壓縮前、你說「記下來」時（聽得懂 5 種語言），以及執行可能重犯已接受教訓的危險指令前運作。計畫/問題與「記下來」hook 只會提醒 agent 呼叫 `remember`；第 9 個 command 同時處理 Codex SessionStart 與 SessionEnd，註冊並退場符合資格的一般 Codex CLI session。
 - **所有工具共用一份記憶。** 今天在 Claude Code 存的決定，明天 Codex 或 Cursor 也用得到。
 - **agent 之間可以留言。** 本機的耐久收件匣可跨重啟保存；在 macOS 或 Linux 上，確切且活動中的一般 Codex CLI session 裝有 MeMesh plugin 時，也能透過原生 queue 收到有界訊息。
 - **有儀表板** 可以瀏覽全部內容：5 個分頁、11 種語言，在 `http://localhost:3737/dashboard`。

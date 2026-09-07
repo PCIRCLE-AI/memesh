@@ -360,7 +360,7 @@ Foreign key cascades: deleting an entity automatically deletes its observations,
 
 Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions.
 
-### Hook Commands (10 hooks)
+### Hook Commands (9 hooks)
 
 | Hook | Event | Purpose |
 |------|-------|---------|
