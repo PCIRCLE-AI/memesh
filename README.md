@@ -485,11 +485,13 @@ Imported bundles stay searchable, but MeMesh does not auto-inject imported memor
 
 ### Turn current work into a reviewed memory
 
-Ask an agent in the current project session to prepare one `work_package`.
-It can prepare one calendar-selected digest or one package from the newest
-session's visible turns, then submit one bounded result or defer. Submission
-only stages a proposal: inspect its complete detail in the Dashboard and accept
-or reject it yourself. The Dashboard cannot start or wake an agent.
+Ask an agent to prepare one `work_package`. It can prepare one calendar-selected
+digest. When its MCP host supplies one unambiguous workspace root and that
+workspace has a recent Claude Code transcript, it can instead prepare bounded
+visible turns from the newest matching Claude Code session. It then submits one
+bounded result or defers. Submission only stages a proposal: inspect the
+proposed memory and its retained redacted source turns in the Dashboard, then
+accept or reject it yourself. The Dashboard cannot start or wake an agent.
 
 ### One memory, three assistants
 
@@ -524,8 +526,10 @@ consequences attached — reasoning you can follow, not just text that matched.
 
 MeMesh recall and capture stay local and deterministic: SQLite FTS5 search,
 explicit memory tools, and rule-based hooks. When a digest would help, or useful
-knowledge remains in the visible conversation, an already-running agent can use
-`work_package`. On hosts with interactive prompts, the agent may offer concise
+knowledge remains in a recent Claude Code session for the same MCP workspace,
+an already-running agent can use `work_package`. Transcript mode requires the
+client to expose exactly one matching MCP workspace root; it fails closed when
+the root is absent or ambiguous. On hosts with interactive prompts, the agent may offer concise
 localized choices such as **Dispatch agent task**, **Later**, and **Don't
 suggest again this session**.
 The last choice suppresses only this session's prompt; it does not create a
@@ -538,7 +542,7 @@ background model, provider setup, scheduled mining, or dashboard-side dispatch.
 
 | Tool | What it does |
 |------|-------------|
-| `work_package` | Prepare one bounded untrusted package: `digest` selects a calendar cluster, `transcript` selects visible turns from the newest project session. An agent submits exactly one strict result or defers; submit only stages pending human review. Hidden reasoning, raw transcripts, and paths are not exposed; recognized credential shapes are redacted. No LLM, embedding, or vector data is used or exposed. The MCP contract exposes no apply/reject action; the local Dashboard and CLI review surfaces do, without cryptographically authenticating a human actor. Hashes identify freshness rather than authentication. |
+| `work_package` | Prepare one bounded untrusted package: `digest` selects a calendar cluster; `transcript` selects visible turns from the newest Claude Code session associated with the client's single matching MCP workspace root. An agent submits exactly one strict result or defers; submit only stages pending human review and retains the bounded redacted source turns for comparison. Hidden reasoning, tool traffic, raw transcripts, and transcript file paths are not exposed; recognized credential shapes are redacted. No LLM, embedding, or vector data is used or exposed. The MCP contract exposes no apply/reject action; the local Dashboard and CLI review surfaces do, without cryptographically authenticating a human actor. Hashes identify freshness and workspace scope rather than authentication. |
 | `remember` | Store knowledge with observations, relations, and tags |
 | `recall` | Local FTS5 search with multi-factor scoring (relevance, recency, frequency, confidence, recall impact) |
 | `forget` | Soft-archive (never deletes) or remove specific observations |

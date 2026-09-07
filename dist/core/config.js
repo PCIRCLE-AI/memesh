@@ -9,7 +9,6 @@ export const RETIRED_CONFIG_KEYS = [
     'language',
     'transcriptMining',
 ];
-const RETIRED_CONFIG_KEY_SET = new Set(RETIRED_CONFIG_KEYS);
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 function configDir() {
@@ -102,7 +101,7 @@ export function updateConfig(partial) {
     const result = readRawConfigResult();
     if (result.state === 'unreadable')
         throw new ConfigUnreadableError(configFilePath());
-    const raw = Object.fromEntries(Object.entries(result.raw).filter(([key]) => !RETIRED_CONFIG_KEY_SET.has(key)));
+    const raw = { ...result.raw };
     for (const key of CONFIG_KEYS) {
         if (!Object.prototype.hasOwnProperty.call(partial, key))
             continue;

@@ -30,6 +30,7 @@ export declare const WorkPackageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
         session_id: z.ZodString;
         modified_at: z.ZodISODateTime;
         source_hash: z.ZodString;
+        workspace_hash: z.ZodString;
     }, z.core.$strict>], "kind">;
     action: z.ZodLiteral<"submit">;
 }, z.core.$strict>, z.ZodObject<{
@@ -46,6 +47,7 @@ export declare const WorkPackageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
         session_id: z.ZodString;
         modified_at: z.ZodISODateTime;
         source_hash: z.ZodString;
+        workspace_hash: z.ZodString;
     }, z.core.$strict>], "kind">;
     action: z.ZodLiteral<"defer">;
 }, z.core.$strict>], "action">;

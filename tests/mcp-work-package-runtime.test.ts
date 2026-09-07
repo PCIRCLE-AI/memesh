@@ -2,11 +2,12 @@ import { it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
 import { getProjectName } from '../src/core/paths.js';
 import { projectTranscriptSlug } from '../src/core/transcript-source.js';
@@ -16,6 +17,8 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
   const require = createRequire(import.meta.url);
   const runtime = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-work-package-'));
   const runtimeCwd = fs.realpathSync(runtime);
+  fs.mkdirSync(path.join(runtime, 'workspace'), { recursive: true });
+  const workspace = fs.realpathSync(path.join(runtime, 'workspace'));
   const dbPath = path.join(runtime, 'memory.db');
   const project = 'mcp-runtime-digest';
   const secret = 'sk-' + 'z'.repeat(40); // Synthetic credential shape, never a real key.
@@ -25,7 +28,15 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     MEMESH_DB_PATH: dbPath,
     PATH: path.dirname(process.execPath),
   };
-  const client = new Client({ name: 'work-package-runtime-test', version: '1' });
+  const client = new Client(
+    { name: 'work-package-runtime-test', version: '1' },
+    { capabilities: { roots: {} } },
+  );
+  let rootsRequests = 0;
+  client.setRequestHandler(ListRootsRequestSchema, () => {
+    rootsRequests++;
+    return { roots: [{ uri: pathToFileURL(workspace).href, name: 'active-workspace' }] };
+  });
   const transport = new StdioClientTransport({
     // Reuse the absolute executable of the pinned verification runner.
     command: process.execPath,
@@ -135,20 +146,22 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     expect(staged.response.isError).not.toBe(true);
     expect(staged.data).toMatchObject({ status: 'staged', proposal_status: 'pending', review_authority: 'human' });
 
-    const transcriptProject = getProjectName(runtimeCwd);
-    const transcriptDir = path.join(runtime, '.claude/projects', projectTranscriptSlug(runtimeCwd));
+    const transcriptProject = getProjectName(workspace);
+    const transcriptDir = path.join(runtime, '.claude/projects', projectTranscriptSlug(workspace));
     fs.mkdirSync(transcriptDir, { recursive: true });
     const transcriptPath = path.join(transcriptDir, 'runtime-session.jsonl');
     fs.writeFileSync(transcriptPath, [
-      { type: 'user', cwd: runtimeCwd, message: { content: 'Use the smaller parser.' } },
+      { type: 'user', cwd: workspace, message: { content: 'Use the smaller parser.' } },
       { type: 'user', message: { content: [{ type: 'text', text: '<system-reminder>RUNTIME_SCAFFOLDING' }] } },
       { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'RUNTIME_PRIVATE' }, { type: 'text', text: `The smaller parser satisfies our requirements. ${secret}` }, { type: 'tool_use', input: 'RUNTIME_TOOL' }] } },
     ].map(entry => JSON.stringify(entry)).join('\n'));
     const transcript = await call('work_package', { action: 'prepare', kind: 'transcript', project: transcriptProject });
     expect(transcript.response.isError).not.toBe(true);
     expect(transcript.data.status).toBe('available');
+    expect(rootsRequests).toBeGreaterThan(0);
     const transcriptPackage = transcript.data.package;
     expect(transcriptPackage.ref).toMatchObject({ kind: 'transcript', project: transcriptProject, session_id: 'runtime-session' });
+    expect(transcriptPackage.source).toEqual({ host: 'claude-code', scope: 'mcp-workspace-root' });
     expect(transcriptPackage.sources).toEqual([{ role: 'user', text: 'Use the smaller parser.' }, { role: 'assistant', text: 'The smaller parser satisfies our requirements. ***REDACTED***' }]);
     expect(transcriptPackage.coverage).toEqual({ truncated: false, total_turns: 2, included_turns: 2 });
     expect(JSON.stringify(transcriptPackage)).not.toMatch(/RUNTIME_PRIVATE|RUNTIME_TOOL|RUNTIME_SCAFFOLDING/);
@@ -161,7 +174,7 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
       },
     });
     expect(projectMismatch.response.isError).toBe(true);
-    expect(projectMismatch.data.error).toBe('project_mismatch');
+    expect(projectMismatch.data.error).toBe('workspace_unavailable');
     expect(proposalCount()).toMatchObject({ n: 1 });
 
     const boundedPath = path.join(transcriptDir, 'bounded-session.jsonl');
@@ -169,10 +182,10 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
       fs.writeFileSync(boundedPath, entries.map(entry => JSON.stringify(entry)).join('\n'));
       fs.utimesSync(boundedPath, new Date(modifiedMs), new Date(modifiedMs));
     };
-    const oversizedTurn = { type: 'user', cwd: runtimeCwd, message: { content: 'x'.repeat(50000) } };
+    const oversizedTurn = { type: 'user', cwd: workspace, message: { content: 'x'.repeat(50000) } };
     const later = Date.now() + 60_000;
     writeBoundedSession([
-      { type: 'user', cwd: runtimeCwd, message: { content: 'Older turn must not cross the gap.' } },
+      { type: 'user', cwd: workspace, message: { content: 'Older turn must not cross the gap.' } },
       oversizedTurn,
     ], later);
     const oversizedNewest = await call('work_package', { action: 'prepare', kind: 'transcript', project: transcriptProject });
@@ -180,7 +193,7 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     expect(oversizedNewest.data.package).toEqual(transcriptPackage);
 
     writeBoundedSession([
-      { type: 'user', cwd: runtimeCwd, message: { content: 'Older turn must not cross the gap.' } },
+      { type: 'user', cwd: workspace, message: { content: 'Older turn must not cross the gap.' } },
       oversizedTurn,
       { type: 'assistant', message: { content: [{ type: 'text', text: 'Newest bounded turn.' }] } },
     ], later + 1000);
@@ -198,7 +211,7 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     expect(transcriptStaged.response.isError).not.toBe(true);
     expect(transcriptStaged.data).toMatchObject({ status: 'staged', proposal_status: 'pending' });
     const existing = { status: 'existing', proposal_id: transcriptStaged.data.proposal_id, proposal_status: 'pending', available_action: [] };
-    fs.writeFileSync(transcriptPath, JSON.stringify({ type: 'user', cwd: `${runtimeCwd}-foreign`, message: { content: 'FOREIGN_PRIVATE_TEXT' } }));
+    fs.writeFileSync(transcriptPath, JSON.stringify({ type: 'user', cwd: `${workspace}-foreign`, message: { content: 'FOREIGN_PRIVATE_TEXT' } }));
     expect((await call('work_package', { action: 'submit', package_id: transcriptPackage.id, ref: transcriptPackage.ref, result: transcriptResult })).data).toEqual(existing);
     fs.unlinkSync(transcriptPath);
     expect((await call('work_package', { action: 'defer', package_id: transcriptPackage.id, ref: transcriptPackage.ref, reason: 'not_now' })).data).toEqual(existing);
@@ -219,7 +232,17 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
       expect(JSON.parse(rows[0].source_ids as string)).toEqual(pkg.ref.source_ids);
       expect(JSON.parse(rows[0].proposed_digest as string)).toMatchObject({ ...result, work_package: { id: pkg.id, ref: pkg.ref } });
       expect(rows[1]).toMatchObject({ id: transcriptStaged.data.proposal_id, project: transcriptProject, status: 'pending', source_kind: 'transcript', kind: 'digest', prompt_version: 'work-package-v1' });
-      expect(JSON.parse(rows[1].source_ids as string)).toEqual({ sessionId: 'runtime-session' });
+      expect(JSON.parse(rows[1].source_ids as string)).toEqual({
+        sessionId: 'runtime-session',
+        source: { host: 'claude-code', scope: 'mcp-workspace-root' },
+        workspaceHash: transcriptPackage.ref.workspace_hash,
+        coverage: { truncated: false, total_turns: 2, included_turns: 2 },
+        sources: [
+          { role: 'user', text: 'Use the smaller parser.' },
+          { role: 'assistant', text: 'The smaller parser satisfies our requirements. ***REDACTED***' },
+        ],
+        trust: 'untrusted',
+      });
       expect(JSON.parse(rows[1].proposed_digest as string)).toMatchObject({ ...transcriptResult, work_package: { id: transcriptPackage.id, ref: transcriptPackage.ref } });
       expect(db.prepare("SELECT count(*) AS n FROM entities WHERE status = 'active'").get()).toMatchObject({ n: 5 });
     } finally { db.close(); }

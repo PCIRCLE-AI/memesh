@@ -27,7 +27,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 
 | Tool | Purpose |
 |---|---|
-| `work_package` | Prepare one bounded untrusted `digest` (calendar cluster) or `transcript` (newest project's visible turns) package; submit exactly one strict result or defer. Submit only stages pending human review; agents cannot apply or reject. No hidden reasoning, raw transcript, path, API key, LLM, embedding, or vector data is exposed or used; hashes identify freshness rather than authentication. |
+| `work_package` | Prepare one bounded untrusted `digest` (calendar cluster) or `transcript` package from the newest Claude Code session under the client's single matching MCP workspace root; submit exactly one strict result or defer. Submit only stages pending human review and retains bounded redacted source turns for comparison; agents cannot apply or reject. No hidden reasoning, raw transcript, transcript path, API key, LLM, embedding, or vector data is exposed or used; hashes identify freshness and workspace scope rather than authentication. |
 | `remember` | Store knowledge as an entity with observations, tags, and relations |
 | `recall` | Search stored knowledge; empty query lists recent memories |
 | `forget` | Archive an entity or remove one exact observation |

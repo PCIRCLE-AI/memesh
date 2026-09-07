@@ -73,10 +73,11 @@ describe('FTS-only config', () => {
     expect(getConfigDir()).toBe(dir);
   });
 
-  it('removes retired provider/key/vector fields on the next successful write', () => {
+  it('preserves retired provider/key/vector values on unrelated successful writes', () => {
     const legacy = {
       llm: { provider: 'openai', apiKey: 'fixture-secret' },
-      embedder: { provider: 'ollama' },
+      llmFallbacks: ['google', 'mistral'],
+      embedder: { provider: 'ollama', model: 'mxbai', vectorSize: 1024 },
       transcriptMining: true,
       language: 'zh-TW',
       futureSetting: { keep: true },
@@ -87,11 +88,11 @@ describe('FTS-only config', () => {
     expect(readConfig()).toEqual({ autoUpdate: 'patch' });
     updateConfig({ sessionLimit: 12 });
 
-    expect(rawConfig()).toEqual({ futureSetting: { keep: true }, autoUpdate: 'patch', sessionLimit: 12 });
+    expect(rawConfig()).toEqual({ ...legacy, sessionLimit: 12 });
     expect(readConfig()).toEqual({ autoUpdate: 'patch', sessionLimit: 12 });
   });
 
-  it('preserves unknown extension keys while removing known retired keys', () => {
+  it('preserves unknown extension and retired keys while updating retained keys', () => {
     fs.writeFileSync(getConfigPath(), JSON.stringify({
       llm: { provider: 'anthropic', apiKey: 'fixture-secret' },
       futureSetting: { keep: true },
@@ -102,6 +103,7 @@ describe('FTS-only config', () => {
     updateConfig({ autoCapture: undefined, sessionLimit: undefined, autoUpdate: 'off' });
 
     expect(rawConfig()).toEqual({
+      llm: { provider: 'anthropic', apiKey: 'fixture-secret' },
       futureSetting: { keep: true },
       autoUpdate: 'off',
     });
@@ -114,7 +116,7 @@ describe('FTS-only config', () => {
       autoUpdate: 'major',
     }));
     expect(updateConfig({ autoCapture: undefined })).toEqual({ autoUpdate: 'major' });
-    expect(rawConfig()).toEqual({ autoUpdate: 'major' });
+    expect(rawConfig()).toEqual({ llm: { provider: 'ollama' }, autoUpdate: 'major' });
   });
 
   it('does not expose malformed retained values', () => {

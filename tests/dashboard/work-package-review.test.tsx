@@ -76,7 +76,11 @@ describe('FTS settings and staged work-package review', () => {
       calls.push({ url, method });
       if (url === '/v1/dream/proposals/41') {
         return response({
-          id: 41, project: 'memesh', cluster_key: 'transcript:session-1', source_ids: { sessionId: 'session-1' },
+          id: 41, project: 'memesh', cluster_key: 'transcript:session-1', source_ids: {
+            sessionId: 'session-1', source: { host: 'claude-code', scope: 'mcp-workspace-root' }, workspaceHash: 'a'.repeat(64),
+            coverage: { truncated: false, total_turns: 1, included_turns: 1 },
+            sources: [{ role: 'user', text: 'Use the smaller parser.' }], trust: 'untrusted',
+          },
           proposed_digest: { name: 'review-this', type: 'decision', observations: ['Keep the FTS-only design'], tags: ['project:memesh'] },
           status: 'pending', reason: null, created_at: '2026-09-06 01:00:00', reviewed_at: null,
           kind: 'digest', source_kind: 'transcript',
@@ -95,11 +99,15 @@ describe('FTS settings and staged work-package review', () => {
 
     const view = render(<InsightsTab />);
     await view.findByText('review-this');
-    expect(view.container.textContent).toContain('Visible transcript');
+    expect(view.container.textContent).toContain('Claude Code transcript');
     expect(view.container.textContent).toContain('The Dashboard reviews proposals that are already staged.');
     expect(view.queryByRole('button', { name: 'Accept' })).toBeNull();
     fireEvent.click(view.getByRole('button', { name: 'View detail' }));
     await view.findByText('Keep the FTS-only design');
+    const evidence = view.getByTestId('transcript-source-evidence');
+    expect(evidence.textContent).toContain('claude-code');
+    expect(evidence.textContent).toContain('session-1');
+    expect(evidence.textContent).toContain('Use the smaller parser.');
     expect(view.getByRole('button', { name: 'Accept' })).toBeTruthy();
     expect(view.getByRole('button', { name: 'Reject' })).toBeTruthy();
     expect(calls.some((call) => forbiddenRoutes.some((route) => call.url.includes(route)))).toBe(false);

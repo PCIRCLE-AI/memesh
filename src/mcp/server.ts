@@ -39,7 +39,34 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 // knows who is connected; the model must not be able to claim it.
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
-  return handleTool(name, args, normalizeClientHost(server.getClientVersion()?.name), extra.signal);
+  const record = args && typeof args === 'object' ? args as Record<string, unknown> : undefined;
+  const ref = record?.ref && typeof record.ref === 'object' ? record.ref as Record<string, unknown> : undefined;
+  const needsWorkspaceRoots = name === 'work_package'
+    && (record?.kind === 'transcript' || ref?.kind === 'transcript');
+  let workspaceRootUris: string[] | undefined;
+  if (needsWorkspaceRoots) {
+    if (!server.getClientCapabilities()?.roots) {
+      workspaceRootUris = [];
+    } else {
+      try {
+        const listed = await server.listRoots(undefined, {
+          signal: extra.signal,
+          timeout: 3_000,
+          maxTotalTimeout: 3_000,
+        });
+        workspaceRootUris = listed.roots.map(root => root.uri);
+      } catch {
+        workspaceRootUris = [];
+      }
+    }
+  }
+  return handleTool(
+    name,
+    args,
+    normalizeClientHost(server.getClientVersion()?.name),
+    extra.signal,
+    { workspaceRootUris },
+  );
 });
 
 // Start

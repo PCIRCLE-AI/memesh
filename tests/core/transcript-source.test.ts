@@ -54,7 +54,8 @@ describe('work-package source boundary', () => {
   let project: string;
   const secret = 'sk-' + 'z'.repeat(40); // Synthetic shape only; never a real credential.
   const result = { name: 'fixture-decision', type: 'decision' as const, observations: ['Use the smaller parser.'], tags: ['parser'] };
-  const prepare = () => executeWorkPackage(db, { action: 'prepare', kind: 'transcript', project });
+  const execute = (input: WorkPackageInput) => executeWorkPackage(db, input, { transcriptWorkspace: cwd });
+  const prepare = () => execute({ action: 'prepare', kind: 'transcript', project });
   const writeSession = (recordedProject: string, text: string) => {
     const file = seedSession(cwd, 'snapshot-session', 1, 0);
     fs.writeFileSync(file, JSON.stringify({ cwd: recordedProject, type: 'user', message: { content: text } }));
@@ -116,7 +117,7 @@ describe('work-package source boundary', () => {
       if (args[0] === file && ++opens === 2) fs.renameSync(replacement, file);
       return realOpen(...args);
     });
-    const response = action === 'prepare' ? prepare() : executeWorkPackage(db, action === 'submit'
+    const response = action === 'prepare' ? prepare() : execute(action === 'submit'
       ? { action, package_id: pkg.id, ref: pkg.ref, result }
       : { action, package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
     expect(opens).toBe(2);
@@ -142,7 +143,7 @@ describe('work-package source boundary', () => {
       }
       return realRead(...args);
     });
-    const response = action === 'prepare' ? prepare() : executeWorkPackage(db, action === 'submit'
+    const response = action === 'prepare' ? prepare() : execute(action === 'submit'
       ? { action, package_id: pkg.id, ref: pkg.ref, result }
       : { action, package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
     expect(reads).toBe(2);
@@ -173,7 +174,7 @@ describe('work-package source boundary', () => {
     const file = writeSession(cwd, 'Use the smaller parser.');
     const pkg = prepare().package as { id: string; ref: Extract<WorkPackageInput, { action: 'submit' }>['ref'] };
     const submit = { action: 'submit' as const, package_id: pkg.id, ref: pkg.ref, result };
-    const staged = executeWorkPackage(db, submit);
+    const staged = execute(submit);
     expect(staged.status).toBe('staged');
     db.prepare('UPDATE dream_proposals SET status = ? WHERE id = ?').run(status, Number(staged.proposal_id));
     if (status === 'pending') writeSession(`${cwd}-foreign`, 'Changed after submission');
@@ -182,10 +183,10 @@ describe('work-package source boundary', () => {
     const before = db.prepare('SELECT total_changes() AS n').get();
     const open = vi.spyOn(fs, 'openSync').mockImplementation(() => { throw new Error('replay must not read transcripts'); });
     const existing = { status: 'existing', proposal_id: staged.proposal_id, proposal_status: status, available_action: [] };
-    expect(executeWorkPackage(db, submit)).toEqual(existing);
-    expect(executeWorkPackage(db, { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })).toEqual(existing);
-    expect(executeWorkPackage(db, { ...submit, result: { ...result, name: 'conflicting-result' } })).toMatchObject({ error: 'submission_conflict' });
-    expect(executeWorkPackage(db, { ...submit, ref: { ...pkg.ref, source_hash: '0'.repeat(64) } })).toMatchObject({ error: 'stale_package' });
+    expect(execute(submit)).toEqual(existing);
+    expect(execute({ action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })).toEqual(existing);
+    expect(execute({ ...submit, result: { ...result, name: 'conflicting-result' } })).toMatchObject({ error: 'submission_conflict' });
+    expect(execute({ ...submit, ref: { ...pkg.ref, source_hash: '0'.repeat(64) } })).toMatchObject({ error: 'stale_package' });
     expect(open).not.toHaveBeenCalled();
     expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
     expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 1 });

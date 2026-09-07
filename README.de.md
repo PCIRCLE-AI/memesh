@@ -483,7 +483,7 @@ Importierte Bundles bleiben durchsuchbar, aber MeMesh injiziert importierte Memo
 
 ### Aktuelle Arbeit in eine geprüfte Erinnerung überführen
 
-Bitten Sie einen bereits laufenden Agenten in der aktuellen Projektsitzung, ein `work_package` vorzubereiten. Es kann einen kalenderbasierten Digest oder ein Paket aus sichtbaren Zügen der neuesten Sitzung vorbereiten und dann genau ein begrenztes Ergebnis einreichen oder zurückstellen. Die Einreichung stellt nur einen Vorschlag bereit: Prüfen Sie die vollständigen Details im Dashboard und nehmen Sie ihn selbst an oder lehnen Sie ihn ab. Das Dashboard kann keinen Agenten starten oder aufwecken.
+Bitten Sie einen bereits laufenden Agenten, ein `work_package` vorzubereiten. Es kann einen kalenderbasierten Digest erstellen. Wenn der MCP-Host genau einen passenden Workspace-Root liefert und dort ein aktuelles Claude-Code-Transkript vorhanden ist, kann es stattdessen begrenzte sichtbare Züge aus der neuesten passenden Claude-Code-Sitzung vorbereiten. Danach reicht der Agent genau ein begrenztes Ergebnis ein oder stellt es zurück. Die Einreichung stellt nur einen Vorschlag bereit: Vergleichen Sie im Dashboard die vorgeschlagene Erinnerung mit den gespeicherten redigierten Quellzügen und nehmen Sie sie selbst an oder lehnen Sie sie ab. Das Dashboard kann keinen Agenten starten oder aufwecken.
 
 ### Eine Erinnerung, drei Assistenten
 
@@ -505,7 +505,7 @@ Verknüpfen Sie dann Folgen mit ihren Ursachen, sobald sie eintreten — von jed
 
 ## Agenten-unterstützte Arbeitspakete
 
-MeMesh hält Recall und Erfassung lokal und deterministisch: SQLite-FTS5-Suche, explizite Memory-Tools und regelbasierte Hooks. Wenn ein Digest nützlich wäre oder sichtbare Gesprächszüge noch wertvolles Wissen enthalten, kann ein bereits laufender Agent `work_package` verwenden. Hosts mit interaktiven Hinweisen zeigen die knappen Optionen **Agentenaufgabe senden**, **Später** und **In dieser Sitzung nicht erneut vorschlagen**. Die letzte Auswahl unterdrückt nur den Hinweis in dieser Sitzung; sie richtet keine dauerhafte Abwahl ein. Das Ergebnis wartet immer auf menschliche Prüfung; es gibt kein Hintergrundmodell, keine Anbieter-Konfiguration, kein geplantes Mining und keinen Versand durch das Dashboard.
+MeMesh hält Recall und Erfassung lokal und deterministisch: SQLite-FTS5-Suche, explizite Memory-Tools und regelbasierte Hooks. Wenn ein Digest nützlich wäre oder eine aktuelle Claude-Code-Sitzung für denselben MCP-Workspace noch wertvolles Wissen enthält, kann ein bereits laufender Agent `work_package` verwenden. Der Transcript-Modus verlangt genau einen passenden MCP-Workspace-Root und lehnt fehlende oder mehrdeutige Roots ab. Hosts mit interaktiven Hinweisen zeigen die knappen Optionen **Agentenaufgabe senden**, **Später** und **In dieser Sitzung nicht erneut vorschlagen**. Die letzte Auswahl unterdrückt nur den Hinweis in dieser Sitzung; sie richtet keine dauerhafte Abwahl ein. Das Ergebnis wartet immer auf menschliche Prüfung; es gibt kein Hintergrundmodell, keine Anbieter-Konfiguration, kein geplantes Mining und keinen Versand durch das Dashboard.
 
 ---
 
@@ -513,7 +513,7 @@ MeMesh hält Recall und Erfassung lokal und deterministisch: SQLite-FTS5-Suche, 
 
 | Tool | Was es tut |
 |------|-------------|
-| `work_package` | Ein begrenztes, nicht vertrauenswürdiges Paket vorbereiten: `digest` wählt einen Kalender-Cluster, `transcript` sichtbare Züge der neuesten Projektsitzung. Ein Agent reicht genau ein strikt validiertes Ergebnis ein oder stellt zurück; die Einreichung stellt nur zur menschlichen Prüfung bereit. Verborgenes Denken, Rohtranskripte und Pfade werden nicht offengelegt; erkannte Zugangsdatenmuster werden redigiert. LLM-, Embedding- und Vektordaten werden weder verwendet noch offengelegt. Der MCP-Vertrag von `work_package` bietet keine Annahme- oder Ablehnungsaktion; die lokalen Review-Oberflächen in Dashboard und CLI bieten sie, ohne einen menschlichen Akteur kryptografisch zu authentifizieren. Hashes kennzeichnen Aktualität statt Authentifizierung. |
+| `work_package` | Ein begrenztes, nicht vertrauenswürdiges Paket vorbereiten: `digest` wählt einen Kalender-Cluster; `transcript` sichtbare Züge aus der neuesten Claude-Code-Sitzung unter dem einzigen passenden MCP-Workspace-Root des Clients. Ein Agent reicht genau ein strikt validiertes Ergebnis ein oder stellt zurück; die Einreichung stellt nur zur menschlichen Prüfung bereit und bewahrt begrenzte redigierte Quellzüge zum Vergleich auf. Verborgenes Denken, Tool-Verkehr, Rohtranskripte und Transcript-Dateipfade werden nicht offengelegt; erkannte Zugangsdatenmuster werden redigiert. LLM-, Embedding- und Vektordaten werden weder verwendet noch offengelegt. Der MCP-Vertrag von `work_package` bietet keine Annahme- oder Ablehnungsaktion; die lokalen Review-Oberflächen in Dashboard und CLI bieten sie, ohne einen menschlichen Akteur kryptografisch zu authentifizieren. Hashes kennzeichnen Aktualität und Workspace-Umfang statt Authentifizierung. |
 | `remember` | Wissen mit Beobachtungen, Relationen und Tags speichern |
 | `recall` | Lokale FTS5-Suche mit Multi-Faktor-Bewertung (Relevanz, Aktualität, Häufigkeit, Konfidenz, Abruf-Auswirkung) |
 | `forget` | Soft-Archivierung (löscht nie) oder entfernt spezifische Beobachtungen |

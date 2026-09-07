@@ -53,6 +53,8 @@ describe('exportOpenAITools', () => {
     expect(parameters.oneOf[0].properties.kind.enum).toEqual(['digest', 'transcript']);
     expect(parameters.oneOf[1].properties.ref.oneOf.map((ref: any) => ref.properties.kind.const)).toEqual(['digest', 'transcript']);
     expect(parameters.oneOf[1].properties.ref.oneOf.every((ref: any) => ref.additionalProperties === false)).toBe(true);
+    const transcriptRef = parameters.oneOf[1].properties.ref.oneOf.find((ref: any) => ref.properties.kind.const === 'transcript');
+    expect(transcriptRef.required).toContain('workspace_hash');
     expect(parameters.oneOf[1].properties.result.properties.type.enum).toEqual(['digest', 'decision', 'lesson_learned', 'fact']);
     expect(parameters.oneOf[1].properties.result.additionalProperties).toBe(false);
   });

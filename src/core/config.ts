@@ -17,7 +17,6 @@ export const RETIRED_CONFIG_KEYS = [
   'language',
   'transcriptMining',
 ] as const;
-const RETIRED_CONFIG_KEY_SET = new Set<string>(RETIRED_CONFIG_KEYS);
 export type RetiredConfigKey = typeof RETIRED_CONFIG_KEYS[number];
 type RawConfig = Record<string, unknown>;
 
@@ -140,16 +139,14 @@ export class ConfigUnreadableError extends Error {
 }
 
 /**
- * Update retained settings. A successful write also removes known retired
- * provider, credential, vector, and transcript-mining keys, while preserving
- * unrelated unknown extension data.
+ * Update retained settings without deleting retired provider, credential,
+ * vector, transcript-mining, or unknown extension data. Active configuration
+ * selection continues to ignore retired keys.
  */
 export function updateConfig(partial: Partial<MeMeshConfig>): MeMeshConfig {
   const result = readRawConfigResult();
   if (result.state === 'unreadable') throw new ConfigUnreadableError(configFilePath());
-  const raw: RawConfig = Object.fromEntries(
-    Object.entries(result.raw).filter(([key]) => !RETIRED_CONFIG_KEY_SET.has(key)),
-  );
+  const raw: RawConfig = { ...result.raw };
   for (const key of CONFIG_KEYS) {
     if (!Object.prototype.hasOwnProperty.call(partial, key)) continue;
     const value = partial[key];

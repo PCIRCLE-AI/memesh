@@ -45,6 +45,40 @@ interface ValidationWarning {
   reason: string;
 }
 
+interface TranscriptSourceEvidence {
+  sessionId: string;
+  source: { host: 'claude-code'; scope: 'mcp-workspace-root' };
+  workspaceHash: string;
+  coverage: {
+    truncated: boolean;
+    total_turns: number;
+    included_turns: number;
+  };
+  sources: Array<{ role: 'user' | 'assistant'; text: string }>;
+  trust: 'untrusted';
+}
+
+function isTranscriptSourceEvidence(value: unknown): value is TranscriptSourceEvidence {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Partial<TranscriptSourceEvidence>;
+  return candidate.source?.host === 'claude-code'
+    && candidate.source.scope === 'mcp-workspace-root'
+    && typeof candidate.sessionId === 'string'
+    && /^[a-f0-9]{64}$/.test(candidate.workspaceHash ?? '')
+    && candidate.trust === 'untrusted'
+    && typeof candidate.coverage?.truncated === 'boolean'
+    && Number.isSafeInteger(candidate.coverage.total_turns)
+    && candidate.coverage.total_turns >= 0
+    && Number.isSafeInteger(candidate.coverage.included_turns)
+    && candidate.coverage.included_turns >= 0
+    && candidate.coverage.included_turns <= candidate.coverage.total_turns
+    && Array.isArray(candidate.sources)
+    && candidate.sources.length === candidate.coverage.included_turns
+    && candidate.sources.every(source => source
+      && (source.role === 'user' || source.role === 'assistant')
+      && typeof source.text === 'string');
+}
+
 interface ProposalDetail {
   id: number;
   project: string;
@@ -56,7 +90,7 @@ interface ProposalDetail {
     tags: string[];
     validation_warnings?: ValidationWarning[];
   } | null;
-  source_ids: number[] | { sessionId: string };
+  source_ids: number[] | { sessionId: string } | TranscriptSourceEvidence;
   status: ProposalStatus;
   reason: string | null;
   created_at: string;
@@ -523,6 +557,23 @@ export function InsightsTab({
                 {Array.isArray(detail.source_ids) && (
                   <div style={{ color: 'var(--text-3)', fontSize: 11, marginTop: 6 }}>
                     {t('insights.sourceIds')}: {t('insights.entitiesCount', { n: detail.source_ids.length })} ({detail.source_ids.slice(0, 8).join(', ')}{detail.source_ids.length > 8 ? '…' : ''})
+                  </div>
+                )}
+                {isTranscriptSourceEvidence(detail.source_ids) && (
+                  <div data-testid="transcript-source-evidence" style={{ marginTop: 12, padding: 10, background: 'var(--surface-2)', borderRadius: 8 }}>
+                    <div style={{ color: 'var(--text-2)', fontSize: 12, marginBottom: 6 }}>
+                      <strong>{t('insights.source.transcript')}</strong>{' '}
+                      <code>{detail.source_ids.source.host}</code> · <code>{detail.source_ids.sessionId}</code> ·{' '}
+                      {detail.source_ids.coverage.included_turns}/{detail.source_ids.coverage.total_turns} {t('insights.sources')}
+                      {detail.source_ids.coverage.truncated ? '…' : ''}
+                    </div>
+                    <ol style={{ margin: '0 0 0 18px', padding: 0 }}>
+                      {detail.source_ids.sources.map((source, index) => (
+                        <li key={index} style={{ marginBottom: 6, lineHeight: 1.5 }}>
+                          <code style={{ fontSize: 11 }}>{source.role}</code>{' '}{source.text}
+                        </li>
+                      ))}
+                    </ol>
                   </div>
                 )}
               </div>

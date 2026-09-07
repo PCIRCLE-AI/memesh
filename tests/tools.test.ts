@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { openDatabase, closeDatabase, getDatabase } from '../src/db.js';
 import { KnowledgeGraph } from '../src/knowledge-graph.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
@@ -11,7 +13,7 @@ import { createHash } from 'node:crypto';
 import { applyProposal, executeWorkPackage, getProposalDetail, listProposals } from '../src/core/dreamer.js';
 import * as agentMessaging from '../src/core/agent-messaging.js';
 import { handleTool, TOOL_DEFINITIONS } from '../src/mcp/tools.js';
-import { normalizeClientHost } from '../src/transports/mcp/handlers.js';
+import { normalizeClientHost, resolveTranscriptWorkspace } from '../src/transports/mcp/handlers.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../src/core/agent-messaging.js';
 
 // recall's MCP payload is an object envelope ({ entities, conflicts? }), never
@@ -59,7 +61,9 @@ describe('work_package', () => {
 
   it('publishes digest/transcript actions with strict nested schemas and actionable structured failures', async () => {
     const tool = TOOL_DEFINITIONS.find(t => t.name === 'work_package')!;
-    expect(tool.description).toContain('transcript');
+    expect(tool.description).toContain('Claude Code transcript');
+    expect(tool.description).toContain('MCP workspace root');
+    expect(tool.description).not.toContain('current project’s visible conversation');
     const schema = tool.inputSchema as any;
     expect(schema.oneOf).toHaveLength(3);
     expect(schema.oneOf.every((s: any) => s.additionalProperties === false)).toBe(true);
@@ -349,13 +353,63 @@ describe('work_package', () => {
   });
 });
 
+describe('transcript workspace roots', () => {
+  it('fails closed when roots are absent, malformed, non-file, or for another project', () => {
+    const project = getProjectName(tmpDir);
+    expect(resolveTranscriptWorkspace(project, undefined)).toEqual({ transcriptWorkspaceError: 'workspace_unavailable' });
+    expect(resolveTranscriptWorkspace(project, [
+      'https://example.invalid/project',
+      'not a uri',
+      pathToFileURL(path.join(tmpDir, 'missing')).href,
+    ])).toEqual({ transcriptWorkspaceError: 'workspace_unavailable' });
+    const foreign = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-foreign-root-'));
+    try {
+      expect(resolveTranscriptWorkspace(project, [pathToFileURL(foreign).href]))
+        .toEqual({ transcriptWorkspaceError: 'workspace_unavailable' });
+    } finally {
+      fs.rmSync(foreign, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('decodes file URIs and deduplicates roots by canonical path', () => {
+    const workspace = path.join(tmpDir, 'space workspace');
+    const alias = path.join(tmpDir, 'workspace-alias');
+    fs.mkdirSync(workspace);
+    fs.symlinkSync(workspace, alias, 'dir');
+    const project = getProjectName(workspace);
+    expect(pathToFileURL(workspace).href).toContain('%20');
+    expect(resolveTranscriptWorkspace(project, [
+      pathToFileURL(workspace).href,
+      pathToFileURL(alias).href,
+    ])).toEqual({ transcriptWorkspace: fs.realpathSync(workspace) });
+  });
+
+  it('rejects two distinct matching roots as ambiguous', () => {
+    const repo = path.join(tmpDir, 'ambiguous-repo');
+    const nested = path.join(repo, 'nested');
+    fs.mkdirSync(nested, { recursive: true });
+    execFileSync('git', ['init', '--quiet', repo]);
+    const project = getProjectName(repo);
+    expect(getProjectName(nested)).toBe(project);
+    expect(resolveTranscriptWorkspace(project, [
+      pathToFileURL(repo).href,
+      pathToFileURL(nested).href,
+    ])).toEqual({ transcriptWorkspaceError: 'workspace_ambiguous' });
+  });
+});
+
 describe('transcript work_package', () => {
   let project: string;
   let transcriptDir: string;
+  let workspace: string;
   const digest = { name: 'transcript-decision', type: 'decision', observations: ['Use the parser selected in the discussion.'], tags: ['parser'] };
   const payload = (response: Awaited<ReturnType<typeof handleTool>>) => JSON.parse(response.content[0].text);
-  const prepare = async () => payload(await handleTool('work_package', { action: 'prepare', kind: 'transcript', project }));
-  const submit = (pkg: any, result = digest, extra: Record<string, unknown> = {}) => handleTool('work_package', {
+  const workPackage = (args: Record<string, unknown>) => handleTool(
+    'work_package', args, undefined, undefined,
+    { workspaceRootUris: [pathToFileURL(workspace).href] },
+  );
+  const prepare = async () => payload(await workPackage({ action: 'prepare', kind: 'transcript', project }));
+  const submit = (pkg: any, result = digest, extra: Record<string, unknown> = {}) => workPackage({
     action: 'submit', package_id: pkg.id, ref: pkg.ref, result, ...extra,
   });
   const writeSession = (id: string, entries: unknown[], modified = new Date(Date.now() - 1000)) => {
@@ -364,13 +418,14 @@ describe('transcript work_package', () => {
     fs.utimesSync(file, modified, modified);
     return file;
   };
-  const user = (text: string, cwd = tmpDir) => ({ type: 'user', cwd, message: { role: 'user', content: text } });
+  const user = (text: string, cwd = workspace) => ({ type: 'user', cwd, message: { role: 'user', content: text } });
 
   beforeEach(() => {
     vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
-    project = getProjectName(tmpDir);
+    workspace = fs.realpathSync(tmpDir);
+    project = getProjectName(workspace);
     vi.stubEnv('CLAUDE_PROJECTS_DIR', path.join(tmpDir, 'transcripts'));
-    transcriptDir = path.join(tmpDir, 'transcripts', projectTranscriptSlug(tmpDir));
+    transcriptDir = path.join(tmpDir, 'transcripts', projectTranscriptSlug(workspace));
     fs.mkdirSync(transcriptDir, { recursive: true });
   });
 
@@ -459,7 +514,7 @@ describe('transcript work_package', () => {
     const before = db.prepare('SELECT total_changes() AS n').get();
     const pkg = (await prepare()).package;
     expect(pkg).toBeDefined();
-    const deferred = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+    const deferred = await workPackage({ action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
     expect(payload(deferred)).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
     expect((await prepare()).package).toEqual(pkg);
     expect(transaction).not.toHaveBeenCalled();
@@ -479,10 +534,21 @@ describe('transcript work_package', () => {
     const row = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(staged.proposal_id) as any;
     expect(row).toMatchObject({ project, status: 'pending', source_kind: 'transcript', kind: 'digest', cluster_key: 'transcript:review-session', prompt_version: 'work-package-v1' });
     expect(JSON.parse(row.proposed_digest)).toMatchObject({ ...output, work_package: { id: pkg.id, ref: pkg.ref } });
+    const evidence = {
+      sessionId: 'review-session',
+      source: { host: 'claude-code', scope: 'mcp-workspace-root' },
+      workspaceHash: pkg.ref.workspace_hash,
+      coverage: { truncated: false, total_turns: 1, included_turns: 1 },
+      sources: [{ role: 'user', text: 'The visible evidence supports this memory.' }],
+      trust: 'untrusted',
+    };
+    expect(JSON.parse(row.source_ids)).toEqual(evidence);
+    expect(getProposalDetail(db, staged.proposal_id)?.source).toEqual(evidence);
+    expect(JSON.stringify(evidence)).not.toContain(file);
     expect(db.prepare('SELECT count(*) AS n FROM entities').get()).toMatchObject({ n: 0 });
     expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'pending' });
     const deferBefore = db.prepare('SELECT total_changes() AS n').get();
-    expect(payload(await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
+    expect(payload(await workPackage({ action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
       .toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'pending', available_action: [] });
     expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(deferBefore);
     expect(await prepare()).toMatchObject({ status: 'none_available' });
@@ -492,11 +558,11 @@ describe('transcript work_package', () => {
     expect(create).toHaveBeenCalledWith(output.name, type, expect.objectContaining({ trustOverride: 'untrusted' }));
     expect(db.prepare('SELECT type, status FROM entities').all()).toEqual([{ type, status: 'active' }]);
     expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'applied' });
-    expect(payload(await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
+    expect(payload(await workPackage({ action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
       .toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'applied', available_action: [] });
     db.prepare("UPDATE dream_proposals SET status = 'rejected' WHERE id = ?").run(staged.proposal_id);
     expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'rejected' });
-    expect(payload(await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
+    expect(payload(await workPackage({ action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
       .toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'rejected', available_action: [] });
     expect(await prepare()).toMatchObject({ status: 'none_available' });
     const conflict = await submit(pkg, { ...output, observations: ['Different result'] });
@@ -522,7 +588,7 @@ describe('transcript work_package', () => {
     const db = getDatabase();
     const before = db.prepare('SELECT total_changes() AS n').get();
     for (const extra of invalid) expect((await submit(pkg, digest, extra)).isError).toBe(true);
-    expect((await handleTool('work_package', { action: 'prepare', kind: 'transcript', project, path: 'forged' })).isError).toBe(true);
+    expect((await workPackage({ action: 'prepare', kind: 'transcript', project, path: 'forged' })).isError).toBe(true);
     expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
   });
 
@@ -532,9 +598,10 @@ describe('transcript work_package', () => {
     const db = getDatabase();
     const before = db.prepare('SELECT total_changes() AS n').get();
     for (const ref of [{ ...pkg.ref, project: 'other' }, { ...pkg.ref, session_id: 'missing' },
-      { ...pkg.ref, modified_at: new Date(0).toISOString() }, { ...pkg.ref, source_hash: '0'.repeat(64) }]) {
+      { ...pkg.ref, modified_at: new Date(0).toISOString() }, { ...pkg.ref, source_hash: '0'.repeat(64) },
+      { ...pkg.ref, workspace_hash: '0'.repeat(64) }]) {
       expect((await submit(pkg, digest, { ref })).isError).toBe(true);
-      expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref, reason: 'not_now' })).isError).toBe(true);
+      expect((await workPackage({ action: 'defer', package_id: pkg.id, ref, reason: 'not_now' })).isError).toBe(true);
     }
     expect((await submit({ ...pkg, id: '0'.repeat(64) })).isError).toBe(true);
     writeSession('fresh', [user('Changed content')], new Date(pkg.ref.modified_at));

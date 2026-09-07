@@ -28,6 +28,7 @@ const transcriptWorkPackageRef = z.object({
     session_id: workPackageText,
     modified_at: z.iso.datetime(),
     source_hash: z.string().regex(/^[a-f0-9]{64}$/),
+    workspace_hash: z.string().regex(/^[a-f0-9]{64}$/),
 }).strict();
 const workPackageIdentity = {
     package_id: z.string().regex(/^[a-f0-9]{64}$/),

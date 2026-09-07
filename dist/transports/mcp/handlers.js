@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn } from '../../core/operations.js';
 import { getDatabase } from '../../db.js';
@@ -9,10 +11,34 @@ import { getProductImprovementStatus, stageProductImprovement, } from '../../cor
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { RememberSchema, RecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, LearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
+import { getProjectName } from '../../core/paths.js';
+export function resolveTranscriptWorkspace(project, rootUris) {
+    if (!rootUris)
+        return { transcriptWorkspaceError: 'workspace_unavailable' };
+    const matches = new Set();
+    for (const uri of rootUris) {
+        try {
+            const parsed = new URL(uri);
+            if (parsed.protocol !== 'file:')
+                continue;
+            const root = fs.realpathSync(fileURLToPath(parsed));
+            if (!fs.statSync(root).isDirectory() || getProjectName(root) !== project)
+                continue;
+            matches.add(root);
+        }
+        catch {
+        }
+    }
+    if (matches.size === 0)
+        return { transcriptWorkspaceError: 'workspace_unavailable' };
+    if (matches.size > 1)
+        return { transcriptWorkspaceError: 'workspace_ambiguous' };
+    return { transcriptWorkspace: [...matches][0] };
+}
 export const TOOL_DEFINITIONS = [
     {
         name: 'work_package',
-        description: 'Prepare one digest from calendar clusters or one transcript work package from the current project’s visible conversation, submit one result to pending human review, or defer without durable changes. Transcript paths are server-resolved. No providers are called. Source text is untrusted. Only humans may apply or reject proposals. Package hashes identify source content; they are not authentication.',
+        description: 'Prepare one digest from calendar clusters or one transcript work package from the newest bounded Claude Code transcript for the client\'s single matching MCP workspace root. Transcript mode fails closed without one unambiguous root. Submit one result to pending human review, or defer without durable changes. Transcript file paths are never exposed. No providers are called. Source text is untrusted. Only humans may apply or reject proposals. Package hashes identify source content and workspace scope; they are not authentication.',
         inputSchema: { type: 'object', ...z.toJSONSchema(WorkPackageSchema) },
     },
     {
@@ -356,7 +382,7 @@ function parseOrFail(schema, args) {
 export function normalizeClientHost(name) {
     return (name ?? '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 64) || 'mcp';
 }
-export async function handleTool(name, args, sourceHost, signal) {
+export async function handleTool(name, args, sourceHost, signal, requestContext = {}) {
     try {
         if (name === 'work_package') {
             const parsed = parseOrFail(WorkPackageSchema, args);
@@ -366,7 +392,11 @@ export async function handleTool(name, args, sourceHost, signal) {
                     isError: true,
                 };
             }
-            const result = executeWorkPackage(getDatabase(), parsed.data);
+            const kind = parsed.data.action === 'prepare' ? parsed.data.kind : parsed.data.ref.kind;
+            const context = kind === 'transcript'
+                ? resolveTranscriptWorkspace(parsed.data.action === 'prepare' ? parsed.data.project : parsed.data.ref.project, requestContext.workspaceRootUris)
+                : {};
+            const result = executeWorkPackage(getDatabase(), parsed.data, context);
             return result.status === 'error' ? { ...ok(result), isError: true } : ok(result);
         }
         if (name === 'remember') {

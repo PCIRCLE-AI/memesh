@@ -23,7 +23,7 @@ host is recallable from all of them. Not installed yet? Follow
      field out if it was not said.
 3. **"What do you remember?"** — call `briefing` and relay its content. Do
    not answer from your own conversation context.
-4. **When memory could be condensed or recovered from this conversation** —
+4. **When memory could be condensed from a calendar cluster or a recent Claude Code session** —
    when the host supports interactive prompts, offer concise choices in the
    user's conversation language, such as **Dispatch agent task**, **Later**, or
    **Don't suggest again this session**.
@@ -31,8 +31,9 @@ host is recallable from all of them. Not installed yet? Follow
    durable opt-out. Dispatch means
    using `work_package` in this already-running agent session; it does not mean
    the Dashboard can start or wake an agent. Prepare either one calendar-selected
-   digest package or one package from the newest current-project session's visible
-   turns, then submit one bounded result for human review or defer without writing.
+   digest package or, when the MCP client supplies one unambiguous matching
+   workspace root, one package from its newest Claude Code session's visible
+   turns. Submit one bounded result for human review or defer without writing.
 5. **When you need another agent** — to hand off, to ask, to report back —
    first use `message discover` with the exact project when you do not already
    know the recipient. It lists only live registrations and their routing IDs,
@@ -49,7 +50,7 @@ host is recallable from all of them. Not installed yet? Follow
 
 | Tool | Purpose |
 |---|---|
-| `work_package` | Prepare one bounded untrusted digest (calendar-selected) or visible transcript (current-project session) package, submit one strictly validated result for pending human review, or defer without durable change; agents cannot apply or reject it, and package hashes identify freshness rather than authentication |
+| `work_package` | Prepare one bounded untrusted digest (calendar-selected) or transcript package from the newest Claude Code session under the client's single matching MCP workspace root; submit one strictly validated result for pending human review or defer without durable change. Submission retains bounded redacted source turns for comparison; agents cannot apply or reject, and hashes identify freshness and workspace scope rather than authentication. |
 | `remember` | Store knowledge as an entity with observations, tags, and relations |
 | `recall` | Search stored knowledge (words are OR-ed, ranked by relevance); empty query lists recent |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |

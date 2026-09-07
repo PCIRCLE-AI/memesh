@@ -16,6 +16,12 @@ All notable changes to MeMesh are documented here.
   interface locale. After an upgrade, `memesh doctor` safely names any retired
   provider-related top-level config keys that still remain on disk without
   reading, printing, or automatically deleting their values.
+- **Transcript work packages now bind to the host's MCP workspace instead of
+  the plugin-cache working directory.** Transcript mode requires one matching
+  `roots/list` entry, identifies the source as a Claude Code transcript, and
+  fails closed when the workspace is missing or ambiguous. A staged proposal
+  retains its bounded redacted turns and coverage so the Dashboard reviewer
+  can compare the proposed memory with the evidence before accepting it.
 
 ## [4.8.5] — 2026-09-05
 

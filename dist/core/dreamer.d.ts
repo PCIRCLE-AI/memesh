@@ -22,6 +22,7 @@ type WorkPackageInput = {
         session_id: string;
         modified_at: string;
         source_hash: string;
+        workspace_hash: string;
     };
 } & ({
     action: 'submit';
@@ -32,7 +33,11 @@ type WorkPackageInput = {
     action: 'defer';
     reason: 'not_now';
 }));
-export declare function executeWorkPackage(db: MemeshDatabase, input: WorkPackageInput): Record<string, unknown>;
+export interface WorkPackageContext {
+    transcriptWorkspace?: string;
+    transcriptWorkspaceError?: 'workspace_unavailable' | 'workspace_ambiguous';
+}
+export declare function executeWorkPackage(db: MemeshDatabase, input: WorkPackageInput, context?: WorkPackageContext): Record<string, unknown>;
 export interface ApplyResult {
     proposalId: number;
     digestEntityName: string;
