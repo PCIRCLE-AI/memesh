@@ -375,7 +375,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         write(`src/host-runtime/${runtime}.ts`);
         for (const extension of ['.js', '.js.map', '.d.ts', '.d.ts.map']) write(`dist/host-runtime/${runtime}${extension}`);
       }
-      const codexSession = "CODEX_THREAD_ID hook_event_name !== 'SessionStart' adapter_kind: 'codex-cli-queue' automaticCodexSessionConfig readCodexSessionConfigIfPresent codex-thread-${session.threadId}";
+      const codexSession = "CODEX_THREAD_ID hook_event_name !== 'SessionStart' hook_event_name !== 'SessionEnd' adapter_kind: 'codex-cli-queue' launchDetachedCompanion detached: true requestExactCompanionControl(state, 'retire') SESSION_END_GRACE_MS automaticCodexSessionConfig readCodexSessionConfigIfPresent codex-thread-${session.threadId}";
       write('src/host-runtime/codex-session.ts', codexSession + [
         "\nif (hookInput.hook_event_name !== 'SessionStart') return null;",
         "if (hookInput.source !== 'startup' && hookInput.source !== 'resume') return null;",
@@ -400,19 +400,19 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('skills/memesh/SKILL.md', [
         '# Skill',
         '## Durable messages and active-host delivery',
-        'message polling. On this host, an ordinary Codex CLI session with the MeMesh plugin can register automatically at SessionStart. Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`. Do not promise a stopped, missing, or replaced session will wake: a failed exact-session native delivery is not replayed automatically. message storage report',
+        'message polling. On macOS and Linux, an ordinary Codex CLI session with the MeMesh plugin registers automatically at SessionStart. SessionEnd retains a bounded 45-second idle queue window. This does not wake a stopped UI. Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`. Do not promise a stopped, missing, or replaced session will wake: a failed exact-session native delivery is not replayed automatically. message storage report',
       ].join('\n'));
       write('llms-install.md', [
         '# Install',
         '## 2. Terminal / CLI (npm global)',
-        '22.13.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report. The ordinary Codex path below is the documented native local wakeup path.',
+        '22.13.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report. The ordinary Codex path below is the documented bounded native queue path.',
         'If the session is stopped, missing, or disconnected, MeMesh neither starts nor replaces it. Failed exact-session native delivery is not replayed automatically after a later registration; the sender must retry deliberately.',
         '## 3. Codex CLI',
       ].join('\n'));
       write('README.md', [
         '# README',
         '## The fine print',
-        'message registers automatically no manual `agent setup` is required without polling or a human reminder stopped, missing, or disconnected Codex session message storage report',
+        'message registers automatically no manual `agent setup` is required without polling or a human reminder bounded 45-second idle queue window stopped, missing, or disconnected Codex session message storage report',
         'untrusted JSON-encoded payload is limited to 65,536 UTF-8 bytes (64 KiB); intake, acknowledgement, and workflow disposition are separate facts.',
         'The complete native envelope is limited to 16,384 bytes (16 KiB); native_message_too_large and recipient_unavailable are distinct. Principal targets retain durable store-and-forward behavior.',
         'With the plugin, each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity, and a failed exact-session native delivery is not replayed automatically; the sender must retry deliberately. Do not assume Codex Desktop or an unattached task registers unless that exact running session appears in `message discover`.',
@@ -420,7 +420,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('README.zh-TW.md', [
         '# README',
         '## 細節',
-        'message 自動以 thread-scoped identity 註冊 不需要手動執行 `agent setup` 沒有輪詢或人工提醒 停止、缺失或斷線 message storage report',
+        'message 自動以 thread-scoped identity 註冊 不需要手動執行 `agent setup` 沒有輪詢或人工提醒 45 秒的有限 idle queue 視窗 停止、缺失或斷線 message storage report',
         'JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload；intake、acknowledgement 與 workflow disposition 分開記錄。',
         '完整 native envelope 不超過 16,384 bytes（16 KiB）；native_message_too_large 與 recipient_unavailable 分開回報。Principal target 保留 durable store-and-forward。',
         '具有有效 identity 並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊。失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試。不要假設 Codex Desktop 或未連接的 task 已註冊，除非確切 session 出現在 `message discover`。',
@@ -428,7 +428,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('README.de.md', [
         '# README',
         '## Das Kleingedruckte',
-        'message registriert sich ein manuelles `agent setup` ist nicht erforderlich ohne Polling oder menschliche Erinnerung gestoppte, fehlende oder getrennte Codex-Session message storage report',
+        'message registriert sich ein manuelles `agent setup` ist nicht erforderlich ohne Polling oder menschliche Erinnerung begrenztes 45-Sekunden-Fenster gestoppte, fehlende oder getrennte Codex-Session message storage report',
         'Beim nicht vertrauenswürdigen, JSON-kodierten Payload gelten 65.536 UTF-8-Bytes (64 KiB); Intake, Bestätigung und Workflow-Status werden getrennt protokollieren.',
         'Die vollständige native Envelope ist auf 16.384 Bytes (16 KiB) begrenzt; native_message_too_large und recipient_unavailable bleiben getrennt. Principal-Ziele behalten Durable Store-and-Forward.',
         'Mit dem Plugin registriert sich jeder gestartete oder fortgesetzte gewöhnliche Codex-CLI-Thread mit gültiger Thread-Identität und vorhandenem Arbeitsverzeichnis automatisch mit einer threadbezogenen Identität, und eine fehlgeschlagene native Exact-Session-Zustellung wird nicht automatisch wiederholt, der Absender muss bewusst erneut senden. Nimm bei Codex Desktop oder einem nicht angehängten Task keine Registrierung an, sofern er nicht in `message discover` erscheint.',
@@ -438,7 +438,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('.codex-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.codex-plugin/mcp.json"');
       write('.codex-plugin/mcp.json', '"mcpServers" "memesh" "command": "node" "args": ["./dist/mcp/server.js"] "cwd": "."');
       write('.claude-plugin/marketplace.json', '"name": "pcircle-memesh" "version"');
-      write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume "async": true');
+      write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume SessionEnd');
       write('package.json', JSON.stringify({
         engines: { node: '>=22.13.0' },
         scripts: { release: 'check-agent-message-sync.mjs test:packaged' },

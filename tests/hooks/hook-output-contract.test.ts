@@ -28,6 +28,8 @@ import { removeTempDir } from '../helpers/temp-dir.js';
 interface HookCase {
   /** Filename under scripts/hooks/ */
   file: string;
+  /** Explicit repository-relative command for hooks outside scripts/hooks/. */
+  commandPath?: string;
   /** Event it is bound to in hooks/hooks.json */
   boundEvent: string;
   /** Representative stdin payload */
@@ -179,6 +181,27 @@ const HOOK_CASES: HookCase[] = [
       tool_input: { plan: 'Ship the decision-nudge hook' },
     },
   },
+  {
+    file: 'codex-session.js',
+    commandPath: 'dist/host-runtime/codex-session.js',
+    boundEvent: 'SessionStart',
+    input: {
+      session_id: '00000000-0000-4000-8000-000000000001',
+      cwd: '/tmp/contract-project',
+      hook_event_name: 'SessionStart',
+      source: 'startup',
+    },
+  },
+  {
+    file: 'codex-session.js',
+    commandPath: 'dist/host-runtime/codex-session.js',
+    boundEvent: 'SessionEnd',
+    input: {
+      session_id: '00000000-0000-4000-8000-000000000001',
+      cwd: '/tmp/contract-project',
+      hook_event_name: 'SessionEnd',
+    },
+  },
 ];
 
 describe('Feature: Claude Code hook-output contract', () => {
@@ -236,7 +259,7 @@ describe('Feature: Claude Code hook-output contract', () => {
   function runHook(hookCase: HookCase): { stdout: string; status: number; stderr: string } {
     if (hookCase.seed) seedMemories(hookCase.seed);
     if (hookCase.patchMetadata) patchMetadata(hookCase.patchMetadata);
-    const hookPath = path.resolve('scripts/hooks', hookCase.file);
+    const hookPath = path.resolve(hookCase.commandPath ?? path.join('scripts/hooks', hookCase.file));
     const result = spawnSync('node', [hookPath], {
       input: JSON.stringify(hookCase.input),
       env: {
