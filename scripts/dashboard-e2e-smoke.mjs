@@ -396,10 +396,10 @@ async function main() {
       await expectVisible(reviewPage, 'A local agent staged this visible transcript finding.');
       const transcriptEvidence = reviewPage.getByTestId('transcript-source-evidence');
       await transcriptEvidence.waitFor({ state: 'visible', timeout: 10000 });
-      await transcriptEvidence.getByText('Visible redacted evidence: ***REDACTED***', { exact: true })
-        .waitFor({ state: 'visible', timeout: 10000 });
-      await transcriptEvidence.getByText('Bounded transcript conclusion.', { exact: true })
-        .waitFor({ state: 'visible', timeout: 10000 });
+      const transcriptEvidenceText = await transcriptEvidence.innerText();
+      assert.match(transcriptEvidenceText, /2\/3 sources/);
+      assert.match(transcriptEvidenceText, /user\s+Visible redacted evidence: \*\*\*REDACTED\*\*\*/);
+      assert.match(transcriptEvidenceText, /assistant\s+Bounded transcript conclusion\./);
       assert.equal(await acceptButton.isVisible(), true, 'Accept must appear after full proposal detail loads');
       assert.equal(await acceptButton.isEnabled(), true, 'Accept must be enabled after full proposal detail loads');
 
