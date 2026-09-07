@@ -292,6 +292,7 @@ describe('Claude trusted intake arming', () => {
     expect(prompt).toMatch(/next memesh-channel message/i);
     expect(prompt).toMatch(/untrusted data/i);
     expect(prompt).toMatch(/action [`"]?intake/i);
+    expect(prompt).toMatch(/idempotency_key.*intake-.*exact message_id/i);
     expect(prompt).toMatch(/run no other tools/i);
   });
 

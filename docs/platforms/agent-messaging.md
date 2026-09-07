@@ -328,7 +328,8 @@ precede nonce generation. Only then does the runner wait for
 `lease_expires_at_ms` to advance, send one inert exact-session payload containing
 only its purpose and nonce, and wait for an
 `intake` receipt on that message whose actor is that session — the model must
-call `intake` under the prior trusted instruction, which is what makes the proof
+call `intake` exactly once under the prior trusted instruction, using the
+documented `intake-<message_id>` idempotency key. This is what makes the proof
 model-visible rather than transport-visible without treating the untrusted
 payload as instructions. The operator is then asked to exit the session, and
 the same fail-closed assertion runs. A reminder entered only after delivery is
@@ -344,15 +345,13 @@ Each run writes a JSON report: the repository revision, every `message_id` and
 a `limitations` list. The exit code is 0 only when every required step passed.
 The limitations these checks always declare:
 
-- The Codex **registration** half is harness-driven: the check drives the
-  shipped `src/host-runtime/codex-session.ts` companion directly with the
-  `SessionStart` payload the packaged plugin hook supplies, because a scripted
-  `codex exec --ignore-user-config` turn does not establish plugin-hook loading.
-  No `codex-session.json` is created, so the companion does exercise automatic
-  thread-scoped registration. Dispatch → `codex queue` → model-visible reply is
-  product-path evidence; plugin-loader invocation itself is not proved by this
-  mode. The bounded `--codex-session-auto-registration` mode additionally proves
-  a clean-home packaged router → native queue boundary without using an account.
+- The Codex journey installs the candidate plugin into a caller-created
+  disposable authenticated `CODEX_HOME`, verifies the installed cache bytes,
+  and exercises that plugin's SessionStart and SessionEnd hooks through a real
+  Codex thread. It does not mutate the owner's normal Codex configuration. The
+  bounded `--codex-session-auto-registration` mode remains a narrower
+  account-free packaged router → native queue check and is not a substitute for
+  this installed-plugin journey.
 - The interactive Claude session is **outside** this check's isolation.
   `--setting-sources ""` is accepted by the CLI (an invalid source name is
   rejected, an empty list is not), but it is not verified to exclude
