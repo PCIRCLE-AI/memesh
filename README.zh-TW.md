@@ -42,7 +42,7 @@ MeMesh 幫它記住。Claude Code hooks 會記錄並還原日常工作脈絡；�
 
 左邊是自動記錄（對話、commit、修掉的錯誤），右邊是適時提醒（開新對話時、改檔案之前），中間是存放決定、教訓與關聯的那個檔案。
 
-- **在適當時機記錄、提醒與防護。** MeMesh 的 Claude Code 與 Codex 整合共提供 **9 個 hook**：其中 8 個 Claude Code hook 分別在開新對話、改檔案前、`git commit` 後、計畫核准或你回答問題後、Claude 停下來時、對話被壓縮前、你說「記下來」時（聽得懂 5 種語言），以及執行可能重犯已接受教訓的危險指令前運作。計畫/問題與「記下來」hook 只會提醒 agent 呼叫 `remember`；另一個 Codex SessionStart companion 只會註冊符合資格的一般 Codex CLI session。
+- **在適當時機記錄、提醒與防護。** MeMesh 的 Claude Code 與 Codex 整合共提供 **10 個 hook**：其中 8 個 Claude Code hook 分別在開新對話、改檔案前、`git commit` 後、計畫核准或你回答問題後、Claude 停下來時、對話被壓縮前、你說「記下來」時（聽得懂 5 種語言），以及執行可能重犯已接受教訓的危險指令前運作。計畫/問題與「記下來」hook 只會提醒 agent 呼叫 `remember`；另一組 Codex SessionStart/SessionEnd lifecycle 會註冊並退場符合資格的一般 Codex CLI session。
 - **所有工具共用一份記憶。** 今天在 Claude Code 存的決定，明天 Codex 或 Cursor 也用得到。
 - **agent 之間可以留言。** 本機的耐久收件匣可跨重啟保存；在 macOS 或 Linux 上，確切且活動中的一般 Codex CLI session 裝有 MeMesh plugin 時，也能透過原生 queue 收到有界訊息。
 - **有儀表板** 可以瀏覽全部內容：5 個分頁、11 種語言，在 `http://localhost:3737/dashboard`。
@@ -162,7 +162,7 @@ memesh serve           # 啟動本機 server 並印出儀表板網址
 **agent 訊息的完整規則**（完整說明：[docs/platforms/agent-messaging.md](docs/platforms/agent-messaging.md)）：
 
 - 今天就能做的：MCP、HTTP 或 CLI sender 可把一份 JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload 耐久化送給一個指定的本機 recipient。接收端可另行擷取、在重啟後用 opaque cursor 補收，並把 intake、acknowledgement、workflow disposition 與 host activation 分開記錄。
-- 啟用 MeMesh Codex plugin 後，每個具有有效 thread identity 與現有工作目錄、並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊，不需要手動執行 `agent setup`。確切活動中的 session 可在沒有輪詢或人工提醒下透過原生 queue 收到一則完整訊息，也不需要再次 fetch inbox；只有某個 workspace 需要穩定的命名 principal 時，才需選用 `memesh agent setup codex-session`。包含 routing metadata 與 payload 的完整 native envelope 另有 16,384 bytes（16 KiB）上限。exact-session send 只有在原生 queue 接受後才成功；完整 envelope 過大時回報 `native_message_too_large`，其他無法使用或拒絕的 session 則回報 `recipient_unavailable`。scope 相符的 recovery data 仍會保留，Principal target 在無法原生傳遞時仍保有 durable store-and-forward。原生接受不代表 acknowledgement 或 workflow disposition，原生訊息不得包含 secrets。
+- 啟用 MeMesh Codex plugin 後，每個具有有效 thread identity 與現有工作目錄、並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊，不需要手動執行 `agent setup`。SessionStart 會啟動 owner-private detached companion，因為 Codex CLI 結束時會回收 async hook child；SessionEnd 保留 45 秒的有限 idle queue 視窗，resume 會取代前一個 exact generation，逾時則移除 registration。在 idle 視窗內被 queue 接受的訊息，會在同一 thread resume 時進入模型；這不代表已停止的 UI 被自動喚醒。只有某個 workspace 需要穩定的命名 principal 時，才需選用 `memesh agent setup codex-session`。包含 routing metadata 與 payload 的完整 native envelope 另有 16,384 bytes（16 KiB）上限。exact-session send 只有在原生 queue 接受後才成功；完整 envelope 過大時回報 `native_message_too_large`，其他無法使用或拒絕的 session 則回報 `recipient_unavailable`。scope 相符的 recovery data 仍會保留，Principal target 在無法原生傳遞時仍保有 durable store-and-forward。原生接受不代表 acknowledgement 或 workflow disposition，原生訊息不得包含 secrets。
 - 已停止、缺失或斷線的 Codex session 不會被喚醒，也不會被別的對話頂替；失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試。scope 相符的 recovery data 仍會保留，`memesh message storage report` 可以看目前存了什麼。原生傳遞目前只支援 macOS 和 Linux。
 - 這條文件化的原生路徑涵蓋一般 Codex CLI。除非確切且正在執行的 session 出現在 `message discover`，否則不要假設 Codex Desktop 或未連接的 task 已註冊；這是證據邊界，不代表這些 host 一律不相容。
 

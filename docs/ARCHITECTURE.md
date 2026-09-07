@@ -358,9 +358,9 @@ Foreign key cascades: deleting an entity automatically deletes its observations,
 
 ## Hook Architecture
 
-Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecycle events, while the separate Codex SessionStart companion registers eligible ordinary Codex CLI sessions.
+Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions.
 
-### Hook Commands (9 hooks)
+### Hook Commands (10 hooks)
 
 | Hook | Event | Purpose |
 |------|-------|---------|
@@ -372,7 +372,7 @@ Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecy
 | pre-compact.js | PreCompact | Save knowledge before compaction |
 | user-prompt-intent.js | UserPromptSubmit | Detect "remember" intent (5 languages: en, es, fr, pt, zh-TW) and remind Claude to use mcp__memesh__remember |
 | guard-check.js | PreToolUse (Bash) | Fire accepted lesson-guards against the command about to run (warn-only; fires counted) |
-| codex-session.js | Codex SessionStart (startup/resume, async) | Automatically register an eligible exact live ordinary Codex CLI thread on the current protocol-versioned router endpoint for bounded full-message native delivery; a matching owner-private config optionally overrides its project/principal |
+| codex-session.js | Codex SessionStart (startup/resume) + SessionEnd | Launch an owner-private detached registration companion, retain a bounded 45-second idle queue window after SessionEnd, replace the exact generation on resume, and retire it at expiry; a matching owner-private config optionally overrides project/principal |
 
 ### Pre-Edit Recall (`scripts/hooks/pre-edit-recall.js`)
 

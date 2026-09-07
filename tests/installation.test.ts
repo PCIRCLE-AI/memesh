@@ -185,7 +185,8 @@ describe('Installation Verification', () => {
 
     it('teaches durable message delivery without claiming stopped-session wakeup', () => {
       const skill = fs.readFileSync('skills/memesh/SKILL.md', 'utf8');
-      expect(skill).toContain('active compatible managed host');
+      expect(skill).toContain('bounded 45-second idle queue window');
+      expect(skill).toContain('This does not wake a stopped UI');
       expect(skill).toContain('removes polling');
       expect(skill).toContain('stopped, missing, or replaced session');
     });

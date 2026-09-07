@@ -68,7 +68,7 @@ MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 memesh doctor
 ```
 
 This probe does not exercise a real host session and never wakes a stopped
-session. The ordinary Codex path below is the documented native local wakeup
+session. The ordinary Codex path below is the documented bounded native queue
 path; `poll`/`watch` and cursor recovery remain available for compatibility and
 diagnosis.
 
@@ -143,12 +143,15 @@ memesh agent setup codex-session --project my-project --principal codex-recipien
 
 This stores the configured workspace realpath and principal in
 `~/.memesh/hosts/codex-session.json`. On `SessionStart` (`startup` or
-`resume`), an asynchronous companion validates the Codex thread ID and cwd. A
+`resume`), a short hook validates the Codex thread ID and cwd, then launches an
+owner-private detached companion. SessionEnd leaves a bounded 45-second idle
+queue window; resume replaces the prior generation, and expiry removes it. A
 matching valid override supplies its project and principal; another workspace
 keeps automatic thread-scoped registration. A malformed or insecure override
-fails closed. The authenticated router sends the active exact session one
+fails closed. The authenticated router sends the exact registered thread one
 bounded full message through native `codex queue`; no second `message fetch`
-is required for that live delivery.
+is required. A message accepted during the idle window becomes model-visible
+when the same thread resumes; a stopped UI is not awakened.
 
 `host_accept` records only that the local Codex queue accepted that message. It
 does not prove an agent read the payload, acknowledged it, or accepted the
@@ -217,7 +220,7 @@ memesh doctor
 ## 3. Codex CLI
 
 Install from the Codex plugin marketplace for zero-config MCP tools and the
-SessionStart companion:
+SessionStart/SessionEnd companion lifecycle:
 
 ```
 codex plugin marketplace add PCIRCLE-AI/memesh

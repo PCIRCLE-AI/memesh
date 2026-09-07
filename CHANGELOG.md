@@ -7,12 +7,14 @@ All notable changes to MeMesh are documented here.
 ### Added
 
 - **Automatic exact-session registration support for eligible ordinary Codex CLI plugin sessions.**
-  The packaged SessionStart companion accepts startup and resume on macOS or Linux,
-  creates a thread-scoped registration on the private local router, and allows an
-  eligible active session to receive one bounded native message while the durable
-  inbox remains the recovery path. The companion, manifest, and packaged harness are
-  release-gated; an actual Codex plugin-loader invocation remains a separate runtime
-  receipt and is not implied by those checks.
+  The packaged SessionStart hook accepts startup and resume on macOS or Linux,
+  launches an owner-private detached thread-scoped companion, and keeps a bounded
+  45-second idle queue window after SessionEnd. Resume replaces the prior exact
+  generation; expiry removes it. This closes the Codex lifecycle gap where the CLI
+  reaped an async hook child before `codex queue` could accept the idle thread. The
+  release gate installs the exact candidate plugin into a disposable authenticated
+  Codex home and proves registration, heartbeat, native acceptance, same-thread
+  model readback, resume supersession, expiry cleanup, and durable fallback.
   Native acceptance, durable fetch, acknowledgement, and final disposition
   remain separate states with explicit size and unavailable-recipient errors.
 

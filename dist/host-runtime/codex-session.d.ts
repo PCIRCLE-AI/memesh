@@ -20,7 +20,15 @@ export interface CodexSessionCompanionDependencies {
     connect?: typeof connectRouterHost;
     realpath?: typeof fs.realpathSync;
 }
+export declare function codexCompanionStatePath(dataDir: string, threadId: string): string;
+export declare function codexCompanionControlSocketPath(dataDir: string, threadId: string): string;
+export declare function supersedeCodexSessionCompanion(dataDir: string, hookInput: CodexSessionStartInput, environment: {
+    PLUGIN_ROOT?: string;
+}, realpath?: typeof fs.realpathSync): Promise<boolean>;
 export declare function startCodexSessionCompanion(config: CodexSessionHostConfig | undefined, hookInput: CodexSessionStartInput, environment: {
     PLUGIN_ROOT?: string;
 }, dependencies?: CodexSessionCompanionDependencies): Promise<RouterHostConnection | null>;
+export declare function endCodexSessionCompanion(dataDir: string, hookInput: CodexSessionStartInput, environment: {
+    PLUGIN_ROOT?: string;
+}, realpath?: typeof fs.realpathSync): Promise<boolean>;
 //# sourceMappingURL=codex-session.d.ts.map

@@ -136,17 +136,22 @@ evidence unless that exact live session registers with the router and the
 result is directly verified. This is a scope boundary for evidence, not a
 claim that Codex Desktop is universally unsupported.
 
-On `SessionStart` for `startup` or `resume`, the asynchronous companion checks
-the Codex thread identity and cwd before it creates owner-private router state
-or connects. A missing or malformed identity, compact lifecycle input, invalid
-cwd, insecure explicit override, or failed/disconnected connection does not
-register a host and does not wake anything.
+On `SessionStart` for `startup` or `resume`, a short hook validates the Codex
+thread identity and cwd, then launches an owner-private detached companion.
+Detachment is required because Codex reaps an async hook child when the CLI
+process exits, while `codex queue` accepts the thread only after its active
+writer is gone. `SessionEnd` leaves a bounded 45-second idle queue window;
+resume replaces the prior exact generation through its private control socket,
+and expiry removes the registration. A missing or malformed identity, invalid
+cwd, insecure explicit override, or failed connection does not register a host.
 
 For a registered session, MeMesh invokes `codex queue` with one untrusted full
 envelope capped at 16,384 bytes (16 KiB), including routing metadata and payload.
 The separate durable JSON-encoded payload limit is 65,536 bytes (64 KiB). The exact-session sender returns
 `native_delivery.status: "native_accepted"` only after the queue accepts it;
 Codex does not need a second `message fetch` to inspect that native message.
+For ordinary CLI, a message accepted in the idle window becomes model-visible
+when that same thread resumes; it does not wake a stopped terminal or Desktop UI.
 The persisted `host_accept` is neither agent readback nor an `ack` or workflow
 disposition. Codex exposes message text only through its `--message` process
 argument, so same-user process inspection may observe it while the short-lived
@@ -240,7 +245,9 @@ close that gap by requiring evidence that could only have come out of a running
 model.
 
 ```bash
-TMPDIR=/private/tmp npm run qa:live-journey -- --host codex  --out .qa/codex-model-report.json
+MEMESH_CODEX_QA_HOME="$(mktemp -d /private/tmp/memesh-codex-qa.XXXXXX)"
+CODEX_HOME="$MEMESH_CODEX_QA_HOME" codex login
+TMPDIR=/private/tmp npm run qa:live-journey -- --host codex --codex-home "$MEMESH_CODEX_QA_HOME" --out .qa/codex-report.json
 TMPDIR=/private/tmp npm run qa:live-journey -- --host claude --out .qa/claude-report.json
 ```
 

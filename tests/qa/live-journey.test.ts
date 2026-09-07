@@ -32,6 +32,7 @@ import {
   assertClaudePluginIsolationConfirmation,
   assertCodexRanNoCommands,
   assertCodexReply,
+  assertInstalledCodexPluginJourney,
   assertCompanionRunning,
   assertDistPresent,
   assertExactCodexQueueRouting,
@@ -46,6 +47,7 @@ import {
   assertNotCi,
   assertSupportedPlatform,
   assertOutsideOwnerMemesh,
+  assertTaskOwnedCodexHome,
   assertRecipientUnavailable,
   assertSocketPathFits,
   awaitSessionDisconnect,
@@ -149,12 +151,12 @@ describe('parseArgs', () => {
   });
 
   it('accepts each supported host', () => {
-    expect(parseArgs(['--host', 'codex']).host).toBe('codex');
+    expect(parseArgs(['--host', 'codex', '--codex-home', '/private/tmp/codex-home']).host).toBe('codex');
     expect(parseArgs(['--host', 'claude']).host).toBe('claude');
   });
 
   it('defaults out/keep/wait-ms', () => {
-    const parsed = parseArgs(['--host', 'codex']);
+    const parsed = parseArgs(['--host', 'codex', '--codex-home', '/private/tmp/codex-home']);
     expect(parsed.out).toBeNull();
     expect(parsed.keep).toBe(false);
     expect(parsed.waitMs).toBe(DEFAULT_WAIT_MS);
@@ -165,12 +167,18 @@ describe('parseArgs', () => {
     expect(parsed).toMatchObject({ host: 'claude', out: 'report.json', keep: true, waitMs: 30_000 });
   });
 
+  it('requires an isolated Codex home instead of falling back to the owner configuration', () => {
+    expect(() => parseArgs(['--host', 'codex'])).toThrow(/requires --codex-home/);
+    expect(() => parseArgs(['--host', 'claude', '--codex-home', '/private/tmp/codex-home']))
+      .toThrow(/only with --host codex/);
+  });
+
   it('requires a host', () => {
     expect(() => parseArgs([])).toThrow(/--host is required.*codex-session-auto-registration/);
   });
 
   it('rejects combining automatic registration with a host mode', () => {
-    expect(() => parseArgs(['--codex-session-auto-registration', '--host', 'codex']))
+    expect(() => parseArgs(['--codex-session-auto-registration', '--host', 'codex', '--codex-home', '/private/tmp/codex-home']))
       .toThrow(/cannot be combined with --host/);
   });
 
@@ -205,8 +213,9 @@ describe('--help', () => {
     expect(text).toMatch(/issue #275/);
   });
 
-  it('discloses the harness-driven Codex registration', () => {
-    expect(helpText()).toMatch(/registration is harness-driven/);
+  it('documents the isolated installed-plugin Codex registration', () => {
+    expect(helpText()).toMatch(/--codex-home/);
+    expect(helpText()).toMatch(/never starts the companion itself/);
   });
 
   it('documents the bounded automatic-registration invocation', () => {
@@ -331,6 +340,7 @@ describe('live-journey report contract', () => {
     expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain(
       'Codex resume registration superseded the prior generation',
     );
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain('Codex resumed lease renewed before expiry');
     expect(REQUIRED_LIVE_JOURNEY_STEPS.claude).toContain('Claude lease renewed before expiry');
     expect(REQUIRED_LIVE_JOURNEY_STEPS.claude).toContain(
       'operator attested that the trusted intake prompt was submitted and READY observed',
@@ -542,6 +552,36 @@ describe('assertCodexReply', () => {
     });
     expect(() => assertCodexReply({ jsonl: withCommand, ...expected }))
       .toThrow(/non-answer items \(item:command_execution\)/);
+  });
+
+  it('allows only the installed plugin skill auto-load when it contains none of the proof values', () => {
+    const skill = '/tmp/plugin/skills/memesh/SKILL.md';
+    const withSkillLoad = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
+      extraItems: [{ id: 'item_9', type: 'command_execution', command: `cat ${skill}`, aggregated_output: 'skill text', exit_code: 0 }],
+    });
+    expect(assertCodexReply({ jsonl: withSkillLoad, ...expected, allowedSkillPath: skill }))
+      .toContain(`CODEX_RECEIVED_${SENTINEL}`);
+  });
+
+  it('rejects a skill auto-load whose output contains a proof identifier', () => {
+    const skill = '/tmp/plugin/skills/memesh/SKILL.md';
+    const leaking = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
+      extraItems: [{ id: 'item_9', type: 'command_execution', command: `cat ${skill}`, aggregated_output: MESSAGE_ID, exit_code: 0 }],
+    });
+    expect(() => assertCodexReply({ jsonl: leaking, ...expected, allowedSkillPath: skill }))
+      .toThrow(/non-answer items/);
+  });
+
+  it('allows only the failed automatic work-package probe when it contains no proof identifier', () => {
+    const project = 'memesh-live-journey~scope';
+    const withProbe = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
+      extraItems: [{
+        id: 'item_9', type: 'mcp_tool_call', server: 'memesh', tool: 'work_package', status: 'failed',
+        arguments: { action: 'prepare', kind: 'digest', project },
+      }],
+    });
+    expect(assertCodexReply({ jsonl: withProbe, ...expected, allowedProject: project }))
+      .toContain(`CODEX_RECEIVED_${SENTINEL}`);
   });
 
   it('rejects NO_ENVELOPE with the reason, not a generic mismatch', () => {
@@ -886,6 +926,104 @@ describe('ordinary MCP registration boundary', () => {
       .toThrow(/exited before its live registration was verified/);
     expect(() => assertCompanionRunning({ exitCode: null, signalCode: 'SIGTERM' }, 'companion'))
       .toThrow(/exited before its live registration was verified/);
+  });
+});
+
+describe('installed Codex plugin lifecycle proof', () => {
+  const startupCard = {
+    session_id: THREAD,
+    principal_id: `codex-thread-${THREAD}`,
+    host_kind: 'codex',
+    generation: 1,
+  };
+  const complete = (): Parameters<typeof assertInstalledCodexPluginJourney>[0] => ({
+    isolatedCodexHome: true,
+    candidatePluginInstalled: true,
+    candidateCacheVerified: true,
+    hookTrustBypass: true,
+    runnerStartedCompanion: false,
+    startupLeaseRenewed: true,
+    resumeLeaseRenewed: true,
+    threadId: THREAD,
+    startupCard,
+    resumedCard: { ...startupCard, generation: 2 },
+  });
+
+  it('accepts a candidate-installed, plugin-loaded startup followed by a real resume supersession', () => {
+    expect(assertInstalledCodexPluginJourney(complete())).toMatchObject({
+      startup: startupCard,
+      resumed: { generation: 2 },
+    });
+  });
+
+  it('rejects a hook-trust flag by itself', () => {
+    const evidence = complete();
+    evidence.candidatePluginInstalled = false;
+    evidence.candidateCacheVerified = false;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/hook flags alone are not proof/);
+  });
+
+  it('rejects a fake or unverified candidate cache', () => {
+    const evidence = complete();
+    evidence.candidateCacheVerified = false;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/candidate plugin installation and cache identity/);
+  });
+
+  it('rejects a runner that manually started the companion', () => {
+    const evidence = complete();
+    evidence.runnerStartedCompanion = true;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/manually started a companion/);
+  });
+
+  it('rejects an absent exact-thread registration', () => {
+    const evidence = complete();
+    evidence.startupCard = null;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/registration was not observed/);
+  });
+
+  it('rejects a resume that does not increment exactly one generation', () => {
+    const evidence = complete();
+    evidence.resumedCard = { ...startupCard, generation: 1 };
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/did not supersede/);
+  });
+
+  it('rejects a resumed session without its own heartbeat renewal', () => {
+    const evidence = complete();
+    evidence.resumeLeaseRenewed = false;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/both the startup and resumed active sessions/);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('task-owned Codex home boundary', () => {
+  const identity = (candidate: string) => candidate;
+
+  it('accepts only an existing temporary home outside the owner configuration', () => {
+    const temporary = fs.mkdtempSync(path.join('/private/tmp', 'memesh-codex-home-test-'));
+    try {
+      expect(assertTaskOwnedCodexHome({
+        codexHome: temporary,
+        ownerCodexHome: '/Users/example/.codex',
+        temporaryRoot: '/private/tmp',
+        realpath: identity,
+      })).toBe(temporary);
+    } finally {
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects owner and non-temporary homes', () => {
+    expect(() => assertTaskOwnedCodexHome({
+      codexHome: '/Users/example/.codex',
+      ownerCodexHome: '/Users/example/.codex',
+      temporaryRoot: '/private/tmp',
+      realpath: identity,
+    })).toThrow(/owner CODEX_HOME/);
+    expect(() => assertTaskOwnedCodexHome({
+      codexHome: '/Users/example/codex-test',
+      ownerCodexHome: '/Users/example/.codex',
+      temporaryRoot: '/private/tmp',
+      realpath: identity,
+    })).toThrow(/outside the allowed temporary root/);
   });
 });
 

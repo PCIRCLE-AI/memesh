@@ -1,10 +1,17 @@
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getProjectName } from '../../src/core/paths.js';
 import { execFileSync } from 'node:child_process';
-import { startCodexSessionCompanion } from '../../src/host-runtime/codex-session.js';
+import {
+  codexCompanionControlSocketPath,
+  codexCompanionStatePath,
+  endCodexSessionCompanion,
+  startCodexSessionCompanion,
+  supersedeCodexSessionCompanion,
+} from '../../src/host-runtime/codex-session.js';
 
 const tempDirs: string[] = [];
 const threadId = '01a041b4-5c67-75b3-9505-4e33d7942b8e';
@@ -39,6 +46,56 @@ function automaticDataDir(dir: string): string {
   const dataDir = path.join(dir, 'memesh-data');
   process.env.MEMESH_DB_PATH = path.join(dataDir, 'knowledge-graph.db');
   return dataDir;
+}
+
+async function stageCompanionState(input: {
+  dataDir: string;
+  id?: string;
+  workspace: string;
+  token?: string;
+  pid?: number;
+  malformed?: boolean;
+}) {
+  const id = input.id ?? threadId;
+  const statePath = codexCompanionStatePath(input.dataDir, id);
+  const controlSocket = codexCompanionControlSocketPath(input.dataDir, id);
+  const token = input.token ?? 'a'.repeat(32);
+  if (input.malformed) {
+    fs.writeFileSync(statePath, '{not-json\n', { mode: 0o600 });
+    return { statePath, controlSocket, close: async () => undefined, seen: () => false };
+  }
+  fs.writeFileSync(statePath, `${JSON.stringify({
+    version: 1,
+    pid: input.pid ?? process.pid,
+    thread_id: id,
+    workspace: fs.realpathSync(input.workspace),
+    token,
+    control_socket: controlSocket,
+  })}\n`, { mode: 0o600 });
+  const actions: string[] = [];
+  const server = net.createServer((socket) => {
+    let text = '';
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => { text += chunk; });
+    socket.once('end', () => {
+      const message = JSON.parse(text) as { action?: string; token?: string };
+      if ((message.action === 'terminate' || message.action === 'retire') && message.token === token) {
+        actions.push(message.action);
+        if (message.action === 'terminate') fs.unlinkSync(statePath);
+        socket.end('terminated\n');
+      } else socket.end('rejected\n');
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(controlSocket, () => resolve());
+  });
+  return {
+    statePath,
+    controlSocket,
+    close: async () => new Promise<void>((resolve) => server.close(() => resolve())),
+    seen: (action: string) => actions.includes(action),
+  };
 }
 
 describe('ordinary Codex session companion', () => {
@@ -284,5 +341,92 @@ describe('ordinary Codex session companion', () => {
 
     expect(connect).not.toHaveBeenCalled();
     expect(fs.existsSync(config.router_socket as string)).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('Codex SessionEnd companion lifecycle', () => {
+  const plugin = { PLUGIN_ROOT: '/plugin' };
+
+  it('SessionEnd starts bounded retirement for only the exact matching companion', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const staged = await stageCompanionState({ dataDir, workspace: config.workspace as string });
+    try {
+      await expect(endCodexSessionCompanion(
+        dataDir,
+        { ...hook, hook_event_name: 'SessionEnd' },
+        plugin,
+      )).resolves.toBe(true);
+      expect(staged.seen('retire')).toBe(true);
+      expect(staged.seen('terminate')).toBe(false);
+      expect(fs.existsSync(staged.statePath)).toBe(true);
+    } finally {
+      await staged.close();
+    }
+  });
+
+  it('resume supersession terminates the prior exact companion before a replacement may register', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const staged = await stageCompanionState({ dataDir, workspace: config.workspace as string });
+    try {
+      await expect(supersedeCodexSessionCompanion(
+        dataDir,
+        { ...hook, source: 'resume' },
+        plugin,
+      )).resolves.toBe(true);
+      expect(staged.seen('terminate')).toBe(true);
+      expect(fs.existsSync(staged.statePath)).toBe(false);
+    } finally {
+      await staged.close();
+    }
+  });
+
+  it('rejects malformed lifecycle state without sending a signal or replacing it', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const staged = await stageCompanionState({ dataDir, workspace: config.workspace as string, malformed: true });
+    await expect(endCodexSessionCompanion(
+      dataDir,
+      { ...hook, hook_event_name: 'SessionEnd' },
+      plugin,
+    )).rejects.toThrow(/malformed/);
+    expect(fs.existsSync(staged.statePath)).toBe(true);
+  });
+
+  it('refuses a foreign workspace state and never contacts its control socket', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const foreign = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-foreign-'));
+    tempDirs.push(foreign);
+    const staged = await stageCompanionState({ dataDir, workspace: foreign });
+    try {
+      await expect(endCodexSessionCompanion(
+        dataDir,
+        { ...hook, hook_event_name: 'SessionEnd' },
+        plugin,
+      )).rejects.toThrow(/does not match.*cross-thread/i);
+      expect(staged.seen('terminate')).toBe(false);
+      expect(staged.seen('retire')).toBe(false);
+    } finally {
+      await staged.close();
+    }
+  });
+
+  it('removes a stale dead-PID state but never sends a PID signal', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const staged = await stageCompanionState({
+      dataDir,
+      workspace: config.workspace as string,
+      pid: 2_147_483_647,
+    });
+    await staged.close();
+    await expect(endCodexSessionCompanion(
+      dataDir,
+      { ...hook, hook_event_name: 'SessionEnd' },
+      plugin,
+    )).resolves.toBe(true);
+    expect(fs.existsSync(staged.statePath)).toBe(false);
   });
 });

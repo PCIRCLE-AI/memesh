@@ -23,8 +23,8 @@
     },
     {
       "path": "hooks/hooks.json",
-      "sha256": "fbbaaeeafc11d799223bf0d8bb11f433354146787b38716af6bc31afb81d4755",
-      "bytes": 2340
+      "sha256": "59a2663c82e4b54910b1eba2657f8ddcea375b54bb1e70e8c4a3fc7cb036443b",
+      "bytes": 2567
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
@@ -143,8 +143,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "11ea88804c555988bc9223d984e4eba7d1865353b168a1d94bfc19eae903189d",
-      "bytes": 18928
+      "sha256": "1b8f9a39b33c525ba564f83b4cb90ba4721622eaa38a1b765a4f1b0a18613061",
+      "bytes": 19172
     }
   ]
 }
