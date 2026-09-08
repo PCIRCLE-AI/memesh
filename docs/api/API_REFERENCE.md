@@ -875,10 +875,11 @@ Dashboard locale is browser-local UI state and is not part of this server
 configuration.
 
 `autoUpdate` controls the maximum permitted bump, not unattended consent. When
-an update is available, the first MeMesh use in a session asks the user once;
-`Upgrade` records session-scoped consent and `Not now` records a decline. The
-Stop hook dispatches only after affirmative consent. `MEMESH_AUTO_UPDATE`
-overrides the configured bump limit, but never bypasses this consent gate.
+an update is available, the first MeMesh use in a session requests a
+host-mediated consent prompt once; an explicit `Upgrade` records
+session-scoped consent and `Not now` records a decline. The Stop hook
+dispatches only after affirmative consent. `MEMESH_AUTO_UPDATE` overrides the
+configured bump limit, but never bypasses this consent gate.
 
 ### GET /v1/update-status
 

@@ -847,7 +847,13 @@ export function readAutoUpdateConsent(sessionId, currentVersion, latestVersion, 
   }
 }
 
-export function findAutoUpdateConsent(sessionId, currentVersion, latestVersion) {
+/**
+ * @param {string} sessionId
+ * @param {string} currentVersion
+ * @param {string} latestVersion
+ * @param {string|null} [channel=null]
+ */
+export function findAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel = null) {
   if (typeof sessionId !== 'string' || !sessionId || sessionId === 'unknown') return null;
   try {
     const dir = join(memeshDir(), 'update-consent');
@@ -857,7 +863,8 @@ export function findAutoUpdateConsent(sessionId, currentVersion, latestVersion) 
         const value = JSON.parse(readFileSync(join(dir, file), 'utf8'));
         if (value?.sessionId === sessionId
           && value?.currentVersion === currentVersion
-          && value?.latestVersion === latestVersion) return value;
+          && value?.latestVersion === latestVersion
+          && (channel === null || value?.channel === channel)) return value;
       } catch { /* ignore one corrupt marker */ }
     }
   } catch { /* missing/unreadable consent dir */ }

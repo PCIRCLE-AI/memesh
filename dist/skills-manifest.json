@@ -93,8 +93,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "496d447e572d79f454c3207e691b4770a9a8c5f4a457d4442fd9eafef07dc8bf",
-      "bytes": 45537
+      "sha256": "cb00c7298a0af282a8db3bb172d2059732bb727931526ee0ee73d3fd10ed994d",
+      "bytes": 45758
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
@@ -128,8 +128,8 @@
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "64ca7c2060336b5de572a3ca5b7e4aa2900a540bd05742b2827f44a982573d81",
-      "bytes": 32773
+      "sha256": "353be655b228d1752372e56a4f3a8073e3f2a4cd2c855dfe96c6585ba409a972",
+      "bytes": 33215
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",

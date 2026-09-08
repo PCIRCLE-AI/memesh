@@ -51,8 +51,10 @@ async function runAutoUpdateAtStop(sessionId) {
     const cache = readUpdateCheckCache(installedVersion);
     const policy = resolveAutoUpdatePolicy(process.env);
     const decision = decideAutoUpdateHook(installedVersion, cache, policy);
+    let channel = 'unknown';
+    try { channel = installChannel?.getCurrentInstallChannel({ packageRoot: pluginRoot }) ?? 'unknown'; } catch { /* best-effort */ }
     const consent = decision.run
-      ? findAutoUpdateConsent(sessionId, installedVersion, decision.latest)
+      ? findAutoUpdateConsent(sessionId, installedVersion, decision.latest, channel)
       : null;
     if (decision.run && consent?.decision === 'approved') {
       await spawnAutoUpdate(decision.latest, installChannel);
@@ -344,6 +346,10 @@ process.stdin.on('end', async () => {
       ).get(`session-${sessionId}-files`, `session-${sessionId}-fixes`, `session-${sessionId}-summary`);
       if (alreadyCaptured) {
         recordHookRun(db, 'session-summary');
+        // A duplicate capture is still a completed Stop lifecycle. Update
+        // consent is session-scoped and must not be skipped merely because
+        // the same transcript was observed twice (a common host retry).
+        await runAutoUpdateAtStop(sessionId);
         return exit0();
       }
 
