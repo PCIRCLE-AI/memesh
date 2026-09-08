@@ -54,10 +54,79 @@ npm run release:finish
 npm run qa:post-release              # after the publish workflow is green
 ```
 
-`npm run qa:pre-release` runs the build, the `verify:artifact` sequence and
+`npm run qa:pre-release` runs the build, requires the independent UI review below against that build, then runs the `verify:artifact` sequence and
 `audit:memory`, prints each step's real exit code, and ends with the list of
 checks it could not run — the interactive live journey among them. It is not a
 substitute for reading that list.
+
+### Required UI review and repair before release
+
+CI, translation-key parity, page-load smoke tests, and screenshots alone do not
+prove that the interface is understandable or truthful. Before **every release**,
+a reviewer who authored none of the candidate changes must exercise the actual
+candidate dashboard in a browser. Keep the report and replay evidence private in
+`.qa/`; never commit internal review notes or fabricate a passing report.
+
+Review **every advertised locale and every top-level tab**, derived from
+`dashboard/src/lib/i18n.ts` and `dashboard/src/App.tsx`, including dialogs,
+notifications, backend-originated diagnostics, and empty/loading/error states.
+The mandatory review includes:
+
+- **Plain language:** users can understand what happened, its impact, and their
+  next action. Internal paths and raw technical diagnostics belong in expandable
+  details, not routine homepage warnings.
+- **Complete localization:** labels, explanations, errors and backend-originated
+  text use the selected language. Missing keys and silent English fallback are
+  findings, not successful localization. Product names and code are not prose.
+- **Truthful, actionable diagnostics:** warnings reflect a verified problem that
+  affects the user. Test an unpublished candidate beside an older installed CLI:
+  do not recommend an unavailable upgrade. Test isolated databases: do not claim
+  installations share data without verifying their actual database identity.
+- **Feature/navigation alignment:** each visible feature, tab and term matches
+  the current release's behavior and documentation. Explicitly review whether
+  "Knowledge Graph" still serves a supported user task; neither keep it merely
+  because it renders nor remove underlying relationships merely because search
+  uses FTS. Resolve unclear product intent with the owner before release.
+- **Failure paths and effects:** exercise empty data, loading, unavailable server,
+  invalid actions and recovery. Read back state changes and clean only disposable
+  test data; do not mutate the owner's memories or settings to obtain a pass.
+
+Record findings first. Each finding needs a fix, a focused regression check
+(including a controlled failing case where practical), and a browser retest.
+Refreeze after changes and obtain a fresh independent review on the new candidate.
+Unresolved findings, missing coverage, or unavailable language expertise block
+release; do not downgrade them to a warning just to publish.
+
+`npm run qa:ui-review` checks `.qa/ui-review.json`, and `qa:pre-release` invokes
+it after building and before the full suite. `release:finish` already runs `qa:pre-release` fresh, so it cannot use
+successful build/tests instead of this requirement. The report contract is:
+
+- `schema_version: "memesh-ui-review/v1"`, exact 40-character `revision`,
+  `dirty: false`, ISO `reviewed_at` within 24 hours, and actual browser/server
+  `runtime` identification, and `dashboard_sha256` of the served candidate's
+  `dashboard/dist/index.html` (checked against the current build).
+- Distinct `reviewer` and `implementer` identities, `independent: true`, and
+  `verdict: "PASS"`. The owner verifies the reviewer authored no changed paths;
+  retain `reviewer_basis` identifying the independent assignment/non-authorship
+  evidence. These fields are attestations, not authenticated identity proof.
+- `checks`: one entry per `REQUIRED_CHECKS` ID in `scripts/qa/ui-review.mjs`.
+  This includes text contrast and readable type sizes, plus responsive layout:
+  inspect actual computed colours (including opacity), small-screen wrapping,
+  keyboard focus, and zoom. A palette unit test alone is not browser evidence.
+- `coverage`: one entry per advertised `locale`/`tab` pair, with rendered-state
+  observations, not just a translation-key or HTTP response check.
+- Each check/coverage entry has `status: "PASS"`, a concrete `observation`, an
+  `replay` array of steps, `expected` and `actual` visible results, an
+  `evidence` file under `.qa/`, and that file's `sha256`. Retain browser replay
+  steps, visible output, test setup, and relevant effect/failure readbacks.
+- `findings`: the complete inventory (an empty array only if none were found).
+  Each has `id`, `fix`, `resolved: true`, and `retest` with the same observation,
+  evidence, digest and status fields. Do not drop earlier findings after repair.
+
+The validator proves only report completeness, file digests and candidate
+binding. It cannot judge language quality, authenticate authorship, or prove
+that observations are true. The release owner must inspect the evidence and
+have the independent reviewer replay the claims. It grants no release authority.
 
 `release:finish` requires separate v3 live receipts for both hosts on the exact
 clean commit, produced within the previous 24 hours. The Claude receipt comes

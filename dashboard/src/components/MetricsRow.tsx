@@ -165,7 +165,7 @@ export function MetricsRow({ dataRevision = 0 }: { dataRevision?: number }) {
     // The row says what happened. It does NOT render four zeroes, which
     // would report four measurements from a request that never answered.
     return (
-      <div role="alert" class="card" style={{ marginBottom: 8, fontSize: 12, color: 'var(--text-2)' }}>
+      <div role="alert" class="card" style={{ marginBottom: 8, fontSize: 14, color: 'var(--text-2)' }}>
         {failureMessage(failure)}
       </div>
     );
@@ -179,11 +179,11 @@ export function MetricsRow({ dataRevision = 0 }: { dataRevision?: number }) {
       <div class="stats-row" aria-busy={loading}>
         {tiles.map((tile) => (
           <div class="stat" key={tile.key}>
-          <div class="stat-val" style={{ color: tone(tile.tone), fontSize: tile.value === null ? 13 : undefined }}>
+          <div class="stat-val" style={{ color: tone(tile.tone), fontSize: tile.value === null ? 16 : undefined }}>
             {tile.value ?? t('metrics.notMeasured')}
           </div>
           <div class="stat-lbl">{tile.label}</div>
-          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{tile.note}</div>
+          <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 2 }}>{tile.note}</div>
           </div>
         ))}
       </div>

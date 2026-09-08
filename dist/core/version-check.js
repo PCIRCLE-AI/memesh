@@ -2,9 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
 import { memeshDir } from './paths.js';
+import { compareSemVerPrecedence, parseSemVer } from './semver.js';
 const DEFAULT_TIMEOUT_MS = 5000;
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 const MAX_ERROR_LENGTH = 160;
+function isUpdateAvailable(currentVersion, latestVersion) {
+    if (latestVersion === null)
+        return false;
+    const current = parseSemVer(currentVersion);
+    const latest = parseSemVer(latestVersion);
+    if (!current || !latest)
+        return false;
+    return compareSemVerPrecedence(current, latest) < 0;
+}
 function getUpdateCheckPath(updateCheckPath, currentVersion) {
     if (updateCheckPath)
         return updateCheckPath;
@@ -46,7 +56,7 @@ function buildResult(currentVersion, stored, source, now) {
         lastAttemptAt: stored.lastAttemptAt,
         lastSuccessfulCheckAt: stored.lastSuccessfulCheckAt,
         lastError,
-        updateAvailable: stored.latestVersion !== null && stored.latestVersion !== currentVersion,
+        updateAvailable: isUpdateAvailable(currentVersion, stored.latestVersion),
         checkSucceeded: stored.checkSucceeded,
         source,
         freshness: determineFreshness(source, stored.checkSucceeded, stored.lastSuccessfulCheckAt, now),

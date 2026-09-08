@@ -41,7 +41,7 @@ function NextBestAction({
 
   return (
     <section class="card" aria-labelledby="home-next-action-title" style={{ padding: 16, marginBottom: 12 }}>
-      <div style={{ color: 'var(--text-3)', fontSize: 11, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>
+      <div style={{ color: 'var(--text-3)', fontSize: 14, fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>
         {t('home.nextAction.eyebrow')}
       </div>
       <h2 id="home-next-action-title" style={{ margin: '5px 0 6px', fontSize: 18 }}>
@@ -130,7 +130,7 @@ export function HomeTab({
           </svg>
           {t('home.analyticsTitle')}
           {!analyticsOpen && (
-            <span style={{ fontWeight: 400, fontSize: 12, color: 'var(--text-3)' }}>{t('home.analyticsHint')}</span>
+            <span style={{ fontWeight: 400, fontSize: 14, color: 'var(--text-3)' }}>{t('home.analyticsHint')}</span>
           )}
         </button>
         <div id="home-analytics" hidden={!analyticsOpen} style={{ marginTop: analyticsOpen ? 14 : 0 }}>

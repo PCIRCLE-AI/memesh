@@ -434,6 +434,7 @@ const CASES: Array<{ name: string; node: () => ComponentChildren }> = [
  * were "covered here too", when they were exactly the six that were missing.
  */
 const INTENTIONALLY_EXCLUDED: Record<string, string> = {
+  InstallationDetails: 'tests/dashboard/installation-details.test.tsx covers lazy loading, all locales, incomplete data, request failure and retry directly',
   AuthPrompt: 'tests/dashboard/AuthPrompt.test.tsx — rendered only from a 401 path, takes no API-backed props',
   CaptureDensityBand: 'tests/dashboard/CaptureDensityBand.test.tsx covers its degenerate inputs directly',
   EvidencePanel: 'tests/dashboard/EvidencePanel.test.tsx covers its four states (loading / empty / truncated / failed) directly',

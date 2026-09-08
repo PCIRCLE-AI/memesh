@@ -1638,8 +1638,8 @@ function readVersionFromInstalledBinary(
  * but does NOT put `memesh` on the shell `PATH`. Users then try
  * `memesh reindex` in a terminal and see `command not found: memesh`.
  *
- * Resolution: also run `npm install -g @pcircle/memesh`. Both paths
- * coexist and share the same DB.
+ * Resolution: also run `npm install -g @pcircle/memesh` when shell access is
+ * wanted. Storage identity depends on each process's configuration.
  *
  * This check fires WARN only on plugin-marketplace installs that lack
  * a separate shell-PATH `memesh`. For npm-global / source-checkout
@@ -1686,59 +1686,22 @@ function inspectShellCli(
 
   if (hasDistinctShellCli) {
     const shellVersion = readVersionFromInstalledBinary(shellPath!, existsSyncImpl, readFileSyncImpl);
-    // classifyBump(from, to) is truthy only when `to` is a real upgrade over
-    // `from` — exactly one of these two can be truthy for two distinct,
-    // parseable versions, which is what "which one is behind" needs.
-    const shellIsBehind = shellVersion ? classifyBump(shellVersion, packageVersion) : null;
-    const thisIsBehind = shellVersion ? classifyBump(packageVersion, shellVersion) : null;
-
-    if (shellIsBehind) {
-      // No `code:` here deliberately — see the block comment above
-      // `inspectPluginCacheCurrency`'s npm-global loop for why a check whose
-      // wording is generated from two runtime version strings is left
-      // uncatalogued (the dashboard's documented fallback renders `summary`/
-      // `fix` verbatim when a row carries no code; see the `code` field's
-      // docstring on `DoctorCheck`).
-      return createCheck(
-        'shell-cli',
-        'Shell CLI on PATH',
-        'warn',
-        `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}), and it is running ${shellVersion} — behind this install's ${packageVersion}. Both share the same DB, but an agent using this install and a human typing \`memesh\` in a terminal are running different code.`,
-        'Run `npm install -g @pcircle/memesh@latest` to bring the shell CLI up to date — a separate global install is never updated automatically by the plugin marketplace.',
-      );
-    }
-    if (thisIsBehind) {
-      // `?? 'claude-code'` was wrong here and is the same mistake the
-      // session-start banner made: `null` is a legitimate answer from
-      // `detectPluginHost` — "this path is not under any plugin cache" — so
-      // collapsing it into a host handed a Codex user the Claude Code command
-      // with no way to tell. On a plugin-marketplace install the host normally
-      // IS detectable; when it is not (a relocated cache whose env var this
-      // process cannot see), naming one host's command is a guess presented as
-      // an instruction. Name both instead.
-      const pluginHost = installChannel === 'plugin-marketplace' ? detectPluginHost(packageRoot) : null;
-      const fix = installChannel !== 'plugin-marketplace'
-        ? `Update this install (a ${installChannel}) to ${shellVersion} or newer via its own channel — see \`memesh status\`.`
-        : pluginHost
-          ? `Run \`${PLUGIN_REFRESH_COMMANDS[pluginHost]}\` to bring this plugin copy to ${shellVersion} (or newer).`
-          : `Bring this plugin copy to ${shellVersion} (or newer) with your host's refresh command — `
-            + `Claude Code: \`${PLUGIN_REFRESH_COMMANDS['claude-code']}\`; `
-            + `Codex: \`${PLUGIN_REFRESH_COMMANDS.codex}\`.`;
-      return createCheck(
-        'shell-cli',
-        'Shell CLI on PATH',
-        'warn',
-        `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}), and it is running ${shellVersion} — ahead of this install's ${packageVersion}.`,
-        fix,
-      );
+    if (shellVersion) {
+      // Local version skew does not establish a published update, a broken
+      // install, or shared storage. Registry-backed update checks own advice.
+      return {
+        ...createInfo('shell-cli', 'Shell CLI on PATH',
+          `Installed versions: this interface ${packageVersion}; terminal ${shellVersion}.`),
+        code: 'shell-cli.versions',
+        params: { current: packageVersion, terminal: shellVersion, shellPath: shellPath!, packageRoot },
+      };
     }
 
     return createCheck(
       'shell-cli',
       'Shell CLI on PATH',
       'pass',
-      `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}). Both paths coexist and share the same DB`
-        + (shellVersion ? `, both on ${packageVersion}.` : ' — could not read the shell copy\'s own version to compare.'),
+      `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}) — could not read the shell copy's own version to compare.`,
     );
   }
 
@@ -1750,7 +1713,7 @@ function inspectShellCli(
       'warn',
       'Plugin is installed but `memesh` is not on the shell PATH. Typing `memesh` in a regular terminal will report `command not found`. '
         + `${host} MCP / hooks / \`/memesh\` skill still work — this only affects standalone shell usage and other MCP clients (Cursor, Cline, etc.).`,
-      'Run `npm install -g @pcircle/memesh` to add the shell CLI. Both paths coexist; they share the same `~/.memesh/knowledge-graph.db`.',
+      'Run `npm install -g @pcircle/memesh` if you want the separate shell CLI. Its database path depends on its environment and configuration.',
       { code: 'shell-cli.not-on-path' },
     );
   }

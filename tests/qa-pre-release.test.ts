@@ -53,8 +53,8 @@ describe('the plan', () => {
     // The size pin comes first on purpose: `unknownSteps(...)` returning `[]`
     // is also what an empty plan returns, and a gate with no steps passes
     // every assertion in this file while checking nothing.
-    expect(STEPS).toHaveLength(3);
-    expect(STEPS.map((step) => step.id)).toEqual(['build', 'verify:artifact', 'audit:memory']);
+    expect(STEPS).toHaveLength(4);
+    expect(STEPS.map((step) => step.id)).toEqual(['build', 'qa:ui-review', 'verify:artifact', 'audit:memory']);
     expect(unknownSteps(repoRoot)).toEqual([]);
   });
 
@@ -101,6 +101,13 @@ describe('the plan', () => {
 });
 
 describe('running it', () => {
+  it('builds then blocks before the suite when UI review is missing or fails', () => {
+    const run = runGate(fixtureRepo('qa:ui-review'));
+    expect(run.status).toBe(1);
+    expect(run.stdout).toContain('FAIL  qa:ui-review (exit=3)');
+    expect(run.stdout).toContain('PASS  build');
+    expect(run.stdout).toContain('NOT RUN — stopped at the first failure: verify:artifact, audit:memory');
+  });
   it('passes and reports every step when every step passes', () => {
     const run = runGate(fixtureRepo(null));
     expect(run.status).toBe(0);

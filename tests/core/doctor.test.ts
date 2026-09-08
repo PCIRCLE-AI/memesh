@@ -12,6 +12,15 @@ function runDoctor(options: Parameters<typeof runDoctorImpl>[0]) {
   return runDoctorImpl({ pluginCacheDiscoveryImpl: () => [], ...options });
 }
 
+function readFileSnapshot(filePath: string) {
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    return { bytes: fs.readFileSync(descriptor), mode: fs.fstatSync(descriptor).mode & 0o777 };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 it('warns about retired config keys without exposing or changing their values', async () => {
   const root = createPackageRoot();
   tempRoots.push(root);
@@ -30,15 +39,8 @@ it('warns about retired config keys without exposing or changing their values', 
     futureSetting: { keep: true },
   });
   if (process.platform !== 'win32') fs.chmodSync(configPath, 0o640);
-  const beforeDescriptor = fs.openSync(configPath, 'r');
-  let beforeDigest: string;
-  let beforeMode: number;
-  try {
-    beforeDigest = createHash('sha256').update(fs.readFileSync(beforeDescriptor)).digest('hex');
-    beforeMode = fs.fstatSync(beforeDescriptor).mode & 0o777;
-  } finally {
-    fs.closeSync(beforeDescriptor);
-  }
+  const before = readFileSnapshot(configPath);
+  const beforeDigest = createHash('sha256').update(before.bytes).digest('hex');
   const noFetch = vi.fn(() => { throw new Error('unexpected network'); });
   vi.stubGlobal('fetch', noFetch);
   try {
@@ -71,19 +73,11 @@ it('warns about retired config keys without exposing or changing their values', 
     expect(result.checks.some(check => check.id === 'native-binding')).toBe(true);
     expect(noFetch).not.toHaveBeenCalled();
 
-    const descriptor = fs.openSync(configPath, 'r');
-    let after: Buffer;
-    let afterMode: number;
-    try {
-      after = fs.readFileSync(descriptor);
-      afterMode = fs.fstatSync(descriptor).mode & 0o777;
-    } finally {
-      fs.closeSync(descriptor);
-    }
-    expect(createHash('sha256').update(after).digest('hex')).toBe(beforeDigest);
-    expect(after.toString('utf8').includes(marker)).toBe(true);
-    expect(afterMode).toBe(beforeMode);
-    const preserved = JSON.parse(after.toString('utf8'));
+    const after = readFileSnapshot(configPath);
+    expect(createHash('sha256').update(after.bytes).digest('hex')).toBe(beforeDigest);
+    expect(after.bytes.toString('utf8').includes(marker)).toBe(true);
+    expect(after.mode).toBe(before.mode);
+    const preserved = JSON.parse(after.bytes.toString('utf8'));
     expect({
       autoCapture: preserved.autoCapture,
       sessionLimit: preserved.sessionLimit,
@@ -2685,39 +2679,38 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       });
     }
 
-    it('WARNs and names both versions when the shell CLI is BEHIND this install', async () => {
+    it('reports differing versions without claiming an unpublished candidate is available to install', async () => {
       const packageRoot = createPackageRoot();
       tempRoots.push(packageRoot);
       const result = await runWithShellCli(packageRoot, '4.8.3', fakeShellCli('4.8.2'));
 
       const cliCheck = result.checks.find((c) => c.id === 'shell-cli');
-      expect(cliCheck?.status).toBe('warn');
+      expect(cliCheck?.informational).toBe(true);
       expect(cliCheck?.summary).toContain('4.8.2');
       expect(cliCheck?.summary).toContain('4.8.3');
-      expect(cliCheck?.summary).toContain('behind');
-      expect(cliCheck?.fix).toContain('npm install -g @pcircle/memesh@latest');
+      expect(cliCheck?.code).toBe('shell-cli.versions');
+      expect(cliCheck?.fix).toBeUndefined();
+      expect(cliCheck?.summary).not.toMatch(/share.*DB|share.*database/i);
     });
 
-    it('WARNs and points at the plugin refresh command when THIS (plugin) install is BEHIND the shell CLI', async () => {
+    it('does not treat a newer local shell copy as proof of a published plugin update', async () => {
       const packageRoot = createPackageRoot();
       tempRoots.push(packageRoot);
       const result = await runWithShellCli(packageRoot, '4.8.3', fakeShellCli('4.9.0'));
 
       const cliCheck = result.checks.find((c) => c.id === 'shell-cli');
-      expect(cliCheck?.status).toBe('warn');
-      expect(cliCheck?.summary).toContain('ahead');
+      expect(cliCheck?.informational).toBe(true);
+      expect(cliCheck?.summary).toContain('4.9.0');
       // This fixture's packageRoot is a bare temp directory, so
       // `detectPluginHost` returns null — the "plugin-marketplace install
       // whose host cannot be determined" case. The advice must not pick one
       // host: `?? 'claude-code'` handed a Codex user `memesh upgrade-plugin`,
       // which does nothing for them, and nothing in the message said it was a
       // guess. Both commands, or neither.
-      expect(cliCheck?.fix).toContain('memesh upgrade-plugin');
-      expect(cliCheck?.fix, 'the undetectable-host case named only one host')
-        .toContain('codex plugin marketplace upgrade');
+      expect(cliCheck?.fix).toBeUndefined();
     });
 
-    it('names ONLY the host it actually detected, when it can detect one', async () => {
+    it('does not offer an unverified upgrade even when the plugin host is detected', async () => {
       // The other side of the same predicate, and the reason the test above
       // is not simply "always print both": a Claude Code plugin install must
       // not be told to run Codex commands. `detectPluginHost` matches on the
@@ -2731,10 +2724,8 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       const result = await runWithShellCli(packageRoot, '4.8.3', fakeShellCli('4.9.0'));
 
       const cliCheck = result.checks.find((c) => c.id === 'shell-cli');
-      expect(cliCheck?.status).toBe('warn');
-      expect(cliCheck?.fix).toContain('memesh upgrade-plugin');
-      expect(cliCheck?.fix, 'a detected Claude Code host was still offered the Codex command')
-        .not.toContain('codex plugin marketplace upgrade');
+      expect(cliCheck?.informational).toBe(true);
+      expect(cliCheck?.fix).toBeUndefined();
     });
 
     it('stays PASS and states the shared version when both copies agree', async () => {
@@ -2744,7 +2735,8 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
 
       const cliCheck = result.checks.find((c) => c.id === 'shell-cli');
       expect(cliCheck?.status).toBe('pass');
-      expect(cliCheck?.summary).toContain('both on 4.8.3');
+      expect(cliCheck?.params).toMatchObject({ current: '4.8.3', terminal: '4.8.3' });
+      expect(cliCheck?.summary).not.toMatch(/share.*DB|share.*database/i);
     });
 
     it('stays PASS but says so honestly when the shell copy\'s version cannot be read — it does not claim agreement', async () => {

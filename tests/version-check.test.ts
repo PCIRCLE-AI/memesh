@@ -265,6 +265,51 @@ describe('version check', () => {
     });
   });
 
+  it('only reports a SemVer-precedence upgrade target', async () => {
+    const cases = [
+      ['orders numeric minor versions', '4.9.0', '4.10.0', true],
+      ['offers a greater major version', '4.9.0', '5.0.0', true],
+      ['offers a greater patch version', '4.9.0', '4.9.1', true],
+      ['does not offer an older registry version', '4.9.0', '4.8.5', false],
+      ['does not offer an equal stable version', '4.9.0', '4.9.0', false],
+      ['treats build metadata as equal precedence', '4.9.0+local.1', '4.9.0+registry.2', false],
+      ['offers the stable release over its prerelease', '4.9.0-rc.1', '4.9.0', true],
+      ['does not offer a prerelease below the installed stable release', '4.9.0', '4.9.0-rc.1', false],
+      ['orders numeric prerelease identifiers numerically', '4.9.0-rc.2', '4.9.0-rc.10', true],
+      ['orders a longer equal-prefix prerelease tuple higher', '4.9.0-alpha', '4.9.0-alpha.1', true],
+      ['orders numeric prerelease identifiers below nonnumeric ones', '4.9.0-1', '4.9.0-alpha', true],
+      ['fails closed for a prerelease numeric identifier with a leading zero', '4.9.0', '4.9.0-rc.01', false],
+      ['fails closed for an invalid registry version', '4.9.0', 'not-a-version', false],
+      ['fails closed for an invalid installed version', 'not-a-version', '4.10.0', false],
+    ] as const;
+
+    for (const [name, currentVersion, latestVersion, updateAvailable] of cases) {
+      const result = await checkForUpdate(currentVersion, {
+        execFileImpl: succeedWith(latestVersion),
+        updateCheckPath: path.join(testDir, `${name}.json`),
+        now: new Date('2026-09-08T00:00:00.000Z'),
+      });
+      expect(result.updateAvailable, name).toBe(updateAvailable);
+    }
+  });
+
+  it('recomputes cached availability by SemVer precedence', () => {
+    fs.writeFileSync(updateCheckPath, JSON.stringify({
+      currentVersion: '4.8.5',
+      latestVersion: '4.8.5',
+      checkedAt: '2026-09-08T00:00:00.000Z',
+      updateAvailable: true,
+      checkSucceeded: true,
+    }));
+
+    const cached = getLastUpdateCheck('4.9.0', {
+      updateCheckPath,
+      now: new Date('2026-09-08T00:30:00.000Z'),
+    });
+    expect(cached?.latestVersion).toBe('4.8.5');
+    expect(cached?.updateAvailable).toBe(false);
+  });
+
   it('surfaces an unavailable state when only failed checks exist', async () => {
     const failed = await checkForUpdate('4.0.2', {
       execFileImpl: failLookup('registry offline'),

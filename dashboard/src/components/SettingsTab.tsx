@@ -8,6 +8,7 @@ import {
 import { t, setLocale, getLocales, type Locale } from '../lib/i18n';
 import { actionFailureMessage } from '../lib/failure';
 import { TerminalHandoff } from './ExternalHandoff';
+import { InstallationDetails } from './InstallationDetails';
 
 interface SettingsTabProps {
   locale: Locale;
@@ -163,8 +164,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
   const updateActionInProgress = updateLoading || updateRefreshing;
   const isDeprecated = Boolean(updateStatus?.currentVersionDeprecated);
   const hasUpdateTarget = Boolean(
-    updateStatus?.latestVersion
-    && updateStatus.latestVersion !== updateStatus.currentVersion,
+    updateStatus?.latestVersion && updateStatus.updateAvailable,
   );
   // Codex rounds 34/35: "confirmed no upgrade target" is only safe
   // to claim when the registry-side equality came from a FRESH
@@ -250,6 +250,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
 
   return (
     <div style={{ display: 'grid', gap: 12 }}>
+      <InstallationDetails />
       {/* Updates */}
       <div class="card">
         <div class="card-title">{t('settings.updates')}</div>
@@ -261,7 +262,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
               borderRadius: 'var(--radius-xs)',
               padding: '10px 12px',
               marginBottom: 12,
-              fontSize: 12,
+              fontSize: 14,
               color: 'var(--text-0)',
               lineHeight: 1.55,
             }}
@@ -281,7 +282,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
               borderRadius: 'var(--radius-xs)',
               padding: '10px 12px',
               marginBottom: 12,
-              fontSize: 12,
+              fontSize: 14,
               color: 'var(--text-0)',
               lineHeight: 1.55,
             }}
@@ -294,10 +295,10 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
           </div>
         )}
         <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'baseline', marginBottom: 12, flexWrap: 'wrap' }}>
-          <div style={{ color: updateSummaryColor, fontSize: 13, fontWeight: 600 }}>{updateSummary}</div>
+          <div style={{ color: updateSummaryColor, fontSize: 16, fontWeight: 600 }}>{updateSummary}</div>
           <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
             {!isCheckingUpdates && updateStatus && (
-              <div style={{ fontSize: 11, color: 'var(--text-2)' }}>{updateSourceLabel}</div>
+              <div style={{ fontSize: 14, color: 'var(--text-2)' }}>{updateSourceLabel}</div>
             )}
             <button
               class="btn btn-sm"
@@ -311,39 +312,39 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
         </div>
 
         <div style={{ display: 'grid', gap: 10 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 14 }}>
             <span style={{ color: 'var(--text-2)' }}>{t('settings.installMethod')}</span>
             <span style={{ color: 'var(--text-0)' }}>{isCheckingUpdates ? t('common.loading') : installMethodLabel}</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 14 }}>
             <span style={{ color: 'var(--text-2)' }}>{t('settings.currentVersion')}</span>
             <span style={{ color: 'var(--text-0)', fontFamily: 'var(--mono)' }}>{updateStatus?.currentVersion || '—'}</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 14 }}>
             <span style={{ color: 'var(--text-2)' }}>{t('settings.latestVersion')}</span>
             <span style={{ color: 'var(--text-0)', fontFamily: 'var(--mono)' }}>{updateStatus?.latestVersion || '—'}</span>
           </div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 14 }}>
             <span style={{ color: 'var(--text-2)' }}>{t('settings.lastAttempted')}</span>
             <span style={{ color: 'var(--text-0)', fontFamily: 'var(--mono)' }}>{lastAttemptLabel}</span>
           </div>
           {showLastSuccessful && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontSize: 14 }}>
               <span style={{ color: 'var(--text-2)' }}>{t('settings.lastSuccessful')}</span>
               <span style={{ color: 'var(--text-0)', fontFamily: 'var(--mono)' }}>{lastSuccessfulLabel}</span>
             </div>
           )}
-          {!updateLoading && (
-            <div style={{ color: 'var(--text-2)', fontSize: 12, lineHeight: 1.5, marginTop: 2 }}>{installGuidance}</div>
+          {!updateLoading && updateStatus?.updateAvailable && (
+            <div style={{ color: 'var(--text-2)', fontSize: 14, lineHeight: 1.5, marginTop: 2 }}>{installGuidance}</div>
           )}
           {showLastError && (
-            <div style={{ color: 'var(--warning)', fontSize: 12, lineHeight: 1.5 }}>
+            <div style={{ color: 'var(--warning)', fontSize: 14, lineHeight: 1.5 }}>
               {t('settings.updateLastError', { message: updateStatus?.lastError || '' })}
             </div>
           )}
-          {updateStatus?.recommendedCommand && (
+          {updateStatus?.updateAvailable && updateStatus.recommendedCommand && (
             <div style={{ display: 'grid', gap: 6, marginTop: 4 }}>
-              <span style={{ color: 'var(--text-2)', fontSize: 12 }}>{t('settings.updateCommand')}</span>
+              <span style={{ color: 'var(--text-2)', fontSize: 14 }}>{t('settings.updateCommand')}</span>
               <TerminalHandoff id="settings-update" command={updateStatus.recommendedCommand} />
             </div>
           )}
@@ -359,7 +360,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
 
         <div style={{ marginTop: 8 }}>
           {configLoading && <div class="loading" role="status" />}
-          <label id="settings-autoupdate-label" style={{ fontSize: 12, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>
+          <label id="settings-autoupdate-label" style={{ fontSize: 14, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>
             {t('settings.autoUpdateLabel')}
           </label>
           <select
@@ -367,18 +368,18 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
             value={config?.config.autoUpdate ?? 'off'}
             disabled={!config || configSaving}
             onChange={(e) => { void saveAutoUpdate((e.target as HTMLSelectElement).value as AutoUpdatePolicy); }}
-            style={{ fontSize: 13, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
+            style={{ fontSize: 16, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
           >
             <option value="off">{t('settings.autoUpdateOff')}</option>
             <option value="patch">{t('settings.autoUpdatePatch')}</option>
             <option value="minor">{t('settings.autoUpdateMinor')}</option>
             <option value="major">{t('settings.autoUpdateMajor')}</option>
           </select>
-          <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+          <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 4 }}>
             {t('settings.autoUpdateHint')}
           </div>
           {configMessage && (
-            <div role={configMessage.startsWith(t('common.error')) ? 'alert' : 'status'} style={{ marginTop: 8, fontSize: 12 }}>
+            <div role={configMessage.startsWith(t('common.error')) ? 'alert' : 'status'} style={{ marginTop: 8, fontSize: 14 }}>
               {configMessage}
             </div>
           )}
@@ -391,20 +392,20 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
         <div class="card-title">{t('settings.language')}</div>
         <div style={{ display: 'grid', gap: 12 }}>
           <div>
-            <label id="settings-interface-language-label" style={{ fontSize: 12, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>
+            <label id="settings-interface-language-label" style={{ fontSize: 14, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>
               {t('settings.interfaceLanguage')}
             </label>
             <select
               aria-labelledby="settings-interface-language-label"
               value={locale}
               onChange={(e) => changeInterfaceLanguage((e.target as HTMLSelectElement).value as Locale)}
-              style={{ fontSize: 13, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
+              style={{ fontSize: 16, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
             >
               {getLocales().map((l) => (
                 <option key={l.code} value={l.code}>{l.name}</option>
               ))}
             </select>
-            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 4 }}>
               {t('settings.interfaceLanguageHint')}
             </div>
           </div>

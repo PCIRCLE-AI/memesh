@@ -2,10 +2,21 @@ import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
 import { memeshDir } from './paths.js';
+import { compareSemVerPrecedence, parseSemVer } from './semver.js';
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 const MAX_ERROR_LENGTH = 160;
+
+/** Returns true only when a valid registry version has higher SemVer precedence. */
+function isUpdateAvailable(currentVersion: string, latestVersion: string | null): boolean {
+  if (latestVersion === null) return false;
+  const current = parseSemVer(currentVersion);
+  const latest = parseSemVer(latestVersion);
+  if (!current || !latest) return false;
+
+  return compareSemVerPrecedence(current, latest) < 0;
+}
 
 export type UpdateCheckSource = 'fresh' | 'cache';
 export type UpdateCheckFreshness = 'fresh' | 'cached' | 'stale' | 'unavailable';
@@ -134,7 +145,7 @@ function buildResult(
     lastAttemptAt: stored.lastAttemptAt,
     lastSuccessfulCheckAt: stored.lastSuccessfulCheckAt,
     lastError,
-    updateAvailable: stored.latestVersion !== null && stored.latestVersion !== currentVersion,
+    updateAvailable: isUpdateAvailable(currentVersion, stored.latestVersion),
     checkSucceeded: stored.checkSucceeded,
     source,
     freshness: determineFreshness(source, stored.checkSucceeded, stored.lastSuccessfulCheckAt, now),
@@ -627,4 +638,3 @@ export function formatUpdateCheckStatus(update: UpdateCheck | null): string[] {
 
   return lines;
 }
-

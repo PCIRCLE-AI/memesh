@@ -60,6 +60,7 @@
     "bench:longmemeval": "node benchmarks/longmemeval/run.mjs --mode A --dataset /tmp/longmemeval_s.json",
     "qa:live-journey": "node scripts/qa/live-journey.mjs",
     "qa:pre-release": "node scripts/qa/pre-release.mjs",
+    "qa:ui-review": "node scripts/qa/ui-review.mjs",
     "qa:post-release": "node scripts/qa/post-release.mjs",
     "test:isolated": "node scripts/run-tests-isolated.mjs",
     "test:coverage": "node scripts/run-tests-isolated.mjs --coverage"

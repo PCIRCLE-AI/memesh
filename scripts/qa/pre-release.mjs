@@ -29,6 +29,10 @@ export const STEPS = [
     why: 'dist/ is version-controlled and several gates spawn it; a stale build makes every later step measure the wrong code.',
   },
   {
+    id: 'qa:ui-review',
+    why: 'require a fresh independent browser review bound to this clean candidate and built dashboard; fix and retest all UI findings before the full suite.',
+  },
+  {
     id: 'verify:artifact',
     why: 'lint, typecheck, version coherence, doc claims, the isolated test suite, the packed artifact and every derived upgrade path — the same sequence npm publish runs.',
   },
@@ -45,6 +49,7 @@ export const STEPS = [
  * cannot run here, so nobody reads a green verdict as more than it is.
  */
 export const NOT_CHECKED = [
+  'UI review evidence is checked for completeness and candidate binding, not semantic truth. The release owner must verify reviewer independence and replay the retained browser observations; a JSON report cannot prove usability.',
   'npm run qa:live-journey -- --host claude — needs an interactive Claude Code session a script cannot open. ' +
     'A --host codex or --host claude receipt is required by `release:finish` instead (see release-preconditions.mjs).',
   'npm run qa:post-release — only meaningful after the release is published; run it next.',

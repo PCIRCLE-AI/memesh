@@ -659,29 +659,19 @@ function inspectShellCli(installChannel, packageRoot, packageVersion, resolveShe
     }
     if (hasDistinctShellCli) {
         const shellVersion = readVersionFromInstalledBinary(shellPath, existsSyncImpl, readFileSyncImpl);
-        const shellIsBehind = shellVersion ? classifyBump(shellVersion, packageVersion) : null;
-        const thisIsBehind = shellVersion ? classifyBump(packageVersion, shellVersion) : null;
-        if (shellIsBehind) {
-            return createCheck('shell-cli', 'Shell CLI on PATH', 'warn', `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}), and it is running ${shellVersion} — behind this install's ${packageVersion}. Both share the same DB, but an agent using this install and a human typing \`memesh\` in a terminal are running different code.`, 'Run `npm install -g @pcircle/memesh@latest` to bring the shell CLI up to date — a separate global install is never updated automatically by the plugin marketplace.');
+        if (shellVersion) {
+            return {
+                ...createInfo('shell-cli', 'Shell CLI on PATH', `Installed versions: this interface ${packageVersion}; terminal ${shellVersion}.`),
+                code: 'shell-cli.versions',
+                params: { current: packageVersion, terminal: shellVersion, shellPath: shellPath, packageRoot },
+            };
         }
-        if (thisIsBehind) {
-            const pluginHost = installChannel === 'plugin-marketplace' ? detectPluginHost(packageRoot) : null;
-            const fix = installChannel !== 'plugin-marketplace'
-                ? `Update this install (a ${installChannel}) to ${shellVersion} or newer via its own channel — see \`memesh status\`.`
-                : pluginHost
-                    ? `Run \`${PLUGIN_REFRESH_COMMANDS[pluginHost]}\` to bring this plugin copy to ${shellVersion} (or newer).`
-                    : `Bring this plugin copy to ${shellVersion} (or newer) with your host's refresh command — `
-                        + `Claude Code: \`${PLUGIN_REFRESH_COMMANDS['claude-code']}\`; `
-                        + `Codex: \`${PLUGIN_REFRESH_COMMANDS.codex}\`.`;
-            return createCheck('shell-cli', 'Shell CLI on PATH', 'warn', `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}), and it is running ${shellVersion} — ahead of this install's ${packageVersion}.`, fix);
-        }
-        return createCheck('shell-cli', 'Shell CLI on PATH', 'pass', `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}). Both paths coexist and share the same DB`
-            + (shellVersion ? `, both on ${packageVersion}.` : ' — could not read the shell copy\'s own version to compare.'));
+        return createCheck('shell-cli', 'Shell CLI on PATH', 'pass', `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}) — could not read the shell copy's own version to compare.`);
     }
     if (installChannel === 'plugin-marketplace') {
         const host = detectPluginHost(packageRoot) === 'codex' ? 'Codex CLI' : 'Claude Code';
         return createCheck('shell-cli', 'Shell CLI on PATH', 'warn', 'Plugin is installed but `memesh` is not on the shell PATH. Typing `memesh` in a regular terminal will report `command not found`. '
-            + `${host} MCP / hooks / \`/memesh\` skill still work — this only affects standalone shell usage and other MCP clients (Cursor, Cline, etc.).`, 'Run `npm install -g @pcircle/memesh` to add the shell CLI. Both paths coexist; they share the same `~/.memesh/knowledge-graph.db`.', { code: 'shell-cli.not-on-path' });
+            + `${host} MCP / hooks / \`/memesh\` skill still work — this only affects standalone shell usage and other MCP clients (Cursor, Cline, etc.).`, 'Run `npm install -g @pcircle/memesh` if you want the separate shell CLI. Its database path depends on its environment and configuration.', { code: 'shell-cli.not-on-path' });
     }
     return createCheck('shell-cli', 'Shell CLI on PATH', 'pass', shellPath
         ? `\`memesh\` resolves to ${shellPath}.`

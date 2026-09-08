@@ -25,6 +25,18 @@ function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
+function readFileSnapshot(filePath) {
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    return {
+      bytes: fs.readFileSync(descriptor),
+      mode: fs.fstatSync(descriptor).mode & 0o777,
+    };
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
 function run(binary, args, options = {}) {
   return execFileSync(binary, args, {
     cwd: repoRoot,
@@ -279,15 +291,9 @@ function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cac
     futureSetting: { keep: true },
   }, null, 2), { mode: 0o640 });
   if (process.platform !== 'win32') fs.chmodSync(configPath, 0o640);
-  const beforeDescriptor = fs.openSync(configPath, 'r');
-  let configDigestBeforeUpgrade;
-  let configModeBeforeUpgrade;
-  try {
-    configDigestBeforeUpgrade = crypto.createHash('sha256').update(fs.readFileSync(beforeDescriptor)).digest('hex');
-    configModeBeforeUpgrade = fs.fstatSync(beforeDescriptor).mode & 0o777;
-  } finally {
-    fs.closeSync(beforeDescriptor);
-  }
+  const configBeforeUpgrade = readFileSnapshot(configPath);
+  const configDigestBeforeUpgrade = crypto.createHash('sha256').update(configBeforeUpgrade.bytes).digest('hex');
+  const configModeBeforeUpgrade = configBeforeUpgrade.mode;
   console.log(`baseline: version=${installed.packageJson.version} package=${installed.packageRoot}`);
 
   const autoUpdate = process.platform === 'win32'
@@ -331,15 +337,9 @@ function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cac
     },
     'candidate doctor did not diagnose every retired top-level config key',
   );
-  const descriptor = fs.openSync(configPath, 'r');
-  let preservedConfigBytes;
-  let preservedConfigMode;
-  try {
-    preservedConfigBytes = fs.readFileSync(descriptor);
-    preservedConfigMode = fs.fstatSync(descriptor).mode & 0o777;
-  } finally {
-    fs.closeSync(descriptor);
-  }
+  const preservedConfig = readFileSnapshot(configPath);
+  const preservedConfigBytes = preservedConfig.bytes;
+  const preservedConfigMode = preservedConfig.mode;
   assert.equal(crypto.createHash('sha256').update(preservedConfigBytes).digest('hex'), configDigestBeforeUpgrade,
     'candidate diagnostics changed the legacy config instead of remaining read-only');
   assert.equal(preservedConfigMode, configModeBeforeUpgrade,
@@ -347,13 +347,13 @@ function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cac
   const preservedConfigText = preservedConfigBytes.toString('utf8');
   assert.equal(preservedConfigText.includes(retiredConfigMarker), true,
     'the read-only diagnostic unexpectedly removed retired config state');
-  const preservedConfig = JSON.parse(preservedConfigText);
+  const preservedConfigJson = JSON.parse(preservedConfigText);
   assert.deepEqual({
-    autoCapture: preservedConfig.autoCapture,
-    sessionLimit: preservedConfig.sessionLimit,
-    autoUpdate: preservedConfig.autoUpdate,
-    setupCompleted: preservedConfig.setupCompleted,
-    futureSetting: preservedConfig.futureSetting,
+    autoCapture: preservedConfigJson.autoCapture,
+    sessionLimit: preservedConfigJson.sessionLimit,
+    autoUpdate: preservedConfigJson.autoUpdate,
+    setupCompleted: preservedConfigJson.setupCompleted,
+    futureSetting: preservedConfigJson.futureSetting,
   }, {
     autoCapture: false,
     sessionLimit: 17,
