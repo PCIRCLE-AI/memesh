@@ -30,11 +30,13 @@ export function codexCompanionControlSocketPath(dataDir, threadId) {
     return path.join(dataDir, `c-${digest}.sock`);
 }
 function readCompanionState(statePath) {
+    let fd;
     try {
-        const stat = fs.lstatSync(statePath);
-        if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0)
+        fd = fs.openSync(statePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile() || (stat.mode & 0o077) !== 0)
             return null;
-        const parsed = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+        const parsed = JSON.parse(fs.readFileSync(fd, 'utf8'));
         if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
             return null;
         const state = parsed;
@@ -47,11 +49,15 @@ function readCompanionState(statePath) {
         return state;
     }
     catch (error) {
-        if (error.code === 'ENOENT')
+        if (['ENOENT', 'ELOOP'].includes(error.code ?? ''))
             return null;
         if (error instanceof SyntaxError)
             return null;
         throw error;
+    }
+    finally {
+        if (fd !== undefined)
+            fs.closeSync(fd);
     }
 }
 function writeCompanionState(statePath, state) {
@@ -118,20 +124,26 @@ function readDetachedLaunchInput(dataDir, launchFile) {
     if (path.dirname(resolved) !== fs.realpathSync(directory)) {
         throw new Error('Codex companion launch input resolved outside its private lifecycle directory.');
     }
-    const stat = fs.lstatSync(resolved);
-    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0
-        || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
-        throw new Error('Codex companion launch input must be an owner-private regular file.');
-    }
+    const fd = fs.openSync(resolved, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     try {
-        const parsed = JSON.parse(fs.readFileSync(resolved, 'utf8'));
-        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-            throw new Error('Codex companion launch input must be an object.');
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile() || (stat.mode & 0o077) !== 0
+            || (typeof process.getuid === 'function' && stat.uid !== process.getuid())) {
+            throw new Error('Codex companion launch input must be an owner-private regular file.');
         }
-        return parsed;
+        try {
+            const parsed = JSON.parse(fs.readFileSync(fd, 'utf8'));
+            if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+                throw new Error('Codex companion launch input must be an object.');
+            }
+            return parsed;
+        }
+        finally {
+            fs.unlinkSync(resolved);
+        }
     }
     finally {
-        fs.unlinkSync(resolved);
+        fs.closeSync(fd);
     }
 }
 function removeOwnState(statePath, token) {

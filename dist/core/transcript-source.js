@@ -10,9 +10,9 @@ export function readTranscriptSnapshot(transcriptPath, expected) {
 function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRemaining) {
     let fd;
     try {
+        fd = fs.openSync(transcriptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
         if (fs.lstatSync(transcriptPath).isSymbolicLink())
             return { snapshot: null, aggregateLimitExceeded: false };
-        fd = fs.openSync(transcriptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
         const before = fs.fstatSync(fd, { bigint: true });
         const sizeBytes = Number(before.size);
         if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {

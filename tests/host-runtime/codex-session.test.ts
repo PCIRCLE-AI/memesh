@@ -347,6 +347,37 @@ describe('ordinary Codex session companion', () => {
 describe.skipIf(process.platform === 'win32')('Codex SessionEnd companion lifecycle', () => {
   const plugin = { PLUGIN_ROOT: '/plugin' };
 
+  it('reads the checked state descriptor even if its pathname is replaced', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const staged = await stageCompanionState({ dataDir, workspace: config.workspace as string });
+    const originalStat = fs.statSync(staged.statePath);
+    const realFstat = fs.fstatSync;
+    const realLstat = fs.lstatSync;
+    let replaced = false;
+    const replaceAfterCheck = (stat: fs.Stats) => {
+      if (!replaced && stat.ino === originalStat.ino && stat.dev === originalStat.dev) {
+        replaced = true;
+        fs.renameSync(staged.statePath, `${staged.statePath}.original`);
+        fs.writeFileSync(staged.statePath, '{replacement-invalid-json', { mode: 0o600 });
+      }
+      return stat;
+    };
+    const fstat = vi.spyOn(fs, 'fstatSync').mockImplementation(((...args: Parameters<typeof fs.fstatSync>) =>
+      replaceAfterCheck(realFstat(...args) as fs.Stats)) as typeof fs.fstatSync);
+    const lstat = vi.spyOn(fs, 'lstatSync').mockImplementation(((...args: Parameters<typeof fs.lstatSync>) =>
+      replaceAfterCheck(realLstat(...args) as fs.Stats)) as typeof fs.lstatSync);
+    try {
+      await expect(endCodexSessionCompanion(dataDir, { ...hook, hook_event_name: 'SessionEnd' }, plugin)).resolves.toBe(true);
+      expect(replaced).toBe(true);
+      expect(staged.seen('retire')).toBe(true);
+    } finally {
+      fstat.mockRestore();
+      lstat.mockRestore();
+      await staged.close();
+    }
+  });
+
   it('SessionEnd starts bounded retirement for only the exact matching companion', async () => {
     const { config, hook } = fixture();
     const dataDir = automaticDataDir(config.workspace as string);

@@ -21,9 +21,10 @@ describe('legacy live dashboard retained settings', () => {
     expect(html).not.toContain("configRes.data.config) || {}");
   });
 
-  it('emits syntactically valid browser scripts', () => {
-    const html = generateLiveDashboardHtml();
-    const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)];
+  it.each(['original', 'mixed-case'])('emits syntactically valid browser scripts (%s tags)', (style) => {
+    const generated = generateLiveDashboardHtml();
+    const html = style === 'mixed-case' ? generated.replaceAll('<script', '<ScRiPt').replaceAll('</script', '</sCrIpT') : generated;
+    const scripts = [...html.matchAll(/<script[^>]*>([\s\S]*?)<\/script>/gi)];
 
     expect(scripts).toHaveLength(2);
     for (const [, script] of scripts) expect(() => new vm.Script(script)).not.toThrow();

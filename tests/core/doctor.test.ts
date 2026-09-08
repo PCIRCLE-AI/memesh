@@ -64,10 +64,18 @@ it('warns about retired config keys without exposing or changing their values', 
     expect(result.checks.some(check => check.id === 'native-binding')).toBe(true);
     expect(noFetch).not.toHaveBeenCalled();
 
-    const after = fs.readFileSync(configPath);
+    const descriptor = fs.openSync(configPath, 'r');
+    let after: Buffer;
+    let afterMode: number;
+    try {
+      after = fs.readFileSync(descriptor);
+      afterMode = fs.fstatSync(descriptor).mode & 0o777;
+    } finally {
+      fs.closeSync(descriptor);
+    }
     expect(createHash('sha256').update(after).digest('hex')).toBe(beforeDigest);
     expect(after.toString('utf8').includes(marker)).toBe(true);
-    expect(fs.statSync(configPath).mode & 0o777).toBe(beforeMode);
+    expect(afterMode).toBe(beforeMode);
     const preserved = JSON.parse(after.toString('utf8'));
     expect({
       autoCapture: preserved.autoCapture,

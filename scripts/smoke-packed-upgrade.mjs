@@ -324,11 +324,20 @@ function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cac
     },
     'candidate doctor did not diagnose every retired top-level config key',
   );
-  assert.equal(sha256(configPath), configDigestBeforeUpgrade,
+  const descriptor = fs.openSync(configPath, 'r');
+  let preservedConfigBytes;
+  let preservedConfigMode;
+  try {
+    preservedConfigBytes = fs.readFileSync(descriptor);
+    preservedConfigMode = fs.fstatSync(descriptor).mode & 0o777;
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  assert.equal(crypto.createHash('sha256').update(preservedConfigBytes).digest('hex'), configDigestBeforeUpgrade,
     'candidate diagnostics changed the legacy config instead of remaining read-only');
-  assert.equal(fs.statSync(configPath).mode & 0o777, configModeBeforeUpgrade,
+  assert.equal(preservedConfigMode, configModeBeforeUpgrade,
     'candidate diagnostics changed the legacy config mode');
-  const preservedConfigText = fs.readFileSync(configPath, 'utf8');
+  const preservedConfigText = preservedConfigBytes.toString('utf8');
   assert.equal(preservedConfigText.includes(retiredConfigMarker), true,
     'the read-only diagnostic unexpectedly removed retired config state');
   const preservedConfig = JSON.parse(preservedConfigText);

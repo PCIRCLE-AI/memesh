@@ -22,6 +22,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
@@ -233,7 +234,7 @@ describe('--help', () => {
       socketPath: '/task/memesh/agent-router-v2.sock',
     });
     expect(env.MEMESH_ROUTER_SOCKET).toBe('/task/memesh/agent-router-v2.sock');
-    expect(env.MEMESH_ROUTER_TOKEN_FILE).toBe('/task/memesh/agent-router.token');
+    expect(env.MEMESH_ROUTER_TOKEN_FILE).toBe(path.join('/task/memesh', 'agent-router.token'));
   });
 
   it('warns that the launched Claude session is outside the isolation', () => {
@@ -1003,12 +1004,13 @@ describe.skipIf(process.platform === 'win32')('task-owned Codex home boundary', 
   const identity = (candidate: string) => candidate;
 
   it('accepts only an existing temporary home outside the owner configuration', () => {
-    const temporary = fs.mkdtempSync(path.join('/private/tmp', 'memesh-codex-home-test-'));
+    const temporaryRoot = os.tmpdir();
+    const temporary = fs.mkdtempSync(path.join(temporaryRoot, 'memesh-codex-home-test-'));
     try {
       expect(assertTaskOwnedCodexHome({
         codexHome: temporary,
         ownerCodexHome: '/Users/example/.codex',
-        temporaryRoot: '/private/tmp',
+        temporaryRoot,
         realpath: identity,
       })).toBe(temporary);
     } finally {

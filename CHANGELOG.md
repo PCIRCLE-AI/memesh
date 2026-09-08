@@ -39,6 +39,9 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **Codex companion state reads validate and read the same open file.**
+  Lifecycle and launch-input reads reject symlinks at open time and check the
+  opened file's type and permissions before parsing its contents.
 - **Observation-level forget is atomic and preserves archived-index exclusion.**
   Removing one observation now updates its source row and the contentless FTS5
   index in one immediate transaction, so an index failure rolls the observation

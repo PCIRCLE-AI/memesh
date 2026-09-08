@@ -27274,9 +27274,9 @@ function readTranscriptSnapshot(transcriptPath, expected) {
 function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRemaining) {
   let fd;
   try {
+    fd = fs3.openSync(transcriptPath, fs3.constants.O_RDONLY | fs3.constants.O_NOFOLLOW);
     if (fs3.lstatSync(transcriptPath).isSymbolicLink())
       return { snapshot: null, aggregateLimitExceeded: false };
-    fd = fs3.openSync(transcriptPath, fs3.constants.O_RDONLY | fs3.constants.O_NOFOLLOW);
     const before = fs3.fstatSync(fd, { bigint: true });
     const sizeBytes = Number(before.size);
     if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {

@@ -42,8 +42,8 @@ function readTranscriptSnapshotWithin(
 ): TranscriptSnapshotRead {
   let fd: number | undefined;
   try {
-    if (fs.lstatSync(transcriptPath).isSymbolicLink()) return { snapshot: null, aggregateLimitExceeded: false };
     fd = fs.openSync(transcriptPath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    if (fs.lstatSync(transcriptPath).isSymbolicLink()) return { snapshot: null, aggregateLimitExceeded: false };
     const before = fs.fstatSync(fd, { bigint: true });
     const sizeBytes = Number(before.size);
     if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {
