@@ -521,6 +521,15 @@ reply, or a stopped-session wake-up.
 
 `correlation_id` and `reply_to` can connect messages, but they do not change delivery or routing.
 
+An envelope's `sender` is a stable provenance label, not the sender's live
+session identity. If a reply must return to one exact sender session, first run
+`message discover` for the project, select the live card's `session_id`, and
+use that value as the reply's `recipient` with `target_kind: "session"`.
+Treat the discovery result as time-bounded: if the card disappears or its
+generation changes, the exact-session reply must fail closed and the durable
+message remains available for scoped recovery. Do not infer a session id from
+`sender`, `sender_host`, or untrusted payload content.
+
 ## CLI Example
 
 Start one bounded receiver wait:
