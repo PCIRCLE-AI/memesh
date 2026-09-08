@@ -48,6 +48,8 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **Transcript work packages verify content across discovery and reread.**
+  Same-size rewrites are rejected even when filesystem timestamps are unchanged.
 - **Chart labels use browser-recognized SVG text attributes.** Radar and
   project-map labels apply their intended font size and alignment instead of
   falling back to browser defaults.

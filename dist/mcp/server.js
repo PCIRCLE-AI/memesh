@@ -27260,10 +27260,11 @@ function forget(args) {
 }
 
 // dist/core/dreamer.js
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 
 // dist/core/transcript-source.js
 import fs3 from "fs";
+import { createHash as createHash3 } from "node:crypto";
 import path3 from "path";
 var MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
 var MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
@@ -27306,7 +27307,10 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    return { snapshot: { bytes, ...identity }, aggregateLimitExceeded: false };
+    const contentHash = createHash3("sha256").update(bytes).digest("hex");
+    if (expected && contentHash !== expected.contentHash)
+      return { snapshot: null, aggregateLimitExceeded: false };
+    return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
   } catch {
     return { snapshot: null, aggregateLimitExceeded: false };
   } finally {
@@ -27411,6 +27415,7 @@ function scanTranscripts(opts) {
       if (!transcriptMatchesProject(buf, cwd))
         continue;
       sessions.push({
+        contentHash: snapshot.contentHash,
         sessionId: name.replace(/\.jsonl$/, ""),
         path: full,
         modifiedAt: snapshot.modifiedAt,
@@ -27492,7 +27497,7 @@ function parseVisibleConversation(transcript) {
 }
 
 // dist/core/product-improvements.js
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 var PRODUCT_IMPROVEMENT_KIND = "product_improvement";
 function clean(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -27602,7 +27607,7 @@ function stageProductImprovement(db2, input) {
       success_criteria: successCriteria,
       priority
     };
-    const digest = createHash3("sha256").update(JSON.stringify(canonical)).digest("hex");
+    const digest = createHash4("sha256").update(JSON.stringify(canonical)).digest("hex");
     const clusterKey = `product-improvement:${digest}`;
     const existing = db2.prepare(`SELECT id, project, source_ids, proposed_digest, status, reason, created_at, reviewed_at
        FROM dream_proposals
@@ -27808,7 +27813,7 @@ function executeWorkPackage(db2, input, context = {}) {
   const execute = () => {
     const project = input.action === "prepare" ? input.project : input.ref.project;
     const kind = input.action === "prepare" ? input.kind : input.ref.kind;
-    const hash2 = (value) => createHash4("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash5("sha256").update(JSON.stringify(value)).digest("hex");
     if (input.action !== "prepare") {
       const submitted = input.action === "submit" ? input.result : void 0;
       if (submitted && [submitted.name, ...submitted.observations, ...submitted.tags].some((s) => redactSecrets(s) !== s)) {
@@ -27878,7 +27883,7 @@ function executeWorkPackage(db2, input, context = {}) {
           project,
           session_id: session.sessionId,
           modified_at: session.modifiedAt,
-          source_hash: createHash4("sha256").update(snapshot.bytes).digest("hex"),
+          source_hash: snapshot.contentHash,
           workspace_hash: workspaceHash
         };
         const id = hash2({ version: "work-package-v1", ref });
@@ -28629,10 +28634,10 @@ function assembleBriefing(project, recipient) {
 import { randomUUID as randomUUID4 } from "node:crypto";
 
 // dist/core/agent-messaging.js
-import { createHash as createHash6, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash7, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash5, randomUUID } from "node:crypto";
+import { createHash as createHash6, randomUUID } from "node:crypto";
 import fs5 from "node:fs";
 var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
@@ -29280,7 +29285,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash6("sha256").update(stableStringify(value)).digest("hex");
+  return createHash7("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)

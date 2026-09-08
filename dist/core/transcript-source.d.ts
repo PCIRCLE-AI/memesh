@@ -3,6 +3,7 @@ export declare const MAX_TRANSCRIPT_SCAN_BYTES: number;
 export declare const MAX_TRANSCRIPT_CANDIDATES = 256;
 export interface TranscriptSnapshot {
     bytes: Buffer;
+    contentHash: string;
     modifiedAt: string;
     sizeBytes: number;
     device: string;
@@ -16,6 +17,7 @@ export declare function projectTranscriptSlug(cwd: string): string;
 export declare function recordedCwd(text: string): string | null;
 export declare function transcriptMatchesProject(bytes: Buffer, cwd: string): boolean;
 export interface TranscriptSession {
+    contentHash: string;
     sessionId: string;
     path: string;
     modifiedAt: string;

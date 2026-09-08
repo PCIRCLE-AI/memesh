@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { createHash } from 'node:crypto';
 import path from 'path';
 import { homeDir } from './paths.js';
 export const MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
@@ -43,7 +44,10 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
             || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
             return { snapshot: null, aggregateLimitExceeded: false };
         }
-        return { snapshot: { bytes, ...identity }, aggregateLimitExceeded: false };
+        const contentHash = createHash('sha256').update(bytes).digest('hex');
+        if (expected && contentHash !== expected.contentHash)
+            return { snapshot: null, aggregateLimitExceeded: false };
+        return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
     }
     catch {
         return { snapshot: null, aggregateLimitExceeded: false };
@@ -154,6 +158,7 @@ export function scanTranscripts(opts) {
             if (!transcriptMatchesProject(buf, cwd))
                 continue;
             sessions.push({
+                contentHash: snapshot.contentHash,
                 sessionId: name.replace(/\.jsonl$/, ''),
                 path: full,
                 modifiedAt: snapshot.modifiedAt,

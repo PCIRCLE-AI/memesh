@@ -212,7 +212,7 @@ export function executeWorkPackage(db, input, context = {}) {
                 if (sources.length === 0)
                     continue;
                 const ref = { kind: 'transcript', project, session_id: session.sessionId,
-                    modified_at: session.modifiedAt, source_hash: createHash('sha256').update(snapshot.bytes).digest('hex'),
+                    modified_at: session.modifiedAt, source_hash: snapshot.contentHash,
                     workspace_hash: workspaceHash };
                 const id = hash({ version: 'work-package-v1', ref });
                 const pkg = {

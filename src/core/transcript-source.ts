@@ -1,6 +1,7 @@
 // Read-only, project-scoped transcript discovery for agent work packages.
 
 import fs from 'fs';
+import { createHash } from 'node:crypto';
 
 import path from 'path';
 
@@ -15,6 +16,7 @@ export const MAX_TRANSCRIPT_CANDIDATES = 256;
 
 export interface TranscriptSnapshot {
   bytes: Buffer;
+  contentHash: string;
   modifiedAt: string;
   sizeBytes: number;
   device: string;
@@ -73,7 +75,9 @@ function readTranscriptSnapshotWithin(
       || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    return { snapshot: { bytes, ...identity }, aggregateLimitExceeded: false };
+    const contentHash = createHash('sha256').update(bytes).digest('hex');
+    if (expected && contentHash !== expected.contentHash) return { snapshot: null, aggregateLimitExceeded: false };
+    return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
   } catch {
     return { snapshot: null, aggregateLimitExceeded: false };
   } finally {
@@ -126,6 +130,8 @@ export function transcriptMatchesProject(bytes: Buffer, cwd: string): boolean {
 }
 
 export interface TranscriptSession {
+  /** Raw scan-byte identity, independent of filesystem timestamp resolution. */
+  contentHash: string;
   /** Session id = the transcript filename without .jsonl. */
   sessionId: string;
   /** Absolute path to the .jsonl file. */
@@ -218,6 +224,7 @@ export function scanTranscripts(opts: ScanOptions): TranscriptSession[] {
       if (!transcriptMatchesProject(buf, cwd)) continue;
 
       sessions.push({
+        contentHash: snapshot.contentHash,
         sessionId: name.replace(/\.jsonl$/, ''),
         path: full,
         modifiedAt: snapshot.modifiedAt,

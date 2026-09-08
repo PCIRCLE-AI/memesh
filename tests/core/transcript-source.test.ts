@@ -15,6 +15,7 @@ import {
   MAX_TRANSCRIPT_SCAN_BYTES,
   MAX_TRANSCRIPT_SOURCE_BYTES,
   recordedCwd,
+  readTranscriptSnapshot,
 } from '../../src/core/transcript-source.js';
 
 // Discovery half of the transcript source (Task #18, B1). Every test points
@@ -126,6 +127,15 @@ describe('work-package source boundary', () => {
     expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toEqual({ n: 0 });
   });
 
+  it('accepts unchanged bytes against the scanned content identity', () => {
+    const file = writeSession(cwd, 'Visible local evidence');
+    const scanned = readTranscriptSnapshot(file);
+    expect(scanned).not.toBeNull();
+    const reread = readTranscriptSnapshot(file, scanned!);
+    expect(reread?.contentHash).toBe(createHash('sha256').update(scanned!.bytes).digest('hex'));
+    expect(reread?.bytes.equals(scanned!.bytes)).toBe(true);
+  });
+
   it.each(['prepare', 'submit', 'defer'] as const)('rejects a same-size in-place rewrite with restored mtime during %s', (action) => {
     const original = 'Visible local evidence';
     const changed = 'Foreign local evidence';
@@ -135,6 +145,13 @@ describe('work-package source boundary', () => {
     fs.utimesSync(file, stableTime, stableTime);
     const pkg = prepare().package as { id: string; ref: Extract<WorkPackageInput, { action: 'submit' }>['ref'] };
     const realRead = fs.readSync;
+    // A filesystem can report the same change timestamp for both snapshots.
+    // Content identity must reject the rewrite without relying on clock resolution.
+    const realStat = fs.fstatSync;
+    vi.spyOn(fs, 'fstatSync').mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => {
+      const stat = realStat(...args);
+      return Object.assign(stat, { ctimeMs: 0, ctime: new Date(0), ...('ctimeNs' in stat ? { ctimeNs: 0n } : {}) });
+    }) as typeof fs.fstatSync);
     let reads = 0;
     vi.spyOn(fs, 'readSync').mockImplementation((...args) => {
       if (++reads === 2) {
