@@ -25,7 +25,7 @@ const baseline = {
 
 describe('current source-backed documentation contracts', () => {
   it('accepts the synchronized current docs', () => {
-    expect(checkCurrentDocumentationContracts(baseline)).toMatchObject({ errors: [], routeCount: 30, webRouteCount: 2, toolCount: 12 });
+    expect(checkCurrentDocumentationContracts(baseline)).toMatchObject({ errors: [], routeCount: 31, webRouteCount: 2, toolCount: 12 });
   });
 
   it.each([
@@ -41,7 +41,7 @@ describe('current source-backed documentation contracts', () => {
     ['HTTP method/path row removal', { apiReference: baseline.apiReference.replace(/^\| POST \| \/v1\/message.*\n/m, '') }, 'HTTP route table differs'],
     ['HTTP method drift', { apiReference: baseline.apiReference.replace('| POST | /v1/config |', '| GET | /v1/config |') }, 'HTTP route table differs'],
     ['HTTP route duplicate', { apiReference: baseline.apiReference.replace(/^\| POST \| \/v1\/message.*\n/m, (row) => `${row}${row}`) }, 'HTTP route table differs'],
-    ['duplicate architecture route count', { architecture: `${baseline.architecture}\n30 \`/v1\` endpoints including two retired 410 routes\n` }, 'exactly once'],
+    ['duplicate architecture route count', { architecture: `${baseline.architecture}\n31 \`/v1\` endpoints including two retired 410 routes\n` }, 'exactly once'],
     ['config capabilities return', { apiReference: baseline.apiReference.replace('"config": {', '"capabilities": {},\n    "config": {') }, 'data.config'],
     ['config enum type', { apiReference: baseline.apiReference.replace('"autoUpdate": "minor"', '"autoUpdate": true') }, 'autoUpdate'],
     ['analytics factor type', { apiReference: baseline.apiReference.replace(/"activity": \{ "score": \d+, "weight": \d+, "detail": "[^"\n]+" \}/, '"activity": 50') }, 'healthFactors.activity'],

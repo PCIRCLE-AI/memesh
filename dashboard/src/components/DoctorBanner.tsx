@@ -303,7 +303,7 @@ export function DoctorBanner() {
         )}
       </ul>
       {repairError && (
-        <div role="status" style={{ margin: '4px 0 8px', color: 'var(--text-2)', fontSize: 13 }}>
+        <div role="status" style={{ margin: '4px 0 8px', color: 'var(--text-2)', fontSize: 14 }}>
           {repairError}
         </div>
       )}

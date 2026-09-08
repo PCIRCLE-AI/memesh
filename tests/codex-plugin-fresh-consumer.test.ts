@@ -225,6 +225,7 @@ describe('Codex plugin fresh consumer', () => {
     const pluginRoot = packagedPluginWithoutNodeModules();
     const dataDirectory = path.join(pluginRoot, 'data');
     const requestedPort = await freeTcpPort();
+    const defaultPortWasOpen = await tcpPortOpen(3737);
     const child = spawn(process.execPath, [path.join(pluginRoot, 'dist/transports/cli/cli.js'), 'serve', '--port', String(requestedPort)], {
       cwd: pluginRoot,
       env: {
@@ -242,7 +243,10 @@ describe('Codex plugin fresh consumer', () => {
     child.stderr!.on('data', (chunk: string) => { stderr += chunk; });
     await waitFor(async () => await tcpPortOpen(requestedPort), 'the packaged server to bind the requested port');
     expect(child.exitCode, stderr).toBeNull();
-    expect(await tcpPortOpen(3737), stderr).toBe(false);
+    // Do not claim ownership of the user's default server port. The fresh
+    // consumer must leave an already-running daemon untouched; when no daemon
+    // existed before, it must still not bind 3737.
+    expect(await tcpPortOpen(3737), stderr).toBe(defaultPortWasOpen);
     await stop(child);
     children.splice(children.indexOf(child), 1);
   });
