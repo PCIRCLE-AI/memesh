@@ -1140,8 +1140,6 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
       const tip = tooltipRef.current;
       if (tip.node && isNodeVisible(tip.node)) {
         ctx.setTransform(curDpr, 0, 0, curDpr, 0, 0);
-        const tx = tip.x + 12;
-        const ty = tip.y - 10;
         // Headline, then the metadata line. This used to reimplement the
         // display chain as `title || type · age` and skip its middle step, so
         // an untitled entity showed its best observation in Memories and only
@@ -1152,14 +1150,25 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         // adds the age, so the two lines never say the same thing twice.)
         const typeTxt = typeLabel(tip.node.type);
         const ageTxt = formatAge(tip.node.lastDate);
-        const line1 = ellipsize(tip.node.display, 64);
-        const line2 = `${typeTxt}  |  ${ageTxt}`;
+        const maxTextWidth = Math.max(0, canvasWidthRef.current - 20);
+        const fitText = (text: string) => {
+          if (ctx.measureText(text).width <= maxTextWidth) return text;
+          let clipped = text;
+          while (clipped.length && ctx.measureText(`${clipped}…`).width > maxTextWidth) clipped = clipped.slice(0, -1);
+          return clipped ? `${clipped}…` : '';
+        };
         ctx.font = `14px ${tk['--font-ui']}`;
+        const line1 = fitText(ellipsize(tip.node.display, 64));
         const w1 = ctx.measureText(line1).width;
         ctx.font = `14px ${tk['--mono']}`;
+        const line2 = fitText(`${typeTxt}  |  ${ageTxt}`);
         const w2 = ctx.measureText(line2).width;
         const boxW = Math.max(w1, w2) + 12;
         const boxH = 44;
+        const left = Math.max(4, Math.min(tip.x + 8, canvasWidthRef.current - boxW - 4));
+        const top = Math.max(4, Math.min(tip.y - 28, CANVAS_HEIGHT - boxH - 4));
+        const tx = left + 6;
+        const ty = top + 18;
         // Tooltip panel: translucent panel bg + accent hairline, both built from
         // the resolved tokens (--bg-1 / --life) so a palette change reaches the
         // canvas — semi-transparent so the graph shows through.
@@ -1167,7 +1176,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         ctx.strokeStyle = rgbaFrom(tk['--life'], 0.3);
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.roundRect(tx - 4, ty - 18, boxW, boxH, 4);
+        ctx.roundRect(left, top, boxW, boxH, 4);
         ctx.fill();
         ctx.stroke();
         ctx.fillStyle = tk['--text-0'];
@@ -1630,8 +1639,8 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
 
       {/* Layer switch. Two questions, not two styles: "what was decided and
           learned" (work) versus "everything memesh has stored" (all). */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
-        <div role="group" aria-label={t('graph.layerLabel')} style={{ display: 'flex', gap: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, margin: '0 0 8px' }}>
+        <div role="group" aria-label={t('graph.layerLabel')} style={{ display: 'flex', flexShrink: 0, gap: 4 }}>
           {(['work', 'all'] as const).map((v) => (
             <button
               key={v}
@@ -1641,6 +1650,8 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               style={{
                 fontSize: 14,
                 padding: '3px 10px',
+                whiteSpace: 'nowrap',
+                minHeight: 32,
                 borderRadius: 'var(--radius)',
                 cursor: 'pointer',
                 border: `1px solid ${layer === v ? 'var(--life)' : 'var(--border)'}`,
