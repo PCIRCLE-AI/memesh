@@ -223,6 +223,42 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     expect(AGENT_ROUTER_PROTOCOL_VERSION).toBe(2);
   });
 
+  it('preserves every request id when one host sends concurrent frames', async () => {
+    const { db, socketPath, token } = setup();
+    await startRouter(db, socketPath, token);
+    const socket = net.createConnection(socketPath);
+    const responses: Frame[] = [];
+    let buffer = Buffer.alloc(0);
+    socket.on('data', (chunk) => {
+      buffer = Buffer.concat([buffer, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)]);
+      for (;;) {
+        const newline = buffer.indexOf(0x0a);
+        if (newline < 0) break;
+        const raw = buffer.subarray(0, newline);
+        buffer = buffer.subarray(newline + 1);
+        if (raw.length > 0) responses.push(JSON.parse(raw.toString('utf8')) as Frame);
+      }
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.once('connect', resolve);
+      socket.once('error', reject);
+    });
+    const requestIds = Array.from({ length: 24 }, () => randomUUID());
+    for (const request_id of requestIds) {
+      socket.write(`${JSON.stringify({
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
+        type: 'discover', request_id, project: 'project-a', limit: 10, hops: 0,
+      })}\n`);
+    }
+    try {
+      await vi.waitFor(() => expect(responses).toHaveLength(requestIds.length), { timeout: 2_000 });
+      expect(responses.map(frame => frame.request_id).sort()).toEqual([...requestIds].sort());
+      expect(responses.every(frame => frame.version === AGENT_ROUTER_PROTOCOL_VERSION && frame.ok === true)).toBe(true);
+    } finally {
+      socket.destroy();
+    }
+  });
+
   it('preserves an invalid-field parse error from the live router', async () => {
     const { db, socketPath, token } = setup();
     await startRouter(db, socketPath, token);
