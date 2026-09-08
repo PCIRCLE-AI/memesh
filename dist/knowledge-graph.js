@@ -9,6 +9,15 @@ function buildMatchExpression(db, query) {
         return null;
     return renderMatchExpression(dropUbiquitousTerms(db, terms).slice(0, MAX_QUERY_TERMS));
 }
+function buildRecallMatchExpressions(db, query) {
+    const broad = buildMatchExpression(db, query);
+    if (!broad)
+        return null;
+    if (tokenizeQuery(query).length < 3) {
+        return { strict: broad, broad };
+    }
+    return { strict: broad.replaceAll(' OR ', ' '), broad };
+}
 function archivedLikeTerms(db, query) {
     const escapeLike = (v) => v.replace(/[\\%_]/g, '\\$&');
     const terms = tokenizeQuery(query);
@@ -355,8 +364,8 @@ export class KnowledgeGraph {
             }
             return this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess);
         }
-        const ftsQuery = buildMatchExpression(this.db, query);
-        if (ftsQuery === null) {
+        const matchExpressions = buildRecallMatchExpressions(this.db, query);
+        if (matchExpressions === null) {
             return [];
         }
         const statusFilter = opts?.includeArchived ? '' : "AND e.status = 'active'";
@@ -364,15 +373,17 @@ export class KnowledgeGraph {
         const tagFilter = opts?.tag
             ? 'AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)'
             : '';
-        const params = [ftsQuery];
+        const filterParams = [];
         if (opts?.tag)
-            params.push(opts.tag);
+            filterParams.push(opts.tag);
         if (opts?.namespace)
-            params.push(opts.namespace);
-        params.push(limit);
+            filterParams.push(opts.namespace);
+        filterParams.push(limit);
         let ftsRows;
-        try {
-            ftsRows = this.db
+        let strictSelected = false;
+        const findFtsRows = (ftsQuery) => {
+            const queryParams = [ftsQuery, ...filterParams];
+            return this.db
                 .prepare(`SELECT e.id FROM entities_fts f
            JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
@@ -387,7 +398,16 @@ export class KnowledgeGraph {
            -- same preference the rest of the scorer expresses.
            ORDER BY f.rank, e.id DESC
            LIMIT ?`)
-                .all(...params);
+                .all(...queryParams);
+        };
+        try {
+            ftsRows = findFtsRows(matchExpressions.strict);
+            if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
+                ftsRows = findFtsRows(matchExpressions.broad);
+            }
+            else if (ftsRows.length > 0 && matchExpressions.strict !== matchExpressions.broad) {
+                strictSelected = true;
+            }
         }
         catch (err) {
             if (err instanceof Error && err.message?.includes('fts5'))
@@ -410,7 +430,7 @@ export class KnowledgeGraph {
                 .map(() => `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' ` +
                 `OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
                 `OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`)
-                .join(' OR ');
+                .join(strictSelected ? ' AND ' : ' OR ');
             const archivedParams = likeTerms.flatMap((t) => [t, t, t]);
             if (opts?.tag)
                 archivedParams.push(opts.tag);

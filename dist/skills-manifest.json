@@ -8,7 +8,7 @@
     },
     {
       "path": ".claude-plugin/plugin.json",
-      "sha256": "9862098f6a1a5beb68a87700bf5e737da278b3607cf6465ae305693b6b485421",
+      "sha256": "60e01653d5d2f11b2aff0e02924c42cb11c9e05baa37e261b791b78c2db279de",
       "bytes": 572
     },
     {
@@ -18,7 +18,7 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "490256086c25ea556199893e42a98a7416deb2e818308d8b944fb961d599685a",
+      "sha256": "56b330ae2e65cfbc7cec59cee01d40b1754b0889d75de59d49c11524ba5ac28a",
       "bytes": 154
     },
     {
@@ -93,8 +93,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "9c26746a196b043a591a9c04dd88bdccf819c922590b082a764d376267ab6c86",
-      "bytes": 43011
+      "sha256": "4474f784643a3384a066b508473ff17ee39beecd86d57451300592971528d3c4",
+      "bytes": 48742
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
@@ -123,18 +123,18 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "10bac8f99e129ecff575eb70baf629d0f892c1ea1d9c4813443094a65aaebeb0",
-      "bytes": 62528
+      "sha256": "cf7535921e5f0758a18e4d7010854762d0372d70db185a578e7a1b3ca61807a4",
+      "bytes": 67464
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "e6489ebc35aa02b357bc528c476ab7eedfdf644acde2c2df4cb738cce473bef1",
-      "bytes": 32534
+      "sha256": "353be655b228d1752372e56a4f3a8073e3f2a4cd2c855dfe96c6585ba409a972",
+      "bytes": 33215
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "a39c9806d403769924159da831258c85aec744799b8b71b54f0196c442a24de9",
-      "bytes": 7577
+      "sha256": "8eab1a34b409bdbbe501755c4baf20c074c9b5c305ab5ca6f81caabbbf4607a4",
+      "bytes": 10234
     },
     {
       "path": "skills/memesh-review/SKILL.md",

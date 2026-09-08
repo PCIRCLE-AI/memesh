@@ -16,5 +16,9 @@ export declare class AgentRecipientUnavailableError extends AgentMessagingError 
     readonly code = "recipient_unavailable";
     constructor();
 }
+export declare class AgentRouterUnavailableError extends AgentMessagingError {
+    readonly code = "router_unreachable";
+    constructor();
+}
 export declare function executeAgentMessageAction(db: MemeshDatabase, rawInput: unknown, context: AgentMessageTransportContext, dependencies?: AgentMessageTransportDependencies): Promise<unknown>;
 //# sourceMappingURL=agent-messaging.d.ts.map

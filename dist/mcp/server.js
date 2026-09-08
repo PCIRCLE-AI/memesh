@@ -25060,6 +25060,15 @@ function buildMatchExpression(db2, query) {
     return null;
   return renderMatchExpression(dropUbiquitousTerms(db2, terms).slice(0, MAX_QUERY_TERMS));
 }
+function buildRecallMatchExpressions(db2, query) {
+  const broad = buildMatchExpression(db2, query);
+  if (!broad)
+    return null;
+  if (tokenizeQuery(query).length < 3) {
+    return { strict: broad, broad };
+  }
+  return { strict: broad.replaceAll(" OR ", " "), broad };
+}
 function archivedLikeTerms(db2, query) {
   const escapeLike = (v) => v.replace(/[\\%_]/g, "\\$&");
   const terms = tokenizeQuery(query);
@@ -25348,22 +25357,24 @@ var KnowledgeGraph = class {
       }
       return this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess);
     }
-    const ftsQuery = buildMatchExpression(this.db, query);
-    if (ftsQuery === null) {
+    const matchExpressions = buildRecallMatchExpressions(this.db, query);
+    if (matchExpressions === null) {
       return [];
     }
     const statusFilter = opts?.includeArchived ? "" : "AND e.status = 'active'";
     const namespaceFilter = opts?.namespace ? "AND e.namespace = ?" : "";
     const tagFilter = opts?.tag ? "AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)" : "";
-    const params = [ftsQuery];
+    const filterParams = [];
     if (opts?.tag)
-      params.push(opts.tag);
+      filterParams.push(opts.tag);
     if (opts?.namespace)
-      params.push(opts.namespace);
-    params.push(limit);
+      filterParams.push(opts.namespace);
+    filterParams.push(limit);
     let ftsRows;
-    try {
-      ftsRows = this.db.prepare(`SELECT e.id FROM entities_fts f
+    let strictSelected = false;
+    const findFtsRows = (ftsQuery) => {
+      const queryParams = [ftsQuery, ...filterParams];
+      return this.db.prepare(`SELECT e.id FROM entities_fts f
            JOIN entities e ON e.id = f.rowid
            WHERE entities_fts MATCH ?
              ${tagFilter}
@@ -25376,7 +25387,15 @@ var KnowledgeGraph = class {
            -- different memories run to run. Newest-first among equals is the
            -- same preference the rest of the scorer expresses.
            ORDER BY f.rank, e.id DESC
-           LIMIT ?`).all(...params);
+           LIMIT ?`).all(...queryParams);
+    };
+    try {
+      ftsRows = findFtsRows(matchExpressions.strict);
+      if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
+        ftsRows = findFtsRows(matchExpressions.broad);
+      } else if (ftsRows.length > 0 && matchExpressions.strict !== matchExpressions.broad) {
+        strictSelected = true;
+      }
     } catch (err) {
       if (err instanceof Error && err.message?.includes("fts5"))
         return [];
@@ -25394,7 +25413,7 @@ var KnowledgeGraph = class {
       const archivedNamespaceFilter = opts?.namespace ? "AND e.namespace = ?" : "";
       const likeTerms = archivedLikeTerms(this.db, query);
       registerNfcFunction(this.db);
-      const termClause = likeTerms.map(() => `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`).join(" OR ");
+      const termClause = likeTerms.map(() => `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`).join(strictSelected ? " AND " : " OR ");
       const archivedParams = likeTerms.flatMap((t) => [t, t, t]);
       if (opts?.tag)
         archivedParams.push(opts.tag);
@@ -27139,7 +27158,7 @@ function remember(args) {
   return db2.transaction(() => rememberInTransaction(args, db2, kg)).immediate();
 }
 function rememberInTransaction(args, db2, kg) {
-  const existing = db2.prepare("SELECT id, namespace FROM entities WHERE name = ?").get(args.name);
+  const existing = db2.prepare("SELECT id, namespace, type FROM entities WHERE name = ?").get(args.name);
   const entityId = kg.createEntity(args.name, args.type, {
     observations: args.observations,
     tags: args.tags,
@@ -27182,7 +27201,7 @@ function rememberInTransaction(args, db2, kg) {
     entityId,
     name: args.name,
     ...args.title !== void 0 ? { title: args.title } : {},
-    type: args.type,
+    type: existing?.type ?? args.type,
     observations: args.observations?.length ?? 0,
     tags: args.tags?.length ?? 0,
     relations: relationsCreated.length,
@@ -29782,6 +29801,12 @@ var AgentRecipientUnavailableError = class extends AgentMessagingError {
     super("recipient_unavailable: the exact active session did not accept the native message.");
   }
 };
+var AgentRouterUnavailableError = class extends AgentMessagingError {
+  code = "router_unreachable";
+  constructor() {
+    super("router_unreachable: the sender could not reach the local agent router; the durable message is preserved.");
+  }
+};
 var AGENT_MESSAGE_STORAGE_QUOTA_ENV = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
 var EXACT_SESSION_NATIVE_TIMEOUT_MS = 12e3;
 var PUBLIC_DISPOSITIONS = /* @__PURE__ */ new Set(["accepted", "rejected", "completed", "cancelled", "deferred"]);
@@ -29843,7 +29868,11 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
   } catch (error51) {
     if (error51 instanceof AgentRecipientUnavailableError || error51 instanceof AgentNativeMessageTooLargeError)
       throw error51;
-    throw new AgentRecipientUnavailableError();
+    if (error51 instanceof AgentRouterError) {
+      if (!["timeout", "connection_closed"].includes(error51.code))
+        throw error51;
+    }
+    throw new AgentRouterUnavailableError();
   }
   const accepted = readHostAccept(db2, sent.delivery_id);
   if (!accepted)
@@ -30198,13 +30227,13 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "recall",
-    description: "Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. Query words are OR-ed and results ranked by relevance, so a question phrased naturally works \u2014 adding words narrows the ranking, not the result set.",
+    description: "Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance.",
     inputSchema: {
       type: "object",
       properties: {
         query: {
           type: "string",
-          description: "Search query. Words are OR-ed and ranked by relevance (BM25); only the first 32 terms are used, and words present in most of the corpus are ignored as noise. Leave empty to list recent."
+          description: "Search query. One- and two-term queries use OR matching; three or more terms use strict all-term matching first, then OR fallback if strict matching has no hits. Results are ranked by relevance (BM25); only the first 32 surviving terms are used, and words present in most of the corpus are ignored as noise. Leave empty to list recent."
         },
         tag: {
           type: "string",
@@ -30390,7 +30419,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "message",
-    description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; other unavailable or rejected sessions return recipient_unavailable while preserving scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
+    description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
     inputSchema: {
       type: "object",
       properties: {

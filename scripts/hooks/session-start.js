@@ -26,6 +26,10 @@ import {
   memeshDir as memeshHomeDir,
   parseTaskState,
   readRepoState,
+  readAutoUpdateConsent,
+  claimUpdatePrompt,
+  finalizeUpdatePromptClaim,
+  readUpdatePromptClaim,
   readUpdateCheckCache,
   repoStateLines,
   resolvePluginRoot,
@@ -34,6 +38,7 @@ import {
   homeDir,
   taskStateName,
   writeCitationRule,
+  writeAutoUpdateConsent,
   writePrivateJson,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -324,6 +329,43 @@ function detectInstallChannelHook(pluginRoot) {
     try { process.stderr.write(`[memesh session-start] install-channel detection: ${err?.message || err}\n`); } catch {}
     return 'unknown';
   }
+}
+
+function buildUpdateConsentPrompt(sessionId, currentVersion, cache, channel) {
+  if (!sessionId || sessionId === 'unknown' || !cache || cache.currentVersion !== currentVersion) return null;
+  if (!cache.latestVersion || !isStrictlyOlder(currentVersion, cache.latestVersion)) return null;
+  const existing = readAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel);
+  if (existing?.decision) return null;
+  // Claim the session-level notice before emitting it. A resumed hook or a
+  // concurrent host process (including a second host channel) sees the
+  // atomic claim and does not duplicate the ask.
+  if (readUpdatePromptClaim(sessionId, currentVersion, cache.latestVersion)
+    || !claimUpdatePrompt(sessionId, currentVersion, cache.latestVersion, channel)) return null;
+  const target = channel === 'plugin-marketplace'
+    ? 'the installed marketplace plugin'
+    : channel === 'npm-global' ? 'the global memesh installation' : 'this MeMesh installation';
+  if (channel !== 'npm-global') {
+    const pluginRoot = resolvePluginRoot(import.meta.url);
+    const action = channel === 'plugin-marketplace'
+      ? pluginUpgradeLine(pluginRoot)
+      : channel === 'source-checkout'
+        ? '    Source checkout: pull and rebuild (`git pull && npm install && npm run build`).'
+        : channel === 'npm-local'
+          ? '    Project-local install: run `npm install @pcircle/memesh@latest` in the project that installed it.'
+          : '    Update it through the tool or package manager that installed MeMesh.';
+    return {
+      system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. This installation cannot be upgraded automatically from this session.\n${action}`,
+      context: `MeMesh ${cache.latestVersion} is available for ${target}, but this channel has no safe in-session installer. Show the user the channel-specific update action and do not claim that an Upgrade reply will install it.`,
+    };
+  }
+  // The npm-global channel is the only hook-owned installer. Record a
+  // channel-specific pending consent for the Stop hook after the global
+  // session notice has been claimed.
+  if (!writeAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel, 'pending')) return null;
+  return {
+    system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. Reply “Upgrade” to install it, or “Not now” to skip for this session.`,
+    context: `MeMesh update consent is pending for this session. Ask the user whether to upgrade from ${currentVersion} to ${cache.latestVersion} for the ${target}. Wait for an explicit Upgrade or Not now response; do not install without affirmative consent.`,
+  };
 }
 
 /**
@@ -679,7 +721,21 @@ process.stdin.on('end', async () => {
       // With no database there is nothing to recall either — the warning IS
       // the whole truth, and "memories will be created as you work" would
       // contradict it one line later.
-      output(combineWithBanner(captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work'));
+      const emptySummary = combineWithBanner(captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work');
+      let consent = null;
+      let consentVersion = null;
+      let consentCache = null;
+      try {
+        const pluginRoot = resolvePluginRoot(import.meta.url);
+        const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
+        consentVersion = typeof pkg.version === 'string' ? pkg.version : null;
+        consentCache = readUpdateCheckCache(consentVersion);
+        const channel = detectInstallChannelHook(pluginRoot);
+        consent = buildUpdateConsentPrompt(data.session_id, consentVersion, consentCache, channel);
+      } catch { /* best-effort */ }
+      output(consent ? `${consent.system}\n${emptySummary}` : emptySummary,
+        consent ? `${consent.context}\n\n${workPackageGuidance}` : workPackageGuidance);
+      if (consent) finalizeUpdatePromptClaim(data.session_id, consentVersion, consentCache?.latestVersion);
       return;
     }
 
@@ -1150,20 +1206,41 @@ process.stdin.on('end', async () => {
       }
       const updateCache = readUpdateCheckCache(installedVersion);
       let bannerLines = [];
+      let updateConsentContext = null;
       if (installedVersion) {
         const deprecation = buildDeprecationBanner(installedVersion, updateCache);
         if (deprecation.length > 0) {
           bannerLines = deprecation;
         } else {
-          bannerLines = buildUpdateAvailableBanner(installedVersion, updateCache,
-            () => detectInstallChannelHook(resolvePluginRoot(import.meta.url)));
+          const channel = detectInstallChannelHook(resolvePluginRoot(import.meta.url));
+          const consent = buildUpdateConsentPrompt(data.session_id, installedVersion, updateCache, channel);
+          if (consent) {
+            // The first-use notice is the authoritative update message for
+            // this session. Do not append the softer 24h banner as well; a
+            // source/plugin user would otherwise see two contradictory
+            // update instructions in one SessionStart payload.
+            bannerLines = [consent.system];
+            updateConsentContext = consent.context;
+          } else if (readUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion)) {
+            // A first-use notice was already shown (and may have been
+            // answered by UserPromptSubmit). Suppress the routine banner for
+            // the rest of this session as well.
+            bannerLines = [];
+          } else {
+            bannerLines = buildUpdateAvailableBanner(installedVersion, updateCache, () => channel);
+          }
         }
       }
       const finalMessage = bannerLines.length > 0
         ? [...bannerLines.filter(l => l.length > 0), '', summary].join('\n')
         : summary;
 
-      output(withCaptureWarning(finalMessage), memoryContext);
+      output(withCaptureWarning(finalMessage), updateConsentContext
+        ? `${updateConsentContext}\n\n${memoryContext}`
+        : memoryContext);
+      if (updateConsentContext) {
+        finalizeUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion);
+      }
 
       // Pre-read the noise-compression throttle on the handle we already
       // hold. compressWeeklyNoise() re-checks under its own connection, but

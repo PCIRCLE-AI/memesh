@@ -30,6 +30,28 @@ afterEach(() => {
 });
 
 describe('issue #235 — explicit external handoffs', () => {
+  it('offers a one-click safe repair for doctor checks that support it', async () => {
+    let fixed = false;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/v1/doctor/fix')) {
+        fixed = true;
+        return response({ restartRequired: false });
+      }
+      if (url.includes('/v1/doctor')) {
+        return response(fixed
+          ? { status: 'PASS', checks: [] }
+          : { status: 'PASS_WITH_CONCERNS', checks: [{ id: 'config', label: 'Config', status: 'warn', summary: 'legacy', fix: 'clean', fixId: 'config-retired-settings' }] });
+      }
+      return response([]);
+    });
+    const view = render(<DoctorBanner />);
+    const button = await view.findByRole('button', { name: t('doctorBanner.fix') });
+    fireEvent.click(button);
+    await waitFor(() => expect(fixed).toBe(true));
+    expect(view.container.textContent).not.toContain('work_package');
+  });
+
   it('keeps one authoritative inventory whose IDs are rendered by their declared surfaces', () => {
     expect(new Set(DASHBOARD_EXTERNAL_HANDOFFS.map(item => item.id)).size).toBe(DASHBOARD_EXTERNAL_HANDOFFS.length);
     for (const item of DASHBOARD_EXTERNAL_HANDOFFS) {

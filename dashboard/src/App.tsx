@@ -222,6 +222,7 @@ export function App() {
         </div>
       </div>
       <FeedbackWidget health={health} />
+      <footer class="app-footer">{t('brand.subtitle')}</footer>
     </div>
   );
 }

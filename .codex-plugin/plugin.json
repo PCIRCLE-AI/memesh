@@ -1,6 +1,6 @@
 {
   "name": "memesh",
   "description": "MeMesh — agentic memory for coding agents.",
-  "version": "4.9.0",
+  "version": "4.9.1",
   "mcpServers": "./.codex-plugin/mcp.json"
 }

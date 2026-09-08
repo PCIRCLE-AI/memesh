@@ -1,7 +1,7 @@
 # MeMesh Plugin -- API Reference
 
 **Protocol**: Model Context Protocol (MCP) over stdio
-**Version**: 4.9.0
+**Version**: 4.9.1
 **Compatibility**: Works with Claude Code plugins, Claude Managed Agents (via MCP connector), and any MCP-compatible client.
 
 **Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
@@ -135,7 +135,7 @@ Three fields are conditional. `relationsCreated` lists the relations actually cr
 
 Search and retrieve stored knowledge. Uses local SQLite FTS5 full-text search, with optional tag filtering and multi-factor scoring. Results are ranked by a weighted combination of search relevance, recency, access frequency, confidence, and recall-effectiveness impact. Call with no query to list recent memories.
 
-Query terms are OR-ed and the matches are ordered by relevance (BM25) before scoring, so a question phrased in your own words finds the memory instead of requiring every word to appear in it. A memory matching more of your terms ranks higher; adding words narrows the ranking, not the result set. Terms appearing in more than half the indexed rows are dropped as noise — they are the ones BM25 already scores near zero — except that a query made entirely of common words keeps its rarest term rather than matching nothing, and the guard does not apply below 25 indexed rows, where a frequent word is the subject rather than a stopword. Of what survives, the first 32 in query order are used — dropping the ubiquitous terms *before* the cap means a bigram-segmented CJK question no longer loses its whole tail to terms that would have been discarded anyway, but the cap itself is still positional, so a query with more than 32 surviving terms does lose its tail. Punctuation inside a word splits it (`kitchen's` searches for `kitchen` and `s`, not for the exact phrase). Results are deterministic: BM25 ties break by recency, so the same query over the same memories returns the same list.
+One- and two-term queries use OR matching. Queries with three or more searchable terms first try strict all-term matching, then fall back to OR only when strict matching has no hits, so natural-language wording stays useful without allowing one frequent token to dominate a precise query. Results are ordered by relevance (BM25) before scoring. Terms appearing in more than half the indexed rows are dropped as noise — they are the ones BM25 already scores near zero — except that a query made entirely of common words keeps its rarest term rather than matching nothing, and the guard does not apply below 25 indexed rows, where a frequent word is the subject rather than a stopword. Of what survives, the first 32 in query order are used — dropping the ubiquitous terms *before* the cap means a bigram-segmented CJK question no longer loses its whole tail to terms that would have been discarded anyway, but the cap itself is still positional, so a query with more than 32 surviving terms does lose its tail. Punctuation inside a word splits it (`kitchen's` searches for `kitchen` and `s`, not for the exact phrase). Results are deterministic: BM25 ties break by recency, so the same query over the same memories returns the same list.
 
 A query that is not empty but contains nothing searchable — `???`, `@#$%` — returns no results rather than falling back to the recent list, so "nothing matched" is never dressed up as "here is what matched". Call with no query at all to list recent memories.
 
@@ -143,7 +143,7 @@ A query that is not empty but contains nothing searchable — `???`, `@#$%` — 
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `query` | string | No | Search query (FTS5 full-text search; terms are OR-ed and ranked by relevance, first 32 terms used). Leave empty to list recent entities. |
+| `query` | string | No | Search query (FTS5 full-text search; one- and two-term queries use OR, three or more terms use strict all-term matching with OR fallback, and the first 32 surviving terms are used). Leave empty to list recent entities. |
 | `tag` | string | No | Filter by tag (e.g., `"project:myapp"`) |
 | `limit` | number | No | Max results (default: 20, max: 100) |
 | `include_archived` | boolean | No | Include archived (forgotten) entities in results (default: false) |
@@ -638,7 +638,7 @@ Status returns the proposal state, source IDs, review timestamps/reason, and `ac
 
 Discover live registrations or exchange durable exact-recipient messages between local hosts connected to the same MeMesh SQLite instance. One tool owns both surfaces so every transport uses the same validation and state semantics.
 
-**When to use it:** use `discover` when you know the project but not the right live recipient; use `send` to hand off work, ask for a result, or report a disposition. For `target_kind: "session"`, MeMesh sends the bounded full message through the exact active native host channel and returns only after `host_accept`. An oversized full envelope returns `native_message_too_large`; an absent, stopped, disconnected, or otherwise rejected exact session returns `recipient_unavailable`. Durable state remains available for scoped recovery, but a failed exact-session native delivery is not automatically replayed when that session later registers. Principal targets retain durable store-and-forward behavior. A briefing surfaces `N messages waiting for "<recipient>" in project "<project>"` only when the caller supplies that exact recipient; generic briefing and SessionStart context have no recipient identity and remain quiet. At zero unread, a scoped briefing still says `... this recipient id has never been seen in this project` when that exact id has no delivery and no live connection recorded for that project — a typo in `--recipient` must not read as an empty, healthy inbox.
+**When to use it:** use `discover` when you know the project but not the right live recipient; use `send` to hand off work, ask for a result, or report a disposition. For `target_kind: "session"`, MeMesh sends the bounded full message through the exact active native host channel and returns only after `host_accept`. An oversized full envelope returns `native_message_too_large`; if the sender cannot reach the local router it returns `router_unreachable`; an absent, stopped, disconnected, or otherwise rejected exact session returns `recipient_unavailable`. Durable state remains available for scoped recovery in each case, but a failed exact-session native delivery is not automatically replayed when that session later registers. Principal targets retain durable store-and-forward behavior. A briefing surfaces `N messages waiting for "<recipient>" in project "<project>"` only when the caller supplies that exact recipient; generic briefing and SessionStart context have no recipient identity and remain quiet. At zero unread, a scoped briefing still says `... this recipient id has never been seen in this project` when that exact id has no delivery and no live connection recorded for that project — a typo in `--recipient` must not read as an empty, healthy inbox.
 
 The JSON-encoded durable `payload` is limited to 65,536 UTF-8 bytes (64 KiB). Native delivery has a separate 16,384-byte (16 KiB) limit for the complete envelope, including routing metadata and payload. Therefore, fitting the durable payload limit does not guarantee that native delivery can accept the message; that permanent size failure is reported as `native_message_too_large`, not as transient unavailability. Payloads are untrusted data and are never executed by MeMesh.
 
@@ -650,7 +650,7 @@ The `action` field is one of:
 
 | Action | Required fields | Meaning |
 |--------|-----------------|---------|
-| `send` | `project`, `sender`, `recipient`, `idempotency_key`, `payload` | Transactionally create one canonical message, one recipient delivery, and one notification event. JSON-encoded payloads are capped at 64 KiB; the complete native envelope is capped separately at 16 KiB. Exact-session success additionally requires native `host_accept`; an oversized envelope returns `native_message_too_large`, while other unavailable or rejected sessions return `recipient_unavailable`, with scoped recovery state retained. Principal targets retain durable store-and-forward behavior. Exact retries return the same IDs; a conflicting retry is rejected. |
+| `send` | `project`, `sender`, `recipient`, `idempotency_key`, `payload` | Transactionally create one canonical message, one recipient delivery, and one notification event. JSON-encoded payloads are capped at 64 KiB; the complete native envelope is capped separately at 16 KiB. Exact-session success additionally requires native `host_accept`; an oversized envelope returns `native_message_too_large`, sender-side router failure returns `router_unreachable`, and other unavailable or rejected sessions return `recipient_unavailable`, with scoped recovery state retained in all cases. Principal targets retain durable store-and-forward behavior. Exact retries return the same IDs; a conflicting retry is rejected. |
 | `discover` | `project`, optional `limit` (default 50, max 100) | Read currently live registrations in one project from the router. Returns only router data (`session_id`, `principal_id`, `host_kind`, `project`, declared `model`/`work_summary` or `null`, `active`, `generation`, and `lease_expires_at_ms`); performs no message or receipt operation and fails explicitly when the router is unavailable. |
 | `poll` | `project`, `recipient` | Read a bounded batch after an optional opaque `cursor`. `wait_ms` is 0–30000 and `limit` is 1–100. Events contain routing metadata, never the payload. |
 | `fetch` | `project`, `recipient`, `message_id` | Return the payload routed to that principal or exact session. Optional `target_kind` defaults to `principal`; exact-session fetches must pass `session`. Fetch is a read and does not imply intake or ACK. |
@@ -660,7 +660,7 @@ The `action` field is one of:
 | `activation` | receipt base plus `activation` | Record `woken`, `manual_resume_required`, `unsupported`, or `failed`. |
 | `receipts` | `project`, `recipient`, `message_id` | Read one ordered audit projection containing public receipt facts plus any host acceptance, host-native ACK, and workflow facts for the authorized delivery. Each row identifies its `fact_source`. |
 
-`project`, `recipient`, and the `actor` derived from `recipient` are scope identifiers: they are canonicalised to Unicode NFC and trimmed on every action, read and write, and a value spelled as an absolute filesystem path (`/root`, `C:\work`, `\\host\share`) is refused with an error naming the field and a valid value. Project identity is derived from a working directory and can never take that shape. Nothing else is rewritten — comparison is exact, case included, no prefix is treated as a namespace, and an identifier that merely contains a separator is accepted. `sender` is provenance rather than routing and is stored exactly as given.
+`project`, `recipient`, and the `actor` derived from `recipient` are scope identifiers: they are canonicalised to Unicode NFC and trimmed on every action, read and write, and a value spelled as an absolute filesystem path (`/root`, `C:\work`, `\\host\share`) is refused with an error naming the field and a valid value. Project identity is derived from a working directory and can never take that shape. Nothing else is rewritten — comparison is exact, case included, no prefix is treated as a namespace, and an identifier that merely contains a separator is accepted. `sender` is provenance rather than routing and is stored exactly as given. It is not the sender's live session id; to reply to one exact sender session, run `discover` for the project, select the current card's `session_id`, and send to that id with `target_kind: "session"`. If the card disappears or its generation changes, fail closed and retain the durable reply for scoped recovery; never infer a session id from sender labels or payload text.
 
 The receipt base is `project`, `recipient`, `message_id`, and a stable `idempotency_key`. `disposition` and `activation` also accept an optional bounded `detail` string.
 
@@ -775,6 +775,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 |--------|----------|-------------|
 | GET | /v1/health | Health check + version + entity count |
 | GET | /v1/doctor | Run the full doctor check suite; secrets in the result are redacted before the response leaves the server |
+| POST | /v1/doctor/fix | Apply one explicitly selected, recoverable doctor repair and return a fresh readback |
 | POST | /v1/remember | Store knowledge |
 | POST | /v1/recall | Search knowledge; with neither `query` nor `tag` it lists recent entities |
 | POST | /v1/forget | Archive or remove observation |
@@ -873,6 +874,16 @@ Capability diagnosis belongs to `GET /v1/doctor`, not this response.
 
 Dashboard locale is browser-local UI state and is not part of this server
 configuration.
+
+`autoUpdate` controls the maximum permitted bump, not unattended consent. On a
+supported npm-global install, the first MeMesh use in a session requests a
+host-mediated consent prompt once; an explicit `Upgrade` records
+session-scoped consent and `Not now` records a decline. The Stop hook
+dispatches only after affirmative consent. Project-local, source-checkout, and
+marketplace installs receive a channel-specific update action instead; they are
+never described as self-updating when the hook cannot safely install them.
+`MEMESH_AUTO_UPDATE` overrides the configured bump limit, but never bypasses
+this consent gate.
 
 ### GET /v1/update-status
 
@@ -1066,6 +1077,22 @@ Returns computed analytics insights for the memory database.
 Runs the same check suite as `memesh doctor` and returns the structured result. Any secret-shaped substring (for example bearer tokens) is redacted before the response leaves the server.
 
 **Response:** `{ "success": true, "data": { ...doctor result... } }`, or `500` with `{ "success": false, "error": "..." }` if the suite itself failed to run.
+
+### POST /v1/doctor/fix
+
+Applies one repair identified by a current doctor check's `id`. The route
+re-runs doctor before changing anything, so a stale Dashboard cannot apply a
+repair to a different condition. It currently supports only recoverable
+actions: removing known retired top-level config keys after creating a
+byte-for-byte backup, and refreshing a stale Claude Code or Codex plugin cache
+through the host's existing updater. The request is never triggered by a GET
+or by loading the Dashboard; it requires an explicit user action. Plugin
+refresh returns `restartRequired: true` because the host must reload the cache.
+
+**Request:** `{ "id": "config" }` or a host-specific `plugin-cache-*` check id.
+
+**Response:** `{ "success": true, "data": { "action": ..., "before": ..., "after": ..., "restartRequired": false } }`.
+The response is path- and secret-redacted like `GET /v1/doctor`.
 
 ### GET /v1/projects
 

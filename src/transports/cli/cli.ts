@@ -10,6 +10,7 @@ import {
 } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { readConfig, updateConfig } from '../../core/config.js';
+import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
@@ -1518,6 +1519,10 @@ program
   // both. Measured: `/v1/entities` answered 200 unauthenticated.
   .option('--allow-remote', 'Permit binding to a non-loopback host. Pair it with --host; on a non-loopback bind a bearer token is generated and REQUIRED for every /v1 request, and the startup output says where it lives. On the default loopback host this flag changes nothing.')
   .action(async (opts) => {
+    // The packaged CLI bundles the HTTP server module. Mark this path so the
+    // server module's standalone-entry guard cannot mistake the bundle itself
+    // for the `memesh-http` binary and open its default 3737 listener too.
+    process.env.MEMESH_CLI_SERVE = '1';
     const { startServer } = await import('../http/server.js');
     try {
       // autoUpdateCheck: a user-launched serve is online by definition, so it
@@ -1866,16 +1871,16 @@ program
 
     // --fix executes only prescriptions that carry a fixId — attached at the
     // diagnosing branch in doctor.ts, never parsed from the human fix text.
-    // The whitelist is deliberately short: hook wiring (installHooks backs
-    // up settings.json and refuses on plugin machines), the keyword-index
-    // rebuild (free, local), and the db chmod. Destructive database repair
+    // The whitelist is limited to recoverable local repairs: hook wiring,
+    // retired-key cleanup (with a config backup), keyword-index rebuild, db
+    // chmod, and explicit host plugin refresh. Destructive database reset
     // branches remain human decisions.
     if (opts.fix) {
       // The dispatch is a Record, not an if-chain, so a fourth fixId added
       // in doctor.ts fails to COMPILE here instead of prompting the user
       // and then silently doing nothing — a success-shaped no-op being the
       // exact failure class this repo audits for.
-      const FIX_ACTIONS: Record<NonNullable<typeof result.checks[number]['fixId']>, () => string> = {
+      const FIX_ACTIONS: Record<NonNullable<typeof result.checks[number]['fixId']>, (check: typeof result.checks[number]) => string> = {
         'install-hooks': wireUserHooks,
         'fts-rebuild': () => {
           openDatabase();
@@ -1886,6 +1891,13 @@ program
           fs.chmodSync(getDbPath(), 0o600);
           return `permissions restored: chmod 600 ${getDbPath()}`;
         },
+        'config-retired-settings': () => {
+          const fixed = removeRetiredConfigKeys();
+          return fixed.changed
+            ? `removed ${fixed.removed.join(', ')} (backup: ${fixed.backupPath})`
+            : 'no retired settings found';
+        },
+        'plugin-cache-refresh': (check) => refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check)).output || 'plugin cache refreshed',
       };
       const fixable = result.checks.filter((c) => c.fixId && (c.status === 'warn' || c.status === 'fail'));
       if (fixable.length === 0) {
@@ -1907,7 +1919,7 @@ program
             if (answer !== 'y' && answer !== 'yes') { console.log('  skipped'); continue; }
           }
           try {
-            console.log(`  ✅ ${FIX_ACTIONS[check.fixId!]()}`);
+            console.log(`  ✅ ${FIX_ACTIONS[check.fixId!](check)}`);
           } catch (err) {
             console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
           }

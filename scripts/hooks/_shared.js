@@ -1,4 +1,5 @@
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { dirname, join } from 'path';
@@ -826,6 +827,154 @@ export function classifyBumpHook(from, to) {
 const POLICY_RANK = { off: 0, patch: 1, minor: 2, major: 3 };
 const BUMP_RANK = { patch: 1, minor: 2, major: 3 };
 const AUTO_UPDATE_CACHE_FRESHNESS_MS = 24 * 60 * 60 * 1000;
+
+function autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel = 'unknown') {
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId === 'unknown') return null;
+  const key = createHash('sha256')
+    .update(`${sessionId}\0${currentVersion}\0${latestVersion}\0${channel}`)
+    .digest('hex');
+  return join(memeshDir(), 'update-consent', `${key}.json`);
+}
+
+function updatePromptClaimPath(sessionId, currentVersion, latestVersion) {
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId === 'unknown') return null;
+  const key = createHash('sha256')
+    .update(`${sessionId}\0${currentVersion}\0${latestVersion}`)
+    .digest('hex');
+  return join(memeshDir(), 'update-prompt-claims', `${key}.json`);
+}
+
+/**
+ * Atomically claim the one first-use update notice for a session/version.
+ * Separate host hooks can start at the same time; a read-then-write pending
+ * marker lets both print the prompt. O_EXCL makes the claim the decision.
+ */
+export function claimUpdatePrompt(sessionId, currentVersion, latestVersion, channel) {
+  const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
+  if (!path || typeof channel !== 'string' || channel.length === 0) return false;
+  try {
+    ensurePrivateDir(join(memeshDir(), 'update-prompt-claims'));
+    // A crash can leave a pending claim before the hook emits its output.
+    // Reclaim only when that owner process is definitely gone; emitted
+    // claims remain session-scoped and continue suppressing duplicates.
+    try {
+      const existing = JSON.parse(readFileSync(path, 'utf8'));
+      const ownerPid = Number(existing?.ownerPid);
+      if (existing?.decision === 'pending' && Number.isInteger(ownerPid) && ownerPid > 0) {
+        try {
+          process.kill(ownerPid, 0);
+        } catch (err) {
+          if (err?.code === 'ESRCH') unlinkSync(path);
+        }
+      }
+    } catch {
+      // A corrupt claim fails closed at the O_EXCL step below.
+    }
+    const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+    try {
+      writeFileSync(fd, JSON.stringify({
+        sessionId,
+        currentVersion,
+        latestVersion,
+        channel,
+        decision: 'pending',
+        ownerPid: process.pid,
+        recordedAt: new Date().toISOString(),
+      }));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function finalizeUpdatePromptClaim(sessionId, currentVersion, latestVersion) {
+  const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
+  if (!path || !existsSync(path)) return false;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    if (value?.decision !== 'pending' || Number(value.ownerPid) !== process.pid) return false;
+    writePrivateJson(path, { ...value, decision: 'emitted', emittedAt: new Date().toISOString() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function readUpdatePromptClaim(sessionId, currentVersion, latestVersion) {
+  const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
+  if (!path || !existsSync(path)) return null;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    return value && typeof value === 'object' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function readAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel = 'unknown') {
+  const path = autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel);
+  if (!path || !existsSync(path)) return null;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    return value && typeof value === 'object' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * @param {string} sessionId
+ * @param {string} currentVersion
+ * @param {string} latestVersion
+ * @param {string|null} [channel=null]
+ */
+export function findAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel = null) {
+  if (typeof sessionId !== 'string' || !sessionId || sessionId === 'unknown') return null;
+  try {
+    const dir = join(memeshDir(), 'update-consent');
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const value = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+        if (value?.sessionId === sessionId
+          && value?.currentVersion === currentVersion
+          && value?.latestVersion === latestVersion
+          && (channel === null || value?.channel === channel)) return value;
+      } catch { /* ignore one corrupt marker */ }
+    }
+  } catch { /* missing/unreadable consent dir */ }
+  return null;
+}
+
+export function writeAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel, decision) {
+  const path = autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel);
+  if (!path || !['pending', 'approved', 'declined'].includes(decision)) return false;
+  try {
+    ensurePrivateDir(join(memeshDir(), 'update-consent'));
+    writePrivateJson(path, {
+      sessionId,
+      currentVersion,
+      latestVersion,
+      channel,
+      decision,
+      recordedAt: new Date().toISOString(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function parseAutoUpdateConsent(prompt) {
+  if (typeof prompt !== 'string') return null;
+  const value = prompt.trim().toLowerCase().replace(/[.!?。！？]+$/u, '');
+  if (/^(?:yes|y|upgrade|update|install(?: it)?|go ahead|是|好|升級|更新|安裝)$/.test(value)) return 'approved';
+  if (/^(?:no|n|not now|later|不要|不用|稍後|暫時不要)$/.test(value)) return 'declined';
+  return null;
+}
 
 export function decideAutoUpdateHook(currentVersion, cache, policy) {
   if (!cache || cache.currentVersion !== currentVersion) return { run: false };

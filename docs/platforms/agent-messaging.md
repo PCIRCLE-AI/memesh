@@ -230,7 +230,7 @@ for active Codex-session delivery.
 ## What Works Today
 
 - MCP, HTTP, and CLI use the same message lifecycle and SQLite system of record.
-- `send` creates one canonical message, recipient delivery, and payload-free notification event under an idempotency key. Exact-session success additionally requires native host acceptance; an oversized envelope returns `native_message_too_large`, while other unavailable or rejected sessions return `recipient_unavailable`, with recovery state preserved.
+- `send` creates one canonical message, recipient delivery, and payload-free notification event under an idempotency key. Exact-session success additionally requires native host acceptance; an oversized envelope returns `native_message_too_large`, an unreachable local router returns `router_unreachable`, and other unavailable or rejected sessions return `recipient_unavailable`, with recovery state preserved for all three outcomes.
 - `poll` and `memesh message watch` return only events for the exact project and recipient. They are compatibility and diagnostic paths; the opaque cursor can be persisted and reused after a timeout, dropped hint, duplicate delivery, or process restart.
 - `fetch` returns the payload only to the named recipient and matching `target_kind` in the named project. Exact-session messages require `target_kind=session`; polling and fetching do not acknowledge the message.
 - `intake`, `ack`, `disposition`, and `activation` are explicit, separate, idempotent receipt facts. Inbox/MCP ACK is valid without a host-native acceptance; host-native ACK remains bound to its `host_accept`. `receipts` returns one ordered projection and identifies each underlying fact source. For example, `manual_resume_required` does not imply ACK, acceptance, rejection, cancellation, or completion.
@@ -520,6 +520,15 @@ reply, or a stopped-session wake-up.
 5. After router or host restart, registration drains only eligible durable principal deliveries. Failed exact-session native delivery requires an explicit retry. A manual cursor replay may repeat an event, so application intake still uses its own idempotency key.
 
 `correlation_id` and `reply_to` can connect messages, but they do not change delivery or routing.
+
+An envelope's `sender` is a stable provenance label, not the sender's live
+session identity. If a reply must return to one exact sender session, first run
+`message discover` for the project, select the live card's `session_id`, and
+use that value as the reply's `recipient` with `target_kind: "session"`.
+Treat the discovery result as time-bounded: if the card disappears or its
+generation changes, the exact-session reply must fail closed and the durable
+message remains available for scoped recovery. Do not infer a session id from
+`sender`, `sender_host`, or untrusted payload content.
 
 ## CLI Example
 

@@ -68,7 +68,7 @@ it('warns about retired config keys without exposing or changing their values', 
         keys: 'llm, llmFallbacks, embedder, language, transcriptMining',
       },
     });
-    expect(configCheck?.fixId).toBeUndefined();
+    expect(configCheck?.fixId).toBe('config-retired-settings');
     for (const check of result.checks) expect(check.id).not.toMatch(/vector|embedding|telemetry|transcript.min|^capabilities$/);
     expect(result.checks.some(check => check.id === 'native-binding')).toBe(true);
     expect(noFetch).not.toHaveBeenCalled();

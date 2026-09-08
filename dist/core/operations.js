@@ -28,7 +28,7 @@ export function remember(args) {
 }
 function rememberInTransaction(args, db, kg) {
     const existing = db
-        .prepare('SELECT id, namespace FROM entities WHERE name = ?')
+        .prepare('SELECT id, namespace, type FROM entities WHERE name = ?')
         .get(args.name);
     const entityId = kg.createEntity(args.name, args.type, {
         observations: args.observations,
@@ -73,7 +73,7 @@ function rememberInTransaction(args, db, kg) {
         entityId,
         name: args.name,
         ...(args.title !== undefined ? { title: args.title } : {}),
-        type: args.type,
+        type: existing?.type ?? args.type,
         observations: args.observations?.length ?? 0,
         tags: args.tags?.length ?? 0,
         relations: relationsCreated.length,

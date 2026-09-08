@@ -110,6 +110,16 @@ describe('Core Operations: remember', () => {
     expect(entities[0].observations).toContain('second');
   });
 
+  it('reports the persisted type when remembering an existing entity with another type', () => {
+    remember({ name: 'typed-memory', type: 'decision', observations: ['original'] });
+
+    const result = remember({ name: 'typed-memory', type: 'note', observations: ['appended'] });
+
+    expect(result.type).toBe('decision');
+    expect(recall({ query: 'typed-memory' })[0].type).toBe('decision');
+    expect(recall({ query: 'appended' })[0].observations).toContain('appended');
+  });
+
   it('stores tags and counts relations', () => {
     remember({ name: 'target', type: 'pattern' });
     const result = remember({

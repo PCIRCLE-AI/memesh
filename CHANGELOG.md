@@ -2,6 +2,21 @@
 
 All notable changes to MeMesh are documented here.
 
+## [4.9.1] — 2026-09-09
+
+### Fixed
+
+- **First-use update guidance is now channel-aware and session-safe.** Only
+  supported npm-global installs can record consent for the Stop-hook updater;
+  project-local, source-checkout, and plugin-marketplace installs receive the
+  correct foreground action instead of a misleading upgrade prompt.
+- **Concurrent and interrupted first-use prompts no longer lose the notice.**
+  Session-scoped claims are atomic, finalize only after output is emitted, and
+  reclaim a pending claim only when its owner process is confirmed gone.
+- **Post-release dogfood regressions are closed.** Recall matching, router
+  failure reporting, bundled server startup, dashboard navigation, doctor
+  repairs, and release-surface contracts now have focused regression coverage.
+
 ## [4.9.0] — 2026-09-07
 
 ### Added

@@ -19,6 +19,7 @@ import {
 import { MessageSchema } from './schemas.js';
 import {
   AGENT_ROUTER_PROTOCOL_VERSION,
+  AgentRouterError,
   createAgentRouterNotifier,
   sendAgentRouterRequest,
   type AgentRouterNotifyRequest,
@@ -43,6 +44,14 @@ export class AgentRecipientUnavailableError extends AgentMessagingError {
 
   constructor() {
     super('recipient_unavailable: the exact active session did not accept the native message.');
+  }
+}
+
+export class AgentRouterUnavailableError extends AgentMessagingError {
+  readonly code = 'router_unreachable';
+
+  constructor() {
+    super('router_unreachable: the sender could not reach the local agent router; the durable message is preserved.');
   }
 }
 
@@ -165,7 +174,13 @@ async function requireExactSessionNativeAcceptance(
       error instanceof AgentRecipientUnavailableError
       || error instanceof AgentNativeMessageTooLargeError
     ) throw error;
-    throw new AgentRecipientUnavailableError();
+    if (error instanceof AgentRouterError) {
+      // Preserve protocol/identity errors: they indicate a broken or skewed
+      // router, not an unreachable socket. Connection-level failures are the
+      // only router errors that should use the sender-side reachability code.
+      if (!['timeout', 'connection_closed'].includes(error.code)) throw error;
+    }
+    throw new AgentRouterUnavailableError();
   }
 
   const accepted = readHostAccept(db, sent.delivery_id);

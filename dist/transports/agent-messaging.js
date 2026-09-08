@@ -1,12 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { AgentMessageAccessError, AgentMessagingError, AgentNativeMessageTooLargeError, fetchAgentMessage, pollAgentEvents, readAgentMessageReceipts, recordAgentReceipt, sendAgentMessage, waitForAgentEvents, } from '../core/agent-messaging.js';
 import { MessageSchema } from './schemas.js';
-import { AGENT_ROUTER_PROTOCOL_VERSION, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
+import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterError, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
     constructor() {
         super('recipient_unavailable: the exact active session did not accept the native message.');
+    }
+}
+export class AgentRouterUnavailableError extends AgentMessagingError {
+    code = 'router_unreachable';
+    constructor() {
+        super('router_unreachable: the sender could not reach the local agent router; the durable message is preserved.');
     }
 }
 const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
@@ -73,7 +79,11 @@ async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
         if (error instanceof AgentRecipientUnavailableError
             || error instanceof AgentNativeMessageTooLargeError)
             throw error;
-        throw new AgentRecipientUnavailableError();
+        if (error instanceof AgentRouterError) {
+            if (!['timeout', 'connection_closed'].includes(error.code))
+                throw error;
+        }
+        throw new AgentRouterUnavailableError();
     }
     const accepted = readHostAccept(db, sent.delivery_id);
     if (!accepted)

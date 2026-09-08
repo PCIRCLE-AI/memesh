@@ -93,6 +93,15 @@ import { UserPatterns } from '../../dashboard/src/components/UserPatterns';
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const COMPONENT_DIR = 'dashboard/src/components';
 
+describe('dashboard branding placement', () => {
+  it('keeps the powered-by attribution in the app footer, not the header', () => {
+    const header = fs.readFileSync(path.join(repoRoot, 'dashboard/src/components/Header.tsx'), 'utf8');
+    const app = fs.readFileSync(path.join(repoRoot, 'dashboard/src/App.tsx'), 'utf8');
+    expect(header).not.toContain("t('brand.subtitle')");
+    expect(app).toContain('<footer class="app-footer">{t(\'brand.subtitle\')}</footer>');
+  });
+});
+
 /**
  * Every key in the English catalogue. A rendered key is a missed translation:
  * `t()` returns its argument on a miss, so the key IS the failure mode.
