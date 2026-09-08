@@ -30,8 +30,15 @@ it('warns about retired config keys without exposing or changing their values', 
     futureSetting: { keep: true },
   });
   if (process.platform !== 'win32') fs.chmodSync(configPath, 0o640);
-  const beforeDigest = createHash('sha256').update(fs.readFileSync(configPath)).digest('hex');
-  const beforeMode = fs.statSync(configPath).mode & 0o777;
+  const beforeDescriptor = fs.openSync(configPath, 'r');
+  let beforeDigest: string;
+  let beforeMode: number;
+  try {
+    beforeDigest = createHash('sha256').update(fs.readFileSync(beforeDescriptor)).digest('hex');
+    beforeMode = fs.fstatSync(beforeDescriptor).mode & 0o777;
+  } finally {
+    fs.closeSync(beforeDescriptor);
+  }
   const noFetch = vi.fn(() => { throw new Error('unexpected network'); });
   vi.stubGlobal('fetch', noFetch);
   try {

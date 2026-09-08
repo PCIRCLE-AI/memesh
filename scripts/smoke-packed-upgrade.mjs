@@ -279,8 +279,15 @@ function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cac
     futureSetting: { keep: true },
   }, null, 2), { mode: 0o640 });
   if (process.platform !== 'win32') fs.chmodSync(configPath, 0o640);
-  const configDigestBeforeUpgrade = sha256(configPath);
-  const configModeBeforeUpgrade = fs.statSync(configPath).mode & 0o777;
+  const beforeDescriptor = fs.openSync(configPath, 'r');
+  let configDigestBeforeUpgrade;
+  let configModeBeforeUpgrade;
+  try {
+    configDigestBeforeUpgrade = crypto.createHash('sha256').update(fs.readFileSync(beforeDescriptor)).digest('hex');
+    configModeBeforeUpgrade = fs.fstatSync(beforeDescriptor).mode & 0o777;
+  } finally {
+    fs.closeSync(beforeDescriptor);
+  }
   console.log(`baseline: version=${installed.packageJson.version} package=${installed.packageRoot}`);
 
   const autoUpdate = process.platform === 'win32'

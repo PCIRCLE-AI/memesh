@@ -124,7 +124,7 @@ function readDetachedLaunchInput(dataDir, launchFile) {
     if (path.dirname(resolved) !== fs.realpathSync(directory)) {
         throw new Error('Codex companion launch input resolved outside its private lifecycle directory.');
     }
-    const fd = fs.openSync(resolved, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    const fd = fs.openSync(launchFile, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
     try {
         const stat = fs.fstatSync(fd);
         if (!stat.isFile() || (stat.mode & 0o077) !== 0
@@ -139,7 +139,7 @@ function readDetachedLaunchInput(dataDir, launchFile) {
             return parsed;
         }
         finally {
-            fs.unlinkSync(resolved);
+            fs.unlinkSync(launchFile);
         }
     }
     finally {

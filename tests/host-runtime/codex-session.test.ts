@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getProjectName } from '../../src/core/paths.js';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   codexCompanionControlSocketPath,
   codexCompanionStatePath,
@@ -459,5 +460,33 @@ describe.skipIf(process.platform === 'win32')('Codex SessionEnd companion lifecy
       plugin,
     )).resolves.toBe(true);
     expect(fs.existsSync(staged.statePath)).toBe(false);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('detached launch input CLI boundary', () => {
+  const entrypoint = fileURLToPath(new URL('../../dist/host-runtime/codex-session.js', import.meta.url));
+
+  it.each([
+    ['regular', '{}', 0, false],
+    ['malformed', '{bad-json', 1, false],
+    ['public', '{}', 1, true],
+    ['symlink', '{}', 1, true],
+  ] as const)('handles %s input without reading or deleting a symlink target', (kind, content, status, retained) => {
+    const { config } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const directory = path.dirname(codexCompanionStatePath(dataDir, threadId));
+    const target = path.join(directory, 'launch.json');
+    fs.writeFileSync(target, content, { mode: kind === 'public' ? 0o644 : 0o600 });
+    const input = kind === 'symlink' ? path.join(directory, 'launch-link.json') : target;
+    if (kind === 'symlink') fs.symlinkSync(target, input);
+    const result = spawnSync(process.execPath, [entrypoint, '--companion', input], {
+      env: { ...process.env, MEMESH_DIR: dataDir, MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db') },
+      encoding: 'utf8', timeout: 5_000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(status);
+    expect(fs.existsSync(target)).toBe(retained);
+    if (retained) expect(fs.readFileSync(target, 'utf8')).toBe(content);
+    if (kind === 'symlink') expect(fs.lstatSync(input).isSymbolicLink()).toBe(true);
   });
 });
