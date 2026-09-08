@@ -178,10 +178,11 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
   // Every "back to browsing" intent goes through here. Dropping the ticket is
   // the load-bearing half: without it the search already in flight still lands
   // and drags the user back into ranked mode.
-  function leaveRecallMode() {
+  function leaveRecallMode(clearFilter = true) {
     recallGen.current++;
     setRecallResults(null);
     setRecallLoading(false);
+    if (clearFilter) setFilter('');
   }
 
   // Picking any chip is a browsing intent — leave ranked-results mode.
@@ -420,7 +421,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
             type="search"
             placeholder={t('memories.searchPlaceholder')}
             value={filter}
-            onInput={(e) => { setFilter((e.target as HTMLInputElement).value); leaveRecallMode(); }}
+            onInput={(e) => { setFilter((e.target as HTMLInputElement).value); leaveRecallMode(false); }}
             onKeyDown={(e) => e.key === 'Enter' && runDeepSearch()}
           />
           <button class="btn" onClick={runDeepSearch} disabled={recallLoading || !filter.trim()}>
@@ -520,7 +521,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
                 <span style={{ fontFamily: 'var(--mono)' }}>{recallResults!.length}</span>{' '}
                 {recallResults!.length !== 1 ? t('search.results') : t('search.result')} · {t('memories.rankedBy')}
               </span>
-              <button class="btn btn-sm" onClick={leaveRecallMode}>✕ {t('memories.backToList')}</button>
+              <button class="btn btn-sm" onClick={() => leaveRecallMode()}>✕ {t('memories.backToList')}</button>
             </div>
             {recallResults!.length === 0
               ? <div class="empty" role="status">{t('search.noResults')} "{filter}"</div>

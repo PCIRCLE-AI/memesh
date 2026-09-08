@@ -446,10 +446,10 @@
       "reason": "ACP child argv is optional by API contract; absence truthfully means launch the configured executable with zero arguments. Every supplied argument and the aggregate argv are independently bounded before spawn.",
       "triaged": "2026-08-27 host-native push release audit"
     },
-    "C5 dashboard/src/components/MemoriesTab.tsx:242": {
+    "C5 dashboard/src/components/MemoriesTab.tsx:243": {
       "class": "SAFE-DISPLAY",
-      "reason": "client-side search haystack only (absorbs the retired BrowseTab:169 and LessonsTab:298 hay statements) (re-keyed 244→242 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-08-16 (UX-3: local CLUSTER_DOT block removed above, statement unchanged — verified)"
+      "reason": "client-side search haystack only (absorbs the retired BrowseTab:169 and LessonsTab:298 hay statements) (re-keyed 244→242 on 2026-08-29; 242→243 on 2026-09-08 after ranked-search exit state moved above; line shift only, classification unchanged)",
+      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-08-16 (UX-3: local CLUSTER_DOT block removed above, statement unchanged — verified); re-keyed 2026-09-08 after ranked-search exit state moved above, statement unchanged — verified"
     },
     "C5 dashboard/src/components/ProjectRoadmap.tsx:346": {
       "class": "SAFE-DISPLAY",

@@ -92,8 +92,8 @@ function rememberInTransaction(
   // observation text materialized and thrown away, on the write hot path
   // (also hit per-entity by importMemories/createEntitiesBatch).
   const existing = db
-    .prepare('SELECT id, namespace FROM entities WHERE name = ?')
-    .get(args.name) as { id: number; namespace: string | null } | undefined;
+    .prepare('SELECT id, namespace, type FROM entities WHERE name = ?')
+    .get(args.name) as { id: number; namespace: string | null; type: string } | undefined;
 
   // Trust signal MUST arrive at createEntity time so the confidence-
   // bump gate (knowledge-graph.ts) can deny it for untrusted callers.
@@ -168,7 +168,10 @@ function rememberInTransaction(
     entityId,
     name: args.name,
     ...(args.title !== undefined ? { title: args.title } : {}),
-    type: args.type,
+    // `createEntity` preserves the stored type on a name collision. Report
+    // that persisted value too; echoing args.type made a duplicate remember
+    // receipt claim a type that was never written.
+    type: existing?.type ?? args.type,
     observations: args.observations?.length ?? 0,
     tags: args.tags?.length ?? 0,
     relations: relationsCreated.length,

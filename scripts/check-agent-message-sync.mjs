@@ -82,6 +82,11 @@ const CLI_ACTIONS = {
   activation: 'activation',
   receipts: 'receipts',
 };
+// dist/transports/cli/cli.js is a self-contained esbuild artifact for
+// node_modules-free marketplace installs. Its transformed command syntax is
+// intentionally not a source-text mirror; runtime coverage lives in
+// tests/codex-plugin-fresh-consumer.test.ts. Keep the source wiring checks
+// below and do not mistake generated bundle text for an independent proof.
 for (const [action, command] of Object.entries(CLI_ACTIONS)) {
   // Do not let an unrelated action literal make a command look wired. In
   // particular, the durable protocol calls this action `poll`, while the CLI
@@ -91,11 +96,6 @@ for (const [action, command] of Object.entries(CLI_ACTIONS)) {
     new RegExp(`\\.command\\('${command}'\\)[\\s\\S]{0,2400}?action:\\s*'${action}'`),
     `CLI command ${JSON.stringify(command)} mapped to action ${JSON.stringify(action)}`,
   );
-  requirePattern(
-    'dist/transports/cli/cli.js',
-    new RegExp(`\\.command\\('${command}'\\)[\\s\\S]{0,2400}?action:\\s*'${action}'`),
-    `installed CLI command ${JSON.stringify(command)} mapped to action ${JSON.stringify(action)}`,
-  );
 }
 requireText('src/transports/cli/cli.ts', ['--payload-stdin', 'never argv', 'readCliMessagePayloadFromStdin']);
 requireText('src/transports/schemas.ts', ['target_kind', "z.enum(['principal', 'session'])"]);
@@ -103,7 +103,6 @@ requireText('dist/transports/schemas.js', ['target_kind', "z.enum(['principal', 
 requireText('src/transports/agent-messaging.ts', ['target_kind: input.target_kind', 'recipient_unavailable', 'native_accepted']);
 requireText('dist/transports/agent-messaging.js', ['target_kind: input.target_kind', 'recipient_unavailable', 'native_accepted']);
 requireText('src/transports/cli/cli.ts', ['messageStorageCmd', 'storage', 'report', 'prune', 'automatic_pruning']);
-requireText('dist/transports/cli/cli.js', ['messageStorageCmd', 'storage', 'report', 'prune', 'automatic_pruning']);
 requireText('src/core/agent-message-storage.ts', ['protected_unresolved_message_count', 'terminal_prunable_message_count', 'storage_quota_exceeded']);
 requireText('dist/core/agent-message-storage.js', ['protected_unresolved_message_count', 'terminal_prunable_message_count', 'storage_quota_exceeded']);
 
@@ -163,9 +162,6 @@ requireText('tests/core/agent-router.test.ts', [
   'never reroutes or later replays an exact-session delivery and drains principal pending after router restart',
 ]);
 requireText('src/transports/cli/cli.ts', [
-  "'codex-session'", "mode: host === 'codex-session'", "'ordinary-session-native-queue'",
-]);
-requireText('dist/transports/cli/cli.js', [
   "'codex-session'", "mode: host === 'codex-session'", "'ordinary-session-native-queue'",
 ]);
 requireText('src/host-runtime/acp.ts', ['session_update_file', 'O_NOFOLLOW']);

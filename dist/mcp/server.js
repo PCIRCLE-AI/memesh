@@ -27139,7 +27139,7 @@ function remember(args) {
   return db2.transaction(() => rememberInTransaction(args, db2, kg)).immediate();
 }
 function rememberInTransaction(args, db2, kg) {
-  const existing = db2.prepare("SELECT id, namespace FROM entities WHERE name = ?").get(args.name);
+  const existing = db2.prepare("SELECT id, namespace, type FROM entities WHERE name = ?").get(args.name);
   const entityId = kg.createEntity(args.name, args.type, {
     observations: args.observations,
     tags: args.tags,
@@ -27182,7 +27182,7 @@ function rememberInTransaction(args, db2, kg) {
     entityId,
     name: args.name,
     ...args.title !== void 0 ? { title: args.title } : {},
-    type: args.type,
+    type: existing?.type ?? args.type,
     observations: args.observations?.length ?? 0,
     tags: args.tags?.length ?? 0,
     relations: relationsCreated.length,

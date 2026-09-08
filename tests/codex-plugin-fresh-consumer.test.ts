@@ -187,4 +187,15 @@ describe('Codex plugin fresh consumer', () => {
       fs.existsSync(path.resolve(repoRoot, manifest.mcpServers.memesh.cwd, manifest.mcpServers.memesh.args[0])),
     ).toBe(true);
   });
+
+  it('starts the packaged memesh CLI without third-party modules', () => {
+    const pluginRoot = packagedPluginWithoutNodeModules();
+    const result = spawnSync(process.execPath, [path.join(pluginRoot, 'dist/transports/cli/cli.js'), '--version'], {
+      cwd: pluginRoot,
+      env: { ...process.env, HOME: path.join(pluginRoot, 'home'), PLUGIN_ROOT: pluginRoot },
+      encoding: 'utf8',
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.trim()).toBe('4.9.0');
+  });
 });

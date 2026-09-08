@@ -105,6 +105,32 @@ describe('MemoriesTab — a stale ranked search must not overwrite a newer view'
   });
 });
 
+describe('MemoriesTab — leaving ranked search returns to the browse list', () => {
+  it('clears the query as well as the ranked results', async () => {
+    stubFetch((url) => {
+      if (url.includes('/v1/projects')) return [];
+      if (url.includes('/v1/recall')) return { entities: [entity(2, { observations: ['ranked hit'] })] };
+      return [entity(1, { observations: ['browse row'] })];
+    });
+
+    const { container, getByRole } = render(<MemoriesTab />);
+    await waitFor(() => { expect(container.textContent).toContain('browse row'); });
+
+    const search = container.querySelector('input[type="search"]') as HTMLInputElement;
+    fireEvent.input(search, { target: { value: 'ranked' } });
+    await waitFor(() => { expect(search.value).toBe('ranked'); });
+    fireEvent.keyDown(search, { key: 'Enter' });
+    await waitFor(() => { expect(container.textContent).toContain('ranked hit'); });
+
+    fireEvent.click(getByRole('button', { name: /返回列表|Back to list/ }));
+    await waitFor(() => {
+      expect(search.value).toBe('');
+      expect(container.textContent).toContain('browse row');
+      expect(container.textContent).not.toContain('ranked hit');
+    });
+  });
+});
+
 describe('MemoriesTab — a truncated list says so even when the total is unknown', () => {
   it('health that never loads does not silence the truncation notice', async () => {
     // Hitting the fetch limit IS the evidence of truncation. The total only
