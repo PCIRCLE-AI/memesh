@@ -461,17 +461,17 @@
       "reason": "`e.relations ?? []` building the reverse supersession index in DecisionsView — no relations means no chain lines render; status falls back to active only when NO supersedes edge points at the entity anywhere in the set. (re-keyed 1065→1070 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1072": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1068": {
       "class": "SAFE-DISPLAY",
       "reason": "`m.get(r.to) ?? []` — standard multimap-append idiom inside the reverse index build; the default is the empty bucket being created, not a masked failure. (re-keyed 1067→1072 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1103": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1101": {
       "class": "SAFE-DISPLAY",
       "reason": "`supersededBy.get(e.name) ?? []` — a decision nothing points at is genuinely unreplaced; the empty default is the honest answer and renders as status \"active\", which is the documented two-state contract. (re-keyed 1098→1103 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1107": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1105": {
       "class": "SAFE-DISPLAY",
       "reason": "`(e.relations ?? []).filter` listing outgoing supersedes chain lines — absence renders no chain section at all rather than an empty claim. (re-keyed 1102→1107 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view)"
