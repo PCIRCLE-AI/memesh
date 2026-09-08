@@ -212,6 +212,31 @@ describe('agent message transport', () => {
     })).rejects.toThrow(/not available/);
   });
 
+  it('distinguishes an unreachable sender-side router from a live recipient refusal', async () => {
+    await expect(executeAgentMessageAction(getDatabase(), {
+      action: 'send',
+      project: 'transport-router-down',
+      sender: 'sender',
+      recipient: 'session-instance-router-down',
+      target_kind: 'session',
+      idempotency_key: 'router-down',
+      payload: 'keep this durable',
+    }, {
+      transport: 'cli',
+      sourceHost: 'cli',
+    }, {
+      sendRouterRequest: async () => { throw new Error('connect ENOENT'); },
+    })).rejects.toMatchObject({
+      code: 'router_unreachable',
+      message: expect.stringContaining('durable message is preserved'),
+    });
+
+    expect(getDatabase().prepare(`
+      SELECT COUNT(*) AS count FROM agent_message_deliveries
+      WHERE project = 'transport-router-down' AND recipient = 'session-instance-router-down'
+    `).get()).toEqual({ count: 1 });
+  });
+
   it('reports native_message_too_large when the exact-session adapter rejects the full envelope', async () => {
     await expect(executeAgentMessageAction(getDatabase(), {
       action: 'send',

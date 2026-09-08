@@ -99,7 +99,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it('reports recipient_unavailable for an unregistered exact session while preserving scoped recovery', () => {
+  it('reports router_unreachable when the sender cannot reach the router while preserving scoped recovery', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
     try {
       const result = spawnSync(process.execPath, cliArgs(
@@ -112,7 +112,7 @@ describe('CLI durable-message ingress', () => {
         env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
       });
       expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain('recipient_unavailable');
+      expect(result.stderr).toContain('router_unreachable');
       expect(result.stdout).toBe('');
 
       const polled = spawnSync(process.execPath, cliArgs(

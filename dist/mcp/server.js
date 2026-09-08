@@ -29801,6 +29801,12 @@ var AgentRecipientUnavailableError = class extends AgentMessagingError {
     super("recipient_unavailable: the exact active session did not accept the native message.");
   }
 };
+var AgentRouterUnavailableError = class extends AgentMessagingError {
+  code = "router_unreachable";
+  constructor() {
+    super("router_unreachable: the sender could not reach the local agent router; the durable message is preserved.");
+  }
+};
 var AGENT_MESSAGE_STORAGE_QUOTA_ENV = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
 var EXACT_SESSION_NATIVE_TIMEOUT_MS = 12e3;
 var PUBLIC_DISPOSITIONS = /* @__PURE__ */ new Set(["accepted", "rejected", "completed", "cancelled", "deferred"]);
@@ -29862,7 +29868,7 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
   } catch (error51) {
     if (error51 instanceof AgentRecipientUnavailableError || error51 instanceof AgentNativeMessageTooLargeError)
       throw error51;
-    throw new AgentRecipientUnavailableError();
+    throw new AgentRouterUnavailableError();
   }
   const accepted = readHostAccept(db2, sent.delivery_id);
   if (!accepted)
