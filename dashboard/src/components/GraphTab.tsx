@@ -1103,8 +1103,10 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         // node and a universal "0" is noise, not information.
         if (n.evidenceCount > 0 && showLabel) {
           const br = BADGE_R / vp.scale;
-          const bx = n.x + r * 0.8;
-          const by = n.y - r * 0.8;
+          // Keep the readable badge clear of both the node and its right-side
+          // label at every zoom level. The gap is constant in screen pixels.
+          const bx = n.x - r - br - 4 / vp.scale;
+          const by = n.y;
           // Publish where it landed. The hit-test reads this instead of
           // recomputing `n.radius * 0.8` — `r` above is 9 or 10px on a hovered
           // or focused node, so the recomputed copy pointed at a badge that

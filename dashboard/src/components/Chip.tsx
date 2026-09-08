@@ -44,7 +44,7 @@ export function Chip({ label, active, onClick, count, dot }: ChipProps) {
       )}
       {label}
       {count !== undefined && (
-        <span style={{ opacity: 0.6, fontFamily: 'var(--mono)', fontSize: 14 }}>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 14 }}>
           {count}
         </span>
       )}
