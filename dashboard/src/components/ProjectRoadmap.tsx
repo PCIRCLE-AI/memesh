@@ -576,10 +576,8 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
         </div>
       )}
 
-      {/* Mindmap view — radial dendrogram laid out in SVG. Project sits
-          at the centre; phases radiate out to evenly-spaced positions
-          on a circle; each phase's entities arrange along a fan from
-          that phase outward. Click any node to switch back to tree
+      {/* Mindmap view — project above phase columns, with entity rows
+          below each phase. Click any node to switch back to tree
           view and scroll the corresponding entity into focus. */}
       {view === 'mindmap' && phases.length > 0 && (
         <RoadmapMindmap
@@ -1229,6 +1227,8 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
   // so a screen-pixel delta is mapped to SVG-space via the SVG's actual
   // bounding rect at event time (handled in the wheel/move helpers below).
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const viewportRef = useRef({ width: W, height: H });
+  viewportRef.current = { width: W, height: H };
   const [scale, setScale] = useState(1);
   const [panX, setPanX] = useState(0);
   const [panY, setPanY] = useState(0);
@@ -1258,15 +1258,15 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) return { x: 0, y: 0 };
     return {
-      x: ((clientX - r.left) / r.width) * W,
-      y: ((clientY - r.top) / r.height) * H,
+      x: ((clientX - r.left) / r.width) * viewportRef.current.width,
+      y: ((clientY - r.top) / r.height) * viewportRef.current.height,
     };
   };
 
   // Wheel handler must be attached as a non-passive listener so preventDefault()
   // actually stops the page from scrolling. Preact's onWheel JSX prop is
   // delegated and effectively passive, so we attach the listener manually.
-  // Bound once; reads current scale/pan via refs.
+  // Bound once; reads current scale, pan and viewport dimensions via refs.
   useEffect(() => {
     const el = svgRef.current;
     if (!el) return;
