@@ -90,6 +90,15 @@ body {
 
 /* ---- Layout ---- */
 .shell { min-height: 100vh; display: flex; flex-direction: column; }
+.app-footer {
+  padding: 16px 24px 20px;
+  color: var(--text-3);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  border-top: 1px solid var(--border);
+  margin-top: auto;
+}
 
 .header {
   display: flex;

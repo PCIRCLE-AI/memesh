@@ -206,7 +206,7 @@ function inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl) 
                 'Do not paste the file into an issue because it may contain credentials. Then run memesh doctor again.', {
                 code: 'config-parse.retired-settings',
                 params: { path: configPath, count: retiredKeys.length, keys },
-            });
+            }, 'config-retired-settings');
         }
         return createCheck('config', 'Config', 'pass', `${configPath} is valid JSON and its settings are in effect.`);
     }
@@ -701,7 +701,7 @@ function readCodexInstallRevision(root, readFileSyncImpl) {
 function pluginCacheUnverifiable(host, missing) {
     const hostLabel = host === 'codex' ? 'Codex' : 'Claude Code';
     const command = PLUGIN_REFRESH_COMMANDS[host];
-    return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'warn', `Could not tell whether the plugin cache matches the marketplace: ${missing}. The version alone cannot answer this — two builds can carry the same version.`, `Run \`${command}\` — it re-stages the cache from the marketplace and records the commit, after which this check can answer.`, { code: 'plugin-cache.unverifiable', params: { host: hostLabel, command } });
+    return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'warn', `Could not tell whether the plugin cache matches the marketplace: ${missing}. The version alone cannot answer this — two builds can carry the same version.`, `Run \`${command}\` — it re-stages the cache from the marketplace and records the commit, after which this check can answer.`, { code: 'plugin-cache.unverifiable', params: { host: hostLabel, command } }, 'plugin-cache-refresh');
 }
 function readClaudePluginEntries(registryPath, readFileSyncImpl, existsSyncImpl) {
     if (!existsSyncImpl(registryPath)) {
@@ -862,7 +862,7 @@ function inspectPluginCacheCurrency(installChannel, pluginHost, packageRoot, ins
     if (installedSha === marketplaceSha) {
         return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'pass', `The plugin cache records marketplace commit ${marketplaceSha.slice(0, 8)}, which matches the current marketplace snapshot.`);
     }
-    return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'warn', `The plugin cache records commit ${installedSha.slice(0, 8)}, but the marketplace has moved to ${marketplaceSha.slice(0, 8)} under the same version — ${hostLabel} does not normally refresh a cache whose version did not change, so refresh the cache before relying on the newer marketplace code.`, `Run \`${command}\` to refresh the cache in place, then restart ${hostLabel}.`, { code: 'plugin-cache.stale', params: { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command } });
+    return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'warn', `The plugin cache records commit ${installedSha.slice(0, 8)}, but the marketplace has moved to ${marketplaceSha.slice(0, 8)} under the same version — ${hostLabel} does not normally refresh a cache whose version did not change, so refresh the cache before relying on the newer marketplace code.`, `Run \`${command}\` to refresh the cache in place, then restart ${hostLabel}.`, { code: 'plugin-cache.stale', params: { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command } }, 'plugin-cache-refresh');
 }
 function isClaudeChannelCommand(command) {
     if (command === 'memesh-host-claude')

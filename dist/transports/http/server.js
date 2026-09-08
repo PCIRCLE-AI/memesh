@@ -7,6 +7,7 @@ import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
+import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -279,6 +280,34 @@ app.get('/v1/doctor', (_req, res) => handleGet(res, async () => {
     });
     return JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(result))));
 }));
+const DoctorFixBody = z.object({ id: z.string().min(1).max(100) }).strict();
+app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, async ({ id }) => {
+    const { runDoctor } = await import('../../core/doctor.js');
+    const before = await runDoctor({ packageRoot, packageVersion });
+    const check = before.checks.find((candidate) => candidate.id === id);
+    if (!check || !check.fixId) {
+        throw new HttpError(400, 'operation.failed', 'This diagnostic has no automatic repair.');
+    }
+    let action;
+    switch (check.fixId) {
+        case 'config-retired-settings':
+            action = removeRetiredConfigKeys();
+            break;
+        case 'plugin-cache-refresh':
+            action = refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check));
+            break;
+        default:
+            throw new HttpError(400, 'operation.failed', 'This diagnostic must be repaired from the command line.');
+    }
+    const after = await runDoctor({ packageRoot, packageVersion });
+    const safe = (value) => JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(value))));
+    return {
+        action: safe(action),
+        before: safe({ status: before.status, checks: [check] }),
+        after: safe(after),
+        restartRequired: check.fixId === 'plugin-cache-refresh',
+    };
+}, { errorStatus: 500, errorCode: 'server.internal' }));
 function requireJsonBody(req, res) {
     if (req.body !== undefined)
         return true;

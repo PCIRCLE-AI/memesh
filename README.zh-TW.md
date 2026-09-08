@@ -106,7 +106,7 @@ memesh doctor          # 檢查本機安裝健康狀態並列出修復方式
 memesh install-hooks   # 沒裝 A 才需要：幫 Claude Code 接上 hook，不動你原本的設定
 ```
 
-Codex 零設定安裝：執行 `codex plugin marketplace add PCIRCLE-AI/memesh` 與 `codex plugin add memesh@pcircle-memesh`。手動替代方案是 `codex mcp add memesh -- memesh-mcp`。Cursor：把 `{ "mcpServers": { "memesh": { "command": "memesh-mcp" } } }` 加進 `~/.cursor/mcp.json`。
+Codex 零設定安裝：執行 `codex plugin marketplace add PCIRCLE-AI/memesh` 與 `codex plugin add memesh@pcircle-memesh`。手動替代方案是 `codex mcp add memesh -- memesh-mcp`。Cursor：把 `{ "mcpServers": { "memesh": { "command": "memesh-mcp" } } }` 加進 `~/.cursor/mcp.json`。Dashboard 的 doctor 提醒可執行它能驗證的兩種可復原本機修復；單純開啟頁面不會自動改檔案。
 
 > **裝了 plugin 不等於有 `memesh` 指令。** `/plugin install` 之後，在終端機打 `memesh` 會出現 `command not found`，要再跑 `npm install -g @pcircle/memesh` 才會有。只在 Claude Code 對話裡用的話，裝 A 就夠了。
 

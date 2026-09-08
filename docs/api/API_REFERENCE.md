@@ -775,6 +775,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 |--------|----------|-------------|
 | GET | /v1/health | Health check + version + entity count |
 | GET | /v1/doctor | Run the full doctor check suite; secrets in the result are redacted before the response leaves the server |
+| POST | /v1/doctor/fix | Apply one explicitly selected, recoverable doctor repair and return a fresh readback |
 | POST | /v1/remember | Store knowledge |
 | POST | /v1/recall | Search knowledge; with neither `query` nor `tag` it lists recent entities |
 | POST | /v1/forget | Archive or remove observation |
@@ -1073,6 +1074,22 @@ Returns computed analytics insights for the memory database.
 Runs the same check suite as `memesh doctor` and returns the structured result. Any secret-shaped substring (for example bearer tokens) is redacted before the response leaves the server.
 
 **Response:** `{ "success": true, "data": { ...doctor result... } }`, or `500` with `{ "success": false, "error": "..." }` if the suite itself failed to run.
+
+### POST /v1/doctor/fix
+
+Applies one repair identified by a current doctor check's `id`. The route
+re-runs doctor before changing anything, so a stale Dashboard cannot apply a
+repair to a different condition. It currently supports only recoverable
+actions: removing known retired top-level config keys after creating a
+byte-for-byte backup, and refreshing a stale Claude Code or Codex plugin cache
+through the host's existing updater. The request is never triggered by a GET
+or by loading the Dashboard; it requires an explicit user action. Plugin
+refresh returns `restartRequired: true` because the host must reload the cache.
+
+**Request:** `{ "id": "config" }` or a host-specific `plugin-cache-*` check id.
+
+**Response:** `{ "success": true, "data": { "action": ..., "before": ..., "after": ..., "restartRequired": false } }`.
+The response is path- and secret-redacted like `GET /v1/doctor`.
 
 ### GET /v1/projects
 

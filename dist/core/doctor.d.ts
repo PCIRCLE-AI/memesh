@@ -11,7 +11,7 @@ export interface DoctorCheck {
     status: DoctorCheckStatus;
     summary: string;
     fix?: string;
-    fixId?: 'install-hooks' | 'fts-rebuild' | 'chmod-db';
+    fixId?: 'install-hooks' | 'fts-rebuild' | 'chmod-db' | 'config-retired-settings' | 'plugin-cache-refresh';
     informational?: boolean;
     code?: string;
     params?: Record<string, string | number>;

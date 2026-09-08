@@ -14,6 +14,7 @@ interface DoctorCheck {
   fix?: string;
   code?: string;
   params?: Record<string, string | number>;
+  fixId?: 'install-hooks' | 'fts-rebuild' | 'chmod-db' | 'config-retired-settings' | 'plugin-cache-refresh';
 }
 interface DoctorResult { status: string; checks: DoctorCheck[] }
 
@@ -122,6 +123,9 @@ export function DoctorBanner() {
   });
   const [helpUrl, setHelpUrl] = useState('');
   const [helpCopied, setHelpCopied] = useState(false);
+  const [repairingId, setRepairingId] = useState<string | null>(null);
+  const [repairedId, setRepairedId] = useState<string | null>(null);
+  const [repairError, setRepairError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -189,6 +193,25 @@ export function DoctorBanner() {
     }
   }
 
+  async function repair(c: DoctorCheck) {
+    if (!c.fixId || repairingId) return;
+    setRepairingId(c.id);
+    setRepairedId(null);
+    setRepairError(null);
+    try {
+      const result = await api<{ restartRequired?: boolean }>('POST', '/v1/doctor/fix', { id: c.id });
+      setRepairedId(c.id);
+      if (result?.restartRequired) {
+        setRepairError(t('doctorBanner.restartRequired'));
+      }
+      window.dispatchEvent(new Event('memesh:data-changed'));
+    } catch (err) {
+      setRepairError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRepairingId(null);
+    }
+  }
+
   async function copyHelpLink() {
     if (!helpUrl) return;
     try { await navigator.clipboard.writeText(helpUrl); setHelpCopied(true); }
@@ -244,14 +267,33 @@ export function DoctorBanner() {
       <ul style={{ margin: '6px 0 10px', paddingLeft: 18, fontSize: 14, lineHeight: 1.5, color: 'var(--text-2)' }}>
         {concerns.slice(0, 3).map(c => {
           const fix = trFix(c);
+          const autoRepairable = c.fixId === 'config-retired-settings' || c.fixId === 'plugin-cache-refresh';
           return (
             <li key={c.id}>
               <strong>{trLabel(c)}:</strong> {trSummary(c)}
               {fix && <>
-                {' — '}<em style={{ color: 'var(--text-3)' }}>{fix}</em>
-                {terminalCommands(fix).map(command => (
-                  <TerminalHandoff key={command} id="doctor-fix-command" command={command} />
-                ))}
+                {!autoRepairable && <>
+                  {' — '}<em style={{ color: 'var(--text-3)' }}>{fix}</em>
+                  {terminalCommands(fix).map(command => (
+                    <TerminalHandoff key={command} id="doctor-fix-command" command={command} />
+                  ))}
+                </>}
+                {autoRepairable && (
+                  <div style={{ marginTop: 7 }}>
+                    <button
+                      type="button"
+                      class="btn btn-sm"
+                      disabled={repairingId !== null}
+                      onClick={() => { void repair(c); }}
+                    >
+                      {repairingId === c.id
+                        ? t('doctorBanner.fixInProgress')
+                        : repairedId === c.id
+                          ? t('doctorBanner.fixDone')
+                          : t('doctorBanner.fix')}
+                    </button>
+                  </div>
+                )}
               </>}
             </li>
           );
@@ -260,6 +302,11 @@ export function DoctorBanner() {
           <li style={{ color: 'var(--text-3)' }}>{t('doctorBanner.moreCount', { n: concerns.length - 3 })}</li>
         )}
       </ul>
+      {repairError && (
+        <div role="status" style={{ margin: '4px 0 8px', color: 'var(--text-2)', fontSize: 13 }}>
+          {repairError}
+        </div>
+      )}
       {/* "Get help" pushes a GitHub issue. Only show for FAIL (broken
           install — the user can't fix it themselves). For WARN-only
           the fix command is already in the list above, so the GitHub

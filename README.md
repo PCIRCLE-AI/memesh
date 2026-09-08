@@ -104,7 +104,7 @@ memesh doctor          # checks local install health and prints fixes
 memesh install-hooks   # only if you skipped A: wires Claude Code, keeps your own hooks
 ```
 
-For a zero-config Codex install, run `codex plugin marketplace add PCIRCLE-AI/memesh` and `codex plugin add memesh@pcircle-memesh`. The manual alternative is `codex mcp add memesh -- memesh-mcp`. For Cursor, add `{ "mcpServers": { "memesh": { "command": "memesh-mcp" } } }` to `~/.cursor/mcp.json`.
+For a zero-config Codex install, run `codex plugin marketplace add PCIRCLE-AI/memesh` and `codex plugin add memesh@pcircle-memesh`. The manual alternative is `codex mcp add memesh -- memesh-mcp`. For Cursor, add `{ "mcpServers": { "memesh": { "command": "memesh-mcp" } } }` to `~/.cursor/mcp.json`. The Dashboard's doctor banner can apply the two recoverable local repairs it knows how to verify; it never changes files just because the page was opened.
 
 > **The plugin does not install the CLI.** After `/plugin install`, typing `memesh` in a terminal says `command not found` until you also run `npm install -g @pcircle/memesh`. If you only use Claude Code chat, A alone is enough.
 

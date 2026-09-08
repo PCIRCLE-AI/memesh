@@ -117,6 +117,30 @@ describe('HTTP Transport: body-parsing failures', () => {
   });
 });
 
+describe('HTTP Transport: Dashboard doctor repairs', () => {
+  it('applies retired-config cleanup only after explicit POST and returns a fresh readback', async () => {
+    const configPath = path.join(tmpDir, 'config.json');
+    fs.writeFileSync(configPath, JSON.stringify({
+      llm: { apiKey: 'fixture-secret' },
+      autoUpdate: 'patch',
+      futureSetting: { keep: true },
+    }));
+
+    const before = await req('GET', '/v1/doctor');
+    const config = before.body.data.checks.find((check: any) => check.id === 'config');
+    expect(config.fixId).toBe('config-retired-settings');
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).llm).toBeDefined();
+
+    const fixed = await req('POST', '/v1/doctor/fix', { id: 'config' });
+    expect(fixed.status).toBe(200);
+    expect(fixed.body.data.after.checks.find((check: any) => check.id === 'config')?.status).toBe('pass');
+    expect(JSON.stringify(fixed.body)).not.toContain('fixture-secret');
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ autoUpdate: 'patch', futureSetting: { keep: true } });
+    const backups = fs.readdirSync(tmpDir).filter((name) => name.startsWith('config.json.bak-'));
+    expect(backups).toHaveLength(1);
+  });
+});
+
 // ── Health ───────────────────────────────────────────────────────────────────
 
 describe('HTTP Transport: GET /v1/health', () => {
