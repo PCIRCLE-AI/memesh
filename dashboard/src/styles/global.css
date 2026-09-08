@@ -453,6 +453,8 @@ mark { background: rgba(143, 242, 92, 0.15); color: inherit; padding: 1px 2px; b
   .mem-time { width: 60px; font-size: 14px; }
 }
 @media (max-width: 480px) {
+  .fb-btn { position: static; align-self: flex-end; margin: 16px; }
+  .fb-panel { width: calc(100% - 32px); right: 16px; }
   .nav-btn { flex: 1; font-size: 14px; padding: 9px 8px; text-align: center; }
   .stats-row { grid-template-columns: 1fr; }
   .mem-row { flex-direction: column; gap: 4px; }

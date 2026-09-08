@@ -56,7 +56,7 @@ export const WORK_LAYER_MIN_NODES = 3;
 
 /** Badge radius in SCREEN pixels — divided by scale at draw and hit-test so
  *  both agree at every zoom. */
-const BADGE_R = 5;
+const BADGE_R = 16;
 
 interface GNode {
   id: string;
@@ -954,8 +954,8 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
           const mx = (a.x + b.x) / 2;
           const my = (a.y + b.y) / 2;
           const edgeAlpha = ctx.globalAlpha;
-          ctx.globalAlpha = Math.max(0.6, Math.min(a.recency, b.recency));
-          ctx.font = `${9 / vp.scale}px ${tk['--font-ui']}`;
+          ctx.globalAlpha = 1;
+          ctx.font = `${14 / vp.scale}px ${tk['--font-ui']}`;
           ctx.fillStyle = tk['--text-2'];
           ctx.fillText(relationLabel(edge.type), mx + 2, my - 2);
           ctx.globalAlpha = edgeAlpha;
@@ -1068,12 +1068,12 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         const showLabel = isHovered || matched || isFocusCenter || budgeted.has(n);
         if (showLabel) {
           const interactive = isHovered || matched || isFocusCenter;
-          ctx.globalAlpha = interactive ? 1 : Math.max(0.7, n.recency);
+          ctx.globalAlpha = 1;
           // Label metrics are SCREEN sizes drawn inside the world
           // transform, so divide by scale — otherwise zooming out shrinks
           // the zoomed-out tier's 3 labels to unreadable specks and zooming
           // in blows 20px text and 6px halos over the graph.
-          ctx.font = `${10 / vp.scale}px ${tk['--font-ui']}`;
+          ctx.font = `${14 / vp.scale}px ${tk['--font-ui']}`;
           // The headline, not the machine name — see GNode.display. Searched
           // and focused nodes get a wider cap because they are the node the
           // user asked about; both are capped now, which the old code did not
@@ -1118,11 +1118,11 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
           ctx.strokeStyle = tk['--life'];
           ctx.lineWidth = 1 / vp.scale;
           ctx.stroke();
-          ctx.font = `${7 / vp.scale}px ${tk['--mono']}`;
+          ctx.font = `${14 / vp.scale}px ${tk['--mono']}`;
           ctx.fillStyle = tk['--life'];
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          // Three digits do not fit a 5px badge; 99+ is the honest cap.
+          // Bound the count to the screen-constant badge width.
           ctx.fillText(n.evidenceCount > 99 ? '99+' : String(n.evidenceCount), bx, by);
           ctx.textAlign = 'start';
           ctx.textBaseline = 'alphabetic';
@@ -1152,11 +1152,12 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         const ageTxt = formatAge(tip.node.lastDate);
         const line1 = ellipsize(tip.node.display, 64);
         const line2 = `${typeTxt}  |  ${ageTxt}`;
-        ctx.font = `11px ${tk['--font-ui']}`;
+        ctx.font = `14px ${tk['--font-ui']}`;
         const w1 = ctx.measureText(line1).width;
+        ctx.font = `14px ${tk['--mono']}`;
         const w2 = ctx.measureText(line2).width;
         const boxW = Math.max(w1, w2) + 12;
-        const boxH = 34;
+        const boxH = 44;
         // Tooltip panel: translucent panel bg + accent hairline, both built from
         // the resolved tokens (--bg-1 / --life) so a palette change reaches the
         // canvas — semi-transparent so the graph shows through.
@@ -1168,10 +1169,11 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         ctx.fill();
         ctx.stroke();
         ctx.fillStyle = tk['--text-0'];
+        ctx.font = `14px ${tk['--font-ui']}`;
         ctx.fillText(line1, tx, ty - 4);
         ctx.fillStyle = tk['--text-2'];
-        ctx.font = `10px ${tk['--mono']}`;
-        ctx.fillText(line2, tx, ty + 10);
+        ctx.font = `14px ${tk['--mono']}`;
+        ctx.fillText(line2, tx, ty + 16);
       }
 
       animRef.current = requestAnimationFrame(simulate);
@@ -1689,10 +1691,12 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
+                  minHeight: 32,
                   gap: 4,
                   fontSize: 14,
                   color: 'var(--text-1)',
-                  opacity: checked ? 1 : 0.4,
                   cursor: 'pointer',
                   userSelect: 'none',
                 }}
