@@ -25,7 +25,7 @@ const R = 80;   // outer radius
 const INNER = 14; // inner label padding
 const AXIS_LABEL_FONT_SIZE = 14;
 // Horizontal room for the axis labels. They sit on the R+18 circle with
-// textAnchor="middle", so a side label's half-width extends past the 220px
+// text-anchor="middle", so a side label's half-width extends past the 220px
 // drawing square — without this padding the SVG viewport clipped
 // "Decisions" to "Dec" and "Patterns" to "Patt" (and longer locales worse).
 // 72px covers half of the widest catalogue label at the readable 14px size.
@@ -124,11 +124,11 @@ export function KnowledgeRadar({ data }: KnowledgeRadarProps) {
                 key={i}
                 x={x.toFixed(1)}
                 y={y.toFixed(1)}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                fontSize={AXIS_LABEL_FONT_SIZE}
+                text-anchor="middle"
+                dominant-baseline="middle"
+                font-size={AXIS_LABEL_FONT_SIZE}
                 fill="var(--text-2)"
-                fontFamily="var(--font-ui)"
+                font-family="var(--font-ui)"
               >
                 {label}
               </text>

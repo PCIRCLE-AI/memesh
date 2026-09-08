@@ -1176,13 +1176,11 @@ function DecisionsView({ entities, onJump }: { entities: Entity[]; onJump: (id: 
 }
 
 /* ============================================================================
- * RoadmapMindmap — radial dendrogram view for a project's phases + entities.
+ * RoadmapMindmap — branching view for a project's phases + entities.
  * ----------------------------------------------------------------------------
- * Layout: project node at the SVG centre; phases sit on a circle of radius
- * R_PHASE around it; each phase's entities fan out from the phase node along
- * a wedge of the surrounding annulus. Connector curves use a quadratic
- * Bézier that hands off near the parent then straightens at the leaf, which
- * reads as "branches" rather than starbursts.
+ * Layout: project node sits above evenly-spaced phase columns; each phase's
+ * entities stack in rows below it. Connector curves keep the branching
+ * relationship readable without making labels compete for one radial wedge.
  *
  * Click any node → caller switches back to tree view and scrolls the
  * corresponding entity into focus. The mindmap is read-only; everything
@@ -1219,19 +1217,12 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
     extra: Math.max(0, arr.length - MAX_ENTITIES_PER_PHASE),
   }));
 
-  const W = 900;
+  const W = Math.max(900, phases.length * 360);
   const H = 600;
   const cx = W / 2;
-  const cy = H / 2;
-  const R_PHASE = 170;
-  // Leave a real text gutter around the 900×600 viewBox: 14px leaf labels
-  // above/below the outer ring otherwise clip at the initial zoom.
-  const R_ENTITY_INNER = 220;
-  const R_ENTITY_STEP = 20;
+  const cy = 50;
+  const phaseOffset = (W - phases.length * 360) / 2;
   const MAP_LABEL_FONT_SIZE = 14;
-
-  // Spread phases evenly around the circle, starting from -90deg (top)
-  const phaseAngle = (i: number) => (2 * Math.PI * i) / phases.length - Math.PI / 2;
 
   // ---- Pan / wheel-zoom state ----
   // We translate then scale in SVG-space. The viewBox is fixed at 0..W x 0..H,
@@ -1422,9 +1413,8 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
         <g transform={`translate(${panX} ${panY}) scale(${scale})`}>
         {/* Connector curves: project → phase, phase → entities */}
         {phases.map((_, i) => {
-          const ang = phaseAngle(i);
-          const px = cx + R_PHASE * Math.cos(ang);
-          const py = cy + R_PHASE * Math.sin(ang);
+          const px = phaseOffset + i * 360 + 180;
+          const py = 160;
           return (
             <path
               key={`p-${i}`}
@@ -1437,16 +1427,11 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
         })}
         {phases.map((_, i) => {
           const { shown } = truncated[i];
-          const baseAng = phaseAngle(i);
-          const phasePx = cx + R_PHASE * Math.cos(baseAng);
-          const phasePy = cy + R_PHASE * Math.sin(baseAng);
-          const wedge = Math.PI / 6; // 30deg total wedge per phase
+          const phasePx = phaseOffset + i * 360 + 180;
+          const phasePy = 160;
           return shown.map((e, j) => {
-            const t = shown.length === 1 ? 0.5 : j / (shown.length - 1);
-            const ang = baseAng - wedge / 2 + wedge * t;
-            const r = R_ENTITY_INNER + R_ENTITY_STEP * (j % 3);
-            const ex = cx + r * Math.cos(ang);
-            const ey = cy + r * Math.sin(ang);
+            const ex = phasePx - 140;
+            const ey = 240 + j * 40;
             return (
               <path
                 key={`e-${i}-${e.id}`}
@@ -1465,10 +1450,10 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
           <text
             x={cx}
             y={cy}
-            textAnchor="middle"
-            dominantBaseline="central"
-            fontSize={MAP_LABEL_FONT_SIZE}
-            fontWeight={600}
+            text-anchor="middle"
+            dominant-baseline="central"
+            font-size={MAP_LABEL_FONT_SIZE}
+            font-weight={600}
             fill="var(--text-0)"
             style={{ pointerEvents: 'none' }}
           >
@@ -1478,9 +1463,8 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
 
         {/* Phase nodes */}
         {phases.map((phase, i) => {
-          const ang = phaseAngle(i);
-          const px = cx + R_PHASE * Math.cos(ang);
-          const py = cy + R_PHASE * Math.sin(ang);
+          const px = phaseOffset + i * 360 + 180;
+          const py = 160;
           const labelTrunc = phase.label.length > 18 ? phase.label.slice(0, 16) + '…' : phase.label;
           return (
             <g
@@ -1508,14 +1492,14 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
               <text
                 x={px}
                 y={py - 8}
-                textAnchor="middle"
-                fontSize={MAP_LABEL_FONT_SIZE}
-                fontWeight={600}
+                text-anchor="middle"
+                font-size={MAP_LABEL_FONT_SIZE}
+                font-weight={600}
                 fill="var(--text-0)"
                 style={{ pointerEvents: 'none' }}
               >
                 <tspan x={px} dy={0}>{labelTrunc}</tspan>
-                <tspan x={px} dy={18} fontSize={MAP_LABEL_FONT_SIZE} fill="var(--text-3)" fontWeight={400} fontFamily="var(--mono)">
+                <tspan x={px} dy={18} font-size={MAP_LABEL_FONT_SIZE} fill="var(--text-3)" font-weight={400} font-family="var(--mono)">
                   {phase.entityCount} · {phase.startIso.slice(5, 10)}
                 </tspan>
               </text>
@@ -1526,17 +1510,12 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
         {/* Entity leaves */}
         {phases.map((_, i) => {
           const { shown, extra } = truncated[i];
-          const baseAng = phaseAngle(i);
-          const wedge = Math.PI / 6;
+          const phasePx = phaseOffset + i * 360 + 180;
           return (
             <g key={`leaves-${i}`}>
               {shown.map((e, j) => {
-                const t = shown.length === 1 ? 0.5 : j / (shown.length - 1);
-                const ang = baseAng - wedge / 2 + wedge * t;
-                const r = R_ENTITY_INNER + R_ENTITY_STEP * (j % 3);
-                const ex = cx + r * Math.cos(ang);
-                const ey = cy + r * Math.sin(ang);
-                const labelY = ey + (Math.sin(ang) < -0.3 ? -12 : Math.sin(ang) > 0.3 ? 16 : 5);
+                const ex = phasePx - 140;
+                const ey = 240 + j * 40;
                 const label = displayTitle(e);
                 const labelTrunc = label.length > 22 ? label.slice(0, 20) + '…' : label;
                 return (
@@ -1562,11 +1541,11 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
                       fill="var(--text-2)"
                     />
                     <text
-                      x={ex}
-                      y={labelY}
-                      textAnchor={Math.cos(ang) > 0.2 ? 'start' : Math.cos(ang) < -0.2 ? 'end' : 'middle'}
-                      dominantBaseline="middle"
-                      fontSize={MAP_LABEL_FONT_SIZE}
+                      x={ex + 12}
+                      y={ey}
+                      text-anchor="start"
+                      dominant-baseline="middle"
+                      font-size={MAP_LABEL_FONT_SIZE}
                       fill="var(--text-1)"
                       style={{ pointerEvents: 'none' }}
                     >
@@ -1576,18 +1555,16 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
                 );
               })}
               {extra > 0 && (() => {
-                const ang = baseAng + wedge / 2 + 0.05;
-                const r = R_ENTITY_INNER + R_ENTITY_STEP * 2 + 10;
-                const ex = cx + r * Math.cos(ang);
-                const ey = cy + r * Math.sin(ang);
+                const ex = phasePx - 128;
+                const ey = 240 + shown.length * 40;
                 return (
                   <text
                     x={ex}
                     y={ey}
-                    textAnchor="middle"
-                    fontSize={MAP_LABEL_FONT_SIZE}
+                    text-anchor="start"
+                    font-size={MAP_LABEL_FONT_SIZE}
                     fill="var(--text-3)"
-                    fontStyle="italic"
+                    font-style="italic"
                   >
                     {t('roadmap.moreEntities', { count: extra })}
                   </text>

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'preact/hooks'
 import { fetchGraph, fetchWorkGraph, type GraphData, type WorkGraphData, type Entity } from '../lib/api';
 import { EvidencePanel } from './EvidencePanel';
 import { t, getLocale } from '../lib/i18n';
-import { typeLabel, relationLabel, displayTitle } from '../lib/entity-display';
+import { typeLabel, relationLabel, displayTitle, timestampDate } from '../lib/entity-display';
 import { classifyLoadError, failureMessage, type LoadFailure } from '../lib/failure';
 import { useSignalMode } from '../lib/signalMode';
 import { EmptyLibraryState } from './EmptyLibraryState';
@@ -214,15 +214,15 @@ function hashString(s: string): number {
 }
 
 /** Compute recency (0.15–1.0) from a date string. */
-function computeRecency(dateStr: string | undefined): number {
+export function computeRecency(dateStr: string | undefined): number {
   if (!dateStr) return 0.15;
-  const ageMs = Date.now() - new Date(dateStr).getTime();
+  const ageMs = Date.now() - timestampDate(dateStr).getTime();
   return Math.max(0.15, 1 - Math.min(1, ageMs / (30 * 86400000)));
 }
 
 /** Format age for tooltip: "today", "3d ago", "2w ago", "45d ago". */
-function formatAge(dateStr: string): string {
-  const ageMs = Date.now() - new Date(dateStr).getTime();
+export function formatAge(dateStr: string): string {
+  const ageMs = Date.now() - timestampDate(dateStr).getTime();
   const days = Math.floor(ageMs / 86400000);
   if (days < 1) return t('graph.ageToday');
   if (days < 7) return t('graph.ageDaysAgo', { count: days });

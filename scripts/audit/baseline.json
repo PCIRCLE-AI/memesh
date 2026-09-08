@@ -1,6 +1,11 @@
 {
   "comment": "Recorded triage, not suppression: every entry is a hit somebody classified, with the reason. New hits fail the audit until they are fixed or land here with a classification. Full detail: the 2026-08-04 triage (two agent passes, lead-verified).",
   "hits": {
+    "C6 tests/dashboard/readability.test.ts": {
+      "class": "WIRING-PIN",
+      "reason": "Source-only typography and palette guard, explicitly not rendered usability evidence. Controlled old palette and inline font failures establish sensitivity; independent browser review separately exercises computed contrast, clipping and responsive layout.",
+      "triaged": "2026-09-08"
+    },
     "C4 .github/workflows/ci.yml:222": {
       "class": "SAFE-CAPTURED-EXIT",
       "reason": "The doctor exit code is captured and rejected before this grep; the grep is an additional content assertion, not the verdict owner.",
@@ -321,12 +326,12 @@
       "reason": "emptiness (silent-pass) assertions paired with positive fire assertions in the same file — the silence IS the contract under test (guard failure must degrade to no output)",
       "triaged": "2026-08-16"
     },
-    "C5 dashboard/src/lib/entity-display.ts:194": {
+    "C5 dashboard/src/lib/entity-display.ts:200": {
       "class": "SAFE-DISPLAY",
       "reason": "classification falls through to the freeform bucket",
       "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified)"
     },
-    "C5 dashboard/src/lib/entity-display.ts:196": {
+    "C5 dashboard/src/lib/entity-display.ts:202": {
       "class": "SAFE-DISPLAY",
       "reason": "classification falls through to the freeform bucket",
       "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified)"

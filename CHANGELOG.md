@@ -48,6 +48,9 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **Chart labels use browser-recognized SVG text attributes.** Radar and
+  project-map labels apply their intended font size and alignment instead of
+  falling back to browser defaults.
 - **Dashboard memory dates interpret SQLite timestamps as UTC.** Relative ages,
   date labels and capture-density buckets share the existing UTC parser instead
   of interpreting database timestamps in the browser's local timezone.
