@@ -26,6 +26,7 @@ import {
   memeshDir as memeshHomeDir,
   parseTaskState,
   readRepoState,
+  readAutoUpdateConsent,
   readUpdateCheckCache,
   repoStateLines,
   resolvePluginRoot,
@@ -34,6 +35,7 @@ import {
   homeDir,
   taskStateName,
   writeCitationRule,
+  writeAutoUpdateConsent,
   writePrivateJson,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -324,6 +326,23 @@ function detectInstallChannelHook(pluginRoot) {
     try { process.stderr.write(`[memesh session-start] install-channel detection: ${err?.message || err}\n`); } catch {}
     return 'unknown';
   }
+}
+
+function buildUpdateConsentPrompt(sessionId, currentVersion, cache, channel) {
+  if (!sessionId || sessionId === 'unknown' || !cache || cache.currentVersion !== currentVersion) return null;
+  if (!cache.latestVersion || !isStrictlyOlder(currentVersion, cache.latestVersion)) return null;
+  const existing = readAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel);
+  if (existing?.decision) return null;
+  // Claim this session's prompt before emitting it. A resumed hook or a
+  // concurrent host process sees `pending` and does not duplicate the ask.
+  writeAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel, 'pending');
+  const target = channel === 'plugin-marketplace'
+    ? 'the installed marketplace plugin'
+    : channel === 'npm-global' ? 'the global memesh installation' : 'this MeMesh installation';
+  return {
+    system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. Reply “Upgrade” to install it, or “Not now” to skip for this session.`,
+    context: `MeMesh update consent is pending for this session. Ask the user whether to upgrade from ${currentVersion} to ${cache.latestVersion} for the ${target}. Wait for an explicit Upgrade or Not now response; do not install without affirmative consent.`,
+  };
 }
 
 /**
@@ -679,7 +698,18 @@ process.stdin.on('end', async () => {
       // With no database there is nothing to recall either — the warning IS
       // the whole truth, and "memories will be created as you work" would
       // contradict it one line later.
-      output(combineWithBanner(captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work'));
+      const emptySummary = combineWithBanner(captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work');
+      let consent = null;
+      try {
+        const pluginRoot = resolvePluginRoot(import.meta.url);
+        const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
+        const version = typeof pkg.version === 'string' ? pkg.version : null;
+        const cache = readUpdateCheckCache(version);
+        const channel = detectInstallChannelHook(pluginRoot);
+        consent = buildUpdateConsentPrompt(data.session_id, version, cache, channel);
+      } catch { /* best-effort */ }
+      output(consent ? `${consent.system}\n${emptySummary}` : emptySummary,
+        consent ? `${consent.context}\n\n${workPackageGuidance}` : workPackageGuidance);
       return;
     }
 
@@ -1150,20 +1180,28 @@ process.stdin.on('end', async () => {
       }
       const updateCache = readUpdateCheckCache(installedVersion);
       let bannerLines = [];
+      let updateConsentContext = null;
       if (installedVersion) {
         const deprecation = buildDeprecationBanner(installedVersion, updateCache);
         if (deprecation.length > 0) {
           bannerLines = deprecation;
         } else {
-          bannerLines = buildUpdateAvailableBanner(installedVersion, updateCache,
-            () => detectInstallChannelHook(resolvePluginRoot(import.meta.url)));
+          const channel = detectInstallChannelHook(resolvePluginRoot(import.meta.url));
+          bannerLines = buildUpdateAvailableBanner(installedVersion, updateCache, () => channel);
+          const consent = buildUpdateConsentPrompt(data.session_id, installedVersion, updateCache, channel);
+          if (consent) {
+            bannerLines = [consent.system, ...bannerLines];
+            updateConsentContext = consent.context;
+          }
         }
       }
       const finalMessage = bannerLines.length > 0
         ? [...bannerLines.filter(l => l.length > 0), '', summary].join('\n')
         : summary;
 
-      output(withCaptureWarning(finalMessage), memoryContext);
+      output(withCaptureWarning(finalMessage), updateConsentContext
+        ? `${updateConsentContext}\n\n${memoryContext}`
+        : memoryContext);
 
       // Pre-read the noise-compression throttle on the handle we already
       // hold. compressWeeklyNoise() re-checks under its own connection, but

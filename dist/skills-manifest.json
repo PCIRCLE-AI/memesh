@@ -93,8 +93,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "9c26746a196b043a591a9c04dd88bdccf819c922590b082a764d376267ab6c86",
-      "bytes": 43011
+      "sha256": "496d447e572d79f454c3207e691b4770a9a8c5f4a457d4442fd9eafef07dc8bf",
+      "bytes": 45537
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
@@ -123,18 +123,18 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "10bac8f99e129ecff575eb70baf629d0f892c1ea1d9c4813443094a65aaebeb0",
-      "bytes": 62528
+      "sha256": "7019f0e423a6c1118b7d0cee0aede3300a4a1acf66c1ae67c49f5806f8286474",
+      "bytes": 64995
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "e6489ebc35aa02b357bc528c476ab7eedfdf644acde2c2df4cb738cce473bef1",
-      "bytes": 32534
+      "sha256": "64ca7c2060336b5de572a3ca5b7e4aa2900a540bd05742b2827f44a982573d81",
+      "bytes": 32773
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "a39c9806d403769924159da831258c85aec744799b8b71b54f0196c442a24de9",
-      "bytes": 7577
+      "sha256": "40cdbeea09975dc0e6ff7f5b08f70c9082ce9e7eeb34b72847b105675a325f5e",
+      "bytes": 9329
     },
     {
       "path": "skills/memesh-review/SKILL.md",

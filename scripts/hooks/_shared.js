@@ -1,4 +1,5 @@
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { dirname, join } from 'path';
@@ -826,6 +827,69 @@ export function classifyBumpHook(from, to) {
 const POLICY_RANK = { off: 0, patch: 1, minor: 2, major: 3 };
 const BUMP_RANK = { patch: 1, minor: 2, major: 3 };
 const AUTO_UPDATE_CACHE_FRESHNESS_MS = 24 * 60 * 60 * 1000;
+
+function autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel = 'unknown') {
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId === 'unknown') return null;
+  const key = createHash('sha256')
+    .update(`${sessionId}\0${currentVersion}\0${latestVersion}\0${channel}`)
+    .digest('hex');
+  return join(memeshDir(), 'update-consent', `${key}.json`);
+}
+
+export function readAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel = 'unknown') {
+  const path = autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel);
+  if (!path || !existsSync(path)) return null;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    return value && typeof value === 'object' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function findAutoUpdateConsent(sessionId, currentVersion, latestVersion) {
+  if (typeof sessionId !== 'string' || !sessionId || sessionId === 'unknown') return null;
+  try {
+    const dir = join(memeshDir(), 'update-consent');
+    for (const file of readdirSync(dir)) {
+      if (!file.endsWith('.json')) continue;
+      try {
+        const value = JSON.parse(readFileSync(join(dir, file), 'utf8'));
+        if (value?.sessionId === sessionId
+          && value?.currentVersion === currentVersion
+          && value?.latestVersion === latestVersion) return value;
+      } catch { /* ignore one corrupt marker */ }
+    }
+  } catch { /* missing/unreadable consent dir */ }
+  return null;
+}
+
+export function writeAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel, decision) {
+  const path = autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel);
+  if (!path || !['pending', 'approved', 'declined'].includes(decision)) return false;
+  try {
+    ensurePrivateDir(join(memeshDir(), 'update-consent'));
+    writePrivateJson(path, {
+      sessionId,
+      currentVersion,
+      latestVersion,
+      channel,
+      decision,
+      recordedAt: new Date().toISOString(),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function parseAutoUpdateConsent(prompt) {
+  if (typeof prompt !== 'string') return null;
+  const value = prompt.trim().toLowerCase().replace(/[.!?。！？]+$/u, '');
+  if (/^(?:yes|y|upgrade|update|install(?: it)?|go ahead|是|好|升級|更新|安裝)$/.test(value)) return 'approved';
+  if (/^(?:no|n|not now|later|不要|不用|稍後|暫時不要)$/.test(value)) return 'declined';
+  return null;
+}
 
 export function decideAutoUpdateHook(currentVersion, cache, policy) {
   if (!cache || cache.currentVersion !== currentVersion) return { run: false };

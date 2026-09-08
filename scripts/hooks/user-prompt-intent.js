@@ -19,7 +19,38 @@
 // Gated by `autoCapture` flag (same as other memesh write hooks).
 
 import { pathToFileURL } from 'url';
-import { isAutoCaptureEnabled } from './_shared.js';
+import {
+  findAutoUpdateConsent,
+  isAutoCaptureEnabled,
+  parseAutoUpdateConsent,
+  readUpdateCheckCache,
+  resolvePluginRoot,
+  writeAutoUpdateConsent,
+} from './_shared.js';
+import { join } from 'path';
+import { readFileSync } from 'fs';
+
+function currentInstalledVersion() {
+  try {
+    const pkg = JSON.parse(readFileSync(join(resolvePluginRoot(import.meta.url), 'package.json'), 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : null;
+  } catch { return null; }
+}
+
+function recordUpdateConsent(sessionId, prompt) {
+  const current = currentInstalledVersion();
+  if (!current || !sessionId) return null;
+  const cache = readUpdateCheckCache(current);
+  const latest = cache?.latestVersion;
+  if (typeof latest !== 'string' || !latest) return null;
+  const pending = findAutoUpdateConsent(sessionId, current, latest);
+  if (!pending || !['pending'].includes(pending.decision)) return null;
+  const decision = parseAutoUpdateConsent(prompt);
+  if (!decision) return null;
+  return writeAutoUpdateConsent(
+    sessionId, current, latest, pending.channel ?? 'unknown', decision,
+  ) ? decision : null;
+}
 
 // Patterns compiled at module load — invalid regex MUST fail loudly. Do
 // NOT move into a try block "for safety": a regex compile error is a
@@ -121,8 +152,6 @@ if (isMainModule) {
   process.stdin.on('data', (chunk) => { input += chunk; });
   process.stdin.on('end', () => {
     try {
-      if (!isAutoCaptureEnabled(process.env)) return process.exit(0);
-
       // Distinguish empty stdin (legitimate degenerate event) from malformed
       // input (protocol drift). Both stay non-blocking, but only malformed
       // input is logged — empty is normal, garbage indicates a real bug.
@@ -142,14 +171,21 @@ if (isMainModule) {
       // we accept either name to survive a similar rename. If both are absent
       // or non-string, detectRememberIntent's type guard returns false safely.
       const prompt = data.prompt ?? data.user_prompt ?? '';
-      if (!detectRememberIntent(prompt)) return process.exit(0);
+      const updateDecision = recordUpdateConsent(data.session_id, prompt);
+      const rememberIntent = detectRememberIntent(prompt);
+      if (!rememberIntent && !updateDecision) return process.exit(0);
+      // Update consent is a user-authorized control decision, not memory
+      // capture; it must still be recorded when auto-capture is disabled.
+      if (!isAutoCaptureEnabled(process.env) && !updateDecision) return process.exit(0);
 
-      const out = {
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext: buildHint(),
-        },
-      };
+      const contexts = [];
+      if (updateDecision) {
+        contexts.push(updateDecision === 'approved'
+          ? 'The user explicitly approved the MeMesh upgrade. The Stop hook may now update the consented installation.'
+          : 'The user declined the MeMesh upgrade for this session. Do not install it or ask again in this session.');
+      }
+      if (rememberIntent) contexts.push(buildHint());
+      const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: contexts.join('\n\n') } };
       process.stdout.write(JSON.stringify(out));
       process.exit(0);
     } catch (err) {

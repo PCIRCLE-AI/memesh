@@ -15,6 +15,7 @@ import {
   extractCitedMemoryIds,
   getMemeshDirFromDbPath,
   getProjectName,
+  findAutoUpdateConsent,
   isAutoCaptureEnabled,
   openHookDb,
   readUpdateCheckCache,
@@ -40,7 +41,7 @@ try {
   // Best-effort: source checkouts may not have built dist output yet.
 }
 
-async function runAutoUpdateAtStop() {
+async function runAutoUpdateAtStop(sessionId) {
   try {
     const pluginRoot = resolvePluginRoot(import.meta.url);
     const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
@@ -50,7 +51,12 @@ async function runAutoUpdateAtStop() {
     const cache = readUpdateCheckCache(installedVersion);
     const policy = resolveAutoUpdatePolicy(process.env);
     const decision = decideAutoUpdateHook(installedVersion, cache, policy);
-    if (decision.run) await spawnAutoUpdate(decision.latest, installChannel);
+    const consent = decision.run
+      ? findAutoUpdateConsent(sessionId, installedVersion, decision.latest)
+      : null;
+    if (decision.run && consent?.decision === 'approved') {
+      await spawnAutoUpdate(decision.latest, installChannel);
+    }
   } catch {
     // Best-effort: update failures must never break session capture.
   }
@@ -204,6 +210,7 @@ let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', async () => {
+  let sessionId = 'unknown';
   try {
     if (!input.trim()) return exit0();
 
@@ -224,7 +231,7 @@ process.stdin.on('end', async () => {
       return exit0();
     }
 
-    const sessionId = inputData.session_id || 'unknown';
+    sessionId = inputData.session_id || 'unknown';
     const transcriptPath = inputData.transcript_path;
 
     // `cwd` decides the project tag, and the project tag decides which
@@ -587,7 +594,7 @@ process.stdin.on('end', async () => {
 
   // Update only after all session work so installed files cannot change while
   // this hook is still reading them.
-  await runAutoUpdateAtStop();
+  await runAutoUpdateAtStop(sessionId);
 
   // Emit NOTHING on success — not `{"suppressOutput": true}`.
   //
