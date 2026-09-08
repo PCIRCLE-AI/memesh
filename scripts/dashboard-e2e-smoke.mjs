@@ -233,6 +233,7 @@ async function main() {
       await page.goto(`${dashboardUrl}?tab=Memories`, { waitUntil: 'networkidle' });
       await expectVisible(page, 'All Memories');
       await expectVisible(page, 'dashboard-e2e-memory');
+      await expectVisible(page, 'powered by pcircle.com');
 
       // The ranked server search lives inside the Memories tab now: typing
       // filters client-side, the Search button (inside .search-bar) POSTs
