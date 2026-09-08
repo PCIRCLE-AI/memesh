@@ -61,13 +61,25 @@ describe('Feature: recall relevance', () => {
     it('ranks the memory that matches more query terms first', () => {
       const results = kg.search('degree graduated college');
       const names = results.map((e) => e.name);
-      // Both memories match; grad-record matches all three terms and
-      // college-trip only one, so BM25 must put grad-record first.
+      // The precise all-terms pass finds the answer and keeps a one-token
+      // ambient match out of the result set. The broad OR fallback is only
+      // used when the precise pass has no hits.
       expect(names).toContain('grad-record');
-      expect(names).toContain('college-trip');
-      expect(names.indexOf('grad-record')).toBeLessThan(names.indexOf('college-trip'));
-      // OR widens the net; it must not drag in a memory sharing no term.
+      expect(names).not.toContain('college-trip');
       expect(names).not.toContain('pasta-recipe');
+    });
+
+    it('does not let one frequent token outrank a precise multi-word query', () => {
+      kg.createEntity('security-sink', 'note', {
+        observations: ['Security notes describe a source to sink flow.'],
+      });
+      kg.createEntity('thermal-simulation', 'note', {
+        observations: ['A heat sink thermal simulation models a cooling loop.'],
+      });
+
+      const names = kg.search('heat sink thermal simulation').map((e) => e.name);
+      expect(names[0]).toBe('thermal-simulation');
+      expect(names).not.toContain('security-sink');
     });
 
     it('still returns nothing when no query term appears anywhere', () => {

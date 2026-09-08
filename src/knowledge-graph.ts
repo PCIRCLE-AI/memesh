@@ -16,9 +16,10 @@ import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 
 /**
- * Cap on how many terms of a query reach the FTS5 MATCH expression. Terms are
- * OR-ed, so an unbounded query (a pasted stack trace, a log dump) would build
- * an arbitrarily large disjunction. Real questions are well under this.
+ * Cap on how many terms of a query reach the FTS5 MATCH expression. The broad
+ * fallback is OR-ed, so an unbounded query (a pasted stack trace, a log dump)
+ * would build an arbitrarily large disjunction. Real questions are well under
+ * this.
  */
 const MAX_QUERY_TERMS = 32;
 
@@ -65,6 +66,19 @@ function buildMatchExpression(db: MemeshDatabase, query: string): string | null 
   const terms = tokenizeQuery(query);
   if (terms.length === 0) return null;
   return renderMatchExpression(dropUbiquitousTerms(db, terms).slice(0, MAX_QUERY_TERMS));
+}
+
+/**
+ * Prefer a precise all-terms match for multi-word recall, then fall back to
+ * the historical OR expression only when the precise query has no hits. A
+ * single frequent token must not outrank an otherwise empty project search;
+ * the fallback preserves recall when the user's wording is split across
+ * several memories or uses natural-language filler.
+ */
+function buildRecallMatchExpressions(db: MemeshDatabase, query: string): { strict: string; broad: string } | null {
+  const broad = buildMatchExpression(db, query);
+  if (!broad) return null;
+  return { strict: broad.replaceAll(' OR ', ' '), broad };
 }
 
 /**
@@ -823,13 +837,12 @@ export class KnowledgeGraph {
       return this.listRecent(limit, opts?.includeArchived, opts?.namespace, countAsAccess);
     }
 
-    // Terms are OR-ed, not space-separated. A space is FTS5's implicit AND,
-    // which required EVERY word of a question — "what", "did", "with" — to
-    // appear in one memory, so a question asked in the user's own words matched
-    // nothing. The invariant to preserve: terms are OR-ed and BM25 decides the
-    // order. See the CHANGELOG entry for the measured effect.
-    const ftsQuery = buildMatchExpression(this.db, query);
-    if (ftsQuery === null) {
+    // Start with FTS5's implicit AND so a frequent token cannot make an
+    // unrelated memory look relevant. If that precise pass has no hits,
+    // retry with the historical OR expression so natural-language questions
+    // whose words are scattered through a memory still work.
+    const matchExpressions = buildRecallMatchExpressions(this.db, query);
+    if (matchExpressions === null) {
       // Nothing searchable in a query that was not itself empty — "???",
       // "@#$%", a lone emoji. Returning recent memories here answers a
       // question nobody asked and dresses it as a search result: the caller
@@ -859,13 +872,14 @@ export class KnowledgeGraph {
     const tagFilter = opts?.tag
       ? 'AND EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)'
       : '';
-    const params: (string | number)[] = [ftsQuery];
-    if (opts?.tag) params.push(opts.tag);
-    if (opts?.namespace) params.push(opts.namespace);
-    params.push(limit);
+    const filterParams: (string | number)[] = [];
+    if (opts?.tag) filterParams.push(opts.tag);
+    if (opts?.namespace) filterParams.push(opts.namespace);
+    filterParams.push(limit);
     let ftsRows: Array<{ id: number }>;
-    try {
-      ftsRows = this.db
+    const findFtsRows = (ftsQuery: string): Array<{ id: number }> => {
+      const queryParams = [ftsQuery, ...filterParams];
+      return this.db
         .prepare(
           `SELECT e.id FROM entities_fts f
            JOIN entities e ON e.id = f.rowid
@@ -882,7 +896,13 @@ export class KnowledgeGraph {
            ORDER BY f.rank, e.id DESC
            LIMIT ?`
         )
-        .all(...params) as Array<{ id: number }>;
+        .all(...queryParams) as Array<{ id: number }>;
+    };
+    try {
+      ftsRows = findFtsRows(matchExpressions.strict);
+      if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
+        ftsRows = findFtsRows(matchExpressions.broad);
+      }
     } catch (err) {
       // FTS5 syntax error from user query — return empty results
       if (err instanceof Error && err.message?.includes('fts5')) return [];
