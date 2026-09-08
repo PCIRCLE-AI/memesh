@@ -12,7 +12,6 @@ import { fileURLToPath } from 'url';
 import { openDatabase, closeDatabase } from '../db.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { normalizeClientHost } from '../transports/mcp/handlers.js';
-import { logCapabilities } from '../core/config.js';
 
 const packageJsonPath = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -40,13 +39,39 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 // knows who is connected; the model must not be able to claim it.
 server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const { name, arguments: args } = request.params;
-  return handleTool(name, args, normalizeClientHost(server.getClientVersion()?.name), extra.signal);
+  const record = args && typeof args === 'object' ? args as Record<string, unknown> : undefined;
+  const ref = record?.ref && typeof record.ref === 'object' ? record.ref as Record<string, unknown> : undefined;
+  const needsWorkspaceRoots = name === 'work_package'
+    && (record?.kind === 'transcript' || ref?.kind === 'transcript');
+  let workspaceRootUris: string[] | undefined;
+  if (needsWorkspaceRoots) {
+    if (!server.getClientCapabilities()?.roots) {
+      workspaceRootUris = [];
+    } else {
+      try {
+        const listed = await server.listRoots(undefined, {
+          signal: extra.signal,
+          timeout: 3_000,
+          maxTotalTimeout: 3_000,
+        });
+        workspaceRootUris = listed.roots.map(root => root.uri);
+      } catch {
+        workspaceRootUris = [];
+      }
+    }
+  }
+  return handleTool(
+    name,
+    args,
+    normalizeClientHost(server.getClientVersion()?.name),
+    extra.signal,
+    { workspaceRootUris },
+  );
 });
 
 // Start
 async function main() {
   openDatabase();
-  logCapabilities();
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

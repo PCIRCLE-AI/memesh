@@ -4,7 +4,8 @@
  *
  * `rankEntities` reads `entity.recall_hits` / `recall_misses`
  * (`scoring.ts:89`). `getEntitiesByIds` — the hydrator behind `search`,
- * `listRecent`, and the vector supplement, i.e. every recall — did not select
+ * `listRecent`, and the former vector supplement, i.e. every recall path at
+ * the time — did not select
  * those columns. So the scorer received `undefined` for both,
  * `impactScore(undefined ?? 0, undefined ?? 0)` returned 0.5, and every row
  * got the identical 0.05 contribution forever.

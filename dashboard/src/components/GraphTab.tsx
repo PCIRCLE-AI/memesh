@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'preact/hooks'
 import { fetchGraph, fetchWorkGraph, type GraphData, type WorkGraphData, type Entity } from '../lib/api';
 import { EvidencePanel } from './EvidencePanel';
 import { t, getLocale } from '../lib/i18n';
-import { typeLabel, relationLabel, displayTitle } from '../lib/entity-display';
+import { typeLabel, relationLabel, displayTitle, timestampDate } from '../lib/entity-display';
 import { classifyLoadError, failureMessage, type LoadFailure } from '../lib/failure';
 import { useSignalMode } from '../lib/signalMode';
 import { EmptyLibraryState } from './EmptyLibraryState';
@@ -35,8 +35,8 @@ export function isGraphRenderable<T extends Partial<RenderableGraph>>(
  * absence must NOT be defaulted away. `?? {}` would render every badge as
  * zero — "nothing supports this decision" — from a response that never
  * answered the question. Missing counts are a shape mismatch (version skew),
- * which the tab already knows how to report; a fabricated zero is the silent
- * degradation `retrieval.degraded` exists to prevent on the recall side.
+ * which the tab already knows how to report; a fabricated zero would be a
+ * silent false claim.
  */
 export function isWorkGraphRenderable(
   d: Partial<WorkGraphData> | null | undefined,
@@ -56,7 +56,7 @@ export const WORK_LAYER_MIN_NODES = 3;
 
 /** Badge radius in SCREEN pixels — divided by scale at draw and hit-test so
  *  both agree at every zoom. */
-const BADGE_R = 5;
+const BADGE_R = 16;
 
 interface GNode {
   id: string;
@@ -214,15 +214,15 @@ function hashString(s: string): number {
 }
 
 /** Compute recency (0.15–1.0) from a date string. */
-function computeRecency(dateStr: string | undefined): number {
+export function computeRecency(dateStr: string | undefined): number {
   if (!dateStr) return 0.15;
-  const ageMs = Date.now() - new Date(dateStr).getTime();
+  const ageMs = Date.now() - timestampDate(dateStr).getTime();
   return Math.max(0.15, 1 - Math.min(1, ageMs / (30 * 86400000)));
 }
 
 /** Format age for tooltip: "today", "3d ago", "2w ago", "45d ago". */
-function formatAge(dateStr: string): string {
-  const ageMs = Date.now() - new Date(dateStr).getTime();
+export function formatAge(dateStr: string): string {
+  const ageMs = Date.now() - timestampDate(dateStr).getTime();
   const days = Math.floor(ageMs / 86400000);
   if (days < 1) return t('graph.ageToday');
   if (days < 7) return t('graph.ageDaysAgo', { count: days });
@@ -954,8 +954,8 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
           const mx = (a.x + b.x) / 2;
           const my = (a.y + b.y) / 2;
           const edgeAlpha = ctx.globalAlpha;
-          ctx.globalAlpha = Math.max(0.6, Math.min(a.recency, b.recency));
-          ctx.font = `${9 / vp.scale}px ${tk['--font-ui']}`;
+          ctx.globalAlpha = 1;
+          ctx.font = `${14 / vp.scale}px ${tk['--font-ui']}`;
           ctx.fillStyle = tk['--text-2'];
           ctx.fillText(relationLabel(edge.type), mx + 2, my - 2);
           ctx.globalAlpha = edgeAlpha;
@@ -1068,12 +1068,12 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         const showLabel = isHovered || matched || isFocusCenter || budgeted.has(n);
         if (showLabel) {
           const interactive = isHovered || matched || isFocusCenter;
-          ctx.globalAlpha = interactive ? 1 : Math.max(0.7, n.recency);
+          ctx.globalAlpha = 1;
           // Label metrics are SCREEN sizes drawn inside the world
           // transform, so divide by scale — otherwise zooming out shrinks
           // the zoomed-out tier's 3 labels to unreadable specks and zooming
           // in blows 20px text and 6px halos over the graph.
-          ctx.font = `${10 / vp.scale}px ${tk['--font-ui']}`;
+          ctx.font = `${14 / vp.scale}px ${tk['--font-ui']}`;
           // The headline, not the machine name — see GNode.display. Searched
           // and focused nodes get a wider cap because they are the node the
           // user asked about; both are capped now, which the old code did not
@@ -1103,8 +1103,10 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         // node and a universal "0" is noise, not information.
         if (n.evidenceCount > 0 && showLabel) {
           const br = BADGE_R / vp.scale;
-          const bx = n.x + r * 0.8;
-          const by = n.y - r * 0.8;
+          // Keep the readable badge clear of both the node and its right-side
+          // label at every zoom level. The gap is constant in screen pixels.
+          const bx = n.x - r - br - 4 / vp.scale;
+          const by = n.y;
           // Publish where it landed. The hit-test reads this instead of
           // recomputing `n.radius * 0.8` — `r` above is 9 or 10px on a hovered
           // or focused node, so the recomputed copy pointed at a badge that
@@ -1118,11 +1120,11 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
           ctx.strokeStyle = tk['--life'];
           ctx.lineWidth = 1 / vp.scale;
           ctx.stroke();
-          ctx.font = `${7 / vp.scale}px ${tk['--mono']}`;
+          ctx.font = `${14 / vp.scale}px ${tk['--mono']}`;
           ctx.fillStyle = tk['--life'];
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
-          // Three digits do not fit a 5px badge; 99+ is the honest cap.
+          // Bound the count to the screen-constant badge width.
           ctx.fillText(n.evidenceCount > 99 ? '99+' : String(n.evidenceCount), bx, by);
           ctx.textAlign = 'start';
           ctx.textBaseline = 'alphabetic';
@@ -1138,8 +1140,6 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
       const tip = tooltipRef.current;
       if (tip.node && isNodeVisible(tip.node)) {
         ctx.setTransform(curDpr, 0, 0, curDpr, 0, 0);
-        const tx = tip.x + 12;
-        const ty = tip.y - 10;
         // Headline, then the metadata line. This used to reimplement the
         // display chain as `title || type · age` and skip its middle step, so
         // an untitled entity showed its best observation in Memories and only
@@ -1150,13 +1150,25 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         // adds the age, so the two lines never say the same thing twice.)
         const typeTxt = typeLabel(tip.node.type);
         const ageTxt = formatAge(tip.node.lastDate);
-        const line1 = ellipsize(tip.node.display, 64);
-        const line2 = `${typeTxt}  |  ${ageTxt}`;
-        ctx.font = `11px ${tk['--font-ui']}`;
+        const maxTextWidth = Math.max(0, canvasWidthRef.current - 20);
+        const fitText = (text: string) => {
+          if (ctx.measureText(text).width <= maxTextWidth) return text;
+          let clipped = text;
+          while (clipped.length && ctx.measureText(`${clipped}…`).width > maxTextWidth) clipped = clipped.slice(0, -1);
+          return clipped ? `${clipped}…` : '';
+        };
+        ctx.font = `14px ${tk['--font-ui']}`;
+        const line1 = fitText(ellipsize(tip.node.display, 64));
         const w1 = ctx.measureText(line1).width;
+        ctx.font = `14px ${tk['--mono']}`;
+        const line2 = fitText(`${typeTxt}  |  ${ageTxt}`);
         const w2 = ctx.measureText(line2).width;
         const boxW = Math.max(w1, w2) + 12;
-        const boxH = 34;
+        const boxH = 44;
+        const left = Math.max(4, Math.min(tip.x + 8, canvasWidthRef.current - boxW - 4));
+        const top = Math.max(4, Math.min(tip.y - 28, CANVAS_HEIGHT - boxH - 4));
+        const tx = left + 6;
+        const ty = top + 18;
         // Tooltip panel: translucent panel bg + accent hairline, both built from
         // the resolved tokens (--bg-1 / --life) so a palette change reaches the
         // canvas — semi-transparent so the graph shows through.
@@ -1164,14 +1176,15 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         ctx.strokeStyle = rgbaFrom(tk['--life'], 0.3);
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.roundRect(tx - 4, ty - 18, boxW, boxH, 4);
+        ctx.roundRect(left, top, boxW, boxH, 4);
         ctx.fill();
         ctx.stroke();
         ctx.fillStyle = tk['--text-0'];
+        ctx.font = `14px ${tk['--font-ui']}`;
         ctx.fillText(line1, tx, ty - 4);
         ctx.fillStyle = tk['--text-2'];
-        ctx.font = `10px ${tk['--mono']}`;
-        ctx.fillText(line2, tx, ty + 10);
+        ctx.font = `14px ${tk['--mono']}`;
+        ctx.fillText(line2, tx, ty + 16);
       }
 
       animRef.current = requestAnimationFrame(simulate);
@@ -1552,7 +1565,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
   const globalFilterStatus = (
     <div
       role="status"
-      style={{ fontSize: 12, color: 'var(--text-2)', padding: '8px 10px', marginBottom: 8, background: 'var(--bg-2)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xs)' }}
+      style={{ fontSize: 14, color: 'var(--text-2)', padding: '8px 10px', marginBottom: 8, background: 'var(--bg-2)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xs)' }}
     >
       {t(signalMode ? 'globalFilter.focusedStatus' : 'globalFilter.allStatus')}
     </div>
@@ -1616,7 +1629,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
       </div>
 
       {isCapped && (
-        <div role="status" style={{ fontSize: 11, color: 'var(--text-2)', margin: '0 0 8px' }}>
+        <div role="status" style={{ fontSize: 14, color: 'var(--text-2)', margin: '0 0 8px' }}>
           {t('graph.cappedNote', {
             shown: data.entities.length.toLocaleString(getLocale()),
             total: totalEntities.toLocaleString(getLocale()),
@@ -1626,8 +1639,8 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
 
       {/* Layer switch. Two questions, not two styles: "what was decided and
           learned" (work) versus "everything memesh has stored" (all). */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '0 0 8px' }}>
-        <div role="group" aria-label={t('graph.layerLabel')} style={{ display: 'flex', gap: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, margin: '0 0 8px' }}>
+        <div role="group" aria-label={t('graph.layerLabel')} style={{ display: 'flex', flexShrink: 0, gap: 4 }}>
           {(['work', 'all'] as const).map((v) => (
             <button
               key={v}
@@ -1635,8 +1648,10 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               aria-pressed={layer === v}
               onClick={() => setLayer(v)}
               style={{
-                fontSize: 11,
+                fontSize: 14,
                 padding: '3px 10px',
+                whiteSpace: 'nowrap',
+                minHeight: 32,
                 borderRadius: 'var(--radius)',
                 cursor: 'pointer',
                 border: `1px solid ${layer === v ? 'var(--life)' : 'var(--border)'}`,
@@ -1648,7 +1663,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
             </button>
           ))}
         </div>
-        <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
+        <span style={{ fontSize: 14, color: 'var(--text-2)' }}>
           {activeLayer === 'work' ? t('graph.layerWorkHint') : t('graph.layerAllHint')}
         </span>
       </div>
@@ -1656,7 +1671,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
       {/* The fallback is announced, never silent: the user asked for the
           work layer and is looking at something else. */}
       {fellBack && (
-        <div role="status" style={{ fontSize: 11, color: 'var(--text-2)', margin: '0 0 8px' }}>
+        <div role="status" style={{ fontSize: 14, color: 'var(--text-2)', margin: '0 0 8px' }}>
           {t('graph.layerFellBack', { min: WORK_LAYER_MIN_NODES })}
         </div>
       )}
@@ -1689,10 +1704,12 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
+                  flexShrink: 0,
+                  whiteSpace: 'nowrap',
+                  minHeight: 32,
                   gap: 4,
-                  fontSize: 11,
+                  fontSize: 14,
                   color: 'var(--text-1)',
-                  opacity: checked ? 1 : 0.4,
                   cursor: 'pointer',
                   userSelect: 'none',
                 }}
@@ -1755,7 +1772,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               border: '1px solid var(--border)',
               borderRadius: 'var(--radius-xs)',
               color: 'var(--text-0)',
-              fontSize: 12,
+              fontSize: 14,
               fontFamily: 'var(--font-ui)',
             }}
           />
@@ -1764,7 +1781,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               id="graph-search-hint"
               role="status"
               style={{
-                fontSize: 11,
+                fontSize: 14,
                 fontFamily: 'var(--mono)',
                 color: 'var(--text-2)',
               }}
@@ -1785,7 +1802,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               border: '1px solid var(--border)',
               borderRadius: 'var(--radius-xs)',
               color: 'var(--text-2)',
-              fontSize: 11,
+              fontSize: 14,
               cursor: 'pointer',
             }}
           >
@@ -1801,7 +1818,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               border: `1px solid ${driftMode ? 'rgba(143,242,92,0.4)' : 'var(--border)'}`,
               borderRadius: 'var(--radius-xs)',
               color: driftMode ? 'var(--life)' : 'var(--text-2)',
-              fontSize: 11,
+              fontSize: 14,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -1832,7 +1849,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               padding: '4px 10px',
               background: 'var(--life-soft)',
               borderRadius: 'var(--radius-xs)',
-              fontSize: 12,
+              fontSize: 14,
             }}
           >
             <span style={{ color: 'var(--life)', fontWeight: 600 }}>
@@ -1841,17 +1858,20 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
             {/* The headline, not `egoEntity.name`: this banner names the node
                 the user is focused on, and a dedup key like
                 `pre-compact-<sessionId>` does not name anything to a human. */}
-            <span style={{ color: 'var(--text-0)' }}>{displayTitle(egoEntity)}</span>
+            <span style={{ color: 'var(--text-0)', minWidth: 0, overflowWrap: 'anywhere' }}>{displayTitle(egoEntity)}</span>
             <button
               onClick={() => setEgoNodeId(null)}
               style={{
                 marginLeft: 'auto',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
+                minHeight: 32,
                 padding: '2px 8px',
                 background: 'rgba(143, 242, 92, 0.12)',
                 border: '1px solid rgba(143, 242, 92, 0.2)',
                 borderRadius: 'var(--radius-hairline)',
                 color: 'var(--life)',
-                fontSize: 11,
+                fontSize: 14,
                 cursor: 'pointer',
               }}
             >
@@ -1864,7 +1884,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         {!egoNodeId && (
           <div
             style={{
-              fontSize: 11,
+              fontSize: 14,
               color: 'var(--text-3)',
               marginBottom: 6,
             }}

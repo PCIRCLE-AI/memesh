@@ -5,7 +5,7 @@
 //
 // Three read-only measurements against THIS machine's real data, gating the
 // work-topology redesign (see the handoff plan). Run before UX-3/UX-4 design
-// decisions, and re-run after LLM titling ships:
+// decisions, and re-run after title-generation behavior changes:
 //
 //   1. Work-layer share — what fraction of active entities are work-layer
 //      types? The whitelist is imported, never restated (see below).

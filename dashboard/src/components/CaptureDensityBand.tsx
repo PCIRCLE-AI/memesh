@@ -1,6 +1,6 @@
 import { useMemo } from 'preact/hooks';
 import type { Entity } from '../lib/api';
-import { clusterOf, CLUSTER_DOT, type TypeCluster } from '../lib/entity-display';
+import { clusterOf, CLUSTER_DOT, timestampDate, type TypeCluster } from '../lib/entity-display';
 import { t } from '../lib/i18n';
 
 /**
@@ -46,7 +46,7 @@ function bucketSizeMs(spanMs: number): number {
 
 export function deriveBuckets(entities: Entity[]): Bucket[] {
   const times = entities
-    .map((e) => new Date(e.created_at).getTime())
+    .map((e) => timestampDate(e.created_at).getTime())
     .filter((ms) => Number.isFinite(ms));
   if (times.length === 0) return [];
   const first = Math.min(...times);
@@ -59,7 +59,7 @@ export function deriveBuckets(entities: Entity[]): Bucket[] {
     total: 0,
   }));
   for (const e of entities) {
-    const ms = new Date(e.created_at).getTime();
+    const ms = timestampDate(e.created_at).getTime();
     if (!Number.isFinite(ms)) continue;
     const idx = Math.min(Math.floor((ms - first) / size), count - 1);
     buckets[idx].counts[clusterOf(e.type)]++;
@@ -82,10 +82,10 @@ export function CaptureDensityBand({ entities }: { entities: Entity[] }) {
   return (
     <div style={{ marginBottom: 14 }}>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'baseline', marginBottom: 4 }}>
-        <span style={{ fontSize: 11, color: 'var(--text-2)', fontFamily: 'var(--font-ui)' }}>
+        <span style={{ fontSize: 14, color: 'var(--text-2)', fontFamily: 'var(--font-ui)' }}>
           {t('roadmap.densityTitle')}
         </span>
-        <span style={{ fontSize: 10, color: 'var(--text-3)' }}>{t('roadmap.densityNote')}</span>
+        <span style={{ fontSize: 14, color: 'var(--text-3)' }}>{t('roadmap.densityNote')}</span>
       </div>
       <div
         aria-hidden="true"
@@ -119,10 +119,10 @@ export function CaptureDensityBand({ entities }: { entities: Entity[] }) {
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 4 }}>
         {CLUSTERS.map((c) => clusterTotals[c] > 0 && (
-          <span key={c} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: 'var(--text-2)', fontFamily: 'var(--font-ui)' }}>
+          <span key={c} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 14, color: 'var(--text-2)', fontFamily: 'var(--font-ui)' }}>
             <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: 'var(--radius-hairline)', background: CLUSTER_DOT[c], flexShrink: 0 }} />
             {t(`cluster.${c}`)}
-            <span style={{ fontFamily: 'var(--mono)', fontSize: 10, opacity: 0.7 }}>{clusterTotals[c]}</span>
+            <span style={{ fontFamily: 'var(--mono)', fontSize: 14, opacity: 0.7 }}>{clusterTotals[c]}</span>
           </span>
         ))}
       </div>

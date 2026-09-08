@@ -76,7 +76,6 @@ import { HomeTab } from '../../dashboard/src/components/HomeTab';
 import { InsightsBanner } from '../../dashboard/src/components/InsightsBanner';
 import { InsightsTab } from '../../dashboard/src/components/InsightsTab';
 import { KnowledgeRadar } from '../../dashboard/src/components/KnowledgeRadar';
-import { LlmTelemetryPanel } from '../../dashboard/src/components/LlmTelemetryPanel';
 import { MemoriesTab } from '../../dashboard/src/components/MemoriesTab';
 import { MemoryAgeMatrix } from '../../dashboard/src/components/MemoryAgeMatrix';
 import { MemoryTimeline } from '../../dashboard/src/components/MemoryTimeline';
@@ -377,7 +376,6 @@ const CASES: Array<{ name: string; node: () => ComponentChildren }> = [
   },
   { name: 'InsightsTab', node: () => <InsightsTab /> },
   { name: 'KnowledgeRadar', node: () => <KnowledgeRadar data={[]} /> },
-  { name: 'LlmTelemetryPanel', node: () => <LlmTelemetryPanel /> },
   { name: 'MemoriesTab', node: () => <MemoriesTab /> },
   { name: 'MemoryAgeMatrix', node: () => <MemoryAgeMatrix data={[]} /> },
   { name: 'MemoryTimeline', node: () => <MemoryTimeline data={[]} /> },
@@ -436,6 +434,7 @@ const CASES: Array<{ name: string; node: () => ComponentChildren }> = [
  * were "covered here too", when they were exactly the six that were missing.
  */
 const INTENTIONALLY_EXCLUDED: Record<string, string> = {
+  InstallationDetails: 'tests/dashboard/installation-details.test.tsx covers lazy loading, all locales, incomplete data, request failure and retry directly',
   AuthPrompt: 'tests/dashboard/AuthPrompt.test.tsx — rendered only from a 401 path, takes no API-backed props',
   CaptureDensityBand: 'tests/dashboard/CaptureDensityBand.test.tsx covers its degenerate inputs directly',
   EvidencePanel: 'tests/dashboard/EvidencePanel.test.tsx covers its four states (loading / empty / truncated / failed) directly',
@@ -496,9 +495,8 @@ const MUST_RENDER: Record<string, { keys?: string[]; literals?: string[]; nothin
   // the only route to the analytics stack.
   HomeTab: { keys: ['home.analyticsTitle'] },
   InsightsBanner: { nothing: 'renders only when there are unreviewed insights to point at from the current tab' },
-  InsightsTab: { keys: ['insights.title'] },
+  InsightsTab: { keys: ['insights.reviewTitle'] },
   KnowledgeRadar: { nothing: 'takes `data={[]}`; an empty radar has no axes to draw' },
-  LlmTelemetryPanel: { keys: ['telemetry.title'] },
   // One marker for the static chrome (the card title) and one for the scope
   // chip row — different rows, each rendered before any fetch settles, so
   // either vanishing is caught independently of the payload.
@@ -514,24 +512,17 @@ const MUST_RENDER: Record<string, { keys?: string[]; literals?: string[]; nothin
   // payload nobody could read is named as such instead of rendering blank
   // or masquerading as a fresh install.
   ProjectTab: { keys: ['common.responseUnreadable'] },
-  // One marker per card: capabilities / LLM provider / updates / behaviour /
-  // language. The card titles are static, so they must survive every payload
-  // this suite sends — a SettingsTab that lost a card lost a control surface.
+  // One marker per retained card: updates / behaviour / language. The card
+  // titles are static, so they must survive every payload this suite sends —
+  // a SettingsTab that lost a card lost a control surface.
   //
   // `settings.updateUnavailable` pins the CALL SITE of the update-status
   // guard, which the leaf tests cannot see: this stub's payload carries none
   // of the fields the summary branches on, and without the guard it falls
   // through every branch and lands on "Up to date" — a false green. The
   // correct answer to a payload that said nothing is "can't check", visibly.
-  // `settings.llmOptional.title`, NOT `settings.llmProvider`, as the LLM
-  // card's marker: `llmProvider` is also the Capabilities card's stat label,
-  // so with it the whole LLM card — provider radios, key entry, Save — could
-  // disappear and the other occurrence would still satisfy `toContain`. A
-  // marker shared between two cards watches neither.
   SettingsTab: {
     keys: [
-      'settings.capabilities',
-      'settings.llmOptional.title',
       'settings.updates',
       'settings.behaviourTitle',
       'settings.language',
@@ -730,7 +721,7 @@ const GUARD_LEAVES: Array<{
   {
     name: 'isConfigRenderable',
     guard: isConfigRenderable as (v: unknown) => boolean,
-    valid: () => ({ config: {}, capabilities: { searchLevel: 0, embeddings: 'tfidf' } }),
+    valid: () => ({ config: {} }),
     leaves: ['config'],
   },
   {
@@ -850,14 +841,13 @@ describe('dashboard components on degenerate data', () => {
               tags: ['implementation:unverified', 'outcome:unverified'],
             },
             source_ids: [7, 9],
-            llm_model: null,
             prompt_version: 'agent-product-improvement/v1',
             reason: null,
             reviewed_at: null,
           }
         : url.includes('/v1/dream/proposals')
           ? [proposal]
-          : { capabilities: { llm: null } };
+          : { config: {} };
       const p = Promise.resolve(jsonResponse({ success: true, data }));
       pendingResponses.push(p);
       return p;
@@ -958,14 +948,11 @@ describe('dashboard components on degenerate data', () => {
       { name: 'MemoriesTab', node: () => <MemoriesTab />, install: stubEmptyApi, kind: 'skew' },
       { name: 'InsightsTab', node: () => <InsightsTab />, install: stubFailingApi, kind: 'down' },
       { name: 'InsightsTab', node: () => <InsightsTab />, install: stubEmptyApi, kind: 'skew' },
-      { name: 'LlmTelemetryPanel', node: () => <LlmTelemetryPanel />, install: stubFailingApi, kind: 'down' },
-      { name: 'LlmTelemetryPanel', node: () => <LlmTelemetryPanel />, install: stubEmptyApi, kind: 'skew' },
       // A 500 is a server that ANSWERED. The first wiring of this feature
       // labelled every catch "unreachable", which mislabelled the most
       // common real failure with the one instruction that cannot help.
       { name: 'AnalyticsTab', node: () => <AnalyticsTab />, install: stubErroringApi, kind: 'skew' },
       { name: 'GraphTab', node: () => <GraphTab />, install: stubErroringApi, kind: 'skew' },
-      { name: 'LlmTelemetryPanel', node: () => <LlmTelemetryPanel />, install: stubErroringApi, kind: 'skew' },
     ];
     for (const c of PAIRS) {
       const label = c.kind === 'down' ? 'the server is down' : 'the reply was unreadable (version skew)';
@@ -999,7 +986,7 @@ describe('dashboard components on degenerate data', () => {
     window.addEventListener('memesh:auth-required', listener);
     try {
       stubApi(() => new Response('unauthorized', { status: 401 }));
-      render(<Recorder><LlmTelemetryPanel /></Recorder>);
+      render(<Recorder><PmAnalyticsPanel /></Recorder>);
       await settle();
       expect(unhandled).toEqual([]);
       expect(caught).toEqual([]);
@@ -1030,45 +1017,6 @@ describe('dashboard components on degenerate data', () => {
     }
   });
 
-  it('LlmTelemetryPanel ignores a stale response that lands after a window switch', async () => {
-    // The effect re-runs per window switch with no request ordering of its
-    // own — without the cleanup flag, whichever response RESOLVES last wins,
-    // so a lagging 30d reply could overwrite the 7d data on screen, or a
-    // stale failure could blank out fresh good data. Resolve out of order on
-    // purpose: the switched-to window answers first, the abandoned one last.
-    const pending: Array<(r: Response) => void> = [];
-    vi.spyOn(globalThis, 'fetch').mockImplementation((() =>
-      new Promise<Response>(res => { pending.push(res); })) as typeof globalThis.fetch);
-    const flush = async () => {
-      await act(async () => {
-        for (let i = 0; i < 6; i++) await Promise.resolve();
-      });
-      await new Promise<void>(r => setImmediate(r));
-    };
-
-    const { container } = render(<Recorder><LlmTelemetryPanel /></Recorder>);
-    await flush();
-    expect(pending.length, 'the mount fetch should be pending').toBe(1);
-
-    const sevenDays = [...container.querySelectorAll('button')]
-      .find(b => (b.textContent ?? '').includes('7'));
-    expect(sevenDays, 'the 7-day window button should exist').toBeTruthy();
-    fireEvent.click(sevenDays as HTMLButtonElement);
-    await flush();
-    expect(pending.length, 'the switch should issue a second fetch').toBe(2);
-
-    // The CURRENT window answers with a clean empty payload...
-    pending[1](jsonResponse({ success: true, data: { window_days: 7, summaries: [] } }));
-    await flush();
-    // ...and the ABANDONED request answers later, with garbage.
-    pending[0](jsonResponse({ success: true, data: {} }));
-    await flush();
-
-    const text = container.textContent ?? '';
-    expect(text, 'the fresh window data should be on screen').toContain(en('telemetry.empty'));
-    expect(text, 'the stale failure must not overwrite it').not.toContain(en('common.responseUnreadable'));
-  });
-
   it('the app swaps in the auth prompt when any request announces a 401', async () => {
     // PR #111 pinned the announcing side (api() fires the event); this pins
     // the LISTENING side — remove App's listener and only this fails.
@@ -1083,6 +1031,53 @@ describe('dashboard components on degenerate data', () => {
     await settle();
     expect(container.textContent ?? '', 'the auth prompt should have taken over')
       .toContain(en('auth.title'));
+  });
+
+  it('PatternCard reveals pending review actions only with expanded full detail', () => {
+    const proposal = {
+      id: 1,
+      project: 'memesh',
+      cluster_key: 'pattern-1',
+      source_count: 1,
+      digest_name: 'reviewable pattern',
+      digest_observations_preview: 'preview',
+      status: 'pending',
+      created_at: '2026-08-04T00:00:00.000Z',
+    };
+    const detail = {
+      proposed_digest: {
+        name: 'reviewable pattern',
+        type: 'digest',
+        observations: ['full observation'],
+        tags: ['project:memesh'],
+      },
+      source_ids: [1],
+    };
+    const shared = {
+      proposal,
+      onToggleExpand: vi.fn(),
+      onAccept: vi.fn(),
+      onReject: vi.fn(),
+      formatRelative: () => 'just now',
+      statusBadgeStyle: () => ({}),
+      statusLabel: () => 'Pending',
+    };
+    const view = render(<PatternCard {...shared} detail={detail} expanded={false} inFlight={false} />);
+
+    expect(view.queryByRole('button', { name: 'Accept' })).toBeNull();
+    expect(view.queryByRole('button', { name: 'Reject' })).toBeNull();
+
+    view.rerender(<PatternCard {...shared} detail={undefined} expanded inFlight />);
+    expect(view.queryByRole('button', { name: 'Accept' })).toBeNull();
+    expect(view.queryByRole('button', { name: 'Reject' })).toBeNull();
+
+    view.rerender(<PatternCard {...shared} detail={detail} expanded inFlight={false} />);
+    expect(view.getByRole('button', { name: 'Accept' })).toBeTruthy();
+    expect(view.getByRole('button', { name: 'Reject' })).toBeTruthy();
+
+    view.rerender(<PatternCard {...shared} detail={detail} expanded inFlight />);
+    expect((view.getByRole('button', { name: 'Applying…' }) as HTMLButtonElement).disabled).toBe(true);
+    expect((view.getByRole('button', { name: 'Reject' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   describe('shape guards, leaf by leaf', () => {

@@ -2,7 +2,79 @@
 
 All notable changes to MeMesh are documented here.
 
-## [Unreleased]
+## [4.9.0] — 2026-09-07
+
+### Added
+
+- **Automatic exact-session registration support for eligible ordinary Codex CLI plugin sessions.**
+  The packaged SessionStart hook accepts startup and resume on macOS or Linux,
+  launches an owner-private detached thread-scoped companion, and keeps a bounded
+  45-second idle queue window after SessionEnd. Resume replaces the prior exact
+  generation; expiry removes it. This closes the Codex lifecycle gap where the CLI
+  reaped an async hook child before `codex queue` could accept the idle thread. The
+  release gate installs the exact candidate plugin into a disposable authenticated
+  Codex home and proves registration, heartbeat, native acceptance, same-thread
+  model readback, resume supersession, expiry cleanup, and durable fallback.
+  Native acceptance, durable fetch, acknowledgement, and final disposition
+  remain separate states with explicit size and unavailable-recipient errors.
+
+### Changed
+
+- **Dashboard text is larger and higher contrast.** Installation version details
+  are available on demand in Settings rather than interrupting the dashboard
+  with a warning merely because two local installations differ. The graph
+  explains that it displays saved memories and recorded links.
+- **Pre-release checks require an independent browser-review record.** The
+  record covers every advertised language and tab, readable text, responsive
+  layout, diagnostic clarity, failure states, and state-change readback. The
+  validator checks candidate and evidence binding; it does not establish the
+  truth of the observations or replace the independent review.
+- **Recall and capture now use one local, deterministic memory path.** MeMesh
+  uses SQLite FTS5 and rule-based hooks; built-in LLM providers, API-key setup,
+  embeddings, vectors, model probes, Dream-run generation, and LLM telemetry
+  are removed. An already-running host agent may instead prepare one bounded
+  `work_package`; submission stages a proposal for human review. The Dashboard
+  lists, expands, accepts, or rejects proposals that are already staged and
+  cannot start or wake an agent. Dashboard settings retain update policy and
+  interface locale. After an upgrade, `memesh doctor` safely names any retired
+  provider-related top-level config keys that still remain on disk without
+  reading, printing, or automatically deleting their values.
+- **Transcript work packages now bind to the host's MCP workspace instead of
+  the plugin-cache working directory.** Transcript mode requires one matching
+  `roots/list` entry, identifies the source as a Claude Code transcript, and
+  fails closed when the workspace is missing or ambiguous. A staged proposal
+  retains its bounded redacted turns and coverage so the Dashboard reviewer
+  can compare the proposed memory with the evidence before accepting it.
+
+### Fixed
+
+- **Transcript work packages verify content across discovery and reread.**
+  Same-size rewrites are rejected even when filesystem timestamps are unchanged.
+- **Chart labels use browser-recognized SVG text attributes.** Radar and
+  project-map labels apply their intended font size and alignment instead of
+  falling back to browser defaults.
+- **Dashboard memory dates interpret SQLite timestamps as UTC.** Relative ages,
+  date labels and capture-density buckets share the existing UTC parser instead
+  of interpreting database timestamps in the browser's local timezone.
+- **Update availability follows semantic version precedence.** An older public
+  release is no longer offered as an update to a newer local candidate. Local
+  CLI/plugin version differences alone no longer trigger upgrade advice, while
+  genuinely stale plugin-cache source revisions remain diagnosable.
+- **Codex companion state reads validate and read the same open file.**
+  Lifecycle and launch-input reads reject symlinks at open time and check the
+  opened file's type and permissions before parsing its contents.
+- **Observation-level forget is atomic and preserves archived-index exclusion.**
+  Removing one observation now updates its source row and the contentless FTS5
+  index in one immediate transaction, so an index failure rolls the observation
+  deletion back. Removing an observation from an archived entity no longer
+  recreates a keyword-index row for that entity. Repeated identical observation
+  text removes one deterministic earliest row rather than every match. Real FTS
+  delete failures now also roll back the complete supersession, archived import,
+  or per-week noise-compression unit instead of leaving partial source state.
+  Clear, archive, hard-delete, memory rename, and weekly compression now resolve
+  the authoritative entity name and indexed observation text only after their
+  immediate write transaction begins, preventing a concurrent process from
+  leaving stale contentless-FTS tokens behind.
 
 ## [4.8.5] — 2026-09-05
 
@@ -59,6 +131,15 @@ All notable changes to MeMesh are documented here.
   harness-driven because `codex exec --ignore-user-config` bypasses the plugin
   `SessionStart` hook, and that print-mode Claude is unsupported (#275).
   Closes the "repeatable check in the repository" box on #270 and #272.
+- **Claude live proof no longer asks a model to obey an untrusted payload.** A
+  real pre-release run exposed that the nonce payload said “no action required”
+  while the gate expected the recipient model to call `intake`; Claude safely
+  treated the payload as data and did nothing. The runner now keeps the payload
+  instruction-free, requires the owner to arm the session with one exact trusted
+  intake prompt before native delivery, records that READY observation as a
+  separate attestation, and accepts only an `ingested` receipt from the exact
+  recipient session and message. Live reports move to schema v3, so older v2
+  reports cannot satisfy the strengthened release gate.
 - **A write-side reminder hook.** The read side of MeMesh was already automatic
   (SessionStart and PreToolUse inject memories) but nothing prompted an agent
   to *store* anything, so decisions made mid-session were routinely lost until
@@ -85,14 +166,20 @@ All notable changes to MeMesh are documented here.
   a receipt cannot substitute here because it can go stale the moment the next
   commit lands. `qa:live-journey` cannot run unattended — it needs a Codex
   login or a person at an interactive Claude Code session — so it stays
-  receipt-based: `npm run qa:live-journey -- --host codex|claude --out
-  .qa/<host>-report.json` writes a report, and `release:finish` requires ONE
-  of the two hosts' reports to be readable, `verdict: "PASS"`, recorded
-  against a clean tree, and naming this exact commit — an older PASS proves an
-  earlier revision, not this one. Neither host is preferred; only Codex can be
-  driven unattended today, but a human-run Claude receipt satisfies the gate
-  exactly as well. `.qa/` is gitignored — a receipt is owner-machine evidence,
-  never shipped.
+  receipt-based. The Claude command writes `.qa/claude-report.json`; the
+  installed Codex plugin lifecycle harness writes `.qa/codex-report.json`.
+  The existing harness-injected `--host codex` journey remains useful model-
+  path evidence but is not plugin-loader proof. `release:finish` now requires
+  BOTH Codex and Claude reports to be readable v2 receipts, PASS
+  within 24 hours on the same clean commit with current `dist/`, and contain
+  ordered lease-renewal, model-visible and stopped-session steps. The Codex
+  receipt must name actual plugin SessionStart loading plus resume-generation
+  supersession; the existing harness-injected model path is labelled and
+  rejected for that claim. One host no longer substitutes for
+  the other. The Claude runner also requires an exact operator confirmation
+  token after `/mcp` and `/hooks` inspection; absent or malformed confirmation
+  fails before nonce generation or send. `.qa/` is gitignored — receipts are
+  owner-machine evidence, never shipped.
 
 - **The packed-upgrade gate derives its upgrade paths instead of pinning
   them.** `scripts/smoke-packed-upgrade.mjs` named both ends by hand

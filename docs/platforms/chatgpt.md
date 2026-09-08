@@ -65,7 +65,7 @@ curl -X POST http://localhost:3737/v1/learn \
   -d '{
     "error": "API timeout",
     "fix": "Increased connection pool size",
-    "rootCause": "Pool exhaustion",
+    "root_cause": "Pool exhaustion",
     "severity": "major"
   }'
 ```

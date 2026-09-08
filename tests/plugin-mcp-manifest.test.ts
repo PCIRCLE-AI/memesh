@@ -173,3 +173,29 @@ describe('the Claude plugin MCP manifest is not also a project-scoped config', (
     }
   });
 });
+
+describe('Codex and Claude plugin MCP manifests', () => {
+  it('resolve to the same canonical bundled server', () => {
+    const codexPlugin = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, '.codex-plugin', 'plugin.json'), 'utf8'),
+    );
+    expect(codexPlugin.mcpServers).toBe('./.codex-plugin/mcp.json');
+
+    const codexManifest = JSON.parse(
+      fs.readFileSync(path.join(repoRoot, codexPlugin.mcpServers), 'utf8'),
+    );
+    expect(Object.keys(codexManifest)).toEqual(['mcpServers']);
+    const codexServer = codexManifest.mcpServers.memesh;
+    expect(codexServer).toEqual({
+      command: 'node',
+      args: ['./dist/mcp/server.js'],
+      cwd: '.',
+    });
+
+    const claudeTarget = mcpEntry(repoRoot);
+    const codexTarget = (codexServer.args as string[])[0].replace(/^\.\//, '');
+    expect(codexTarget).toBe(claudeTarget);
+    expect(fs.existsSync(path.resolve(repoRoot, codexServer.cwd as string, codexTarget))).toBe(true);
+  });
+
+});

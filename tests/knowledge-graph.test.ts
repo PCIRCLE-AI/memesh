@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { openDatabase, closeDatabase } from '../src/db.js';
 import { KnowledgeGraph } from '../src/knowledge-graph.js';
 import type { CreateEntityInput } from '../src/knowledge-graph.js';
-import { getEmbeddingDimension } from '../src/core/config.js';
 import { MemeshDatabase as Database } from '../src/storage/sqlite.js';
+import { indexedObservationText, insertFtsRow, removeFromFts } from '../src/storage/fts-index.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -481,24 +481,6 @@ describe('Feature: Knowledge Graph', () => {
       expect(results).toEqual([]);
     });
 
-    it('should remove archived entity from vector index', () => {
-      const id = kg.createEntity('OldDesign', 'decision', {
-        observations: ['Use REST API'],
-      });
-      const embedding = new Float32Array(getEmbeddingDimension());
-      embedding.fill(0.01);
-      embedding[0] = 1;
-
-      db.prepare(
-        'INSERT INTO entities_vec (rowid, embedding) VALUES (?, ?)'
-      ).run(BigInt(id), Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength));
-
-      kg.archiveEntity('OldDesign');
-
-      const count = db.prepare('SELECT count(*) AS count FROM entities_vec').get() as { count: number };
-      expect(count.count).toBe(0);
-    });
-
     it('should return { archived: false } for non-existent entity', () => {
       const result = kg.archiveEntity('Ghost');
       expect(result).toEqual({ archived: false });
@@ -812,6 +794,89 @@ describe('Feature: Knowledge Graph', () => {
       const results = kg.search('UniqueProjectName');
       expect(results).toHaveLength(1);
       expect(results[0].name).toBe('UniqueProjectName');
+    });
+  });
+
+  describe('Transaction snapshots', () => {
+    function graphInterruptedBeforeTransaction(action: () => void): KnowledgeGraph {
+      let injected = false;
+      return new KnowledgeGraph(new Proxy(db, {
+        get(target, prop) {
+          if (prop === 'transaction') return (fn: () => unknown) => {
+            if (!injected) {
+              injected = true;
+              action();
+            }
+            return target.transaction(fn);
+          };
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      }));
+    }
+
+    function withOtherConnection(action: (other: Database) => void): void {
+      const other = new Database(testDbPath);
+      try {
+        other.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+        action(other);
+      } finally {
+        other.close();
+      }
+    }
+
+    function renameOnOtherConnection(from: string, to: string): void {
+      withOtherConnection((other) => {
+        const row = other.prepare('SELECT id, title FROM entities WHERE name = ?').get(from) as {
+          id: number;
+          title: string | null;
+        };
+        const observations = indexedObservationText(other, row.id);
+        other.transaction(() => {
+          removeFromFts(other, row.id, from, observations, row.title);
+          other.prepare('UPDATE entities SET name = ? WHERE id = ?').run(to, row.id);
+          insertFtsRow(other, row.id, to, observations, row.title);
+        }).immediate();
+      });
+    }
+
+    it('takes the clearEntityData FTS snapshot only after its immediate transaction begins', () => {
+      kg.createEntity('raced-clear', 'note', { observations: ['alphaold'] });
+      const interrupted = graphInterruptedBeforeTransaction(() => {
+        withOtherConnection((other) => {
+          new KnowledgeGraph(other).createEntity('raced-clear', 'note', {
+            observations: ['betanew'],
+          });
+        });
+      });
+
+      interrupted.clearEntityData('raced-clear');
+
+      expect(kg.getEntity('raced-clear')!.observations).toEqual([]);
+      expect(kg.search('alphaold')).toEqual([]);
+      expect(kg.search('betanew')).toEqual([]);
+    });
+
+    it('does not archive an entity that was concurrently renamed before the transaction', () => {
+      kg.createEntity('archive-old-name', 'note', { observations: ['archivebody'] });
+      const interrupted = graphInterruptedBeforeTransaction(() => {
+        renameOnOtherConnection('archive-old-name', 'archive-new-name');
+      });
+
+      expect(interrupted.archiveEntity('archive-old-name')).toEqual({ archived: false });
+      expect(kg.getEntity('archive-new-name')).toMatchObject({ name: 'archive-new-name' });
+      expect(kg.search('archive-new-name').map((entity) => entity.name)).toEqual(['archive-new-name']);
+    });
+
+    it('does not delete an entity that was concurrently renamed before the transaction', () => {
+      kg.createEntity('delete-old-name', 'note', { observations: ['deletebody'] });
+      const interrupted = graphInterruptedBeforeTransaction(() => {
+        renameOnOtherConnection('delete-old-name', 'delete-new-name');
+      });
+
+      expect(interrupted.deleteEntity('delete-old-name')).toEqual({ deleted: false });
+      expect(kg.getEntity('delete-new-name')).not.toBeNull();
+      expect(kg.search('delete-new-name').map((entity) => entity.name)).toEqual(['delete-new-name']);
     });
   });
 

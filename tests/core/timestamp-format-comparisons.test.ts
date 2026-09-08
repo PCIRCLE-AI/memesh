@@ -1,30 +1,23 @@
 /**
- * Five comparisons across two timestamp formats, all failing the same way.
+ * Timestamp comparisons across two storage formats must use parsed instants.
  *
  * SQLite stores what it is given. `CURRENT_TIMESTAMP` writes
  * `'YYYY-MM-DD HH:MM:SS'`; JavaScript's `toISOString()` writes
  * `'YYYY-MM-DDTHH:MM:SS.sssZ'`. Both live in this database — `created_at` and
- * `llm_telemetry.ts` come from SQLite, `last_accessed_at` and every cutoff
- * computed in JS come from Date. Compared as TEXT they first differ at index
+ * legacy telemetry rows came from SQLite, while `last_accessed_at` and every
+ * cutoff computed in JS come from Date. Compared as TEXT they first differ at index
  * 10, and the separator decides the whole comparison:
  *
  *     ' '  is 0x20     'T'  is 0x54     so ' ' sorts BEFORE 'T'
  *
- * Same instant, opposite verdicts. The consequences ran from "one day of a
- * scorecard silently missing" to "every telemetry row from the cutoff day
- * deleted, including rows newer than the cutoff".
- *
- * The fix is one rule: normalise before comparing — `datetime(?)` in SQL,
- * `parseSqliteUtcMs` in JS. This file pins the rule at the boundary where it
- * matters, the cutoff day itself, because that is the only place the defect
- * was ever visible.
+ * Same instant, opposite verdicts. The fix is one rule: normalise before
+ * comparing — `datetime(?)` in SQL or `parseSqliteUtcMs` in JS.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
-import { pruneTelemetry, summariseTelemetry } from '../../src/core/llm-telemetry.js';
 import { parseSqliteUtcMs } from '../../src/core/time-utils.js';
 
 let dir: string;
@@ -45,41 +38,8 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-/** SQLite's own rendering of a moment, which is what `ts` really holds. */
-function sqliteStamp(msAgo: number): string {
-  return new Date(Date.now() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
-}
-
-function addTelemetry(ts: string, flow = 'dreamer'): void {
-  getDatabase()
-    .prepare(
-      `INSERT INTO llm_telemetry (ts, flow, provider, model, attempt_index, status, latency_ms, fallback_used)
-       VALUES (?, ?, 'anthropic', 'm', 0, 'ok', 10, 0)`,
-    )
-    .run(ts, flow);
-}
-
-function telemetryCount(): number {
-  return (getDatabase().prepare('SELECT COUNT(*) c FROM llm_telemetry').get() as { c: number }).c;
-}
-
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
-
-/**
- * A stamp on the SAME CALENDAR DAY as a cutoff, but newer than it.
- *
- * Derived from the cutoff rather than picked by hand: the defect only shows
- * where the two strings share their first ten characters and differ at the
- * separator, so a fixture that lands a day off proves nothing — and a
- * hand-picked offset lands a day off whenever the run happens near midnight.
- * The hour is forced to 23:59:59 UTC of the cutoff's date, which is the
- * newest a same-day row can be.
- */
-function sameDayButNewerThan(cutoffMs: number): string {
-  const d = new Date(cutoffMs);
-  return `${d.toISOString().slice(0, 10)} 23:59:59`;
-}
 
 /** How far back the product's own cutoff sits, in ms. */
 function cutoffMsFor(days: number): number {
@@ -94,68 +54,6 @@ describe('the separator does decide a raw TEXT comparison', () => {
     const iso = now.toISOString();
     const sqlite = iso.replace('T', ' ').slice(0, 19);
     expect(sqlite < iso, 'the same moment no longer compares unequal across formats').toBe(true);
-  });
-});
-
-describe('pruning telemetry keeps rows newer than the cutoff', () => {
-  it('does not delete a row from the cutoff day that is newer than the cutoff', () => {
-    // 180 days is the default window. A row 179 days and 23 hours old is
-    // INSIDE it — but shares a date with the cutoff, which is exactly where
-    // the raw comparison went wrong.
-    const cutoff = cutoffMsFor(180);
-    const boundary = sameDayButNewerThan(cutoff);
-    // Fixture: the row really is inside the window AND really does share the
-    // cutoff's date. Both have to hold or the test proves nothing.
-    // Compared at SECOND resolution, which is the resolution the product
-    // works at: `pruneTelemetry` binds `datetime(?)`, and `datetime()` drops
-    // the milliseconds. A strict `>` against a millisecond-precision cutoff is
-    // stricter than the query it is standing in for, and it has one instant a
-    // day where it is wrong — a run in the last second of a UTC day, where
-    // 23:59:59 IS the newest same-day stamp and is `=` rather than `>`. Same
-    // class as the `cutoff - HOUR` fixture below, which cost a release.
-    const cutoffSecond = Math.floor(cutoff / 1000) * 1000;
-    expect(parseSqliteUtcMs(boundary)! >= cutoffSecond, 'fixture: the row is not inside the window').toBe(true);
-    expect(boundary.slice(0, 10), 'fixture: the row is not on the cutoff day')
-      .toBe(new Date(cutoff).toISOString().slice(0, 10));
-
-    addTelemetry(boundary, 'inside-window');
-    addTelemetry(sqliteStamp(400 * DAY), 'genuinely-old');
-    expect(telemetryCount(), 'fixture: nothing to prune').toBe(2);
-
-    pruneTelemetry();
-
-    const rows = getDatabase().prepare('SELECT flow FROM llm_telemetry').all() as Array<{ flow: string }>;
-    expect(rows, 'the row inside the window was deleted with the old one').toHaveLength(1);
-    expect(rows[0].flow).toBe('inside-window');
-  });
-
-  it('still deletes what it should — the anti-vacuity half', () => {
-    // A prune normalised into a no-op would satisfy the test above and let
-    // telemetry grow without bound.
-    addTelemetry(sqliteStamp(400 * DAY), 'genuinely-old');
-    pruneTelemetry();
-    expect(telemetryCount(), 'nothing was pruned at all').toBe(0);
-  });
-});
-
-describe('the scorecard includes the first day of its window', () => {
-  it('counts a row from the window boundary day', () => {
-    // The mirror image: `WHERE ts >= ?` dropped every row from the first day
-    // of the window, so a 30-day scorecard silently reported 29.
-    const cutoff = cutoffMsFor(30);
-    const boundary = sameDayButNewerThan(cutoff);
-    expect(parseSqliteUtcMs(boundary)! > cutoff, 'fixture: the row is not inside the window').toBe(true);
-    addTelemetry(boundary, 'boundary-day');
-
-    const summaries = summariseTelemetry(30);
-
-    expect(summaries.map((s) => s.flow), 'the boundary day was dropped from the scorecard')
-      .toContain('boundary-day');
-  });
-
-  it('still excludes rows outside the window — the anti-vacuity half', () => {
-    addTelemetry(sqliteStamp(400 * DAY), 'ancient');
-    expect(summariseTelemetry(30).map((s) => s.flow)).not.toContain('ancient');
   });
 });
 

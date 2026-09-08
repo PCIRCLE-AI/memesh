@@ -93,7 +93,7 @@ export function MemoryLoopCard({ metric }: Props) {
       <div style={{ flex: '1 1 200px', minWidth: 200 }}>
         <div
           style={{
-            fontSize: 11,
+            fontSize: 14,
             textTransform: 'uppercase',
             letterSpacing: '0.08em',
             color: 'var(--text-2)',
@@ -119,7 +119,7 @@ export function MemoryLoopCard({ metric }: Props) {
           {delta !== null && delta !== 0 && (
             <span
               style={{
-                fontSize: 12,
+                fontSize: 14,
                 fontWeight: 600,
                 fontFamily: 'var(--mono)',
                 color: delta > 0 ? 'var(--success)' : 'var(--danger)',
@@ -129,11 +129,11 @@ export function MemoryLoopCard({ metric }: Props) {
             </span>
           )}
         </div>
-        <div style={{ fontSize: 13, color: 'var(--text-1)', marginTop: 4 }}>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', marginTop: 4 }}>
           {reusedThisWeek > 0 ? t('loop.subtitleHas') : t('loop.subtitleNone')}
         </div>
         {isApprox && (
-          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6, fontStyle: 'italic' }}>
+          <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 6, fontStyle: 'italic' }}>
             {t('loop.approxNote')}
           </div>
         )}
@@ -141,7 +141,7 @@ export function MemoryLoopCard({ metric }: Props) {
 
       <div style={{ flex: '0 0 auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
         <Sparkline trend={trend} />
-        <div style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>
+        <div style={{ fontSize: 14, color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>
           {t('loop.sparkLabel')}
         </div>
       </div>

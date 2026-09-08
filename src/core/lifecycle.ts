@@ -144,88 +144,100 @@ export function compressWeeklyNoise(db: MemeshDatabase): { compressed: number; w
   `).all(...noiseTypeValues, cutoff, NOISE_THRESHOLD) as Array<{ week: string; count: number }>;
 
   let totalCompressed = 0;
+  let weeksProcessed = 0;
 
-  for (const { week, count } of weekGroups) {
-    // Get entities for this week — include cutoff filter to avoid archiving recent entities
-    const entities = db.prepare(`
-      SELECT e.id, e.name, e.type
-      FROM entities e
-      WHERE e.type IN (${noiseTypePlaceholders})
-        AND e.status = 'active'
-        AND strftime('%Y-W%W', e.created_at) = ?
-        AND e.created_at < datetime(?)
-    `).all(...noiseTypeValues, week, cutoff) as Array<{ id: number; name: string; type: string }>;
-
-    if (entities.length === 0) continue;
-
-    // Count by type
-    const typeCounts = new Map<string, number>();
-    for (const e of entities) {
-      typeCounts.set(e.type, (typeCounts.get(e.type) || 0) + 1);
-    }
-
-    const typeBreakdown = Array.from(typeCounts.entries())
-      .map(([t, c]) => `${c} ${t}`)
-      .join(', ');
-
-    // Create or update weekly summary entity — through KnowledgeGraph.
-    // A raw INSERT here used to be a fourth entity-write path (besides
-    // createEntity/captureEntity): its append branch skipped the
-    // contentless-FTS delete+insert dance (stale index tokens on every
-    // appended summary), and its create branch skipped the signal_score
-    // stamp. createEntity owns both invariants; `untrusted` opts out of
-    // the confidence bump — a machine summary adds no truth value.
+  for (const { week } of weekGroups) {
+    // Create or update the summary and archive its sources in one per-week
+    // transaction. KnowledgeGraph.createEntity() nests through a savepoint,
+    // so an index failure while archiving rolls back the summary mutation too.
+    // Keeping the boundary per week preserves the existing partial-progress
+    // semantics across independent weeks.
     const summaryName = `weekly-summary-${week}`;
-    const existing = db.prepare('SELECT id FROM entities WHERE name = ?').get(summaryName) as { id: number } | undefined;
+    const archiveWeek = db.transaction(() => {
+      // Re-resolve the complete source set only after BEGIN IMMEDIATE. A list
+      // read before the lock could contain a stale name after another process
+      // renamed the row, so the contentless FTS delete used bytes that were no
+      // longer indexed and left the new-name token behind.
+      const entities = db.prepare(`
+        SELECT e.id, e.name, e.type
+        FROM entities e
+        WHERE e.type IN (${noiseTypePlaceholders})
+          AND e.status = 'active'
+          AND strftime('%Y-W%W', e.created_at) = ?
+          AND e.created_at < datetime(?)
+      `).all(...noiseTypeValues, week, cutoff) as Array<{ id: number; name: string; type: string }>;
 
-    if (existing) {
-      kg.createEntity(summaryName, 'weekly-summary', {
-        observations: [`+${entities.length} entities archived (${typeBreakdown})`],
-        trustOverride: 'untrusted',
-      });
-    } else {
-      // Heuristic title, same as the auto-capture hooks generate.
-      // title_source marks this as machine-derived, so a future LLM titling
-      // pass may replace it; an unmarked title is treated as human-provided.
-      const title = `${week} — ${entities.length} entities compressed`;
-      const obsText = `${week}: ${count} auto-tracked entities compressed (${typeBreakdown})`;
-      // Copy project tags from originals
-      const entityIdPlaceholders = entities.map(() => '?').join(',');
-      const projectTags = db.prepare(`
-        SELECT DISTINCT t.tag FROM tags t
-        JOIN entities e ON e.id = t.entity_id
-        WHERE e.id IN (${entityIdPlaceholders})
-          AND t.tag LIKE 'project:%'
-      `).all(...entities.map(e => e.id)) as Array<{ tag: string }>;
-      kg.createEntity(summaryName, 'weekly-summary', {
-        title,
-        metadata: { title_source: 'heuristic' },
-        observations: [obsText],
-        tags: [...projectTags.map((t) => t.tag), 'source:noise-filter'],
-        trustOverride: 'untrusted',
-      });
-    }
+      // The outer grouping is only a cheap candidate scan. Re-check the
+      // threshold against the locked snapshot so concurrent archiving cannot
+      // turn a qualifying week into a partial under-threshold compression.
+      if (entities.length < NOISE_THRESHOLD) return 0;
 
-    // Archive originals — out of BOTH indexes, then out of circulation.
-    //
-    // This used to be the bare UPDATE alone, and an archived entity kept its
-    // FTS row and its vector. Measured on the maintainer's graph, this path
-    // alone accounted for all 213 archived entities still in the keyword index
-    // (`MATCH 'ae83279'` answered with the archived `commit-ae83279`), and it
-    // is also what made re-remembering one of them insert a second, permanently
-    // undeletable document at the same FTS rowid — see `createEntityInner`.
-    //
-    // Per entity rather than one set-UPDATE: a contentless FTS5 delete has to
-    // repeat that row's own indexed text, so there is no set form of it.
-    const archiveOne = db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?");
-    db.transaction(() => {
+      const typeCounts = new Map<string, number>();
+      for (const e of entities) {
+        typeCounts.set(e.type, (typeCounts.get(e.type) || 0) + 1);
+      }
+      const typeBreakdown = Array.from(typeCounts.entries())
+        .map(([t, c]) => `${c} ${t}`)
+        .join(', ');
+
+      // Create or update weekly summary entity — through KnowledgeGraph.
+      // A raw INSERT here used to be a fourth entity-write path (besides
+      // createEntity/captureEntity): its append branch skipped the
+      // contentless-FTS delete+insert dance (stale index tokens on every
+      // appended summary), and its create branch skipped the signal_score
+      // stamp. createEntity owns both invariants; `untrusted` opts out of
+      // the confidence bump — a machine summary adds no truth value.
+      const existing = db.prepare('SELECT id FROM entities WHERE name = ?').get(summaryName) as { id: number } | undefined;
+
+      if (existing) {
+        kg.createEntity(summaryName, 'weekly-summary', {
+          observations: [`+${entities.length} entities archived (${typeBreakdown})`],
+          trustOverride: 'untrusted',
+        });
+      } else {
+        // Heuristic title, same as the auto-capture hooks generate.
+        const title = `${week} — ${entities.length} entities compressed`;
+        const obsText = `${week}: ${entities.length} auto-tracked entities compressed (${typeBreakdown})`;
+        // Copy project tags from originals
+        const entityIdPlaceholders = entities.map(() => '?').join(',');
+        const projectTags = db.prepare(`
+          SELECT DISTINCT t.tag FROM tags t
+          JOIN entities e ON e.id = t.entity_id
+          WHERE e.id IN (${entityIdPlaceholders})
+            AND t.tag LIKE 'project:%'
+        `).all(...entities.map(e => e.id)) as Array<{ tag: string }>;
+        kg.createEntity(summaryName, 'weekly-summary', {
+          title,
+          metadata: { title_source: 'heuristic' },
+          observations: [obsText],
+          tags: [...projectTags.map((t) => t.tag), 'source:noise-filter'],
+          trustOverride: 'untrusted',
+        });
+      }
+
+      // Archive originals — out of BOTH indexes, then out of circulation.
+      //
+      // This used to be the bare UPDATE alone, and an archived entity kept its
+      // FTS row. Measured on the maintainer's graph, this path
+      // alone accounted for all 213 archived entities still in the keyword index
+      // (`MATCH 'ae83279'` answered with the archived `commit-ae83279`), and it
+      // is also what made re-remembering one of them insert a second, permanently
+      // undeletable document at the same FTS rowid — see `createEntityInner`.
+      //
+      // Per entity rather than one set-UPDATE: a contentless FTS5 delete has to
+      // repeat that row's own indexed text, so there is no set form of it.
+      const archiveOne = db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?");
       for (const e of entities) {
         dropEntityFromIndexes(db, e.id, e.name);
         archiveOne.run(e.id);
       }
-    })();
-
-    totalCompressed += entities.length;
+      return entities.length;
+    });
+    const compressedThisWeek = archiveWeek.immediate();
+    if (compressedThisWeek > 0) {
+      totalCompressed += compressedThisWeek;
+      weeksProcessed++;
+    }
   }
 
   // Record timestamp
@@ -233,7 +245,7 @@ export function compressWeeklyNoise(db: MemeshDatabase): { compressed: number; w
     "INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES ('last_noise_compress_at', ?)"
   ).run(new Date().toISOString());
 
-  return { compressed: totalCompressed, weeksProcessed: weekGroups.length };
+  return { compressed: totalCompressed, weeksProcessed };
 }
 
 // Export preserved/noise type sets for testing

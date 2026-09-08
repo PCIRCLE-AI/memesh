@@ -69,17 +69,20 @@ export function EvidencePanel({ node, nodeTitle, onClose }: Props) {
       }}
     >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
-        <strong style={{ fontSize: 13 }}>{t('graph.evidenceFor', { node: nodeTitle })}</strong>
+        <strong style={{ fontSize: 14, minWidth: 0, overflowWrap: 'anywhere' }}>{t('graph.evidenceFor', { node: nodeTitle })}</strong>
         <button
           type="button"
           onClick={onClose}
           style={{
             marginLeft: 'auto',
+            flexShrink: 0,
+            whiteSpace: 'nowrap',
+            minHeight: 32,
             background: 'transparent',
             border: '1px solid var(--border)',
             borderRadius: 'var(--radius-sm)',
             color: 'var(--text-2)',
-            fontSize: 11,
+            fontSize: 14,
             padding: '2px 8px',
             cursor: 'pointer',
           }}
@@ -89,17 +92,17 @@ export function EvidencePanel({ node, nodeTitle, onClose }: Props) {
       </div>
 
       {state.phase === 'loading' && (
-        <div style={{ color: 'var(--text-2)', fontSize: 12 }}>{t('graph.evidenceLoading')}</div>
+        <div style={{ color: 'var(--text-2)', fontSize: 14 }}>{t('graph.evidenceLoading')}</div>
       )}
 
       {state.phase === 'failed' && (
-        <div role="alert" style={{ color: 'var(--danger)', fontSize: 12 }}>
+        <div role="alert" style={{ color: 'var(--danger)', fontSize: 14 }}>
           {t('graph.evidenceFailed')}
         </div>
       )}
 
       {state.phase === 'loaded' && state.data.entities.length === 0 && (
-        <div style={{ color: 'var(--text-2)', fontSize: 12 }}>
+        <div style={{ color: 'var(--text-2)', fontSize: 14 }}>
           {t('graph.evidenceEmpty')}
           <TerminalHandoff id="graph-evidence-backfill" command="memesh kg backfill" />
         </div>
@@ -109,8 +112,8 @@ export function EvidencePanel({ node, nodeTitle, onClose }: Props) {
         <>
           <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 6 }}>
             {state.data.entities.map((e) => (
-              <li key={e.name} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 12 }}>
-                <span style={{ color: 'var(--text-3)', fontSize: 11, minWidth: 96 }}>
+              <li key={e.name} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 14 }}>
+                <span style={{ color: 'var(--text-3)', fontSize: 14, minWidth: 96 }}>
                   {typeLabel(e.type)}
                 </span>
                 <span style={{ color: 'var(--text-1)' }}>{displayTitle(e)}</span>
@@ -118,7 +121,7 @@ export function EvidencePanel({ node, nodeTitle, onClose }: Props) {
             ))}
           </ul>
           {state.data.truncated && (
-            <div style={{ marginTop: 8, color: 'var(--text-2)', fontSize: 11 }}>
+            <div style={{ marginTop: 8, color: 'var(--text-2)', fontSize: 14 }}>
               {t('graph.evidenceTruncated', { shown: state.data.entities.length })}
             </div>
           )}

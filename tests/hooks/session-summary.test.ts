@@ -725,7 +725,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     db.close();
   });
 
-  it('Scenario: LLM analysis section does not run without LLM config (Level 0)', () => {
+  it('Scenario: rule-based capture does not invent lesson_learned entries', () => {
     writeTranscript([
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
@@ -742,7 +742,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     });
 
     const db = openDb();
-    // Should have session-insight entities (rule-based) but NO lesson_learned (LLM)
+    // Session-insight entities are captured, but no lesson is synthesized automatically.
     const lessons = db.prepare("SELECT * FROM entities WHERE type = 'lesson_learned'").all();
     expect(lessons.length).toBe(0);
 

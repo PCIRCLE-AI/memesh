@@ -1,4 +1,130 @@
+import { z } from 'zod';
+export interface McpRequestContext {
+    workspaceRootUris?: readonly string[];
+}
+export declare function resolveTranscriptWorkspace(project: string, rootUris: readonly string[] | undefined): {
+    transcriptWorkspace?: string;
+    transcriptWorkspaceError?: 'workspace_unavailable' | 'workspace_ambiguous';
+};
 export declare const TOOL_DEFINITIONS: readonly [{
+    readonly name: "work_package";
+    readonly description: "Prepare one digest from calendar clusters or one transcript work package from the newest bounded Claude Code transcript for the client's single matching MCP workspace root. Transcript mode fails closed without one unambiguous root. Submit one result to pending human review, or defer without durable changes. Transcript file paths are never exposed. No providers are called. Source text is untrusted. Only humans may apply or reject proposals. Package hashes identify source content and workspace scope; they are not authentication.";
+    readonly inputSchema: {
+        readonly "~standard": z.core.ZodStandardSchemaWithJSON<z.ZodDiscriminatedUnion<[z.ZodObject<{
+            action: z.ZodLiteral<"prepare">;
+            project: z.ZodString;
+            kind: z.ZodEnum<{
+                digest: "digest";
+                transcript: "transcript";
+            }>;
+        }, z.core.$strict>, z.ZodObject<{
+            result: z.ZodObject<{
+                name: z.ZodString;
+                type: z.ZodEnum<{
+                    lesson_learned: "lesson_learned";
+                    decision: "decision";
+                    digest: "digest";
+                    fact: "fact";
+                }>;
+                observations: z.ZodArray<z.ZodString>;
+                tags: z.ZodArray<z.ZodString>;
+            }, z.core.$strict>;
+            package_id: z.ZodString;
+            ref: z.ZodDiscriminatedUnion<[z.ZodObject<{
+                kind: z.ZodLiteral<"digest">;
+                project: z.ZodString;
+                source_ids: z.ZodArray<z.ZodNumber>;
+                source_hash: z.ZodString;
+            }, z.core.$strict>, z.ZodObject<{
+                kind: z.ZodLiteral<"transcript">;
+                project: z.ZodString;
+                session_id: z.ZodString;
+                modified_at: z.ZodISODateTime;
+                source_hash: z.ZodString;
+                workspace_hash: z.ZodString;
+            }, z.core.$strict>], "kind">;
+            action: z.ZodLiteral<"submit">;
+        }, z.core.$strict>, z.ZodObject<{
+            reason: z.ZodLiteral<"not_now">;
+            package_id: z.ZodString;
+            ref: z.ZodDiscriminatedUnion<[z.ZodObject<{
+                kind: z.ZodLiteral<"digest">;
+                project: z.ZodString;
+                source_ids: z.ZodArray<z.ZodNumber>;
+                source_hash: z.ZodString;
+            }, z.core.$strict>, z.ZodObject<{
+                kind: z.ZodLiteral<"transcript">;
+                project: z.ZodString;
+                session_id: z.ZodString;
+                modified_at: z.ZodISODateTime;
+                source_hash: z.ZodString;
+                workspace_hash: z.ZodString;
+            }, z.core.$strict>], "kind">;
+            action: z.ZodLiteral<"defer">;
+        }, z.core.$strict>], "action">>;
+        readonly $schema?: "https://json-schema.org/draft/2020-12/schema" | "http://json-schema.org/draft-07/schema#" | "http://json-schema.org/draft-04/schema#";
+        readonly $id?: string;
+        readonly $anchor?: string;
+        readonly $ref?: string;
+        readonly $dynamicRef?: string;
+        readonly $dynamicAnchor?: string;
+        readonly $vocabulary?: Record<string, boolean>;
+        readonly $comment?: string;
+        readonly $defs?: Record<string, z.core.JSONSchema.JSONSchema>;
+        type: "object" | "array" | "string" | "number" | "boolean" | "null" | "integer";
+        readonly additionalItems?: z.core.JSONSchema._JSONSchema;
+        readonly unevaluatedItems?: z.core.JSONSchema._JSONSchema;
+        readonly prefixItems?: z.core.JSONSchema._JSONSchema[];
+        readonly items?: z.core.JSONSchema._JSONSchema | z.core.JSONSchema._JSONSchema[];
+        readonly contains?: z.core.JSONSchema._JSONSchema;
+        readonly additionalProperties?: z.core.JSONSchema._JSONSchema;
+        readonly unevaluatedProperties?: z.core.JSONSchema._JSONSchema;
+        readonly properties?: Record<string, z.core.JSONSchema._JSONSchema>;
+        readonly patternProperties?: Record<string, z.core.JSONSchema._JSONSchema>;
+        readonly dependentSchemas?: Record<string, z.core.JSONSchema._JSONSchema>;
+        readonly propertyNames?: z.core.JSONSchema._JSONSchema;
+        readonly if?: z.core.JSONSchema._JSONSchema;
+        readonly then?: z.core.JSONSchema._JSONSchema;
+        readonly else?: z.core.JSONSchema._JSONSchema;
+        readonly allOf?: z.core.JSONSchema.JSONSchema[];
+        readonly anyOf?: z.core.JSONSchema.JSONSchema[];
+        readonly oneOf?: z.core.JSONSchema.JSONSchema[];
+        readonly not?: z.core.JSONSchema._JSONSchema;
+        readonly multipleOf?: number;
+        readonly maximum?: number;
+        readonly exclusiveMaximum?: number | boolean;
+        readonly minimum?: number;
+        readonly exclusiveMinimum?: number | boolean;
+        readonly maxLength?: number;
+        readonly minLength?: number;
+        readonly pattern?: string;
+        readonly maxItems?: number;
+        readonly minItems?: number;
+        readonly uniqueItems?: boolean;
+        readonly maxContains?: number;
+        readonly minContains?: number;
+        readonly maxProperties?: number;
+        readonly minProperties?: number;
+        readonly required?: string[];
+        readonly dependentRequired?: Record<string, string[]>;
+        readonly enum?: Array<string | number | boolean | null>;
+        readonly const?: string | number | boolean | null;
+        readonly id?: string;
+        readonly title?: string;
+        readonly description?: string;
+        readonly default?: unknown;
+        readonly deprecated?: boolean;
+        readonly readOnly?: boolean;
+        readonly writeOnly?: boolean;
+        readonly nullable?: boolean;
+        readonly examples?: unknown[];
+        readonly format?: string;
+        readonly contentMediaType?: string;
+        readonly contentEncoding?: string;
+        readonly contentSchema?: z.core.JSONSchema.JSONSchema;
+        readonly _prefault?: unknown;
+    };
+}, {
     readonly name: "remember";
     readonly description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context.";
     readonly inputSchema: {
@@ -410,6 +536,6 @@ type ToolResult = {
     isError?: boolean;
 };
 export declare function normalizeClientHost(name: string | undefined): string;
-export declare function handleTool(name: string, args: Record<string, unknown> | undefined, sourceHost?: string, signal?: AbortSignal): Promise<ToolResult>;
+export declare function handleTool(name: string, args: Record<string, unknown> | undefined, sourceHost?: string, signal?: AbortSignal, requestContext?: McpRequestContext): Promise<ToolResult>;
 export {};
 //# sourceMappingURL=handlers.d.ts.map

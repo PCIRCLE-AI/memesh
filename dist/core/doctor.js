@@ -4,22 +4,16 @@ import path from 'path';
 import net from 'node:net';
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
-import { pathToFileURL } from 'url';
 import { execFileSync } from 'child_process';
-import { detectCapabilities, getConfigPath, isTranscriptMiningEnabled, readConfig } from './config.js';
-import { embedText } from './embedder.js';
-import { probeProvider } from './llm-validator.js';
-import { openDatabase, closeDatabase, getPendingReindexInfo, isDatabaseOpen, readVectorGeneration, generationRowIds, } from '../db.js';
+import { findRetiredConfigKeys, getConfigPath, readConfig } from './config.js';
+import { openDatabase, closeDatabase, isDatabaseOpen, } from '../db.js';
 import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
 import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS, } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
-import { getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir, getProjectName } from './paths.js';
+import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
-import { lastTranscriptMineAt } from './transcript-source.js';
-import { countMissingVectors } from './operations.js';
-import { hasVectorIndex } from '../storage/vector-index.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
@@ -28,8 +22,6 @@ import { autoCaptureDecision } from './capture-flag.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
-import { summariseTelemetry } from './llm-telemetry.js';
-const EMBEDDING_PROBE_TIMEOUT_MS = 15000;
 const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop', 'PreCompact'];
 const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
 const LOCALE_README_FILES = [
@@ -154,9 +146,9 @@ function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
         return null;
     const configPath = path.join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
     if (existsSyncImpl(configPath)) {
-        return createCheck('codex-session-setup', 'Codex ordinary-session notification setup', 'pass', 'A Codex plugin cache copy was detected, but this proves only that cached source exists, not that the plugin is enabled or registered. The explicit opt-in ordinary-session notification setup is present; durable inbox remains available, and MeMesh will not auto-attach.');
+        return createInfo('codex-session-setup', 'Codex ordinary-session notifications', 'A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.');
     }
-    return createCheck('codex-session-setup', 'Codex ordinary-session notification setup', 'warn', 'A Codex plugin cache copy was detected, but this proves only that cached source exists, not that the plugin is enabled or registered. Durable inbox remains available, but live ordinary-session wakeup is inactive. Setup is explicit opt-in; MeMesh will not auto-attach.', 'Run `memesh agent setup codex-session --project <project> --principal <principal> --workspace <exact-workspace>`, then restart Codex.', { code: 'codex-session.config-missing' });
+    return createInfo('codex-session-setup', 'Codex ordinary-session notifications', 'No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.');
 }
 function configuredAgentMessageStoragePolicy(explicit) {
     if (explicit !== undefined)
@@ -195,14 +187,10 @@ function parseJsonFile(filePath, readFileSyncImpl) {
         };
     }
 }
-function inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl, envLlm) {
+function inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl) {
     const configPath = getConfigPathImpl();
     if (!existsSyncImpl(configPath)) {
-        return createCheck('config', 'Config', 'pass', envLlm
-            ? `No config file yet (${configPath}), but your environment names ${envLlm.provider}${envLlm.apiKey ? ' (via its API key)' : ' (via OLLAMA_HOST)'}, which enables Smart Mode. A file is only needed to pin a provider or change defaults.`
-            : `No config file yet (${configPath}). MeMesh will run in Core mode until you configure Smart Mode.`, envLlm
-            ? `Optional: \`memesh config set llm.provider ${envLlm.provider}\` pins it so it does not depend on which shell you run from.`
-            : 'Optional: run `memesh config list` or set an LLM with `memesh config set llm.provider anthropic`.');
+        return createCheck('config', 'Config', 'pass', `No config file yet (${configPath}); default settings are in effect.`, 'Optional: run memesh config list to inspect settings.');
     }
     try {
         const raw = readFileSyncImpl(configPath, 'utf8');
@@ -210,11 +198,21 @@ function inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl, 
         if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
             return createCheck('config', 'Config', 'fail', `${configPath} parsed but is not a JSON object — every setting is being ignored.`, `Fix or remove ${configPath}, then re-run memesh doctor.`, { code: 'config-parse.not-object', params: { path: configPath } });
         }
+        const retiredKeys = findRetiredConfigKeys(parsed);
+        if (retiredKeys.length > 0) {
+            const keys = retiredKeys.join(', ');
+            return createCheck('config', 'Config', 'warn', `${configPath} is valid JSON but still contains ${retiredKeys.length} retired top-level setting(s) (${keys}). ` +
+                'This version ignores them, but legacy provider credentials or settings may remain on disk.', `Review ${configPath} locally and remove only those retired top-level keys. ` +
+                'Do not paste the file into an issue because it may contain credentials. Then run memesh doctor again.', {
+                code: 'config-parse.retired-settings',
+                params: { path: configPath, count: retiredKeys.length, keys },
+            });
+        }
         return createCheck('config', 'Config', 'pass', `${configPath} is valid JSON and its settings are in effect.`);
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return createCheck('config', 'Config', 'fail', `${configPath} could not be read or parsed (${msg}). Every setting in it — LLM provider, fallbacks, embedder — is being silently ignored right now.`, `Fix the JSON or remove the file to fall back to defaults: mv ${configPath} ${configPath}.bak`, { code: 'config-parse.unreadable', params: { path: configPath, detail: msg } });
+        return createCheck('config', 'Config', 'fail', `${configPath} could not be read or parsed (${msg}). Its settings are being ignored right now.`, `Fix the JSON or remove the file to fall back to defaults: mv ${configPath} ${configPath}.bak`, { code: 'config-parse.unreadable', params: { path: configPath, detail: msg } });
     }
 }
 const MCP_PLACEHOLDER = '${CLAUDE_PLUGIN_ROOT}';
@@ -552,19 +550,11 @@ function defaultResolveShellMemesh() {
         return null;
     }
 }
-const RUNTIME_TOO_OLD = 'memesh:node-sqlite-too-old';
-function defaultNativeBindingProbe(packageRoot) {
+function defaultNativeBindingProbe(_packageRoot) {
     try {
-        const probe = new MemeshDatabase(':memory:', { allowExtension: true });
+        const probe = new MemeshDatabase(':memory:');
         try {
-            if (typeof probe.enableLoadExtension !== 'function') {
-                return { ok: false, message: `${RUNTIME_TOO_OLD}: node:sqlite in ${process.version} has no enableLoadExtension` };
-            }
-            probe.enableLoadExtension(true);
-            const localRequire = createRequire(pathToFileURL(path.join(packageRoot, 'package.json')).href);
-            const sqliteVec = localRequire('sqlite-vec');
-            sqliteVec.load(probe);
-            probe.prepare('SELECT vec_version()').get();
+            probe.prepare('SELECT 1').get();
         }
         finally {
             probe.close();
@@ -629,17 +619,9 @@ export function hasBuiltInSqlite() {
 }
 function inspectNativeBinding(packageRoot, _existsSyncImpl, probeImpl = defaultNativeBindingProbe) {
     const result = probeImpl(packageRoot);
-    if (result.ok) {
-        return createCheck('native-binding', 'SQLite and vector search', 'pass', 'node:sqlite opened a database and sqlite-vec loaded (probe succeeded).');
-    }
-    if (result.message.startsWith(RUNTIME_TOO_OLD)) {
-        return createCheck('native-binding', 'SQLite and vector search', 'fail', `The node:sqlite in this Node (${process.version}) is too old for memesh — it cannot load the vector-search extension. The complete version arrived in Node 22.13.`, 'Upgrade Node to 22.13 or newer, then re-run `memesh doctor`.', { code: 'native-binding.node-too-old', params: { version: process.version } });
-    }
-    const isMissingPackage = /MODULE_NOT_FOUND|Cannot find module/i.test(result.message);
-    if (isMissingPackage) {
-        return createCheck('native-binding', 'SQLite and vector search', 'warn', 'sqlite-vec is not installed, so memesh cannot search by meaning. Memories are still saved, and still found by keyword.', 'Run: npm install   (in the directory that depends on @pcircle/memesh)', { code: 'native-binding.not-installed' });
-    }
-    return createCheck('native-binding', 'SQLite and vector search', 'warn', `sqlite-vec could not be loaded: ${result.message}. Memories are still saved and found by keyword; only search by meaning is off.`, `Run: cd "${packageRoot}" && npm install --omit=dev`, { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } });
+    return result.ok
+        ? createCheck('native-binding', 'SQLite', 'pass', 'node:sqlite opened a database (probe succeeded).')
+        : createCheck('native-binding', 'SQLite', 'fail', `SQLite could not open a database: ${result.message}`, 'Check the Node runtime and reinstall if necessary.', { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } });
 }
 function readVersionFromInstalledBinary(binaryPath, existsSyncImpl, readFileSyncImpl, realpathSyncImpl = fs.realpathSync) {
     let resolved;
@@ -677,29 +659,19 @@ function inspectShellCli(installChannel, packageRoot, packageVersion, resolveShe
     }
     if (hasDistinctShellCli) {
         const shellVersion = readVersionFromInstalledBinary(shellPath, existsSyncImpl, readFileSyncImpl);
-        const shellIsBehind = shellVersion ? classifyBump(shellVersion, packageVersion) : null;
-        const thisIsBehind = shellVersion ? classifyBump(packageVersion, shellVersion) : null;
-        if (shellIsBehind) {
-            return createCheck('shell-cli', 'Shell CLI on PATH', 'warn', `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}), and it is running ${shellVersion} — behind this install's ${packageVersion}. Both share the same DB, but an agent using this install and a human typing \`memesh\` in a terminal are running different code.`, 'Run `npm install -g @pcircle/memesh@latest` to bring the shell CLI up to date — a separate global install is never updated automatically by the plugin marketplace.');
+        if (shellVersion) {
+            return {
+                ...createInfo('shell-cli', 'Shell CLI on PATH', `Installed versions: this interface ${packageVersion}; terminal ${shellVersion}.`),
+                code: 'shell-cli.versions',
+                params: { current: packageVersion, terminal: shellVersion, shellPath: shellPath, packageRoot },
+            };
         }
-        if (thisIsBehind) {
-            const pluginHost = installChannel === 'plugin-marketplace' ? detectPluginHost(packageRoot) : null;
-            const fix = installChannel !== 'plugin-marketplace'
-                ? `Update this install (a ${installChannel}) to ${shellVersion} or newer via its own channel — see \`memesh status\`.`
-                : pluginHost
-                    ? `Run \`${PLUGIN_REFRESH_COMMANDS[pluginHost]}\` to bring this plugin copy to ${shellVersion} (or newer).`
-                    : `Bring this plugin copy to ${shellVersion} (or newer) with your host's refresh command — `
-                        + `Claude Code: \`${PLUGIN_REFRESH_COMMANDS['claude-code']}\`; `
-                        + `Codex: \`${PLUGIN_REFRESH_COMMANDS.codex}\`.`;
-            return createCheck('shell-cli', 'Shell CLI on PATH', 'warn', `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}), and it is running ${shellVersion} — ahead of this install's ${packageVersion}.`, fix);
-        }
-        return createCheck('shell-cli', 'Shell CLI on PATH', 'pass', `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}). Both paths coexist and share the same DB`
-            + (shellVersion ? `, both on ${packageVersion}.` : ' — could not read the shell copy\'s own version to compare.'));
+        return createCheck('shell-cli', 'Shell CLI on PATH', 'pass', `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}) — could not read the shell copy's own version to compare.`);
     }
     if (installChannel === 'plugin-marketplace') {
         const host = detectPluginHost(packageRoot) === 'codex' ? 'Codex CLI' : 'Claude Code';
         return createCheck('shell-cli', 'Shell CLI on PATH', 'warn', 'Plugin is installed but `memesh` is not on the shell PATH. Typing `memesh` in a regular terminal will report `command not found`. '
-            + `${host} MCP / hooks / \`/memesh\` skill still work — this only affects standalone shell usage and other MCP clients (Cursor, Cline, etc.).`, 'Run `npm install -g @pcircle/memesh` to add the shell CLI. Both paths coexist; they share the same `~/.memesh/knowledge-graph.db`.', { code: 'shell-cli.not-on-path' });
+            + `${host} MCP / hooks / \`/memesh\` skill still work — this only affects standalone shell usage and other MCP clients (Cursor, Cline, etc.).`, 'Run `npm install -g @pcircle/memesh` if you want the separate shell CLI. Its database path depends on its environment and configuration.', { code: 'shell-cli.not-on-path' });
     }
     return createCheck('shell-cli', 'Shell CLI on PATH', 'pass', shellPath
         ? `\`memesh\` resolves to ${shellPath}.`
@@ -892,32 +864,23 @@ function inspectPluginCacheCurrency(installChannel, pluginHost, packageRoot, ins
     }
     return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'warn', `The plugin cache records commit ${installedSha.slice(0, 8)}, but the marketplace has moved to ${marketplaceSha.slice(0, 8)} under the same version — ${hostLabel} does not normally refresh a cache whose version did not change, so refresh the cache before relying on the newer marketplace code.`, `Run \`${command}\` to refresh the cache in place, then restart ${hostLabel}.`, { code: 'plugin-cache.stale', params: { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command } });
 }
-function annotateNpmGlobalPluginCacheVersion(check, discoveredPackageRoot, hostLabel, runningVersion) {
-    const cacheRoot = path.dirname(discoveredPackageRoot);
-    const discoveredVersion = path.basename(discoveredPackageRoot);
-    let amended = check;
-    if (discoveredVersion !== runningVersion && classifyBump(runningVersion, discoveredVersion)) {
-        const skewNote = `This npm-global install is on ${runningVersion}; the ${hostLabel} plugin cache is on ${discoveredVersion}. `
-            + 'The plugin marketplace\'s own auto-updater only ever refreshes its plugin copy — it cannot and will not update this separate npm-global install.';
-        const skewFix = `Run \`memesh update\` to bring this npm-global install to ${discoveredVersion} (or newer) — it does not update itself automatically.`;
-        amended = {
-            ...amended,
-            status: amended.status === 'pass' ? 'warn' : amended.status,
-            summary: `${amended.summary} ${skewNote}`,
-            fix: amended.fix ? `${amended.fix} Also: ${skewFix}` : skewFix,
-            code: undefined,
-            params: undefined,
-        };
+function isClaudeChannelCommand(command) {
+    if (command === 'memesh-host-claude')
+        return true;
+    if (typeof command !== 'string' || !path.isAbsolute(command) || path.basename(command) !== 'memesh-host-claude') {
+        return false;
     }
-    const cachedVersions = versionedPluginCacheRoots(cacheRoot);
-    if (cachedVersions.length > 2) {
-        amended = {
-            ...amended,
-            summary: `${amended.summary} ${cachedVersions.length} versioned copies of the ${hostLabel} plugin are cached under ${cacheRoot}; old ones are never removed automatically. `
-                + `Delete ones you no longer need once no ${hostLabel} process is using them, e.g. \`rm -rf "${cachedVersions[0]}"\`.`,
-        };
+    try {
+        const target = fs.realpathSync(command);
+        const stat = fs.statSync(target);
+        if (!stat.isFile())
+            return false;
+        fs.accessSync(target, fs.constants.X_OK);
+        return true;
     }
-    return amended;
+    catch {
+        return false;
+    }
 }
 function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
     const configPath = path.join(homeDir(), '.claude.json');
@@ -967,14 +930,15 @@ function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
             targetConfigValid = false;
         }
     }
-    const coherent = command === 'memesh-host-claude'
+    const commandValid = isClaudeChannelCommand(command);
+    const coherent = commandValid
         && args !== null
         && args.length === 2
         && configIndex === 0
         && target !== null
         && targetConfigValid;
     if (!coherent) {
-        const reason = command !== 'memesh-host-claude' || args === null || configIndex !== 0 || target === null
+        const reason = !commandValid || args === null || configIndex !== 0 || target === null
             ? 'the command or --config declaration is malformed'
             : 'the declared owner config target is missing, insecure, malformed, or incomplete';
         return createCheck('claude-channel', 'Claude Channel registration', 'warn', `The user-scoped memesh-channel registration is present but ${reason}. Live Claude Channel notification is not established.`, 'Remove and re-register the owner-controlled memesh-channel entry with `memesh agent setup claude`; keep its generated config file owner-private.');
@@ -1197,8 +1161,7 @@ function inspectMessageCapability(packageRoot, enabled, probe) {
     return createCheck('message-capability', 'Message adapter imports', 'fail', `Installed message capability probe failed: ${result.message}.`, 'Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.', { code: 'message-capability.probe-failed', params: { detail: result.message } });
 }
 async function defaultMessageRouterStatusProbe() {
-    const socketPath = process.env.MEMESH_ROUTER_SOCKET
-        ?? path.join(getMemeshDirFromDbPath(), 'agent-router.sock');
+    const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
     let stat;
     try {
         stat = fs.lstatSync(socketPath);
@@ -1245,81 +1208,6 @@ async function inspectMessageRouterStatus(enabled, probe) {
             return createCheck('message-router-status', 'Live message router / host registration', 'warn', `An owner-private router socket exists at ${result.socket_path}, but it did not accept a local connection. No host registration or native delivery is verified.`, 'Check the owner-configured `memesh-router` process, then run this opt-in probe again.', { code: 'message-router.socket-unreachable', params: { path: result.socket_path } });
     }
 }
-async function inspectEmbeddingProbe(capabilities, probeCapabilities, embedTextImpl) {
-    if (capabilities.embeddings === 'tfidf') {
-        return createInfo('embeddings_probe', 'Embeddings work', 'No neural embedder configured — recall runs on FTS5 keyword search alone. That is a supported mode, not a fault.');
-    }
-    if (!probeCapabilities) {
-        return createInfo('embeddings_probe', 'Embeddings work', `NOT VERIFIED. Config names "${capabilities.embeddings}", but generating a test embedding is a network call (billed on hosted providers) so it was not made — a revoked key or an unreachable host would look identical to a healthy setup here.`, 'Run: memesh doctor --probe   (generates one test embedding to confirm)');
-    }
-    let timer;
-    try {
-        const vector = await Promise.race([
-            embedTextImpl('memesh doctor embedding probe'),
-            new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new Error(`no response within ${EMBEDDING_PROBE_TIMEOUT_MS / 1000}s`)), EMBEDDING_PROBE_TIMEOUT_MS);
-            }),
-        ]);
-        if (!vector || vector.length === 0) {
-            return createCheck('embeddings_probe', 'Embeddings work', 'warn', `Config selects "${capabilities.embeddings}" but generating a test embedding returned nothing. Semantic recall is degraded to FTS5-only; keyword search still works.`, 'Run: memesh doctor --probe for detail, or check network access to the embedding provider.', { code: 'embeddings.empty', params: { provider: String(capabilities.embeddings) } });
-        }
-        return createCheck('embeddings_probe', 'Embeddings work', 'pass', `Generated a ${vector.length}-dim test embedding via "${capabilities.embeddings}".`);
-    }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return createCheck('embeddings_probe', 'Embeddings work', 'warn', `Config selects "${capabilities.embeddings}" but the embedder threw (${msg}). Semantic recall is degraded to FTS5-only.`, 'Check the embedding provider is reachable (e.g. run `ollama serve`), or remove embedder config to use keyword-only search.', { code: 'embeddings.threw', params: { provider: String(capabilities.embeddings), detail: msg } });
-    }
-    finally {
-        clearTimeout(timer);
-    }
-}
-const LLM_TELEMETRY_HEALTH_WINDOW_DAYS = 7;
-const LLM_TELEMETRY_HEALTH_MIN_CALLS = 3;
-function inspectLlmTelemetryHealth(db, windowDays = LLM_TELEMETRY_HEALTH_WINDOW_DAYS, minCalls = LLM_TELEMETRY_HEALTH_MIN_CALLS) {
-    let summaries;
-    try {
-        summaries = summariseTelemetry(windowDays, db);
-    }
-    catch {
-        return undefined;
-    }
-    if (summaries.length === 0)
-        return undefined;
-    const broken = summaries
-        .filter((s) => s.total_calls >= minCalls && s.successes === 0)
-        .sort((a, b) => b.total_calls - a.total_calls);
-    if (broken.length > 0) {
-        const detail = broken.map((s) => `${s.flow} (${s.total_calls} call${s.total_calls === 1 ? '' : 's'}, 0 succeeded)`).join(', ');
-        return createCheck('llm_telemetry_health', 'AI feature health', 'warn', `${broken.length} AI-backed feature${broken.length === 1 ? '' : 's'} failed every call in the last `
-            + `${windowDays} days: ${detail}. Those features are silently doing nothing.`, 'Run `memesh telemetry` for the full per-flow detail, then check the model/provider configured for '
-            + 'the failing flow. `memesh doctor --probe` confirms whether it answers a live call.', { code: 'llm-telemetry.silent-failure', params: { count: broken.length, detail, windowDays } });
-    }
-    const totalCalls = summaries.reduce((n, s) => n + s.total_calls, 0);
-    const totalSuccesses = summaries.reduce((n, s) => n + s.successes, 0);
-    const rate = totalCalls > 0 ? Math.round((totalSuccesses / totalCalls) * 100) : 100;
-    return createInfo('llm_telemetry_health', 'AI feature health', `${summaries.length} AI-backed flow${summaries.length === 1 ? '' : 's'} made ${totalCalls} call(s) in the `
-        + `last ${windowDays} days; ${rate}% succeeded.`);
-}
-async function inspectLlmProbe(capabilities, probeCapabilities, probeProviderImpl) {
-    const llm = capabilities.llm;
-    if (!llm) {
-        return createInfo('llm_probe', 'LLM reachable', 'No LLM configured — Core Mode. Write-side features (lessons, auto-tag, dream) are off by design.');
-    }
-    if (!probeCapabilities) {
-        return createInfo('llm_probe', 'LLM reachable', `NOT VERIFIED. Config names ${llm.provider} (${llm.model ?? 'default'}), but no live call was made — an expired key or an unreachable host would look identical to a healthy setup here.`, 'Run: memesh doctor --probe   (makes one small live call to confirm)');
-    }
-    try {
-        const result = await probeProviderImpl(llm.provider, llm.apiKey);
-        if (result.valid) {
-            return createCheck('llm_probe', 'LLM reachable', 'pass', `${llm.provider} answered a live probe.`);
-        }
-        return createCheck('llm_probe', 'LLM reachable', 'fail', `${llm.provider} is configured but did not answer: ${result.error ?? 'unknown error'}. Every LLM-backed feature is silently doing nothing.`, 'Check the API key / host, then re-run: memesh doctor --probe', { code: 'llm.unreachable', params: { provider: llm.provider, detail: result.error ?? 'unknown error' } });
-    }
-    catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return createCheck('llm_probe', 'LLM reachable', 'fail', `${llm.provider} probe threw: ${msg}. Every LLM-backed feature is silently doing nothing.`, 'Check the API key / host, then re-run: memesh doctor --probe', { code: 'llm.threw', params: { provider: llm.provider, detail: msg } });
-    }
-}
 function summarizeOverallStatus(checks) {
     const assertions = checks.filter((check) => !check.informational);
     if (assertions.some((check) => check.status === 'fail'))
@@ -1329,7 +1217,7 @@ function summarizeOverallStatus(checks) {
     return 'PASS';
 }
 export async function runDoctor(options) {
-    const { packageRoot, packageVersion, probeHttp = false, probeCapabilities = false, embedTextImpl = embedText, probeProviderImpl = probeProvider, httpBaseUrl = 'http://127.0.0.1:3737', platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabase, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, detectCapabilitiesImpl = detectCapabilities, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs.existsSync, readFileSyncImpl = fs.readFileSync, statSyncImpl = fs.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === '1', messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === '1', messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe, } = options;
+    const { packageRoot, packageVersion, probeHttp = false, httpBaseUrl = 'http://127.0.0.1:3737', platform = process.platform, envImpl = process.env, openDatabaseImpl = openDatabase, closeDatabaseImpl = closeDatabase, isDatabaseOpenImpl = isDatabaseOpen, getConfigPathImpl = getConfigPath, getUpdateCheckImpl = getUpdateCheck, getCurrentInstallChannelImpl = getCurrentInstallChannel, installedPluginsPathImpl, marketplaceHeadShaImpl = defaultMarketplaceHeadSha, pluginCacheDiscoveryImpl, getInstallChannelSupportImpl = getInstallChannelSupport, existsSyncImpl = fs.existsSync, readFileSyncImpl = fs.readFileSync, statSyncImpl = fs.statSync, fetchImpl = fetch, agentMessageStoragePolicy, nativeBindingProbeImpl, resolveShellMemeshImpl = defaultResolveShellMemesh, probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === '1', messageCapabilityProbeImpl = probeInstalledMessageCapability, probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === '1', messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe, } = options;
     const wasDbOpenBeforeUs = isDatabaseOpenImpl();
     const safeCloseDatabaseImpl = wasDbOpenBeforeUs
         ? () => undefined
@@ -1364,46 +1252,6 @@ export async function runDoctor(options) {
                     `that a newer one had already migrated — the version marker only moves forward, so the ` +
                     `automatic rebuild cannot notice. Re-run doctor after the rebuild: this count should be 0.`, `Run 'memesh reindex --fts' to rebuild the keyword index.`, { code: 'fts.unsegmented', params: { count: unsegmented.c } }, 'fts-rebuild'));
             }
-        }
-        const pendingReindex = getPendingReindexInfo();
-        const vectorDb = db;
-        let missingVectors;
-        let vectorsPossible = true;
-        try {
-            vectorsPossible = hasVectorIndex(vectorDb);
-            missingVectors = vectorsPossible ? countMissingVectors(vectorDb) : 0;
-        }
-        catch {
-            missingVectors = null;
-        }
-        const payableDebt = pendingReindex && !(pendingReindex.reason === 'vectors-missing' && !vectorsPossible);
-        if (payableDebt || missingVectors === null || missingVectors > 0) {
-            const owed = pendingReindex && pendingReindex.reason !== 'vectors-missing'
-                ? 'Search index needs rebuilding (embedding configuration changed)'
-                : missingVectors === null
-                    ? 'The vector index could not be read, so how much of your memory semantic recall can see is unknown'
-                    : `${missingVectors} memor${missingVectors === 1 ? 'y has' : 'ies have'} no search vector, `
-                        + 'so semantic recall cannot find them (keyword search still works)';
-            const noEmbedderConfigured = detectCapabilitiesImpl().embeddings === 'tfidf';
-            const vectorIndexFix = noEmbedderConfigured
-                ? `No embedder is configured, so reindex has nothing to embed with — run 'memesh config set embedder.provider ollama' (or 'openai') first, then 'memesh reindex'.`
-                : `Run 'memesh reindex' to fix. This will restore full search functionality.`;
-            dbChecks.push(createCheck('vector_index', 'Vector Index', 'warn', owed, vectorIndexFix, {
-                code: noEmbedderConfigured ? 'vector-index.stale-no-embedder' : 'vector-index.stale',
-                params: { missing: missingVectors ?? -1 },
-            }));
-        }
-        const generation = readVectorGeneration();
-        if (generation.state !== 'none') {
-            const staged = generationRowIds().size;
-            const detail = generation.state === 'open'
-                ? `${staged} vectors staged at ${generation.info.dimension} dimensions `
-                    + `(provider ${generation.info.provider}, started ${generation.info.startedAt})`
-                : `${staged} vectors staged, but the marker cannot be read (${generation.detail})`;
-            dbChecks.push(createCheck('vector_generation', 'Half-built search index', 'warn', `An unfinished index rebuild is holding disk space: ${detail}.`, generation.state === 'open'
-                ? `Run 'memesh reindex' to finish it (the vectors already produced are reused), `
-                    + `or 'memesh reindex --discard-generation' to reclaim the space.`
-                : `Run 'memesh reindex --discard-generation' to clear it, then 'memesh reindex'.`, { code: 'vector-generation.open', params: { staged } }));
         }
         try {
             const guardRows = db
@@ -1472,9 +1320,6 @@ export async function runDoctor(options) {
                 dbChecks.push(createInfo('citation_compliance', 'Memory citation rate', `${cited} of ${citationTotal} session(s) with injected memories cited at least one (${rate}%).`));
             }
         }
-        const llmTelemetryHealth = inspectLlmTelemetryHealth(db);
-        if (llmTelemetryHealth)
-            dbChecks.push(llmTelemetryHealth);
     }
     catch (err) {
         const message = err instanceof Error ? err.message : 'unknown database error';
@@ -1541,7 +1386,7 @@ export async function runDoctor(options) {
         catch {
         }
     }
-    checks.push(inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl, detectCapabilitiesImpl().llm));
+    checks.push(inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl));
     checks.push(inspectMcpConfig(packageRoot, install, existsSyncImpl, readFileSyncImpl, envImpl));
     checks.push(...inspectHooksConfig(packageRoot, platform, existsSyncImpl, readFileSyncImpl, statSyncImpl));
     const pluginHost = detectPluginHost(packageRoot);
@@ -1561,12 +1406,9 @@ export async function runDoctor(options) {
                 codexPluginCacheDetected = true;
             if (discovered.host === 'claude-code')
                 claudePluginCacheDetected = true;
-            let check = discovered.unverifiableReason
+            const check = discovered.unverifiableReason
                 ? pluginCacheUnverifiable(discovered.host, discovered.unverifiableReason)
                 : inspectPluginCacheCurrency('plugin-marketplace', discovered.host, discovered.packageRoot, discovered.installedPluginsPath, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl);
-            if (check && !discovered.unverifiableReason) {
-                check = annotateNpmGlobalPluginCacheVersion(check, discovered.packageRoot, discovered.host === 'codex' ? 'Codex' : 'Claude Code', packageVersion);
-            }
             if (check) {
                 const hostName = discovered.host;
                 const index = (discoveredCounts.get(discovered.host) ?? 0) + 1;
@@ -1592,20 +1434,6 @@ export async function runDoctor(options) {
     checks.push(verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, installSupport));
     checks.push(inspectMessageCapability(packageRoot, probeMessageCapability, messageCapabilityProbeImpl));
     checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
-    const capabilities = detectCapabilitiesImpl();
-    checks.push(createInfo('capabilities', 'Capabilities (configured)', `Search level ${capabilities.searchLevel} (${capabilities.searchLevel === 1 ? 'Smart Mode' : 'Core'}); embeddings: ${capabilities.embeddings}; LLM: ${capabilities.llm ? `${capabilities.llm.provider} (${capabilities.llm.model ?? 'default'})` : 'not configured'}. Configured values only — see the probe rows below for what actually works.`));
-    if (!isTranscriptMiningEnabled()) {
-        checks.push(createInfo('transcript-mining', 'Scheduled transcript mining', 'Off (opt-in). memesh can mine this project\'s Claude Code session transcripts for decisions and lessons and STAGE them for your review. Turn it on with `memesh config set transcriptMining true`, then have a scheduler (cron/launchd) run `memesh dream run --from-transcripts --if-due` — it self-throttles and stages only, so nothing enters your graph without `dream accept`.'));
-    }
-    else {
-        const last = lastTranscriptMineAt(getProjectName(process.cwd()));
-        const when = last === null
-            ? 'not yet run for this project'
-            : `last mined ${((Date.now() - last) / 3600_000).toFixed(1)}h ago`;
-        checks.push(createInfo('transcript-mining', 'Scheduled transcript mining', `On for this project — ${when}. Have a scheduler run \`memesh dream run --from-transcripts --if-due\`; it mines when due (default every 24h) and stages proposals. Review the queue with \`memesh dream list\`.`));
-    }
-    checks.push(await inspectEmbeddingProbe(capabilities, probeCapabilities, embedTextImpl));
-    checks.push(await inspectLlmProbe(capabilities, probeCapabilities, probeProviderImpl));
     checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport));
     try {
         const record = getInstallRecord();

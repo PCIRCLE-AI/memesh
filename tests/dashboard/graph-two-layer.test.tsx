@@ -134,6 +134,14 @@ describe('GraphTab — two layers', () => {
     // …and never the machine key, which is what UX-1's chain forbids.
     expect(container.textContent, 'the focus banner named the entity by its dedup key')
       .not.toContain('pre-compact-9f3c2a1b');
+    // These declarations protect the observed mobile button compression;
+    // actual available width and wrapping remain browser-replay claims.
+    const showAll = [...container.querySelectorAll('button')]
+      .find(button => button.textContent === t('graph.showAll'));
+    expect(showAll).toBeDefined();
+    expect(showAll!.style.whiteSpace).toBe('nowrap');
+    expect(showAll!.style.flexShrink).toBe('0');
+    expect(showAll!.style.minHeight).toBe('32px');
   });
 
   it('asks for the work layer first and never fetches the full graph when it is big enough', async () => {

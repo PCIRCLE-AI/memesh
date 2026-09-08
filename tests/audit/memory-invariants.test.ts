@@ -443,13 +443,7 @@ describe('memory-invariants: read-only detector over a real graph', () => {
     }
   });
 
-  /**
-   * A graph seeded through the LIVE handle, so sqlite-vec is loaded and
-   * `entities_fts` / `entities_vec` can both be written the way the product
-   * writes them. `freshGraph()` above closes before returning, which is right
-   * for raw-SQL seeds and useless for these two: neither index is reachable
-   * from a plain `DatabaseSync`.
-   */
+  /** A graph seeded through the live handle so FTS is written by the product. */
   function graphSeededLive(fn: (db: ReturnType<typeof openDatabase>) => void): { dir: string; dbPath: string } {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-inv-live-'));
     const dbPath = path.join(dir, 'kg.db');
@@ -495,68 +489,6 @@ describe('memory-invariants: read-only detector over a real graph', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
-
-  it('#D11 — flags an archived entity still holding a vector row', () => {
-    const { dir, dbPath } = graphSeededLive((db) => {
-      const kg = new KnowledgeGraph(db);
-      kg.createEntity('commit-vecleak', 'commit', { observations: ['leaked vector'] });
-      kg.createEntity('decision-stays', 'decision', { observations: ['SQLite over Postgres'] });
-      const id = (db.prepare('SELECT id FROM entities WHERE name = ?').get('commit-vecleak') as { id: number }).id;
-      const keep = (db.prepare('SELECT id FROM entities WHERE name = ?').get('decision-stays') as { id: number }).id;
-      // No embedder runs in the suite, so the vectors are written directly —
-      // the same rows a graph holds when an embedder WAS configured.
-      const width = parseInt(
-        (db.prepare("SELECT value FROM memesh_metadata WHERE key = 'embedding_dimension'")
-          .get() as { value: string }).value,
-        10,
-      );
-      const vec = new Float32Array(width);
-      vec[0] = 1;
-      const insVec = db.prepare('INSERT INTO entities_vec (rowid, embedding) VALUES (?, ?)');
-      insVec.run(BigInt(id), Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength));
-      insVec.run(BigInt(keep), Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength));
-      // Archived through `archiveEntity`, so the FTS row goes and ONLY the
-      // vector leak is left — otherwise both invariants fire and this one
-      // could be passing on the other's evidence.
-      kg.archiveEntity('commit-vecleak');
-      insVec.run(BigInt(id), Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength));
-    });
-    try {
-      const r = run(dbPath);
-      expect(r.status, r.stdout + r.stderr).toBe(1);
-      expect(r.stdout).toContain('FAIL archived-entities-not-in-vector-index');
-      expect(r.stdout).toContain('commit-vecleak');
-      expect(r.stdout).toContain('ok   archived-entities-not-in-keyword-index');
-      expect(r.stdout).not.toContain('decision-stays');
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  it('#D11 — a graph with vectors only for active entities holds', () => {
-    const { dir, dbPath } = graphSeededLive((db) => {
-      const kg = new KnowledgeGraph(db);
-      kg.createEntity('decision-stays', 'decision', { observations: ['SQLite over Postgres'] });
-      const keep = (db.prepare('SELECT id FROM entities WHERE name = ?').get('decision-stays') as { id: number }).id;
-      const width = parseInt(
-        (db.prepare("SELECT value FROM memesh_metadata WHERE key = 'embedding_dimension'")
-          .get() as { value: string }).value,
-        10,
-      );
-      const vec = new Float32Array(width);
-      vec[0] = 1;
-      db.prepare('INSERT INTO entities_vec (rowid, embedding) VALUES (?, ?)')
-        .run(BigInt(keep), Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength));
-    });
-    try {
-      const r = run(dbPath);
-      expect(r.status, r.stdout).toBe(0);
-      expect(r.stdout).toContain('ok   archived-entities-not-in-vector-index');
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
 
   it('D15 — flags an archived split shell that still carries recall history', () => {
     const { dir, dbPath } = freshGraph();

@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: 📚 Documentation
-    url: https://github.com/PCIRCLE-AI/memesh#documentation
+    url: https://github.com/PCIRCLE-AI/memesh#architecture
     about: Read the full documentation including user guide, architecture, and API reference
   - name: 💬 GitHub Discussions
     url: https://github.com/PCIRCLE-AI/memesh/discussions
@@ -9,9 +9,6 @@ contact_links:
   - name: 🔒 Security Vulnerabilities
     url: https://github.com/PCIRCLE-AI/memesh/security/advisories/new
     about: Report security vulnerabilities privately (DO NOT use public issues)
-  - name: 📖 Troubleshooting Guide
-    url: https://github.com/PCIRCLE-AI/memesh/blob/main/docs/TROUBLESHOOTING.md
-    about: Check common issues and solutions before opening an issue
   - name: 💡 Feature Ideas & Roadmap
     url: https://github.com/PCIRCLE-AI/memesh/discussions/categories/ideas
     about: Discuss feature ideas and see what's on the roadmap

@@ -13,22 +13,14 @@
 // The two had drifted: the harness OR-joined query terms and ordered by BM25
 // `rank` while the shipped `search()` AND-joined and ordered by `e.id DESC`,
 // so the same 500 questions scored 95.40% here and 5.20% through the product.
-// See CHANGELOG [Unreleased] / PR #78. Results produced before that fix are
+// See CHANGELOG [4.2.11] / PRs #78-#79. Results produced before that fix are
 // kept in `results/` for history and are labelled `harness_reimplementation`.
 //
 // Usage:
 //   node benchmarks/longmemeval/run.mjs --mode A --dataset /tmp/longmemeval_s.json
 //
-// Modes map to real product configurations, not to harness-internal fusion
-// strategies:
-//   A — embeddings absent. FTS5 + BM25 only. ~10s for 500 questions.
-//   B — embeddings populated, so `recallEnhanced()`'s vector supplement can
-//       contribute. Needs a configured embedder (ollama/openai); the published
-//       Mode B/C figures were measured on the local ONNX MiniLM-L6 embedder
-//       that has since been removed, so they are historical for that model.
-// The old mode C (a 60/40 weighted FTS+vector fusion) is gone: it was a
-// harness-only experiment. The product has never implemented weighted fusion,
-// so there was nothing for it to measure.
+// Mode A measures the shipped FTS5 + BM25 path. Historical vector experiments
+// remain in results/ but are not executable product modes.
 
 import path from 'path';
 import os from 'os';
@@ -50,8 +42,8 @@ function parseArgs(a) {
 }
 const args = parseArgs(process.argv);
 const mode = String(args.mode || 'A').toUpperCase();
-if (mode !== 'A' && mode !== 'B') {
-  process.stderr.write(`Unknown mode "${mode}". Use A (no embeddings) or B (embeddings populated).\n`);
+if (mode !== 'A') {
+  process.stderr.write(`Unknown mode "${mode}". The shipped benchmark supports mode A (FTS5) only.\n`);
   process.exit(1);
 }
 const datasetPath = args.dataset || '/tmp/longmemeval_s.json';
@@ -60,9 +52,7 @@ const recallLimit = parseInt(args['recall-limit'] || '20', 10);
 const outputDir = args.output || path.join(__dirname, 'results');
 
 // Isolate from the real install. The runner opens hundreds of throwaway
-// databases; without this it would read ~/.memesh/config.json (picking up the
-// operator's provider/embedder settings and making the run unreproducible) and
-// risk writing next to their real knowledge graph.
+// databases and must never write next to the operator's real knowledge graph.
 const workRoot = args.workdir || path.join(os.tmpdir(), 'memesh-longmemeval');
 const fakeHome = path.join(workRoot, 'home');
 mkdirSync(path.join(fakeHome, '.memesh'), { recursive: true });
@@ -79,12 +69,6 @@ if (!existsSync(path.join(repoRoot, 'dist/core/operations.js'))) {
 const { openDatabase, closeDatabase, getDatabase } = await import(path.join(repoRoot, 'dist/db.js'));
 const { KnowledgeGraph } = await import(path.join(repoRoot, 'dist/knowledge-graph.js'));
 const { recallEnhanced } = await import(path.join(repoRoot, 'dist/core/operations.js'));
-const { embedAndStore, isEmbeddingAvailable } = await import(path.join(repoRoot, 'dist/core/embedder.js'));
-
-if (mode === 'B' && !isEmbeddingAvailable()) {
-  process.stderr.write('Mode B needs a configured embedder. The local ONNX embedder was removed — run `ollama serve` and `memesh config set embedder.provider ollama` (or configure openai), then retry.\n');
-  process.exit(1);
-}
 
 function sha256File(fp) {
   return new Promise((res, rej) => {
@@ -136,25 +120,17 @@ async function runQuestion(item) {
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
 
-    // Write path: the storage call `remember()` makes. remember()'s extras
-    // (auto-tagging, provenance metadata, scheduled embedding) are
-    // fire-and-forget LLM work that does not affect retrieval; mode B does the
-    // embedding explicitly below so the run stays deterministic.
-    const seeded = [];
+    // Write path: the storage call `remember()` makes.
     db.transaction(() => {
       for (let i = 0; i < item.haystack_sessions.length; i++) {
         const name = item.haystack_session_ids[i];
         const text = sessionToText(item.haystack_sessions[i]);
-        seeded.push([kg.createEntity(name, 'session', { observations: [text] }), name, text]);
+        kg.createEntity(name, 'session', { observations: [text] });
       }
     })();
 
-    if (mode === 'B') {
-      for (const [id, name, text] of seeded) await embedAndStore(id, `${name} ${text}`);
-    }
-
     // Read path: exactly what a `recall` call runs.
-    const entities = await recallEnhanced({ query: item.question, limit: recallLimit });
+    const { entities } = await recallEnhanced({ query: item.question, limit: recallLimit });
     const ranked = entities.map((e) => e.name);
 
     const answers = new Set(item.answer_session_ids);
@@ -197,7 +173,7 @@ function metricsByType(rs) {
 }
 
 async function main() {
-  const description = mode === 'A' ? 'shipped recall, no embeddings' : 'shipped recall, embeddings populated';
+  const description = 'shipped FTS5 recall';
   process.stderr.write(`\nMeMesh LongMemEval — mode ${mode}: ${description}\n`);
   process.stderr.write('Retrieval: dist/core/operations.js -> recallEnhanced()\n');
 

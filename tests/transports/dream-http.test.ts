@@ -5,13 +5,7 @@ import path from 'path';
 import { openDatabase, closeDatabase } from '../../src/db.js';
 import { app } from '../../src/transports/http/server.js';
 
-// dream-http — exercises POST /v1/dream/run, the HTTP entry point that
-// closes the v4.2.0 known limitation ("Dashboard wiring for the
-// validator is planned for a follow-up release"). The validator-on
-// path can't be asserted end-to-end here without spinning up a real
-// LLM, so the validate-true scenario only confirms the route accepts
-// the field and routes through `runDreamer` without 400ing — the
-// digest-validator unit tests cover the validator's own behaviour.
+// Removed generation route and retained human-review failure contract.
 
 let tmpDir: string;
 let server: ReturnType<typeof app.listen>;
@@ -47,89 +41,11 @@ async function req(method: string, urlPath: string, body?: unknown): Promise<{ s
   return { status: res.status, body: await res.json() };
 }
 
-describe('HTTP Transport: POST /v1/dream/run', () => {
-  it('accepts the body and returns DreamerResult shape', async () => {
-    // No LLM configured in the test environment → runDreamer short-
-    // circuits with a "no LLM configured" skip. We surface that as a
-    // 400 in server.ts (config error, not a runtime failure), so the
-    // success path here is the route accepting the body and the
-    // server returning a *structured* response — not a raw 500 or a
-    // routing 404.
-    const res = await req('POST', '/v1/dream/run', {
-      windowDays: 14,
-      maxLlmCalls: 1,
-    });
-    // Either 200 (LLM configured locally) or 400 (no-llm fast path)
-    // is acceptable; what we're guarding against is a 404/500 that
-    // would mean the route isn't wired or threw unexpectedly.
-    expect([200, 400]).toContain(res.status);
-    if (res.status === 200) {
-      // DreamerResult shape — see src/core/dreamer.ts.
-      expect(res.body.success).toBe(true);
-      expect(typeof res.body.data.proposalsCreated).toBe('number');
-      expect(typeof res.body.data.clustersScanned).toBe('number');
-      expect(typeof res.body.data.llmCalls).toBe('number');
-      expect(typeof res.body.data.durationMs).toBe('number');
-      expect(Array.isArray(res.body.data.skipped)).toBe(true);
-    } else {
-      expect(res.body.success).toBe(false);
-      expect(typeof res.body.error).toBe('string');
-      // Body must be parsed and reach handler — error must be the
-      // no-LLM message, not a Zod validation failure.
-      expect(res.body.error.toLowerCase()).toContain('llm');
-    }
-  });
-
-  it('accepts validate=true without 400 (route plumbing check)', async () => {
-    // We can't assert validator LLM calls without a real provider, so
-    // the contract here is narrower: the route MUST accept the
-    // `validate` field as part of the body schema. Earlier wiring
-    // attempts dropped unknown fields silently via .strip() and the
-    // CLI was the only path with the flag — this test catches a
-    // regression where the field gets dropped at the HTTP boundary.
-    const res = await req('POST', '/v1/dream/run', {
-      maxLlmCalls: 1,
-      validate: true,
-    });
-    expect([200, 400]).toContain(res.status);
-    if (res.status === 400) {
-      // 400 is acceptable ONLY for the no-LLM-configured path. A Zod
-      // failure on the `validate` field would be a regression.
-      expect(res.body.error.toLowerCase()).not.toContain('validate:');
-    }
-  });
-
-  it('returns 400 for out-of-bounds windowDays', async () => {
-    const res = await req('POST', '/v1/dream/run', {
-      windowDays: 999, // > 90 max
-    });
-    expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
-    expect(res.body.error).toMatch(/windowDays/);
-  });
-
-  it('returns 400 for out-of-bounds maxLlmCalls', async () => {
-    const res = await req('POST', '/v1/dream/run', {
-      maxLlmCalls: 100, // > 20 max
-    });
-    expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
-    expect(res.body.error).toMatch(/maxLlmCalls/);
-  });
-
-  it('returns 400 for non-boolean validate', async () => {
-    const res = await req('POST', '/v1/dream/run', {
-      // Wrong type — should fail Zod validation rather than coerce.
-      validate: 'yes' as unknown as boolean,
-    });
-    expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
-    // Named, so the 400 is proof the FIELD was validated. Without this the
-    // assertion passes for any 400 the route happens to produce — including
-    // one from a schema that dropped `validate` entirely, which is the
-    // regression this file says it exists to catch.
-    expect(String(res.body.error), 'the 400 did not come from the validate field')
-      .toMatch(/validate/i);
+describe('HTTP Transport: removed dream generation', () => {
+  it('returns route.not-found instead of staging a built-in generation', async () => {
+    const res = await req('POST', '/v1/dream/run', { windowDays: 14, maxLlmCalls: 1 });
+    expect(res.status).toBe(404);
+    expect(res.body.errorCode).toBe('route.not-found');
   });
 });
 
@@ -143,8 +59,8 @@ describe('HTTP Transport: POST /v1/dream/proposals/:id/accept', () => {
     const { getDatabase } = await import('../../src/db.js');
     const db = getDatabase();
     db.prepare(`
-      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version)
-      VALUES ('memesh', '2026-W19', ?, ?, 'ollama/fake', 'v1')
+      INSERT INTO dream_proposals (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('memesh', '2026-W19', ?, ?, 'v1')
     `).run(
       JSON.stringify([999901, 999902]), // no such entities — the digest can claim nothing
       JSON.stringify({ name: 'http-empty-digest', type: 'digest', observations: ['s'], tags: ['digest'] })

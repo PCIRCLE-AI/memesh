@@ -1,6 +1,6 @@
 ---
 name: memesh-review
-description: Review and optimize the MeMesh memory database. Analyzes health score, finds stale/conflicting/redundant memories, shows work patterns, and suggests cleanup actions. Use when asked to "review memories", "check memory health", "clean up knowledge", or "what's in my memory".
+description: Review and optimize the MeMesh memory database. Analyzes health score, finds stale or noisy memories, shows work patterns, and suggests human-reviewed cleanup actions. Use when asked to "review memories", "check memory health", "clean up knowledge", or "what's in my memory".
 user-invocable: true
 ---
 
@@ -59,11 +59,12 @@ From the recalled data, compute and present:
 
 **Verbose (5+ observations)**
 - "entity-name" (N observations) — note it; there is no one-entity compression
-  command any more. If the noise is spread across many episodic entries,
-  suggest `memesh dream run` instead.
+  command. If useful knowledge is spread across episodic entries, an already
+  running agent can prepare one MCP `work_package` for human review.
 
 **Potential conflicts**
-- "entity-A" vs "entity-B" — contradicting decisions
+- "entity-A" vs "entity-B" — inspect the text and recommend an explicit
+  `contradicts` or `supersedes` relation; MeMesh does not judge it automatically
 
 **Noise ratio**
 - N% auto-tracked (session_keypoint, commit) vs N% intentional knowledge
@@ -71,7 +72,7 @@ From the recalled data, compute and present:
 
 ### Recommended Actions
 1. `memesh forget --name "old-design"` (superseded)
-2. `memesh dream run --project myapp` (propose digests for the noisy clusters, then review)
+2. Ask the current agent to prepare one MCP `work_package`; then review the staged proposal
 3. `memesh remember ...` (knowledge gap in [area])
 ```
 
@@ -81,7 +82,7 @@ Present the report first. Ask which actions to execute. Then run the commands:
 
 ```bash
 memesh forget --name "outdated-entity"
-memesh dream run                  # then: memesh dream list / accept <id> / reject <id>
+# MCP work_package submits one proposal; then use dream show / accept / reject
 memesh remember --name "missing-knowledge" --type decision --obs "..."
 ```
 

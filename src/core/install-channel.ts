@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
 import { homeDir } from './paths.js';
+import { compareSemVerPrecedence, parseSemVer, type ParsedSemVer } from './semver.js';
 
 export type InstallChannel = 'npm-global' | 'npm-local' | 'source-checkout' | 'plugin-marketplace' | 'unknown';
 
@@ -77,57 +78,18 @@ export function pluginHostConfigRoot(host: PluginHost): string {
   return relocated ? path.resolve(relocated) : path.join(homeDir(), defaultDir);
 }
 
-interface ParsedVersion {
-  core: [bigint, bigint, bigint];
-  prerelease: string[] | null;
+interface ParsedVersionDirectory {
+  version: ParsedSemVer;
   raw: string;
 }
 
-const VERSION_DIRECTORY = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-const NUMERIC_IDENTIFIER = /^\d+$/;
-
-function parseVersionDirectory(raw: string): ParsedVersion | null {
-  const match = VERSION_DIRECTORY.exec(raw);
-  if (!match) return null;
-  const prerelease = match[4]?.split('.') ?? null;
-  if (prerelease?.some(identifier => NUMERIC_IDENTIFIER.test(identifier) && identifier.length > 1 && identifier.startsWith('0'))) {
-    return null;
-  }
-  return {
-    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
-    prerelease,
-    raw,
-  };
+function parseVersionDirectory(raw: string): ParsedVersionDirectory | null {
+  const version = parseSemVer(raw);
+  return version ? { version, raw } : null;
 }
 
-function compareIdentifiers(a: string, b: string): number {
-  const aNumeric = NUMERIC_IDENTIFIER.test(a);
-  const bNumeric = NUMERIC_IDENTIFIER.test(b);
-  if (aNumeric && bNumeric) return BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0;
-  if (aNumeric !== bNumeric) return aNumeric ? -1 : 1;
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-
-function compareVersions(a: ParsedVersion, b: ParsedVersion): number {
-  for (let index = 0; index < a.core.length; index += 1) {
-    if (a.core[index] !== b.core[index]) return a.core[index] < b.core[index] ? -1 : 1;
-  }
-  if (a.prerelease === null || b.prerelease === null) {
-    if (a.prerelease !== b.prerelease) return a.prerelease === null ? 1 : -1;
-  } else {
-    const length = Math.max(a.prerelease.length, b.prerelease.length);
-    for (let index = 0; index < length; index += 1) {
-      const aIdentifier = a.prerelease[index];
-      const bIdentifier = b.prerelease[index];
-      if (aIdentifier === undefined || bIdentifier === undefined) {
-        if (aIdentifier !== bIdentifier) return aIdentifier === undefined ? -1 : 1;
-        break;
-      }
-      const compared = compareIdentifiers(aIdentifier, bIdentifier);
-      if (compared !== 0) return compared;
-    }
-  }
-  return a.raw < b.raw ? -1 : a.raw > b.raw ? 1 : 0;
+function compareVersions(a: ParsedVersionDirectory, b: ParsedVersionDirectory): number {
+  return compareSemVerPrecedence(a.version, b.version) || (a.raw < b.raw ? -1 : a.raw > b.raw ? 1 : 0);
 }
 
 /** Existing plugin cache directories in ascending SemVer precedence. */
@@ -136,7 +98,7 @@ export function versionedPluginCacheRoots(root: string): string[] {
     return fs.readdirSync(root, { withFileTypes: true })
       .filter(entry => entry.isDirectory())
       .map(entry => parseVersionDirectory(entry.name))
-      .filter((version): version is ParsedVersion => version !== null)
+      .filter((version): version is ParsedVersionDirectory => version !== null)
       .sort(compareVersions)
       .map(version => path.join(root, version.raw));
   } catch {

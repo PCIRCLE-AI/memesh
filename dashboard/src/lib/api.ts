@@ -216,123 +216,15 @@ export interface StatsData {
   statusDistribution: { status: string; count: number }[];
 }
 
-export interface LlmConfig {
-  provider?: string;
-  model?: string;
-  apiKey?: string;
-}
-
-/**
- * One entry in the ordered LLM failover chain (config `llmFallbacks`). Same
- * shape as a primary provider, but `provider` is required: an entry with no
- * provider is not a fallback. The server masks `apiKey` as '***' on load; the
- * Settings UI must NOT re-send that mask (see SettingsTab fallback save).
- */
-export interface LlmFallback {
-  provider: 'anthropic' | 'openai' | 'ollama';
-  model?: string;
-  apiKey?: string;
-}
-
 export type AutoUpdatePolicy = 'off' | 'patch' | 'minor' | 'major';
-export type EmbedderProvider = 'openai' | 'ollama';
-
-export interface EmbedderConfig {
-  provider: EmbedderProvider;
-}
-
-export interface PendingReindexData {
-  from: number;
-  to: number;
-  noticedAt: string;
-  reason: 'dimension-change' | 'vectors-missing';
-}
-
-export interface ReindexGenerationData {
-  state: 'none' | 'unreadable' | 'open';
-  detail?: string;
-  info?: {
-    dimension: number;
-    provider: string;
-    startedAt: string;
-  };
-}
-
-export interface ReindexJobData {
-  id: string;
-  state: 'running' | 'succeeded' | 'failed';
-  processed: number;
-  total: number;
-  startedAt: string;
-  finishedAt: string | null;
-}
-
-export interface ReindexResultData {
-  processed: number;
-  embedded: number;
-  skipped: number;
-  failed: number;
-  outcomes: Record<string, number>;
-  missingVectors: number;
-  missingVectorsDatabaseWide: number;
-  pendingReindexCleared: boolean;
-  generationSwapped: boolean | null;
-  abortedAfter: number | null;
-}
-
-export interface ReindexStatusData {
-  status: 'idle' | 'running' | 'succeeded' | 'failed' | 'retry-needed';
-  job: ReindexJobData | null;
-  configuredProvider: EmbedderProvider | null;
-  configuredDimension: number;
-  storedDimension: number;
-  pendingReindex: PendingReindexData | null;
-  missingVectors: number;
-  generation: ReindexGenerationData;
-  result: ReindexResultData | null;
-  error: string | null;
-}
 
 export interface ConfigData {
   config: {
-    llm?: LlmConfig;
-    /** Ordered cross-provider failover chain. apiKeys arrive masked as '***'. */
-    llmFallbacks?: LlmFallback[];
-    embedder?: EmbedderConfig;
     setupCompleted?: boolean;
     autoCapture?: boolean;
-    /** Auto-update policy. Mirrors MEMESH_AUTO_UPDATE env var with env > config precedence. */
     autoUpdate?: AutoUpdatePolicy;
-    /**
-     * Output language for LLM-generated content (dreamer digests, patterns,
-     * lessons). Free-form — the Settings language selector posts the locale's
-     * display name so generated memories follow the UI language.
-     */
-    language?: string;
+    sessionLimit?: number;
   };
-  capabilities: {
-    searchLevel: number;
-    llm?: LlmConfig;
-    llmSource: 'config' | 'environment' | 'none';
-    llmFallbacks?: LlmFallback[];
-    embeddings: string;
-  };
-}
-
-export interface ConfigTestResult {
-  valid: boolean;
-  error?: string;
-  /**
-   * Stable machine code when valid=false: 'auth' | 'network' | 'no_models'
-   * | 'bad_host' | 'inference_failed' | 'http_<status>' | 'unknown'. The dashboard translates
-   * known codes (settings.testError.*) and keeps `error` as the detail.
-   */
-  errorCode?: string;
-  models?: Array<{ id: string; created?: string }>;
-  suggested?: string;
-  catalogVerified?: boolean;
-  inferenceVerified?: boolean;
-  testedModel?: string;
 }
 
 export interface HealthFactor {

@@ -9,9 +9,6 @@ import {
   openDatabase,
   closeDatabase,
   getDatabase,
-  getStoredEmbeddingDimension,
-  getPendingReindexInfo,
-  readVectorGeneration,
 } from '../../db.js';
 import {
   remember,
@@ -20,20 +17,12 @@ import {
   exportMemories,
   importMemories,
   learn,
-  reindex,
-  countMissingVectors,
-  type ReindexResult,
 } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import {
-  logCapabilities,
   readConfig,
   updateConfig,
-  detectCapabilities,
-  getEmbeddingDimension,
-  type LLMConfig,
 } from '../../core/config.js';
-import { languageValueError } from '../../core/output-language.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -93,7 +82,6 @@ type ErrorCode =
   | 'resource.not-found'    // 404 — route exists, the named entity/proposal does not
   | 'payload.too-large'     // 413 — body exceeds the 1 MB limit
   | 'operation.failed'      // 400 — valid request, but the operation itself rejected it
-  | 'llm.not-configured'    // 400 — the endpoint needs Smart Mode and no LLM is configured
   | 'rate.limited'          // 429 — too many requests in the window (non-loopback only)
   | 'server.internal';      // 500/503 — unexpected server-side failure
 
@@ -234,7 +222,6 @@ function constantTimeEquals(a: Buffer, b: Buffer): boolean {
  *
  * which is a CORS "simple request": no preflight, the handler runs, the whole
  * knowledge graph is replaced by demo seed data. Same reach for
- * `POST /v1/dream/run` and the proposal accept/reject routes. The browser
  * blocks the page from READING the reply, which hides the damage rather than
  * preventing it.
  *
@@ -702,8 +689,8 @@ app.post('/v1/remember', (req, res) => handlePost(RememberBody, req, res, (data)
 
 // --- Recall ---
 app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (data) => {
-  // recallWithConflicts: FTS5 + sqlite-vec recall + conflict annotation,
-  // owned by core so the transports can't drift on the wrapping rule.
+  // FTS5 recall and conflict annotation are owned by core so transports
+  // cannot drift on the wrapping rule.
   const { entities, conflicts, retrieval } = await recallWithConflicts(data);
   // Always return object envelope {entities, retrieval, conflicts?} to match
   // API_REFERENCE.md and MCP transport's documented guarantee (issue #159);
@@ -714,20 +701,11 @@ app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (dat
 // --- Forget / Consolidate / Export / Import / Learn / Verify ---
 // All 6 follow the same shape; handlePost above does the heavy lifting.
 app.post('/v1/forget',      (req, res) => handlePost(ForgetBody, req, res, forget));
-// `/v1/consolidate` is retired, and answers 410 rather than 404 because the two
-// mean different things to a script: 404 reads as a typo or a bad base URL and
-// invites a retry, 410 says the resource is gone on purpose and names what to
-// do instead. The tool compressed an entity's observations by deleting them and
-// writing an LLM summary back, with no proposal, no review and no way to
-// recover the originals — see the CHANGELOG entry for what that cost. `dream`
-// does the reviewed version of the same idea.
-//
-// Deletable at the next major, once no caller can plausibly still be pointing
-// here. Until then this line is the only thing standing between a script and a
-// silent 404.
-app.post('/v1/consolidate', (_req, res) => {
-  res.status(410).json({ success: false, errorCode: 'route.retired' satisfies ErrorCode, error: RETIRED_ROUTES['/v1/consolidate'] });
-});
+for (const [retiredRoute, error] of Object.entries(RETIRED_ROUTES)) {
+  app.post(retiredRoute, (_req, res) => {
+    res.status(410).json({ success: false, errorCode: 'route.retired' satisfies ErrorCode, error });
+  });
+}
 app.post('/v1/export',      (req, res) => handlePost(ExportBody, req, res, exportMemories));
 app.post('/v1/import',      (req, res) => handlePost(ImportBody, req, res, importMemories));
 app.post('/v1/learn',       (req, res) => handlePost(LearnBody, req, res, (data) => learn({ ...data, sourceHost: 'http' })));
@@ -779,359 +757,19 @@ app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => 
     limit: data.limit,
   });
 }));
-app.post('/v1/verify', (_req, res) => {
-  res.status(410).json({ success: false, errorCode: 'route.retired' satisfies ErrorCode, error: RETIRED_ROUTES['/v1/verify'] });
-});
-
-// --- Config ---
-/**
- * Redact every apiKey in an `{ llm, llmFallbacks }`-shaped object before it
- * leaves the process over the wire. Masks the primary `llm.apiKey` AND every
- * entry in the `llmFallbacks` chain.
- *
- * Single owner for BOTH the GET and POST /v1/config responses: previously each
- * handler hand-rolled its own masking, and the POST copy masked only
- * `llm.apiKey` — so a saved fallback provider's key was echoed back to the
- * dashboard SPA in plaintext. Routing both surfaces through one helper makes
- * that drift impossible. Returns a shallow clone; the stored config is untouched.
- */
-// The placeholder every masked key is rendered as. A write surface must treat
-// an incoming value equal to this as "the user left the stored key untouched",
-// NOT as a real key — otherwise a client that round-trips GET→POST verbatim
-// (a second tab, a script) would overwrite the real key with the literal mask
-// and the next provider call fails auth. One constant so the mask and the
-// treat-as-omitted check can never drift apart.
-const API_KEY_MASK = '***';
-
-function maskLlmSecrets<T extends {
-  llm?: { apiKey?: string } | null;
-  llmFallbacks?: Array<{ apiKey?: string } | null> | null;
-}>(obj: T): T {
-  const masked: T = { ...obj };
-  if (masked.llm?.apiKey) {
-    masked.llm = { ...masked.llm, apiKey: API_KEY_MASK };
-  }
-  if (Array.isArray(masked.llmFallbacks) && masked.llmFallbacks.length > 0) {
-    masked.llmFallbacks = masked.llmFallbacks.map(fb =>
-      fb?.apiKey ? { ...fb, apiKey: API_KEY_MASK } : fb
-    );
-  }
-  return masked;
-}
-
-// `keepKeyFrom` is a WIRE-ONLY field: the SPA sends it to say "reuse the key
-// stored at this original index"; it is never persisted. Stripped in
-// preserveFallbackApiKeys before the entry reaches updateConfig.
-type IncomingFallback = { provider: 'anthropic' | 'openai' | 'ollama'; model?: string; apiKey?: string; keepKeyFrom?: number | null };
-type FallbackEntry = { provider: 'anthropic' | 'openai' | 'ollama'; model?: string; apiKey?: string };
-
-/**
- * Restore the stored apiKey on fallback entries the dashboard sent WITHOUT one.
- *
- * The GET response masks every fallback key as '***', and the SPA is built to
- * NOT re-send that mask — it omits the apiKey for a cloud entry whose key the
- * user never retyped (mirroring the primary provider's "leave it and it stays"
- * behaviour). But unlike the primary `llm`, which `updateConfig` deep-merges,
- * `llmFallbacks` is written wholesale (it rides the generic `{...partialRest}`
- * spread). So an omitted key would be DROPPED — a saved credential silently
- * lost while the response still says "saved". That is the exact fake-working
- * class this project guards against, so the write surface has to close it.
- *
- * Identity is EXPLICIT, never positional. Each keyless entry that wants to keep
- * a stored key carries `keepKeyFrom` = the index it originally loaded from; the
- * SPA moves that field with the entry across reorders and removals, and sets it
- * to null when the entry is new, had its key retyped, or had its provider
- * changed. We look the key up at exactly that index (guarded by a provider
- * match, so a stale/forged index can never graft one provider's key onto
- * another). Positional matching was wrong: with two same-provider entries it
- * swapped their keys on reorder, gave a survivor the deleted entry's key on
- * removal, and grafted an unrelated key onto a provider-changed row. An entry
- * that carries an apiKey is a freshly entered credential and wins outright.
- * `keepKeyFrom` itself is stripped from the returned entry — it is never stored.
- */
-function preserveFallbackApiKeys(incoming: IncomingFallback[], stored: LLMConfig[] | undefined): FallbackEntry[] {
-  return incoming.map((entry) => {
-    const { keepKeyFrom, ...clean } = entry;
-    // The mask is not a real key. Treat it as omitted so it is refilled from
-    // storage (or dropped) — never persisted as the literal '***', which would
-    // silently overwrite the real key and break the next call to that provider.
-    if (clean.apiKey === API_KEY_MASK) delete clean.apiKey;
-    if (clean.apiKey) return clean;
-    if (typeof keepKeyFrom === 'number' && stored && keepKeyFrom >= 0 && keepKeyFrom < stored.length) {
-      const src = stored[keepKeyFrom];
-      if (src && src.provider === clean.provider && src.apiKey) {
-        return { ...clean, apiKey: src.apiKey };
-      }
-    }
-    return clean;
-  });
-}
-
-app.get('/v1/config', (_req, res) => handleGet(res, () => {
-  const config = readConfig();
-  const caps = detectCapabilities(config);
-  // detectCapabilities returns the llm config with the raw key, so mask both
-  // the config and the capabilities view before returning them.
-  return { config: maskLlmSecrets(config), capabilities: maskLlmSecrets(caps) };
-}));
+app.get('/v1/config', (_req, res) => handleGet(res, () => ({
+  config: ConfigBody.strip().parse(readConfig()),
+})));
 
 const ConfigBody = z.object({
-  // F17: `llm: null` removes the provider entirely (Core Mode). Used by
-  // the dashboard "Remove provider" action so the user can opt out of
-  // LLM-backed features without hand-editing config.json.
-  llm: z.union([
-    z.object({
-      provider: z.enum(['anthropic', 'openai', 'ollama']),
-      model: z.string().optional(),
-      apiKey: z.string().optional(),
-    }),
-    z.null(),
-  ]).optional(),
-  // Cross-provider failover chain — accepted via dashboard Settings
-  // UI so the user can configure their fallback plan (e.g.
-  // anthropic-primary -> openai-fallback -> ollama-local) without
-  // hand-editing config.json. Without this entry, ConfigBody.strip()
-  // would silently drop the field on every POST.
-  llmFallbacks: z.array(z.object({
-    provider: z.enum(['anthropic', 'openai', 'ollama']),
-    model: z.string().optional(),
-    apiKey: z.string().optional(),
-    // Wire-only: "reuse the key stored at this original index". The nested
-    // z.object() strips unknown keys, so without declaring it here the SPA's
-    // keep-my-stored-key signal would be dropped before preserveFallbackApiKeys
-    // ever saw it. Resolved and then stripped there — never persisted.
-    keepKeyFrom: z.number().int().nonnegative().nullable().optional(),
-  })).optional(),
-  embedder: z.union([
-    z.object({ provider: z.enum(['openai', 'ollama']) }),
-    z.null(),
-  ]).optional(),
   autoCapture: z.boolean().optional(),
   sessionLimit: z.number().int().min(1).max(100).optional(),
-  // Auto-update policy for the session-start hook. Mirrors
-  // MEMESH_AUTO_UPDATE env var with env > config precedence.
-  // Without this on the write surface, the only way to opt into
-  // the new policy was hand-editing ~/.memesh/config.json.
   autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
-  // Output language for LLM-generated content (dreamer digests, patterns,
-  // lessons, validator reasons). Free-form — a locale code ('zh-TW') or a
-  // language name ('繁體中文'); it becomes a prompt instruction, not a
-  // parsed locale. The 60-char cap mirrors MAX_LANGUAGE_LENGTH in
-  // src/core/output-language.ts. This is the write surface the dashboard
-  // uses so its locale picker can ALSO localise generated content —
-  // without this entry, ConfigBody.strip() silently drops the field.
-  //
-  // Control characters are rejected outright (mirrors the CLI validator,
-  // both via core/output-language.ts languageValueError): the value lands
-  // inside every content-generating LLM prompt, and a newline would let
-  // it smuggle in a free-standing instruction line. sanitizeForPrompt
-  // deliberately preserves \n, so the gate has to be here.
-  language: z.string().trim().min(1).max(60)
-    .refine((v) => languageValueError(v) === null, {
-      message: 'language must not contain line breaks or other control characters',
-    })
-    .optional(),
   setupCompleted: z.boolean().optional(),
-  // `.strict()`, not `.strip()`: every current caller (SettingsTab.tsx)
-  // posts a small, purpose-built object — `{ llm }`, `{ autoUpdate: next }`
-  // — never a superset read back from GET, so nothing legitimate relies on
-  // an unrecognized key being tolerated. `.strip()` silently discarded a
-  // mistyped key (`sesionLimit`) and still answered 200 — success, for a
-  // write that changed nothing. `.strict()` answers the same 400
-  // `validation.bad-body` every other malformed POST here already does.
 }).strict();
 
-app.post('/v1/config', (req, res) => handlePost(ConfigBody, req, res, (data) => {
-  // NOTE: the read-modify-write across `before`/`updateConfig` is non-atomic.
-  // Acceptable for the single-user MeMesh dashboard; revisit if the HTTP API
-  // ever serves multi-tenant config writes.
-  const before = readConfig();
-  if (data.embedder !== undefined && reindexJob?.state === 'running') {
-    throw new Error('The search index is being rebuilt. Wait for it to finish before changing the embedding provider.');
-  }
-  // Backstop the PRIMARY llm key the same way as the fallbacks: a posted-back
-  // mask means "keep the stored key", never "set the key to '***'". Refill
-  // from the prior config when the provider matches; otherwise strip the
-  // placeholder so the literal mask is never persisted as a real credential.
-  if (data.llm && data.llm.apiKey === API_KEY_MASK) {
-    if (before.llm && before.llm.provider === data.llm.provider && before.llm.apiKey) {
-      data.llm.apiKey = before.llm.apiKey;
-    } else {
-      delete data.llm.apiKey;
-    }
-  }
-  // Refill any fallback apiKey the SPA omitted because the user left a
-  // stored (masked) key untouched — otherwise the wholesale llmFallbacks
-  // write would drop it. See preserveFallbackApiKeys.
-  if (data.llmFallbacks) {
-    data.llmFallbacks = preserveFallbackApiKeys(data.llmFallbacks, before.llmFallbacks);
-  }
-  const updated = updateConfig(data);
-  if (data.embedder && before.embedder?.provider !== data.embedder.provider) {
-    // A terminal job describes the provider/dimension it just built. Once the
-    // user selects a different provider that receipt is stale; database/config
-    // readback below will now truthfully report retry-needed.
-    reindexJob = null;
-  }
-  // The embedder holds no cached provider/pipeline state: every embedText()
-  // reads config fresh, so a config change takes effect on the next call
-  // with no reset needed and no "restart server to apply" footgun.
-  // Mask every apiKey (primary + fallback chain) before returning — same
-  // helper the GET handler uses, so the response can't leak a saved
-  // llmFallbacks[].apiKey in plaintext.
-  return maskLlmSecrets(updated);
-}));
-
-type ReindexJob = {
-  id: string;
-  state: 'running' | 'succeeded' | 'failed';
-  processed: number;
-  total: number;
-  startedAt: string;
-  finishedAt: string | null;
-  result: ReindexResult | null;
-  error: string | null;
-};
-
-let reindexJob: ReindexJob | null = null;
-
-function safeReindexDiagnostic(message: string): string {
-  return redactUserPaths(redactSecrets(message));
-}
-
-function reindexStatus() {
-  const config = readConfig();
-  const embeddings = detectCapabilities(config).embeddings;
-  const configuredProvider = embeddings === 'openai' || embeddings === 'ollama'
-    ? embeddings
-    : null;
-  const pendingReindex = getPendingReindexInfo();
-  const generationRead = readVectorGeneration();
-  const generation = generationRead.state === 'unreadable'
-    ? { ...generationRead, detail: safeReindexDiagnostic(generationRead.detail) }
-    : generationRead;
-  const configuredDimension = getEmbeddingDimension(config);
-  const storedDimension = getStoredEmbeddingDimension();
-  const missingVectors = countMissingVectors(getDatabase());
-  const retryNeeded = pendingReindex !== null
-    || generation.state !== 'none'
-    || configuredDimension !== storedDimension
-    || missingVectors > 0;
-  const status = reindexJob?.state === 'running'
-    ? 'running'
-    : reindexJob?.state === 'failed'
-      ? 'failed'
-      : retryNeeded
-        ? 'retry-needed'
-        : reindexJob?.state === 'succeeded'
-          ? 'succeeded'
-          : 'idle';
-
-  return {
-    status,
-    job: reindexJob === null ? null : {
-      id: reindexJob.id,
-      state: reindexJob.state,
-      processed: reindexJob.processed,
-      total: reindexJob.total,
-      startedAt: reindexJob.startedAt,
-      finishedAt: reindexJob.finishedAt,
-    },
-    configuredProvider,
-    configuredDimension,
-    storedDimension,
-    pendingReindex,
-    missingVectors,
-    generation,
-    result: reindexJob?.result ?? null,
-    error: reindexJob?.error ?? null,
-  };
-}
-
-app.get('/v1/reindex', (_req, res) => handleGet(res, reindexStatus));
-
-app.post('/v1/reindex', (_req, res) => {
-  if (reindexJob?.state !== 'running') {
-    reindexJob = {
-      id: randomBytes(8).toString('hex'),
-      state: 'running',
-      processed: 0,
-      total: 0,
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      result: null,
-      error: null,
-    };
-    const job = reindexJob;
-    void reindex({
-      onProgress: ({ processed, total }) => {
-        job.processed = processed;
-        job.total = total;
-      },
-    }).then((result) => {
-      job.result = result;
-      const incomplete = result.failed > 0 || result.generationSwapped === false;
-      job.state = incomplete ? 'failed' : 'succeeded';
-      if (incomplete) {
-        job.error = 'The new search index is incomplete. The previous index is still active; retry the rebuild.';
-      }
-      job.finishedAt = new Date().toISOString();
-    }).catch((err: unknown) => {
-      job.state = 'failed';
-      job.error = safeReindexDiagnostic(err instanceof Error ? err.message : 'The rebuild failed.');
-      job.finishedAt = new Date().toISOString();
-    });
-  }
-
-  res.status(202).json({ success: true, data: reindexStatus() });
-});
-
-// --- Test LLM credentials + fetch live model list ---
-//
-// Probe the provider's models endpoint with the supplied apiKey before the
-// user commits to writing it to disk. Returns a fresh model catalog so the
-// dashboard can populate a dropdown with real choices instead of stale
-// hardcoded names. Rate-limited at /v1/* shared limiter.
-const ConfigTestBody = z.object({
-  provider: z.enum(['anthropic', 'openai', 'ollama']),
-  apiKey: z.string().max(500).optional(),
-  host: z.string().max(500).optional(),
-  // When omitted, the probe tests the catalog's suggested model. Supplying
-  // the Dashboard's current selection catches "listed but incompatible with
-  // the real inference endpoint" before Save or Dream.
-  model: z.string().min(1).max(200).optional(),
-  // Dashboard "Test" on a FALLBACK entry whose key is stored (masked) and
-  // untouched: the SPA sends the entry's original index here instead of the
-  // key. We resolve the key from llmFallbacks[fallbackIndex] so the probe
-  // tests the ENTRY'S OWN credential — not the primary provider's key (a
-  // false green on the wrong account) and not nothing (a false 401 that
-  // contradicts the "a key is saved" hint shown next to the button).
-  fallbackIndex: z.number().int().nonnegative().optional(),
-});
-
-app.post('/v1/config/test', (req, res) => handlePost(ConfigTestBody, req, res, async (data) => {
-  const { probeProvider } = await import('../../core/llm-validator.js');
-  const { provider, host, model, fallbackIndex } = data;
-  let { apiKey } = data;
-  // If the caller omits apiKey, fall back to the one already saved — lets the
-  // dashboard offer "Test with current settings" without forcing the user to
-  // re-enter a key they previously saved. A `fallbackIndex` means the caller
-  // is testing a specific fallback entry, so resolve THAT entry's stored key
-  // (provider-guarded); otherwise resolve the primary provider's key. The two
-  // are mutually exclusive on purpose — a fallback test must never silently
-  // borrow the primary's credential.
-  if (!apiKey && (provider === 'anthropic' || provider === 'openai')) {
-    const existing = readConfig();
-    if (typeof fallbackIndex === 'number') {
-      const fb = existing.llmFallbacks?.[fallbackIndex];
-      if (fb && fb.provider === provider && fb.apiKey) apiKey = fb.apiKey;
-    } else if (existing.llm?.provider === provider && existing.llm.apiKey) {
-      apiKey = existing.llm.apiKey;
-    }
-  }
-  return probeProvider(provider, apiKey, host, model);
-  // Probe failures are server-side (network, module load), not caller errors.
-}, { errorStatus: 500, errorCode: 'server.internal' }));
+app.post('/v1/config', (req, res) => handlePost(ConfigBody, req, res, (data) =>
+  ConfigBody.strip().parse(updateConfig(data))));
 
 // --- Update status ---
 app.get('/v1/update-status', (req, res) => handleGet(res, async () => {
@@ -1255,23 +893,6 @@ app.get('/v1/projects', (_req, res) => handleGet(res, () => computeProjects(getD
 // --- Patterns ---
 app.get('/v1/patterns', (_req, res) => handleGet(res, () => computePatterns(getDatabase())));
 
-// --- LLM telemetry ---
-//
-// Surfaces the `llm_telemetry` table contents (see core/llm-telemetry.ts)
-// as a per-flow scorecard for the dashboard Analytics tab. Same shape
-// as the `memesh telemetry` CLI output. Default 30-day window.
-const TelemetryQuerySchema = z.object({
-  window: z.coerce.number().int().min(1).max(365).default(30),
-});
-app.get('/v1/telemetry', (req, res) => {
-  const query = parseQuery(TelemetryQuerySchema, req, res);
-  if (!query) return;
-  handleGet(res, async () => {
-    const { summariseTelemetry } = await import('../../core/llm-telemetry.js');
-    return { window_days: query.window, summaries: summariseTelemetry(query.window) };
-  });
-});
-
 // --- Dream proposals (Insights tab) ---
 //
 // Backs the dashboard's Insights surface, replacing CLI-only
@@ -1302,10 +923,7 @@ app.get('/v1/dream/proposals', (req, res) => {
 // detail view in the Insights tab — listProposals only returns a
 // truncated preview.
 //
-// Validator surfacing channel: when the dreamer was invoked with
-// `validateBeforeStage: true` and the LLM validator returned a 'soften'
-// verdict, `writeProposal` in src/core/dreamer.ts persists the
-// SuspiciousClaim[] onto the JSON blob as `proposed_digest.validation_warnings`.
+// Older proposals may carry validation warnings inside the digest blob.
 // This endpoint JSON-parses the blob and returns it whole, so the
 // `validation_warnings` field passes through untouched and is the
 // channel the dashboard reads to render its "Flagged claims" section.
@@ -1316,61 +934,18 @@ app.get('/v1/dream/proposals/:id', (req, res) => {
   if (id === null) return;
   handleGet(res, () => {
     const row = getDatabase().prepare(
-      'SELECT id, project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version, status, reason, created_at, reviewed_at, source_kind, kind FROM dream_proposals WHERE id = ?'
+      'SELECT id, project, cluster_key, source_ids, proposed_digest, prompt_version, status, reason, created_at, reviewed_at, source_kind, kind FROM dream_proposals WHERE id = ?'
     ).get(id) as { proposed_digest: string; source_ids: string; [k: string]: unknown } | undefined;
     if (!row) {
       throw new HttpError(404, 'resource.not-found', `proposal #${id} not found`);
     }
     let digest: unknown = null;
-    let sourceIds: number[] = [];
+    let sourceIds: unknown = [];
     try { digest = JSON.parse(row.proposed_digest); } catch { /* corrupt — surface as null */ }
     try { sourceIds = JSON.parse(row.source_ids); } catch { /* leave empty */ }
     return { ...row, proposed_digest: digest, source_ids: sourceIds };
   });
 });
-
-// --- Run a dream pass on demand ---
-//
-// Closes the v4.2.0 known limitation: the digest validator existed only
-// behind `memesh dream run --validate` on the CLI. The dashboard
-// Insights tab can now POST here to trigger a pass without leaving the
-// browser. Bounds match the CLI defaults (windowDays/maxLlmCalls) and
-// add a hard ceiling so a hostile/runaway client cannot ask for a
-// 1-year window with 10000 LLM calls.
-//
-// Forwards `caps.llmFallbacks` so users with a primary+fallback chain
-// configured in Settings get the same failover behaviour the CLI does.
-const DreamRunBody = z.object({
-  project: z.string().min(1).max(100).optional(),
-  windowDays: z.number().int().min(1).max(90).default(14),
-  maxLlmCalls: z.number().int().min(1).max(20).default(5),
-  validate: z.boolean().default(false),
-});
-app.post('/v1/dream/run', (req, res) => handlePost(DreamRunBody, req, res, async (data) => {
-  const { runDreamer } = await import('../../core/dreamer.js');
-  // `detectCapabilities()`, not the raw config, so this endpoint agrees with
-  // the CLI and doctor about whether an LLM exists. `readConfig().llm` is
-  // truthy for `{ apiKey: "sk-…" }` with no provider — a configuration that
-  // configures nothing — so the documented `llm.not-configured` 400 never
-  // fired for it and the endpoint answered 200 with every cluster skipped.
-  // It also missed the reverse: an env-only ANTHROPIC_API_KEY 400'd here
-  // while `memesh status` reported Smart Mode on.
-  const caps = detectCapabilities();
-  const llm = caps.llm;
-  if (!llm) {
-    throw new HttpError(400, 'llm.not-configured',
-      'No LLM configured — dream run requires Smart Mode. Configure a provider in Settings.');
-  }
-  return runDreamer(getDatabase(), llm, {
-    project: data.project,
-    windowDays: data.windowDays,
-    maxLlmCalls: data.maxLlmCalls,
-    fallbacks: caps.llmFallbacks,
-    validateBeforeStage: data.validate,
-  });
-  // allowEmptyBody: every field has a default; a body-less POST is the
-  // documented "run with defaults". Non-HttpError throws are server-side.
-}, { allowEmptyBody: true, errorStatus: 500, errorCode: 'server.internal' }));
 
 app.post('/v1/dream/proposals/:id/accept', (req, res) => {
   const id = requireIdParam(req, res);
@@ -1601,7 +1176,6 @@ export function startServer(
     throw new Error(`Database initialization failed: ${message}`, { cause: err });
   }
 
-  logCapabilities();
   // A running server IS online, so it fills the npm update-check cache
   // itself instead of asking the user to. The doctor used to WARN "no
   // cached npm update check yet — run `memesh status` once while online",

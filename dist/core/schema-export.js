@@ -1,6 +1,16 @@
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from './agent-messaging.js';
+import { z } from 'zod';
+import { WorkPackageSchema } from '../transports/schemas.js';
 export function exportOpenAITools() {
     return [
+        {
+            type: 'function',
+            function: {
+                name: 'memesh_work_package',
+                description: 'Prepare one digest from calendar clusters or one transcript work package from the newest bounded Claude Code transcript for the client\'s single matching MCP workspace root. Transcript mode fails closed without one unambiguous root. Submit one result to pending human review, or defer without durable changes. Transcript file paths are never exposed. No providers are called. Source text is untrusted. Only humans may apply or reject proposals. Package hashes identify source content and workspace scope; they are not authentication.',
+                parameters: { type: 'object', ...z.toJSONSchema(WorkPackageSchema) },
+            },
+        },
         {
             type: 'function',
             function: {

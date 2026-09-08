@@ -101,8 +101,8 @@ export function SeverityBadge({ entity }: { entity: Entity }) {
 function Field({ label, color, text }: { label: string; color: string; text: string }) {
   return (
     <div style={{ marginBottom: 8 }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color, marginBottom: 2, fontFamily: 'var(--font-ui)' }}>{label}</div>
-      <div style={{ fontSize: 13, lineHeight: 1.55 }}>{text}</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color, marginBottom: 2, fontFamily: 'var(--font-ui)' }}>{label}</div>
+      <div style={{ fontSize: 14, lineHeight: 1.55 }}>{text}</div>
     </div>
   );
 }
@@ -110,7 +110,7 @@ function Field({ label, color, text }: { label: string; color: string; text: str
 function FailureBody({ entity }: { entity: Entity }) {
   const blocks = parseStructuredBlocks(entity.observations ?? []);
   if (blocks.length === 0) {
-    return <div style={{ fontSize: 12, color: 'var(--text-3)', fontStyle: 'italic' }}>{t('lessons.unstructured')}</div>;
+    return <div style={{ fontSize: 14, color: 'var(--text-3)', fontStyle: 'italic' }}>{t('lessons.unstructured')}</div>;
   }
   return (
     <>
@@ -130,14 +130,14 @@ function PlanBody({ entity }: { entity: Entity }) {
   const plan = parsePlan(entity);
   return (
     <div>
-      <div style={{ fontSize: 12, color: 'var(--text-3)', marginBottom: 6, fontFamily: 'var(--font-ui)' }}>
+      <div style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 6, fontFamily: 'var(--font-ui)' }}>
         <span style={{ fontFamily: 'var(--mono)' }}>{plan.stepCount}</span> {t('lessons.stepsLabel')} · {t('lessons.commitsCount', { count: plan.commits.length })}
       </div>
       {plan.steps && (
-        <div style={{ fontSize: 13, color: 'var(--text-1)', lineHeight: 1.55 }}>{plan.steps}</div>
+        <div style={{ fontSize: 14, color: 'var(--text-1)', lineHeight: 1.55 }}>{plan.steps}</div>
       )}
       {plan.commits.length > 0 && (
-        <div style={{ marginTop: 8, fontSize: 11, color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>
+        <div style={{ marginTop: 8, fontSize: 14, color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>
           {plan.commits.slice(0, 6).join(' · ')}
           {plan.commits.length > 6 && <span> · +{plan.commits.length - 6}</span>}
         </div>
@@ -149,10 +149,10 @@ function PlanBody({ entity }: { entity: Entity }) {
 function ObservationsBody({ entity }: { entity: Entity }) {
   const obs = entity.observations ?? [];
   if (obs.length === 0) {
-    return <div style={{ fontSize: 12, color: 'var(--text-3)', fontStyle: 'italic' }}>{t('lessons.unstructured')}</div>;
+    return <div style={{ fontSize: 14, color: 'var(--text-3)', fontStyle: 'italic' }}>{t('lessons.unstructured')}</div>;
   }
   return (
-    <ul style={{ fontSize: 13, lineHeight: 1.6, margin: 0, paddingLeft: 18, color: 'var(--text-1)' }}>
+    <ul style={{ fontSize: 14, lineHeight: 1.6, margin: 0, paddingLeft: 18, color: 'var(--text-1)' }}>
       {obs.slice(0, 8).map((o, i) => (
         <li key={i} style={{ marginBottom: 3 }}>{o}</li>
       ))}
@@ -167,7 +167,7 @@ function ObservationsBody({ entity }: { entity: Entity }) {
  * the primary row; these storage values stay one deliberate expansion away. */
 export function EntityTechnicalDetails({ entity }: { entity: Entity }) {
   return (
-    <details style={{ marginTop: 10, fontSize: 11, color: 'var(--text-3)' }}>
+    <details style={{ marginTop: 10, fontSize: 14, color: 'var(--text-3)' }}>
       <summary style={{ cursor: 'pointer' }}>{t('memory.technicalDetails')}</summary>
       <dl style={{ display: 'grid', gridTemplateColumns: 'max-content minmax(0, 1fr)', gap: '4px 10px', margin: '8px 0 0' }}>
         <dt>{t('memory.canonicalName')}</dt>

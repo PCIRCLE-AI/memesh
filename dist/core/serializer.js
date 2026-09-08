@@ -106,68 +106,80 @@ export function importMemories(args) {
             continue;
         }
         try {
-            const existing = kg.getEntity(entity.name);
-            const bundledTitle = entity.title;
-            const title = typeof bundledTitle === 'string' && bundledTitle.trim().length > 0
-                ? truncateTitle(bundledTitle)
-                : undefined;
-            const namespace = args.namespace ?? (existing ? undefined : (entity.namespace || 'personal'));
-            const importedMetadata = buildImportedMetadata(existing?.metadata, {
-                bundled: entity.metadata,
-                exportedAt: args.data.exported_at,
-                importVersion: args.data.version,
-                mergeStrategy: args.merge_strategy,
-            });
-            if (existing) {
-                if (args.merge_strategy === 'skip') {
-                    skipped++;
-                    continue;
+            const outcome = db.transaction(() => {
+                const existing = kg.getEntity(entity.name);
+                const bundledTitle = entity.title;
+                const title = typeof bundledTitle === 'string' && bundledTitle.trim().length > 0
+                    ? truncateTitle(bundledTitle)
+                    : undefined;
+                const namespace = args.namespace ?? (existing ? undefined : (entity.namespace || 'personal'));
+                const importedMetadata = buildImportedMetadata(existing?.metadata, {
+                    bundled: entity.metadata,
+                    exportedAt: args.data.exported_at,
+                    importVersion: args.data.version,
+                    mergeStrategy: args.merge_strategy,
+                });
+                if (existing) {
+                    if (args.merge_strategy === 'skip')
+                        return { kind: 'skipped' };
+                    if (args.merge_strategy === 'append') {
+                        const existingText = new Set(existing.observations);
+                        const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
+                        kg.createEntity(entity.name, entity.type, {
+                            title,
+                            observations: newObservations,
+                            tags: entity.tags,
+                            namespace,
+                            trustOverride: 'untrusted',
+                        });
+                        kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+                        return { kind: 'appended' };
+                    }
+                    kg.clearEntityData(entity.name);
                 }
-                if (args.merge_strategy === 'append') {
-                    const existingText = new Set(existing.observations);
-                    const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
-                    kg.createEntity(entity.name, entity.type, {
-                        title,
-                        observations: newObservations,
-                        tags: entity.tags,
-                        namespace,
-                        trustOverride: 'untrusted',
-                    });
+                kg.createEntity(entity.name, entity.type, {
+                    title,
+                    observations: entity.observations,
+                    tags: entity.tags,
+                    metadata: importedMetadata,
+                    namespace,
+                    trustOverride: 'untrusted',
+                });
+                if (existing) {
                     kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-                    appended++;
-                    continue;
                 }
-                kg.clearEntityData(entity.name);
-            }
-            kg.createEntity(entity.name, entity.type, {
-                title,
-                observations: entity.observations,
-                tags: entity.tags,
-                metadata: importedMetadata,
-                namespace,
-                trustOverride: 'untrusted',
-            });
-            if (existing) {
-                kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
-            }
-            for (const rel of entity.relations || []) {
-                pendingRelations.push({ from: entity.name, to: rel.to, type: rel.type });
-            }
-            if (!existing) {
-                const bundledCreatedAt = entity.created_at;
-                const bundledMs = typeof bundledCreatedAt === 'string'
-                    ? parseSqliteUtcMs(bundledCreatedAt)
-                    : null;
-                if (bundledMs !== null) {
-                    setCreatedAt.run(new Date(bundledMs).toISOString().replace('T', ' ').slice(0, 19), entity.name);
+                if (!existing) {
+                    const bundledCreatedAt = entity.created_at;
+                    const bundledMs = typeof bundledCreatedAt === 'string'
+                        ? parseSqliteUtcMs(bundledCreatedAt)
+                        : null;
+                    if (bundledMs !== null) {
+                        setCreatedAt.run(new Date(bundledMs).toISOString().replace('T', ' ').slice(0, 19), entity.name);
+                    }
+                    if (entity.status === 'archived') {
+                        kg.archiveEntity(entity.name);
+                    }
                 }
-                if (entity.status === 'archived') {
-                    kg.archiveEntity(entity.name);
-                }
+                return {
+                    kind: 'imported',
+                    overwritten: Boolean(existing),
+                    relations: (entity.relations || []).map((rel) => ({
+                        from: entity.name,
+                        to: rel.to,
+                        type: rel.type,
+                    })),
+                };
+            }).immediate();
+            if (outcome.kind === 'skipped')
+                skipped++;
+            else if (outcome.kind === 'appended')
+                appended++;
+            else {
+                pendingRelations.push(...outcome.relations);
+                imported++;
+                if (outcome.overwritten)
+                    overwritten++;
             }
-            imported++;
-            if (existing)
-                overwritten++;
         }
         catch (err) {
             errors.push(`${entity.name}: ${err instanceof Error ? err.message : String(err)}`);

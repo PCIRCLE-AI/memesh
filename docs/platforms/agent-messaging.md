@@ -77,30 +77,58 @@ Linux. Windows remains supported for core MeMesh memory, durable message
 storage, and MCP tools, but host-native wakeup fails closed before creating
 credentials, configuration, IPC listeners, or managed child processes.
 
-Create one reusable owner-private config for each local path and principal.
-The stable principal is the logical recipient. Managed processes generate a
-fresh exact session identity; the ordinary Codex path instead uses the Codex
-thread identity supplied at SessionStart. No thread ID is copied by hand.
-Ordinary sessions outside the explicit `codex-session` workspace opt-in remain
-`presence-only/inbound-unavailable`.
+The default local endpoint is versioned with the wire protocol
+(`agent-router-v2.sock`). This lets a current router start beside an incompatible
+legacy daemon after an upgrade instead of killing it or taking over its live
+socket. Existing generated configs that name the former default are normalized
+in memory; an explicit custom socket remains exact and reports
+`router_version_mismatch` when it exposes the known legacy response shape.
+
+Create one reusable owner-private config for each managed local host and
+principal. The stable principal is the logical recipient. Managed processes
+generate a fresh exact session identity. Ordinary Codex plugin sessions instead
+register automatically from the Codex thread identity supplied at SessionStart,
+using a distinct thread-scoped principal; no thread ID is copied by hand.
 
 ```bash
-memesh agent setup codex-session --project my-project --principal codex-reviewer --workspace "$PWD"
 memesh agent setup codex --project my-project --principal codex-reviewer --workspace "$PWD"
 memesh agent setup claude --project my-project --principal claude-reviewer
 ```
 
 Optional declarations can be persisted with `--model <id>` and
 `--work-summary <text>` (each is capped at 200 characters); no defaults are guessed.
+For ordinary Codex only, `memesh agent setup codex-session ...` is an optional
+workspace-specific stable-principal override, not an activation prerequisite.
+When pairing Claude Channel with an automatically registered Codex session,
+use the complete `project` field returned by `memesh briefing --json` in the
+Claude setup command. A repository basename is not equivalent to the automatic
+collision-resistant project identity, and different project strings cannot
+discover or natively route to each other.
 
 ### Ordinary active Codex CLI session
 
-`codex-session` is the opt-in path for an ordinary local Codex session and
-requires the MeMesh Codex plugin to be installed and enabled so Codex loads
-the packaged SessionStart hook. Run
-the setup command from the exact workspace that Codex will use; it stores the
-configured real workspace and stable principal in the owner-private
-`codex-session.json` config. Restart Codex in that workspace after setup.
+An ordinary local Codex session requires the MeMesh Codex plugin to be installed
+and enabled so Codex loads the packaged SessionStart hook. Each startup or
+resumed thread then registers automatically under the current project with a
+thread-scoped principal. Use `message discover` to obtain the exact live session
+ID. No manual `agent setup` is required.
+
+The automatic project is a readable repo label plus a 32-hex identity suffix.
+For a network Git remote, the suffix covers a password-free locator; otherwise
+it covers the native real path. Standard GitHub HTTPS and SSH spellings
+converge. Generic SSH locators keep the login and whether the repository path is
+absolute or relative to that login's home, preventing distinct accounts or
+paths from sharing one scope. This keeps the same repo together across
+subdirectories, symlinks, remote-backed clones, and linked worktrees without
+letting two unrelated repos named `shared` discover or receive each other's
+messages. `memesh briefing` in that workspace reports the exact project value.
+
+If one workspace needs a stable named principal across different threads, run
+`memesh agent setup codex-session --project my-project --principal codex-reviewer
+--workspace "$PWD"` there and restart Codex. The owner-private config overrides
+project and principal only when its exact real workspace matches. Another
+workspace still uses automatic identity; a malformed or insecure override fails
+closed rather than silently downgrading.
 
 This guide's supported documented path is ordinary Codex CLI `SessionStart`.
 Codex Desktop or an unattached task is not user-visible native-delivery
@@ -108,23 +136,28 @@ evidence unless that exact live session registers with the router and the
 result is directly verified. This is a scope boundary for evidence, not a
 claim that Codex Desktop is universally unsupported.
 
-On `SessionStart` for `startup` or `resume`, the asynchronous companion checks
-the Codex thread identity, hook session identity, and configured workspace
-realpath before it connects to the router. A missing identity, a different
-workspace, compact lifecycle input, or a failed/disconnected connection does
-not register a host and does not wake anything.
+On `SessionStart` for `startup` or `resume`, a short hook validates the Codex
+thread identity and cwd, then launches an owner-private detached companion.
+Detachment is required because Codex reaps an async hook child when the CLI
+process exits, while `codex queue` accepts the thread only after its active
+writer is gone. `SessionEnd` leaves a bounded 45-second idle queue window;
+resume replaces the prior exact generation through its private control socket,
+and expiry removes the registration. A missing or malformed identity, invalid
+cwd, insecure explicit override, or failed connection does not register a host.
 
 For a registered session, MeMesh invokes `codex queue` with one untrusted full
 envelope capped at 16,384 bytes (16 KiB), including routing metadata and payload.
 The separate durable JSON-encoded payload limit is 65,536 bytes (64 KiB). The exact-session sender returns
 `native_delivery.status: "native_accepted"` only after the queue accepts it;
 Codex does not need a second `message fetch` to inspect that native message.
+For ordinary CLI, a message accepted in the idle window becomes model-visible
+when that same thread resumes; it does not wake a stopped terminal or Desktop UI.
 The persisted `host_accept` is neither agent readback nor an `ack` or workflow
 disposition. Codex exposes message text only through its `--message` process
 argument, so same-user process inspection may observe it while the short-lived
 queue command runs; do not put secrets in native messages.
 
-If the configured Codex session is stopped, missing, disconnected, or no
+If the target Codex session is stopped, missing, disconnected, or no
 longer matches its configured workspace, MeMesh does not start or replace it.
 An exact-session send reports `recipient_unavailable`; durable scoped recovery
 and receipt history remain available to fetch, cursor recovery, `poll`, or
@@ -212,14 +245,21 @@ close that gap by requiring evidence that could only have come out of a running
 model.
 
 ```bash
-TMPDIR=/private/tmp npm run qa:live-journey -- --host codex  --out .qa/codex-report.json
+MEMESH_CODEX_QA_HOME="$(mktemp -d /private/tmp/memesh-codex-qa.XXXXXX)"
+CODEX_HOME="$MEMESH_CODEX_QA_HOME" codex login
+TMPDIR=/private/tmp npm run qa:live-journey -- --host codex --codex-home "$MEMESH_CODEX_QA_HOME" --out .qa/codex-report.json
 TMPDIR=/private/tmp npm run qa:live-journey -- --host claude --out .qa/claude-report.json
 ```
 
-`.qa/` is where `npm run release:finish` looks for these reports (any ONE
-host's PASS, against the exact commit being released, is enough — see
-`scripts/lib/release-preconditions.mjs`'s `findUsableLiveJourneyReceipt`). The
-directory is gitignored; a report is owner-machine evidence, never shipped.
+`.qa/` is where `npm run release:finish` looks for release receipts. Codex and
+Claude are separate delivery claims, so **both** must PASS within 24 hours
+against the exact clean commit being released, with current `dist/`, ordered
+lifecycle steps, lease renewal, model-visible evidence, and the stopped-session
+failure path. The installed Codex receipt also requires actual plugin
+SessionStart loading and a resume that supersedes the prior generation.
+One host can never satisfy the other host's gate. The commands above produce
+`.qa/codex-report.json` and `.qa/claude-report.json`, respectively. The directory
+is gitignored; reports are owner-machine evidence, never shipped.
 
 `TMPDIR` is not decoration on macOS. The router's Unix socket lives beside the
 database inside the temporary directory, and `AF_UNIX` caps a socket path at
@@ -252,28 +292,46 @@ only then removes the directory; if a session is still connected when the wait
 expires it keeps the directory rather than racing that spawn. The same sequence
 runs on failures and on `SIGINT`/`SIGTERM`.
 
-**`--host codex`** starts the router, runs `memesh agent setup codex-session`,
-creates one real Codex CLI thread with `codex exec`, registers that thread,
-sends one exact-session message, and then resumes the thread with a fixed
-prompt that names neither the sentinel nor any identifier. The reply must quote
-the envelope's `message_id` and `delivery_id` back, **and** that turn must have
-produced nothing but an answer. Both halves matter: a `read-only` Codex sandbox
-still permits reads, so a turn that ran one command could have taken the
-identifiers off disk instead of out of the envelope. The Codex workspace is a
-separate temporary tree for the same reason — the database and this run's own
-logs are not one `..` away from it. The check then stops the companion and requires the next send to return
-`recipient_unavailable` while `message fetch` still returns the payload.
+**`--host codex`** installs the candidate plugin into the caller-prepared
+authenticated `--codex-home`, verifies its cache, and creates a real Codex CLI
+thread. The installed plugin's SessionStart hook registers the thread; the
+runner never starts its companion. The check verifies lease renewal,
+exact-session delivery, resume-generation supersession, renewed lease, and a
+reply quoting the envelope's sentinel, `message_id`, and `delivery_id`.
+
+The proof rejects other command/tool activity except the narrowly allowed
+installed-skill read and failed work-package prepare probe; neither may contain
+proof identifiers. After SessionEnd retirement, the next send must return
+`recipient_unavailable` while the durable payload remains fetchable.
+Its v3 report requires registration from `codex_plugin_session_start` with
+`plugin_loader_verified: true`, including a renewed lease after resume supersedes
+the startup generation. `release:finish` requires separate current-candidate
+v3 receipts for both Codex and Claude; an old harness-injected v2 report does not
+prove automatic installed-plugin registration and is rejected.
 
 **`--host claude`** starts the router, runs `memesh agent setup claude`, writes
 a temporary MCP config, and prints the exact interactive launch command — which
-includes `--setting-sources ""` so that no user, project, or local settings
-file is loaded. The operator runs it, confirms with `/mcp` and `/hooks` that
-only the two servers from `--mcp-config` are present, and then types nothing. The check waits for the session to appear
-in `message discover`, sends one exact-session message, and then waits for an
+includes `--setting-sources ""` to request no user, project, or local settings
+source. That option did not suppress all `[User]` hooks in a live Claude Code
+2.1.263 check, so it is not treated as plugin isolation. The operator runs
+the command, checks `/mcp` and `/hooks` for any installed MeMesh plugin hook or
+extra MeMesh MCP server, and types the exact isolation confirmation token in the
+runner terminal. Other non-MeMesh hooks are outside this check. The token records
+operator attestation, not programmatic inspection. The runner then prints one
+trusted owner prompt: the operator submits it in Claude and confirms only after
+Claude replies `READY_FOR_UNTRUSTED_INTAKE`. That second attestation must also
+precede nonce generation. Only then does the runner wait for
+`lease_expires_at_ms` to advance, send one inert exact-session payload containing
+only its purpose and nonce, and wait for an
 `intake` receipt on that message whose actor is that session — the model must
-call `intake` itself, which is what makes the proof model-visible rather than
-transport-visible. The operator is then asked to exit the session, and the same
-fail-closed assertion runs.
+call `intake` exactly once under the prior trusted instruction, using the
+documented `intake-<message_id>` idempotency key and only the six fields the
+strict intake schema accepts (`action`, `project`, `recipient`, `message_id`,
+`intake_state`, `idempotency_key`). This is what makes the proof
+model-visible rather than transport-visible without treating the untrusted
+payload as instructions. The operator is then asked to exit the session, and
+the same fail-closed assertion runs. A reminder entered only after delivery is
+diagnostic and cannot satisfy this release receipt.
 
 Print mode (`claude -p`) is **not supported** and is deliberately not
 exercised. A print-mode session does not surface `memesh-channel` notifications
@@ -285,28 +343,31 @@ Each run writes a JSON report: the repository revision, every `message_id` and
 a `limitations` list. The exit code is 0 only when every required step passed.
 The limitations these checks always declare:
 
-- The Codex **registration** half is harness-driven: the check drives the
-  shipped `src/host-runtime/codex-session.ts` companion directly with the
-  `SessionStart` payload the packaged plugin hook supplies, because a scripted
-  `codex exec` turn was not observed to register anything on its own. *Why* the
-  plugin hook does not run there is not established — `--ignore-user-config` is
-  documented only as skipping `config.toml`, and on a machine whose
-  `~/.memesh/hosts` has no `codex-session.json` the shipped companion would
-  return early regardless. Dispatch → `codex queue` → model-visible reply is
-  product-path evidence; the registration step is not.
+- The Codex journey installs the candidate plugin into a caller-created
+  disposable authenticated `CODEX_HOME`, verifies the installed cache bytes,
+  and exercises that plugin's SessionStart and SessionEnd hooks through a real
+  Codex thread. It does not mutate the owner's normal Codex configuration. The
+  bounded `--codex-session-auto-registration` mode remains a narrower
+  account-free packaged router → native queue check and is not a substitute for
+  this installed-plugin journey.
 - The interactive Claude session is **outside** this check's isolation.
   `--setting-sources ""` is accepted by the CLI (an invalid source name is
   rejected, an empty list is not), but it is not verified to exclude
   plugin-provided hooks or MCP servers. A MeMesh plugin hook running in that
   session inherits no `MEMESH_DIR` and would write the owner's real
-  `~/.memesh`. The operator is told to confirm with `/mcp` and `/hooks` first,
-  and the check cannot observe whether they did.
+  `~/.memesh`. Before nonce generation or send, the runner requires the exact
+  confirmation token after the operator checks `/mcp` and `/hooks`. This is a
+  recorded human attestation, not a machine inspection; inability to identify
+  whether an entry comes from MeMesh means the operator must stop the run.
 - `--host codex` creates one throwaway thread in the owner's Codex rollout
   store and queues one message into it. That is session state, not
   configuration; nothing outside the temporary directory is otherwise written.
-- The Claude operator is told to type nothing, but the check cannot observe
-  whether anything was typed. The intake receipt proves the model called
-  `intake` in that session; it does not prove it did so unprompted.
+- Before delivery, the Claude operator submits one exact trusted intake prompt
+  and attests that its READY reply was observed. The runner cannot inspect that
+  UI exchange. After delivery the operator is told to type nothing, but the
+  runner cannot observe whether that instruction was followed. The intake
+  receipt proves the model called `intake` in that session after native
+  notification; it does not prove the operator followed either instruction.
 - The Claude intake receipt is matched on its `actor`, which `intake` sets from
   the caller's `recipient`. The model must intake under its own session id; an
   intake recorded against the principal id would not match, and the check would
@@ -351,9 +412,12 @@ error about some other agent's send.
 it keys no inbox, and it keys the send idempotency record — so it is stored
 exactly as given, and the transport-bound provenance remains the field to trust.
 
-Rows written before this rule are repaired once, in place, at the first
-database open after upgrade. Renaming a project across both its entity tags and
-its message scopes is a separate, deliberate, owner-run operation:
+Rows written before this rule are preserved byte-for-byte. MeMesh reports
+path-shaped historical scope through its read-only memory invariant rather than
+guessing that `/root`, `/tmp/root`, and `root` name one recipient. Such rows may
+remain unreachable through the stricter public API until the owner supplies an
+explicit mapping. For a confirmed project mapping, rename both its entity tags
+and message scopes with the deliberate owner-run operation:
 
 ```bash
 memesh kg rename-project --from <old> --to <new>          # dry run
@@ -433,7 +497,7 @@ reply, or a stopped-session wake-up.
 
 | Participant | Current path | Status today | Notes |
 |---|---|---|---|
-| Ordinary Codex CLI | `codex-session` owner-private opt-in | bounded full-message native delivery while active | Exact workspace, principal, and SessionStart identity must match; oversized envelopes return `native_message_too_large`, while stopped or disconnected sessions return `recipient_unavailable` |
+| Ordinary Codex CLI | automatic plugin SessionStart registration; optional `codex-session` identity override | bounded full-message native delivery while active | Exact thread identity is discoverable; oversized envelopes return `native_message_too_large`, while stopped or disconnected sessions return `recipient_unavailable` |
 | MeMesh-managed Codex app-server | `memesh-host-codex` | separate managed path | It creates its own Codex thread; it does not attach to an ordinary session |
 | Claude channel | `memesh-host-claude` | separate channel path | Requires the documented Channel opt-in; no stopped-session resume |
 | Other local MCP clients | MCP, HTTP, or CLI message operations | durable messaging only | Use `poll`/`watch` and scoped fetch where their own host loop supports it; this guide makes no native-wakeup claim |

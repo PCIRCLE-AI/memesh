@@ -19,7 +19,6 @@ function doctor(policy?: { storage_quota_bytes?: number; retention_cutoff?: Date
     openDatabaseImpl: () => getDatabase(),
     closeDatabaseImpl: () => undefined,
     isDatabaseOpenImpl: () => true,
-    detectCapabilitiesImpl: () => ({ searchLevel: 0, embeddings: 'tfidf', llm: null }) as never,
     getConfigPathImpl: () => path.join(dbHandle.tmpDir, 'config.json'),
     getUpdateCheckImpl: async () => ({ checkSucceeded: true, updateAvailable: false }) as never,
     getCurrentInstallChannelImpl: () => 'npm-global',

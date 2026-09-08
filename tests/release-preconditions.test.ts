@@ -25,20 +25,41 @@ import {
   findUsableLiveJourneyReceipt,
   LIVE_JOURNEY_RECEIPT_PATHS,
 } from '../scripts/lib/release-preconditions.mjs';
+import {
+  LIVE_JOURNEY_SCHEMA_VERSION,
+  REQUIRED_LIVE_JOURNEY_STEPS,
+  REQUIRED_REGISTRATION_EVIDENCE,
+} from '../scripts/lib/live-journey-contract.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const HEAD = 'a'.repeat(40);
 
-/** A `qa:live-journey` candidate list with exactly one usable PASS receipt for HEAD. */
+function liveReport(host: 'codex' | 'claude') {
+  return {
+    schema_version: LIVE_JOURNEY_SCHEMA_VERSION,
+    revision: HEAD,
+    dirty: false,
+    dist_stale: false,
+    verdict: 'PASS',
+    host,
+    mode: null,
+    started_at: new Date(Date.now() - 1_000).toISOString(),
+    finished_at: new Date().toISOString(),
+    registration_evidence: REQUIRED_REGISTRATION_EVIDENCE[host],
+    steps: REQUIRED_LIVE_JOURNEY_STEPS[host].map(name => ({ name, status: 'PASS' })),
+  };
+}
+
+/** A `qa:live-journey` candidate list with usable PASS receipts for both hosts. */
 function readyLiveJourney() {
   return [
     {
       host: 'codex',
       path: '.qa/codex-report.json',
-      report: { schema_version: 'memesh-live-journey/v1', revision: HEAD, dirty: false, verdict: 'PASS', host: 'codex' },
+      report: liveReport('codex'),
       readError: null,
     },
-    { host: 'claude', path: '.qa/claude-report.json', report: null, readError: 'not found' },
+    { host: 'claude', path: '.qa/claude-report.json', report: liveReport('claude'), readError: null },
   ];
 }
 
@@ -194,23 +215,24 @@ describe('release preconditions', () => {
     expect(r.blockers.join('\n')).toContain('qa:live-journey');
   });
 
-  it('accepts a Claude-host receipt just as readily as a Codex one', () => {
+  it('refuses a Claude-only receipt because Codex and Claude are separate release claims', () => {
     const claudeOnly = [
       { host: 'codex', path: '.qa/codex-report.json', report: null, readError: 'not found' },
       {
         host: 'claude',
         path: '.qa/claude-report.json',
-        report: { schema_version: 'memesh-live-journey/v1', revision: HEAD, dirty: false, verdict: 'PASS', host: 'claude' },
+        report: liveReport('claude'),
         readError: null,
       },
     ];
     const r = checkReleasePreconditions(ready({ liveJourneyCandidates: claudeOnly }));
-    expect(r.ok).toBe(true);
+    expect(r.ok).toBe(false);
+    expect(r.blockers.join('\n')).toContain('no usable codex');
   });
 });
 
 describe('findUsableLiveJourneyReceipt', () => {
-  const pass = { schema_version: 'memesh-live-journey/v1', revision: HEAD, dirty: false, verdict: 'PASS', host: 'codex' };
+  const pass = liveReport('codex');
 
   it('accepts a PASS receipt for the exact HEAD revision', () => {
     const r = findUsableLiveJourneyReceipt([{ host: 'codex', path: '.qa/codex-report.json', report: pass, readError: null }], HEAD);
@@ -250,22 +272,163 @@ describe('findUsableLiveJourneyReceipt', () => {
     expect(r.reasons.join('\n')).toContain('unreadable — Unexpected token');
   });
 
-  it('refuses a report of the wrong shape (not a memesh-live-journey/v1 report)', () => {
+  it('refuses a report of the wrong shape', () => {
     const r = findUsableLiveJourneyReceipt([{ host: 'codex', path: '.qa/codex-report.json', report: { foo: 'bar' }, readError: null }], HEAD);
     expect(r.ok).toBe(false);
-    expect(r.reasons.join('\n')).toContain('not a memesh-live-journey/v1 report');
+    expect(r.reasons.join('\n')).toContain(`not a ${LIVE_JOURNEY_SCHEMA_VERSION} report`);
   });
 
   it('falls through to the second candidate when the first is unusable', () => {
     const r = findUsableLiveJourneyReceipt(
       [
         { host: 'codex', path: '.qa/codex-report.json', report: null, readError: 'not found' },
-        { host: 'claude', path: '.qa/claude-report.json', report: pass, readError: null },
+        { host: 'claude', path: '.qa/claude-report.json', report: liveReport('claude'), readError: null },
       ],
       HEAD,
     );
     expect(r.ok).toBe(true);
     expect(r.usable?.host).toBe('claude');
+  });
+
+  it('refuses a report whose declared host does not match its candidate slot', () => {
+    const report = liveReport('claude');
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('does not match the required host');
+  });
+
+  it('refuses the fake automatic-registration mode as a real-host receipt', () => {
+    const report = { ...pass, host: null, mode: 'codex-session-auto-registration' };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
+  });
+
+  it('refuses harness-injected Codex registration as proof that the plugin loader ran', () => {
+    const report = {
+      ...pass,
+      registration_evidence: {
+        source: 'harness_injected_session_start',
+        plugin_loader_verified: false,
+      },
+    };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('codex_plugin_session_start');
+  });
+
+  it('refuses Claude registration without the operator attestation record', () => {
+    const report = {
+      ...liveReport('claude'),
+      registration_evidence: {
+        source: 'interactive_development_channel',
+        operator_attestation_recorded: false,
+      },
+    };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'claude', path: '.qa/claude-report.json', report, readError: null }],
+      HEAD,
+      'claude',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('operator_attestation_recorded');
+  });
+
+  it.each([[true], [null]])('refuses dist_stale=%j', dist_stale => {
+    const report = { ...pass, dist_stale };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('dist_stale is not false');
+  });
+
+  it('refuses a report with no lifecycle steps', () => {
+    const report = { ...pass, steps: [] };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('missing or out-of-order required steps');
+  });
+
+  it('refuses a report older than 24 hours', () => {
+    const report = {
+      ...pass,
+      started_at: new Date(Date.now() - 26 * 60 * 60 * 1000).toISOString(),
+      finished_at: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('older than 24 hours');
+  });
+
+  it('refuses required lifecycle steps that are out of order', () => {
+    const reversed = [...pass.steps].reverse();
+    const report = { ...pass, steps: reversed };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('out-of-order');
+  });
+
+  it('refuses a report missing the model-visible success path', () => {
+    const report = {
+      ...pass,
+      steps: pass.steps.filter(step => step.name !== 'the Codex model quoted the envelope back (model-visible proof)'),
+    };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('model-visible proof');
+  });
+
+  it('refuses a report missing the stopped-session failure path', () => {
+    const report = {
+      ...pass,
+      steps: pass.steps.filter(step => step.name !== 'a send to the stopped session fails closed and the durable row survives'),
+    };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('stopped session');
+  });
+
+  it('requires the requested host instead of accepting the other host', () => {
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'claude', path: '.qa/claude-report.json', report: liveReport('claude'), readError: null }],
+      HEAD,
+      'codex',
+    );
+    expect(r.ok).toBe(false);
   });
 
   it('refuses with no candidates rather than vacuously passing', () => {

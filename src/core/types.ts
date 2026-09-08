@@ -75,7 +75,6 @@ export type Namespace = (typeof NAMESPACES)[number];
 export type MergeStrategy = 'skip' | 'overwrite' | 'append';
 export type LessonSeverity = 'critical' | 'major' | 'minor';
 export type EntityStatus = 'active' | 'archived';
-export type LLMProvider = 'anthropic' | 'openai' | 'ollama';
 
 export interface Entity {
   id: number;
@@ -95,18 +94,9 @@ export interface Entity {
   relations?: Relation[];
   archived?: boolean;
   /**
-   * How recall found this entity. `keyword` = the FTS index matched the
-   * query text; `semantic` = the vector index supplied it because nothing
-   * (or nothing else) matched lexically. The distinction is load-bearing
-   * for presentation: a semantic-only hit CANNOT be certified relevant —
-   * measured on this repo's own calibration data (nomic-embed-text, the
-   * current embedder), genuine matches land at nearest distance 0.858–1.010
-   * while unrelated queries land at 0.983–1.104, so the two distributions
-   * overlap around ~1.0 (where MAX_VECTOR_DISTANCE sits) and no threshold
-   * cleanly separates them. What geometry cannot decide, the UI must
-   * disclose. Absent on non-recall reads.
+   * How FTS recall matched this entity. Absent on non-recall reads.
    */
-  match?: { source: 'keyword' | 'semantic'; relevance: number };
+  match?: { source: 'keyword'; relevance: number };
   access_count?: number;
   last_accessed_at?: string;
   /** Citation accounting, written by the Stop hook and read by
@@ -178,11 +168,8 @@ export interface RememberInput {
   tags?: string[];
   relations?: Array<{ to: string; type: string }>;
   namespace?: string;  // 'personal' | 'team' | 'global' (default: 'personal')
-  // Internal-only metadata override. Used by auto-learned lessons (LLM
-  // paraphrasing of session errors) to mark themselves `untrusted` so
-  // `isTrustedForAutoContext()` excludes them from session-start
-  // injection. Not exposed in the transport schemas — only callers
-  // inside core can set this.
+  // Internal-only metadata override. Not exposed in transport schemas so a
+  // caller cannot self-assert trust.
   trustOverride?: 'trusted' | 'untrusted';
   provenanceOverride?: Record<string, unknown>;
   // Which host/surface wrote this memory — 'claude-code', 'codex', 'cli',
@@ -239,8 +226,8 @@ export interface RememberResult {
    * A move is a real relocation — the memory drops out of every scoped view it
    * used to appear in — and it was invisible: the result said `stored: true`
    * and nothing else, no backup is taken, and the row is overwritten in place.
-   * The entity keeps its id, so its vectors and FTS row are untouched; what
-   * changes is where it can be found. Pairs with `metadata.previous_namespace`,
+   * The entity keeps its id, so its FTS row is untouched; what changes is
+   * where it can be found. Pairs with `metadata.previous_namespace`,
    * which makes the move undoable from the row itself.
    */
   movedFromNamespace?: string;
@@ -406,19 +393,3 @@ export type PragmaColumnRow = {
   dflt_value: string | null;
   pk: number;
 };
-
-// ---------------------------------------------------------------------------
-// LLM API response types — replace `as any` on response.json()
-// ---------------------------------------------------------------------------
-
-export interface AnthropicResponse {
-  content?: Array<{ text?: string }>;
-}
-
-export interface OpenAIResponse {
-  choices?: Array<{ message?: { content?: string } }>;
-}
-
-export interface OllamaResponse {
-  response?: string;
-}

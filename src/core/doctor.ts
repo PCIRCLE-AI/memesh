@@ -4,14 +4,10 @@ import path from 'path';
 import net from 'node:net';
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
-import { pathToFileURL } from 'url';
 import { execFileSync } from 'child_process';
-import { detectCapabilities, getConfigPath, isTranscriptMiningEnabled, readConfig, type Capabilities } from './config.js';
-import { embedText } from './embedder.js';
-import { probeProvider } from './llm-validator.js';
+import { findRetiredConfigKeys, getConfigPath, readConfig } from './config.js';
 import {
-  openDatabase, closeDatabase, getPendingReindexInfo, isDatabaseOpen,
-  readVectorGeneration, generationRowIds,
+  openDatabase, closeDatabase, isDatabaseOpen,
 } from '../db.js';
 import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
@@ -22,11 +18,8 @@ import {
 } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
-import { getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir, getProjectName } from './paths.js';
+import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
-import { lastTranscriptMineAt } from './transcript-source.js';
-import { countMissingVectors } from './operations.js';
-import { hasVectorIndex } from '../storage/vector-index.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
@@ -35,7 +28,6 @@ import { autoCaptureDecision } from './capture-flag.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
-import { summariseTelemetry, type TelemetrySummary } from './llm-telemetry.js';
 
 export type DoctorCheckStatus = 'pass' | 'warn' | 'fail';
 export type DoctorOverallStatus = 'PASS' | 'PASS_WITH_CONCERNS' | 'FAIL';
@@ -58,21 +50,18 @@ export interface DoctorCheck {
    * True for rows that REPORT a value rather than ASSERT a fact.
    *
    * A doctor row is one of two very different things:
-   *   - an assertion — "the native binding loads", "hooks are wired". It
+   *   - an assertion — "SQLite opens", "hooks are wired". It
    *     makes a claim that the outside world can falsify, so it can fail.
-   *   - an informational row — "your install id is X", "your config names
-   *     ollama". It describes state. It cannot fail, because it is not
+   *   - an informational row — "your install id is X". It describes state. It cannot fail, because it is not
    *     claiming anything is working.
    *
    * Before this flag existed both rendered as `[PASS]` and both counted
    * toward `Overall`, so "13/13 PASS" read as "13 things verified" when
-   * some had verified nothing. The Capabilities row was the worst case: it
-   * was hardcoded to 'pass' and merely echoed config, so an expired API key
-   * or a broken embedder could never move doctor off PASS.
+   * some had verified nothing.
    *
    * Informational rows are excluded from `summarizeOverallStatus` and are
    * rendered as `[INFO]`. If you want a row to be able to fail, it must
-   * probe something — see `probeEmbeddings` / `probeLlm`.
+   * probe something.
    */
   informational?: boolean;
   /**
@@ -120,22 +109,11 @@ interface DoctorOptions {
   packageRoot: string;
   packageVersion: string;
   probeHttp?: boolean;
-  /**
-   * Make one small LIVE call to the configured LLM provider.
-   *
-   * Off by default: probing on every run costs latency and, for hosted
-   * providers, money. When off, the LLM row reports "NOT VERIFIED" rather
-   * than a green it did not earn.
-   */
-  probeCapabilities?: boolean;
-  embedTextImpl?: (text: string) => Promise<Float32Array | null>;
-  probeProviderImpl?: typeof probeProvider;
   httpBaseUrl?: string;
   platform?: NodeJS.Platform;
   openDatabaseImpl?: typeof openDatabase;
   closeDatabaseImpl?: typeof closeDatabase;
   isDatabaseOpenImpl?: typeof isDatabaseOpen;
-  detectCapabilitiesImpl?: typeof detectCapabilities;
   getConfigPathImpl?: typeof getConfigPath;
   getUpdateCheckImpl?: typeof getUpdateCheck;
   getCurrentInstallChannelImpl?: typeof getCurrentInstallChannel;
@@ -165,9 +143,7 @@ interface DoctorOptions {
     retention_cutoff?: Date | string;
   };
   /**
-   * Test seam: probe that a database opens and sqlite-vec loads. Default
-   * resolves sqlite-vec from packageRoot the way Node would; tests inject a
-   * stub so the check can be exercised without a real extension.
+   * Test seam: probe that the built-in SQLite runtime can open a database.
    */
   nativeBindingProbeImpl?: (packageRoot: string) => { ok: true } | { ok: false; message: string };
   /**
@@ -212,13 +188,6 @@ type MessageRouterStatusProbe = {
   active_registrations?: number;
   detail?: string;
 };
-
-/**
- * Cap on the live embedding probe in `memesh doctor`. Generous enough for a
- * local ollama call or a hosted embedder round-trip, short enough that doctor
- * always returns.
- */
-const EMBEDDING_PROBE_TIMEOUT_MS = 15000;
 
 const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop', 'PreCompact'];
 const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
@@ -459,9 +428,10 @@ function inspectAgentMessageStorage(
 }
 
 /**
- * Report the separate opt-in bridge that lets ordinary Codex sessions receive
- * live notifications. A plugin cache copy is only evidence of cached source;
- * it does not prove that Codex enabled or registered the plugin.
+ * Report how ordinary Codex sessions choose their local routing identity.
+ * A plugin cache copy is only evidence of cached source; live discovery is
+ * still the authoritative proof that Codex enabled the plugin and its
+ * SessionStart companion registered this thread.
  */
 function inspectCodexSessionSetup(
   codexPluginCacheDetected: boolean,
@@ -471,21 +441,17 @@ function inspectCodexSessionSetup(
 
   const configPath = path.join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
   if (existsSyncImpl(configPath)) {
-    return createCheck(
+    return createInfo(
       'codex-session-setup',
-      'Codex ordinary-session notification setup',
-      'pass',
-      'A Codex plugin cache copy was detected, but this proves only that cached source exists, not that the plugin is enabled or registered. The explicit opt-in ordinary-session notification setup is present; durable inbox remains available, and MeMesh will not auto-attach.',
+      'Codex ordinary-session notifications',
+      'A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.',
     );
   }
 
-  return createCheck(
+  return createInfo(
     'codex-session-setup',
-    'Codex ordinary-session notification setup',
-    'warn',
-    'A Codex plugin cache copy was detected, but this proves only that cached source exists, not that the plugin is enabled or registered. Durable inbox remains available, but live ordinary-session wakeup is inactive. Setup is explicit opt-in; MeMesh will not auto-attach.',
-    'Run `memesh agent setup codex-session --project <project> --principal <principal> --workspace <exact-workspace>`, then restart Codex.',
-    { code: 'codex-session.config-missing' },
+    'Codex ordinary-session notifications',
+    'No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.',
   );
 }
 
@@ -540,38 +506,16 @@ function parseJsonFile(
  * aligned for one fact. Merged keeping this row's id (pinned by tests) and
  * the stricter checks: `readConfig()` returns `{}` on ANY read failure —
  * corrupt JSON, a half-written file, EACCES, an array root — so every
- * Smart-Mode setting degrades to a silent no-op; this row makes that state
- * visible.
+ * stored setting degrades to a silent no-op; this row makes that state visible.
  */
 function inspectConfigFile(
   existsSyncImpl: typeof fs.existsSync,
   readFileSyncImpl: typeof fs.readFileSync,
   getConfigPathImpl: typeof getConfigPath,
-  envLlm: { provider: string; apiKey?: string } | null,
 ): DoctorCheck {
   const configPath = getConfigPathImpl();
   if (!existsSyncImpl(configPath)) {
-    // "No config file" is not "Core mode". An API key in the environment is
-    // enough for Smart Mode with no file at all, and this check used to say
-    // Core mode regardless while the Capabilities line two sections later
-    // said Smart Mode — the same report contradicting itself. The dream gate
-    // already learned this (detectCapabilities, not readConfig); doctor's own
-    // Config check had not. Take the level from the one detector, and say
-    // which it is.
-    return createCheck(
-      'config',
-      'Config',
-      'pass',
-      // Name WHAT enabled it. The first version of this sentence said "an API
-      // key in the environment", which is false for OLLAMA_HOST — that sets a
-      // provider with no key at all, and sent the user hunting for one.
-      envLlm
-        ? `No config file yet (${configPath}), but your environment names ${envLlm.provider}${envLlm.apiKey ? ' (via its API key)' : ' (via OLLAMA_HOST)'}, which enables Smart Mode. A file is only needed to pin a provider or change defaults.`
-        : `No config file yet (${configPath}). MeMesh will run in Core mode until you configure Smart Mode.`,
-      envLlm
-        ? `Optional: \`memesh config set llm.provider ${envLlm.provider}\` pins it so it does not depend on which shell you run from.`
-        : 'Optional: run `memesh config list` or set an LLM with `memesh config set llm.provider anthropic`.',
-    );
+    return createCheck('config', 'Config', 'pass', `No config file yet (${configPath}); default settings are in effect.`, 'Optional: run memesh config list to inspect settings.');
   }
 
   try {
@@ -587,6 +531,23 @@ function inspectConfigFile(
         { code: 'config-parse.not-object', params: { path: configPath } },
       );
     }
+    const retiredKeys = findRetiredConfigKeys(parsed);
+    if (retiredKeys.length > 0) {
+      const keys = retiredKeys.join(', ');
+      return createCheck(
+        'config',
+        'Config',
+        'warn',
+        `${configPath} is valid JSON but still contains ${retiredKeys.length} retired top-level setting(s) (${keys}). ` +
+          'This version ignores them, but legacy provider credentials or settings may remain on disk.',
+        `Review ${configPath} locally and remove only those retired top-level keys. ` +
+          'Do not paste the file into an issue because it may contain credentials. Then run memesh doctor again.',
+        {
+          code: 'config-parse.retired-settings',
+          params: { path: configPath, count: retiredKeys.length, keys },
+        },
+      );
+    }
     return createCheck('config', 'Config', 'pass', `${configPath} is valid JSON and its settings are in effect.`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -594,7 +555,7 @@ function inspectConfigFile(
       'config',
       'Config',
       'fail',
-      `${configPath} could not be read or parsed (${msg}). Every setting in it — LLM provider, fallbacks, embedder — is being silently ignored right now.`,
+      `${configPath} could not be read or parsed (${msg}). Its settings are being ignored right now.`,
       `Fix the JSON or remove the file to fall back to defaults: mv ${configPath} ${configPath}.bak`,
       { code: 'config-parse.unreadable', params: { path: configPath, detail: msg } },
     );
@@ -1476,56 +1437,10 @@ function defaultResolveShellMemesh(): string | null {
   }
 }
 
-/**
- * Can this runtime actually open a database with vector search?
- *
- * There is no native binding to miss any more — node:sqlite ships with Node —
- * so this no longer probes better-sqlite3's `.node` file. What CAN still be
- * absent is sqlite-vec, whose per-platform loadable extension arrives through
- * `optionalDependencies`: on an unsupported platform npm installs nothing and
- * says nothing, and recall quietly falls back to keyword-only search.
- *
- * So the probe opens an in-memory database and loads the extension — the same
- * two steps `openDatabase` takes — rather than asserting that a file exists.
- *
- * No test-env seam here. An earlier version gated on `process.env.VITEST`,
- * which was too permissive: anyone with VITEST exported in their shell got a
- * green PASS on a broken install, the exact failure this exists to surface.
- * Tests inject `nativeBindingProbeImpl` through runDoctor options instead.
- */
-/**
- * Marker the probe puts in its message when the RUNTIME, not the package, is
- * the problem. Matched by `inspectNativeBinding` instead of pattern-matching a
- * TypeError's wording, which changes between Node releases and belongs to
- * nobody.
- */
-const RUNTIME_TOO_OLD = 'memesh:node-sqlite-too-old';
-
-function defaultNativeBindingProbe(packageRoot: string): { ok: true } | { ok: false; message: string } {
+function defaultNativeBindingProbe(_packageRoot: string): { ok: true } | { ok: false; message: string } {
   try {
-    const probe = new MemeshDatabase(':memory:', { allowExtension: true });
-    try {
-      // Asked explicitly, because the alternative is a TypeError that reads
-      // like a package problem. `node:sqlite` exists from Node 22.5 but was
-      // behind `--experimental-sqlite`, and the extension methods only landed
-      // in 22.13 — so a user running 22.5–22.12 WITH that flag gets a handle
-      // whose `enableLoadExtension` is undefined. Left to the catch below,
-      // "probe.enableLoadExtension is not a function" matched neither
-      // classification branch and doctor told them to reinstall sqlite-vec,
-      // which cannot help: the fix is upgrading Node.
-      if (typeof probe.enableLoadExtension !== 'function') {
-        return { ok: false, message: `${RUNTIME_TOO_OLD}: node:sqlite in ${process.version} has no enableLoadExtension` };
-      }
-      probe.enableLoadExtension(true);
-      // Resolved from the package root so a hoisted install is found the way
-      // Node would find it at runtime, not relative to this compiled file.
-      const localRequire = createRequire(pathToFileURL(path.join(packageRoot, 'package.json')).href);
-      const sqliteVec = localRequire('sqlite-vec');
-      sqliteVec.load(probe);
-      probe.prepare('SELECT vec_version()').get();
-    } finally {
-      probe.close();
-    }
+    const probe = new MemeshDatabase(':memory:');
+    try { probe.prepare('SELECT 1').get(); } finally { probe.close(); }
     return { ok: true };
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
@@ -1658,68 +1573,15 @@ export function hasBuiltInSqlite(): boolean {
     return false;
   }
 }
-
 function inspectNativeBinding(
   packageRoot: string,
   _existsSyncImpl: typeof fs.existsSync,
   probeImpl: (packageRoot: string) => { ok: true } | { ok: false; message: string } = defaultNativeBindingProbe,
 ): DoctorCheck {
-  // DO NOT pre-check `<packageRoot>/node_modules/sqlite-vec` for existence —
-  // npm hoists, so when memesh is installed as a dependency that directory
-  // lives at the consumer's top-level node_modules. The probe uses Node's own
-  // resolution, which follows hoisting.
   const result = probeImpl(packageRoot);
-  if (result.ok) {
-    return createCheck(
-      'native-binding',
-      'SQLite and vector search',
-      'pass',
-      'node:sqlite opened a database and sqlite-vec loaded (probe succeeded).',
-    );
-  }
-  // The runtime is too old to use node:sqlite properly. Matched on the marker
-  // the probe sets, not on a TypeError's wording — that string belongs to Node
-  // and changes between releases.
-  if (result.message.startsWith(RUNTIME_TOO_OLD)) {
-    return createCheck(
-      'native-binding',
-      'SQLite and vector search',
-      'fail',
-      `The node:sqlite in this Node (${process.version}) is too old for memesh — it cannot load the vector-search extension. The complete version arrived in Node 22.13.`,
-      'Upgrade Node to 22.13 or newer, then re-run `memesh doctor`.',
-      { code: 'native-binding.node-too-old', params: { version: process.version } },
-    );
-  }
-
-  // Everything below is sqlite-vec, and sqlite-vec is a SUPPLEMENT: without it
-  // memesh still stores memories and still finds them by keyword, it just
-  // cannot search by meaning. So these are `warn`, not `fail`.
-  //
-  // The severity was inherited from the better-sqlite3 row, where a missing
-  // binding meant nothing was written at all. Left that way it would make
-  // `memesh doctor` exit 1 — breaking any CI step, container healthcheck or
-  // install script gating on it, and turning the dashboard banner red — on a
-  // platform this project documents as supported. The row's own words
-  // ("memories are still saved") contradicted the severity it carried.
-  const isMissingPackage = /MODULE_NOT_FOUND|Cannot find module/i.test(result.message);
-  if (isMissingPackage) {
-    return createCheck(
-      'native-binding',
-      'SQLite and vector search',
-      'warn',
-      'sqlite-vec is not installed, so memesh cannot search by meaning. Memories are still saved, and still found by keyword.',
-      'Run: npm install   (in the directory that depends on @pcircle/memesh)',
-      { code: 'native-binding.not-installed' },
-    );
-  }
-  return createCheck(
-    'native-binding',
-    'SQLite and vector search',
-    'warn',
-    `sqlite-vec could not be loaded: ${result.message}. Memories are still saved and found by keyword; only search by meaning is off.`,
-    `Run: cd "${packageRoot}" && npm install --omit=dev`,
-    { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } },
-  );
+  return result.ok
+    ? createCheck('native-binding', 'SQLite', 'pass', 'node:sqlite opened a database (probe succeeded).')
+    : createCheck('native-binding', 'SQLite', 'fail', `SQLite could not open a database: ${result.message}`, 'Check the Node runtime and reinstall if necessary.', { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } });
 }
 
 /**
@@ -1776,8 +1638,8 @@ function readVersionFromInstalledBinary(
  * but does NOT put `memesh` on the shell `PATH`. Users then try
  * `memesh reindex` in a terminal and see `command not found: memesh`.
  *
- * Resolution: also run `npm install -g @pcircle/memesh`. Both paths
- * coexist and share the same DB.
+ * Resolution: also run `npm install -g @pcircle/memesh` when shell access is
+ * wanted. Storage identity depends on each process's configuration.
  *
  * This check fires WARN only on plugin-marketplace installs that lack
  * a separate shell-PATH `memesh`. For npm-global / source-checkout
@@ -1824,59 +1686,22 @@ function inspectShellCli(
 
   if (hasDistinctShellCli) {
     const shellVersion = readVersionFromInstalledBinary(shellPath!, existsSyncImpl, readFileSyncImpl);
-    // classifyBump(from, to) is truthy only when `to` is a real upgrade over
-    // `from` — exactly one of these two can be truthy for two distinct,
-    // parseable versions, which is what "which one is behind" needs.
-    const shellIsBehind = shellVersion ? classifyBump(shellVersion, packageVersion) : null;
-    const thisIsBehind = shellVersion ? classifyBump(packageVersion, shellVersion) : null;
-
-    if (shellIsBehind) {
-      // No `code:` here deliberately — see the block comment above
-      // `inspectPluginCacheCurrency`'s npm-global loop for why a check whose
-      // wording is generated from two runtime version strings is left
-      // uncatalogued (the dashboard's documented fallback renders `summary`/
-      // `fix` verbatim when a row carries no code; see the `code` field's
-      // docstring on `DoctorCheck`).
-      return createCheck(
-        'shell-cli',
-        'Shell CLI on PATH',
-        'warn',
-        `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}), and it is running ${shellVersion} — behind this install's ${packageVersion}. Both share the same DB, but an agent using this install and a human typing \`memesh\` in a terminal are running different code.`,
-        'Run `npm install -g @pcircle/memesh@latest` to bring the shell CLI up to date — a separate global install is never updated automatically by the plugin marketplace.',
-      );
-    }
-    if (thisIsBehind) {
-      // `?? 'claude-code'` was wrong here and is the same mistake the
-      // session-start banner made: `null` is a legitimate answer from
-      // `detectPluginHost` — "this path is not under any plugin cache" — so
-      // collapsing it into a host handed a Codex user the Claude Code command
-      // with no way to tell. On a plugin-marketplace install the host normally
-      // IS detectable; when it is not (a relocated cache whose env var this
-      // process cannot see), naming one host's command is a guess presented as
-      // an instruction. Name both instead.
-      const pluginHost = installChannel === 'plugin-marketplace' ? detectPluginHost(packageRoot) : null;
-      const fix = installChannel !== 'plugin-marketplace'
-        ? `Update this install (a ${installChannel}) to ${shellVersion} or newer via its own channel — see \`memesh status\`.`
-        : pluginHost
-          ? `Run \`${PLUGIN_REFRESH_COMMANDS[pluginHost]}\` to bring this plugin copy to ${shellVersion} (or newer).`
-          : `Bring this plugin copy to ${shellVersion} (or newer) with your host's refresh command — `
-            + `Claude Code: \`${PLUGIN_REFRESH_COMMANDS['claude-code']}\`; `
-            + `Codex: \`${PLUGIN_REFRESH_COMMANDS.codex}\`.`;
-      return createCheck(
-        'shell-cli',
-        'Shell CLI on PATH',
-        'warn',
-        `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}), and it is running ${shellVersion} — ahead of this install's ${packageVersion}.`,
-        fix,
-      );
+    if (shellVersion) {
+      // Local version skew does not establish a published update, a broken
+      // install, or shared storage. Registry-backed update checks own advice.
+      return {
+        ...createInfo('shell-cli', 'Shell CLI on PATH',
+          `Installed versions: this interface ${packageVersion}; terminal ${shellVersion}.`),
+        code: 'shell-cli.versions',
+        params: { current: packageVersion, terminal: shellVersion, shellPath: shellPath!, packageRoot },
+      };
     }
 
     return createCheck(
       'shell-cli',
       'Shell CLI on PATH',
       'pass',
-      `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}). Both paths coexist and share the same DB`
-        + (shellVersion ? `, both on ${packageVersion}.` : ' — could not read the shell copy\'s own version to compare.'),
+      `\`memesh\` resolves to ${shellPath} (separate from this install at ${packageRoot}) — could not read the shell copy's own version to compare.`,
     );
   }
 
@@ -1888,7 +1713,7 @@ function inspectShellCli(
       'warn',
       'Plugin is installed but `memesh` is not on the shell PATH. Typing `memesh` in a regular terminal will report `command not found`. '
         + `${host} MCP / hooks / \`/memesh\` skill still work — this only affects standalone shell usage and other MCP clients (Cursor, Cline, etc.).`,
-      'Run `npm install -g @pcircle/memesh` to add the shell CLI. Both paths coexist; they share the same `~/.memesh/knowledge-graph.db`.',
+      'Run `npm install -g @pcircle/memesh` if you want the separate shell CLI. Its database path depends on its environment and configuration.',
       { code: 'shell-cli.not-on-path' },
     );
   }
@@ -2155,86 +1980,21 @@ function inspectPluginCacheCurrency(
   );
 }
 
-/**
- * F3/F5 (2026-09-02 dogfood): the npm-global discovery loop that calls
- * `inspectPluginCacheCurrency` above only ever compared the commit the
- * cache was staged from against the marketplace HEAD. It never compared
- * the cache's own VERSION against the npm-global process asking the
- * question, so a real machine with npm-global at 4.8.2 and a Claude Code
- * plugin cache at 4.8.3 got a clean `[PASS] Plugin cache source record is
- * current` — true about the commit, silent about the fact that this
- * npm-global copy is a full version behind and CANNOT be reached by the
- * plugin's own auto-updater: `getCurrentInstallChannel` for a hook always
- * resolves to whichever copy is executing it (here, the plugin), so
- * `~/.memesh/auto-update.log` on that machine logged 45 consecutive
- * `SKIPPED: install channel 'plugin-marketplace' does not support
- * self-update` lines — correct for the copy that wrote them, and silently
- * incomplete for the npm-global copy sitting right next to it, which
- * genuinely does need `memesh update` run by hand.
- *
- * The discovered cache's own version is read for free from its directory
- * name (`<cacheRoot>/<version>/`, the same layout `versionedPluginCacheRoots`
- * already depends on) — no extra file I/O, and no risk of trusting a
- * `--version` subprocess call. Callers only invoke this for a CLEAN
- * discovery (no `unverifiableReason`): an ambiguous or unreadable registry
- * should not also make a confident version claim.
- *
- * F5 rides along here because it needs the exact same `cacheRoot`: old
- * versioned copies accumulate under it forever (nothing in the upgrade
- * path removes them), so once there are more than a couple this appends
- * one informational sentence naming the count and a cleanup command — the
- * same `rm -rf <old-copy>` shape `scripts/upgrade-plugin.sh` itself prints
- * when it cannot remove the copy it just replaced. This never moves
- * `status`: unused disk space is not a correctness problem, and counting
- * `versionedPluginCacheRoots(cacheRoot).length` costs one `readdirSync` —
- * no directory is walked and no size is computed, which would mean a full
- * `du` over a node_modules-sized tree on every `memesh doctor` run.
- */
-function annotateNpmGlobalPluginCacheVersion(
-  check: DoctorCheck,
-  discoveredPackageRoot: string,
-  hostLabel: string,
-  runningVersion: string,
-): DoctorCheck {
-  const cacheRoot = path.dirname(discoveredPackageRoot);
-  const discoveredVersion = path.basename(discoveredPackageRoot);
-  let amended = check;
 
-  // classifyBump(from, to) is truthy only when `to` is a real upgrade over
-  // `from` — this only fires when the npm-global copy is the OLD one. The
-  // reverse (npm-global ahead of the plugin cache) is not this machine's
-  // problem: the plugin cache being behind is what the SHA/commit check
-  // above already exists to catch.
-  if (discoveredVersion !== runningVersion && classifyBump(runningVersion, discoveredVersion)) {
-    const skewNote = `This npm-global install is on ${runningVersion}; the ${hostLabel} plugin cache is on ${discoveredVersion}. `
-      + 'The plugin marketplace\'s own auto-updater only ever refreshes its plugin copy — it cannot and will not update this separate npm-global install.';
-    const skewFix = `Run \`memesh update\` to bring this npm-global install to ${discoveredVersion} (or newer) — it does not update itself automatically.`;
-    amended = {
-      ...amended,
-      status: amended.status === 'pass' ? 'warn' : amended.status,
-      summary: `${amended.summary} ${skewNote}`,
-      fix: amended.fix ? `${amended.fix} Also: ${skewFix}` : skewFix,
-      // Dropping the code: the appended sentence is not in the i18n
-      // catalogue, and keeping the old code would make the dashboard show
-      // ONLY the stale catalogue text, silently dropping this fact — see
-      // `DoctorCheck.code`'s own docstring for the documented fallback
-      // this relies on (raw `summary`/`fix`, in English, when `code` is
-      // absent).
-      code: undefined,
-      params: undefined,
-    };
+function isClaudeChannelCommand(command: unknown): boolean {
+  if (command === 'memesh-host-claude') return true;
+  if (typeof command !== 'string' || !path.isAbsolute(command) || path.basename(command) !== 'memesh-host-claude') {
+    return false;
   }
-
-  const cachedVersions = versionedPluginCacheRoots(cacheRoot);
-  if (cachedVersions.length > 2) {
-    amended = {
-      ...amended,
-      summary: `${amended.summary} ${cachedVersions.length} versioned copies of the ${hostLabel} plugin are cached under ${cacheRoot}; old ones are never removed automatically. `
-        + `Delete ones you no longer need once no ${hostLabel} process is using them, e.g. \`rm -rf "${cachedVersions[0]}"\`.`,
-    };
+  try {
+    const target = fs.realpathSync(command);
+    const stat = fs.statSync(target);
+    if (!stat.isFile()) return false;
+    fs.accessSync(target, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
   }
-
-  return amended;
 }
 
 /**
@@ -2305,14 +2065,15 @@ function inspectClaudeChannelRegistration(
       targetConfigValid = false;
     }
   }
-  const coherent = command === 'memesh-host-claude'
+  const commandValid = isClaudeChannelCommand(command);
+  const coherent = commandValid
     && args !== null
     && args.length === 2
     && configIndex === 0
     && target !== null
     && targetConfigValid;
   if (!coherent) {
-    const reason = command !== 'memesh-host-claude' || args === null || configIndex !== 0 || target === null
+    const reason = !commandValid || args === null || configIndex !== 0 || target === null
       ? 'the command or --config declaration is malformed'
       : 'the declared owner config target is missing, insecure, malformed, or incomplete';
     return createCheck(
@@ -2792,8 +2553,7 @@ function inspectMessageCapability(
 }
 
 async function defaultMessageRouterStatusProbe(): Promise<MessageRouterStatusProbe> {
-  const socketPath = process.env.MEMESH_ROUTER_SOCKET
-    ?? path.join(getMemeshDirFromDbPath(), 'agent-router.sock');
+  const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(socketPath);
@@ -2875,265 +2635,6 @@ async function inspectMessageRouterStatus(
   }
 }
 
-// (The former `config_parse` row merged into `inspectConfigFile` — one file,
-// one row, one set of fix strings. Its stricter checks and error codes
-// survived the merge; only the duplicate ID died.)
-
-/**
- * Does embedding generation actually work?
- *
- * Config saying `embeddings: openai` proves only that a string was written
- * to a file. A blocked model download, a corrupt `~/.memesh/models` cache,
- * a bad BYOK key or a dimension mismatch all leave the config untouched
- * while every vector write and semantic recall silently returns nothing.
- *
- * The probe is therefore real — but it must never have side effects the
- * user did not ask a *diagnostic* command for. A live embedder call is gated
- * behind `--probe`: every embedder is now a network call (ollama is local but
- * still a socket; openai is billed), and `memesh doctor` is what you reach for
- * when the network is already misbehaving.
- *
- * When the probe is skipped the row says NOT VERIFIED and names the reason.
- * That is not the hardcoded-'pass' failure this row was rewritten to fix —
- * the point of that fix was that "not verified" and "verified working" must
- * never look the same, which is exactly what this preserves. Same shape as
- * `inspectLlmProbe`.
- */
-async function inspectEmbeddingProbe(
-  capabilities: Capabilities,
-  probeCapabilities: boolean,
-  embedTextImpl: (text: string) => Promise<Float32Array | null>,
-): Promise<DoctorCheck> {
-  if (capabilities.embeddings === 'tfidf') {
-    return createInfo(
-      'embeddings_probe',
-      'Embeddings work',
-      'No neural embedder configured — recall runs on FTS5 keyword search alone. That is a supported mode, not a fault.',
-    );
-  }
-
-  if (!probeCapabilities) {
-    return createInfo(
-      'embeddings_probe',
-      'Embeddings work',
-      `NOT VERIFIED. Config names "${capabilities.embeddings}", but generating a test embedding is a network call (billed on hosted providers) so it was not made — a revoked key or an unreachable host would look identical to a healthy setup here.`,
-      'Run: memesh doctor --probe   (generates one test embedding to confirm)',
-    );
-  }
-
-  // Bound the probe. A BYOK embedder is a network call and a local ollama
-  // endpoint can be slow to answer, so an unbounded await turns `memesh
-  // doctor` — the command you reach for when things are wrong — into the
-  // thing that hangs. Timing out is itself a useful answer.
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    const vector = await Promise.race([
-      embedTextImpl('memesh doctor embedding probe'),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error(`no response within ${EMBEDDING_PROBE_TIMEOUT_MS / 1000}s`)),
-          EMBEDDING_PROBE_TIMEOUT_MS,
-        );
-      }),
-    ]);
-    if (!vector || vector.length === 0) {
-      return createCheck(
-        'embeddings_probe',
-        'Embeddings work',
-        'warn',
-        `Config selects "${capabilities.embeddings}" but generating a test embedding returned nothing. Semantic recall is degraded to FTS5-only; keyword search still works.`,
-        'Run: memesh doctor --probe for detail, or check network access to the embedding provider.',
-        { code: 'embeddings.empty', params: { provider: String(capabilities.embeddings) } },
-      );
-    }
-    return createCheck(
-      'embeddings_probe',
-      'Embeddings work',
-      'pass',
-      `Generated a ${vector.length}-dim test embedding via "${capabilities.embeddings}".`,
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return createCheck(
-      'embeddings_probe',
-      'Embeddings work',
-      'warn',
-      `Config selects "${capabilities.embeddings}" but the embedder threw (${msg}). Semantic recall is degraded to FTS5-only.`,
-      'Check the embedding provider is reachable (e.g. run `ollama serve`), or remove embedder config to use keyword-only search.',
-      { code: 'embeddings.threw', params: { provider: String(capabilities.embeddings), detail: msg } },
-    );
-  } finally {
-    // If the embedder answered first, the timeout is still pending — and
-    // because the CLI sets exitCode without calling process.exit(), a live
-    // timer would keep the event loop open and hang `memesh doctor` for up to
-    // EMBEDDING_PROBE_TIMEOUT_MS after the report prints. Clear it.
-    clearTimeout(timer);
-  }
-}
-
-/** How far back `inspectLlmTelemetryHealth` looks, and how many recent calls a
- *  flow needs before "every one failed" is treated as a trend rather than a
- *  blip. See the function doc for the measurement behind both numbers. */
-const LLM_TELEMETRY_HEALTH_WINDOW_DAYS = 7;
-const LLM_TELEMETRY_HEALTH_MIN_CALLS = 3;
-
-/**
- * Has an AI-backed feature quietly stopped working?
- *
- * `llm_telemetry` (llm-telemetry.ts) is written by every Smart-Mode flow —
- * dreamer, auto_tagger, failure_analyzer, guard_proposer, consolidator,
- * transcript_extractor — and until this row existed, read by nothing that
- * could alert anyone: `memesh telemetry` shows it on request, which means a
- * broken flow needed someone to think to ask. Reading it costs nothing (no
- * network call, unlike `inspectLlmProbe` below), so this runs on every
- * `memesh doctor`.
- *
- * The window is 7 days, not `summariseTelemetry`'s 30-day default. Measured
- * against a real graph on 2026-09-02: `dreamer` has 29 historical successes,
- * the most recent on 2026-08-23, and 51 failures whose most recent run
- * started 2026-08-28 and has not produced one success since. A 30-day (or
- * even 14-day) window blends the 2026-08-23 successes into the average and
- * reports "36% success" — true in aggregate, and exactly the number that
- * hides a flow that had been 100% broken for five days. 7 days is short
- * enough to exclude that stale success and still catch every flow that
- * failed its entire recent history: the sparsest real case in the same
- * graph (`failure_analyzer`) still had 8 failing calls inside the window.
- *
- * The rule is "every call in the window failed", not "some did" or "the
- * rate dropped below X%". `transcript_extractor` in the same graph has a
- * genuine 3.4% failure rate (4 of 118) from ordinary network blips — always
- * sandwiched between successes, never two in a row — so a rate-based
- * threshold anywhere below 100% has to guess a cutoff nothing in the
- * measured data motivates. "Zero successes" needs no cutoff and is exactly
- * the shape both real defects had (`guard_proposer`: 69 calls, 69 failures,
- * ever).
- *
- * `minCalls` counts PRIMARY calls (`total_calls`, `attempt_index === 0`),
- * not provider attempts (`total_attempts`): a single call whose failover
- * chain tried three providers and failed all three is one data point, not
- * three, and gating on attempts would treat that blip as the trend
- * `minCalls` exists to rule out.
- *
- * Three outcomes, deliberately not two — "found a problem" and "found
- * nothing" collapse "measured healthy" and "measured nothing" into the same
- * silence, which is the honesty gap this row exists to close:
- *   - no rows in the window at all (table absent, never run, or nothing
- *     recent) → no row. Silence here means "nothing to report", not "fine" —
- *     the same convention `guard_activity` and `citation_compliance` use.
- *   - rows exist, none of them a 100%-failing flow → an informational row
- *     naming what WAS measured, so "healthy" is a stated fact, not an
- *     absence of complaint.
- *   - a flow at 100% failure with ≥ minCalls primary calls → warn, not fail:
- *     the rest of memesh (keyword search, everything not LLM-backed) is
- *     unaffected, the same reasoning `embeddings.threw` uses.
- */
-function inspectLlmTelemetryHealth(
-  db: MemeshDatabase,
-  windowDays: number = LLM_TELEMETRY_HEALTH_WINDOW_DAYS,
-  minCalls: number = LLM_TELEMETRY_HEALTH_MIN_CALLS,
-): DoctorCheck | undefined {
-  let summaries: TelemetrySummary[];
-  try {
-    summaries = summariseTelemetry(windowDays, db);
-  } catch {
-    // No `llm_telemetry` table (a database from before it existed) or an
-    // unreadable one: there is nothing here to diagnose, and reporting
-    // "healthy" would be a claim this function never checked.
-    return undefined;
-  }
-  if (summaries.length === 0) return undefined;
-
-  const broken = summaries
-    .filter((s) => s.total_calls >= minCalls && s.successes === 0)
-    .sort((a, b) => b.total_calls - a.total_calls);
-
-  if (broken.length > 0) {
-    // `total_calls` (primary attempts) and `failures` (a status count over
-    // ALL attempts, primary + fallback) are different units — a flow whose
-    // failover chain fires reads e.g. 3 calls, 6 failed attempts, and
-    // "3/6" would print backwards ("more failures than calls"). Stating the
-    // call count and "0 succeeded" (true by the filter above) says the same
-    // thing without mixing them.
-    const detail = broken.map((s) => `${s.flow} (${s.total_calls} call${s.total_calls === 1 ? '' : 's'}, 0 succeeded)`).join(', ');
-    return createCheck(
-      'llm_telemetry_health',
-      'AI feature health',
-      'warn',
-      `${broken.length} AI-backed feature${broken.length === 1 ? '' : 's'} failed every call in the last `
-        + `${windowDays} days: ${detail}. Those features are silently doing nothing.`,
-      'Run `memesh telemetry` for the full per-flow detail, then check the model/provider configured for '
-        + 'the failing flow. `memesh doctor --probe` confirms whether it answers a live call.',
-      { code: 'llm-telemetry.silent-failure', params: { count: broken.length, detail, windowDays } },
-    );
-  }
-
-  const totalCalls = summaries.reduce((n, s) => n + s.total_calls, 0);
-  const totalSuccesses = summaries.reduce((n, s) => n + s.successes, 0);
-  const rate = totalCalls > 0 ? Math.round((totalSuccesses / totalCalls) * 100) : 100;
-  return createInfo(
-    'llm_telemetry_health',
-    'AI feature health',
-    `${summaries.length} AI-backed flow${summaries.length === 1 ? '' : 's'} made ${totalCalls} call(s) in the `
-      + `last ${windowDays} days; ${rate}% succeeded.`,
-  );
-}
-
-/**
- * Does the configured LLM actually answer?
- *
- * Network-probing on every `memesh doctor` would add latency and (for
- * hosted providers) cost, so the live probe is opt-in via `--probe`.
- * Crucially, when the probe has NOT run this row says so explicitly rather
- * than reporting a green it did not earn — "not verified" and "verified
- * working" must never look the same.
- */
-async function inspectLlmProbe(
-  capabilities: Capabilities,
-  probeCapabilities: boolean,
-  probeProviderImpl: typeof probeProvider,
-): Promise<DoctorCheck> {
-  const llm = capabilities.llm;
-  if (!llm) {
-    return createInfo(
-      'llm_probe',
-      'LLM reachable',
-      'No LLM configured — Core Mode. Write-side features (lessons, auto-tag, dream) are off by design.',
-    );
-  }
-  if (!probeCapabilities) {
-    return createInfo(
-      'llm_probe',
-      'LLM reachable',
-      `NOT VERIFIED. Config names ${llm.provider} (${llm.model ?? 'default'}), but no live call was made — an expired key or an unreachable host would look identical to a healthy setup here.`,
-      'Run: memesh doctor --probe   (makes one small live call to confirm)',
-    );
-  }
-  try {
-    const result = await probeProviderImpl(llm.provider, llm.apiKey);
-    if (result.valid) {
-      return createCheck('llm_probe', 'LLM reachable', 'pass', `${llm.provider} answered a live probe.`);
-    }
-    return createCheck(
-      'llm_probe',
-      'LLM reachable',
-      'fail',
-      `${llm.provider} is configured but did not answer: ${result.error ?? 'unknown error'}. Every LLM-backed feature is silently doing nothing.`,
-      'Check the API key / host, then re-run: memesh doctor --probe',
-      { code: 'llm.unreachable', params: { provider: llm.provider, detail: result.error ?? 'unknown error' } },
-    );
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return createCheck(
-      'llm_probe',
-      'LLM reachable',
-      'fail',
-      `${llm.provider} probe threw: ${msg}. Every LLM-backed feature is silently doing nothing.`,
-      'Check the API key / host, then re-run: memesh doctor --probe',
-      { code: 'llm.threw', params: { provider: llm.provider, detail: msg } },
-    );
-  }
-}
-
 function summarizeOverallStatus(checks: DoctorCheck[]): DoctorOverallStatus {
   // Informational rows describe state and cannot fail — counting them would
   // pad the verdict with rows that verified nothing. See DoctorCheck.informational.
@@ -3148,16 +2649,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     packageRoot,
     packageVersion,
     probeHttp = false,
-    probeCapabilities = false,
-    embedTextImpl = embedText,
-    probeProviderImpl = probeProvider,
     httpBaseUrl = 'http://127.0.0.1:3737',
     platform = process.platform,
     envImpl = process.env,
     openDatabaseImpl = openDatabase,
     closeDatabaseImpl = closeDatabase,
     isDatabaseOpenImpl = isDatabaseOpen,
-    detectCapabilitiesImpl = detectCapabilities,
     getConfigPathImpl = getConfigPath,
     getUpdateCheckImpl = getUpdateCheck,
     getCurrentInstallChannelImpl = getCurrentInstallChannel,
@@ -3302,119 +2799,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       }
     }
 
-    // Measured, not inferred.
-    //
-    // This row used to read `pending_reindex` alone, and that marker has one
-    // writer: `reindex()`. Every other way an entity reaches the graph
-    // without a vector leaves it unset — the seven capture hooks (which never
-    // embed, because embedding is a network call and a hook has a 2s budget),
-    // `import`, and `clearEntityData`, which now drops a vector whose text is
-    // gone. Measured on a real graph on 2026-08-24: 344 of 499 active
-    // memories had no vector, `pending_reindex` was unset, and doctor called
-    // the database healthy. Semantic recall could not see 69% of it.
-    //
-    // So the count is read from the index itself. The marker still speaks for
-    // the case a count cannot express — a width change, where the vectors
-    // that DO exist are the wrong shape — and it still leads when both are
-    // true, because a rebuild is the wider remedy.
-    const pendingReindex = getPendingReindexInfo();
-    // `db` is the real handle narrowed to `DatabaseLike` for the test seam
-    // two dozen lines up; both of these need only `prepare`. Cast rather than
-    // widen `DatabaseLike`, and rather than re-write the "owed a vector"
-    // query here — one definition of what the index owes is the point.
-    const vectorDb = db as unknown as MemeshDatabase;
-    // Three outcomes, not two. `hasVectorIndex` deliberately rethrows
-    // anything that is not "the module or table is absent" — swallowing a
-    // real fault there would report a broken index as a configuration
-    // choice. But a DIAGNOSTIC must not die on the thing it is diagnosing,
-    // and it must not answer 0 either: "measured none missing" and "could
-    // not measure" are different reports, and only one of them means the
-    // graph is fine.
-    let missingVectors: number | null;
-    let vectorsPossible = true;
-    try {
-      vectorsPossible = hasVectorIndex(vectorDb);
-      missingVectors = vectorsPossible ? countMissingVectors(vectorDb) : 0;
-    } catch {
-      missingVectors = null;
-    }
-    // A `vectors-missing` debt on a machine where sqlite-vec does not load is
-    // one `reindex` cannot pay ("sqlite-vec is not loaded"), and the row would
-    // read "0 memories have no search vector — run reindex" forever. Semantic
-    // recall is off on that machine for a different reason, reported elsewhere.
-    const payableDebt = pendingReindex && !(pendingReindex.reason === 'vectors-missing' && !vectorsPossible);
-    if (payableDebt || missingVectors === null || missingVectors > 0) {
-      const owed = pendingReindex && pendingReindex.reason !== 'vectors-missing'
-        ? 'Search index needs rebuilding (embedding configuration changed)'
-        : missingVectors === null
-          ? 'The vector index could not be read, so how much of your memory semantic recall can see is unknown'
-          : `${missingVectors} memor${missingVectors === 1 ? 'y has' : 'ies have'} no search vector, `
-            + 'so semantic recall cannot find them (keyword search still works)';
-      // D6: `memesh reindex` refuses (exit 1) when no embedder is configured
-      // — "Nothing was rebuilt: no embedding provider is configured" — and
-      // that is the state nearly every fresh Core-mode install is in, since
-      // the capture hooks never embed. Sending that user to a command that
-      // is guaranteed to fail is not a fix. `inspectEmbeddingProbe` above
-      // already answers "is an embedder configured?" via
-      // `capabilities.embeddings === 'tfidf'`; reuse that exact predicate
-      // here instead of re-deriving it, so the two checks can never disagree
-      // about the embedder state.
-      const noEmbedderConfigured = detectCapabilitiesImpl().embeddings === 'tfidf';
-      // Distinct code, not a shared one with a branching fix string: the
-      // dashboard looks up its own locale string by `code` alone
-      // (DoctorBanner.tsx's trFix/trField), so a single 'vector-index.stale'
-      // code covering two different embedder states cannot carry two
-      // different fix messages there — whichever the catalogue holds "wins"
-      // for both branches, and the no-embedder branch (the common
-      // fresh-install state) had been getting the OTHER one, telling users
-      // to run a command that is guaranteed to fail. A second code makes the
-      // dashboard-i18n parity check require its own catalogue entry, so a
-      // missing translation fails loudly instead of silently reusing the
-      // wrong text.
-      const vectorIndexFix = noEmbedderConfigured
-        ? `No embedder is configured, so reindex has nothing to embed with — run 'memesh config set embedder.provider ollama' (or 'openai') first, then 'memesh reindex'.`
-        : `Run 'memesh reindex' to fix. This will restore full search functionality.`;
-      dbChecks.push(
-        createCheck(
-          'vector_index',
-          'Vector Index',
-          'warn',
-          owed,
-          vectorIndexFix,
-          {
-            code: noEmbedderConfigured ? 'vector-index.stale-no-embedder' : 'vector-index.stale',
-            params: { missing: missingVectors ?? -1 },
-          },
-        ),
-      );
-    }
-
-    // A half-built index is a normal outcome of an interrupted rebuild, and it
-    // was invisible: nothing reclaimed it and no diagnostic mentioned it, so a
-    // user who abandoned a rebuild carried a second full copy of their vectors
-    // on disk indefinitely without being told.
-    const generation = readVectorGeneration();
-    if (generation.state !== 'none') {
-      const staged = generationRowIds().size;
-      const detail = generation.state === 'open'
-        ? `${staged} vectors staged at ${generation.info.dimension} dimensions `
-          + `(provider ${generation.info.provider}, started ${generation.info.startedAt})`
-        : `${staged} vectors staged, but the marker cannot be read (${generation.detail})`;
-      dbChecks.push(
-        createCheck(
-          'vector_generation',
-          'Half-built search index',
-          'warn',
-          `An unfinished index rebuild is holding disk space: ${detail}.`,
-          generation.state === 'open'
-            ? `Run 'memesh reindex' to finish it (the vectors already produced are reused), `
-              + `or 'memesh reindex --discard-generation' to reclaim the space.`
-            : `Run 'memesh reindex --discard-generation' to clear it, then 'memesh reindex'.`,
-          { code: 'vector-generation.open', params: { staged } },
-        ),
-      );
-    }
-
     // Guard ROI: has any accepted guard ever fired?
     //
     // `recordGuardFires` increments `metadata.guard.fires` on every match,
@@ -3555,12 +2939,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       }
     }
 
-    // Has an AI-backed feature quietly stopped working? See
-    // inspectLlmTelemetryHealth's own doc for the window/threshold and the
-    // measurements behind them. Zero cost (a local read), so unlike
-    // inspectLlmProbe below this runs unconditionally, not behind --probe.
-    const llmTelemetryHealth = inspectLlmTelemetryHealth(db as unknown as MemeshDatabase);
-    if (llmTelemetryHealth) dbChecks.push(llmTelemetryHealth);
   } catch (err) {
     const message = err instanceof Error ? err.message : 'unknown database error';
 
@@ -3642,7 +3020,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     }
   }
 
-  checks.push(inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl, detectCapabilitiesImpl().llm));
+  checks.push(inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl));
   checks.push(inspectMcpConfig(packageRoot, install, existsSyncImpl, readFileSyncImpl, envImpl));
   checks.push(...inspectHooksConfig(packageRoot, platform, existsSyncImpl, readFileSyncImpl, statSyncImpl));
   // Runtime wiring + activity (#25 — file existence isn't enough;
@@ -3664,23 +3042,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     for (const discovered of discoveredPluginCaches) {
       if (discovered.host === 'codex') codexPluginCacheDetected = true;
       if (discovered.host === 'claude-code') claudePluginCacheDetected = true;
-      let check = discovered.unverifiableReason
+      const check = discovered.unverifiableReason
         ? pluginCacheUnverifiable(discovered.host, discovered.unverifiableReason)
         : inspectPluginCacheCurrency(
           'plugin-marketplace', discovered.host, discovered.packageRoot,
           discovered.installedPluginsPath, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl,
         );
-      // Only for a CLEAN discovery — see annotateNpmGlobalPluginCacheVersion's
-      // docstring for why an ambiguous/unreadable registry should not also
-      // carry a confident version claim.
-      if (check && !discovered.unverifiableReason) {
-        check = annotateNpmGlobalPluginCacheVersion(
-          check,
-          discovered.packageRoot,
-          discovered.host === 'codex' ? 'Codex' : 'Claude Code',
-          packageVersion,
-        );
-      }
       if (check) {
         const hostName = discovered.host;
         const index = (discoveredCounts.get(discovered.host) ?? 0) + 1;
@@ -3715,42 +3082,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   checks.push(verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, installSupport));
   checks.push(inspectMessageCapability(packageRoot, probeMessageCapability, messageCapabilityProbeImpl));
   checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
-
-  // Capabilities: what the CONFIG says. This row asserts nothing about
-  // whether any of it works, so it is informational by construction.
-  // The rows that follow do the actual verifying.
-  const capabilities = detectCapabilitiesImpl();
-  checks.push(
-    createInfo(
-      'capabilities',
-      'Capabilities (configured)',
-      `Search level ${capabilities.searchLevel} (${capabilities.searchLevel === 1 ? 'Smart Mode' : 'Core'}); embeddings: ${capabilities.embeddings}; LLM: ${capabilities.llm ? `${capabilities.llm.provider} (${capabilities.llm.model ?? 'default'})` : 'not configured'}. Configured values only — see the probe rows below for what actually works.`,
-    ),
-  );
-
-  // Scheduled transcript mining (opt-in). Informational by construction: it is
-  // OFF by default and being off is not a fault, so this row never warns, never
-  // reaches the banner, and never touches Overall.
-  if (!isTranscriptMiningEnabled()) {
-    checks.push(createInfo(
-      'transcript-mining',
-      'Scheduled transcript mining',
-      'Off (opt-in). memesh can mine this project\'s Claude Code session transcripts for decisions and lessons and STAGE them for your review. Turn it on with `memesh config set transcriptMining true`, then have a scheduler (cron/launchd) run `memesh dream run --from-transcripts --if-due` — it self-throttles and stages only, so nothing enters your graph without `dream accept`.',
-    ));
-  } else {
-    const last = lastTranscriptMineAt(getProjectName(process.cwd()));
-    const when = last === null
-      ? 'not yet run for this project'
-      : `last mined ${((Date.now() - last) / 3600_000).toFixed(1)}h ago`;
-    checks.push(createInfo(
-      'transcript-mining',
-      'Scheduled transcript mining',
-      `On for this project — ${when}. Have a scheduler run \`memesh dream run --from-transcripts --if-due\`; it mines when due (default every 24h) and stages proposals. Review the queue with \`memesh dream list\`.`,
-    ));
-  }
-
-  checks.push(await inspectEmbeddingProbe(capabilities, probeCapabilities, embedTextImpl));
-  checks.push(await inspectLlmProbe(capabilities, probeCapabilities, probeProviderImpl));
 
   checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport));
 

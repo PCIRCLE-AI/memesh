@@ -1,264 +1,60 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import * as cp from "child_process";
-import fs from "fs";
-import path from "path";
-import os from "os";
-import { MemeshDatabase as Database } from "../../src/storage/sqlite.js";
-import { createRequire } from "module";
+import { it, expect } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { openDatabase, closeDatabase } from '../../src/db.js';
+import { MemeshDatabase } from '../../src/storage/sqlite.js';
 
-const require = createRequire(import.meta.url);
-// Non-git identity is basename + real-path hash. The hook derives these from
-// the payload cwd, so the seeds and history keys must derive them the same
-// way (rule pinned in tests/core/project-identity.test.ts).
-const { getProjectName: mirrorProjectName } = require("../../scripts/hooks/_shared.js");
-const D_MY = mirrorProjectName("/tmp/myproject");
-const D_MEMESH = mirrorProjectName("/tmp/memesh");
-const D_MEMESH_CLOUD = mirrorProjectName("/tmp/memesh-cloud");
-
-// Tests for the Stop hook dream auto-trigger added so the Insights tab
-// receives data without users running `memesh dream run` manually.
-// Each scenario asserts what the throttle / activity / LLM gate
-// decides — the spawned dream child is detached and its real LLM
-// behaviour is covered by the dreamer's own test suite.
-
-
-describe("Feature: Stop-hook dream auto-trigger", () => {
-  let testDir: string;
-  let memeshDir: string;
-  let dbPath: string;
-  let configPath: string;
-  let transcriptPath: string;
-
-  beforeEach(() => {
-    testDir = fs.mkdtempSync(path.join(os.tmpdir(), "memesh-dream-trigger-test-"));
-    memeshDir = path.join(testDir, ".memesh");
-    fs.mkdirSync(memeshDir, { recursive: true });
-    dbPath = path.join(memeshDir, "knowledge-graph.db");
-    configPath = path.join(memeshDir, "config.json");
-    transcriptPath = path.join(testDir, "transcript.jsonl");
-  });
-
-  afterEach(() => {
-    fs.rmSync(testDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-  });
-
-  function writeConfig(cfg: object): void {
-    fs.writeFileSync(configPath, JSON.stringify(cfg));
-    fs.chmodSync(configPath, 0o600);
-  }
-
-  function writeMinimalTranscript(): void {
-    fs.writeFileSync(transcriptPath, [
-      { type: "assistant", message: { content: [{ type: "tool_use", name: "Edit", input: { file_path: "/tmp/proj/src/auth.ts" } }] } },
-      { type: "assistant", message: { content: [{ type: "tool_use", name: "Write", input: { file_path: "/tmp/proj/src/config.ts" } }] } },
-      { type: "assistant", message: { content: [{ type: "tool_use", name: "Bash", input: { command: "npm test" } }] } },
-    ].map(e => JSON.stringify(e)).join("\n"));
-  }
-
-  function seedEpisodicEntities(projectName: string, count: number, namePrefix?: string): void {
-    const db = new Database(dbPath);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS entities (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,
-        type TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'active',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        access_count INTEGER DEFAULT 0,
-        confidence REAL DEFAULT 1.0,
-        metadata JSON
-      );
-      CREATE TABLE IF NOT EXISTS tags (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        entity_id INTEGER NOT NULL,
-        tag TEXT NOT NULL,
-        UNIQUE(entity_id, tag)
-      );
+it('Stop captures and indexes rules without provider requests, dream spawn, or scheduling writes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-stop-offline-'));
+  const dbPath = path.join(dir, 'memory.db');
+  const transcript = path.join(dir, 'session.jsonl');
+  const probe = path.join(dir, 'forbidden-call');
+  const preload = path.join(dir, 'probe.cjs');
+  try {
+    openDatabase(dbPath);
+    closeDatabase();
+    fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({
+      autoUpdate: 'off', llm: { provider: 'ollama' }, transcriptMining: true,
+    }));
+    fs.writeFileSync(transcript, [
+      ...Array.from({ length: 4 }, (_, i) => ({ type: 'assistant', message: { content: [
+        { type: 'tool_use', id: 'edit-' + i, name: 'Edit', input: { file_path: path.join(dir, 'file-' + i + '.ts') } },
+      ] } })),
+      { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: 'Synthetic test failed before edit' }] } },
+    ].map(entry => JSON.stringify(entry)).join('\n'));
+    fs.writeFileSync(preload, `
+      const fs = require('node:fs');
+      const cp = require('node:child_process');
+      const mark = () => { fs.writeFileSync(${JSON.stringify(probe)}, 'forbidden'); throw new Error('forbidden provider or generator'); };
+      globalThis.fetch = mark;
+      const original = cp.spawn;
+      cp.spawn = function(command, args, options) {
+        if (/dream|failure-analy|ollama|anthropic|openai/.test([command, ...(args || [])].join(' '))) return mark();
+        return original.call(this, command, args, options);
+      };
+      require('node:module').syncBuiltinESMExports();
     `);
-    const insertEnt = db.prepare(`INSERT INTO entities (name, type) VALUES (?, 'session_keypoint')`);
-    const insertTag = db.prepare(`INSERT INTO tags (entity_id, tag) VALUES (?, ?)`);
-    for (let i = 0; i < count; i++) {
-      const r = insertEnt.run(`${namePrefix ?? projectName}-keypoint-${i}-${Date.now()}-${Math.random()}`);
-      insertTag.run(r.lastInsertRowid as number, `project:${projectName}`);
-    }
-    db.close();
-  }
-
-  function runHook(env: Record<string, string> = {}): string {
-    const hookPath = path.resolve("scripts/hooks/session-summary.js");
-    const input = JSON.stringify({
-      session_id: "test-dream-trigger",
-      transcript_path: transcriptPath,
-      cwd: "/tmp/myproject",
-      stop_reason: "end_turn",
-      was_in_agentic_loop: true,
+    const result = spawnSync(process.execPath, ['--require', preload, path.resolve('scripts/hooks/session-summary.js')], {
+      input: JSON.stringify({ session_id: 'offline-stop', transcript_path: transcript, cwd: dir }),
+      cwd: dir, encoding: 'utf8', timeout: 10000,
+      env: { HOME: dir, USERPROFILE: dir, MEMESH_DIR: dir, MEMESH_DB_PATH: dbPath, PATH: path.dirname(process.execPath), MEMESH_AUTO_CAPTURE: 'true' },
     });
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(probe)).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'dream-history.json'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'dream-runs'))).toBe(false);
+    const db = new MemeshDatabase(dbPath, { readOnly: true });
     try {
-      return cp.execFileSync("node", [hookPath], {
-        input,
-        env: {
-          ...process.env,
-          MEMESH_DB_PATH: dbPath,
-          MEMESH_DIR: memeshDir,
-          MEMESH_AUTO_CAPTURE: "true",
-          ...env,
-        },
-        encoding: "utf8",
-        timeout: 15000,
-      });
-    } catch (err: any) {
-      return err.stdout || "";
-    }
+      expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 0 });
+      const memories = db.prepare("SELECT id FROM entities WHERE type = 'session-insight'").all() as Array<{ id: number }>;
+      expect(memories.length).toBeGreaterThan(0);
+      for (const memory of memories) expect(db.prepare('SELECT count(*) AS n FROM entities_fts WHERE rowid = ?').get(memory.id)).toMatchObject({ n: 1 });
+      expect(db.prepare("SELECT run_count FROM hook_runs WHERE hook = 'session-summary'").get()).toMatchObject({ run_count: 1 });
+    } finally { db.close(); }
+  } finally {
+    closeDatabase();
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
-
-  it("skips dream when no LLM is configured", () => {
-    writeConfig({});
-    writeMinimalTranscript();
-    seedEpisodicEntities(D_MY, 30);
-    runHook();
-
-    const historyPath = path.join(memeshDir, "dream-history.json");
-    expect(fs.existsSync(historyPath)).toBe(false);
-  });
-
-  it("skips dream when below the activity threshold", () => {
-    writeConfig({ llm: { provider: "anthropic", model: "claude-haiku-4-5", apiKey: "sk-ant-test-junk" } });
-    writeMinimalTranscript();
-    seedEpisodicEntities(D_MY, 5);
-
-    runHook();
-
-    const historyPath = path.join(memeshDir, "dream-history.json");
-    if (fs.existsSync(historyPath)) {
-      const history = JSON.parse(fs.readFileSync(historyPath, "utf8"));
-      expect(history[D_MY]).toBeUndefined();
-    }
-  });
-
-  it("skips dream when last run was within 24h (throttle)", () => {
-    writeConfig({ llm: { provider: "anthropic", model: "claude-haiku-4-5", apiKey: "sk-ant-test-junk" } });
-    writeMinimalTranscript();
-    seedEpisodicEntities(D_MY, 30);
-
-    const oneHourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
-    const historyPath = path.join(memeshDir, "dream-history.json");
-    fs.writeFileSync(historyPath, JSON.stringify({
-      [D_MY]: { last_run_iso: oneHourAgo, last_episodic_count: 30, last_window_days: 14 },
-    }));
-
-    runHook();
-
-    const history = JSON.parse(fs.readFileSync(historyPath, "utf8"));
-    expect(history[D_MY].last_run_iso).toBe(oneHourAgo);
-
-    const logDir = path.join(memeshDir, "dream-runs");
-    const logs = fs.existsSync(logDir) ? fs.readdirSync(logDir) : [];
-    expect(logs.length).toBe(0);
-  });
-
-  // Regression for v4.2.1 prefix-collision fix. Before the fix the
-  // activity gate used `OR e.name LIKE 'project-%'`, which over-counted
-  // entities for `memesh` because `memesh-cloud-*` names share the same
-  // prefix. The throttle still gated correctly per project-name, but the
-  // dreamer fired earlier than it should for the shorter-named project.
-  // After the fix the gate uses `project:<name>` tag membership only —
-  // `memesh-cloud` entities are tagged `project:memesh-cloud`, so they
-  // do not count toward `memesh`'s gate.
-  it("activity gate does not over-count when two projects share a name prefix", () => {
-    writeConfig({ llm: { provider: "anthropic", model: "claude-haiku-4-5", apiKey: "sk-ant-test-junk" } });
-    writeMinimalTranscript();
-    // 5 episodic entities tagged `project:memesh`, 5 tagged
-    // `project:memesh-cloud`. Below the activity threshold (10) for
-    // `memesh` alone — but the legacy LIKE branch would have summed both
-    // groups (10) and tripped the gate.
-    seedEpisodicEntities(D_MEMESH, 5, "memesh");
-    seedEpisodicEntities(D_MEMESH_CLOUD, 5, "memesh-cloud");
-
-    const twoDaysAgo = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
-    fs.writeFileSync(path.join(memeshDir, "dream-history.json"), JSON.stringify({
-      [D_MEMESH]: { last_run_iso: twoDaysAgo },
-    }));
-
-    // Run the hook with cwd implying project name `memesh`.
-    const hookPath = path.resolve("scripts/hooks/session-summary.js");
-    const input = JSON.stringify({
-      session_id: "test-prefix-collision",
-      transcript_path: transcriptPath,
-      cwd: "/tmp/memesh",
-      stop_reason: "end_turn",
-      was_in_agentic_loop: true,
-    });
-    try {
-      cp.execFileSync("node", [hookPath], {
-        input,
-        env: {
-          ...process.env,
-          MEMESH_DB_PATH: dbPath,
-          MEMESH_DIR: memeshDir,
-          MEMESH_AUTO_CAPTURE: "true",
-        },
-        encoding: "utf8",
-        timeout: 15000,
-      });
-    } catch { /* hook exits 0 normally; ignore */ }
-
-    // Activity gate should reject — last_run_iso must be unchanged
-    // (still twoDaysAgo, not bumped to "just now").
-    const history = JSON.parse(fs.readFileSync(path.join(memeshDir, "dream-history.json"), "utf8"));
-    expect(history[D_MEMESH].last_run_iso).toBe(twoDaysAgo);
-
-    // No dream-runs log directory should have been created either.
-    const logDir = path.join(memeshDir, "dream-runs");
-    const logs = fs.existsSync(logDir) ? fs.readdirSync(logDir) : [];
-    expect(logs.length).toBe(0);
-  });
-
-  // Windows skipped pending Windows-specific env-propagation investigation.
-  // The hook completes but `dream-history.json` is not updated on Windows
-  // when MEMESH_DIR is propagated through execFileSync. The gate-only
-  // scenarios (LLM gate, activity gate, throttle gate, prefix-collision)
-  // all pass on Windows — the regression is specific to this all-gates-
-  // pass scenario where the hook should overwrite the pre-seeded
-  // `last_run_iso` with `Date.now()`.
-  //
-  // Diagnosis runbook (next Windows session):
-  //   docs/notes/windows-dream-trigger-diagnosis.md
-  //
-  // Quick path: remove this skipIf, set
-  //   env: { ..., MEMESH_DREAM_TRIGGER_DEBUG: '1' }
-  // in the runHook call below, and inspect the `[memesh dream-trigger]`
-  // stderr lines to see which gate is exiting early on Windows. The
-  // first `exit reason=...` line is the answer.
-  it.skipIf(process.platform === 'win32')("triggers dream when all gates pass (LLM + activity ≥ 10 + last run > 24h)", () => {
-    writeConfig({ llm: { provider: "anthropic", model: "claude-haiku-4-5", apiKey: "sk-ant-test-junk" } });
-    writeMinimalTranscript();
-    seedEpisodicEntities(D_MY, 15);
-
-    const twoDaysAgo = new Date(Date.now() - 48 * 3600 * 1000).toISOString();
-    fs.writeFileSync(path.join(memeshDir, "dream-history.json"), JSON.stringify({
-      [D_MY]: { last_run_iso: twoDaysAgo },
-    }));
-
-    runHook();
-
-    const history = JSON.parse(fs.readFileSync(path.join(memeshDir, "dream-history.json"), "utf8"));
-    expect(history[D_MY]).toBeDefined();
-    const updatedAge = Date.now() - new Date(history[D_MY].last_run_iso).getTime();
-    expect(updatedAge).toBeLessThan(60 * 1000);
-    expect(history[D_MY].last_episodic_count).toBeGreaterThanOrEqual(10);
-
-    const logDir = path.join(memeshDir, "dream-runs");
-    expect(fs.existsSync(logDir)).toBe(true);
-    const logs = fs.readdirSync(logDir);
-    expect(logs.length).toBeGreaterThanOrEqual(1);
-    const headerLine = fs.readFileSync(path.join(logDir, logs[0]), "utf8").split("\n")[0];
-    expect(headerLine).toContain(`project=${D_MY}`);
-    // The hook itself creates a session-insight entity before reaching
-    // the dream trigger, so the episodic count picks up 1+ extra
-    // entities of compactable type. Test for >= seed count rather than
-    // an exact match.
-    const m = headerLine.match(/episodic_count=(\d+)/);
-    expect(m).not.toBeNull();
-    expect(parseInt(m![1], 10)).toBeGreaterThanOrEqual(15);
-  });
 });

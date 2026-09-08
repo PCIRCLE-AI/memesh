@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import { normalizeAgentRouterSocketPath } from '../core/paths.js';
 const MAX_HOST_CONFIG_FILE_BYTES = 64 * 1024;
 const MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
 export const SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED = 'The secure local host runtime is not supported on Windows.';
@@ -41,6 +42,9 @@ export function requiredString(value, field) {
         throw new Error(`${field} must be a bounded non-empty string.`);
     }
     return value;
+}
+export function normalizeConfiguredRouterSocket(value) {
+    return normalizeAgentRouterSocketPath(requiredString(value, 'router_socket'));
 }
 export function optionalStringArray(value, field) {
     if (value === undefined)

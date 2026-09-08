@@ -207,8 +207,8 @@ async function main() {
     assert.equal(configResponse.status, 200, 'isolated config readback should succeed');
     const configPayload = await configResponse.json();
     assert.equal(configPayload.success, true, 'isolated config readback should return success');
-    assert.equal(configPayload.data.capabilities.llm, null, 'Dashboard E2E must not inherit an owner LLM provider');
-    assert.equal(configPayload.data.capabilities.llmSource, 'none', 'Dashboard E2E provider source must stay isolated');
+    assert.equal(typeof configPayload.data.config, 'object', 'isolated config readback should expose current settings');
+    assert.equal('capabilities' in configPayload.data, false, 'retired provider capabilities must not be exposed');
     const browser = await launchBrowser();
 
     try {
@@ -281,64 +281,192 @@ async function main() {
         'Locale switch back to English triggered a full reload'
       );
 
-      // Reproduce the compatible Dream path against the packaged dashboard.
-      // Keep the provider and proposal lifecycle deterministic while leaving
-      // every other request (including health) on the real server.
-      const dreamPage = await context.newPage();
-      const dreamPageErrors = [];
-      const dreamConsoleErrors = [];
+      // Exercise the current staged-work-package review path. The dashboard
+      // may review an existing proposal, but must never call a provider,
+      // generate a proposal, or rebuild a retired vector index.
+      const reviewPage = await context.newPage();
+      const reviewPageErrors = [];
+      const reviewConsoleErrors = [];
+      const reviewRequests = [];
+      // Build these paths from segments so the repository's static client-route
+      // inventory does not mistake this negative assertion for an HTTP call.
+      const forbiddenRoutes = [
+        'config/test', 'reindex', 'telemetry', 'dream/run',
+        'consolidate', 'report-issue', 'report_issue',
+      ].map((segment) => ['', 'v1', segment].join('/'));
       const proposal = {
         id: 1,
         project: 'dashboard-e2e',
-        cluster_key: 'dashboard-e2e-cluster',
+        cluster_key: 'transcript:dashboard-e2e-session',
         source_count: 1,
-        digest_name: 'dashboard-e2e-dream-proposal',
-        digest_observations_preview: 'Dashboard Dream smoke proposal',
+        digest_name: 'dashboard-e2e-work-package',
+        digest_observations_preview: 'Staged transcript proposal',
         status: 'pending',
         created_at: '2026-08-31 00:00:00',
         kind: 'digest',
+        source_kind: 'transcript',
       };
-      let dreamRuns = 0;
       let proposalReads = 0;
-      dreamPage.on('pageerror', (error) => dreamPageErrors.push(error.message));
-      dreamPage.on('console', (message) => {
-        if (message.type() === 'error') dreamConsoleErrors.push(message.text());
+      let rejectAttempts = 0;
+      let proposalStatus = 'pending';
+      let markDetailRequestStarted;
+      let releaseDetailResponse;
+      const detailRequestStarted = new Promise((resolve) => { markDetailRequestStarted = resolve; });
+      const detailResponseReleased = new Promise((resolve) => { releaseDetailResponse = resolve; });
+      reviewPage.on('request', (request) => reviewRequests.push(new URL(request.url()).pathname));
+      reviewPage.on('pageerror', (error) => reviewPageErrors.push(error.message));
+      reviewPage.on('console', (message) => {
+        if (message.type() === 'error') reviewConsoleErrors.push(message.text());
       });
-      await dreamPage.route('**/v1/config', (route) => route.fulfill({
-        contentType: 'application/json',
-        body: JSON.stringify({ success: true, data: { capabilities: { llm: { provider: 'openai' } } } }),
-      }));
-      await dreamPage.route('**/v1/dream/run', async (route) => {
+      reviewPage.on('dialog', (dialog) => dialog.accept());
+      await reviewPage.route(/\/v1\/dream\/proposals\/1\/reject$/, async (route) => {
         assert.equal(route.request().method(), 'POST');
-        dreamRuns += 1;
+        rejectAttempts += 1;
+        if (rejectAttempts === 1) {
+          await route.fulfill({
+            status: 404,
+            contentType: 'application/json',
+            body: JSON.stringify({ success: false, errorCode: 'resource.not-found', error: 'proposal disappeared' }),
+          });
+          return;
+        }
+        proposalStatus = 'rejected';
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ success: true, data: { status: 'rejected' } }) });
+      });
+      await reviewPage.route(/\/v1\/dream\/proposals\/1$/, async (route) => {
+        assert.equal(route.request().method(), 'GET');
+        markDetailRequestStarted();
+        await detailResponseReleased;
         await route.fulfill({
           contentType: 'application/json',
           body: JSON.stringify({
             success: true,
-            data: { proposalsCreated: 1, llmCalls: 1, skipped: [] },
+            data: {
+              ...proposal,
+              status: proposalStatus,
+              proposed_digest: {
+                name: proposal.digest_name,
+                type: 'decision',
+                observations: ['A local agent staged this visible transcript finding.'],
+                tags: ['project:dashboard-e2e'],
+              },
+              source_ids: {
+                sessionId: 'dashboard-e2e-session',
+                source: { host: 'claude-code', scope: 'mcp-workspace-root' },
+                workspaceHash: 'a'.repeat(64),
+                coverage: { truncated: true, total_turns: 3, included_turns: 2 },
+                sources: [
+                  { role: 'user', text: 'Visible redacted evidence: ***REDACTED***' },
+                  { role: 'assistant', text: 'Bounded transcript conclusion.' },
+                ],
+                trust: 'untrusted',
+              },
+              reason: null,
+              reviewed_at: null,
+            },
           }),
         });
       });
-      await dreamPage.route(/\/v1\/dream\/proposals(?:\?.*)?$/, async (route) => {
+      await reviewPage.route(/\/v1\/dream\/proposals(?:\?.*)?$/, async (route) => {
         assert.equal(route.request().method(), 'GET');
         proposalReads += 1;
         await route.fulfill({
           contentType: 'application/json',
-          body: JSON.stringify({ success: true, data: dreamRuns === 1 ? [proposal] : [] }),
+          body: JSON.stringify({ success: true, data: [{ ...proposal, status: proposalStatus }] }),
         });
       });
-      await dreamPage.goto(`${dashboardUrl}?tab=Home`, { waitUntil: 'networkidle' });
+      await reviewPage.goto(`${dashboardUrl}?tab=Home`, { waitUntil: 'networkidle' });
+      await expectVisible(reviewPage, 'Staged memory proposals');
+      await expectVisible(reviewPage, 'The Dashboard reviews proposals that are already staged');
+      await expectVisible(reviewPage, 'dashboard-e2e-work-package');
+      const acceptButton = reviewPage.getByRole('button', { name: 'Accept', exact: true });
       assert.equal(
-        await dreamPage.getByText('dashboard-e2e-dream-proposal', { exact: true }).count(),
-        0,
-        'Dream proposal must not be visible before the run succeeds',
+        await acceptButton.isVisible(),
+        false,
+        'Accept must stay hidden while only the truncated summary is available',
       );
-      await dreamPage.getByRole('button', { name: 'Run weekly recap', exact: true }).click();
-      await expectVisible(dreamPage, 'dashboard-e2e-dream-proposal');
-      assert.equal(dreamRuns, 1, 'Dream run should POST exactly once');
-      assert.ok(proposalReads >= 2, `Dream proposals should be read at least twice (got ${proposalReads})`);
-      assert.deepEqual(dreamPageErrors, [], `Dream page errors detected:\n${dreamPageErrors.join('\n')}`);
-      assert.deepEqual(dreamConsoleErrors, [], `Dream console errors detected:\n${dreamConsoleErrors.join('\n')}`);
+      await reviewPage.getByRole('button', { name: 'View detail', exact: true }).click();
+      await detailRequestStarted;
+      assert.equal(
+        await acceptButton.isVisible(),
+        false,
+        'Accept must stay hidden until full proposal detail has loaded',
+      );
+      releaseDetailResponse();
+      await expectVisible(reviewPage, 'A local agent staged this visible transcript finding.');
+      const transcriptEvidence = reviewPage.getByTestId('transcript-source-evidence');
+      await transcriptEvidence.waitFor({ state: 'visible', timeout: 10000 });
+      const transcriptEvidenceText = await transcriptEvidence.innerText();
+      assert.match(transcriptEvidenceText, /2\/3 sources/);
+      assert.match(transcriptEvidenceText, /user\s+Visible redacted evidence: \*\*\*REDACTED\*\*\*/);
+      assert.match(transcriptEvidenceText, /assistant\s+Bounded transcript conclusion\./);
+      assert.equal(await acceptButton.isVisible(), true, 'Accept must appear after full proposal detail loads');
+      assert.equal(await acceptButton.isEnabled(), true, 'Accept must be enabled after full proposal detail loads');
+
+      await reviewPage.getByRole('button', { name: 'Reject', exact: true }).click();
+      await expectVisible(reviewPage, 'That item no longer exists on the server');
+      await reviewPage.getByRole('button', { name: 'Reject', exact: true }).click();
+      await reviewPage.getByRole('button', { name: 'Rejected', exact: true }).click();
+      await expectVisible(reviewPage, 'dashboard-e2e-work-package');
+      assert.equal(rejectAttempts, 2, 'Reject should expose one stale-item failure and succeed on retry');
+      assert.ok(proposalReads >= 2, `Proposal list should refresh after review (got ${proposalReads})`);
+      assert.deepEqual(
+        [...new Set(reviewRequests.filter((requestPath) => forbiddenRoutes.includes(requestPath)))],
+        [],
+        'Dashboard called a retired provider/vector route',
+      );
+      assert.deepEqual(reviewPageErrors, [], `Review page errors detected:\n${reviewPageErrors.join('\n')}`);
+      assert.equal(reviewConsoleErrors.length, 1, 'The intentional stale-proposal 404 should be the only review console error');
+      assert.match(reviewConsoleErrors[0], /404 \(Not Found\)/, 'The expected review console error must be the exercised 404');
+
+      // Exercise the dependency-free fallback directly from the packed
+      // module. A 200 with a malformed body must render an error, never a
+      // truthful-looking empty state or editable default settings.
+      const legacyPage = await context.newPage();
+      const legacyPageErrors = [];
+      legacyPage.on('pageerror', (error) => legacyPageErrors.push(error.message));
+      const legacyModule = await import(pathToFileURL(path.join(packageRoot, 'dist', 'cli', 'view-live.js')).href);
+      const legacyHtml = legacyModule.generateLiveDashboardHtml();
+      await legacyPage.route('http://legacy.memesh.invalid/**', (route) => {
+        const routeUrl = new URL(route.request().url());
+        if (routeUrl.pathname === '/') {
+          return route.fulfill({ contentType: 'text/html', body: legacyHtml });
+        }
+        if (routeUrl.pathname === '/v1/health') {
+          return route.fulfill({
+            contentType: 'application/json',
+            body: JSON.stringify({ success: true, data: { version: 'packaged', entity_count: 1 } }),
+          });
+        }
+        if (['/v1/recall', '/v1/entities', '/v1/graph', '/v1/config'].includes(routeUrl.pathname)) {
+          return route.fulfill({
+            contentType: 'application/json',
+            body: JSON.stringify({ success: true, data: {} }),
+          });
+        }
+        return route.fulfill({
+          status: 404,
+          contentType: 'application/json',
+          body: JSON.stringify({ success: false, error: 'unexpected legacy route' }),
+        });
+      });
+      await legacyPage.goto('http://legacy.memesh.invalid/', { waitUntil: 'networkidle' });
+
+      await legacyPage.locator('#search-query').fill('malformed-shape');
+      await legacyPage.locator('#search-btn').click();
+      await expectVisible(legacyPage, 'Invalid search results response');
+
+      await legacyPage.getByRole('button', { name: 'Browse', exact: true }).click();
+      await legacyPage.locator('#browse-table-wrap').getByText('Invalid entities response').waitFor({ state: 'visible' });
+      await legacyPage.getByRole('button', { name: 'Graph', exact: true }).click();
+      await legacyPage.locator('#graph-svg-wrap').getByText('Invalid graph response').waitFor({ state: 'visible' });
+      await legacyPage.getByRole('button', { name: 'Timeline', exact: true }).click();
+      await legacyPage.locator('#timeline-body').getByText('Invalid graph response').waitFor({ state: 'visible' });
+      await legacyPage.getByRole('button', { name: 'Manage', exact: true }).click();
+      await legacyPage.locator('#manage-table-wrap').getByText('Invalid entities response').waitFor({ state: 'visible' });
+      await legacyPage.getByRole('button', { name: 'Settings', exact: true }).click();
+      await expectVisible(legacyPage, 'Failed to load config: Invalid config response');
+      assert.deepEqual(legacyPageErrors, [], `Legacy dashboard page errors detected:\n${legacyPageErrors.join('\n')}`);
 
       assert.deepEqual(pageErrors, [], `Dashboard page errors detected:\n${pageErrors.join('\n')}`);
       assert.deepEqual(consoleErrors, [], `Dashboard console errors detected:\n${consoleErrors.join('\n')}`);

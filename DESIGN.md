@@ -73,8 +73,8 @@ add a token rather than a literal.
 |---|---|---|
 | `--text-0` | `#EDEDEE` | Primary |
 | `--text-1` | `#B4B5B7` | Secondary |
-| `--text-2` | `#7E8083` | Muted / labels |
-| `--text-3` | `#4B4D51` | Disabled / hints |
+| `--text-2` | `#AAACB0` | Secondary labels |
+| `--text-3` | `#96999F` | Readable hints and metadata |
 
 ### Life, amber, and status
 
@@ -148,7 +148,10 @@ a decorative italic in the meantime.)
 Fonts load via Google Fonts `<link>` in `dashboard/index.html`; offline,
 the fallback stacks carry the page. There is no `--font` and no
 `--font-mono` — referencing either silently produces a fallback font.
-Base size is 14px on `html`.
+Base size is 16px on `html`. Navigation and standard buttons use 15px;
+compact controls and explanatory labels use at least 14px. Keep secondary
+information readable instead of making it disappear into the background.
+Static cards do not glow on hover; reserve emphasis for actionable controls.
 
 ### Radius
 
@@ -217,7 +220,7 @@ they are touched.
 
 - **Chip** (shared): token-only styling. Inactive: `--border` border,
   `--text-2` text, transparent fill. Active: `--life` border, `--life-soft`
-  fill, `--life` text. Radius `--radius`, 11px `--font-ui`, count in
+  fill, `--life` text. Radius `--radius`, 14px `--font-ui`, count in
   `--mono`. `aria-pressed` always.
 - **Composition bar**: cluster segments coloured by the species formula,
   height 6px, `--radius-hairline`, on a `--bg-0` track. The bar itself is

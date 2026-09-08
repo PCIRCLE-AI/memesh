@@ -1,31 +1,6 @@
 import { remember } from './operations.js';
 import { getDatabase } from '../db.js';
-import { KnowledgeGraph } from '../knowledge-graph.js';
 import { lessonSlug } from './lesson-slug.js';
-export function createLesson(lesson, projectName) {
-    const name = `lesson-${projectName}-${lesson.errorPattern}`;
-    const isNew = new KnowledgeGraph(getDatabase()).getEntity(name) === null;
-    remember({
-        name,
-        type: 'lesson_learned',
-        observations: [
-            `Error: ${lesson.error}`,
-            `Root cause: ${lesson.rootCause}`,
-            `Fix: ${lesson.fix}`,
-            `Prevention: ${lesson.prevention}`,
-        ],
-        tags: [
-            `project:${projectName}`,
-            `error-pattern:${lesson.errorPattern}`,
-            `fix-pattern:${lesson.fixPattern}`,
-            `severity:${lesson.severity}`,
-            'source:auto-learned',
-        ],
-        trustOverride: 'untrusted',
-        provenanceOverride: { source: 'auto-learned' },
-    });
-    return { name, isNew };
-}
 export function createExplicitLesson(error, fix, projectName, opts) {
     const errorPattern = opts?.errorPattern || inferErrorPattern(error);
     const name = opts?.errorPattern

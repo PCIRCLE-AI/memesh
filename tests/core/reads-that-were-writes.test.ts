@@ -9,14 +9,6 @@
  *              the counter and stamped "used just now" on up to a thousand
  *              memories. The act of copying the graph re-sorted it.
  *
- *   `createLesson`  asked "does a lesson with this exact name exist?" with
- *              `recall({ query: name, limit: 1 })` — a fuzzy search against an
- *              exact key. When the lesson did NOT exist it matched some other
- *              memory (the old `existing[0].name !== name` clause is its
- *              author's evidence for that), and bumped THAT memory. So every
- *              LLM-generated lesson manufactured one "memory reused this
- *              week" — the dashboard's headline number.
- *
  * `listByType` already drew this line by simply never calling `trackAccess`
  * ("a type browse is a catalogue read"). These paths share a query with real
  * recalls, so they say so with a flag instead.
@@ -28,7 +20,6 @@ import path from 'path';
 import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { exportMemories } from '../../src/core/serializer.js';
-import { createLesson } from '../../src/core/lesson-engine.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { trackAccess } from '../../src/storage/conflicts.js';
 
@@ -113,7 +104,6 @@ describe('recall access accounting is best-effort only for read-only SQLite', ()
     closeDatabase();
     const reader = new MemeshDatabase(path.join(dir, 'kg.db'), {
       readOnly: true,
-      allowExtension: true,
     });
     try {
       const found = new KnowledgeGraph(reader).search('searchable');
@@ -135,42 +125,5 @@ describe('recall access accounting is best-effort only for read-only SQLite', ()
     } as unknown as MemeshDatabase;
 
     expect(() => trackAccess(failingDb, [1])).toThrow(failure);
-  });
-});
-
-describe('a lesson existence check does not touch another memory', () => {
-  const LESSON = {
-    error: 'the build failed',
-    rootCause: 'a missing dependency',
-    fix: 'install it',
-    prevention: 'pin the version',
-    errorPattern: 'missing-dep',
-    fixPattern: 'install',
-    severity: 'minor' as const,
-  };
-
-  it('leaves an unrelated memory alone when the lesson is new', () => {
-    // The exact live shape: nothing named `lesson-*` exists, so the old fuzzy
-    // search fell through to whatever else the query happened to match.
-    const kg = new KnowledgeGraph(getDatabase());
-    kg.createEntity('lesson-notes-about-the-build', 'note', {
-      observations: ['unrelated notes that a fuzzy search for the lesson name would match'],
-    });
-    const before = accountingFor('lesson-notes-about-the-build');
-
-    const created = createLesson(LESSON, 'someproject');
-
-    expect(created.isNew, 'a brand-new lesson was reported as an update').toBe(true);
-    const after = accountingFor('lesson-notes-about-the-build');
-    expect(after.access_count, 'writing a lesson counted a use of an unrelated memory')
-      .toBe(before.access_count);
-    expect(after.last_accessed_at).toBe(before.last_accessed_at);
-  });
-
-  it('still reports isNew=false on the second write — the anti-vacuity half', () => {
-    // A check hardwired to "new" would satisfy the test above and break the
-    // dashboard's new-vs-updated accounting instead.
-    createLesson(LESSON, 'someproject');
-    expect(createLesson(LESSON, 'someproject').isNew).toBe(false);
   });
 });

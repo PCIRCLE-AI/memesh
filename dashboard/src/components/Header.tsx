@@ -26,7 +26,7 @@ export function Header({ health, error }: { health: HealthData | null; error: st
             aria-label={`${t(signalMode ? 'header.signalModeOn' : 'header.signalModeOff')}. ${t(signalMode ? 'header.signalModeOnHint' : 'header.signalModeOffHint')}`}
             title={t(signalMode ? 'header.signalModeOnHint' : 'header.signalModeOffHint')}
             style={{
-              fontSize: 11,
+              fontSize: 14,
               padding: '4px 10px',
               borderRadius: 'var(--radius)',
               border: `1px solid ${signalMode ? 'rgba(143, 242, 92, 0.4)' : 'var(--border)'}`,

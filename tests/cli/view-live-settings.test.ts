@@ -1,0 +1,50 @@
+import { describe, expect, it } from 'vitest';
+import vm from 'node:vm';
+import { Window } from 'happy-dom';
+import { generateLiveDashboardHtml } from '../../src/cli/view-live.js';
+
+function parseScriptContents(html: string) {
+  const window = new Window({ settings: { disableJavaScriptEvaluation: true } });
+  try {
+    const document = new window.DOMParser().parseFromString(html, 'text/html');
+    return [...document.querySelectorAll('script')].map(script => script.textContent ?? '');
+  } finally {
+    window.close();
+  }
+}
+
+describe('legacy live dashboard retained settings', () => {
+  it('renders only supported local settings and agent-neutral onboarding', () => {
+    const html = generateLiveDashboardHtml();
+
+    expect(html).toContain("addCap('Memory engine', 'Local FTS5', true)");
+    expect(html).toContain("addCap('Initial setup'");
+    expect(html).toContain('autoCapture: autoCheck.checked');
+    expect(html).toContain('autoUpdate: autoUpdateSelect.value');
+    expect(html).toContain('sessionLimit: sessionLimit');
+    expect(html).toContain("{ setupCompleted: true }");
+    expect(html).toContain('already-running agent to use work_package');
+    expect(html).toContain('does not run or wake agents');
+
+    expect(html).not.toMatch(/LLM Provider|Smart Mode|wizard-provider|llm-provider|apiKey|\/v1\/reindex/);
+    expect(html).not.toMatch(/Claude Code|Anthropic|OpenAI|Ollama/);
+    expect(html).toContain("throw new Error('Invalid config response')");
+    expect(html).not.toContain("configRes.data.config) || {}");
+  });
+
+  it.each(['original', 'mixed-case', 'end-tag-space'])('emits syntactically valid browser scripts (%s tags)', (style) => {
+    const generated = generateLiveDashboardHtml();
+    const html = style === 'mixed-case' ? generated.replaceAll('<script', '<ScRiPt').replaceAll('</script', '</sCrIpT')
+      : style === 'end-tag-space' ? generated.replaceAll('</script>', '</script >') : generated;
+    const scripts = parseScriptContents(html);
+
+    expect(scripts).toHaveLength(2);
+    for (const script of scripts) expect(() => new vm.Script(script)).not.toThrow();
+  });
+
+  it('rejects malformed script end tags instead of silently skipping the missing script', () => {
+    const malformed = generateLiveDashboardHtml().replaceAll('</script>', '</script/>');
+
+    expect(parseScriptContents(malformed)).not.toHaveLength(2);
+  });
+});

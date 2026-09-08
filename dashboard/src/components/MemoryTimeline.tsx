@@ -13,10 +13,12 @@ interface MemoryTimelineProps {
 }
 
 const PAD_TOP = 8;
-const PAD_RIGHT = 8;
-const PAD_BOTTOM = 20;
-const PAD_LEFT = 8;
+const PAD_RIGHT = 24;
+const PAD_BOTTOM = 28;
+const PAD_LEFT = 24;
 const CANVAS_HEIGHT = 120;
+export const TIMELINE_AXIS_FONT_SIZE = 14;
+const AXIS_LABEL_GAP = 8;
 
 // Accent at 30% — a glow alpha (no 8% token fits), sanctioned by DESIGN.md and
 // shared by the bars and the DOM legend swatch so they stay identical.
@@ -25,7 +27,7 @@ const LINE_WIDTH = 1.5;
 // The line, label colour and font are palette tokens; canvas cannot read
 // var(), so they are resolved from the live stylesheet inside drawTimeline.
 
-function drawTimeline(
+export function drawTimeline(
   canvas: HTMLCanvasElement,
   data: TimelineEntry[],
 ): void {
@@ -59,7 +61,7 @@ function drawTimeline(
   const tk = resolveTokens(canvas, ['--life', '--text-3', '--font-ui']);
   const lineStroke = tk['--life'];
   const labelColor = tk['--text-3'];
-  const labelFont = `9px ${tk['--font-ui']}`;
+  const labelFont = `${TIMELINE_AXIS_FONT_SIZE}px ${tk['--font-ui']}`;
 
   const maxCreated = Math.max(1, ...data.map((d) => d.created));
   const maxRecalled = Math.max(1, ...data.map((d) => d.recalled));
@@ -103,8 +105,15 @@ function drawTimeline(
   ctx.font = labelFont;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
+  // Keep date labels legible at narrow responsive widths without losing any
+  // data bars. Measuring after setting the real canvas font keeps each tick's
+  // width inside the drawable bounds rather than relying on a magic cadence.
+  const labelEvery = Math.max(
+    7,
+    Math.ceil((ctx.measureText('00-00').width + AXIS_LABEL_GAP) / (barW + gap)),
+  );
 
-  for (let i = 0; i < barCount; i += 7) {
+  for (let i = 0; i < barCount; i += labelEvery) {
     const entry = data[i];
     // Format as MM-DD
     const parts = entry.date.split('-');
@@ -149,7 +158,7 @@ export function MemoryTimeline({ data }: MemoryTimelineProps) {
           display: 'flex',
           alignItems: 'center',
           gap: 12,
-          fontSize: 11,
+          fontSize: 14,
           color: 'var(--text-2)',
         }}>
           <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>

@@ -13,7 +13,7 @@ import {
   SQL_NFC_FUNCTION,
 } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
-import { dropEntityFromIndexes, removeVectorRow } from './storage/entity-index.js';
+import { dropEntityFromIndexes } from './storage/entity-index.js';
 
 /**
  * Cap on how many terms of a query reach the FTS5 MATCH expression. Terms are
@@ -293,7 +293,7 @@ export class KnowledgeGraph {
        * `updateEntityMetadata()` call, because the bump decision
        * happens inside this function. The default ('trusted') matches
        * what `buildLocalMetadata()` writes for explicit user
-       * remembers; importer / failure-analyzer paths pass
+       * remembers; importer and accepted-agent proposal paths pass
        * `'untrusted'` to opt out of the bump.
        */
       trustOverride?: 'trusted' | 'untrusted';
@@ -440,8 +440,8 @@ export class KnowledgeGraph {
     // Reading the text unconditionally is correct for BOTH archived cases.
     // Archiving never touches observations, so this IS the text that was
     // indexed at archive time; and when the entity was archived through
-    // `archiveEntity` and genuinely has no FTS row, `removeFromFts` classes
-    // the miss as benign and does nothing.
+    // `archiveEntity` and genuinely has no FTS row, `removeFromFts` detects
+    // that absence before issuing the contentless delete and does nothing.
     const prevObs = isNewEntity
       ? []
       : (this.db
@@ -452,12 +452,11 @@ export class KnowledgeGraph {
     // review feedback:
     //
     //   1. First take: bump on every re-call. Codex caught it as a
-    //      pump-attack — every internal caller (auto-tagger, importer,
+    //      pump-attack — every internal caller (importer, repeated hooks,
     //      tight loop) would inflate confidence with no truth value
     //      added.
     //   2. Second take: never bump from createEntity, only from
-    //      explicit `learn`. (A successful `consolidate` also reached
-    //      here until that tool was retired.) Codex caught
+    //      explicit `learn`. Codex caught
     //      THAT as a one-way decay regression for LLM-free installs.
     //   3. Third take: bump on new observations only. Codex caught
     //      THAT as still permitting untrusted sources (importer,
@@ -468,7 +467,7 @@ export class KnowledgeGraph {
     // brand-new observation string, AND (c) the metadata trust signal
     // is 'trusted' (the default for explicit MCP/HTTP/CLI remember
     // calls). Untrusted sources — `importMemories(append/overwrite)`,
-    // `createLesson` (failure-analyzer auto-learned), and any future
+    // `createLesson`, and any future
     // caller that sets `trustOverride: 'untrusted'` — explicitly
     // opt out of confidence lift.
     if (!isNewEntity && !wasArchived) {
@@ -1066,162 +1065,144 @@ export class KnowledgeGraph {
    * Used by overwrite import to start fresh before re-adding data.
    */
   clearEntityData(name: string): void {
-    const row = this.db
-      .prepare('SELECT id, title FROM entities WHERE name = ?')
-      .get(name) as { id: number; title: string | null } | undefined;
-    if (!row) return;
-
-    // Capture current observations text for FTS delete before clearing.
-    // ALWAYS a string, never undefined-on-empty: createEntity indexes
-    // name+title even for a zero-observation entity, so an FTS row exists —
-    // the old `length > 0 ? text : undefined` skipped the delete for exactly
-    // that case, and an overwrite-import of an observation-less entity
-    // double-inserted the same rowid into the index. If the entity truly has
-    // no FTS row (archived, pre-index era), `removeFromFts` skips the delete
-    // because the rowid is not indexed.
-    //
-    // That last sentence used to read "removeFromFts's benign-error class
-    // absorbs the miss", and it was not true: on SQLite 3.51.3 a contentless
-    // delete with no row to match either does nothing OR — when the same
-    // (rowid, text) was already deleted — raises `database disk image is
-    // malformed`, which that class deliberately does NOT absorb. The check
-    // now lives in `removeFromFts` itself, before the delete.
-    const prevObsText = indexedObservationText(this.db, row.id);
-
-    // One transaction, for the same reason archiveEntity has one: these four
-    // writes are a single act. A throw between the observation delete and the
-    // FTS rebuild leaves indexed text for observations that are gone —
-    // keyword search answering for content nobody can read.
     this.db.transaction(() => {
+      const row = this.db
+        .prepare('SELECT id, title FROM entities WHERE name = ?')
+        .get(name) as { id: number; title: string | null } | undefined;
+      if (!row) return;
+
+      // Capture current observations only after the immediate transaction
+      // begins. A snapshot taken before the write lock let another connection
+      // append text that this delete could not match, leaving stale FTS tokens.
+      // ALWAYS a string, never undefined-on-empty: createEntity indexes
+      // name+title even for a zero-observation entity, so an FTS row exists.
+      const prevObsText = indexedObservationText(this.db, row.id);
+
+      // These four writes are a single act. A throw between the observation
+      // delete and the FTS rebuild must leave both source and index unchanged.
       this.db.prepare('DELETE FROM observations WHERE entity_id = ?').run(row.id);
       this.db.prepare('DELETE FROM tags WHERE entity_id = ?').run(row.id);
       // Rebuild FTS with empty content (removes old indexed text). title is
       // untouched by this method, so the same value goes in on both sides.
       this.rebuildFts(row.id, name, prevObsText, row.title);
-      // And drop the vector, for the same reason the FTS text is dropped: it
-      // encodes observations that no longer exist. The keyword index was
-      // cleared here from the start; the vector was not, so every caller of
-      // this method — `--merge overwrite` on import, and the memory tool's
-      // `rewriteObservations` — left the entity semantically matching its OLD
-      // text. A memory edited to say the opposite of what it used to say
-      // still came back for the old query, with the new text attached.
-      //
-      // Deleted rather than re-embedded: embedding is a network call and this
-      // is a synchronous graph mutation. NO vector is a state the system
-      // already knows how to see (`countMissingVectors`) and already knows
-      // how to fix (`memesh reindex`); a WRONG vector is neither.
-      removeVectorRow(this.db, row.id);
-    })();
+    }).immediate();
   }
 
   archiveEntity(name: string): { archived: boolean; name?: string; previousStatus?: string } {
-    const row = this.db
-      .prepare('SELECT id, status, title FROM entities WHERE name = ?')
-      .get(name) as { id: number; status: string; title: string | null } | undefined;
-
-    if (!row) return { archived: false };
-
     // One transaction, because a partial archive is worse than a failed one.
     //
-    // These ran in autocommit. The FTS delete committed, the vector delete
-    // threw `no such module: vec0` (see hasVectorIndex — the catalogue check
-    // could not tell a loaded extension from a leftover table row), and the
-    // status update never ran. The memory was left ACTIVE and unindexed:
+    // These writes used to run in autocommit. If the FTS delete committed and
+    // the status update then failed, the memory was left ACTIVE and unindexed:
     // invisible to keyword search, invisible to the archived-supplement
     // branch (which filters on status='archived'), and invisible to
     // `includeArchived`. Retrying threw again forever. Only `reindex --fts`
     // recovered it, and nothing told the user it existed.
     //
-    // hasVectorIndex now answers the process question, so the throw should
-    // not recur — but the atomicity is what makes a future throw survivable
-    // rather than data-destroying, and that is worth having independently.
-    this.db.transaction(() => {
-      dropEntityFromIndexes(this.db, row.id, name);
+    // Atomicity makes a future throw survivable rather than data-destroying.
+    return this.db.transaction(() => {
+      // Resolve the row and its authoritative name only after the immediate
+      // write lock. Otherwise a concurrent rename can make the contentless
+      // FTS delete use a stale name while the status update still hits by id.
+      const row = this.db
+        .prepare('SELECT id, name, status FROM entities WHERE name = ?')
+        .get(name) as { id: number; name: string; status: string } | undefined;
+      if (!row) return { archived: false };
+
+      dropEntityFromIndexes(this.db, row.id, row.name);
 
       this.db
         .prepare("UPDATE entities SET status = 'archived' WHERE id = ?")
         .run(row.id);
+      return { archived: true, name: row.name, previousStatus: row.status };
     }).immediate();
-
-    return { archived: true, name, previousStatus: row.status };
   }
 
   removeObservation(
     entityName: string,
     observationContent: string
   ): { removed: boolean; remainingObservations: number; entityFound: boolean } {
-    const row = this.db
-      .prepare('SELECT id, title FROM entities WHERE name = ?')
-      .get(entityName) as { id: number; title: string | null } | undefined;
+    // The source rows and their derived FTS row are one state transition. An
+    // immediate transaction prevents another writer changing the observations
+    // after we reconstruct the exact contentless-FTS delete text, and rolls the
+    // observation deletion back if either half of the FTS replacement fails.
+    return this.db.transaction(() => {
+      const row = this.db
+        .prepare('SELECT id, title, status FROM entities WHERE name = ?')
+        .get(entityName) as { id: number; title: string | null; status: string } | undefined;
 
-    // `entityFound` exists because "no such entity" and "that text does not
-    // match any observation" are different problems with opposite next steps,
-    // and the caller could not tell them apart: both arrived as
-    // `removed: false`, and the CLI printed "Entity not found" for the second
-    // one — sending the user to re-create a memory that was sitting right there.
-    if (!row) return { removed: false, remainingObservations: 0, entityFound: false };
+      // `entityFound` exists because "no such entity" and "that text does not
+      // match any observation" are different problems with opposite next steps,
+      // and the caller could not tell them apart: both arrived as
+      // `removed: false`, and the CLI printed "Entity not found" for the second
+      // one — sending the user to re-create a memory that was sitting right there.
+      if (!row) return { removed: false, remainingObservations: 0, entityFound: false };
 
-    const prevObs = this.db
-      .prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id')
-      .all(row.id) as { content: string }[];
-    const prevObsText = joinIndexedObservations(prevObs.map((o) => o.content));
+      const prevObs = this.db
+        .prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id')
+        .all(row.id) as { content: string }[];
+      const prevObsText = joinIndexedObservations(prevObs.map((o) => o.content));
 
-    const deleteResult = this.db
-      .prepare('DELETE FROM observations WHERE entity_id = ? AND content = ?')
-      .run(row.id, observationContent);
+      // The public contract removes one observation, not every row with the
+      // same text. Lesson entities may intentionally repeat an Error/Fix
+      // boundary, so delete the earliest matching observation deterministically.
+      const deleteResult = this.db
+        .prepare(`DELETE FROM observations
+          WHERE id = (
+            SELECT id FROM observations
+            WHERE entity_id = ? AND content = ?
+            ORDER BY id
+            LIMIT 1
+          )`)
+        .run(row.id, observationContent);
 
-    if (deleteResult.changes === 0) {
-      return { removed: false, remainingObservations: prevObs.length, entityFound: true };
-    }
+      if (deleteResult.changes === 0) {
+        return { removed: false, remainingObservations: prevObs.length, entityFound: true };
+      }
 
-    this.rebuildFts(row.id, entityName, prevObsText, row.title);
+      // archiveEntity deliberately removes this row from FTS. Observation-
+      // level forget must preserve that exclusion rather than reactivating the
+      // entity's remaining text in the keyword index.
+      if (row.status !== 'archived') {
+        this.rebuildFts(row.id, entityName, prevObsText, row.title);
+      }
 
-    const remaining = this.db
-      .prepare('SELECT COUNT(*) as c FROM observations WHERE entity_id = ?')
-      .get(row.id) as { c: number };
+      const remaining = this.db
+        .prepare('SELECT COUNT(*) as c FROM observations WHERE entity_id = ?')
+        .get(row.id) as { c: number };
 
-    return { removed: true, remainingObservations: remaining.c, entityFound: true };
+      return { removed: true, remainingObservations: remaining.c, entityFound: true };
+    }).immediate();
   }
 
   /**
-   * Hard-delete an entity by name. Cleans the FTS5 entry, the
-   * sqlite-vec embedding row, then DELETE FROM entities — the
-   * foreign-key cascade handles observations, tags, and relations.
+   * Hard-delete an entity by name. Cleans the FTS5 entry, then DELETE FROM
+   * entities; the foreign-key cascade handles observations, tags and relations.
    *
    * Prefer `archiveEntity()` for user-facing forget flows: archiving
    * preserves the row for restore + analytics. This hard delete is
    * the right tool only when the entity should not exist at all
    * (e.g. demo cleanup after `memesh demo --reset`).
    *
-   * Both index sides matter: FTS5 is contentless and needs the
-   * original observations to locate its row, and `entities_vec` is
-   * a separate virtual table whose rows are not cascaded by the
-   * `entities` FK — leaving them behind shows up as orphan
-   * embeddings on later vector searches.
+   * FTS5 is contentless and needs the original observations to locate its row.
    */
   deleteEntity(name: string): { deleted: boolean } {
-    const row = this.db
-      .prepare('SELECT id, title FROM entities WHERE name = ?')
-      .get(name) as { id: number; title: string | null } | undefined;
-
-    if (!row) return { deleted: false };
-
     // Delete FTS entry first (contentless FTS5 requires the original
     // indexed values to find the row — see storage/fts-index.ts).
     // One transaction, same reason as archiveEntity: in autocommit the FTS
-    // delete committed and a throw on the vector delete left the entity row
-    // in place but out of the index — a permanent orphan that no search could
-    // reach and no retry could clear.
-    this.db.transaction(() => {
-      // Same pair as archiveEntity, through the same owner, so a hard delete
-      // cannot leak orphan embeddings while an archive does not.
-      dropEntityFromIndexes(this.db, row.id, name);
+    // delete committed and a later throw left the entity row in place but out
+    // of the index — a permanent orphan that no search could reach.
+    return this.db.transaction(() => {
+      const row = this.db
+        .prepare('SELECT id, name FROM entities WHERE name = ?')
+        .get(name) as { id: number; name: string } | undefined;
+      if (!row) return { deleted: false };
+
+      dropEntityFromIndexes(this.db, row.id, row.name);
 
       // CASCADE handles observations, relations, tags.
       this.db.prepare('DELETE FROM entities WHERE id = ?').run(row.id);
+      return { deleted: true };
     }).immediate();
-
-    return { deleted: true };
   }
 
   private parseMetadata(rawMetadata: string | null): Record<string, unknown> {

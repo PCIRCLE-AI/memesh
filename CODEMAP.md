@@ -1,6 +1,6 @@
 # CODEMAP
 
-**Version**: 4.8.5
+**Version**: 4.9.0
 
 A navigation map for the codebase: *"I want to change X — which file?"* For the
 design rationale behind these modules see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md);
@@ -35,14 +35,14 @@ listed below.
 ```
 src/
 ├── core/            # framework-agnostic business logic (zero transport deps)
-├── db.ts            # SQLite + FTS5 + sqlite-vec + migrations + auto-decay
+├── db.ts            # SQLite + FTS5 + migrations + auto-decay
 ├── knowledge-graph.ts  # Entity CRUD, relations, FTS5 search, access tracking
 ├── storage/         # conflicts.ts (detection) + fts-index.ts (contentless-FTS5 primitives)
 ├── transports/      # cli/ · http/ · mcp/ (+ schemas.ts = shared Zod validation)
 ├── host-adapters/   # native Claude/Codex adapters + experimental ACP protocol adapter
 ├── host-runtime/    # managed host processes + private-router client/server
 ├── mcp/             # stdio server (NOTE: server lives here, handlers in transports/mcp/)
-└── cli/             # view.ts + view-live.ts (dashboard fallback, NOT a transport)
+└── cli/             # view-live.ts + assets/ (dashboard fallback, NOT a transport)
 scripts/hooks/       # Claude/Codex hook entrypoints + shared/generated helpers
 dashboard/src/       # Preact + Vite dashboard
 tests/               # vitest (forks pool) — mirrors src/ layout
@@ -54,43 +54,31 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 
 ## Feature → file index
 
-### Recall / search (the LLM-free hot path)
+### Recall / search
 - Ranking / scoring weights → `src/core/scoring.ts` (`rankEntities`)
-- FTS5 + sqlite-vec query, access tracking → `src/knowledge-graph.ts`
-- Recall operation (cross_project / namespace / include_archived) → `src/core/operations.ts` (`recallEnhanced`)
-- Vector index / embedding dimension / migration → `src/db.ts`, `src/core/embedder.ts`
+- FTS5 query + access tracking → `src/knowledge-graph.ts`
+- Shared transport recall operation (cross_project / namespace / include_archived) → `src/core/operations.ts` (`recallWithConflicts`, backed by `recallEnhanced`)
 
 ### Write flows (remember / forget / learn / pin)
 - remember / forget / learn / **setPinned** → `src/core/operations.ts`
-- Structured lessons → `src/core/lesson-engine.ts`, `src/core/failure-analyzer.ts`
-- Auto-tagging (LLM) → `src/core/auto-tagger.ts`
+- Structured lessons → `src/core/lesson-engine.ts`
+- Hook capture and classification → deterministic rules in `scripts/hooks/`
 
-### Embeddings
-- Provider dispatch (Ollama / OpenAI) + graceful keyword-only fallback → `src/core/embedder.ts`
-- No local model: semantic search needs Ollama (nomic-embed-text, 768-dim) or OpenAI (1536-dim); with none, recall is FTS5 keyword-only
-
-### LLM (write-side Smart Mode only — never on the recall hot path)
-- Single dispatch + cross-provider failover + secret redaction → `src/core/llm-client.ts`
-- Fallback chain (`llmFallbacks`): ordered providers tried when the primary is down → defined in `src/core/config.ts`, consumed by `src/core/llm-client.ts`
-- Per-attempt telemetry (`by_model` / `by_project` / `sample_errors`) → `src/core/llm-telemetry.ts`
-- Provider/model capability probe → `src/core/llm-validator.ts`
-- Prompt-injection hardening → `src/core/prompt-safety.ts`
-
-### Dream (LLM cluster compaction + pattern detection)
-- Compactor + pattern detector (propose/accept/reject) → `src/core/dreamer.ts`
-- Transcript mining (`dream run --from-transcripts`): find a project's session JSONL → mine conversational memory → sanitise → vector-dedup → stage proposals → `src/core/transcript-source.ts` + `src/core/transcript-extractor.ts`
-- `metadata.pin === true` protection is honored here (set via `memesh pin`)
-- Second-pass digest cross-check → `src/core/digest-validator.ts`
+### Agent-assisted work packages + human review
+- Calendar-cluster or visible-transcript package preparation and strict submission → `src/core/dreamer.ts` (`executeWorkPackage`)
+- Package input is bounded, redacted, and treated as untrusted; submission stages one proposal rather than applying it
+- Proposal list/detail/accept/reject → `src/core/dreamer.ts`; accept/reject authority remains human
+- Transcript paths are server-resolved and never enter the package or API contract
 
 ### Project identity + tags
 - `getProjectName()` (git-remote-slug → repo-root → cwd-basename, cached) → `src/core/paths.ts`
-  (mirrored in `scripts/hooks/_shared.js` — F5 boundary; kept in sync by `tests/core/project-identity.test.ts`)
+  (build-generated as `scripts/hooks/_generated/core-paths.js`, then imported by `_shared.js`)
 - List / merge / rename `project:*` tags → `src/core/project-tags.ts` (backs `memesh kg rename-project`)
 - Heuristic relation backfill (orphan connector) → `src/core/kg-backfill.ts`
 
-### Config / capabilities / self-update
-- Config read/write + capability detection + env auto-detect → `src/core/config.ts`
-- Path resolution (HOME-first) → `src/core/paths.ts`
+### Config / self-update
+- Config read/write → `src/core/config.ts`
+- Path resolution (explicit `MEMESH_DIR` / `MEMESH_DB_PATH` overrides, then HOME defaults) → `src/core/paths.ts`
 - `memesh doctor` health check + real probes → `src/core/doctor.ts`
 - npm version check / self-update → `src/core/version-check.ts`, `src/core/updater.ts`, `src/core/install-channel.ts`, `src/core/install-hooks.ts`
 
@@ -104,7 +92,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 
 ### Dashboard (Preact)
 - Tab routing → `dashboard/src/App.tsx`
-- Analytics / telemetry / insights panels → `dashboard/src/components/`
+- Analytics and proposal-review panels → `dashboard/src/components/`
 - Read-only aggregation endpoints → `src/core/analytics.ts`, `stats.ts`, `graph.ts`, `projects.ts`, `patterns.ts`
 - i18n registry → `dashboard/src/lib/i18n.ts`
 
@@ -114,8 +102,8 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `session-start.js` | SessionStart | inject top-N memories (additionalContext), banner, lesson warnings, auto-update |
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
-| `src/host-runtime/codex-session.ts` | SessionStart | register the exact configured Codex thread for metadata-only wakeups |
-| `session-summary.js` | Stop | auto-capture, LLM failure analysis, dream auto-trigger |
+| `src/host-runtime/codex-session.ts` | SessionStart / SessionEnd | launch, supersede, and retire the detached exact-thread companion; apply a matching optional identity override |
+| `session-summary.js` | Stop | deterministic session capture |
 | `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
 | `decision-nudge.js` | PostToolUse ExitPlanMode/AskUserQuestion | remind Claude to `remember` a decision just made, once per tool per session |
@@ -130,8 +118,8 @@ is invoked by the session-start flow rather than registered directly in the mani
 
 ```
 transport (cli/http/mcp) → validate (transports/schemas.ts, Zod)
-  → operations.recallEnhanced()
-    → knowledge-graph FTS5 + sqlite-vec  → scoring.rankEntities()
+  → operations.recallWithConflicts() → recallEnhanced()
+    → knowledge-graph FTS5 → scoring.rankEntities()
       → conflict detection (storage/conflicts.ts) → result
 ```
 
@@ -141,7 +129,7 @@ The same `operations.ts` memory functions run identically from all three transpo
 
 ## Tests & docs
 
-- Tests: `tests/` mirrors `src/`. Run `npm test -- --run` (pool: forks, not threads — native modules).
+- Tests: `tests/` mirrors `src/`. Run `node scripts/run-tests-isolated.mjs` (throwaway HOME; forks pool, one worker).
   Cross-hook contract gate: `tests/hooks/hook-output-contract.test.ts` (validates every hook's stdout against the real Claude Code contract).
 - Owner-run live checks (never CI): `scripts/qa/live-journey.mjs` — `npm run qa:live-journey -- --host codex|claude`
   drives a real Codex thread or an interactive Claude channel session and requires model-visible proof.
@@ -163,4 +151,4 @@ The same `operations.ts` memory functions run identically from all three transpo
   than merely available. After publishing, `npm run qa:post-release`
   (`scripts/qa/post-release.mjs`) checks registry acceptance, a fresh install from the registry,
   and whether this machine is on the release — read-only, printing fixes rather than running them.
-- Version anchors that must agree on a bump: `package.json`, both root entries in `package-lock.json`, `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `herdr-plugin.toml`, `CHANGELOG.md`, `CODEMAP.md`, `docs/ARCHITECTURE.md`, and `docs/api/API_REFERENCE.md`. Run `npm run build` after to regenerate `dist/skills-manifest.json`.
+- Version anchors that must agree on a bump: `package.json`, both root entries in `package-lock.json`, `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `herdr-plugin.toml`, `CHANGELOG.md`, `CODEMAP.md`, `docs/ARCHITECTURE.md`, and `docs/api/API_REFERENCE.md`. Run `npm run build` after to regenerate `dist/skills-manifest.json`.

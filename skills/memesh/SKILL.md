@@ -23,10 +23,11 @@ Persistent memory for AI agents. The point is continuity: the next session start
 
 All examples below use CLI. MCP tools accept the same parameters as JSON objects.
 
-## All 11 MCP tools
+## All 12 MCP tools
 
 | Tool | Purpose |
 |---|---|
+| `work_package` | Prepare one bounded untrusted `digest` (calendar cluster) or `transcript` package from the newest Claude Code session under the client's single matching MCP workspace root; submit exactly one strict result or defer. Submit only stages pending human review and retains bounded redacted source turns for comparison; agents cannot apply or reject. No hidden reasoning, raw transcript, transcript path, API key, LLM, embedding, or vector data is exposed or used; hashes identify freshness and workspace scope rather than authentication. |
 | `remember` | Store knowledge as an entity with observations, tags, and relations |
 | `recall` | Search stored knowledge; empty query lists recent memories |
 | `forget` | Archive an entity or remove one exact observation |
@@ -86,7 +87,12 @@ Use the routing and identity fields returned by `fetch`. A reply has this shape 
 }
 ```
 
-An active compatible managed host can receive a native push, which removes polling for that live delivery. One-time provider enablement and a MeMesh-managed Codex app-server or Claude Channel may be required; ordinary unattached sessions are presence-only/inbound-unavailable. The bundled Gemini ACP adapter is experimental protocol-development code, not a release-gated native-wakeup provider. Adapter imports and a live router socket do not prove host registration or `host_accept`. Do not promise that a stopped, missing, or replaced session will wake up: it is not resumed or silently rerouted. Use the stable principal for logical routing, and an exact session/generation only when delivery must not move to a replacement connection. Local owns durable storage and host-native delivery; Cloud relay, A2A, SSE, discovery, or fetch is not host delivery.
+For a compatible managed host, native delivery removes polling from the inbound path only after exact live-host acceptance. On macOS and Linux, an ordinary Codex CLI session with the MeMesh plugin registers automatically at SessionStart. SessionEnd retains a bounded 45-second idle queue window; a message accepted there becomes model-visible when the same thread resumes, resume replaces the prior exact generation, and expiry removes the registration. This does not wake a stopped UI. Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`. Separate managed Codex app-server and Claude Channel paths may require one-time owner setup. The bundled Gemini ACP adapter is experimental protocol-development code, not a release-gated native-wakeup provider. Adapter imports and a live router socket do not prove host registration or `host_accept`. Do not promise that a stopped, missing, or replaced session will wake up: it is not resumed or silently rerouted, and a failed exact-session native delivery is not replayed automatically. Use the stable principal for logical routing, and an exact session/generation only when delivery must not move to a replacement connection. Local owns durable storage and host-native delivery; Cloud relay, A2A, SSE, discovery, or fetch is not host delivery.
+
+When pairing Claude Channel with an automatically registered Codex session, use
+the complete `project` field from `memesh briefing --json` for Claude setup. Do
+not replace it with the repository basename; different project strings are
+different discovery and native-routing scopes.
 
 Durable audit does not mean unbounded silent growth. Owners can inspect it with `memesh message storage report --cutoff <ISO timestamp>`, preview bounded terminal-payload tombstones with `memesh message storage prune --cutoff <ISO timestamp>`, and explicitly add `--apply`. Never prune unresolved/offline-pending work. `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES` is an optional owner policy; there is no default quota or automatic pruning.
 
@@ -134,13 +140,12 @@ fabricate a memory or cite a `[mem:id]` that was not actually returned.
 Recall is bounded by `limit` — a small hit count is not a graph-wide count,
 and an empty result is not proof nothing was stored: vary the wording or
 narrow by tag before concluding. Every recall answer includes a `retrieval`
-block — `truncated: true` means the window filled (more may exist);
-`degraded: true` means semantic search could not run and these are
-keyword-only results right now (`memesh doctor` explains why).
+block — `truncated: true` means the window filled (more may exist). Retrieval
+uses the local FTS5 keyword index; it does not call a model or vector service.
 
-## What's Already Automatic (Claude Code Plugin Hooks)
+## What's Already Automatic (Plugin Hooks)
 
-If MeMesh is installed as a Claude Code plugin, these happen **without any action from you**:
+With the Claude Code plugin, the first eight rows happen **without any action from you**. The final row is the separate Codex plugin SessionStart/SessionEnd companion lifecycle:
 
 | Hook | When | What it does |
 |------|------|-------------|
@@ -149,10 +154,10 @@ If MeMesh is installed as a Claude Code plugin, these happen **without any actio
 | **UserPromptSubmit** | When you submit a prompt | Detects "remember this" intent (5 languages) and reminds Claude to use memesh |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
 | **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision if it's worth keeping — once per tool per session |
-| **Stop** | Session ends | Auto-captures session knowledge + runs LLM failure analysis → lessons |
+| **Stop** | Session ends | Auto-captures session knowledge and applies the configured update policy |
 | **PreCompact** | Before context compaction | Saves important knowledge before history is compressed |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
-| **SessionStart (Codex, async)** | A configured Codex session starts or resumes | Registers that exact live thread for bounded full-message native delivery; exits without registering outside the configured workspace |
+| **SessionStart/SessionEnd (Codex)** | An ordinary Codex CLI plugin session starts, resumes, or ends | Launches the detached exact-thread companion, replaces its generation on resume, and retires it after the bounded idle queue window; a matching owner-private config may override its project/principal |
 
 Because of the SessionStart hook: **in Claude Code, do NOT call `briefing` at
 session start — it is already in your context.** Call it only mid-session
@@ -226,16 +231,16 @@ memesh forget --name "old-auth-approach"                       # archive the who
 Both are soft (recoverable) — nothing is permanently removed.
 
 ### Memories are getting verbose or stale
-Use the **memesh-review** skill: it analyzes health, finds stale, conflicting
-and redundant memories, and proposes cleanup (including `memesh dream`, the
-reviewed digest pipeline). Do not hand-compress memories yourself.
+Use the **memesh-review** skill: it prepares bounded `work_package` evidence
+for an already-running local agent, then leaves every proposal pending for
+human review. Do not hand-compress memories yourself.
 
 ### Backup, share, health
 ```bash
 memesh export --tag "project:myapp" > memories.json
 memesh import memories.json --merge skip     # skip | overwrite | append
-memesh status                                # version, search level, embeddings
-memesh reindex                               # rebuild embeddings after provider change
+memesh status                                # version, install channel, update state
+memesh reindex --fts                         # rebuild the local keyword index
 ```
 
 ## Memory hygiene

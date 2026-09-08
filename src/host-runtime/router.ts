@@ -6,11 +6,11 @@ import path from 'node:path';
 import { closeDatabase, openDatabase } from '../db.js';
 import { AgentRouter, type AgentHostRegistration } from '../core/agent-router.js';
 import { createCodexCliQueueAdapter } from '../host-adapters/codex-cli-queue.js';
-import { getMemeshDirFromDbPath } from '../core/paths.js';
+import { getAgentRouterSocketPath, getMemeshDirFromDbPath } from '../core/paths.js';
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile } from './config.js';
 
 const dataDir = getMemeshDirFromDbPath();
-const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? path.join(dataDir, 'agent-router.sock');
+const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
 const tokenFile = process.env.MEMESH_ROUTER_TOKEN_FILE ?? path.join(dataDir, 'agent-router.token');
 
 assertSecureLocalHostRuntimeSupported();

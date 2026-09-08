@@ -30,12 +30,9 @@
 //   retractZeroEditClaims         → stop-summary-does-not-assert-zero-edits-for-bash-sessions
 //   splitFusedLessons             → explicit-lessons-not-fused-into-other-bucket
 //   repairFusedLessonShellHistory → split-lesson-shell-carries-no-recall-history
-//   normalizeAgentScopePaths      → agent-message-scope-ids-are-not-filesystem-paths
 //
 // What each pass does NOT do, and why:
-//   - The dedupe keeps the lowest id of each (entity, content) pair and leaves
-//     the entity's vector alone: the set of sentences is unchanged, so the
-//     embedding of "name + observations" is the same text minus repeats.
+//   - The dedupe keeps the lowest id of each (entity, content) pair.
 //   - The split moves observation ROWS rather than copying them, so ids and
 //     created_at survive and nothing is re-authored. EVERY explicit lesson
 //     leaves the bucket — keeping the first would leave one lesson whose
@@ -46,11 +43,6 @@
 //     `source:explicit` tag is dropped ONLY when it emptied — a bucket that
 //     kept a stray row must stay visible to the invariant, not be hidden
 //     from it by losing the tag.
-//   - Vectors are left where they are. sqlite-vec is loaded AFTER the
-//     backfills run, so this code cannot touch `entities_vec` and does not
-//     pretend to; it records that a rebuild is owed (`pending_reindex`, the
-//     flag `memesh doctor` reports and `memesh reindex` clears). Until then
-//     the bucket's old vector still describes text it no longer holds.
 //   - FTS is rebuilt whole (`rebuildFtsIndex`, the same call the segmentation
 //     migration makes) rather than patched row by row. `entities_fts` is
 //     contentless: a delete must repeat the exact text that was indexed, and a
@@ -64,20 +56,13 @@
 
 import type { MemeshDatabase } from './sqlite.js';
 import { rebuildFtsIndex, runOnceMigration } from './schema.js';
-import { hasVectorIndex } from './vector-index.js';
 import { lessonSlug } from '../core/lesson-slug.js';
-import {
-  AGENT_MESSAGE_SCOPE_COLUMNS,
-  isFilesystemPathScopeId,
-  lastPathSegment,
-} from '../core/agent-scope-id.js';
 import { computeSignalScore } from '../core/signal-scorer.js';
 
 export const SESSION_DEDUPE_KEY = 'session_observation_dedupe';
 export const ZERO_EDIT_RETRACT_KEY = 'session_zero_edit_retract';
 export const FUSED_LESSON_SPLIT_KEY = 'fused_lesson_split';
 export const ARCHIVED_FTS_ROWS_KEY = 'archived_fts_rows';
-export const ARCHIVED_VECTOR_ROWS_KEY = 'archived_vector_rows';
 export const FUSED_LESSON_SHELL_HISTORY_RESET_KEY = 'fused_lesson_shell_history_reset';
 
 /** The summary suffix the Stop hook wrote when it could not see Bash edits. */
@@ -124,7 +109,7 @@ function note(line: string): void {
  * successor came from — only the live `recall_hits`/`recall_misses` columns,
  * which feed `impactScore` (scoring.ts) and the unfiltered
  * `SUM(recall_hits) FROM entities` in `scripts/audit/measure-signals.mjs`,
- * are cleared. Archived rows are excluded from the default FTS/vector
+ * are cleared. Archived rows are excluded from the default FTS
  * candidate set (`archiveEntity()` removes the FTS row; `search()`'s
  * `statusFilter` defaults to active-only), so a shell's stale rate is not
  * currently swaying live ranking — but it does inflate that audit sum
@@ -373,7 +358,7 @@ function legacyReadableLessonSlug(error: string): string {
  * title from `deriveTitle`), revived if it exists archived (a `forget` of the
  * re-learned copy must not swallow the older one), appended to if active.
  * The bucket loses its `source:explicit` tag and, once empty, is archived.
- * FTS follows; a reindex is marked owed via `markReindexOwed`.
+ * FTS follows in the same migration.
  *
  * @returns number of lessons moved out of buckets, or -1 if the pass did not run
  */
@@ -381,7 +366,6 @@ export function splitFusedLessons(
   db: MemeshDatabase,
   deps: {
     deriveTitle: (type: string, observations: string[]) => string | null;
-    markReindexOwed: (conn: MemeshDatabase) => void;
   },
 ): number {
   let moved = -1;
@@ -529,13 +513,12 @@ export function splitFusedLessons(
 
       if (moved > 0) {
         rebuildFtsIndex(conn);
-        deps.markReindexOwed(conn);
         if (legacyReadableMoved === 0) {
-          note(`moved ${moved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) into their own entities; run 'memesh reindex' to refresh their vectors.`);
+          note(`moved ${moved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) into their own entities.`);
         } else if (bucketsTouched === 0) {
-          note(`moved ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities; run 'memesh reindex' to refresh their vectors.`);
+          note(`moved ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities.`);
         } else {
-          note(`moved ${moved - legacyReadableMoved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) and ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities; run 'memesh reindex' to refresh their vectors.`);
+          note(`moved ${moved - legacyReadableMoved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) and ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities.`);
         }
       }
     },
@@ -544,34 +527,14 @@ export function splitFusedLessons(
 }
 
 /**
- * D11/D12 — an archived entity is in NEITHER search index.
+ * D12 — archived entities do not remain in the keyword index.
  *
- * `archiveEntity` always dropped both index rows. `compressWeeklyNoise`, the
- * dreamer's compaction apply and `splitFusedLessons` archived with a bare
- * status UPDATE and dropped neither. Those three are fixed at the source, but
- * every graph written before the fix still holds the rows they left. Measured
- * on the maintainer's graph at 2136 entities (820 active, 1316 archived):
+ * `compressWeeklyNoise`, the dreamer's compaction apply and
+ * `splitFusedLessons` once archived with a bare status UPDATE and left stale
+ * FTS rows behind. Those paths are fixed at the source; this one-shot repair
+ * cleans databases written before the fix.
  *
- *   413 of 1013 vector rows belonged to archived entities — 41 real k-NN
- *       queries spent 290 of 820 top-20 slots (35.4%) on memories the user
- *       had put away, displacing active ones.
- *   213 archived entities were still in `entities_fts` — `MATCH 'ae83279'`
- *       returned the archived `commit-ae83279`.
- *
- * TWO `runOnceMigration` keys, not one, because the two halves have different
- * preconditions and one must not be able to mark the other done:
- *
- *   `archived_fts_rows`     always runnable — FTS5 is built into SQLite.
- *   `archived_vector_rows`  needs sqlite-vec loaded IN THIS PROCESS.
- *
- * On a platform sqlite-vec publishes no binary for, the vector half can never
- * run. Folded into one key it would either strand the FTS repair on those
- * machines forever, or stamp a marker over work that did not happen — and this
- * file exists precisely because "a fix that only prevents new damage" is not
- * enough. Split, each machine repairs what it can, and the vector half runs
- * the first time the file is opened somewhere that has the binary.
- *
- * The FTS half rebuilds the whole index rather than deleting the archived rows
+ * It rebuilds the whole FTS index rather than deleting archived rows
  * one by one, for the reason the header gives: a contentless delete must repeat
  * the exact text that was indexed, and where an entity was re-remembered while
  * archived the index holds TWO documents at its rowid whose combined text
@@ -579,18 +542,11 @@ export function splitFusedLessons(
  * re-inserts active rows only, so it needs no such input and clears both
  * defects at once. It is idempotent and may already have run this open.
  *
- * **Must be called AFTER the sqlite-vec load in `openDatabase`**, unlike the
- * three passes above, which run before it and therefore cannot touch
- * `entities_vec` at all.
- *
- * @returns `{ ftsRows, vectorRows }` — rows removed by each half, or -1 for a
- *          half that did not run.
+ * @returns archived FTS rows seen before the rebuild, or -1 when this one-shot
+ *          migration has already run.
  */
-export function dropArchivedIndexRows(db: MemeshDatabase): {
-  ftsRows: number;
-  vectorRows: number;
-} {
-  const result = { ftsRows: -1, vectorRows: -1 };
+export function dropArchivedIndexRows(db: MemeshDatabase): { ftsRows: number } {
+  const result = { ftsRows: -1 };
 
   runOnceMigration(db, {
     key: ARCHIVED_FTS_ROWS_KEY,
@@ -634,30 +590,6 @@ export function dropArchivedIndexRows(db: MemeshDatabase): {
       rebuildFtsIndex(conn);
       if (stale.n > 0) {
         note(`removed ${stale.n} archived entit${stale.n === 1 ? 'y' : 'ies'} from the keyword index (archived before 4.8.4 by a path that left the index behind).`);
-      }
-    },
-  });
-
-  // Asked before `runOnceMigration`, not inside `migrate`: a migrate that
-  // returns early because it cannot work still gets its marker stamped, and
-  // this repair would then be permanently "done" on the one class of machine
-  // that never performed it.
-  if (!hasVectorIndex(db)) return result;
-
-  runOnceMigration(db, {
-    key: ARCHIVED_VECTOR_ROWS_KEY,
-    version: 1,
-    describe: 'archived rows removed from the vector index',
-    migrate: (conn) => {
-      const removed = conn
-        .prepare(
-          `DELETE FROM entities_vec WHERE rowid IN
-             (SELECT e.id FROM entities e WHERE e.status = 'archived')`,
-        )
-        .run();
-      result.vectorRows = Number(removed.changes);
-      if (result.vectorRows > 0) {
-        note(`removed ${result.vectorRows} archived entit${result.vectorRows === 1 ? 'y' : 'ies'} from the vector index; they were taking recall slots from live memories.`);
       }
     },
   });
@@ -715,159 +647,4 @@ export function repairFusedLessonShellHistory(db: MemeshDatabase): number {
     },
   });
   return retired;
-}
-
-export const AGENT_SCOPE_PATH_KEY = 'agent_scope_path_identity';
-
-/**
- * Message scope identifiers spelled as filesystem paths.
- *
- * `agent_message_deliveries` keys one inbox on (`project`, `recipient`) and
- * both columns were free text with no canonical form, so one logical inbox was
- * split across spellings. On the maintainer's own graph, measured before this
- * pass: `recipient` held `root` 25 times and `/root` 20; `project` held one row
- * of `/Users/ktseng/Developer/Projects/memesh-llm-memory`. A recipient that
- * fetches under one spelling never sees what was sent under the other.
- *
- * The rule applied here is the ONLY one that is mechanical: a value spelled as
- * an absolute filesystem path is rewritten to its final segment. It is safe
- * because `getProjectName` cannot produce such a value at any of its three
- * layers (git remote slug, git repo-root basename, `basename-<hash>`), so the
- * path spelling is a caller writing its own home directory or checkout path
- * where its NAME belonged, and the final segment is that name. The write path
- * now refuses the same shape (core/agent-scope-id.ts), so the divergence
- * cannot recur.
- *
- * What this pass deliberately does NOT do, and why each is a rule this code
- * cannot legitimately invent:
- *
- *   - It does not merge `project` `memesh-llm-memory` into `memesh`, the
- *     LARGEST split on that graph (38 vs 28 messages). They ARE one project:
- *     `gh api repos/PCIRCLE-AI/memesh-llm-memory` answers `PCIRCLE-AI/memesh`,
- *     so the repository was renamed, and both values are `getProjectName`
- *     outputs for one working directory — the remote slug before and after the
- *     rename, the repo-root basename when no origin is configured. But the
- *     evidence that proves it is a network call against one owner's GitHub
- *     account. A `runOnceMigration` firing inside `openDatabase` on an
- *     arbitrary machine has no way to know it, and `src/core/project-tags.ts`
- *     already states the standing rule for exactly this case: the mapping is
- *     user-driven. `memesh kg rename-project --from memesh-llm-memory --to
- *     memesh` is the owner-driven, dry-run-by-default answer, and it now moves
- *     these message rows as well as the project tags.
- *
- *     Nor may this pass resolve it from `getProjectName(process.cwd())`, which
- *     WOULD be mechanical: a one-shot migration fires from whatever directory
- *     the user's first post-upgrade open happens to be in, so the result would
- *     differ per user by accident.
- *
- *   - It does not strip the `claude-code:` prefix from
- *     `claude-code:session_01PDMer3P4cVYeHr4KRen3Un` to fuse it with
- *     `session_01PDMer3P4cVYeHr4KRen3Un`. That string appears nowhere in this
- *     repository's source, artifacts, docs, or history (`git log -S
- *     'claude-code:' --all` is empty), so there is no prefixing convention to
- *     normalise against; neither spelling is a registered identity in
- *     `agent_session_instances`; they were used with DIFFERENT `target_kind`,
- *     which is part of the fetch key; and neither carries a single receipt, so
- *     the split-inbox symptom is not even demonstrable for them. Stripping it
- *     would merge a legitimate `claude-code:reviewer` with a different agent
- *     called `reviewer` — the failure mode that is worse than the split.
- *
- *   - It does not touch `sender`. Sender is provenance, not routing: it keys
- *     no inbox, and `agent_message_idempotency` is keyed
- *     `(project, sender, idempotency_key)`, so rewriting it would mutate
- *     replay-protection keys to no delivery benefit.
- *
- *   - It does not touch the router tables (`agent_principals`,
- *     `agent_session_instances`, `agent_session_connections`,
- *     `agent_presence_facts`, `agent_dispatch_attempts`). Their `project` comes
- *     from an owner-written host config through `memesh agent setup`, not from
- *     `MessageSchema`. Gating that entry point is a separate change, and the
- *     invariant in `scripts/audit/memory-invariants.mjs` watches exactly the
- *     columns this pass repairs and the write path refuses — the three sets are
- *     kept equal so neither a hole nor a permanently red invariant is left.
- *
- * A rewrite that would violate a UNIQUE constraint is left in place and
- * counted, not forced: that is the one case where the target identity already
- * holds an equivalent row, and deleting user rows to satisfy a migration is
- * not this pass's decision to make. The invariant then still reports it, which
- * is the correct outcome — an owner has to say what should happen.
- *
- * @returns number of column values rewritten, or -1 if the pass did not run
- */
-export function normalizeAgentScopePaths(db: MemeshDatabase): number {
-  let rewritten = -1;
-  runOnceMigration(db, {
-    key: AGENT_SCOPE_PATH_KEY,
-    version: 1,
-    describe: 'agent message scope path identities',
-    migrate: (conn) => {
-      rewritten = 0;
-      let merged = 0;
-      let blocked = 0;
-      let discarded = 0;
-      const pairs = new Set<string>();
-      for (const { table, columns } of AGENT_MESSAGE_SCOPE_COLUMNS) {
-        for (const column of columns) {
-          let values: Array<{ v: unknown }>;
-          try {
-            values = conn.prepare(`SELECT DISTINCT ${column} AS v FROM ${table}`).all() as unknown as Array<{ v: unknown }>;
-          } catch {
-            // A schema older than this column is not a violation of it.
-            continue;
-          }
-          const update = conn.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
-          const drop = conn.prepare(`DELETE FROM ${table} WHERE rowid = ?`);
-          const ids = conn.prepare(`SELECT rowid AS rid FROM ${table} WHERE ${column} = ?`);
-          const exists = conn.prepare(`SELECT 1 AS hit FROM ${table} WHERE ${column} = ? LIMIT 1`);
-          for (const { v } of values) {
-            if (typeof v !== 'string' || !isFilesystemPathScopeId(v)) continue;
-            const target = lastPathSegment(v);
-            // `/` or `C:\` names nothing; there is no identity to rewrite it
-            // to, so it is left for the invariant to report.
-            if (target === null) continue;
-            const isMerge = exists.get(target) !== undefined;
-            const rows = ids.all(v) as unknown as Array<{ rid: number }>;
-            for (const { rid } of rows) {
-              try {
-                const changed = Number(update.run(target, rid).changes);
-                rewritten += changed;
-                if (changed > 0 && isMerge) merged += changed;
-              } catch {
-                // UNIQUE constraint: an equivalent row already exists under the
-                // canonical spelling. A failed statement rolls back only itself.
-                //
-                // A cursor is the one row where that is not a standoff.
-                // `idx_agent_message_cursors_unique_scope_sequence` is UNIQUE on
-                // (project, recipient, event_sequence), so the collision means
-                // the canonical identity ALREADY has a cursor at this exact
-                // position. The path-spelled one is now dead state: no legal
-                // call can reach it, because `poll` refuses the path spelling
-                // of the recipient it is bound to, and `resolveCursor` rejects
-                // a token whose scope does not match the caller's. The public
-                // contract already treats a cursor as an opaque, re-derivable
-                // hint that may repeat an event, so dropping the unreachable
-                // duplicate loses nothing and keeps the invariant honest.
-                if (table === 'agent_message_cursors') {
-                  discarded += Number(drop.run(rid).changes);
-                } else {
-                  blocked += 1;
-                }
-              }
-            }
-            if (rows.length > 0) pairs.add(`${v} → ${target}`);
-          }
-        }
-      }
-      if (rewritten > 0 || discarded > 0) {
-        const detail = [...pairs].join(', ');
-        note(
-          `rewrote ${rewritten} filesystem-path message scope value(s) to their identity name (${detail})`
-          + `${merged > 0 ? `; ${merged} joined an identity that already existed` : ''}`
-          + `${discarded > 0 ? `; ${discarded} duplicate poll cursor(s) dropped` : ''}`
-          + `${blocked > 0 ? `; ${blocked} left in place because the canonical spelling already holds an equivalent row` : ''}.`,
-        );
-      }
-    },
-  });
-  return rewritten;
 }

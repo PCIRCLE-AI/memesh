@@ -33,7 +33,7 @@ The adapter (`benchmarks/longmemeval/run.mjs`) maps the LongMemEval question for
 > **This changed in 2026-07, and the change matters for how you read older results.**
 > Until then the adapter carried its own `CREATE TABLE`, its own FTS5 query
 > construction and its own ranking. It measured that reimplementation, not the
-> product — and the two had drifted. §2.3 below used to document an OR-joined
+> product — and the two had drifted. [§2.3 below](#23-fts5-query-construction) used to document an OR-joined
 > query builder that only the adapter had; the shipped `search()` AND-joined its
 > terms and ordered by `e.id DESC` instead of by BM25 `rank`. On the same 500
 > questions the adapter scored 95.40% R@5 and the shipped path scored **5.20%**,
@@ -43,8 +43,8 @@ The adapter (`benchmarks/longmemeval/run.mjs`) maps the LongMemEval question for
 > no marker of their own. Which file measured what is recorded in
 > [`results/README.md`](results/README.md); files produced by the current runner
 > are the ones whose `run_info.measures` reads `"shipped_recall_path"`. The older
-> files do not describe the product at any version. See CHANGELOG `[Unreleased]`
-> and PR #78.
+> files do not describe the product at any version. See
+> [CHANGELOG 4.2.11](../../CHANGELOG.md#4211--2026-08-03) and PRs #78–#79.
 
 Key design decisions:
 
@@ -65,17 +65,20 @@ For each question, all haystack sessions are indexed as MeMesh entities:
 
 The adapter does not build the query. It passes the question text to
 `recallEnhanced()` unchanged, and `KnowledgeGraph.search()` turns it into an
-FTS5 expression via `buildQueryTerms()`:
+FTS5 expression via `buildMatchExpression()`:
 
-1. Normalize to NFC
-2. Split on `[^\p{L}\p{N}\p{M}]+` — the boundaries FTS5's own `unicode61`
-   tokenizer uses, so the query is cut the same way the index was
-3. Take up to `MAX_QUERY_TERMS` (32) terms
-4. Quote each term and join with `OR`
+1. Normalize to NFC, then segment unspaced scripts into the same bigram form
+   stored in the index.
+2. `tokenizeQuery()` keeps terms that begin with a Unicode letter or number and
+   may continue with letters, numbers, or combining marks.
+3. On corpora with at least 25 active rows, discard terms present in more than
+   50% of rows; if every term is common, retain the single rarest one.
+4. After that document-frequency guard, take up to `MAX_QUERY_TERMS` (32),
+   quote each survivor, and join them with `OR`.
 5. Order the matches by FTS5 `rank` (BM25) before `LIMIT`, then rank the
    survivors with the five-factor scorer
 
-Example: "How many properties did I view before making an offer?" →
+Example when the document-frequency guard removes none: "How many properties did I view before making an offer?" →
 `"How" OR "many" OR "properties" OR "did" OR "I" OR "view" OR "before" OR "making" OR "an" OR "offer"`
 
 The FTS5 tokenizer uses `unicode61 remove_diacritics 1` to normalize accented characters.
@@ -87,13 +90,11 @@ Reproducing it is not possible from the current adapter, which is the point.
 
 ### 2.4 Modes
 
-Modes now name real product configurations, not adapter-internal strategies:
+Only Mode A remains a current product configuration:
 
-- **Mode A** — no embeddings stored. `recallEnhanced()` runs FTS5 + BM25 and its
-  vector supplement finds nothing to add.
-- **Mode B** — embeddings populated with `Xenova/all-MiniLM-L6-v2` (384-dim, the
-  model MeMesh's local embedder uses) through the product's own
-  `embedAndStore()`, so `recallEnhanced()`'s vector supplement can contribute.
+- **Mode A** — `recallEnhanced()` runs FTS5 + BM25.
+- **Mode B (historical)** — measured the retired ONNX/vector supplement. It is
+  preserved only in old result artifacts and cannot be run by the current adapter.
 
 **Mode C has been removed.** It applied a 60/40 weighted FTS+vector fusion that
 exists nowhere in MeMesh — it was an adapter experiment. There was no product
@@ -101,12 +102,10 @@ behaviour for it to measure. Its historical result file is retained.
 
 ### 2.5 Score Fusion
 
-Fusion is whatever `recallEnhanced()` does; the adapter does not compute scores.
-As shipped, that is: FTS5 hits ordered by BM25 and graded by position, vector
-hits appended with `vectorSimilarity(distance)` = `max(0, 1 - distance / 2)`,
-cut off at `MAX_VECTOR_DISTANCE = 1.30`, then the whole set ranked by the
-five-factor scorer (relevance 0.30, recency 0.25, frequency 0.18, confidence
-0.17, recall-impact 0.10).
+The current adapter does not compute scores. The shipped path uses FTS5 hits
+ordered by BM25 and then the five-factor scorer (relevance 0.30, recency 0.25,
+frequency 0.18, confidence 0.17, recall-impact 0.10). Historical Mode B/C
+result files document their retired vector fusion separately.
 
 ### 2.6 Ranking and Metrics
 
@@ -132,8 +131,9 @@ five-factor scorer. What it does not cover is everything a memory layer does
   unevenly accessed, and those factors then decide real orderings.
 - **Corpus scale.** Each haystack is ~50 sessions. Real bases are thousands of
   entities, where `LIMIT` binds much harder and term frequency behaves differently.
-- **Everything that is not retrieval**: auto-capture, consolidation, knowledge
-  evolution and conflict detection, auto-tagging, relation traversal.
+- **Everything that is not retrieval**: deterministic hook capture,
+  work-package preparation and staging, human proposal review, knowledge
+  evolution and conflict detection, and relation backfill/traversal.
 - **Answer correctness.** No LLM answers anything. The score is whether the
   session containing the answer came back, not whether the answer is right.
 
@@ -162,8 +162,11 @@ fresh corpus, under a keyword-retrieval task.
 
 - **Session truncation at 8000 chars**: Long sessions are truncated. Some answer sessions may have the relevant information in the second half.
 - **FTS5 query quality**: OR-joining individual keywords is not optimal BM25. Proximity operators or phrase matching would likely do better. This item used to sit here as an *adapter* limitation — while the shipped `search()` was AND-joining and would have been listed as a far worse limitation had anyone measured it. A limitation described next to a number it does not apply to is how a divergence stays invisible; the adapter and the product now share one implementation, so anything listed here applies to both.
-- **MiniLM-L6 embedding quality**: The 384-dim model is too small for indirect semantic matching. Vocabulary mismatches (e.g., session uses "Dr. Patel" instead of "doctor") are not recovered by this model.
-- **Mode B's vector supplement reaches the ranker and still changes nothing at the cut-off**: `vectorSearch()` used to filter hits at `MAX_VECTOR_DISTANCE = 1` while sqlite-vec returns L2 distances around 1.2–1.4 for related text, so nearly every vector hit was discarded and Mode B came out identical to Mode A to sixteen decimal places. The cut-off is now 1.30 and 14 of 500 result lists differ between the modes — but R@5 and R@10 are unchanged, and only two questions move the position of the correct session, both outside the top 10 (RESULTS.md). Read Mode B as "embeddings are not what is carrying this score", not as "embeddings are switched off". The number is reported as measured rather than adjusted.
+- **Historical MiniLM-L6 embedding quality**: In the retired vector experiment,
+  the 384-dim model was too small for indirect semantic matching. It did not
+  recover vocabulary mismatches (e.g., a session using "Dr. Patel" instead of
+  "doctor"). Current MeMesh recall is FTS5-only and does not run this model.
+- **Historical Mode B's vector supplement reached the ranker and still changed nothing at the cut-off**: the retired `vectorSearch()` path filtered hits at `MAX_VECTOR_DISTANCE = 1` before the historical experiment raised it to 1.30. Fourteen of 500 result lists differed, but R@5 and R@10 were unchanged; only two correct sessions moved, both outside the top 10 (RESULTS.md). This describes the archived experiment, not current product behavior.
 
 ### 4.3 Comparison Limitations
 

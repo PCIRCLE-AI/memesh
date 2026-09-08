@@ -22,10 +22,8 @@
 //   0.0 = pure noise (Duration: 0s session_keypoint from a hook that
 //         fired but had nothing to capture)
 //
-// Dashboard hides everything < 0.4 by default; threshold is
-// configurable in Settings. The score is RULE-BASED — no LLM call,
-// runs in microseconds. Phase 2 (cluster compactor) and Phase 3
-// (pattern detector) layer LLM-based work ON TOP of this floor.
+// Dashboard hides everything < 0.4 by default. The score is deterministic
+// and runs in microseconds without a model or network call.
 //
 // CONTRACT
 // ────────
@@ -168,4 +166,3 @@ function baseScoreForType(type: string): number {
   // Unknown — give benefit of doubt
   return 0.5;
 }
-

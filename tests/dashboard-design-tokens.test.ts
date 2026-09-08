@@ -97,6 +97,19 @@ describe('Feature: the dashboard design system is actually followed', () => {
     expect(offenders).toEqual([]);
   });
 
+  it('has no unsanctioned numeric borderRadius values', () => {
+    const offenders: string[] = [];
+    for (const file of walk(srcDir, ['.tsx', '.ts'])) {
+      const text = fs.readFileSync(file, 'utf8');
+      for (const match of text.matchAll(/\bborderRadius\s*:\s*(\d+(?:\.\d+)?)\b/g)) {
+        if (Number(match[1]) === 9999) continue; // DESIGN.md explicitly sanctions status pills.
+        const line = text.slice(0, match.index).split('\n').length;
+        offenders.push(`${path.relative(repoRoot, file)}:${line} borderRadius: ${match[1]}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
   /**
    * 3. **No colour literal that resolves to a token's colour, in any syntax,
    *    and none of the off-palette hues the redesign removed — including inside

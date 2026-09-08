@@ -101,7 +101,7 @@ describe('the title backfill fills gaps and nothing else', () => {
     const row = rowOf('auth-note-9f3a');
     expect(row.title).toBe('Chose OAuth 2.0 with PKCE because implicit flow leaks tokens');
     const meta = JSON.parse(row.metadata as string);
-    expect(meta.title_source, 'an unmarked auto-title becomes permanent — the LLM pass may never replace it').toBe('heuristic');
+    expect(meta.title_source, 'an unmarked generated title is indistinguishable from a human title').toBe('heuristic');
     expect(meta.pin, 'existing metadata keys must survive the stamp').toBe(true);
   });
 

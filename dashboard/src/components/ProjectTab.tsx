@@ -158,7 +158,7 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
       {error && <div class="error-box" role="alert">{error}</div>}
       {projectsError && <div class="error-box" role="alert">{projectsError}</div>}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12, alignItems: 'center' }}>
-        <span style={{ fontSize: 11, color: 'var(--text-3)', marginRight: 4 }}>{t('project.selectLabel')}</span>
+        <span style={{ fontSize: 14, color: 'var(--text-3)', marginRight: 4 }}>{t('project.selectLabel')}</span>
         {projects.map((p) => (
           <Chip
             key={p.name}

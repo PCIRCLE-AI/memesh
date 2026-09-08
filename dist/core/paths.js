@@ -3,6 +3,8 @@ import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
+export const AGENT_ROUTER_SOCKET_FILENAME = 'agent-router-v2.sock';
+const LEGACY_AGENT_ROUTER_SOCKET_FILENAME = 'agent-router.sock';
 export function homeDir() {
     const home = process.env.HOME;
     if (home && home.length > 0)
@@ -23,6 +25,15 @@ export function getMemeshDirFromDbPath() {
         ? path.dirname(process.env.MEMESH_DB_PATH)
         : memeshDir();
 }
+export function getAgentRouterSocketPath() {
+    return path.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
+}
+export function normalizeAgentRouterSocketPath(socketPath) {
+    const dataDir = getMemeshDirFromDbPath();
+    return socketPath === path.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME)
+        ? getAgentRouterSocketPath()
+        : socketPath;
+}
 export function getProjectName(cwdInput) {
     const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
     const cached = projectNameCache.get(cwd);
@@ -36,22 +47,36 @@ const projectNameCache = new Map();
 function resolveProjectIdentity(cwd) {
     const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
     if (remote) {
-        const slug = slugFromRemoteUrl(remote);
-        if (slug)
-            return slug;
+        const locator = canonicalRemoteLocator(remote);
+        if (locator) {
+            const label = path.posix.basename(locator).replace(/\.git$/i, '');
+            return projectIdentity(label, locator);
+        }
     }
     const root = tryGit(cwd, ['rev-parse', '--show-toplevel']);
-    if (root)
-        return path.basename(root);
+    const commonDir = root
+        ? tryGit(cwd, ['rev-parse', '--git-common-dir'])
+        : null;
+    const absoluteCommonDir = commonDir ? path.resolve(cwd, commonDir) : null;
+    const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === '.git'
+        ? path.dirname(absoluteCommonDir)
+        : (root ?? cwd);
     let real;
     try {
-        real = fs.realpathSync.native(cwd);
+        real = fs.realpathSync.native(localPath);
     }
     catch {
-        real = path.resolve(cwd);
+        real = path.resolve(localPath);
     }
-    const suffix = createHash('sha256').update(real).digest('hex').slice(0, 8);
-    return `${path.basename(real)}-${suffix}`;
+    return projectIdentity(path.basename(real), real);
+}
+const PROJECT_HASH_HEX_LENGTH = 32;
+const PROJECT_ID_MAX_LENGTH = 200;
+const PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
+function projectIdentity(label, locator) {
+    const readable = label.normalize('NFC').slice(0, PROJECT_LABEL_MAX_LENGTH) || 'project';
+    const suffix = createHash('sha256').update(locator).digest('hex').slice(0, PROJECT_HASH_HEX_LENGTH);
+    return `${readable}~${suffix}`;
 }
 function tryGit(cwd, args) {
     try {
@@ -67,12 +92,61 @@ function tryGit(cwd, args) {
         return null;
     }
 }
-export function slugFromRemoteUrl(url) {
-    const cleaned = url.trim().replace(/\.git$/i, '').replace(/[/\\]+$/, '');
-    if (!cleaned)
+export function canonicalRemoteLocator(remote) {
+    const value = remote.trim();
+    if (!value)
         return null;
-    const seg = cleaned.split(/[/:\\]/).filter(Boolean).pop();
-    return seg && seg.length > 0 ? seg : null;
+    if (path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value))
+        return null;
+    let host;
+    let port = '';
+    let user;
+    let remotePath;
+    let transport;
+    if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) {
+        let parsed;
+        try {
+            parsed = new URL(value);
+        }
+        catch {
+            return null;
+        }
+        if (parsed.protocol === 'file:' || !parsed.hostname)
+            return null;
+        host = parsed.hostname.toLowerCase();
+        port = parsed.port;
+        const protocol = parsed.protocol.toLowerCase();
+        if ((protocol === 'ssh:' || protocol === 'git+ssh:') && port === '22')
+            port = '';
+        user = parsed.username;
+        remotePath = parsed.pathname;
+        transport = protocol === 'ssh:' || protocol === 'git+ssh:'
+            ? 'ssh-absolute'
+            : protocol.slice(0, -1);
+    }
+    else {
+        const scp = /^(?:([^@]+)@)?(\[[^\]]+\]|[^:/]+):(.+)$/.exec(value);
+        if (!scp)
+            return null;
+        user = scp[1] ?? '';
+        host = scp[2].toLowerCase();
+        remotePath = scp[3];
+        transport = remotePath.startsWith('/') ? 'ssh-absolute' : 'ssh-relative';
+    }
+    const pathWithoutSlashes = remotePath.replace(/^\/+|\/+$/g, '');
+    if (!host || !pathWithoutSlashes)
+        return null;
+    const endpoint = `${host}${port ? `:${port}` : ''}`;
+    const standardGithub = host === 'github.com'
+        && port === ''
+        && (transport === 'https' || ((transport === 'ssh-relative' || transport === 'ssh-absolute') && user === 'git'));
+    const normalizedPath = standardGithub
+        ? pathWithoutSlashes.replace(/\.git$/i, '')
+        : pathWithoutSlashes;
+    if (standardGithub)
+        return `${endpoint}/${normalizedPath}`;
+    const authority = transport.startsWith('ssh-') && user ? `${user}@${endpoint}` : endpoint;
+    return `${transport}://${authority}/${normalizedPath}`;
 }
 export function _clearProjectNameCache() {
     projectNameCache.clear();

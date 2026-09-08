@@ -23,12 +23,13 @@ const CX = SIZE / 2;
 const CY = SIZE / 2;
 const R = 80;   // outer radius
 const INNER = 14; // inner label padding
+const AXIS_LABEL_FONT_SIZE = 14;
 // Horizontal room for the axis labels. They sit on the R+18 circle with
-// textAnchor="middle", so a side label's half-width extends past the 220px
+// text-anchor="middle", so a side label's half-width extends past the 220px
 // drawing square — without this padding the SVG viewport clipped
 // "Decisions" to "Dec" and "Patterns" to "Patt" (and longer locales worse).
-// 48px covers half of the widest catalogue label at 9px font.
-const PAD_X = 48;
+// 72px covers half of the widest catalogue label at the readable 14px size.
+const PAD_X = 72;
 
 function polarToXY(angle: number, radius: number): [number, number] {
   // Start from top, go clockwise
@@ -58,12 +59,13 @@ export function KnowledgeRadar({ data }: KnowledgeRadarProps) {
     <div class="card">
       <div class="card-title" style={{ marginBottom: 8 }}>{t('radar.title')}</div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
-        <svg
-          width={SIZE + PAD_X * 2}
-          height={SIZE}
-          viewBox={`${-PAD_X} 0 ${SIZE + PAD_X * 2} ${SIZE}`}
-          style={{ flexShrink: 0 }}
-        >
+        <div style={{ maxWidth: '100%', minWidth: 0, overflowX: 'auto' }}>
+          <svg
+            width={SIZE + PAD_X * 2}
+            height={SIZE}
+            viewBox={`${-PAD_X} 0 ${SIZE + PAD_X * 2} ${SIZE}`}
+            style={{ display: 'block' }}
+          >
           {/* Grid rings */}
           {rings.map(ratio => {
             const pts = angles.map(a => {
@@ -122,17 +124,18 @@ export function KnowledgeRadar({ data }: KnowledgeRadarProps) {
                 key={i}
                 x={x.toFixed(1)}
                 y={y.toFixed(1)}
-                textAnchor="middle"
-                dominantBaseline="middle"
-                fontSize={9}
+                text-anchor="middle"
+                dominant-baseline="middle"
+                font-size={AXIS_LABEL_FONT_SIZE}
                 fill="var(--text-2)"
-                fontFamily="var(--font-ui)"
+                font-family="var(--font-ui)"
               >
                 {label}
               </text>
             );
           })}
-        </svg>
+          </svg>
+        </div>
 
         {/* Legend */}
         <div style={{ flex: 1, minWidth: 120 }}>
@@ -143,11 +146,11 @@ export function KnowledgeRadar({ data }: KnowledgeRadarProps) {
                 <div style={{
                   display: 'flex',
                   justifyContent: 'space-between',
-                  fontSize: 11,
+                  fontSize: 14,
                   marginBottom: 3,
                 }}>
                   <span style={{ color: 'var(--text-1)' }}>{axisLabel(d.axis)}</span>
-                  <span style={{ color: 'var(--life)', fontFamily: 'var(--mono)', fontSize: 10 }}>
+                  <span style={{ color: 'var(--life)', fontFamily: 'var(--mono)', fontSize: 14 }}>
                     {d.count}
                   </span>
                 </div>
@@ -168,7 +171,7 @@ export function KnowledgeRadar({ data }: KnowledgeRadarProps) {
               </div>
             );
           })}
-          <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 6 }}>
+          <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 6 }}>
             {t('radar.caption')}
           </div>
         </div>

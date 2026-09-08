@@ -268,8 +268,8 @@ export function stageProductImprovement(
 
     const inserted = db.prepare(
       `INSERT INTO dream_proposals
-        (project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version, source_kind, kind)
-       VALUES (?, ?, ?, ?, NULL, 'product-improvement-v1', 'entities', ?)`,
+        (project, cluster_key, source_ids, proposed_digest, prompt_version, source_kind, kind)
+       VALUES (?, ?, ?, ?, 'product-improvement-v1', 'entities', ?)`,
     ).run(
       project,
       clusterKey,

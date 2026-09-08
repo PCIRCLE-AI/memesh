@@ -47,7 +47,7 @@ function walk(dir: string, out: string[] = []): string[] {
 const server = read('src/transports/http/server.ts');
 
 /** Routes the Express app registers, normalised. Either quote style counts. */
-const registered = new Set(
+const registered = new Set<string>(
   [...server.matchAll(/^app\.(?:get|post|put|delete|patch)\((['"`])([^'"`]+)\1/gm)].map(m => normalise(m[2]))
 );
 
@@ -62,6 +62,11 @@ const registered = new Set(
  * file's current formatting.
  */
 const retired = new Set(Object.keys(RETIRED_ROUTES).map(normalise));
+const retiredRoutesAreRegisteredFromTheMap = /Object\.entries\(RETIRED_ROUTES\)/.test(server)
+  && /app\.post\(retiredRoute,/.test(server);
+if (retiredRoutesAreRegisteredFromTheMap) {
+  for (const route of retired) registered.add(route);
+}
 
 /**
  * Directories that hold a client of the HTTP API. Add one when a client is
@@ -118,6 +123,7 @@ describe('in-repo HTTP clients call routes that exist', () => {
   it('every retired route still has a registration to answer 410', () => {
     // An entry in RETIRED_ROUTES whose app.post line was deleted is a silent
     // 404 — exactly the failure the 410 exists to prevent.
+    expect(retiredRoutesAreRegisteredFromTheMap).toBe(true);
     for (const r of retired) {
       expect(registered.has(r), `${r} is retired but no longer registered`).toBe(true);
     }

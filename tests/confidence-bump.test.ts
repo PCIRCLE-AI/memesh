@@ -1,8 +1,7 @@
-// G1 verification: confidence is no longer a one-way decay. Three paths
+// G1 verification: confidence is no longer a one-way decay. Two paths
 // must bump it back up:
 //   1. createEntity() re-asserting an existing active entity (+0.05 cap 1.0)
-//   2. consolidator post-LLM-summary (reset to 1.0)
-//   3. lesson-engine createExplicitLesson (reset to 1.0)
+//   2. lesson-engine createExplicitLesson (reset to 1.0)
 //
 // We validate by writing a low confidence to disk (simulating prior auto-
 // decay) and confirming each bump path lifts it.
@@ -44,7 +43,7 @@ describe('G1 — confidence bump paths', () => {
     return (db.prepare('SELECT confidence FROM entities WHERE name = ?').get(name) as { confidence: number }).confidence;
   }
 
-  it('re-asserting with a brand-new observation bumps confidence by +0.05 (LLM-free recovery path)', () => {
+  it('re-asserting with a brand-new observation bumps confidence by +0.05', () => {
     expect(getConfidence('decayed')).toBeCloseTo(0.4, 5);
     kg.createEntity('decayed', 'lesson_learned', { observations: ['additional obs'] });
     expect(getConfidence('decayed')).toBeCloseTo(0.45, 5);
@@ -56,10 +55,9 @@ describe('G1 — confidence bump paths', () => {
     expect(getConfidence('decayed')).toBeCloseTo(1.0, 5);
   });
 
-  it('re-asserting with NO new observations does NOT bump (auto-tagger / verifier guard)', () => {
-    // The auto-tagger calls remember(name, type, { tags: [...] }) with no
-    // observations. A tight loop re-asserting an existing entity with no
-    // new content must not pump confidence.
+  it('re-asserting with NO new observations does NOT bump', () => {
+    // A tag-only update or tight-loop re-assertion with no new content must
+    // not pump confidence.
     kg.createEntity('decayed', 'lesson_learned', { tags: ['new-tag'] });
     expect(getConfidence('decayed')).toBeCloseTo(0.4, 5);
   });

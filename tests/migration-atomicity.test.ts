@@ -180,8 +180,7 @@ describe('Feature: index migration atomicity', () => {
 
     // An attempt timestamp is what stops a permanently broken index from
     // re-scanning the whole corpus on every CLI call and every hook fire —
-    // the same 24h throttle its neighbours runAutoDecay and
-    // runAutoTelemetryPrune already use.
+    // the same 24h throttle runAutoDecay already uses.
     expect(attempt).toBeDefined();
     expect(Number(attempt!.value)).toBeGreaterThan(0);
   });

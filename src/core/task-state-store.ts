@@ -8,8 +8,8 @@
 //
 // It deliberately writes THROUGH `remember()` rather than touching the tables
 // itself. That is not indirection for its own sake: `remember()` is where
-// FTS indexing, auto-tagging, project tagging, signal scoring and embedding
-// happen, and a second write path that skipped them is exactly how this
+// FTS indexing, project tagging and signal scoring happen, and a second write
+// path that skipped them is exactly how this
 // repository shipped the P0 where session memories were unrecallable.
 
 import { getDatabase } from '../db.js';

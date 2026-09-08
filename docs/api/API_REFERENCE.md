@@ -1,18 +1,42 @@
 # MeMesh Plugin -- API Reference
 
 **Protocol**: Model Context Protocol (MCP) over stdio
-**Version**: 4.8.5
+**Version**: 4.9.0
 **Compatibility**: Works with Claude Code plugins, Claude Managed Agents (via MCP connector), and any MCP-compatible client.
 
-**Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin) and OpenClaw (TypeScript memory-capability plugin) — same tier as their built-in backends, not HTTP bridges. See [docs/platforms/](../platforms/) for platform-specific guides.
+**Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
 
 ---
 
 ## Tools
 
-MeMesh exposes 11 tools via MCP.
+MeMesh exposes 12 tools via MCP.
 
 ---
+
+### work_package
+
+Prepare one bounded untrusted package, submit exactly one strictly validated result into pending human review, or defer without durable change. `kind: "digest"` selects a calendar cluster; `kind: "transcript"` selects visible turns from the newest Claude Code session associated with the client's single matching MCP workspace root. The same tool and existing proposal review path handle both kinds: this adds no relation kind and no second API or UI path.
+
+`prepare` returns at most one package (or `none_available`). The agent must either submit one result bound to the returned `package_id` and `ref`, or defer with a listed reason. `submit` only stages a `pending` proposal for human review; agents cannot apply or reject it. A package is untrusted evidence, and its hash identifies source freshness rather than authentication. A transcript package selects the newest eligible session that is not already represented by a proposal.
+
+Transcript packages require the MCP client to support `roots/list` and supply exactly one canonical directory whose MeMesh project identity matches `project`. Missing, malformed, non-matching, or multiple matching roots fail closed as `workspace_unavailable` or `workspace_ambiguous`. Packages carry only visible user/assistant text, in chronological order, identify their source as `claude-code`, and disclose clipping through `coverage`. They never include hidden reasoning, tool inputs or outputs, a raw transcript, or a transcript file path. Neither kind exposes or uses an API key, LLM, embedding, or vector data; no provider is called.
+
+Transcript discovery considers files modified within the last 3 days. It refuses a directory with more than 256 transcript candidates, skips any individual source larger than 8 MiB, and returns `none_available` when eligible scan input exceeds 16 MiB. A transcript without a recorded cwd, or whose cwd does not match the selected workspace, is ineligible. From the selected transcript, the package retains at most the 100 most recent visible turns in chronological order and at most 48 KiB of serialized source turns. The complete returned package is capped at 64 KiB; the submitted result has its separate 16 KiB cap.
+
+Digest discovery considers the last 56 days of active, same-project evidence with these exact entity types: `commit`, `session_keypoint`, `session-insight`, `workflow_checkpoint`, `weekly-summary`, `weekly_summary`. It excludes pinned or already-compacted rows, consolidation depth 1 or greater, and signal scores outside 0.2–0.7. Candidates are grouped by ISO week; only complete groups of 5–100 sources whose returned package fits 64 KiB are eligible.
+
+**Input schema:**
+
+| Action | Required fields | Strict result / behavior |
+|--------|-----------------|--------------------------|
+| `prepare` | `project`, `kind` (`"digest"` or `"transcript"`) | Returns one bounded package or `none_available`; unknown fields are rejected. |
+| `submit` | `package_id`, matching `ref`, `result` | One result only. A digest package accepts `type: "digest"`; a transcript package accepts `"decision"`, `"lesson_learned"`, or `"fact"`. Results need a name, 1–100 observations, and 1–50 non-`project:` tags; the encoded result is capped at 16 KiB. |
+| `defer` | `package_id`, matching `ref`, `reason` | `reason` is `not_now`. This makes no durable change, so preparing again may return the same package. |
+
+The `ref` is strict and kind-specific. A digest ref has `project`, sorted unique `source_ids`, and `source_hash`; a transcript ref has `project`, `session_id`, `modified_at`, `source_hash`, and `workspace_hash`. The workspace hash binds the package to the canonical host-provided root without exposing that path. Transcript file paths are server-resolved and are never input or output. Changed, forged, stale, or mismatched references fail without staging a proposal. A staged transcript proposal retains the bounded redacted turns and coverage metadata in its existing `source_ids` detail object so the human reviewer can compare the proposed memory with its evidence.
+
+**Responses:** `prepare` returns `{ status: "available", package, available_action: [{ action: "submit", actor: "agent" }, { action: "defer", actor: "agent" }] }`; `submit` returns `{ status: "staged", proposal_id, proposal_status: "pending", review_authority: "human" }`; and `defer` returns `{ status: "deferred", durable_change: false }`. Replaying the identical submission reports the existing proposal; it does not create another one.
 
 ### remember
 
@@ -44,7 +68,7 @@ If `remember` is called again with an existing `name`, MeMesh treats it as an ap
 | Type | Effect |
 |------|--------|
 | `supersedes` | **Archives the target entity**, immediately, on write. Use it when this memory replaces an older one. |
-| `contradicts` | Makes both memories surface as a conflict every time either is recalled (see [recall → Conflict detection](#recall)). Use it when two memories cannot both be true. Stated by the caller, or staged by the conflict judge (`memesh dream conflicts`) and created only when a human accepts the proposal. |
+| `contradicts` | Makes both memories surface as a conflict every time either is recalled (see [recall → Conflict detection](#recall)). Use it when two memories cannot both be true. |
 
 **Causal conventions (inert, but worth agreeing on).** For links between a
 decision and what it led to, use `caused` (direct: this decision produced
@@ -55,9 +79,8 @@ causal chain traversable later (`decision —caused→ incident —caused→
 lesson_learned`). The principle behind stating them explicitly: **MeMesh
 never infers causality.** Two memories being close in time, close in meaning,
 or co-mentioned proves nothing about one causing the other, so no pipeline
-here will ever manufacture a causal edge from timestamps or embedding
-distance (the conflict judge proposes `contradicts`/`supersedes`/`duplicates`
-from meaning — never `caused`). A cause you know but do not state is a cause
+here will ever manufacture a causal edge from timestamps. A cause you know
+but do not state is a cause
 the graph does not have.
 
 **Response**:
@@ -110,11 +133,11 @@ Three fields are conditional. `relationsCreated` lists the relations actually cr
 
 ### recall
 
-Search and retrieve stored knowledge. Uses FTS5 full-text search + sqlite-vec vector supplement, with optional tag filtering and multi-factor scoring. The hot path is LLM-free. Results are ranked by a weighted combination of search relevance, recency, access frequency, confidence, and recall-effectiveness impact. Call with no query to list recent memories.
+Search and retrieve stored knowledge. Uses local SQLite FTS5 full-text search, with optional tag filtering and multi-factor scoring. Results are ranked by a weighted combination of search relevance, recency, access frequency, confidence, and recall-effectiveness impact. Call with no query to list recent memories.
 
 Query terms are OR-ed and the matches are ordered by relevance (BM25) before scoring, so a question phrased in your own words finds the memory instead of requiring every word to appear in it. A memory matching more of your terms ranks higher; adding words narrows the ranking, not the result set. Terms appearing in more than half the indexed rows are dropped as noise — they are the ones BM25 already scores near zero — except that a query made entirely of common words keeps its rarest term rather than matching nothing, and the guard does not apply below 25 indexed rows, where a frequent word is the subject rather than a stopword. Of what survives, the first 32 in query order are used — dropping the ubiquitous terms *before* the cap means a bigram-segmented CJK question no longer loses its whole tail to terms that would have been discarded anyway, but the cap itself is still positional, so a query with more than 32 surviving terms does lose its tail. Punctuation inside a word splits it (`kitchen's` searches for `kitchen` and `s`, not for the exact phrase). Results are deterministic: BM25 ties break by recency, so the same query over the same memories returns the same list.
 
-A query that is not empty but contains nothing searchable — `???`, `@#$%` — returns no results rather than falling back to the recent list, so "nothing matched" is never dressed up as "here is what matched". This holds with embeddings enabled too: the vector supplement is skipped for such a query rather than returning its semantically-nearest memories. Call with no query at all to list recent memories.
+A query that is not empty but contains nothing searchable — `???`, `@#$%` — returns no results rather than falling back to the recent list, so "nothing matched" is never dressed up as "here is what matched". Call with no query at all to list recent memories.
 
 **Input Schema**:
 
@@ -151,7 +174,7 @@ Returns an object whose `entities` array holds the matching entities ranked by m
       "match": {"source": "keyword", "relevance": 0.42}
     }
   ],
-  "retrieval": {"mode": "hybrid", "degraded": false, "truncated": false}
+  "retrieval": {"mode": "fts", "truncated": false}
 }
 ```
 
@@ -160,34 +183,17 @@ not — a memory written before titles existed, or by a caller that sent none.
 Show it where you would otherwise show `name`; `name` is the identifier the
 other tools address the memory by, not a label meant to be read.
 
-**Retrieval metadata (`retrieval`)**: every recall envelope says HOW it was
-answered — the three things the rows themselves cannot tell you. `mode` is
-`"hybrid"` when the vector supplement actually ran and `"fts"` when the
-answer is keyword-only (either because embeddings are not configured, or
-because there was no searchable query). `degraded: true` means embeddings
-ARE configured but the vector side could not run right now — provider
-failure or missing sqlite-vec — so keyword-only results are a degradation,
-not the configured behaviour (`memesh doctor` diagnoses why; before this
-field, that condition was silent). `truncated: true` means the results
-filled `limit` and more may exist — a small hit count is a window, not a
-graph-wide count, and this flag is the difference between "that is all"
-and "that is all I was allowed to return". The CLI prints a warning line
-when degraded and a `(limit reached — more may exist)` note when
-truncated.
+**Retrieval metadata (`retrieval`)**: every recall envelope states that local
+FTS answered the query. `truncated: true` means the results filled `limit` and
+more may exist — a small hit count is a window, not a graph-wide count, and
+this flag is the difference between "that is all" and "that is all I was
+allowed to return". The CLI prints a `(limit reached — more may exist)` note
+when truncated.
 
-**Provenance (`match`)**: when the call has a query, every result says how it
-was found. `"source": "keyword"` means the full-text index matched your words;
-`"source": "semantic"` means the keyword index found nothing for this entity
-and it was surfaced by vector similarity alone. The distinction is disclosed
-because similarity cannot certify relevance — measured on this project's own
-calibration data, the distance ranges of unrelated and genuinely related
-memories overlap, so a semantic-only result may be unrelated. `relevance` is
-the 0–1 similarity for semantic results and the normalized keyword score for
-keyword results. The CLI renders this honestly: a result set that is entirely
-semantic is prefixed with `No keyword matches. Closest memories by meaning —
-may be unrelated:` and each such row carries a `~N% semantic` badge. The
-empty-query listing (recent memories) carries no `match` field — a listing is
-not a match. In CLI (non-`--json`) output, observations longer than 500
+**Provenance (`match`)**: when the call has a query, every result carries
+`"source": "keyword"` and the normalized FTS relevance score. The empty-query
+listing (recent memories) carries no `match` field — a listing is not a match.
+In CLI (non-`--json`) output, observations longer than 500
 characters are capped on display with `… (+N more chars)`; storage and
 `--json` always carry the full text.
 
@@ -196,7 +202,7 @@ characters are capped on display with `… (+N more chars)`; storage and
 ```json
 {
   "entities": [...],
-  "retrieval": {"mode": "hybrid", "degraded": false, "truncated": false},
+  "retrieval": {"mode": "fts", "truncated": false},
   "conflicts": [
     "\"no-jwt\" contradicts \"use-jwt\""
   ]
@@ -250,7 +256,7 @@ Archive an entity (soft-delete) or remove a specific observation.
 **HTTP**: `POST /v1/consolidate` answers `410 Gone` with a pointer, rather than 404 — a script author reads the difference.
 **CLI**: `memesh consolidate` prints where to go and exits `1`.
 
-Use [`dream`](#dream) instead: it proposes digests and applies nothing until a proposal is accepted, keeps `source_ids`, and archives sources rather than deleting them. It is **not** a like-for-like replacement — `dream` merges *clusters* of episodic memories (commits, session notes) into a digest, and never touches lessons, decisions, architecture notes or pinned entities. There is no reviewed equivalent of "compress this one named entity" today.
+Use [`work_package`](#work_package) from an already-running agent session instead. It prepares a bounded digest or visible-transcript package and stages exactly one proposal for human review. The Dashboard can inspect, accept, or reject that staged proposal; it does not create the package or wake an agent. There is no reviewed equivalent of "compress this one named entity" today.
 
 ---
 
@@ -733,6 +739,8 @@ Start: `memesh serve` (default: `localhost:3737`)
 
 Safety note: non-loopback binds are blocked by default. To expose the HTTP server beyond the local machine, you must pass `memesh serve --host 0.0.0.0 --allow-remote` or set `MEMESH_HTTP_ALLOW_REMOTE=true`.
 
+### Authentication
+
 **Authentication on a remote bind.** A non-loopback bind requires a bearer token on every `/v1` request — MeMesh generates one before it starts listening, so there is no unauthenticated window:
 
 | | |
@@ -770,31 +778,31 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/remember | Store knowledge |
 | POST | /v1/recall | Search knowledge; with neither `query` nor `tag` it lists recent entities |
 | POST | /v1/forget | Archive or remove observation |
-| POST | /v1/consolidate | **Retired** — answers `410 Gone`. Use `POST /v1/dream/run`. |
+| POST | /v1/consolidate | **Retired** — answers `410 Gone`. Use the MCP `work_package` flow from an already-running agent session. |
 | POST | /v1/export | Export memories as JSON bundle |
 | POST | /v1/import | Import memories from JSON bundle with merge strategy |
 | POST | /v1/learn | Record structured lesson from mistake or discovery |
+| POST | /v1/message | Run one durable-message lifecycle action using the same schema as the MCP `message` tool |
 | POST | /v1/why | File attribution: join caller-resolved commit hashes to commit entities, their sessions, and file-tag memories |
 | GET | /v1/entities | List entities (pagination); supports `?type=<type>` and `?limit=<n>` |
 | GET | /v1/entities/:name | Get single entity |
-| GET | /v1/config | Get current config and detected capabilities |
+| GET | /v1/config | Get current supported non-model config fields |
 | GET | /v1/update-status | Current/latest package version, freshness state, and update guidance |
-| POST | /v1/config | Save config (partial update), including the independent embedding provider |
-| POST | /v1/config/test | Validate provider+apiKey against the live `/v1/models` endpoint and return the available model list |
-| GET | /v1/reindex | Read semantic-index rebuild status, progress, generation, and database readback |
-| POST | /v1/reindex | Start one asynchronous full semantic-index rebuild; duplicate requests reuse the running job |
+| POST | /v1/config | Save supported non-model config fields as a partial update |
 | GET | /v1/stats | Aggregate counts: entities, observations, relations, tags; type/tag/status distributions |
 | GET | /v1/graph | Signal entities (all non-noise types) + up to 200 recent noise entities + all relations |
-| GET | /v1/graph?layer=work | The work layer only: decisions, lessons, plans — plus per-node evidence counts |
-| GET | /v1/graph/evidence?node=NAME | The evidence supporting one work node, loaded on drill-down |
-| GET | /v1/analytics | Health score, memory-loop metric, 30-day timeline, ageMatrix, knowledgeRadar |
+| GET | /v1/graph/evidence | Evidence supporting one work node; requires the `node` query parameter |
+| GET | /v1/analytics | Health score/factors, memory-loop metric, criticalLessons, citationCompliance, 30-day timeline, ageMatrix, knowledgeRadar |
+| GET | /v1/analytics/pm | Project-management velocity, flow, operational signals, and recommendations |
 | GET | /v1/patterns | User work patterns: schedule, tools, focus areas, workflow, strengths, learning |
+| GET | /v1/dream/proposals | List staged proposals for human review |
+| GET | /v1/dream/proposals/:id | Read one proposal and its retained evidence detail |
+| POST | /v1/dream/proposals/:id/accept | Human review action: accept and apply one pending proposal |
+| POST | /v1/dream/proposals/:id/reject | Human review action: reject one pending proposal |
 | POST | /v1/verify | **Retired** — answers `410 Gone`. Removed with the agentic-orchestration experiment. |
 | POST | /v1/demo/seed | Insert the demo tour dataset (entities tagged `metadata.demo = true`) |
 | POST | /v1/demo/reset | Remove every demo entity; all-or-nothing transaction |
 | GET | /v1/projects | Distinct projects from `project:*` tags and name-prefix heuristics, with per-project counts |
-| GET | /dashboard | Interactive web dashboard (HTML) |
-
 All responses: `{ success: true, data: ... }` or `{ success: false, errorCode: "...", error: "..." }`
 
 ### Stable error codes
@@ -814,7 +822,6 @@ Every `success: false` envelope carries a machine-readable `errorCode` **alongsi
 | `resource.not-found` | 404 | Route exists, but the named entity / proposal does not |
 | `payload.too-large` | 413 | Body exceeds the 1 MB limit (the legacy `code: "PAYLOAD_TOO_LARGE"` field is also kept) |
 | `operation.failed` | 400 | The request was well-formed but the operation itself rejected it |
-| `llm.not-configured` | 400 | The endpoint needs Smart Mode and no LLM provider is configured |
 | `server.internal` | 500/503 | Unexpected server-side failure |
 
 ### The origin boundary
@@ -843,11 +850,10 @@ Non-browser clients — the CLI, the MCP server, `curl`, your scripts — send n
 of these headers and are unaffected. Anything able to set headers freely is
 already running locally, where it could open the database directly.
 
-`POST /v1/config/test` is the one surface whose failures travel *inside* a `success: true` envelope (the probe outcome is data, not a transport error); its stable codes are documented with that endpoint below.
-
 ### GET /v1/config
 
-Returns the current configuration and detected capabilities. API keys are masked in the response.
+Returns the current supported non-model configuration fields that are present.
+Capability diagnosis belongs to `GET /v1/doctor`, not this response.
 
 **Response**:
 
@@ -857,33 +863,16 @@ Returns the current configuration and detected capabilities. API keys are masked
   "data": {
     "config": {
       "autoCapture": true,
-      "llm": { "provider": "openai", "apiKey": "***" },
-      "embedder": { "provider": "ollama" }
-    },
-    "capabilities": {
-      "fts5": true,
-      "vectorSearch": true,
-      "scoring": true,
-      "knowledgeEvolution": true,
-      "embeddings": "ollama",
-      "llm": { "provider": "openai", "apiKey": "***" },
-      "llmSource": "config",
-      "searchLevel": 1
+      "autoUpdate": "minor",
+      "sessionLimit": 20,
+      "setupCompleted": true
     }
   }
 }
 ```
 
-`config.llm` is the LLM setting persisted by MeMesh. `capabilities.llm` is the
-effective runtime LLM after applying provider precedence, and `llmSource`
-explains where it came from:
-
-- `config` — the saved MeMesh setting is effective (and wins over environment detection)
-- `environment` — a provider was detected from the process environment but is not saved in MeMesh
-- `none` — no effective LLM is available
-
-API keys are masked in both views. The response never exposes the environment
-variable name or value.
+Dashboard locale is browser-local UI state and is not part of this server
+configuration.
 
 ### GET /v1/update-status
 
@@ -897,13 +886,13 @@ Use `?cached=1` to read the cached state only. Without it, MeMesh prefers a fres
 {
   "success": true,
   "data": {
-    "currentVersion": "4.2.10",
-    "latestVersion": "4.2.11",
-    "checkedAt": "2026-04-24T10:15:00.000Z",
-    "lastAttemptAt": "2026-04-24T10:15:00.000Z",
-    "lastSuccessfulCheckAt": "2026-04-24T10:00:00.000Z",
+    "currentVersion": "4.9.0",
+    "latestVersion": "4.9.0",
+    "checkedAt": "2026-09-07T10:15:00.000Z",
+    "lastAttemptAt": "2026-09-07T10:15:00.000Z",
+    "lastSuccessfulCheckAt": "2026-09-07T10:00:00.000Z",
     "lastError": "npm unavailable",
-    "updateAvailable": true,
+    "updateAvailable": false,
     "checkSucceeded": false,
     "source": "cache",
     "freshness": "cached",
@@ -924,39 +913,13 @@ Use `?cached=1` to read the cached state only. Without it, MeMesh prefers a fres
 
 Save a partial config update. Fields not provided are preserved.
 
-**Request body**: Any supported subset of `MeMeshConfig` fields (`llm`, `llmFallbacks`, `embedder`, `autoCapture`, `sessionLimit`, `autoUpdate`, `language`, `setupCompleted`). Unknown fields are rejected.
+**Request body**: Any supported subset of the non-model `MeMeshConfig` fields
+(`autoCapture`, `sessionLimit`, `autoUpdate`, `setupCompleted`). Unknown fields
+are rejected. Dashboard locale is stored in the browser and is not sent here.
 
-`embedder.provider` selects the provider used to build semantic-search vectors and accepts `openai` or `ollama`. It is independent of `llm`, which selects the model used to organize or generate content. Saving a different embedder does not silently rebuild existing vectors; call `POST /v1/reindex` explicitly after reviewing the provider, privacy, and cost implications.
-
-Send `llm: null` to remove the persisted primary LLM. Send `embedder: null` to remove the persisted search-index provider; this leaves the existing derived index on disk but disables provider-backed rebuilds until another provider is saved. The Dashboard sends both nulls only when the saved LLM and search provider are the same Ollama installation and the user explicitly confirms removing both. A provider change replaces the primary LLM object rather than carrying the previous provider's API key across providers; same-provider model edits preserve the stored key when no replacement key is sent.
-
-`language` sets the output language for LLM-generated *content* — dreamer digests, emergent patterns, lessons, digest-validator reasons. It is free-form (a locale code like `zh-TW` or a language name like `繁體中文`, max 60 chars) because it becomes a prompt instruction, not a parsed locale. Unset means English. It is deliberately separate from the dashboard's own locale (stored client-side in the browser): that setting translates the UI chrome, this one decides what language generated memories are written in. Machine identifiers (entity type slugs, tags, category enums) stay English regardless. CLI equivalent: `memesh config set language zh-TW` / `memesh config unset language`.
-
-`llmFallbacks` is the ordered cross-provider failover chain, written *wholesale* — the array you send replaces the stored one, so send the entries in the priority order you want (index 0 is tried first after the primary). Stored secrets are preserved through an EXPLICIT identity, never positional guessing: because GET masks every fallback `apiKey` as `***`, a client MUST NOT echo that mask back. To keep the key already on disk for an entry, send it **with no `apiKey`** and a `keepKeyFrom: <original index>` — the index that entry occupied in the chain you loaded. The server refills the key from exactly that stored slot (guarded by a `provider` match, so a stale index can never graft one provider's key onto another), then strips `keepKeyFrom` before persisting. Carry `keepKeyFrom` with the entry across reorders and removals; omit it (or send `null`) for a new entry, one whose key you retyped, or one whose provider you changed. An entry that sends an `apiKey` sets or rotates that key and wins over `keepKeyFrom`. An entry with neither `apiKey` nor `keepKeyFrom` is stored with no key. CLI equivalent: `memesh config set llmFallbacks '[{"provider":"openai","model":"gpt-4o-mini","apiKey":"sk-..."}]'`.
-
-**Response**: `{ success: true, data: <updated config> }` (every API key — primary and fallback chain — masked if present). Clients that present a persisted-success state should follow with `GET /v1/config` and render that authoritative readback; the Dashboard retains its draft if the readback is missing or disagrees.
-
-### GET /v1/reindex
-
-Returns the current full-index rebuild job plus authoritative database/config readback. `configuredProvider` describes the provider selected in configuration; `storedDimension` describes the live index on disk. They may intentionally disagree until a rebuild completes. The stored dimension does not prove which provider created the live vectors.
-
-When the process restarts, an in-memory job is no longer available. A pending rebuild marker or unfinished staging generation is therefore reported as `retry-needed`, never as success.
-
-**Response fields**:
-
-- `status`: `idle`, `running`, `succeeded`, `failed`, or `retry-needed`
-- `job`: job id, state, progress counts, and timestamps, or `null`
-- `configuredProvider` / `configuredDimension`: current configuration
-- `storedDimension`: width of the live index currently on disk
-- `pendingReindex`, `missingVectors`, `generation`: database readback
-- `result`: the completed core `reindex()` result, when available
-- `error`: a retryable human-readable failure reason, when available
-
-### POST /v1/reindex
-
-Starts a full semantic-index rebuild asynchronously and returns HTTP `202` with the same shape as `GET /v1/reindex`. The request has no body. If a rebuild is already running, the route returns that existing job instead of starting another provider run; this prevents duplicate paid embedding requests.
-
-The core generation safety rules still apply: the live index continues serving until the staging generation is complete and verified. A provider failure or incomplete generation is reported as `failed`; the old live index is not swapped out, and the retained staging work can be retried.
+**Response**: `{ success: true, data: <updated config> }`. Clients that present
+a persisted-success state should follow with `GET /v1/config` and render that
+authoritative readback.
 
 ### GET /v1/stats
 
@@ -1063,13 +1026,15 @@ Returns computed analytics insights for the memory database.
   "data": {
     "healthScore": 72,
     "healthFactors": {
-      "activity": 50,
-      "quality": 80,
-      "freshness": 60,
-      "lessons": 100
+      "activity": { "score": 20, "weight": 30, "detail": "2/3 active entities accessed in last 30 days" },
+      "quality": { "score": 24, "weight": 30, "detail": "4/5 active entities with confidence > 0.7" },
+      "freshness": { "score": 8, "weight": 20, "detail": "2 new entities this week" },
+      "lessons": { "score": 20, "weight": 20, "detail": "5 lessons learned" }
     },
+    "criticalLessons": { "critical": 2, "severityTagged": 6, "total": 14 },
+    "citationCompliance": null,
     "timeline": [
-      { "day": "2026-04-01", "created": 5, "recalled": 12 }
+      { "date": "2026-09-01", "created": 5, "recalled": 12 }
     ],
     "loopMetric": {
       "reusedThisWeek": 12,
@@ -1088,7 +1053,7 @@ Returns computed analytics insights for the memory database.
 }
 ```
 
-> `valueMetrics`, `recallEffectiveness`, and `cleanup` were removed — they were computed on every request but never rendered by any dashboard component. The dashboard reads `healthScore`, `healthFactors`, `loopMetric`, `timeline`, `ageMatrix`, and `knowledgeRadar`.
+> `valueMetrics`, `recallEffectiveness`, and `cleanup` were removed — they were computed on every request but never rendered by any dashboard component. The dashboard reads `healthScore`, `healthFactors`, `loopMetric`, `criticalLessons`, `citationCompliance`, `timeline`, `ageMatrix`, and `knowledgeRadar`.
 
 **Health Score Algorithm:**
 - Activity (30%): percentage of active entities accessed in last 30 days
@@ -1098,7 +1063,7 @@ Returns computed analytics insights for the memory database.
 
 ### GET /v1/doctor
 
-Runs the same check suite as `memesh doctor` and returns the structured result. Any secret-shaped substring (API keys, bearer tokens) is redacted before the response leaves the server — defence in depth on top of the config masking.
+Runs the same check suite as `memesh doctor` and returns the structured result. Any secret-shaped substring (for example bearer tokens) is redacted before the response leaves the server.
 
 **Response:** `{ "success": true, "data": { ...doctor result... } }`, or `500` with `{ "success": false, "error": "..." }` if the suite itself failed to run.
 
@@ -1121,7 +1086,7 @@ Lists distinct projects extracted from entity tags (`project:*`) and entity name
 
 ### POST /v1/demo/seed / POST /v1/demo/reset
 
-Back the dashboard onboarding banner: `seed` inserts the demo tour dataset (every entity carries `metadata.demo = true`), `reset` removes exactly those entities in one all-or-nothing transaction, routed through the knowledge-graph delete so the FTS and vector indexes stay consistent. The CLI equivalent is `memesh demo`.
+Back the dashboard onboarding banner: `seed` inserts the demo tour dataset (every entity carries `metadata.demo = true`), `reset` removes exactly those entities in one all-or-nothing transaction, routed through the knowledge-graph delete so the FTS index stays consistent. The CLI equivalent is `memesh demo`.
 
 **Response:** `{ "success": true, "data": { "inserted": 12, "removed": 0 } }` — counts of demo entities written or removed.
 
@@ -1162,57 +1127,6 @@ Returns PM-framed metrics: decision velocity, knowledge-graph connectedness, and
 - `stalePlanCount`: active `plan` entities not accessed in 30+ days
 - `openDecisionCount`: active `decision` entities created more than 14 days ago and not yet superseded
 - `orphanRate`: fraction of active entities with zero relations (lower = better connected KG)
-
-### POST /v1/config/test
-
-Loads the provider's model catalog, then sends a bounded inference request through the same provider transport used by Dream. `valid:true` means the selected `model` (or the catalog's `suggested` model when omitted) completed that inference request; model-list access alone is not readiness. Used by Dashboard Settings before persisting and to populate a model dropdown with live choices. **Does not write to disk.**
-
-When `apiKey` is omitted the server resolves a stored key so the dashboard can offer "Test with current settings" without re-typing: send `fallbackIndex: <index>` to test the stored key of `llmFallbacks[index]` (provider-guarded — it tests THAT entry's own credential, not the primary's); with no `fallbackIndex`, an omitted key resolves the primary `llm` key when its provider matches. This keeps a Test on a saved-but-untouched fallback from either falsely failing (probing empty) or falsely passing on the primary's key.
-
-**Request body:**
-
-```json
-{
-  "provider": "anthropic" | "openai" | "ollama",
-  "apiKey": "<optional, required for anthropic/openai unless a stored key is resolved>",
-  "host": "<optional, Ollama base URL, defaults to http://localhost:11434>",
-  "model": "<optional, exact model to exercise; defaults to suggested>",
-  "fallbackIndex": "<optional, test the stored key of llmFallbacks[index]>"
-}
-```
-
-**Response:**
-
-```json
-{
-  "success": true,
-  "data": {
-    "valid": true,
-    "catalogVerified": true,
-    "inferenceVerified": true,
-    "testedModel": "claude-haiku-4-5",
-    "models": [
-      { "id": "claude-haiku-4-5", "created": "2026-04-01T00:00:00Z" },
-      { "id": "claude-opus-4", "created": "2026-01-15T00:00:00Z" }
-    ],
-    "suggested": "claude-haiku-4-5"
-  }
-}
-```
-
-On failure: `{ valid: false, error: "<provider message>", errorCode: "<stable code>" }`. The endpoint always returns HTTP 200 with `success:true` even when `valid:false` — the boolean is the contract, not the HTTP status. `error` is the human message (English, may be reworded); `errorCode` is the stable machine code. The message is **credential-redacted before it leaves the server**: a provider that quotes the submitted key back in its rejection ("Incorrect API key provided: sk-…") has that fragment replaced with `***REDACTED***`, so the response, the rendered Dashboard alert, and anything copied out of either are safe to paste into a bug report. Non-sensitive diagnostics — model name, organisation-level rate-limit prose, HTTP status — are preserved.
-
-| `errorCode` | Meaning |
-|---|---|
-| `auth` | API key empty or rejected by the provider (401/403) |
-| `network` | DNS failure, connection refused/reset, timeout, or abort |
-| `no_models` | Provider answered but returned zero usable models (proxy/gateway interception, or a bare Ollama with nothing pulled) |
-| `bad_host` | Caller-supplied Ollama host rejected (must be loopback; use the server-side `OLLAMA_HOST` env for remote Ollama) |
-| `inference_failed` | The catalog was readable, but the selected/suggested model failed the real inference request |
-| `http_<status>` | Any other upstream HTTP status, e.g. `http_429` for rate limiting |
-| `unknown` | Unclassified failure |
-
-The `suggested` model picks the first entry whose id contains a small-tier hint (`mini`, `nano`, `haiku`, `flash`, `lite`, `small`, `8b`, `7b`, `3b`), preferring the most recently `created`. Falls back to the first entry when no hint matches.
 
 ### POST /v1/why
 
@@ -1344,6 +1258,25 @@ printf '%s' '{"kind":"handoff","text":"review ready"}' | memesh message send \
 
 `--target-kind` accepts `principal` (the default) or `session` on both `send` and `fetch`. An exact-session payload must be fetched with the same target kind and is never exposed through a principal fetch.
 
+### memesh feedback
+
+Build a pre-filled public GitHub issue for a bug, feature request, or question:
+
+```bash
+memesh feedback --bug --message "Brief reproduction"
+memesh feedback --feature
+memesh feedback --question --no-diagnostics
+memesh feedback --bug --no-open
+```
+
+Unless `--no-diagnostics` is used, the body includes a redacted doctor report,
+runtime metadata, and the anonymous local install ID. MeMesh prints the exact
+public body before opening the browser; the user reviews and submits the GitHub
+form. `--no-open` prints only the pre-filled URL and does not launch a browser.
+MeMesh never submits the issue automatically. There is no MCP `report_issue`
+tool and no HTTP report-issue endpoint. The `improvement` MCP tool remains a
+separate private, human-governed product-proposal workflow.
+
 ### memesh remember — stating a relation
 
 The two relation types that change behaviour have their own flags, because
@@ -1367,143 +1300,16 @@ they have no CLI flag.
 
 ### memesh reindex
 
-Regenerate vector embeddings for all entities.
-
-**Options**:
-
-| Option | Description |
-|--------|-------------|
-| `--namespace <namespace>` | Reindex only entities in this namespace. |
-| `--fts` | Rebuild the full-text keyword index instead of the vector index. |
-| `--discard-generation` | Throw away a half-built index left by an interrupted rebuild, without rebuilding. Never touches the live index. |
-| `--json` | Output the result as JSON. |
-
-`--fts` rebuilds the full-text keyword index instead. The keyword index
-normally rebuilds itself once, on the first open after an upgrade, guarded by a
-version marker. That marker only moves forward, so it cannot describe a
-database migrated by a newer build and then written to by an older one — which
-happens with a downgrade, or with an npm-global and a plugin-marketplace
-install side by side. `--fts` is the way out of that state.
+Rebuild the local FTS5 full-text index. MeMesh normally keeps this index current
+automatically; use this recovery command after a downgrade or when
+`memesh doctor` reports an FTS index mismatch.
 
 ```bash
 memesh reindex --fts
 ```
 
-#### Nothing is deleted until the new index is complete
-
-A full reindex builds the new vectors in a **staging generation** beside the
-live index, and replaces the live one only once every entity that should have a
-vector has one and nothing failed. The swap is a single transaction.
-
-What that means in practice:
-
-- **The old index keeps answering queries** for the whole rebuild, when the
-  rebuild is at the same width. Rebuilding at a **new** width is different and
-  the difference matters: a query embedded at the new width cannot be matched
-  against an index built at the old one, so from the moment you switch provider
-  until the rebuild completes, **semantic search is off and recall runs on
-  keyword search alone**. That window is reported honestly rather than hidden —
-  `recall` returns `retrieval.mode: "fts"` and `retrieval.degraded: true` for
-  it, and the message printed on open says so.
-- **A run that dies part way changes nothing.** Provider rate limit, network
-  drop, `Ctrl-C`, a killed process — the live index is byte-for-byte what it
-  was. It is never left as a half-new, half-old mix, whose distances are no
-  longer comparable against each other or against the dedup threshold.
-- **The embeddings already produced are kept.** Run `memesh reindex` again and
-  it resumes: only the entities the previous run did not reach are sent to the
-  provider. On a paid API this is the difference between finishing the job and
-  paying for it twice.
-- **A half-built generation is discarded, not resumed, if the provider or the
-  width changed** since it was started. Vectors from two different embedding
-  spaces must not end up in one index.
-- **A memory captured while the rebuild runs keeps its vector.** Only the
-  rebuild writes to the staging index; every other writer — the capture hooks,
-  `remember`, the dreamer, the MCP server — writes the live one, and the rebuild
-  works from a list of entities taken before it started. So at swap time, rows
-  that are still active and absent from the staging index are carried across
-  rather than dropped. (This applies to a same-width rebuild. During a width
-  change a concurrent write is refused as a dimension mismatch, so there is
-  nothing of the new width to carry.)
-- **A memory you deleted stays deleted.** `forget` clears the live row, but it
-  does not know about a staging index, so a row staged before the deletion is
-  pruned at swap time instead of being promoted back into the live index.
-
-**Switching embedding provider needs no special flag.** Each provider emits a
-different width — 768 for Ollama, 1536 for OpenAI, 384 for the keyword-only
-default — and a `vec0` table is fixed at one width, so the new index really is a
-new table. That is what a generation is. Change the provider in your config and
-run `memesh reindex`; the old index stays live at its old width until the new one
-is verified. Until you do, MeMesh keeps the existing index and says so on open,
-because a stale index still works.
-
-> `--vectors` was retired. It existed to grant consent for dropping every
-> stored embedding before the refill began — the step generations removed. The
-> flag is rejected rather than accepted as a no-op, and rejecting it destroys
-> nothing.
-
-A full reindex refuses up front in two cases:
-
-| Refused | Why |
-|---------|-----|
-| A test embedding could not be produced at the configured width | The run would fill nothing, and would spend its whole length discovering that. The check embeds one string and measures the result, rather than trusting the provider name in the config: `openai` and `ollama` are "available" the moment they are named, so an expired key, a typo'd key or a stopped Ollama would otherwise be found out one entity at a time. Your existing index is untouched. |
-| sqlite-vec is not loaded | There is no vector index to rebuild, so there is nothing this command can do. Recall is running on FTS5 keyword search alone. `memesh doctor`'s "SQLite and vector search" row explains why the extension did not load on this machine. |
-| A half-built index is present and its marker cannot be read | Resuming it could merge vectors from two different embedding spaces; discarding it would destroy embeddings a previous run already produced. Neither is done silently. Clear it with `memesh reindex --discard-generation`, then rebuild. |
-
-**`memesh reindex --discard-generation`** throws away a half-built index without
-rebuilding, and never touches the live one. Two situations call for it: a rebuild
-you have decided to abandon (the staging index otherwise holds a full second copy
-of your vectors on disk — `memesh doctor` reports its size), and the unreadable
-marker above. It prints what it discarded, and exits 0 when there was nothing to
-discard.
-
-**A resumed rebuild only reuses a staged vector while it still matches.** Each
-staged row records a hash of the text it was built from, so an entity edited
-between an interrupted run and its resume is re-embedded rather than promoted with
-a stale vector. An entity that has not changed is never sent to the provider
-twice, and the result reports those separately as `already_staged` — `embedded`
-counts only what this run wrote.
-
-**A rebuild gives up after five consecutive provider failures.** A provider that
-has stopped answering answers for every remaining entity too, so continuing costs
-the whole graph at up to ~91.5 seconds each and tells the user nothing new.
-Everything embedded so far is kept, the run reports `abortedAfter`, and the next
-`memesh reindex` continues from there.
-
-Namespace-scoped runs (`--namespace X`) write in place rather than through a
-generation, because a staging table holding one namespace would drop every other
-namespace's vectors when swapped in. In-place is safe for the reason a full
-rebuild is not: each row's old vector survives until its replacement has been
-produced.
-
-**Provider requests** are bounded: a 30-second timeout per request, and up to
-three attempts for a 429 or a 5xx (honouring `Retry-After` when the server sends
-one). A 401, 403 or 404 is configuration rather than weather, so it stops
-immediately and names the status instead of retrying against a certainty.
-
-**Exit codes**:
-
-| Code | Meaning |
-|------|---------|
-| `0` | Every memory this run was responsible for has a vector, and every embedding this run attempted was written. |
-| `1` | The command failed, was refused, finished with memories still missing a vector, or could not regenerate an embedding it tried to. |
-
-Both halves are needed, because either alone can be satisfied by a run that did
-nothing. "Every memory has a vector" is true of a full index whose vectors are
-the *stale* ones a provider switch was meant to replace — so a run that refused
-every write would report itself complete and exit `0`, in exactly the situation
-the command exists for. When that happens the run now reports
-`Could not be regenerated: N` and leaves the reindex-needed flag set.
-
-The verdict is scoped to what was asked: `--namespace personal` exits `0` when
-that namespace is complete, even if another namespace is behind. The
-reindex-needed flag is *not* scoped — it describes the whole database, so it
-stays set until every namespace is complete, and the run says so rather than
-printing a bare tick next to a `memesh doctor` that still reports work
-outstanding.
-
-An incomplete run prints `⚠️  Reindex incomplete` with a per-reason breakdown.
-Earlier versions printed `✅ Reindex complete` and exited `0` in every case,
-including runs that wrote no vectors at all.
+The command rebuilds keyword-search data only. It does not contact a provider,
+generate embeddings, or create vector data.
 
 ### memesh why
 
@@ -1531,9 +1337,11 @@ the project scope.
 
 ### memesh pin / memesh unpin
 
-Protect an entity from the dreamer's automatic compaction (or release that protection).
+Protect an entity from digest work-package selection (or release that protection).
 
-The dreamer periodically compacts low-signal clusters of memories into digests. `pin` marks an entity so the compactor skips it; `unpin` removes the mark. Pinning writes `metadata.pin = true` (and unpinning removes the key), which is exactly the flag the dreamer reads before compacting.
+`pin` marks an entity so deterministic digest-package preparation skips it;
+`unpin` removes the mark. Pinning writes `metadata.pin = true` and unpinning
+removes the key. Neither command runs a digest job or stages a proposal.
 
 **Usage**:
 
@@ -1653,30 +1461,11 @@ A Python SDK used to ship in this repository, and this page told you to
 `pip install memesh`. It was never published — PyPI answers 404 for that name —
 no workflow built it, no CI ran its tests, and it still called
 `POST /v1/consolidate`, which has answered `410 Gone` since 4.2.11. It is
-removed rather than repaired: an unpublished client covering 7 of 32 endpoints
+removed rather than repaired: an unpublished client covering only seven of the
+then-available HTTP routes
 is a promise this project was not keeping.
 
 ---
-
-### memesh telemetry
-
-Render the per-flow LLM telemetry scorecard for the last N days.
-
-**Usage**:
-
-```bash
-memesh telemetry [--window <days>] [--prune <days>] [--json]
-```
-
-**Options**:
-
-| Flag | Description |
-|------|-------------|
-| `--window <days>` | Look-back window for the scorecard (default 30) |
-| `--prune <days>` | Run `pruneTelemetry({olderThanDays: N})` BEFORE rendering. Prints `Pruned X rows older than N days.` first. |
-| `--json` | Output as JSON for programmatic consumption |
-
-**Output**: per-flow scorecard with success rate, fallback usage, median latency, provider breakdown, and error-class chips. Auto-prune also runs from `openDatabase()` once per 24h with a 180-day default cutoff.
 
 ### memesh kg backfill-relations
 
@@ -1718,7 +1507,7 @@ memesh kg backfill-relations [--project <name>] [--dry-run] [--max-per-source <n
 
 ### memesh kg rename-project
 
-Merge or rename a project across every entity **and every durable agent message scoped to it**. Heals project tags that were split by an identity-rule change: tags from before project identity became git-based (e.g. a repo captured under both `project:tim` and `project:TIM`, or memories captured in a subdirectory tagged with the subdirectory name), and — since non-git identity gained its real-path hash suffix — bare-basename tags like `project:notes` that should merge into the new `project:notes-<8 hex>` form (run with no flags to see both spellings side by side). The system cannot infer the correct project for an old value, so the mapping is user-driven.
+Merge or rename a project across every entity **and every durable agent message scoped to it**. Automatic identities use `<readable repo label>~<32 hex>` and hash either a password-free remote locator or a native real path, preventing unrelated same-basename repositories from sharing an inbox. Standard GitHub HTTPS and SSH spellings converge; generic SSH retains its login, absolute-versus-home-relative path semantics, and literal `.git` suffix. Existing bare Git names and older non-Git `<name>-<8 hex>` values are not rewritten automatically: run with no flags to inspect the stored spellings, then use an explicit mapping when one old project has one unambiguous destination. An old basename that already mixed multiple repositories has no stored provenance from which MeMesh can safely split its rows; do not guess that migration.
 
 **Usage**:
 
@@ -1743,66 +1532,26 @@ A project identity is half the key of a message inbox (`project` + `recipient`) 
 
 ### memesh dream
 
-LLM cluster compactor + pattern detector with propose / accept / reject lifecycle. The dreamer also auto-triggers from the Stop hook (gated by ≥10 episodic entities + 24h throttle), so users typically don't run this manually.
-
-**Subcommands**:
+Review proposals that an agent or deterministic rule has already staged. These
+commands do not generate proposals and do not wake or dispatch an agent.
 
 ```bash
-memesh dream run [--project <name>] [--dry-run] [--from-transcripts] [--max-llm-calls <n>] [--window-days <n>] [--validate]
-memesh dream patterns [--project <name>] [--dry-run] [--max-llm-calls <n>] [--window-days <n>] [--min-signal <n>]
-memesh dream conflicts [--max-pairs <n>] [--dry-run]
 memesh dream list [--status <pending|applied|rejected|all>]
 memesh dream show <id> [--json]
 memesh dream accept <id>
 memesh dream reject <id> [--reason <text>]
 ```
 
-**`--validate`** on `dream run` enables the optional second-pass LLM validator (`src/core/digest-validator.ts`) which cross-checks the proposed digest's claims against source observations and attaches `validation_warnings` to soften'd proposals. Doubles per-proposal LLM cost; default off.
-
-**`memesh dream conflicts`** is the contradiction pipeline. Candidate
-generation (`src/core/conflict-candidates.ts`) is deterministic and free:
-signal-type entities only, per-entity nearest vector neighbours inside a
-measured cosine gate, minus pairs already related by
-`supersedes`/`contradicts` and pairs a previous run already judged
-(`conflict_judged_pairs`). The judge (`src/core/conflict-judge.ts`) then
-spends the LLM on the `--max-pairs` tightest pairs (default 20) and rules
-each one `CONTRADICTS`, `SUPERSEDES`, `DUPLICATE` or `UNRELATED`.
-`UNRELATED` is recorded so the pair is never re-bought; the other three are
-**staged as `kind='relation'` proposals** in the same `dream list` /
-`accept` / `reject` review flow as every other machine proposal. Accepting
-one creates the corresponding relation (`contradicts` / `supersedes` — the
-judge names the survivor — / `duplicates`) between the two existing
-entities; nothing is created, archived or applied automatically, and both
-endpoints must still be active or the apply refuses loudly. An unparseable
-LLM response is a counted failure, not a verdict — the pair simply returns
-as a candidate next run. Causality is never inferred from timestamps: a
-`SUPERSEDES` verdict must come from content showing revision, and relations
-like `caused`/`influenced` remain explicit human statements. `--dry-run`
-prints the candidate count without calling an LLM. Telemetry flow:
-`conflict_judge`.
-
-**`memesh dream show <id>`** prints a proposal in full — name, type, *every* observation untruncated, tags and source — so you can review the whole thing (including anything hiding past the `dream list` preview) before accepting. `--json` for scripts.
-
-**`--from-transcripts`** on `dream run` mines this project's Claude Code session transcripts (`src/core/transcript-source.ts` + `src/core/transcript-extractor.ts`) for the decisions, lessons and facts that live in the conversation itself, instead of clustering existing entities. It reads each session's JSONL directly (no dependence on a capture hook having fired), asks the LLM for the durable memories, and **stages them as proposals** for `dream accept` — nothing enters the knowledge graph automatically. It is scoped to the current project only (`--project` does not apply). Every candidate is sanitised and any candidate carrying a detected secret is dropped, not stored. Before staging, each candidate is embedded and checked against entities already in the graph with the same vector index recall uses, so a near-duplicate of a memory you already accepted is skipped (and the skip is reported, never silent). With `--dry-run` it lists the sessions and their conversation-turn counts **without calling an LLM**.
-
-**`--if-due`** (with `--from-transcripts`) makes `dream run` safe to put behind a scheduler. memesh has no daemon, so it does not mine on its own — a `--if-due` run does nothing *unless* the `transcriptMining` config switch is on (env override `MEMESH_TRANSCRIPT_MINING=1`) **and** at least `--min-interval-hours` (default 24) have elapsed since this project was last mined; otherwise it prints why and exits 0. The last-mined time is tracked per project in `~/.memesh/transcript-mining.json`, and any completed run (manual or scheduled) advances it, so a cron entry never re-mines right after a hand run. This lets one frequently-firing entry self-throttle. Example — a launchd/cron job that fires hourly but mines at most daily:
-
-```bash
-# crontab: attempt hourly; --if-due mines only when enabled AND ≥24h since last run
-0 * * * * cd /path/to/your/project && memesh dream run --from-transcripts --if-due --min-interval-hours 24 --max-llm-calls 25 >> ~/.memesh/mine.log 2>&1
-```
-
-Enable it first with `memesh config set transcriptMining true` (or `MEMESH_TRANSCRIPT_MINING=1`); until then the scheduled entry is a harmless no-op. `memesh doctor` shows the current state under "Scheduled transcript mining".
-
-Validator verdicts are `pass` | `soften` | `reject` | `unavailable`. Only `reject` skips a proposal and only `soften` annotates one. `unavailable` means the validator could not run at all (LLM unreachable, fallback chain exhausted) — it is deliberately distinct from `pass`, which asserts that every claim was checked and supported. Both let the proposal through, so an unreachable validator never costs you a real digest, but a proposal validated by nothing is no longer indistinguishable from one that passed a clean check.
-
----
+`show` prints the complete proposal before review. `accept` and `reject` are
+human-authority actions; an agent using `work_package` can only submit a pending
+proposal or defer. The Dashboard exposes the same list, detail, accept, and
+reject review surface without adding another queue or execution path.
 
 ## Anthropic memory tool (`memory_20250818`)
 
 For applications that call the **Messages API directly** rather than through MCP. Claude gets a memory tool whose storage is MeMesh instead of a folder of text files, so it also gets search, ranking, decay, relations and namespaces without knowing they are there.
 
-This is **not** one of the eleven MCP tools and is not exposed over HTTP or the CLI. The MCP surface serves an agent that already speaks MeMesh; this serves an application that speaks only the Messages API.
+This is **not** one of the twelve MCP tools and is not exposed over HTTP or the CLI. The MCP surface serves an agent that already speaks MeMesh; this serves an application that speaks only the Messages API.
 
 ### Wiring it up
 
@@ -1879,7 +1628,7 @@ Two behaviours worth stating because they differ from a filesystem:
 
 ## Connection
 
-MeMesh runs as a stdio MCP server. Claude Code manages the connection automatically via the MCP manifest the plugin declares in `.claude-plugin/plugin.json` (`mcpServers: "./.claude-plugin/mcp.json"`).
+MeMesh runs as a stdio MCP server. Claude Code and Codex manage the connection automatically through their plugin manifests. Both resolve to the same bundled `dist/mcp/server.js`: Claude declares `mcpServers: "./.claude-plugin/mcp.json"`, while Codex declares `mcpServers: "./.codex-plugin/mcp.json"`.
 
 ```json
 {
@@ -1893,6 +1642,20 @@ MeMesh runs as a stdio MCP server. Claude Code manages the connection automatica
 }
 ```
 
+The Codex manifest uses the plugin cache as its working directory:
+
+```json
+{
+  "mcpServers": {
+    "memesh": {
+      "command": "node",
+      "args": ["./dist/mcp/server.js"],
+      "cwd": "."
+    }
+  }
+}
+```
+
 ### GET /v1/patterns
 
 Returns user work patterns extracted from existing memory entities.
@@ -1901,49 +1664,22 @@ Returns user work patterns extracted from existing memory entities.
 
 `workSchedule.dayDistribution` entries carry `dayNum` — an integer `0`–`6` from SQLite `strftime('%w')`, where `0` is Sunday and `6` is Saturday. There is no English `day` name field: day names are presentation, so localising `dayNum` into a weekday label is the client's job.
 
-### GET /v1/telemetry
-
-Per-flow LLM telemetry scorecard for the last `window` days. Backs the "LLM activity" panel in the dashboard Home tab's analytics section and `memesh telemetry` CLI.
-
-**Query parameters:**
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `window` | number | 30 | Look-back window in days (1–365) |
-
-**Response shape:** `{ window_days, summaries: FlowSummary[] }` where each `FlowSummary` is `{ flow, total_calls, total_attempts, successes, failures, fallback_used, median_latency_ms, by_provider, by_model, by_project, by_error_class, sample_errors, window_days }`. `by_model` and `by_project` are `Record<string, { ok, fail }>` (per-model and per-project ok/fail counts); `sample_errors` is up to 5 recent `{ error_class, message }` failure samples. Flows: `dreamer`, `pattern_detector`, `auto_tagger`, `failure_analyzer`, `digest_validator`, `transcript_extractor`, `conflict_judge`. (`consolidator` rows may still exist from before that tool was retired.)
-
 ### GET /v1/dream/proposals
 
-Lists dream digest, pattern, relation, guard, and product-improvement proposals from the staging table.
+Lists proposals that an agent or deterministic rule has already staged for human review. The Dashboard reads this review queue; it does not create work packages or wake an agent.
 
 **Query parameters:**
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `status` | enum | `pending` | One of `pending`, `applied`, `rejected`, `all` |
 
-**Response:** array of `{ id, project, cluster_key, source_count, digest_name, digest_observations_preview, status, created_at, kind, source_kind }` where `kind` is `digest | pattern_emergent | relation | guard | product_improvement`.
+**Response:** array of `{ id, project, cluster_key, source_count, digest_name, digest_observations_preview, status, created_at, kind, source_kind }`. Agent-assisted work packages stage `kind: "digest"` with `source_kind: "entities" | "transcript"`; the Dashboard labels entity clusters as calendar-grouped. Other retained proposal kinds share the same review lifecycle.
 
 ### GET /v1/dream/proposals/:id
 
-Full proposal detail for the Home tab's expanded card view.
+Full proposal detail for the Dashboard review view.
 
-**Response:** `{ id, project, cluster_key, source_ids, proposed_digest, llm_model, prompt_version, status, reason, created_at, reviewed_at, kind, source_kind }`. `proposed_digest` includes the kind-specific full proposal payload. Digest payloads include `name`, `type`, `observations`, `tags`, and (when the validator ran with a `soften` verdict) `validation_warnings: Array<{claim, reason}>`.
-
-### POST /v1/dream/run
-
-Trigger a dream pass via HTTP. Same logic as `memesh dream run`; runs `runDreamer()` synchronously and returns the result.
-
-**Body schema:**
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `project` | string | (all projects) | Restrict to one project |
-| `windowDays` | number | 14 | Look-back window in days (1–90) |
-| `maxLlmCalls` | number | 5 | Hard cap on LLM calls (1–20) |
-| `validate` | boolean | false | Run the digest validator as a second LLM pass before staging |
-
-**Response:** `DreamerResult` shape — `{ proposalsCreated, clustersScanned, llmCalls, skipped: Array<{reason, project, clusterKey, code?}>, durationMs, clusteringMode?, clusteringNote? }`. A skipped entry caused by a provider request carries `code: "provider_error"`; clients must surface it as an error even though the Dream envelope itself is HTTP 200. Zero proposals without a `provider_error` remains a normal no-result outcome.
-
-`clusteringMode` is `"semantic"` when entries were grouped by embedding distance and `"calendar"` when the graph has no vectors and they fell back to ISO-week buckets — which can put unrelated work in one digest, so a client that surfaces digests should surface this too. `clusteringNote` is one sentence saying why, or naming candidates that had no embedding and were left out.
+**Response:** `{ id, project, cluster_key, source_ids, proposed_digest, status, reason, created_at, reviewed_at, kind, source_kind }`. `proposed_digest` includes the complete kind-specific payload. Digest payloads include `name`, `type`, `observations`, and `tags`.
 
 ### POST /v1/dream/proposals/:id/accept
 

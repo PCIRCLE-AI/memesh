@@ -39,8 +39,19 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
-            "async": true,
-            "timeout": 31536000
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
+            "timeout": 10
           }
         ]
       }

@@ -80,7 +80,7 @@ describe('CLI: memesh why', () => {
     const res = runCli(['why', 'auth.ts', '--json'], repoDir);
     expect(res.exitCode, res.stderr).toBe(0);
     const parsed = JSON.parse(res.stdout);
-    expect(parsed.project).toBe('repo');
+    expect(parsed.project).toMatch(/^repo~[0-9a-f]{32}$/);
     expect(parsed.commits).toHaveLength(1);
     expect(parsed.commits[0].commit.hash).toHaveLength(40);
     expect(parsed.commits[0].entity.name).toBe(`commit-${abbrev}`);

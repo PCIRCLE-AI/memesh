@@ -8,17 +8,18 @@
 // of audit findings.
 //
 // Hooks cannot import from `dist/` (the F5 security boundary — `dist/`
-// may be stale or absent at hook execution time), so `scripts/hooks/_shared.js`
-// keeps a mirror of these helpers. Any change to the shapes here MUST be
-// reflected in `_shared.js`. The `check-schema-drift` build-time guard
-// (`scripts/check-schema-drift.mjs`) catches the SQL portion; the path
-// helpers are short enough that a JSDoc cross-link is enough.
+// may be stale or absent at hook execution time), so the build copies this
+// leaf module into `scripts/hooks/_generated/`. That generated copy is the
+// hook implementation; there is no second hand-maintained identity parser.
 
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
+
+export const AGENT_ROUTER_SOCKET_FILENAME = 'agent-router-v2.sock';
+const LEGACY_AGENT_ROUTER_SOCKET_FILENAME = 'agent-router.sock';
 
 /**
  * Resolve the user's home directory, honouring `HOME` first.
@@ -88,6 +89,22 @@ export function getMemeshDirFromDbPath(): string {
     : memeshDir();
 }
 
+/** The versioned local endpoint used when no owner-selected socket overrides it. */
+export function getAgentRouterSocketPath(): string {
+  return path.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
+}
+
+/**
+ * Migrate only the historic default beside the active database. An explicit
+ * socket, including one with the old basename elsewhere, remains owner-owned.
+ */
+export function normalizeAgentRouterSocketPath(socketPath: string): string {
+  const dataDir = getMemeshDirFromDbPath();
+  return socketPath === path.join(dataDir, LEGACY_AGENT_ROUTER_SOCKET_FILENAME)
+    ? getAgentRouterSocketPath()
+    : socketPath;
+}
+
 /**
  * Derive the project name from a working directory.
  *
@@ -117,17 +134,19 @@ export function getProjectName(cwdInput?: string | null): string {
 const projectNameCache = new Map<string, string>();
 
 /**
- * Layered project identity, most-canonical first:
+ * Layered project identity, most-canonical first. Every result is a bounded
+ * readable label plus a 128-bit SHA-256 prefix; the label is for humans and
+ * the hash is the routing identity:
  *
- *   1. git remote slug — the repo name from `remote.origin.url`. This is the
+ *   1. canonical git remote locator — host plus full namespace and repo. This is the
  *      only identity that is BOTH location-independent (same from any
  *      subdirectory, worktree, or clone path) AND case-canonical (the remote
  *      spells the name once). It fixes the real-data failures: a memory
  *      captured in `<repo>/backend` and one captured at `<repo>` now share an
  *      identity, and `tim` vs `TIM` collapse to whatever the remote says.
- *   2. git repo root basename — for a real repo with no remote configured.
+ *   2. native real path of the git repo root — for a real repo with no remote.
  *      Still fixes the subdirectory split.
- *   3. real-path basename + 8-hex hash of the real path — non-git directories
+ *   3. native real path of the cwd — for non-git directories
  *      used to be bare `basename(cwd)`, which made `~/a/notes` and `~/b/notes`
  *      one project and leaked memories across them. The hash pins identity to
  *      the directory itself; every host on the machine derives the same id
@@ -145,33 +164,40 @@ const projectNameCache = new Map<string, string>();
 function resolveProjectIdentity(cwd: string): string {
   const remote = tryGit(cwd, ['config', '--get', 'remote.origin.url']);
   if (remote) {
-    const slug = slugFromRemoteUrl(remote);
-    if (slug) return slug;
+    const locator = canonicalRemoteLocator(remote);
+    if (locator) {
+      const label = path.posix.basename(locator).replace(/\.git$/i, '');
+      return projectIdentity(label, locator);
+    }
   }
   const root = tryGit(cwd, ['rev-parse', '--show-toplevel']);
-  if (root) return path.basename(root);
-  // Non-git: the basename alone collides — `~/a/notes` and `~/b/notes` used to
-  // share one identity, and the symptom was the other directory's memories
-  // appearing. Rare with one host; three MCP hosts sharing one database made
-  // it three times likelier. The suffix is derived from the real path, so it
-  // is stateless, identical for every host that opens the same directory
-  // (including through a symlink), and different for two directories that
-  // merely share a name. `.native`, not the JS realpath: on the
-  // case-insensitive filesystems macOS and Windows default to, the JS one
-  // returns whatever case the caller typed, so `~/Notes` and `~/notes` — the
-  // same directory — would hash to two identities, the exact split this layer
-  // exists to close. The native call returns the on-disk spelling (and
-  // expands Windows 8.3 short names). realpath falls back to resolve()
-  // because a deleted cwd must never break capture (same rule as the git
-  // layers above).
+  // A linked worktree has its own top-level path but shares the primary
+  // repository's common `.git` directory. Use that directory's parent when
+  // available so no-remote worktrees do not split into separate projects.
+  const commonDir = root
+    ? tryGit(cwd, ['rev-parse', '--git-common-dir'])
+    : null;
+  const absoluteCommonDir = commonDir ? path.resolve(cwd, commonDir) : null;
+  const localPath = absoluteCommonDir && path.basename(absoluteCommonDir) === '.git'
+    ? path.dirname(absoluteCommonDir)
+    : (root ?? cwd);
   let real: string;
   try {
-    real = fs.realpathSync.native(cwd);
+    real = fs.realpathSync.native(localPath);
   } catch {
-    real = path.resolve(cwd);
+    real = path.resolve(localPath);
   }
-  const suffix = createHash('sha256').update(real).digest('hex').slice(0, 8);
-  return `${path.basename(real)}-${suffix}`;
+  return projectIdentity(path.basename(real), real);
+}
+
+const PROJECT_HASH_HEX_LENGTH = 32;
+const PROJECT_ID_MAX_LENGTH = 200;
+const PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
+
+function projectIdentity(label: string, locator: string): string {
+  const readable = label.normalize('NFC').slice(0, PROJECT_LABEL_MAX_LENGTH) || 'project';
+  const suffix = createHash('sha256').update(locator).digest('hex').slice(0, PROJECT_HASH_HEX_LENGTH);
+  return `${readable}~${suffix}`;
 }
 
 function tryGit(cwd: string, args: string[]): string | null {
@@ -189,17 +215,65 @@ function tryGit(cwd: string, args: string[]): string | null {
 }
 
 /**
- * Reduce a git remote URL to its repo name. Handles both URL-style
- * (`https://host/owner/repo.git`) and scp-style (`git@host:owner/repo.git`).
- * Returns just the repo segment, matching the existing `project:<basename>`
- * tag style, so a checkout whose directory name already equals the repo name
- * stays byte-identical and needs no migration.
+ * Canonicalize a network git remote without retaining a password.
+ *
+ * Only standard GitHub HTTPS and `git@github.com` SSH spellings are known to
+ * identify the same repository, so they converge. For a generic SSH host the
+ * login and path mode are part of the repository locator: `alice@host:repo`
+ * is relative to Alice's home, while `alice@host:/repo` is absolute, and Bob's
+ * home may contain another repository with the same name. Other URL schemes
+ * remain explicit rather than being guessed equivalent. Host case is
+ * DNS-insensitive; repository path case is preserved. Local/file remotes
+ * return null and use the repository-root identity instead.
  */
-export function slugFromRemoteUrl(url: string): string | null {
-  const cleaned = url.trim().replace(/\.git$/i, '').replace(/[/\\]+$/, '');
-  if (!cleaned) return null;
-  const seg = cleaned.split(/[/:\\]/).filter(Boolean).pop();
-  return seg && seg.length > 0 ? seg : null;
+export function canonicalRemoteLocator(remote: string): string | null {
+  const value = remote.trim();
+  if (!value) return null;
+  if (path.isAbsolute(value) || /^[A-Za-z]:[\\/]/.test(value) || /^\\\\/.test(value)) return null;
+
+  let host: string;
+  let port = '';
+  let user: string;
+  let remotePath: string;
+  let transport: string;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value)) {
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return null;
+    }
+    if (parsed.protocol === 'file:' || !parsed.hostname) return null;
+    host = parsed.hostname.toLowerCase();
+    port = parsed.port;
+    const protocol = parsed.protocol.toLowerCase();
+    if ((protocol === 'ssh:' || protocol === 'git+ssh:') && port === '22') port = '';
+    user = parsed.username;
+    remotePath = parsed.pathname;
+    transport = protocol === 'ssh:' || protocol === 'git+ssh:'
+      ? 'ssh-absolute'
+      : protocol.slice(0, -1);
+  } else {
+    const scp = /^(?:([^@]+)@)?(\[[^\]]+\]|[^:/]+):(.+)$/.exec(value);
+    if (!scp) return null;
+    user = scp[1] ?? '';
+    host = scp[2].toLowerCase();
+    remotePath = scp[3];
+    transport = remotePath.startsWith('/') ? 'ssh-absolute' : 'ssh-relative';
+  }
+
+  const pathWithoutSlashes = remotePath.replace(/^\/+|\/+$/g, '');
+  if (!host || !pathWithoutSlashes) return null;
+  const endpoint = `${host}${port ? `:${port}` : ''}`;
+  const standardGithub = host === 'github.com'
+    && port === ''
+    && (transport === 'https' || ((transport === 'ssh-relative' || transport === 'ssh-absolute') && user === 'git'));
+  const normalizedPath = standardGithub
+    ? pathWithoutSlashes.replace(/\.git$/i, '')
+    : pathWithoutSlashes;
+  if (standardGithub) return `${endpoint}/${normalizedPath}`;
+  const authority = transport.startsWith('ssh-') && user ? `${user}@${endpoint}` : endpoint;
+  return `${transport}://${authority}/${normalizedPath}`;
 }
 
 /** Test seam: clear the per-cwd resolution cache between cases. */
@@ -211,7 +285,7 @@ export function _clearProjectNameCache(): void {
  * The one list of secret-shaped patterns, shared by every redactor in the
  * codebase. Three copies used to exist at three different strengths — the
  * transcript scrubber (broadest), this module's egress redactor (middle),
- * and a private one in llm-client (weakest, sk-/Bearer only) — and a
+ * and a private narrower copy — and a
  * cross-model review measured the gap: `github_pat_`, Stripe `sk_live_`,
  * JWTs, npm tokens and private keys sailed through the egress redactor into
  * a public GitHub issue URL. One list means one place to add the next token

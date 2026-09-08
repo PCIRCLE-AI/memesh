@@ -127,10 +127,10 @@ describe('RuleBasedExtractor: memory extraction', () => {
     // as if they were the same session.
     expect(tags).toContain('session:abc12345deadbeef');
     // `/Users/test/myproject` is not a git repo (it does not exist), so the
-    // identity is basename + 8-hex real-path hash — pin the shape, not the
+    // identity is basename + 32-hex real-path hash — pin the shape, not the
     // digest, or this test recomputes the implementation.
     const projectTag = tags.find((t) => t.startsWith('project:'));
-    expect(projectTag).toMatch(/^project:myproject-[0-9a-f]{8}$/);
+    expect(projectTag).toMatch(/^project:myproject~[0-9a-f]{32}$/);
   });
 
   it('Rule 2: produces bugfix memory when errors and edits both present', () => {
@@ -163,7 +163,7 @@ describe('RuleBasedExtractor: memory extraction', () => {
   it('Rule 2 (regression): does NOT count tool_result that mentions "Error" but has is_error=false', () => {
     // The bug: a Read of README.md containing the word "Error" was
     // being counted as a session error. Real impact: a 47MB transcript
-    // produced 315 fake "errors", drowning the LLM analyzer in noise.
+    // produced 315 fake "errors", drowning failure review in noise.
     // The fix: trust the is_error flag, not substring matching.
     writeTranscript([
       { type: 'tool_use', tool_name: 'Read', tool_input: { file_path: '/repo/README.md' } },
@@ -422,7 +422,7 @@ describe('parseTranscript', () => {
   it('current-format regression: ignores blocks missing the is_error flag entirely', () => {
     // Pre-flag transcripts (older Claude Code) had no is_error field.
     // Treat missing flag as not-an-error (false negative is safer than
-    // the old false positive that flooded the LLM with noise).
+    // the old false positive that flooded failure review with noise).
     const p = path.join(tmpDir, 't.jsonl');
     writeLine(p, [
       {

@@ -68,7 +68,7 @@ MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 memesh doctor
 ```
 
 This probe does not exercise a real host session and never wakes a stopped
-session. The ordinary Codex path below is the documented native local wakeup
+session. The ordinary Codex path below is the documented bounded native queue
 path; `poll`/`watch` and cursor recovery remain available for compatibility and
 diagnosis.
 
@@ -104,8 +104,13 @@ umask 077
 memesh-router
 ```
 
-If you start it yourself, it creates `agent-router.sock` and `agent-router.token` beside the active
-MeMesh database (normally `~/.memesh/`) with owner-private permissions. Check
+If you start it yourself, it creates the current protocol endpoint
+`agent-router-v2.sock` and the shared `agent-router.token` beside the active
+MeMesh database (normally `~/.memesh/`) with owner-private permissions. After
+an upgrade, an older router may remain on its legacy socket until its old
+sessions exit or the machine restarts. Current clients do not attach to it,
+and MeMesh does not kill or unlink a live process without durable ownership
+proof. Check
 the installed adapter imports and the live socket as distinct facts:
 
 ```bash
@@ -117,10 +122,20 @@ The router probe does not register a host, send content, or wake a stopped
 session. Generate reusable `0600` configs; session identities are not copied
 from an active ordinary session.
 
-For an ordinary active local Codex session, first install and enable the MeMesh
-Codex plugin (Option A), which supplies the packaged SessionStart hook. Then
-run this from the exact workspace you want to configure and restart Codex in
-that same workspace:
+For an ordinary active local Codex session, install and enable the MeMesh
+Codex plugin (Option A), which supplies the packaged SessionStart hook. On the
+next startup or resume, that thread registers automatically under the current
+project with a thread-scoped principal. First read the exact automatic project
+value, then copy its `project` field into the discover command:
+
+```bash
+memesh briefing --json
+memesh message discover --project '<project from briefing>'
+```
+
+No manual host setup is required. If one exact workspace needs a stable named
+principal across different Codex threads, create this optional override and
+restart Codex in that workspace:
 
 ```bash
 memesh agent setup codex-session --project my-project --principal codex-recipient --workspace "$PWD"
@@ -128,21 +143,33 @@ memesh agent setup codex-session --project my-project --principal codex-recipien
 
 This stores the configured workspace realpath and principal in
 `~/.memesh/hosts/codex-session.json`. On `SessionStart` (`startup` or
-`resume`), an asynchronous companion registers only when its Codex thread ID,
-hook session ID, and workspace realpath match that config. The authenticated
-router sends the active exact session one bounded full message through native
-`codex queue`; no second `message fetch` is required for that live delivery.
+`resume`), a short hook validates the Codex thread ID and cwd, then launches an
+owner-private detached companion. SessionEnd leaves a bounded 45-second idle
+queue window; resume replaces the prior generation, and expiry removes it. A
+matching valid override supplies its project and principal; another workspace
+keeps automatic thread-scoped registration. A malformed or insecure override
+fails closed. The authenticated router sends the exact registered thread one
+bounded full message through native `codex queue`; no second `message fetch`
+is required. A message accepted during the idle window becomes model-visible
+when the same thread resumes; a stopped UI is not awakened.
 
 `host_accept` records only that the local Codex queue accepted that message. It
 does not prove an agent read the payload, acknowledged it, or accepted the
 work. Codex exposes message text through its `--message` process argument, so
 same-user process inspection may observe it while the queue command runs; do
-not send secrets through the native path. If the session is stopped, missing, disconnected, or in another
-workspace, MeMesh neither starts nor replaces it; the durable inbox remains
+not send secrets through the native path. If the session is stopped, missing,
+or disconnected, MeMesh neither starts nor replaces it; the durable inbox remains
 available to scoped fetch, cursor recovery, `poll`, and `memesh message watch`
-for audit and diagnosis.
+for audit and diagnosis. Failed exact-session native delivery is not replayed
+automatically after a later registration; the sender must retry deliberately.
 
 The following are separate managed-host paths:
+
+When pairing Claude Channel with an automatically registered Codex session,
+copy the complete `project` value from `memesh briefing --json` into the Claude
+setup command. Do not substitute the repository basename: automatic project
+identities include a collision-resistant suffix, and different project strings
+cannot discover or natively route to each other.
 
 ```bash
 memesh agent setup codex --project my-project --principal codex-recipient --workspace "$PWD"
@@ -192,13 +219,17 @@ memesh doctor
 
 ## 3. Codex CLI
 
-Prerequisite: section 2 — `memesh-mcp` must resolve on PATH.
+Install from the Codex plugin marketplace for zero-config MCP tools and the
+SessionStart/SessionEnd companion lifecycle:
 
 ```
-codex mcp add memesh -- memesh-mcp
+codex plugin marketplace add PCIRCLE-AI/memesh
+codex plugin add memesh@pcircle-memesh
 ```
 
-Writes `[mcp_servers.memesh]` into `~/.codex/config.toml`.
+The plugin manifest starts its bundled `dist/mcp/server.js` directly from the
+plugin cache. It does not need a global `memesh-mcp` command or a manual
+`codex mcp add` entry.
 
 **Verify**:
 
@@ -208,33 +239,34 @@ codex mcp list
 
 Expected: `memesh` is listed as enabled.
 
-### Optional: Codex plugin marketplace
+### Manual npm-global alternative
 
-Current Codex CLI versions can install the repository's plugin marketplace
-directly. For a fresh install:
+If you installed section 2 instead of the Codex plugin, register the global
+stdio command manually:
 
 ```
-codex plugin marketplace add PCIRCLE-AI/memesh
-codex plugin add memesh@pcircle-memesh
+codex mcp add memesh -- memesh-mcp
 ```
 
-If the configured marketplace snapshot is stale, refresh it and reinstall the
-plugin:
+This writes `[mcp_servers.memesh]` into `~/.codex/config.toml`.
+
+### Refresh a stale plugin cache
+
+If the configured marketplace snapshot is stale, refresh it and re-stage the
+plugin. `codex plugin add` replaces the installed cache atomically, so do not
+remove the working plugin first:
 
 ```
 codex plugin marketplace upgrade pcircle-memesh
-codex plugin remove memesh
 codex plugin add memesh@pcircle-memesh
 ```
-
-These commands are separate from the MCP registration above; keep the MCP
-path when a host needs `memesh-mcp` directly.
 
 | Failure | Remedy |
 |---|---|
 | `command not found: codex` | Codex CLI itself is not installed — out of scope here; install it first, then re-run the add. |
-| `memesh` absent from the list | The add did not persist. Re-run `codex mcp add memesh -- memesh-mcp` and re-check. |
-| Listed, but tool calls fail | Run `command -v memesh-mcp`. Empty output means section 2 is incomplete or PATH is wrong — fix per section 2's table. |
+| Plugin-installed `memesh` is absent | Refresh and reinstall the plugin using the commands above, then restart Codex. |
+| Manually registered `memesh` is absent | Re-run `codex mcp add memesh -- memesh-mcp` and re-check. |
+| Manual registration is listed, but tool calls fail | Run `command -v memesh-mcp`. Empty output means section 2 is incomplete or PATH is wrong — fix per section 2's table. |
 
 ## 4. Cursor
 

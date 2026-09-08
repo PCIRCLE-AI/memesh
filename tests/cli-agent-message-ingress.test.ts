@@ -412,7 +412,7 @@ describe('CLI durable-message ingress', () => {
     });
   });
 
-  it.skipIf(process.platform === 'win32')('requires explicit owner-private opt-in before attaching an ordinary Codex workspace', () => {
+  it.skipIf(process.platform === 'win32')('creates an optional owner-private stable-principal override for one Codex workspace', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
     try {
       const setup = spawnSync(process.execPath, cliArgs(
@@ -427,9 +427,9 @@ describe('CLI durable-message ingress', () => {
       expect(result).toMatchObject({
         mode: 'ordinary-session-native-queue',
         session_identity: 'codex-thread-id-at-session-start',
-        ordinary_sessions: 'explicit-workspace-opt-in',
+        ordinary_sessions: 'automatic-thread-scoped-with-workspace-override',
         launch_command: null,
-        next_command: 'Restart Codex in the configured workspace',
+        next_command: 'Restart Codex in the configured workspace to apply the identity override',
       });
       const configPath = String(result.config_path);
       expect(configPath).toMatch(/hosts\/codex-session\.json$/);

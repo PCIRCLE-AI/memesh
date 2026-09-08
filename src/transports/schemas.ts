@@ -48,6 +48,47 @@ const observationField = z.string().max(10000).refine(
   { message: 'an observation must not be empty or whitespace-only' },
 );
 
+const workPackageText = z.string().min(1).max(255).refine(s => s.trim().length > 0);
+const digestWorkPackageRef = z.object({
+  kind: z.literal('digest'),
+  project: workPackageText,
+  source_ids: z.array(z.number().int().positive()).min(5).max(100)
+    .refine(ids => ids.every((id, i) => i === 0 || id > ids[i - 1]), 'source_ids must be sorted and unique'),
+  source_hash: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+const transcriptWorkPackageRef = z.object({
+  kind: z.literal('transcript'),
+  project: workPackageText,
+  session_id: workPackageText,
+  modified_at: z.iso.datetime(),
+  source_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  workspace_hash: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict();
+const workPackageIdentity = {
+  package_id: z.string().regex(/^[a-f0-9]{64}$/),
+  ref: z.discriminatedUnion('kind', [digestWorkPackageRef, transcriptWorkPackageRef]),
+};
+const WORK_PACKAGE_RESULT_MAX_BYTES = 16 * 1024;
+
+export const WorkPackageSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('prepare'), project: workPackageText, kind: z.enum(['digest', 'transcript']) }).strict(),
+  z.object({
+    action: z.literal('submit'),
+    ...workPackageIdentity,
+    result: z.object({
+      name: workPackageText,
+      type: z.enum(['digest', 'decision', 'lesson_learned', 'fact']),
+      observations: z.array(observationField).min(1).max(100),
+      tags: z.array(workPackageText.refine(tag => !tag.startsWith('project:'), 'project tags are server-owned')).min(1).max(50),
+    }).strict().refine(result => Buffer.byteLength(JSON.stringify(result), 'utf8') <= WORK_PACKAGE_RESULT_MAX_BYTES, 'output_too_large'),
+  }).strict().refine(input => (input.ref.kind === 'digest') === (input.result.type === 'digest'), 'result type must match work kind'),
+  z.object({
+    action: z.literal('defer'),
+    ...workPackageIdentity,
+    reason: z.literal('not_now'),
+  }).strict(),
+]);
+
 export const RememberSchema = z.object({
   name: nameField,
   type: z.string().min(1).max(100),

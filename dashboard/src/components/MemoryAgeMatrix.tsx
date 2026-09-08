@@ -31,11 +31,11 @@ const TYPE_ORDER = [
 // the panel-private ageMatrix.type.* copies were retired — two catalogues for
 // the same 13 nouns is exactly the duplicated-list drift this repo hunts.
 
-// Intensity color: 0 = no data, higher = more vivid cyan
+// Keep the heatmap subdued so its counts remain readable at every intensity.
 function cellStyle(count: number, max: number): string {
   if (count === 0 || max === 0) return 'rgba(255,255,255,0.03)';
   const intensity = Math.min(count / max, 1);
-  const alpha = 0.12 + intensity * 0.55;
+  const alpha = 0.05 + intensity * 0.15;
   return `rgba(143, 242, 92, ${alpha.toFixed(2)})`;
 }
 
@@ -60,7 +60,7 @@ export function MemoryAgeMatrix({ data }: MemoryAgeMatrixProps) {
         <table style={{
           width: '100%',
           borderCollapse: 'collapse',
-          fontSize: 12,
+          fontSize: 14,
           tableLayout: 'fixed',
         }}>
           <colgroup>
@@ -93,7 +93,7 @@ export function MemoryAgeMatrix({ data }: MemoryAgeMatrixProps) {
                   <td style={{
                     padding: '5px 8px',
                     color: 'var(--text-1)',
-                    fontSize: 11,
+                    fontSize: 14,
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
@@ -109,10 +109,10 @@ export function MemoryAgeMatrix({ data }: MemoryAgeMatrixProps) {
                         padding: '5px 6px',
                         background: cellStyle(count, maxCount),
                         borderRadius: 'var(--radius-xs)',
-                        color: count > 0 ? 'var(--life)' : 'var(--text-3)',
+                        color: count > 0 ? 'var(--text-1)' : 'var(--text-3)',
                         fontFamily: 'var(--mono)',
                         fontWeight: count > 0 ? 600 : 400,
-                        fontSize: 11,
+                        fontSize: 14,
                         transition: 'background 0.2s',
                       }}>
                         {count > 0 ? count : '·'}
@@ -127,14 +127,14 @@ export function MemoryAgeMatrix({ data }: MemoryAgeMatrixProps) {
       </div>
       <div style={{
         marginTop: 10,
-        fontSize: 11,
+        fontSize: 14,
         color: 'var(--text-3)',
         display: 'flex',
         alignItems: 'center',
         gap: 6,
       }}>
         <span>{t('ageMatrix.low')}</span>
-        {[0.15, 0.35, 0.55, 0.7].map(a => (
+        {[0.05, 0.1, 0.15, 0.2].map(a => (
           <span key={a} style={{
             display: 'inline-block',
             width: 14,

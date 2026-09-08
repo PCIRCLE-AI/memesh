@@ -27,7 +27,7 @@ export function Chip({ label, active, onClick, count, dot }: ChipProps) {
         borderColor: active ? 'var(--life)' : 'var(--border)',
         background: active ? 'var(--life-soft)' : 'transparent',
         color: active ? 'var(--life)' : 'var(--text-2)',
-        fontSize: 11,
+        fontSize: 14,
         cursor: 'pointer',
         whiteSpace: 'nowrap',
         fontFamily: 'var(--font-ui)',
@@ -44,7 +44,7 @@ export function Chip({ label, active, onClick, count, dot }: ChipProps) {
       )}
       {label}
       {count !== undefined && (
-        <span style={{ opacity: 0.6, fontFamily: 'var(--mono)', fontSize: 10 }}>
+        <span style={{ fontFamily: 'var(--mono)', fontSize: 14 }}>
           {count}
         </span>
       )}

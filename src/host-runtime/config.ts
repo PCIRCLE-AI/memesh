@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import { normalizeAgentRouterSocketPath } from '../core/paths.js';
 
 const MAX_HOST_CONFIG_FILE_BYTES = 64 * 1024;
 const MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
@@ -53,6 +54,10 @@ export function requiredString(value: unknown, field: string): string {
     throw new Error(`${field} must be a bounded non-empty string.`);
   }
   return value;
+}
+
+export function normalizeConfiguredRouterSocket(value: unknown): string {
+  return normalizeAgentRouterSocketPath(requiredString(value, 'router_socket'));
 }
 
 export function optionalStringArray(value: unknown, field: string): string[] {

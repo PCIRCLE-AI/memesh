@@ -7,8 +7,7 @@
  * `export ANTHROPIC_API_KEY=sk-...` on a command line, an auth error echoing
  * back the `Authorization: Bearer ...` header it was sent. Neither was
  * redacted, so the secret became a permanent observation: searchable,
- * exportable, and included in the payload `analyzeFailure` sends to whatever
- * LLM provider the user configured.
+ * exportable, and eligible to surface later in context or an agent work package.
  *
  * `redactSecrets` already existed and was already exported from the hooks'
  * own `_generated/core-paths.js`. Nothing called it.

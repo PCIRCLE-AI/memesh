@@ -48,8 +48,7 @@ CREATE INDEX IF NOT EXISTS idx_relations_from ON relations(from_entity_id);
 CREATE INDEX IF NOT EXISTS idx_relations_to ON relations(to_entity_id);
 CREATE INDEX IF NOT EXISTS idx_entities_type_created ON entities(type, created_at);
 
--- Migration markers and small bits of persistent state (index segmentation
--- version, embedding dimension, pending-reindex flags, backfill markers).
+-- Migration markers and small bits of persistent state.
 --
 -- This used to be created ad hoc by each helper that needed it — four inline
 -- CREATE TABLE IF NOT EXISTS copies in src/db.ts, none of them visible to

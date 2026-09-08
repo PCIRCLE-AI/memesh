@@ -8,8 +8,7 @@
 // user) sees their own install_id via `memesh config get install_id`,
 // the dashboard Settings tab, and the doctor output. It is never
 // transmitted automatically — only included in body text the user
-// chooses to share (FeedbackWidget "Include system info" checkbox,
-// future opt-in telemetry).
+// chooses to share (FeedbackWidget "Include system info" checkbox).
 //
 // Pattern lifted from gstack's `gstack-config` + brain-init flow:
 // lazy-generate, chmod 600, single canonical location, transparent

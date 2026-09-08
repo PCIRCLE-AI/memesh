@@ -15,13 +15,15 @@ body:
       label: Component
       description: Which component is affected?
       options:
-        - MCP Server
-        - MCP Tools (buddy-do, buddy-remember, etc.)
-        - Memory System
-        - Knowledge Graph
-        - Agents
-        - Orchestrator
-        - Installation/Setup
+        - CLI
+        - MCP server/tools
+        - Dashboard
+        - Hooks/plugin
+        - Memory/knowledge graph
+        - Agent messaging
+        - Work packages/proposal review
+        - Installation/setup
+        - Documentation
         - Other
     validations:
       required: true
@@ -63,21 +65,23 @@ body:
     id: version
     attributes:
       label: MeMesh Version
-      description: Run `npm list @pcircle/memesh`
-      placeholder: "2.5.3"
+      description: Run `memesh --version`
+      placeholder: "Output of memesh --version"
     validations:
       required: true
 
   - type: dropdown
     id: client
     attributes:
-      label: Claude Code Client
-      description: Which client are you using?
+      label: Client or host
+      description: Which client or host are you using?
       options:
         - Claude Code CLI
-        - Claude Desktop (Cowork)
+        - Codex CLI
+        - Claude Desktop
         - Cursor
         - VS Code
+        - Other MCP client
         - Other
     validations:
       required: true
@@ -87,7 +91,7 @@ body:
     attributes:
       label: Node.js Version
       description: Run `node --version`
-      placeholder: "v20.0.0"
+      placeholder: "v22.13.0"
     validations:
       required: true
 
@@ -112,8 +116,7 @@ body:
         {
           "mcpServers": {
             "memesh": {
-              "command": "npx",
-              "args": ["-y", "@pcircle/memesh"]
+              "command": "memesh-mcp"
             }
           }
         }

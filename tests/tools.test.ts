@@ -1,10 +1,19 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { openDatabase, closeDatabase } from '../src/db.js';
+import { pathToFileURL } from 'node:url';
+import { execFileSync } from 'node:child_process';
+import { openDatabase, closeDatabase, getDatabase } from '../src/db.js';
+import { KnowledgeGraph } from '../src/knowledge-graph.js';
+import { MemeshDatabase } from '../src/storage/sqlite.js';
+import { getProjectName } from '../src/core/paths.js';
+import { projectTranscriptSlug } from '../src/core/transcript-source.js';
+import { createHash } from 'node:crypto';
+import { applyProposal, executeWorkPackage, getProposalDetail, listProposals } from '../src/core/dreamer.js';
+import * as agentMessaging from '../src/core/agent-messaging.js';
 import { handleTool, TOOL_DEFINITIONS } from '../src/mcp/tools.js';
-import { normalizeClientHost } from '../src/transports/mcp/handlers.js';
+import { normalizeClientHost, resolveTranscriptWorkspace } from '../src/transports/mcp/handlers.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../src/core/agent-messaging.js';
 
 // recall's MCP payload is an object envelope ({ entities, conflicts? }), never
@@ -20,18 +29,588 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-tools-'));
   dbPath = path.join(tmpDir, 'test.db');
   previousMemeshDir = process.env.MEMESH_DIR;
-  // Tool tests must never inherit the developer's real embedder/LLM config.
-  // A configured Ollama instance otherwise schedules network work from
-  // `remember`, making a focused offline replay slow or non-terminating.
+  // Keep tool state isolated from the developer's real MeMesh directory.
   process.env.MEMESH_DIR = tmpDir;
   openDatabase(dbPath);
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   closeDatabase();
   if (previousMemeshDir === undefined) delete process.env.MEMESH_DIR;
   else process.env.MEMESH_DIR = previousMemeshDir;
   fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+});
+
+describe('work_package', () => {
+  const result = { name: 'work-digest', type: 'digest', observations: ['Five commits completed the parser cleanup.'], tags: ['parser'] };
+  const payload = (response: Awaited<ReturnType<typeof handleTool>>) => JSON.parse(response.content[0].text);
+  const prepare = async (project = 'work-project') => payload(await handleTool('work_package', { action: 'prepare', kind: 'digest', project }));
+  const seed = (project = 'work-project', count = 5) => {
+    const kg = new KnowledgeGraph(getDatabase());
+    return Array.from({ length: count }, (_, i) => kg.createEntity(`${project}-commit-${i}`, 'commit', {
+      observations: [`Parser cleanup step ${i} completed.`], tags: [`project:${project}`],
+    }));
+  };
+  const submit = (pkg: any, changes: Record<string, unknown> = {}) => handleTool('work_package', {
+    action: 'submit', package_id: pkg.id, ref: pkg.ref, result, ...changes,
+  });
+  const snapshot = () => getDatabase().prepare('SELECT total_changes() AS changes').get();
+
+  it('publishes digest/transcript actions with strict nested schemas and actionable structured failures', async () => {
+    const tool = TOOL_DEFINITIONS.find(t => t.name === 'work_package')!;
+    expect(tool.description).toContain('Claude Code transcript');
+    expect(tool.description).toContain('MCP workspace root');
+    expect(tool.description).not.toContain('current project’s visible conversation');
+    const schema = tool.inputSchema as any;
+    expect(schema.oneOf).toHaveLength(3);
+    expect(schema.oneOf.every((s: any) => s.additionalProperties === false)).toBe(true);
+    expect(schema.oneOf[0].properties.kind.enum).toEqual(['digest', 'transcript']);
+    expect(schema.oneOf[1].properties.ref.oneOf.every((ref: any) => ref.additionalProperties === false)).toBe(true);
+    expect(schema.oneOf[1].properties.result.additionalProperties).toBe(false);
+    for (const input of [
+      { action: 'prepare', project: 'work-project', kind: 'pattern' },
+      { action: 'prepare', project: 'work-project', kind: 'digest', limit: 2 },
+      { action: 'prepare', project: ' ', kind: 'digest' },
+      { action: 'apply', proposal_id: 1 },
+    ]) {
+      const response = await handleTool('work_package', input);
+      expect(response.isError).toBe(true);
+      expect(payload(response)).toMatchObject({ error: 'invalid_input', detail: expect.any(String) });
+    }
+    const misspelled = payload(await handleTool('work_package', {
+      action: 'defer', package_Id: '0'.repeat(64), ref: {}, reason: 'not_now',
+    }));
+    expect(misspelled.detail).toContain('package_Id');
+  });
+
+  it('returns one deterministic complete calendar package, or none, without writes', async () => {
+    expect(await prepare()).toMatchObject({ status: 'none_available', available_action: [] });
+    const ids = seed();
+    const before = snapshot();
+    const available = await prepare();
+    expect(await prepare()).toEqual(available);
+    expect(snapshot()).toEqual(before);
+    expect(available).toMatchObject({ status: 'available', available_action: [{ action: 'submit', actor: 'agent' }, { action: 'defer', actor: 'agent' }] });
+    expect(available.package).toMatchObject({
+      ref: { kind: 'digest', project: 'work-project', source_ids: ids },
+      limits: { max_output_bytes: 16384, max_results: 1 }, coverage: { truncated: false },
+      trust: 'untrusted', selection_mode: 'calendar',
+    });
+    expect(available.package.id).toMatch(/^[a-f0-9]{64}$/);
+    expect(available.package.ref.source_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(available.package.sources).toHaveLength(5);
+    expect(available.package.sources[0]).toEqual({ id: ids[0], name: 'work-project-commit-0', type: 'commit', observations: ['Parser cleanup step 0 completed.'] });
+    expect(await prepare('another-project')).toMatchObject({ status: 'none_available' });
+  });
+
+  it('stages pending offline output and preserves human list/detail/apply plus replay across settled statuses', async () => {
+    const ids = seed();
+    const pkg = (await prepare()).package;
+    const staged = payload(await submit(pkg));
+    expect(staged).toMatchObject({ status: 'staged', proposal_status: 'pending', review_authority: 'human', available_action: [] });
+    const db = getDatabase();
+    const row = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(staged.proposal_id) as any;
+    expect(row).toMatchObject({ status: 'pending', prompt_version: 'work-package-v1', project: 'work-project' });
+    expect(JSON.parse(row.proposed_digest).work_package).toMatchObject({ id: pkg.id, ref: pkg.ref });
+    expect(listProposals(db).some(p => p.id === staged.proposal_id)).toBe(true);
+    expect(getProposalDetail(db, staged.proposal_id)?.digest.name).toBe(result.name);
+    expect(payload(await submit(pkg))).toMatchObject({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'pending' });
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    expect(db.prepare("SELECT count(*) AS n FROM entities WHERE status = 'active'").get()).toMatchObject({ n: 5 });
+    const applied = applyProposal(db, staged.proposal_id, new KnowledgeGraph(db));
+    expect(applied.sourcesArchived).toBe(5);
+    expect(db.prepare("SELECT count(*) AS n FROM entities WHERE status = 'archived'").get()).toMatchObject({ n: ids.length });
+    expect(db.prepare('SELECT tag FROM tags WHERE entity_id = (SELECT id FROM entities WHERE name = ?)').all(result.name)).toContainEqual({ tag: 'project:work-project' });
+    const before = snapshot();
+    expect(payload(await submit(pkg))).toMatchObject({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'applied' });
+    expect(snapshot()).toEqual(before);
+    const conflict = await submit(pkg, { result: { ...result, observations: ['Different result'] } });
+    expect(conflict.isError).toBe(true);
+    expect(payload(conflict).error).toBe('submission_conflict');
+    db.prepare("UPDATE dream_proposals SET status = 'rejected' WHERE id = ?").run(staged.proposal_id);
+    expect(payload(await submit(pkg))).toMatchObject({ status: 'existing', proposal_status: 'rejected' });
+  });
+
+  it('rejects stale, archived, missing, rescoped and changed sources without staging', async () => {
+    const ids = seed();
+    const pkg = (await prepare()).package;
+    const db = getDatabase();
+    const original = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(ids[0]) as { metadata: string };
+    const badRefs = [
+      { ...pkg.ref, project: 'other-project' },
+      { ...pkg.ref, source_ids: [...ids.slice(0, 4), ids[4] + 1000] },
+      { ...pkg.ref, source_hash: '0'.repeat(64) },
+    ];
+    for (const ref of badRefs) {
+      const before = snapshot();
+      expect((await submit(pkg, { ref })).isError).toBe(true);
+      expect(snapshot()).toEqual(before);
+    }
+    expect((await submit({ ...pkg, id: '0'.repeat(64) })).isError).toBe(true);
+    for (const sql of [
+      "UPDATE observations SET content = 'changed' WHERE entity_id = ?",
+      "UPDATE entities SET metadata = '{\"pin\":true}' WHERE id = ?",
+      "UPDATE entities SET status = 'archived' WHERE id = ?",
+      "UPDATE tags SET tag = 'project:other' WHERE entity_id = ?",
+      'DELETE FROM entities WHERE id = ?',
+    ]) {
+      db.prepare(sql).run(ids[0]);
+      const before = snapshot();
+      expect(payload(await submit(pkg)).error).toBe('stale_package');
+      expect(snapshot()).toEqual(before);
+      db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run('Parser cleanup step 0 completed.', ids[0]);
+      db.prepare("UPDATE entities SET metadata = ?, status = 'active' WHERE id = ?").run(original.metadata, ids[0]);
+      db.prepare('UPDATE tags SET tag = ? WHERE entity_id = ?').run('project:work-project', ids[0]);
+    }
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 0 });
+  });
+
+  it('rejects malformed, secret-shaped and oversized output with zero durable changes', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const invalidResults = [
+      { ...result, surprise: true }, { ...result, type: 'pattern_emergent' },
+      { ...result, tags: ['project:forged'] }, { ...result, tags: [] },
+      { ...result, tags: [''] }, { ...result, tags: Array(51).fill('tag') },
+      { ...result, name: '' }, { ...result, name: 'x'.repeat(256) },
+      { ...result, observations: [] }, { ...result, observations: [' '] },
+      { ...result, observations: Array(101).fill('observation') },
+      { ...result, observations: ['x'.repeat(10001)] },
+      { ...result, observations: ['界'.repeat(3000), '界'.repeat(3000)] },
+      { ...result, observations: ['sk-' + 'a'.repeat(40)] },
+    ];
+    for (const invalid of invalidResults) {
+      const before = snapshot();
+      expect((await submit(pkg, { result: invalid })).isError).toBe(true);
+      expect(snapshot()).toEqual(before);
+    }
+    for (const changes of [
+      { extra: true }, { ref: { ...pkg.ref, extra: true } },
+      { ref: { ...pkg.ref, source_ids: [...pkg.ref.source_ids].reverse() } },
+      { ref: { ...pkg.ref, source_ids: Array(5).fill(pkg.ref.source_ids[0]) } },
+    ]) expect((await submit(pkg, changes)).isError).toBe(true);
+    expect(getDatabase().prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 0 });
+  });
+
+  it('defers without durable changes and can immediately prepare the same package again', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const before = snapshot();
+    const response = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+    expect(payload(response)).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
+    expect(snapshot()).toEqual(before);
+    expect((await prepare()).package).toEqual(pkg);
+    for (const reason of ['insufficient_evidence', 'irrelevant', 'forever']) {
+      expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason })).isError).toBe(true);
+    }
+    getDatabase().prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(pkg.ref.source_ids[0]);
+    expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })).isError).toBe(true);
+  });
+
+  it('replays an already submitted package for defer without durable changes', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const staged = payload(await submit(pkg));
+    const db = getDatabase();
+    for (const status of ['pending', 'applied', 'rejected']) {
+      db.prepare('UPDATE dream_proposals SET status = ? WHERE id = ?').run(status, staged.proposal_id);
+      const before = snapshot();
+      const deferred = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+      expect(payload(deferred)).toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: status, available_action: [] });
+      expect(snapshot()).toEqual(before);
+    }
+  });
+
+  it('does not treat ref key order as freshness or replay identity', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const ref = {
+      source_hash: pkg.ref.source_hash,
+      source_ids: pkg.ref.source_ids,
+      project: pkg.ref.project,
+      kind: 'digest' as const,
+    };
+    const defer = { action: 'defer' as const, package_id: pkg.id, ref, reason: 'not_now' as const };
+    expect(executeWorkPackage(getDatabase(), defer)).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
+    const staged = payload(await submit(pkg));
+    expect(executeWorkPackage(getDatabase(), defer)).toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'pending', available_action: [] });
+  });
+
+  it('reports unexpected work-package failures through the shared handler error path', async () => {
+    const db = getDatabase();
+    const prepare = vi.spyOn(db, 'prepare').mockImplementation(() => { throw new Error('test database failure'); });
+    try {
+      const response = await handleTool('work_package', { action: 'prepare', kind: 'digest', project: 'work-project' });
+      expect(response.isError).toBe(true);
+      expect(response.content).toEqual([{ type: 'text', text: 'Tool "work_package" failed: test database failure' }]);
+    } finally {
+      prepare.mockRestore();
+    }
+  });
+
+  it('prepares and defers without transactions while an independent connection holds the write lock', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const db = getDatabase();
+    const peer = new MemeshDatabase(dbPath);
+    const transaction = vi.spyOn(db, 'transaction').mockImplementation(() => {
+      throw new Error('read-only work must not acquire a transaction');
+    });
+    try {
+      peer.exec('BEGIN IMMEDIATE');
+      expect((await prepare()).package).toEqual(pkg);
+      const deferred = await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+      expect(payload(deferred)).toMatchObject({ status: 'deferred', durable_change: false });
+      expect(transaction).not.toHaveBeenCalled();
+      // The independent connection can still read and write under its own lock.
+      expect(peer.prepare('SELECT count(*) AS n FROM entities').get()).toMatchObject({ n: 5 });
+      expect(peer.prepare('UPDATE entities SET name = ? WHERE id = ?').run('peer-write-probe', pkg.ref.source_ids[0]).changes).toBe(1);
+      expect(peer.prepare('SELECT name FROM entities WHERE id = ?').get(pkg.ref.source_ids[0])).toMatchObject({ name: 'peer-write-probe' });
+    } finally {
+      transaction.mockRestore();
+      if (peer.isTransaction) peer.exec('ROLLBACK');
+      peer.close();
+    }
+    expect((await prepare()).package).toEqual(pkg);
+  });
+
+  it('never enters network or agent-message paths in any action', async () => {
+    seed();
+    const forbidden = () => { throw new Error('forbidden external path'); };
+    const spies = [
+      vi.spyOn(agentMessaging, 'sendAgentMessage').mockImplementation(forbidden),
+      vi.fn(forbidden),
+    ];
+    vi.stubGlobal('fetch', spies[spies.length - 1]);
+    const pkg = (await prepare()).package;
+    expect(pkg).toBeDefined();
+    expect((await handleTool('work_package', { action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })).isError).toBeUndefined();
+    expect((await submit(pkg)).isError).toBeUndefined();
+    expect(payload(await submit(pkg))).toMatchObject({ status: 'existing' });
+    spies.forEach(spy => expect(spy).not.toHaveBeenCalled());
+  });
+
+  it('serializes simultaneous requests into one proposal with the synchronous immediate transaction', async () => {
+    seed();
+    const pkg = (await prepare()).package;
+    const responses = await Promise.all(Array.from({ length: 8 }, () => submit(pkg)));
+    expect(responses.map(payload).filter(r => r.status === 'staged')).toHaveLength(1);
+    expect(responses.map(payload).filter(r => r.status === 'existing')).toHaveLength(7);
+    expect(getDatabase().prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 1 });
+  });
+
+  it('keeps the existing eligibility rules and skips whole oversized clusters without truncation', async () => {
+    const ids = seed();
+    const db = getDatabase();
+    const original = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(ids[0]) as { metadata: string };
+    for (const metadata of [
+      { pin: true }, { compacted_into: 123 }, { consolidation_depth: 1 },
+      { signal_score: 0.1 }, { signal_score: 0.8 },
+    ]) {
+      db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), ids[0]);
+      expect(await prepare()).toMatchObject({ status: 'none_available' });
+    }
+    db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(original.metadata, ids[0]);
+    for (const type of ['decision', 'digest', 'unknown']) {
+      db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(type, ids[0]);
+      expect(await prepare()).toMatchObject({ status: 'none_available' });
+    }
+    db.prepare("UPDATE entities SET type = 'commit' WHERE id = ?").run(ids[0]);
+    expect(await prepare()).toMatchObject({ status: 'available' });
+    db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run('x'.repeat(65536), ids[0]);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    seed('large-project', 101);
+    expect(await prepare('large-project')).toMatchObject({ status: 'none_available' });
+  });
+
+  it('blocks overlapping and contained proposals without altering existing pending work', async () => {
+    const ids = seed();
+    const db = getDatabase();
+    const pkg = (await prepare()).package;
+    const insert = db.prepare(`INSERT INTO dream_proposals
+      (project, cluster_key, source_ids, proposed_digest, prompt_version)
+      VALUES ('work-project', 'legacy', ?, ?, 'v1')`);
+    const overlappingId = Number(insert.run(JSON.stringify([ids[0], 9999]), JSON.stringify(result)).lastInsertRowid);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    const before = snapshot();
+    expect(payload(await submit(pkg))).toMatchObject({ error: 'proposal_overlap' });
+    expect(snapshot()).toEqual(before);
+    db.prepare("UPDATE dream_proposals SET status = 'rejected' WHERE id = ?").run(overlappingId);
+    const containedId = Number(insert.run(JSON.stringify(ids.slice(0, 2)), JSON.stringify(result)).lastInsertRowid);
+    const containedBefore = snapshot();
+    const containedRow = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(containedId);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    const blocked = await submit(pkg);
+    expect(blocked.isError).toBe(true);
+    expect(payload(blocked)).toMatchObject({ error: 'proposal_overlap' });
+    expect(snapshot()).toEqual(containedBefore);
+    expect(db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(containedId)).toEqual(containedRow);
+    expect(db.prepare('SELECT status FROM dream_proposals WHERE id = ?').get(containedId)).toMatchObject({ status: 'pending' });
+    expect(db.prepare("SELECT count(*) AS n FROM dream_proposals WHERE status = 'pending'").get()).toMatchObject({ n: 1 });
+  });
+});
+
+describe('transcript workspace roots', () => {
+  it('fails closed when roots are absent, malformed, non-file, or for another project', () => {
+    const project = getProjectName(tmpDir);
+    expect(resolveTranscriptWorkspace(project, undefined)).toEqual({ transcriptWorkspaceError: 'workspace_unavailable' });
+    expect(resolveTranscriptWorkspace(project, [
+      'https://example.invalid/project',
+      'not a uri',
+      pathToFileURL(path.join(tmpDir, 'missing')).href,
+    ])).toEqual({ transcriptWorkspaceError: 'workspace_unavailable' });
+    const foreign = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-foreign-root-'));
+    try {
+      expect(resolveTranscriptWorkspace(project, [pathToFileURL(foreign).href]))
+        .toEqual({ transcriptWorkspaceError: 'workspace_unavailable' });
+    } finally {
+      fs.rmSync(foreign, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('decodes file URIs and deduplicates roots by canonical path', () => {
+    const workspace = path.join(tmpDir, 'space workspace');
+    const alias = path.join(tmpDir, 'workspace-alias');
+    fs.mkdirSync(workspace);
+    fs.symlinkSync(workspace, alias, 'dir');
+    const project = getProjectName(workspace);
+    expect(pathToFileURL(workspace).href).toContain('%20');
+    expect(resolveTranscriptWorkspace(project, [
+      pathToFileURL(workspace).href,
+      pathToFileURL(alias).href,
+    ])).toEqual({ transcriptWorkspace: fs.realpathSync(workspace) });
+  });
+
+  it('rejects two distinct matching roots as ambiguous', () => {
+    const repo = path.join(tmpDir, 'ambiguous-repo');
+    const nested = path.join(repo, 'nested');
+    fs.mkdirSync(nested, { recursive: true });
+    execFileSync('git', ['init', '--quiet', repo]);
+    const project = getProjectName(repo);
+    expect(getProjectName(nested)).toBe(project);
+    expect(resolveTranscriptWorkspace(project, [
+      pathToFileURL(repo).href,
+      pathToFileURL(nested).href,
+    ])).toEqual({ transcriptWorkspaceError: 'workspace_ambiguous' });
+  });
+});
+
+describe('transcript work_package', () => {
+  let project: string;
+  let transcriptDir: string;
+  let workspace: string;
+  const digest = { name: 'transcript-decision', type: 'decision', observations: ['Use the parser selected in the discussion.'], tags: ['parser'] };
+  const payload = (response: Awaited<ReturnType<typeof handleTool>>) => JSON.parse(response.content[0].text);
+  const workPackage = (args: Record<string, unknown>) => handleTool(
+    'work_package', args, undefined, undefined,
+    { workspaceRootUris: [pathToFileURL(workspace).href] },
+  );
+  const prepare = async () => payload(await workPackage({ action: 'prepare', kind: 'transcript', project }));
+  const submit = (pkg: any, result = digest, extra: Record<string, unknown> = {}) => workPackage({
+    action: 'submit', package_id: pkg.id, ref: pkg.ref, result, ...extra,
+  });
+  const writeSession = (id: string, entries: unknown[], modified = new Date(Date.now() - 1000)) => {
+    const file = path.join(transcriptDir, `${id}.jsonl`);
+    fs.writeFileSync(file, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    fs.utimesSync(file, modified, modified);
+    return file;
+  };
+  const user = (text: string, cwd = workspace) => ({ type: 'user', cwd, message: { role: 'user', content: text } });
+
+  beforeEach(() => {
+    vi.spyOn(process, 'cwd').mockReturnValue(tmpDir);
+    workspace = fs.realpathSync(tmpDir);
+    project = getProjectName(workspace);
+    vi.stubEnv('CLAUDE_PROJECTS_DIR', path.join(tmpDir, 'transcripts'));
+    transcriptDir = path.join(tmpDir, 'transcripts', projectTranscriptSlug(workspace));
+    fs.mkdirSync(transcriptDir, { recursive: true });
+  });
+
+  it('selects newest same-project sessions with deterministic tie-break and excludes hidden/tool content', async () => {
+    writeSession('older', [user('Older conversation')], new Date(Date.now() - 4000));
+    const newest = new Date(Date.now() - 1000);
+    writeSession('b-session', [user('Tie-break second')], newest);
+    const file = writeSession('a-session', [
+      user('Choose a parser'),
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'PRIVATE_THOUGHT' }, { type: 'tool_use', input: 'TOOL_INPUT' }, { type: 'text', text: 'Use the simpler parser.' }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', content: 'TOOL_OUTPUT' }] } },
+    ], newest);
+    writeSession('wrong-project', [user('FOREIGN_DATA', path.join(tmpDir, 'sibling'))], new Date());
+    const available = await prepare();
+    expect(available.status).toBe('available');
+    expect(available.package.ref.session_id).toBe('a-session');
+    expect(available.package.ref.source_hash).toBe(createHash('sha256').update(fs.readFileSync(file)).digest('hex'));
+    expect(available.package.sources).toEqual([{ role: 'user', text: 'Choose a parser' }, { role: 'assistant', text: 'Use the simpler parser.' }]);
+    expect(available.package.coverage).toEqual({ truncated: false, total_turns: 2, included_turns: 2 });
+    expect(JSON.stringify(available)).not.toMatch(/PRIVATE_THOUGHT|TOOL_INPUT|TOOL_OUTPUT|FOREIGN_DATA/);
+    expect(available.package.ref).not.toHaveProperty('path');
+    expect(await prepare()).toEqual(available);
+    // Legacy transcript rows also reserve their session, regardless of status or key label.
+    const db = getDatabase();
+    const legacy = db.prepare(`INSERT INTO dream_proposals
+      (project, cluster_key, source_ids, proposed_digest, prompt_version, source_kind)
+      VALUES (?, 'legacy-label', ?, '{}', 'transcript-v1', 'transcript')`).run(project, JSON.stringify({ sessionId: 'a-session' }));
+    for (const status of ['pending', 'applied', 'rejected']) {
+      db.prepare('UPDATE dream_proposals SET status = ? WHERE id = ?').run(status, legacy.lastInsertRowid);
+      expect((await prepare()).package.ref.session_id).toBe('b-session');
+    }
+  });
+
+  it('skips a transcript that becomes unreadable after discovery', async () => {
+    writeSession('older-readable', [user('Use the readable fallback session.')], new Date(Date.now() - 4000));
+    const newest = writeSession('newest-unreadable', [user('This session disappears during selection.')]);
+    const realOpen = fs.openSync;
+    let newestOpens = 0;
+    const opened = vi.spyOn(fs, 'openSync').mockImplementation(((file: fs.PathLike, flags: fs.OpenMode) => {
+      if (String(file) === newest && ++newestOpens === 2) {
+        throw Object.assign(new Error('gone after discovery'), { code: 'ENOENT' });
+      }
+      return realOpen(file, flags);
+    }) as typeof fs.openSync);
+    try {
+      const available = await prepare();
+      expect(available.package.ref.session_id).toBe('older-readable');
+      expect(newestOpens).toBe(2);
+    } finally {
+      opened.mockRestore();
+    }
+  });
+
+  it('clips turns and bytes explicitly while preserving chronological order and skips unusable sessions', async () => {
+    writeSession('many-turns', Array.from({ length: 120 }, (_, i) => user(`visible-${i}`)));
+    let pkg = (await prepare()).package;
+    expect(pkg.sources).toHaveLength(100);
+    expect(pkg.sources[0].text).toBe('visible-20');
+    expect(pkg.sources[99].text).toBe('visible-119');
+    expect(pkg.coverage).toEqual({ truncated: true, total_turns: 120, included_turns: 100 });
+    writeSession('many-turns', Array.from({ length: 30 }, (_, i) => user(`${i}:` + '界'.repeat(3000))));
+    pkg = (await prepare()).package;
+    expect(Buffer.byteLength(JSON.stringify(pkg.sources))).toBeLessThanOrEqual(49152);
+    expect(Buffer.byteLength(JSON.stringify(pkg))).toBeLessThanOrEqual(65536);
+    expect(pkg.coverage.truncated).toBe(true);
+    expect(pkg.coverage.total_turns).toBe(30);
+    expect(pkg.sources.map((turn: any) => Number(turn.text.split(':')[0]))).toEqual([25, 26, 27, 28, 29]);
+    writeSession('many-turns', [user('x'.repeat(60000))]);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    writeSession('many-turns', [{ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'private only' }] } }]);
+    writeSession('', [user('No usable session identity')]);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+  });
+
+  it('prepares/defers without transactions and never enters generation, vectors, embeddings, messages or network', async () => {
+    writeSession('offline', [user('One supported decision')]);
+    const db = getDatabase();
+    const forbidden = () => { throw new Error('forbidden provider path'); };
+    const spies = [
+
+
+
+      vi.spyOn(agentMessaging, 'sendAgentMessage').mockImplementation(forbidden), vi.fn(forbidden)];
+    vi.stubGlobal('fetch', spies[spies.length - 1]);
+    const transaction = vi.spyOn(db, 'transaction').mockImplementation(forbidden);
+    const before = db.prepare('SELECT total_changes() AS n').get();
+    const pkg = (await prepare()).package;
+    expect(pkg).toBeDefined();
+    const deferred = await workPackage({ action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' });
+    expect(payload(deferred)).toEqual({ status: 'deferred', durable_change: false, available_action: [] });
+    expect((await prepare()).package).toEqual(pkg);
+    expect(transaction).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
+    transaction.mockRestore();
+    expect((await submit(pkg)).isError).toBeUndefined();
+    spies.forEach(spy => expect(spy).not.toHaveBeenCalled());
+  });
+
+  it.each(['decision', 'lesson_learned', 'fact'])('stages one %s and preserves human additive apply plus all-status replay', async (type) => {
+    const file = writeSession('review-session', [user('The visible evidence supports this memory.')]);
+    const bytes = fs.readFileSync(file);
+    const pkg = (await prepare()).package;
+    const output = { ...digest, type };
+    const staged = payload(await submit(pkg, output));
+    const db = getDatabase();
+    const row = db.prepare('SELECT * FROM dream_proposals WHERE id = ?').get(staged.proposal_id) as any;
+    expect(row).toMatchObject({ project, status: 'pending', source_kind: 'transcript', kind: 'digest', cluster_key: 'transcript:review-session', prompt_version: 'work-package-v1' });
+    expect(JSON.parse(row.proposed_digest)).toMatchObject({ ...output, work_package: { id: pkg.id, ref: pkg.ref } });
+    const evidence = {
+      sessionId: 'review-session',
+      source: { host: 'claude-code', scope: 'mcp-workspace-root' },
+      workspaceHash: pkg.ref.workspace_hash,
+      coverage: { truncated: false, total_turns: 1, included_turns: 1 },
+      sources: [{ role: 'user', text: 'The visible evidence supports this memory.' }],
+      trust: 'untrusted',
+    };
+    expect(JSON.parse(row.source_ids)).toEqual(evidence);
+    expect(getProposalDetail(db, staged.proposal_id)?.source).toEqual(evidence);
+    expect(JSON.stringify(evidence)).not.toContain(file);
+    expect(db.prepare('SELECT count(*) AS n FROM entities').get()).toMatchObject({ n: 0 });
+    expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'pending' });
+    const deferBefore = db.prepare('SELECT total_changes() AS n').get();
+    expect(payload(await workPackage({ action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
+      .toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'pending', available_action: [] });
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(deferBefore);
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    const kg = new KnowledgeGraph(db);
+    const create = vi.spyOn(kg, 'createEntity');
+    expect(applyProposal(db, staged.proposal_id, kg).sourcesArchived).toBe(0);
+    expect(create).toHaveBeenCalledWith(output.name, type, expect.objectContaining({ trustOverride: 'untrusted' }));
+    expect(db.prepare('SELECT type, status FROM entities').all()).toEqual([{ type, status: 'active' }]);
+    expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'applied' });
+    expect(payload(await workPackage({ action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
+      .toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'applied', available_action: [] });
+    db.prepare("UPDATE dream_proposals SET status = 'rejected' WHERE id = ?").run(staged.proposal_id);
+    expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'rejected' });
+    expect(payload(await workPackage({ action: 'defer', package_id: pkg.id, ref: pkg.ref, reason: 'not_now' })))
+      .toEqual({ status: 'existing', proposal_id: staged.proposal_id, proposal_status: 'rejected', available_action: [] });
+    expect(await prepare()).toMatchObject({ status: 'none_available' });
+    const conflict = await submit(pkg, { ...output, observations: ['Different result'] });
+    expect(conflict.isError).toBe(true);
+    expect(payload(conflict).error).toBe('submission_conflict');
+    expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 1 });
+    expect(fs.readFileSync(file)).toEqual(bytes);
+    writeSession('review-session', [user('Changed after human review')]);
+    expect(payload(await submit(pkg, output))).toMatchObject({ status: 'existing', proposal_status: 'rejected' });
+  });
+
+  it('rejects path injection, unknown fields, wrong kinds, tags, secrets and oversized output without writes', async () => {
+    writeSession('strict', [user('Visible evidence')]);
+    const pkg = (await prepare()).package;
+    const invalid = [
+      { extra: true }, { ref: { ...pkg.ref, path: '/not-authorized' } }, { ref: { ...pkg.ref, source_ids: [1] } },
+      { result: { ...digest, type: 'digest' } }, { result: { ...digest, type: 'pattern' } },
+      { result: { ...digest, extra: true } }, { result: { ...digest, observations: [] } },
+      { result: { ...digest, tags: ['project:forged'] } }, { result: { ...digest, tags: [] } },
+      { result: { ...digest, observations: ['sk-' + 'a'.repeat(40)] } },
+      { result: { ...digest, observations: ['界'.repeat(3000), '界'.repeat(3000)] } },
+    ];
+    const db = getDatabase();
+    const before = db.prepare('SELECT total_changes() AS n').get();
+    for (const extra of invalid) expect((await submit(pkg, digest, extra)).isError).toBe(true);
+    expect((await workPackage({ action: 'prepare', kind: 'transcript', project, path: 'forged' })).isError).toBe(true);
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
+  });
+
+  it('revalidates pathless project/session/content/mtime/hash references for submit and defer', async () => {
+    const file = writeSession('fresh', [user('Original content')]);
+    const pkg = (await prepare()).package;
+    const db = getDatabase();
+    const before = db.prepare('SELECT total_changes() AS n').get();
+    for (const ref of [{ ...pkg.ref, project: 'other' }, { ...pkg.ref, session_id: 'missing' },
+      { ...pkg.ref, modified_at: new Date(0).toISOString() }, { ...pkg.ref, source_hash: '0'.repeat(64) },
+      { ...pkg.ref, workspace_hash: '0'.repeat(64) }]) {
+      expect((await submit(pkg, digest, { ref })).isError).toBe(true);
+      expect((await workPackage({ action: 'defer', package_id: pkg.id, ref, reason: 'not_now' })).isError).toBe(true);
+    }
+    expect((await submit({ ...pkg, id: '0'.repeat(64) })).isError).toBe(true);
+    writeSession('fresh', [user('Changed content')], new Date(pkg.ref.modified_at));
+    expect((await submit(pkg)).isError).toBe(true);
+    const updated = (await prepare()).package;
+    fs.utimesSync(file, new Date(), new Date());
+    expect((await submit(updated)).isError).toBe(true);
+    expect(db.prepare('SELECT total_changes() AS n').get()).toEqual(before);
+  });
 });
 
 // ── Remember ────────────────────────────────────────────────────────────
@@ -226,11 +805,7 @@ describe('remember', () => {
       relations: [{ to: 'auth-v2', type: 'supersedes' }],
     });
 
-    // auth-v2 should be auto-archived — must NOT appear in default recall.
-    // (We don't assert []: if a neural embedder is configured, recallEnhanced
-    // can supplement with vector hits, e.g. surfacing the related auth-v3.
-    // The behavioural guarantee here is "archived rows stay hidden", not
-    // "no results at all".)
+    // auth-v2 should be auto-archived and must not appear in default recall.
     const recallOld = await handleTool('recall', { query: 'JWT' });
     const oldNames = recallEntities(recallOld).map((e: any) => e.name);
     expect(oldNames).not.toContain('auth-v2');
@@ -301,12 +876,11 @@ describe('recall', () => {
     const parsed = JSON.parse(result.content[0].text);
     expect(Array.isArray(parsed), 'bare-array payload breaks Gemini CLI').toBe(false);
     expect(Array.isArray(parsed.entities)).toBe(true);
-    // R2: the envelope always says HOW it was answered — mode (fts|hybrid),
-    // degraded (configured vector side could not run), truncated (window
-    // filled). A caller must never have to guess whether keyword-only
-    // results are the configured behaviour or a silent degradation.
-    expect(['fts', 'hybrid']).toContain(parsed.retrieval.mode);
-    expect(typeof parsed.retrieval.degraded).toBe('boolean');
+    // R2: the envelope always says HOW it was answered. Current recall is
+    // exactly FTS; `degraded` remains a fixed-false compatibility field, and
+    // `truncated` says whether the result window filled.
+    expect(parsed.retrieval.mode).toBe('fts');
+    expect(parsed.retrieval.degraded).toBe(false);
     expect(typeof parsed.retrieval.truncated).toBe('boolean');
   });
 
@@ -548,7 +1122,7 @@ describe('improvement', () => {
   }
 
   it('is advertised with proposal-only authority', () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(11);
+    expect(TOOL_DEFINITIONS).toHaveLength(12);
     const tool = TOOL_DEFINITIONS.find((definition) => definition.name === 'improvement');
     expect(tool?.description).toMatch(/Agents may only propose and read status/);
     expect(tool?.inputSchema.properties.action.enum).toEqual(['propose', 'status']);
@@ -609,7 +1183,7 @@ describe('improvement', () => {
 describe('message', () => {
   it('is advertised as one lifecycle tool with explicit receipt axes', () => {
     const tool = TOOL_DEFINITIONS.find((definition) => definition.name === 'message');
-    expect(TOOL_DEFINITIONS).toHaveLength(11);
+    expect(TOOL_DEFINITIONS).toHaveLength(12);
     expect(tool?.inputSchema.properties.action.enum).toEqual([
       'send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts',
     ]);

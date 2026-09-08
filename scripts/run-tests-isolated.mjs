@@ -26,10 +26,8 @@ try {
   // maintainer's shell — a normal state while debugging against a copy — sends
   // the whole suite at the real config and the real database, from the publish
   // path. The docblock above warned about *setting* MEMESH_DB_PATH and said
-  // nothing about inheriting it. Provider settings from the invoking shell are
-  // owner-controlled runtime state, not test inputs, and go for the same
-  // reason; individual tests that exercise provider discovery set their own
-  // fixtures after Vitest starts.
+  // nothing about inheriting it. Common credential variables are also stripped
+  // so tests never receive owner-controlled secrets as accidental inputs.
   //
   // Both deletions now live in `lib/isolated-env.mjs`, with the audit scripts
   // that need the identical guarantee. Three copies is how two of them ended

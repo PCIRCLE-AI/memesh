@@ -133,8 +133,8 @@ describe('Feature: Post-Commit Hook', () => {
     expect(obs.content).toBe('fix: resolve login bug');
 
     // Verify tag
-    const tag = db.prepare('SELECT * FROM tags WHERE entity_id = ? AND tag = ?').get(entity.id, 'project:repo') as Row;
-    expect(tag).toBeTruthy();
+    const tag = db.prepare("SELECT * FROM tags WHERE entity_id = ? AND tag LIKE 'project:%'").get(entity.id) as Row;
+    expect(tag?.tag).toMatch(/^project:repo~[0-9a-f]{32}$/);
 
     // Verify FTS
     const fts = db.prepare("SELECT * FROM entities_fts WHERE entities_fts MATCH 'login'").all() as Row[];
@@ -145,8 +145,8 @@ describe('Feature: Post-Commit Hook', () => {
 
   it('Scenario: the commit subject becomes the entity title, marked heuristic', () => {
     // UX-1: a commit subject is already the human-written one-line summary,
-    // so it IS the title. The heuristic mark is what lets a later LLM pass
-    // know this title is machine-assigned and replaceable.
+    // so it IS the title. The heuristic mark records that MeMesh derived the
+    // title rather than receiving a separately edited human label.
     const c = commit('refactor(db): collapse the tuple cache');
     runHook({
       tool_name: 'Bash',

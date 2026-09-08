@@ -68,7 +68,7 @@ jobs:
       - name: Smoke test packaged dashboard
         run: npm run test:e2e-dashboard
 
-      - name: Release gates (version coherence + F5 mirror drift)
+      - name: Source verification (`npm run verify:release`)
         # The same gates ci.yml runs on every PR. This workflow had neither, so
         # the publish path enforced strictly less than the review path — and
         # .claude-plugin/plugin.json and marketplace.json ship INSIDE the

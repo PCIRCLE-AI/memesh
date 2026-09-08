@@ -1,13 +1,10 @@
 import { rebuildFtsIndex, runOnceMigration } from './schema.js';
-import { hasVectorIndex } from './vector-index.js';
 import { lessonSlug } from '../core/lesson-slug.js';
-import { AGENT_MESSAGE_SCOPE_COLUMNS, isFilesystemPathScopeId, lastPathSegment, } from '../core/agent-scope-id.js';
 import { computeSignalScore } from '../core/signal-scorer.js';
 export const SESSION_DEDUPE_KEY = 'session_observation_dedupe';
 export const ZERO_EDIT_RETRACT_KEY = 'session_zero_edit_retract';
 export const FUSED_LESSON_SPLIT_KEY = 'fused_lesson_split';
 export const ARCHIVED_FTS_ROWS_KEY = 'archived_fts_rows';
-export const ARCHIVED_VECTOR_ROWS_KEY = 'archived_vector_rows';
 export const FUSED_LESSON_SHELL_HISTORY_RESET_KEY = 'fused_lesson_shell_history_reset';
 const ZERO_EDITS = ', 0 files edited';
 const ZERO_EDITS_RETRACTED = ', files edited through Bash (count not recorded before 4.8.2)';
@@ -254,15 +251,14 @@ export function splitFusedLessons(db, deps) {
             }
             if (moved > 0) {
                 rebuildFtsIndex(conn);
-                deps.markReindexOwed(conn);
                 if (legacyReadableMoved === 0) {
-                    note(`moved ${moved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) into their own entities; run 'memesh reindex' to refresh their vectors.`);
+                    note(`moved ${moved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) into their own entities.`);
                 }
                 else if (bucketsTouched === 0) {
-                    note(`moved ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities; run 'memesh reindex' to refresh their vectors.`);
+                    note(`moved ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities.`);
                 }
                 else {
-                    note(`moved ${moved - legacyReadableMoved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) and ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities; run 'memesh reindex' to refresh their vectors.`);
+                    note(`moved ${moved - legacyReadableMoved} lesson(s) out of ${bucketsTouched} "-other" bucket(s) and ${legacyReadableMoved} legacy readable-only lesson(s) into their canonical digest entities.`);
                 }
             }
         },
@@ -270,7 +266,7 @@ export function splitFusedLessons(db, deps) {
     return moved;
 }
 export function dropArchivedIndexRows(db) {
-    const result = { ftsRows: -1, vectorRows: -1 };
+    const result = { ftsRows: -1 };
     runOnceMigration(db, {
         key: ARCHIVED_FTS_ROWS_KEY,
         version: 1,
@@ -285,23 +281,6 @@ export function dropArchivedIndexRows(db) {
             rebuildFtsIndex(conn);
             if (stale.n > 0) {
                 note(`removed ${stale.n} archived entit${stale.n === 1 ? 'y' : 'ies'} from the keyword index (archived before 4.8.4 by a path that left the index behind).`);
-            }
-        },
-    });
-    if (!hasVectorIndex(db))
-        return result;
-    runOnceMigration(db, {
-        key: ARCHIVED_VECTOR_ROWS_KEY,
-        version: 1,
-        describe: 'archived rows removed from the vector index',
-        migrate: (conn) => {
-            const removed = conn
-                .prepare(`DELETE FROM entities_vec WHERE rowid IN
-             (SELECT e.id FROM entities e WHERE e.status = 'archived')`)
-                .run();
-            result.vectorRows = Number(removed.changes);
-            if (result.vectorRows > 0) {
-                note(`removed ${result.vectorRows} archived entit${result.vectorRows === 1 ? 'y' : 'ies'} from the vector index; they were taking recall slots from live memories.`);
             }
         },
     });
@@ -335,71 +314,5 @@ export function repairFusedLessonShellHistory(db) {
         },
     });
     return retired;
-}
-export const AGENT_SCOPE_PATH_KEY = 'agent_scope_path_identity';
-export function normalizeAgentScopePaths(db) {
-    let rewritten = -1;
-    runOnceMigration(db, {
-        key: AGENT_SCOPE_PATH_KEY,
-        version: 1,
-        describe: 'agent message scope path identities',
-        migrate: (conn) => {
-            rewritten = 0;
-            let merged = 0;
-            let blocked = 0;
-            let discarded = 0;
-            const pairs = new Set();
-            for (const { table, columns } of AGENT_MESSAGE_SCOPE_COLUMNS) {
-                for (const column of columns) {
-                    let values;
-                    try {
-                        values = conn.prepare(`SELECT DISTINCT ${column} AS v FROM ${table}`).all();
-                    }
-                    catch {
-                        continue;
-                    }
-                    const update = conn.prepare(`UPDATE ${table} SET ${column} = ? WHERE rowid = ?`);
-                    const drop = conn.prepare(`DELETE FROM ${table} WHERE rowid = ?`);
-                    const ids = conn.prepare(`SELECT rowid AS rid FROM ${table} WHERE ${column} = ?`);
-                    const exists = conn.prepare(`SELECT 1 AS hit FROM ${table} WHERE ${column} = ? LIMIT 1`);
-                    for (const { v } of values) {
-                        if (typeof v !== 'string' || !isFilesystemPathScopeId(v))
-                            continue;
-                        const target = lastPathSegment(v);
-                        if (target === null)
-                            continue;
-                        const isMerge = exists.get(target) !== undefined;
-                        const rows = ids.all(v);
-                        for (const { rid } of rows) {
-                            try {
-                                const changed = Number(update.run(target, rid).changes);
-                                rewritten += changed;
-                                if (changed > 0 && isMerge)
-                                    merged += changed;
-                            }
-                            catch {
-                                if (table === 'agent_message_cursors') {
-                                    discarded += Number(drop.run(rid).changes);
-                                }
-                                else {
-                                    blocked += 1;
-                                }
-                            }
-                        }
-                        if (rows.length > 0)
-                            pairs.add(`${v} → ${target}`);
-                    }
-                }
-            }
-            if (rewritten > 0 || discarded > 0) {
-                const detail = [...pairs].join(', ');
-                note(`rewrote ${rewritten} filesystem-path message scope value(s) to their identity name (${detail})`
-                    + `${merged > 0 ? `; ${merged} joined an identity that already existed` : ''}`
-                    + `${discarded > 0 ? `; ${discarded} duplicate poll cursor(s) dropped` : ''}`
-                    + `${blocked > 0 ? `; ${blocked} left in place because the canonical spelling already holds an equivalent row` : ''}.`);
-            }
-        },
-    });
-    return rewritten;
 }
 //# sourceMappingURL=graph-repairs.js.map

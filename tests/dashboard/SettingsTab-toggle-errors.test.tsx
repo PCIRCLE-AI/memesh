@@ -40,6 +40,21 @@ function mockFetch(): void {
 describe('SettingsTab behaviour toggles surface POST failures', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it.each([false, true])('only shows upgrade instructions when an update exists: %s', async (updateAvailable) => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      if (String(input).includes('/v1/update-status')) return jsonResponse({ success: true, data: {
+        currentVersion: '4.9.0', latestVersion: updateAvailable ? '4.9.1' : '4.8.5',
+        checkSucceeded: true, freshness: 'fresh', updateAvailable,
+        installChannel: 'source-checkout', canSelfUpdate: false,
+        recommendedCommand: 'test-upgrade-command',
+      } });
+      return jsonResponse({ success: true, data: { config: { autoUpdate: 'off' }, capabilities: { searchLevel: 0 } } });
+    });
+    const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
+    await waitFor(() => expect(container.textContent).toContain('4.9.0'));
+    expect(container.textContent?.includes('test-upgrade-command')).toBe(updateAvailable);
+  });
+
   it('shows the error instead of silently swallowing a failed autoUpdate write', async () => {
     mockFetch();
     const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);

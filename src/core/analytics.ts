@@ -1,5 +1,6 @@
 // =============================================================================
-// Analytics — health score + timeline + value metrics + cleanup suggestions
+// Analytics — health score/factors, memory-loop metric, timeline, age matrix,
+// and knowledge radar.
 // =============================================================================
 //
 // Used by the HTTP /v1/analytics route. Pure read-only aggregation.
@@ -97,8 +98,7 @@ export interface AnalyticsResult {
    * zero: it means no session has yet run the citation-era accounting, which
    * is true of every install until the release carrying it lands. A tile
    * that renders `null` as 0% would report perfect non-compliance from an
-   * instrument that has never been switched on — the exact failure
-   * `retrieval.degraded` exists to prevent on the recall side.
+   * instrument that has never been switched on.
    */
   citationCompliance: { cited: number; total: number } | null;
   timeline: Array<{ date: string; created: number; recalled: number }>;

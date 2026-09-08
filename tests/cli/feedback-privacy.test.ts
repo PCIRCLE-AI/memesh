@@ -172,4 +172,13 @@ describe('CLI: feedback does not publish the account name', () => {
       expect(r.stdout).not.toContain(fs.realpathSync(home));
     }
   );
+
+  it.skipIf(process.platform === 'win32')('reports the URL instead of false success when the platform opener is missing', () => {
+    fs.symlinkSync(process.execPath, path.join(binDir, 'node'));
+    const r = runCli(['feedback', '--no-diagnostics'], { PATH: binDir });
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain('Could not open browser. URL:');
+    expect(r.stdout).toContain('https://github.com/PCIRCLE-AI/memesh/issues/new?');
+    expect(r.stdout).not.toContain('Opened browser');
+  });
 });

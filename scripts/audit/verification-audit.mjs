@@ -15,6 +15,10 @@
 // Classes C2 (blank-out mutations) and the mutation score live in
 // mutation-sample.mjs — they run code, not scans, and take minutes; this
 // file stays fast enough for verify:release.
+//
+// `--prune-stale` removes only baseline keys that the current detectors no
+// longer emit. It never adds or classifies a new hit; those still require a
+// reviewed reason.
 import fs from 'node:fs';
 import path from 'node:path';
 import { stripComments } from '../lib/reference-corpus.mjs';
@@ -22,6 +26,13 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const read = p => fs.readFileSync(path.join(REPO, p), 'utf8');
+const args = process.argv.slice(2);
+const unknownArgs = args.filter(arg => arg !== '--prune-stale');
+if (unknownArgs.length) {
+  console.error(`Unknown option(s): ${unknownArgs.join(', ')}`);
+  process.exit(2);
+}
+const pruneStale = args.includes('--prune-stale');
 
 function walk(dir, exts, out = []) {
   const full = path.join(REPO, dir);
@@ -283,6 +294,11 @@ const stale = [...known].filter(id => !current.has(id));
 if (stale.length) {
   console.log(`  ! ${stale.length} baseline entries no longer hit (prune them):`);
   for (const id of stale) console.log(`      ${id}`);
+  if (pruneStale) {
+    for (const id of stale) delete baseline.hits[id];
+    fs.writeFileSync(baselinePath, `${JSON.stringify(baseline, null, 2)}\n`, { mode: 0o600 });
+    console.log(`  ✓ pruned ${stale.length} stale baseline entries; no new hit was classified`);
+  }
 }
 
 if (failed) {

@@ -39,7 +39,7 @@ describe('OnboardingBanner', () => {
     expect(buttons[0]?.textContent ?? '').toMatch(/demo|示範|示范|डेमो|デモ|투어|démo|demo/i);
   });
 
-  it('separates the LLM-free core, semantic indexing, and LLM-assisted organization', () => {
+  it('explains FTS retrieval and human-reviewed work packages without model setup', () => {
     const previousLocale = getLocale();
     setLocale('en');
     try {
@@ -47,10 +47,10 @@ describe('OnboardingBanner', () => {
       const capabilityItems = Array.from(container.querySelectorAll('ul li'))
         .map((item) => item.textContent ?? '');
       expect(capabilityItems).toHaveLength(3);
-      expect(capabilityItems[0]).toMatch(/Without an LLM.*FTS5.*hooks.*Dashboard/i);
-      expect(capabilityItems[1]).toMatch(/With an embedder.*semantic indexing.*meaning-based recall/i);
-      expect(capabilityItems[2]).toMatch(/With an LLM.*weekly digest.*pattern\/conflict.*validation.*lesson\/tag.*telemetry/i);
-      expect(capabilityItems.join(' ')).not.toMatch(/everything.*FTS5 alone|LLM.*only.*lesson/i);
+      expect(capabilityItems[0]).toMatch(/local memory.*hooks.*Dashboard/i);
+      expect(capabilityItems[1]).toMatch(/FTS5.*keyword/i);
+      expect(capabilityItems[2]).toMatch(/agent.*work package.*Dashboard.*review/i);
+      expect(capabilityItems.join(' ')).not.toMatch(/LLM|embed|vector|semantic|provider|API key|telemetry/i);
     } finally {
       setLocale(previousLocale);
     }

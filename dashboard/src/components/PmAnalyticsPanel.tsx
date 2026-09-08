@@ -105,29 +105,29 @@ export function PmAnalyticsPanel({ dataRevision = 0 }: { dataRevision?: number }
           <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--mono)' }}>
             {data.velocity.decisionsPerWeek.toFixed(1)}
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{t('pm.decisionsPerWeek')}</div>
+          <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 2 }}>{t('pm.decisionsPerWeek')}</div>
         </div>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--mono)' }}>
             {data.staleness.openDecisionCount}
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{t('pm.openDecisions')}</div>
+          <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 2 }}>{t('pm.openDecisions')}</div>
         </div>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--mono)', color: orphanColor }}>
             {orphanPct}%
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{t('pm.orphanRate')}</div>
+          <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 2 }}>{t('pm.orphanRate')}</div>
         </div>
         <div style={{ textAlign: 'center' }}>
           <div style={{ fontSize: 22, fontWeight: 700, fontFamily: 'var(--mono)' }}>
             {data.connectedness.totalRelations}
           </div>
-          <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 2 }}>{t('pm.relationsTotal')}</div>
+          <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 2 }}>{t('pm.relationsTotal')}</div>
         </div>
       </div>
       {data.staleness.stalePlanCount > 0 && (
-        <div style={{ marginTop: 10, fontSize: 12, color: 'var(--warning)' }}>
+        <div style={{ marginTop: 10, fontSize: 14, color: 'var(--warning)' }}>
           {t('pm.stalePlans', { count: data.staleness.stalePlanCount })}
         </div>
       )}

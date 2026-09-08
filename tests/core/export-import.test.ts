@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { remember, forget, recall, exportMemories, importMemories } from '../../src/core/operations.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { getDatabase } from '../../src/db.js';
@@ -405,6 +405,75 @@ describe('importMemories', () => {
     const result = importMemories({ data, merge_strategy: 'skip' });
     expect(result.imported).toBe(1);
     expect(result.errors).toHaveLength(0);
+  });
+
+  it('rolls back one archived entity when removing its fresh FTS row fails, then imports the rest', () => {
+    const data = {
+      ...makeExport([
+        {
+          name: 'archive-fails',
+          observations: ['must not survive'],
+          tags: ['must:not-survive'],
+          relations: [{ to: 'survivor', type: 'depends-on' }],
+        },
+        { name: 'survivor', observations: ['still imported'] },
+      ]),
+      entities: [
+        {
+          ...makeExport([{ name: 'archive-fails' }]).entities[0],
+          observations: ['must not survive'],
+          tags: ['must:not-survive'],
+          relations: [{ to: 'survivor', type: 'depends-on' }],
+          status: 'archived' as const,
+          created_at: '2024-01-02T03:04:05.000Z',
+        },
+        makeExport([{ name: 'survivor', observations: ['still imported'] }]).entities[0],
+      ],
+    };
+    const db = getDatabase();
+    const realPrepare = db.prepare.bind(db);
+    const diagnostics: string[] = [];
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      diagnostics.push(String(chunk));
+      return true;
+    });
+
+    Object.defineProperty(db, 'prepare', {
+      configurable: true,
+      value: (sql: string) => {
+        if (sql.includes('INSERT INTO entities_fts (entities_fts, rowid, name, observations)')) {
+          throw new Error('injected archive FTS delete failure');
+        }
+        return realPrepare(sql);
+      },
+    });
+
+    let result: ReturnType<typeof importMemories>;
+    try {
+      result = importMemories({ data, merge_strategy: 'skip' });
+    } finally {
+      delete (db as unknown as { prepare?: unknown }).prepare;
+      stderrSpy.mockRestore();
+    }
+
+    expect(diagnostics.some((line) => line.includes('removeFromFts'))).toBe(true);
+    expect(result.imported, 'the failed entity was counted as imported').toBe(1);
+    expect(result.overwritten).toBe(0);
+    expect(result.appended).toBe(0);
+    expect(result.skipped).toBe(0);
+    expect(result.errors).toEqual([
+      'archive-fails: injected archive FTS delete failure',
+    ]);
+    expect(result.skipped_relations, 'a relation from a rolled-back entity was queued').toEqual([]);
+
+    expect(db.prepare("SELECT name FROM entities WHERE name = 'archive-fails'").get()).toBeUndefined();
+    expect(db.prepare("SELECT COUNT(*) AS c FROM observations WHERE content = 'must not survive'").get())
+      .toMatchObject({ c: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS c FROM tags WHERE tag = 'must:not-survive'").get())
+      .toMatchObject({ c: 0 });
+    expect(db.prepare('SELECT COUNT(*) AS c FROM relations').get()).toMatchObject({ c: 0 });
+    expect(recall({ query: 'must not survive' }), 'the rolled-back FTS document remained searchable').toEqual([]);
+    expect(recall({ query: 'survivor' }).map((entity) => entity.name)).toEqual(['survivor']);
   });
 
   it('records entity errors in errors array', () => {

@@ -9,7 +9,6 @@ export type Namespace = (typeof NAMESPACES)[number];
 export type MergeStrategy = 'skip' | 'overwrite' | 'append';
 export type LessonSeverity = 'critical' | 'major' | 'minor';
 export type EntityStatus = 'active' | 'archived';
-export type LLMProvider = 'anthropic' | 'openai' | 'ollama';
 export interface Entity {
     id: number;
     name: string;
@@ -22,7 +21,7 @@ export interface Entity {
     relations?: Relation[];
     archived?: boolean;
     match?: {
-        source: 'keyword' | 'semantic';
+        source: 'keyword';
         relevance: number;
     };
     access_count?: number;
@@ -183,19 +182,4 @@ export type PragmaColumnRow = {
     dflt_value: string | null;
     pk: number;
 };
-export interface AnthropicResponse {
-    content?: Array<{
-        text?: string;
-    }>;
-}
-export interface OpenAIResponse {
-    choices?: Array<{
-        message?: {
-            content?: string;
-        };
-    }>;
-}
-export interface OllamaResponse {
-    response?: string;
-}
 //# sourceMappingURL=types.d.ts.map

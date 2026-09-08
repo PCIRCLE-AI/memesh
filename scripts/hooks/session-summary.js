@@ -4,26 +4,9 @@
 // Extracts knowledge from completed Claude Code sessions
 // and stores as session-insight entities in MeMesh.
 //
-// THIS HOOK STAYS, and that was an open question rather than an assumption.
-// `dream run --from-transcripts` reads the same sessions from their raw JSONL
-// and does not depend on this hook having fired, so the obvious next step was
-// to retire the hook as redundant. Measured first, on a real graph
-// (2026-08-09, 214 active entities, ollama nomic-embed-text, L2 over the same
-// `name + observations` text the runtime embeds):
-//
-//   every transcript-mined memory -> its nearest hook-captured entity
-//     min 0.784   p25 0.821   p50 0.865   max 0.946
-//     within 0.55: 0 of 47.   within 0.70: 0 of 47.
-//
-// Nothing the transcript miner produced came within 0.78 of anything this hook
-// recorded. They are not two views of the same material: this hook records what
-// HAPPENED (files touched, commands run, commits), the miner extracts what was
-// DECIDED and what was LEARNED. Retiring either one loses a whole category.
-
 import { createRequire } from 'module';
 import { basename, join } from 'path';
-import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync } from 'fs';
-import { spawn } from 'child_process';
+import { existsSync, readFileSync } from 'fs';
 import { pathToFileURL } from 'url';
 import {
   AUTO_CAPTURE_TAG,
@@ -32,7 +15,6 @@ import {
   extractCitedMemoryIds,
   getMemeshDirFromDbPath,
   getProjectName,
-  importFromPluginRoot,
   isAutoCaptureEnabled,
   openHookDb,
   readUpdateCheckCache,
@@ -47,24 +29,17 @@ import {
 
 const require = createRequire(import.meta.url);
 
-// Pre-load dist/core/install-channel.js for auto-update channel detection.
-// Same pattern as session-start.js: async ESM import at process init,
-// falls back to null if dist is missing (source checkout pre-build).
-let _installChannelMod = null;
+let installChannel = null;
 try {
-  const _pluginRootForInit = resolvePluginRoot(import.meta.url);
-  const _modPath = join(_pluginRootForInit, 'dist/core/install-channel.js');
-  if (existsSync(_modPath)) {
-    _installChannelMod = await import(pathToFileURL(_modPath).href);
+  const pluginRoot = resolvePluginRoot(import.meta.url);
+  const modulePath = join(pluginRoot, 'dist/core/install-channel.js');
+  if (existsSync(modulePath)) {
+    installChannel = await import(pathToFileURL(modulePath).href);
   }
-} catch { /* best-effort */ }
+} catch {
+  // Best-effort: source checkouts may not have built dist output yet.
+}
 
-/**
- * Run auto-update at Stop hook: reads cache, evaluates policy, and dispatches
- * the detached updater runner if warranted. Runs after all session work
- * completes, avoiding the TOCTOU race where install would overwrite dist/
- * mid-session.
- */
 async function runAutoUpdateAtStop() {
   try {
     const pluginRoot = resolvePluginRoot(import.meta.url);
@@ -75,11 +50,9 @@ async function runAutoUpdateAtStop() {
     const cache = readUpdateCheckCache(installedVersion);
     const policy = resolveAutoUpdatePolicy(process.env);
     const decision = decideAutoUpdateHook(installedVersion, cache, policy);
-    if (decision.run) {
-      await spawnAutoUpdate(decision.latest, _installChannelMod);
-    }
+    if (decision.run) await spawnAutoUpdate(decision.latest, installChannel);
   } catch {
-    // Best-effort — never crash the hook.
+    // Best-effort: update failures must never break session capture.
   }
 }
 
@@ -183,13 +156,9 @@ function parseTranscript(transcriptPath) {
             const text = typeof block.content === 'string'
               ? block.content
               : JSON.stringify(block.content);
-            // Same reason as the bash branch, and one more: this array is
-            // ALSO the payload `analyzeFailure` sends to the configured LLM
-            // provider. A failed request that echoes its own Authorization
-            // header — the ordinary shape of an auth error — would be stored
-            // and then transmitted off the machine. Redacted once here, at
-            // the point the text enters the process, so every downstream use
-            // inherits it.
+            // Same reason as the bash branch: a failed request may echo its
+            // own Authorization header. Redact once, where text enters the
+            // process, so every downstream use inherits it.
             errorsEncountered.push(redactSecrets(text).slice(0, 200));
           }
         }
@@ -338,33 +307,12 @@ process.stdin.on('end', async () => {
     // healthy exit, so it MUST stamp (see stampHookRunOnly).
     if (toolCallCount < 3) { stampHookRunOnly(process.env, 'session-summary'); return exit0(); }
 
-    // Hoisted to outer-try scope so the LLM failure-analysis block
-    // below (which runs AFTER db.close()) can reference it. Earlier
-    // version defined projectName inside the inner try-finally and the
-    // LLM path threw `projectName is not defined` silently — caught by
-    // the LLM try/catch but logged to stderr. Result: lesson_learned
-    // creation never actually happened in production.
     const projectName = getProjectName(cwd);
 
     // Open DB via shared helper — applies SCHEMA_SQL + status migration.
     // { fts: true } guarantees the entities_fts table exists so captureEntity()
     // can keep it in sync — session-insight memories must be FTS-recallable.
     //
-    // sqlite-vec is NOT loaded here, and used to be. The comment said it was
-    // needed "for embedding-aware recall-effectiveness tracking" — but this
-    // hook runs exactly two statements, `PRAGMA table_info(entities)` and
-    // `SELECT id FROM entities WHERE name = ?`, and `captureEntity` in
-    // _shared.js touches no vectors either. Nothing here has ever used the
-    // extension.
-    //
-    // It was not free. sqlite-vec ships its engine as a per-platform file
-    // through optionalDependencies, and on a platform it does not publish the
-    // load threw — past the `require` guard, which never fired because the JS
-    // wrapper resolves fine and the throw happens later inside
-    // `sqliteVec.load()`. Measured with the platform binary hidden: the whole
-    // Stop capture vanished (0 entities against a control run's 1) and the
-    // user got a `Require stack:` dump on stderr. An extension nobody calls
-    // was silently costing every session on those platforms its memory.
     const { db } = openHookDb(process.env, { fts: true });
     let writeFailed = false;
     try {
@@ -628,68 +576,17 @@ process.stdin.on('end', async () => {
       db.close();
     }
 
-    // ── LLM-powered failure analysis (Level 1 only) ──────────────────────
-    // Runs AFTER the hook's own DB is closed.
-    // Uses the core module's DB singleton (openDatabase/closeDatabase).
-    // Wrapped in its own try/catch — never blocks rule-based extraction.
-    if (errorsEncountered.length > 0 && filesEdited.length > 0) {
-      try {
-        // F5: derive pluginRoot strictly from this file's location.
-        // See `resolvePluginRoot` for the full reasoning.
-        const pluginRoot = resolvePluginRoot(import.meta.url);
-        const configMod = await importFromPluginRoot(pluginRoot, 'dist/core/config.js');
-        const config = configMod.readConfig();
-
-        if (config.llm) {
-          const { openDatabase, closeDatabase } = await importFromPluginRoot(pluginRoot, 'dist/db.js');
-          const { analyzeFailure } = await importFromPluginRoot(pluginRoot, 'dist/core/failure-analyzer.js');
-          const { createLesson } = await importFromPluginRoot(pluginRoot, 'dist/core/lesson-engine.js');
-
-          openDatabase();
-          try {
-            // Pass cross-provider failover chain so a stale Anthropic key
-            // doesn't silently disable Stop-hook lesson generation.
-            const lesson = await analyzeFailure(errorsEncountered, filesEdited, config.llm, { fallbacks: config.llmFallbacks });
-            if (lesson) {
-              createLesson(lesson, projectName);
-            }
-          } finally {
-            closeDatabase();
-          }
-        }
-      } catch (llmErr) {
-        // LLM analysis failed — rule-based extraction already captured the session.
-        // Log to stderr so config issues (e.g. invalid API key) are visible.
-        try { process.stderr.write(`[memesh] LLM failure analysis skipped: ${llmErr?.message || llmErr}\n`); } catch {}
-      }
-    }
-
-    // Auto-trigger dream — solves the "Insights tab is empty for users
-    // who don't know `memesh dream run` exists" problem. Throttled to
-    // once per project per 24h, gated by minimum activity threshold.
-    // Background-detached spawn so the hook exits immediately even if
-    // the LLM call takes 30-60s. See `maybeTriggerDream` for the gate
-    // logic and dream-history.json schema.
-    try {
-      const pluginRoot = resolvePluginRoot(import.meta.url);
-      const configMod = await importFromPluginRoot(pluginRoot, 'dist/core/config.js');
-      const config = configMod.readConfig();
-      maybeTriggerDream(projectName, config, pluginRoot);
-    } catch (dreamErr) {
-      try { process.stderr.write(`[memesh] dream auto-trigger skipped: ${dreamErr?.message || dreamErr}\n`); } catch {}
-    }
   } catch (err) {
     // Never crash Claude Code — leave a trace for debugging.
     //
-    // Every error is traced now. There used to be a suppression branch for a
-    // `skip-session-capture:` sentinel, thrown when sqlite-vec was missing —
-    // an extension this hook never used. The thrower is gone, so the branch
-    // could only ever hide a real error from here on.
+    // Every error is traced. A retired suppression sentinel once hid setup
+    // failures from this hook; with that branch gone, real capture errors stay
+    // visible without crashing the host session.
     try { process.stderr.write(`[memesh session-summary] ${err?.message || err}\n`); } catch {}
   }
 
-  // Dispatch auto-update if policy + cache permit. Runs after all session work
-  // so the runner cannot overwrite dist/ while peer hooks are reading it.
+  // Update only after all session work so installed files cannot change while
+  // this hook is still reading them.
   await runAutoUpdateAtStop();
 
   // Emit NOTHING on success — not `{"suppressOutput": true}`.
@@ -711,173 +608,6 @@ process.stdin.on('end', async () => {
 function exit0() {
   process.exit(0);
 }
-
-// =============================================================================
-// Dream auto-trigger (Phase 2 / Phase 3 background runner)
-// =============================================================================
-//
-// Without an automated trigger, `memesh dream` only runs when the user
-// types it into a terminal — and most users never read the docs that
-// far. Result: Insights tab stays empty and the KG accumulates 89.7%
-// orphan rate (the maintainer's own observation on this DB).
-//
-// This trigger fires at the END of every Stop hook (after rule-based
-// session capture + optional LLM failure analysis). It:
-//   1. Loads ~/.memesh/dream-history.json — a per-project record of
-//      the last dream run timestamp + outcome.
-//   2. Throttles: skip if < THROTTLE_HOURS since the project's last
-//      run, even if the previous run produced zero proposals.
-//   3. Activity gate: skip if the project has < MIN_EPISODIC episodic
-//      entities to draw from in the last WINDOW_DAYS days.
-//   4. LLM gate: skip if no LLM provider configured (Phase 2 needs
-//      Smart Mode — Phase 3 patterns same).
-//   5. Spawns `node <pluginRoot>/dist/transports/cli/cli.js dream run
-//      --project <name> --max-llm-calls 2 --window-days 14` as a
-//      detached child process. Stdout/stderr go to a per-project log
-//      under ~/.memesh/dream-runs/ so the user can `tail -f` to see
-//      progress without the hook blocking.
-//   6. Records the run start in dream-history.json BEFORE spawning so
-//      a long-running spawn doesn't get re-triggered on the next
-//      Stop within the same window.
-//
-// The spawned process inherits config from disk, including the
-// `llmFallbacks` chain wired in commit 883abd4d, so a primary
-// outage falls through to Ollama automatically.
-
-const DREAM_THROTTLE_HOURS = 24;
-const DREAM_MIN_EPISODIC = 10;
-const DREAM_WINDOW_DAYS = 14;
-const DREAM_MAX_LLM_CALLS = 2;
-const DREAM_HISTORY_BASENAME = 'dream-history.json';
-const DREAM_LOG_DIRNAME = 'dream-runs';
-
-const DREAM_EPISODIC_TYPES = [
-  'commit',
-  'session_keypoint',
-  'session-insight',
-  'workflow_checkpoint',
-  'weekly-summary',
-  'weekly_summary',
-];
-
-// Debug-trace gate. Set MEMESH_DREAM_TRIGGER_DEBUG=1 to emit a stderr
-// breadcrumb at every gate decision in maybeTriggerDream. Contract:
-//   [memesh dream-trigger] <stage>=<value>...
-// Matches one line per stage (resolve, llm-gate, throttle-gate,
-// activity-gate, history-write, spawn). Stable across releases — if
-// you rename a stage, update the matching test fixture too.
-function dreamTrigTrace(stage, fields) {
-  if (process.env.MEMESH_DREAM_TRIGGER_DEBUG !== '1') return;
-  try {
-    const parts = Object.entries(fields || {}).map(([k, v]) => {
-      if (v === undefined) return `${k}=<undef>`;
-      if (v === null) return `${k}=<null>`;
-      return `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`;
-    });
-    process.stderr.write(`[memesh dream-trigger] ${stage} ${parts.join(' ')}\n`);
-  } catch {}
-}
-
-function dreamHistoryPath() {
-  // Test isolation: tests set MEMESH_DB_PATH to a tmp file, expecting
-  // sibling state (history, logs) to land beside it. Without honouring
-  // that, real-home `~/.memesh/dream-history.json` would be polluted
-  // by every test run. Same precedence as memesh's other state files —
-  // see `getMemeshDirFromDbPath` in `_shared.js`.
-  //
-  // Windows note: on Windows under execFileSync, env vars propagate as
-  // plain strings (no canonicalisation). If a caller passed MEMESH_DIR
-  // with mixed separators (e.g. `C:/Users/.../tmp/.memesh`), join() will
-  // happily mix `/` and `\`. Node fs accepts either — the only divergence
-  // is in pure string comparisons, which we don't do here. The trace
-  // below shows the resolved value verbatim so a Windows diagnosis run
-  // can confirm what actually arrived.
-  // The helper IS the precedence (MEMESH_DB_PATH > MEMESH_DIR > home).
-  // A hand-rolled version here inverted it (MEMESH_DIR won over
-  // MEMESH_DB_PATH), so with both set, dream history landed in a different
-  // directory than every sibling state file — plus a dead home-fallback
-  // branch, since the helper always returns a string.
-  const dir = getMemeshDirFromDbPath();
-  dreamTrigTrace('resolve', {
-    src: process.env.MEMESH_DB_PATH ? 'db-path' : (process.env.MEMESH_DIR ? 'env' : 'home'),
-    MEMESH_DIR: process.env.MEMESH_DIR,
-    MEMESH_DB_PATH: process.env.MEMESH_DB_PATH,
-    dir,
-    platform: process.platform,
-  });
-  return { dir, historyFile: join(dir, DREAM_HISTORY_BASENAME), logDir: join(dir, DREAM_LOG_DIRNAME) };
-}
-
-function readDreamHistory() {
-  try {
-    const { historyFile } = dreamHistoryPath();
-    if (!existsSync(historyFile)) return {};
-    const raw = readFileSync(historyFile, 'utf8');
-    const parsed = JSON.parse(raw);
-    return (parsed && typeof parsed === 'object') ? parsed : {};
-  } catch { return {}; }
-}
-
-function writeDreamHistory(history) {
-  try {
-    const { dir, historyFile } = dreamHistoryPath();
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(historyFile, JSON.stringify(history, null, 2));
-    dreamTrigTrace('history-write', { historyFile, ok: true, projects: Object.keys(history) });
-  } catch (err) {
-    dreamTrigTrace('history-write', { ok: false, err: err?.message || String(err) });
-    try { process.stderr.write(`[memesh dream-history write] ${err?.message || err}\n`); } catch {}
-  }
-}
-
-/**
- * Count episodic entities for the given project over the configured
- * window. Only issues a SELECT, but the handle is openHookDb's ordinary
- * read-write one (it runs the schema/migration chain) — there is no
- * read-only variant on the hook side, and this call site must not stamp
- * the heartbeat (recordHookRun is per-hook-exit, never per-open).
- */
-function countEpisodicEntities(projectName) {
-  let handle;
-  try {
-    handle = openHookDb();
-    // { db, dbPath } — don't call db.prepare() on the wrapper itself (an
-    // earlier version did, and silently skipped the gate, defeating the
-    // trigger's whole purpose).
-    const db = handle.db;
-    const since = new Date(Date.now() - DREAM_WINDOW_DAYS * 86400000).toISOString();
-    const types = DREAM_EPISODIC_TYPES.map(() => '?').join(',');
-    // Project-membership is determined by the `project:<name>` tag only.
-    // The previous implementation also OR'd on `e.name LIKE 'project-%'`
-    // as a fallback for legacy entities, but that branch over-counts when
-    // two projects share a name prefix (e.g. counting `memesh` would
-    // sweep in `memesh-cloud-keypoint-*` entities). Post-v3.0 episodic
-    // entities all carry the project tag — the auto-tagger writes it on
-    // every session_keypoint / commit / session_insight / session_lesson
-    // / failure_pattern / decision_anchor — so the tag-only path is the
-    // accurate signal. See v4.2.1 CHANGELOG known-limitations note.
-    const sql = `SELECT COUNT(DISTINCT e.id) AS n
-                 FROM entities e
-                 INNER JOIN tags t ON t.entity_id = e.id AND t.tag = ?
-                 WHERE e.status = 'active'
-                   AND e.type IN (${types})
-                   AND e.created_at >= ?`;
-    const projectTag = `project:${projectName}`;
-    const row = db.prepare(sql).get(projectTag, ...DREAM_EPISODIC_TYPES, since);
-    return row?.n ?? 0;
-  } catch (err) {
-    try { process.stderr.write(`[memesh dream-trigger count] ${err?.message || err}\n`); } catch {}
-    return 0;
-  } finally {
-    try { handle?.db?.close(); } catch {}
-  }
-}
-
-/**
- * Decide whether to fire dream for `projectName` and, if so, spawn
- * the detached background runner. Pure side effect — no return value
- * used by callers.
- */
 /**
  * Attachment record types Claude Code uses to persist a hook's own output
  * into the transcript. Anything memesh injected reaches the transcript
@@ -926,89 +656,4 @@ export function stripHookEchoes(rawTranscript) {
     kept.push(line);
   }
   return kept.join('\n');
-}
-
-export function maybeTriggerDream(projectName, config, pluginRoot) {
-  dreamTrigTrace('enter', { projectName, hasLlm: Boolean(config?.llm) });
-  if (!projectName || projectName === 'unknown') {
-    dreamTrigTrace('exit', { reason: 'no-project-name', projectName });
-    return;
-  }
-
-  // Phase 2 & 3 both need a configured LLM. Without it the dreamer's
-  // first action is to push `{reason: 'no LLM configured'}` into
-  // skipped[] and exit, which would still bump our throttle clock
-  // for no value — so gate here.
-  if (!config?.llm) {
-    dreamTrigTrace('exit', { reason: 'llm-gate-fail' });
-    return;
-  }
-  dreamTrigTrace('llm-gate', { ok: true });
-
-  const history = readDreamHistory();
-  const last = history[projectName];
-  if (last?.last_run_iso) {
-    const ageMs = Date.now() - new Date(last.last_run_iso).getTime();
-    if (Number.isFinite(ageMs) && ageMs < DREAM_THROTTLE_HOURS * 3600 * 1000) {
-      dreamTrigTrace('exit', { reason: 'throttle-gate-fail', ageMs, last_run_iso: last.last_run_iso });
-      return; // throttled
-    }
-  }
-  dreamTrigTrace('throttle-gate', { ok: true, prior_last_run_iso: last?.last_run_iso });
-
-  const episodicCount = countEpisodicEntities(projectName);
-  if (episodicCount < DREAM_MIN_EPISODIC) {
-    dreamTrigTrace('exit', { reason: 'activity-gate-fail', episodicCount, threshold: DREAM_MIN_EPISODIC });
-    return;
-  }
-  dreamTrigTrace('activity-gate', { ok: true, episodicCount });
-
-  // Activity gate passed — record start BEFORE spawning so we don't
-  // re-trigger on any subsequent Stop within the window even if the
-  // child takes 30-60s.
-  history[projectName] = {
-    last_run_iso: new Date().toISOString(),
-    last_episodic_count: episodicCount,
-    last_window_days: DREAM_WINDOW_DAYS,
-  };
-  writeDreamHistory(history);
-
-  // Spawn detached so the hook exits immediately. Stdio routes to a
-  // per-project log file so the user can inspect dream output without
-  // the hook blocking on the LLM call.
-  try {
-    const { dir, logDir } = dreamHistoryPath();
-    mkdirSync(logDir, { recursive: true });
-    const safeProj = projectName.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 64);
-    const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const logFile = join(logDir, `${safeProj}-${ts}.log`);
-
-    // Append a header so a tail -f shows context for the run.
-    appendFileSync(logFile, `[memesh dream] ${new Date().toISOString()} project=${projectName} episodic_count=${episodicCount} window=${DREAM_WINDOW_DAYS}d max_llm_calls=${DREAM_MAX_LLM_CALLS}\n`);
-
-    const cliPath = join(pluginRoot, 'dist/transports/cli/cli.js');
-    if (!existsSync(cliPath)) {
-      appendFileSync(logFile, `[memesh dream] cli.js missing at ${cliPath}, skipping\n`);
-      return;
-    }
-
-    const args = [
-      cliPath, 'dream', 'run',
-      '--project', projectName,
-      '--max-llm-calls', String(DREAM_MAX_LLM_CALLS),
-      '--window-days', String(DREAM_WINDOW_DAYS),
-    ];
-
-    const logFd = require('fs').openSync(logFile, 'a');
-    const child = spawn(process.execPath, args, {
-      detached: true,
-      stdio: ['ignore', logFd, logFd],
-      env: { ...process.env, MEMESH_DIR: dir },
-    });
-    child.unref();
-    dreamTrigTrace('spawn', { ok: true, pid: child.pid, logFile, MEMESH_DIR: dir });
-  } catch (err) {
-    dreamTrigTrace('spawn', { ok: false, err: err?.message || String(err) });
-    try { process.stderr.write(`[memesh dream-trigger spawn] ${err?.message || err}\n`); } catch {}
-  }
 }

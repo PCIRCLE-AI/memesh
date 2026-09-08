@@ -6,20 +6,6 @@ import { DERIVED_RELATION_TYPES } from '../src/core/kg-backfill.js';
 
 const i18nSource = readFileSync('dashboard/src/lib/i18n.ts', 'utf8');
 
-function parseTranslationKeys(): Map<string, Set<string>> {
-  const locales = new Map<string, Set<string>>();
-  const localeBlocks = i18nSource.matchAll(/\n {2}('[^']+'|\w+): \{([\s\S]*?)\n {2}\}/g);
-
-  for (const match of localeBlocks) {
-    const locale = match[1].replaceAll("'", '');
-    const body = match[2];
-    const keys = new Set([...body.matchAll(/'([^']+)':/g)].map((keyMatch) => keyMatch[1]));
-    locales.set(locale, keys);
-  }
-
-  return locales;
-}
-
 /**
  * Every locale's key AND value, so a test can compare what a locale SAYS and
  * not only which keys it declares.
@@ -36,13 +22,19 @@ function parseTranslationEntries(): Map<string, Map<string, string>> {
   for (const match of localeBlocks) {
     const locale = match[1].replaceAll("'", '');
     const entries = new Map<string, string>();
-    for (const entry of match[2].matchAll(/'([^']+)': ('(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`),?\n/g)) {
+    for (const entry of match[2].matchAll(/'([^']+)': ('(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`),?(?:\n|$)/g)) {
       entries.set(entry[1], entry[2].slice(1, -1));
     }
     locales.set(locale, entries);
   }
 
   return locales;
+}
+
+function parseTranslationKeys(): Map<string, Set<string>> {
+  return new Map(
+    [...parseTranslationEntries()].map(([locale, entries]) => [locale, new Set(entries.keys())]),
+  );
 }
 
 function parseNamedLocales(): string[] {
@@ -77,36 +69,38 @@ describe('dashboard i18n', () => {
     }
   });
 
-  it('uses the memory-organization heading consistently in every locale', () => {
+  it('uses the staged-proposal heading consistently in every locale', () => {
     const entries = parseTranslationEntries();
     const expected = new Map([
-      ['en', 'Memory organization suggestions'],
-      ['zh-TW', '記憶整理建議'],
-      ['zh-CN', '记忆整理建议'],
-      ['ja', 'メモリ整理の提案'],
-      ['ko', '메모리 정리 제안'],
-      ['pt', 'Sugestões de organização da memória'],
-      ['fr', 'Suggestions d’organisation de la mémoire'],
-      ['de', 'Vorschläge zur Organisation der Erinnerungen'],
-      ['vi', 'Đề xuất sắp xếp bộ nhớ'],
-      ['es', 'Sugerencias para organizar la memoria'],
-      ['th', 'คำแนะนำในการจัดระเบียบความจำ'],
+      ['en', 'Staged memory proposals'],
+      ['zh-TW', '已暫存的記憶提案'],
+      ['zh-CN', '已暂存的记忆提案'],
+      ['ja', 'ステージ済みメモリ提案'],
+      ['ko', '스테이징된 메모리 제안'],
+      ['pt', 'Propostas de memória preparadas'],
+      ['fr', 'Propositions mémoire préparées'],
+      ['de', 'Bereitgestellte Memory-Vorschläge'],
+      ['vi', 'Đề xuất bộ nhớ đã được tạm lưu'],
+      ['es', 'Propuestas de memoria preparadas'],
+      ['th', 'ข้อเสนอความจำที่เตรียมไว้'],
     ]);
 
     expect([...entries.keys()].sort()).toEqual([...expected.keys()].sort());
     for (const [locale, title] of expected) {
-      expect(entries.get(locale)?.get('insights.title'), locale).toBe(title);
+      expect(entries.get(locale)?.get('insights.reviewTitle'), locale).toBe(title);
     }
   });
 
   it('keeps every locale in key parity with English', () => {
-    const locales = parseTranslationKeys();
-    const englishKeys = locales.get('en');
-    expect(englishKeys).toBeDefined();
+    const locales = parseTranslationEntries();
+    const english = locales.get('en');
+    expect(english).toBeDefined();
+    const englishKeys = new Set(english!.keys());
 
-    for (const [locale, keys] of locales) {
-      const missing = [...englishKeys!].filter((key) => !keys.has(key));
-      const extra = [...keys].filter((key) => !englishKeys!.has(key));
+    for (const [locale, entries] of locales) {
+      const keys = new Set(entries.keys());
+      const missing = [...englishKeys].filter((key) => !keys.has(key));
+      const extra = [...keys].filter((key) => !englishKeys.has(key));
 
       expect({ locale, missing, extra }).toEqual({ locale, missing: [], extra: [] });
     }
@@ -144,7 +138,7 @@ describe('dashboard i18n', () => {
   });
 
   it('has labels for every translated locale', () => {
-    const translatedLocales = [...parseTranslationKeys().keys()].sort();
+    const translatedLocales = [...parseTranslationEntries().keys()].sort();
     const namedLocales = parseNamedLocales().sort();
 
     expect(namedLocales).toEqual(translatedLocales);
@@ -321,6 +315,22 @@ describe('dashboard i18n', () => {
       expectAllPresent(['pending', 'applied', 'rejected', 'all'].map((f) => `insights.filter.${f}`));
     });
 
+    // HomeTab: t(`home.nextAction.${kind}.*`) — derive the complete finite
+    // set from NextActionKind so a new branch cannot render raw dotted keys.
+    it('covers every home next-action kind', () => {
+      const homeSource = readFileSync('dashboard/src/components/HomeTab.tsx', 'utf8');
+      const union = homeSource.match(/type NextActionKind = ([^;]+);/);
+      expect(union, 'HomeTab stopped declaring its finite NextActionKind set').not.toBeNull();
+      const kinds = [...union![1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
+      expect(kinds.sort()).toEqual(['empty', 'healthy', 'insights', 'loading', 'unavailable']);
+      expectAllPresent(kinds.flatMap((kind) => [
+        `home.nextAction.${kind}.title`,
+        `home.nextAction.${kind}.why`,
+        `home.nextAction.${kind}.result`,
+      ]));
+      expectAllPresent(['empty', 'insights', 'unavailable'].map((kind) => `home.nextAction.${kind}.action`));
+    });
+
     // typeLabel(): t(`type.${slug}`) — entity types are open server data
     // with a sanctioned raw-slug fallback, so "⊆ catalogue" cannot hold for
     // arbitrary input. What must hold: every type THIS CODEBASE produces or
@@ -383,33 +393,6 @@ describe('dashboard i18n', () => {
       expectAllPresent([0, 1, 2, 3, 4, 5, 6].map((n) => `patterns.day.${n}`));
     });
 
-    // LlmTelemetryPanel: t(`telemetry.flow.${flow}`) — flows are the
-    // literals passed to recordTelemetry() across src/core.
-    it('covers every telemetry flow recorded in src/core', () => {
-      const flows = new Set<string>();
-      for (const f of readdirSync('src/core')) {
-        if (!f.endsWith('.ts')) continue;
-        const src = readFileSync(`src/core/${f}`, 'utf8');
-        for (const m of src.matchAll(/recordTelemetry\([^)]*\{\s*flow:\s*'([\w-]+)'/g)) flows.add(m[1]);
-      }
-      expect(flows.size).toBeGreaterThanOrEqual(5);
-      expectAllPresent([...flows].map((f) => `telemetry.flow.${f}`));
-    });
-
-    // LlmTelemetryPanel: t(`telemetry.errorClass.${cls}`) — classes are the
-    // LLMErrorClass union in llm-client.ts.
-    it('covers every LLM error class', () => {
-      // Strip line comments first: the union annotates each member with a
-      // comment that itself contains a `;`, which would end a lazy match
-      // after the first member.
-      const clientSrc = readFileSync('src/core/llm-client.ts', 'utf8').replace(/\/\/[^\n]*/g, '');
-      const unionMatch = clientSrc.match(/export type LLMErrorClass =([\s\S]*?);/);
-      expect(unionMatch).not.toBeNull();
-      const classes = [...unionMatch![1].matchAll(/\|\s*'(\w+)'/g)].map((m) => m[1]);
-      expect(classes.length).toBeGreaterThanOrEqual(7);
-      expectAllPresent(classes.map((c) => `telemetry.errorClass.${c}`));
-    });
-
     // LessonCards (SeverityBadge, extracted from the retired LessonsTab):
     // t(`lessons.severity.${severity}`) — severities are the severity:* tags
     // severityOf() recognises.
@@ -460,14 +443,6 @@ describe('dashboard i18n', () => {
       expectAllPresent(codes.map((c) => `httpError.${c}`));
     });
 
-    // SettingsTab: t(`settings.testError.${code}`) — the probe codes the
-    // llm-validator attaches to POST /v1/config/test failures. `http_<status>`
-    // is a family; it is translated through the single parameterised
-    // settings.testError.http entry.
-    it('covers every config-test probe code', () => {
-      expectAllPresent(['auth', 'network', 'no_models', 'bad_host', 'unknown'].map((c) => `settings.testError.${c}`));
-      expectAllPresent(['settings.testError.http']);
-    });
   });
 
   // Doctor messages reach the dashboard as server data, so the static-key
@@ -489,5 +464,58 @@ describe('dashboard i18n', () => {
     expect(englishKeys).toBeDefined();
     const missing = [...new Set(codes)].filter((code) => !englishKeys!.has(`doctor.msg.${code}.summary`));
     expect(missing, 'warn/fail variants with no translation catalogue entry').toEqual([]);
+  });
+
+  it('keeps the retired-config warning parameters complete in every locale', () => {
+    const entries = parseTranslationEntries();
+    for (const [locale, values] of entries) {
+      const summary = values.get('doctor.msg.config-parse.retired-settings.summary');
+      const fix = values.get('doctor.msg.config-parse.retired-settings.fix');
+      expect(summary, `${locale}: missing retired-config summary`).toBeDefined();
+      expect(fix, `${locale}: missing retired-config fix`).toBeDefined();
+      expect([...summary!.matchAll(/\{([a-z]+)\}/g)].map((match) => match[1]).sort(), locale)
+        .toEqual(['count', 'keys', 'path']);
+      expect([...fix!.matchAll(/\{([a-z]+)\}/g)].map((match) => match[1]).sort(), locale)
+        .toEqual(['path']);
+    }
+  });
+
+  it('does not retain translations for removed live-chat doctor checks', () => {
+    const retiredKeys = [
+      'doctor.label.llm_probe',
+      'doctor.msg.llm.unreachable.summary',
+      'doctor.msg.llm.unreachable.fix',
+      'doctor.msg.llm.threw.summary',
+      'doctor.msg.llm.threw.fix',
+    ];
+
+    for (const [locale, values] of parseTranslationEntries()) {
+      expect(retiredKeys.filter((key) => values.has(key)), `${locale}: unreachable live-chat doctor translations`).toEqual([]);
+    }
+  });
+
+  it('does not retain retired provider, vector, or telemetry catalogue paths', () => {
+    const retiredPrefixes = [
+      'telemetry.',
+      'settings.llm',
+      'settings.provider',
+      'settings.fallback',
+      'settings.embedding',
+      'settings.vector',
+      'home.nextAction.reindex.',
+      'home.nextAction.llm.',
+      'httpError.llm.',
+      'doctor.label.embeddings',
+      'doctor.label.vector',
+      'doctor.label.llm',
+      'doctor.msg.embeddings.',
+      'doctor.msg.vector.',
+      'doctor.msg.llm.',
+    ];
+
+    for (const [locale, keys] of parseTranslationKeys()) {
+      const retired = [...keys].filter((key) => retiredPrefixes.some((prefix) => key.startsWith(prefix)));
+      expect(retired, `${locale}: retired provider/vector/telemetry translations`).toEqual([]);
+    }
   });
 });

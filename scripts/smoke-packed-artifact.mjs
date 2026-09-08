@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -15,8 +17,7 @@ const repoRoot = process.cwd();
 // This used to extract into `<repoRoot>/tmp/pack-smoke`, so when the import
 // check below loaded the packaged `dist/index.js`, every bare specifier
 // resolved by walking UP into the repo's own `node_modules` — devDependencies
-// included. Verified: `sqlite-vec` resolved to the repo tree. The gate
-// therefore could not see a missing runtime dependency. It also printed
+// included. The gate therefore could not see a missing runtime dependency. It also printed
 // "installs" for an install that never happened.
 //
 // In os.tmpdir() nothing resolves upward, so the install below is the only
@@ -72,8 +73,8 @@ const requiredFiles = [
   'package.json',
   '.claude-plugin/plugin.json',
   '.codex-plugin/plugin.json',
-  '.codex-plugin/mcp.json',
   '.claude-plugin/mcp.json',
+  '.codex-plugin/mcp.json',
   'hooks/hooks.json',
   // Dist — core engine
   'dist/index.js',
@@ -83,11 +84,9 @@ const requiredFiles = [
   'dist/core/types.js',
   'dist/core/config.js',
   'dist/core/scoring.js',
-  'dist/core/failure-analyzer.js',
   'dist/core/lesson-engine.js',
   'dist/core/serializer.js',
   'dist/core/patterns.js',
-  'dist/core/embedder.js',
   'dist/core/product-improvements.js',
   'dist/core/agent-messaging.js',
   'dist/core/agent-router.js',
@@ -95,6 +94,8 @@ const requiredFiles = [
   'dist/transports/schemas.js',
   'dist/transports/agent-messaging.js',
   'dist/mcp/server.js',
+  'dist/mcp/server.js.map',
+  'dist/mcp/THIRD_PARTY_NOTICES.txt',
   'dist/transports/mcp/handlers.js',
   'dist/transports/http/server.js',
   'dist/transports/cli/cli.js',
@@ -105,6 +106,7 @@ const requiredFiles = [
   'dist/host-runtime/router-client.js',
   'dist/host-runtime/config.js',
   'dist/host-runtime/codex.js',
+  'dist/host-runtime/codex-session.js',
   'dist/host-runtime/claude.js',
   'dist/host-runtime/acp.js',
   // Dist — dashboard assets
@@ -132,6 +134,30 @@ for (const relativePath of requiredFiles) {
     `Missing packaged file: ${relativePath}`
   );
 }
+
+const bundledServer = fs.readFileSync(path.join(packageDir, 'dist/mcp/server.js'));
+const bundledSourceMap = fs.readFileSync(path.join(packageDir, 'dist/mcp/server.js.map'));
+const bundledNotice = fs.readFileSync(
+  path.join(packageDir, 'dist/mcp/THIRD_PARTY_NOTICES.txt'),
+  'utf8',
+);
+const declaredBundleDigest = bundledNotice.match(/^Bundle SHA-256: ([0-9a-f]{64})$/m)?.[1];
+const declaredSourceMapDigest = bundledNotice.match(/^Source map SHA-256: ([0-9a-f]{64})$/m)?.[1];
+assert.equal(
+  declaredBundleDigest,
+  createHash('sha256').update(bundledServer).digest('hex'),
+  'third-party notice is not bound to the packaged MCP bundle',
+);
+assert.equal(
+  declaredSourceMapDigest,
+  createHash('sha256').update(bundledSourceMap).digest('hex'),
+  'third-party notice is not bound to the packaged MCP source map',
+);
+assert.equal(
+  Object.hasOwn(JSON.parse(bundledSourceMap.toString('utf8')), 'sourcesContent'),
+  false,
+  'packaged MCP source map embeds source bodies instead of following the repository map policy',
+);
 
 // Every hook the plugin manifest can invoke, and every command package.json
 // declares, has to be in the tarball AND be runnable. Both lists are derived
@@ -199,13 +225,108 @@ assert.equal(packagedJson.version, JSON.parse(fs.readFileSync(path.join(repoRoot
 
 const codexPlugin = JSON.parse(fs.readFileSync(path.join(packageDir, '.codex-plugin', 'plugin.json'), 'utf8'));
 assert.equal(codexPlugin.version, packagedJson.version);
-assert.equal(codexPlugin.mcpServers, './.codex-plugin/mcp.json');
-const codexMcp = JSON.parse(fs.readFileSync(path.join(packageDir, '.codex-plugin', 'mcp.json'), 'utf8'));
-assert.deepEqual(codexMcp.memesh, {
+assert.equal(
+  codexPlugin.mcpServers,
+  './.codex-plugin/mcp.json',
+  'Codex plugin manifest must declare the bundled MCP manifest',
+);
+const codexMcpManifestPath = codexPlugin.mcpServers.slice(2);
+const codexMcpManifest = JSON.parse(
+  fs.readFileSync(path.join(packageDir, codexMcpManifestPath), 'utf8'),
+);
+assert.deepEqual(
+  Object.keys(codexMcpManifest),
+  ['mcpServers'],
+  'Codex MCP manifest must use the loader mcpServers wrapper, not a direct server map',
+);
+const codexMcp = codexMcpManifest.mcpServers?.memesh;
+assert.deepEqual(codexMcp, {
   command: 'node',
   args: ['./dist/mcp/server.js'],
   cwd: '.',
-}, 'Codex plugin manifest must start the packaged MCP server from its plugin root');
+});
+assert.equal(
+  codexMcp.args[0].replace(/^\.\//, ''),
+  mcpTarget,
+  'Codex and Claude plugin manifests must resolve to the same bundled MCP server',
+);
+
+// A plugin cache is the raw extracted package: no npm install runs inside it.
+// Start exactly what the Codex manifests declare before creating the installed
+// consumer below, so a server that only works by walking into node_modules
+// cannot pass this gate.
+assert.equal(
+  fs.existsSync(path.join(packageDir, 'node_modules')),
+  false,
+  'raw extracted plugin cache unexpectedly contains node_modules',
+);
+const rawProtocolHome = path.join(smokeDir, 'raw-protocol-home');
+const rawProtocolMemeshDir = path.join(rawProtocolHome, '.memesh');
+fs.mkdirSync(rawProtocolMemeshDir, { recursive: true });
+const rawProtocolDbPath = path.join(rawProtocolMemeshDir, 'knowledge-graph.db');
+const rawOsEnvKeys = ['PATH', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'ComSpec', 'PATHEXT', 'WINDIR'];
+const rawBaseEnv = Object.fromEntries(
+  rawOsEnvKeys.flatMap((key) => (
+    typeof process.env[key] === 'string' ? [[key, process.env[key]]] : []
+  )),
+);
+assert.equal('NODE_PATH' in rawBaseEnv, false, 'raw plugin cache inherited NODE_PATH');
+assert.equal('NODE_OPTIONS' in rawBaseEnv, false, 'raw plugin cache inherited NODE_OPTIONS');
+assert.equal(
+  Object.keys(rawBaseEnv).some((key) => /(?:KEY|TOKEN|SECRET|SOCKET)/i.test(key)),
+  false,
+  'raw plugin cache inherited a credential or agent-socket variable',
+);
+const clientModuleUrl = pathToFileURL(
+  path.join(repoRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'esm', 'client', 'index.js'),
+).href;
+const transportModuleUrl = pathToFileURL(
+  path.join(repoRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'esm', 'client', 'stdio.js'),
+).href;
+execFileSync(
+  process.execPath,
+  [
+    '--input-type=module',
+    '-e',
+    `import assert from 'node:assert/strict';
+import { Client } from ${JSON.stringify(clientModuleUrl)};
+import { StdioClientTransport } from ${JSON.stringify(transportModuleUrl)};
+
+const transport = new StdioClientTransport({
+  command: ${JSON.stringify(codexMcp.command)},
+  args: ${JSON.stringify(codexMcp.args)},
+  cwd: ${JSON.stringify(path.resolve(packageDir, codexMcp.cwd))},
+  env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false' },
+});
+const client = new Client({ name: 'memesh-raw-plugin-cache-smoke', version: '1.0.0' });
+try {
+  await client.connect(transport);
+  assert.deepEqual(
+    client.getServerVersion(),
+    { name: 'memesh', version: ${JSON.stringify(packagedJson.version)} },
+    'raw plugin cache initialize returned the wrong server identity/version',
+  );
+  const listed = await client.listTools();
+  assert.deepEqual(
+    listed.tools.map((tool) => tool.name).sort(),
+    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'recall', 'remember', 'task_state', 'user_patterns', 'work_package'],
+    'raw plugin cache exposed an unexpected tool surface',
+  );
+} finally {
+  await client.close();
+}
+`,
+  ],
+  {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: buildIsolatedRuntimeEnv(rawBaseEnv, {
+      runtimeHome: rawProtocolHome,
+      memeshDir: rawProtocolMemeshDir,
+      dbPath: rawProtocolDbPath,
+    }),
+  },
+);
 
 // Install the way a consumer does — production deps only, scripts ON so the
 // native bindings actually build — into a project that has no relationship to
@@ -229,12 +350,8 @@ assert.ok(
   'the packed tarball did not install — nothing was imported'
 );
 
-// `openDatabase()` below gets an explicit path, so the DB file itself cannot
-// leak to an ambient location — but opening it also runs
-// `resolveEmbeddingDimension()`, which reads config.json through
-// `memeshDir()` (HOME/MEMESH_DIR), a path independent of the explicit DB
-// path. Without an isolated HOME/MEMESH_DIR here, an ambient MEMESH_DIR
-// would still hand this step the maintainer's real embedder/LLM config.
+// Keep every path inside the smoke directory even though openDatabase receives
+// an explicit file, so future startup reads cannot reach owner state.
 const importHome = path.join(smokeDir, 'import-home');
 const importMemeshDir = path.join(importHome, '.memesh');
 fs.mkdirSync(importMemeshDir, { recursive: true });
@@ -253,10 +370,12 @@ if (typeof pkg.KnowledgeGraph !== 'function') {
   throw new Error('Packaged module missing KnowledgeGraph export');
 }
 // Exercise the runtime path, not just the export shape: opening a database
-// loads sqlite-vec, which is where a dependency that was
-// moved out of \`dependencies\` actually bites.
+// must create the FTS-backed schema from the installed package.
 const db = pkg.openDatabase(${JSON.stringify(importDbPath)});
 if (!db) throw new Error('openDatabase returned nothing');
+const fts = db.prepare("SELECT name FROM sqlite_master WHERE name = 'entities_fts'").get();
+if (!fts) throw new Error('packaged database did not create entities_fts');
+pkg.closeDatabase();
 `,
   ],
   {
@@ -304,7 +423,7 @@ try {
   const names = listed.tools.map((tool) => tool.name).sort();
   assert.deepEqual(
     names,
-    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'recall', 'remember', 'task_state', 'user_patterns'],
+    ['briefing', 'export', 'forget', 'import', 'improvement', 'learn', 'message', 'recall', 'remember', 'task_state', 'user_patterns', 'work_package'],
     'installed MCP server exposed an unexpected tool surface'
   );
 
@@ -328,6 +447,43 @@ try {
     JSON.stringify(recalled),
     /packaged-protocol-smoke/,
     'recall did not return the memory written through MCP'
+  );
+
+  const learned = await client.callTool({
+    name: 'learn',
+    arguments: {
+      error: 'Packaged MCP learn contract failed',
+      fix: 'Use the documented snake_case field',
+      root_cause: 'The caller used a field name outside the strict MCP schema',
+      prevention: 'Keep runtime schemas, exported schemas, and examples in parity',
+      severity: 'major',
+    },
+  });
+  assert.notEqual(learned.isError, true, 'learn rejected the documented root_cause field');
+  const recalledLesson = await client.callTool({
+    name: 'recall',
+    arguments: { query: 'Packaged MCP learn contract failed', limit: 5 },
+  });
+  assert.notEqual(recalledLesson.isError, true, 'recall rejected the packaged learn readback');
+  assert.match(
+    JSON.stringify(recalledLesson),
+    /caller used a field name outside the strict MCP schema/,
+    'learn did not persist the documented root_cause value'
+  );
+
+  const camelCaseLearn = await client.callTool({
+    name: 'learn',
+    arguments: {
+      error: 'This request must be rejected',
+      fix: 'Do not silently drop unknown fields',
+      rootCause: 'Wrong public field name',
+    },
+  });
+  assert.equal(camelCaseLearn.isError, true, 'learn silently accepted the undocumented rootCause field');
+  assert.match(
+    JSON.stringify(camelCaseLearn.content),
+    /rootCause|Unrecognized key/,
+    'learn rejected rootCause without identifying the invalid request'
   );
 
   const sentMessage = await client.callTool({
@@ -456,6 +612,47 @@ async function waitFor(condition, description, timeoutMs = 5_000) {
   throw new Error(`Timed out waiting for ${description}`);
 }
 
+async function stopChild(child, timeoutMs = 5_000) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise((resolve) => child.once('exit', resolve));
+  child.kill('SIGTERM');
+  const stopped = await Promise.race([
+    exited.then(() => true),
+    new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+  ]);
+  if (stopped) return;
+  child.kill('SIGKILL');
+  await Promise.race([
+    exited,
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
+async function terminateCodexCompanion(statePath) {
+  if (!statePath || !fs.existsSync(statePath)) return;
+  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+  assert.equal(typeof state.token, 'string', 'packaged Codex companion state omitted its control token');
+  assert.equal(typeof state.control_socket, 'string', 'packaged Codex companion state omitted its control socket');
+  await new Promise((resolve, reject) => {
+    const socket = net.createConnection(state.control_socket);
+    let response = '';
+    socket.setEncoding('utf8');
+    socket.setTimeout(2_000, () => socket.destroy(new Error('Timed out stopping packaged Codex companion.')));
+    socket.on('data', (chunk) => { response += chunk; });
+    socket.once('error', reject);
+    socket.once('close', (hadError) => {
+      if (hadError) return;
+      if (response.trim() !== 'terminated') {
+        reject(new Error(`Packaged Codex companion rejected termination: ${response.trim()}`));
+        return;
+      }
+      resolve();
+    });
+    socket.once('connect', () => socket.end(`${JSON.stringify({ action: 'terminate', token: state.token })}\n`));
+  });
+  await waitFor(() => !fs.existsSync(statePath), 'the packaged Codex companion lifecycle state to disappear');
+}
+
 function installedBin(name) {
   return path.join(consumerDir, 'node_modules', '.bin', process.platform === 'win32' ? `${name}.cmd` : name);
 }
@@ -493,8 +690,10 @@ if (process.platform !== 'win32') {
   const nativeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-'));
   const nativeDir = path.join(nativeHome, '.memesh');
   const nativeDbPath = path.join(nativeDir, 'knowledge-graph.db');
-  const routerSocket = path.join(nativeDir, 'router.sock');
-  const routerToken = path.join(nativeDir, 'router.token');
+  // These are the automatic Codex SessionStart companion defaults, so the
+  // installed companion and the installed router meet without host config.
+  const routerSocket = path.join(nativeDir, 'agent-router-v2.sock');
+  const routerToken = path.join(nativeDir, 'agent-router.token');
   const fakeBin = path.join(nativeHome, 'bin');
   const queueCapture = path.join(nativeHome, 'codex-queue.json');
   fs.mkdirSync(fakeBin, { recursive: true });
@@ -540,6 +739,11 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
   router.once('exit', (code, signal) => { routerExit = { code, signal }; });
 
   let host;
+  let companionA;
+  let companionB;
+  const sessionA = '11a041b4-5c67-75b3-9505-4e33d7942b8e';
+  const sessionB = '22a041b4-5c67-75b3-9505-4e33d7942b8e';
+  const companionState = (sessionId) => path.join(nativeDir, 'runtime', 'codex-session', `${sessionId}.json`);
   try {
     await waitFor(
       () => fs.existsSync(routerSocket) || routerExit !== null,
@@ -746,9 +950,156 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
       'message', 'storage', 'report', '--cutoff', '2026-01-01T00:00:00.000Z',
     ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' }));
     assert.equal(afterQuota.message_count, 2, 'installed quota rejection left a partial message');
+
+    // The queue/host stub above proves the adapter contract in isolation. The
+    // two children below are the actual packaged Codex SessionStart companion
+    // runtime: each owns a distinct exact-session identity on this router.
+    const startCompanion = (sessionId) => {
+      const child = spawn(process.execPath, [path.join(installedRoot, 'dist', 'host-runtime', 'codex-session.js')], {
+        cwd: consumerDir,
+        env: { ...nativeEnv, PLUGIN_ROOT: installedRoot },
+        stdio: ['pipe', 'ignore', 'pipe'],
+      });
+      let stderr = '';
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+      child.stdin.end(JSON.stringify({
+        hook_event_name: 'SessionStart',
+        source: 'startup',
+        session_id: sessionId,
+        cwd: consumerDir,
+      }));
+      return { child, stderr: () => stderr };
+    };
+    companionA = startCompanion(sessionA);
+    companionB = startCompanion(sessionB);
+    await Promise.all([
+      waitFor(() => fs.existsSync(companionState(sessionA)), 'the first installed Codex companion lifecycle state'),
+      waitFor(() => fs.existsSync(companionState(sessionB)), 'the second installed Codex companion lifecycle state'),
+      waitFor(() => companionA.child.exitCode !== null, 'the first installed Codex SessionStart launcher to exit'),
+      waitFor(() => companionB.child.exitCode !== null, 'the second installed Codex SessionStart launcher to exit'),
+    ]);
+    assert.equal(companionA.child.exitCode, 0, `first installed Codex SessionStart launcher failed: ${companionA.stderr()}`);
+    assert.equal(companionB.child.exitCode, 0, `second installed Codex SessionStart launcher failed: ${companionB.stderr()}`);
+
+    // The earlier CLI dispatch has already been fully asserted, so a fresh
+    // capture makes this exchange's exact recipient observable by itself.
+    fs.unlinkSync(queueCapture);
+    const mcpExchange = JSON.parse(execFileSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `import assert from 'node:assert/strict';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { getProjectName } from ${JSON.stringify(pathToFileURL(path.join(installedRoot, 'dist', 'core', 'paths.js')).href)};
+
+const project = getProjectName(${JSON.stringify(consumerDir)});
+const sessionA = ${JSON.stringify(sessionA)};
+const sessionB = ${JSON.stringify(sessionB)};
+const expected = [
+  { session_id: sessionA, principal_id: 'codex-thread-' + sessionA, project },
+  { session_id: sessionB, principal_id: 'codex-thread-' + sessionB, project },
+];
+const serverParameters = {
+  command: process.execPath,
+  args: [${JSON.stringify(protocolServer)}],
+  env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false' },
+};
+const transportA = new StdioClientTransport(serverParameters);
+const transportB = new StdioClientTransport(serverParameters);
+const clientA = new Client({ name: 'packaged-native-mcp-client-a', version: '1.0.0' });
+const clientB = new Client({ name: 'packaged-native-mcp-client-b', version: '1.0.0' });
+
+async function messageJson(client, arguments_, label) {
+  const result = await client.callTool({ name: 'message', arguments: arguments_ });
+  assert.notEqual(result.isError, true, label + ' returned an MCP error: ' + JSON.stringify(result.content));
+  const text = result.content.find((block) => block.type === 'text')?.text;
+  assert.equal(typeof text, 'string', label + ' returned no JSON text');
+  return JSON.parse(text);
+}
+
+function hasExpectedCards(result) {
+  const cards = Array.isArray(result.cards) ? result.cards.filter((card) => card?.host_kind === 'codex') : [];
+  return expected.every((wanted) => cards.some((card) => (
+    card.session_id === wanted.session_id
+    && card.principal_id === wanted.principal_id
+    && card.project === wanted.project
+  )));
+}
+
+try {
+  await Promise.all([clientA.connect(transportA), clientB.connect(transportB)]);
+  assert.ok(Number.isInteger(transportA.pid) && transportA.pid > 0, 'MCP client A did not start a server process');
+  assert.ok(Number.isInteger(transportB.pid) && transportB.pid > 0, 'MCP client B did not start a server process');
+  assert.notEqual(transportA.pid, transportB.pid, 'MCP clients unexpectedly share one server process');
+
+  let discoveredA;
+  let discoveredB;
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    [discoveredA, discoveredB] = await Promise.all([
+      messageJson(clientA, { action: 'discover', project, limit: 50 }, 'MCP client A discover'),
+      messageJson(clientB, { action: 'discover', project, limit: 50 }, 'MCP client B discover'),
+    ]);
+    if (hasExpectedCards(discoveredA) && hasExpectedCards(discoveredB)) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.ok(hasExpectedCards(discoveredA), 'MCP client A could not discover both Codex SessionStart companions');
+  assert.ok(hasExpectedCards(discoveredB), 'MCP client B could not discover both Codex SessionStart companions');
+
+  const payload = { marker: 'packaged-native-mcp-a-to-b' };
+  const sent = await messageJson(clientA, {
+    action: 'send', project, sender: 'codex-thread-' + sessionA,
+    recipient: sessionB, target_kind: 'session', idempotency_key: 'packaged-native-mcp-a-to-b',
+    payload, content_type: 'application/json', privacy: 'private',
+  }, 'MCP client A exact-session send');
+  assert.equal(sent.native_delivery?.status, 'native_accepted', 'MCP exact-session send returned before native acceptance');
+  assert.equal(sent.native_delivery?.adapter_kind, 'codex-cli-queue', 'MCP exact-session send used the wrong native adapter');
+  assert.equal(sent.recipient, sessionB, 'MCP exact-session send returned a different recipient');
+
+  const fetched = await messageJson(clientB, {
+    action: 'fetch', project, recipient: sessionB, target_kind: 'session', message_id: sent.message_id,
+  }, 'MCP client B exact-session fetch');
+  assert.deepEqual(fetched.payload, payload, 'MCP client B fetched a payload different from client A sent');
+
+  const denied = await clientB.callTool({ name: 'message', arguments: {
+    action: 'fetch', project, recipient: sessionA, target_kind: 'session', message_id: sent.message_id,
+  }});
+  assert.equal(denied.isError, true, 'MCP client B cross-session fetch was accepted');
+  assert.doesNotMatch(JSON.stringify(denied), /packaged-native-mcp-a-to-b/, 'cross-session fetch leaked the private payload');
+
+  process.stdout.write(JSON.stringify({ project, sender: sent.sender, recipient: sessionB, message_id: sent.message_id, delivery_id: sent.delivery_id, payload }) + '\\n');
+} finally {
+  await Promise.all([clientA.close(), clientB.close()]);
+}
+`,
+      ],
+      { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' },
+    ));
+    await waitFor(() => fs.existsSync(queueCapture), 'MCP A-to-B native queue dispatch');
+    const mcpQueued = JSON.parse(fs.readFileSync(queueCapture, 'utf8'));
+    assert.equal(mcpQueued.thread_id, sessionB, 'MCP A-to-B queue dispatch targeted the wrong Codex session');
+    assert.equal(mcpQueued.message.delivery_id, mcpExchange.delivery_id, 'MCP A-to-B queue dispatch used the wrong delivery');
+    assert.deepEqual(mcpQueued.message.envelope.payload, mcpExchange.payload, 'MCP A-to-B queue dispatch lost the exact payload');
+    const mcpAccepted = readHostAcceptance(nativeDbPath, mcpExchange.delivery_id);
+    assert.equal(mcpAccepted.attempts, 1, 'MCP A-to-B dispatch did not persist exactly one attempt');
+    assert.equal(mcpAccepted.acceptance?.adapter_kind, 'codex-cli-queue', 'MCP A-to-B dispatch did not persist host_accept');
+    const mcpReceipts = JSON.parse(execFileSync(installedBin('memesh'), [
+      'message', 'receipts', '--project', mcpExchange.project,
+      '--recipient', mcpExchange.recipient, '--message-id', mcpExchange.message_id,
+    ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' }));
+    assert.ok(mcpReceipts.some((receipt) => receipt.receipt_kind === 'host_accept'), 'MCP A-to-B receipt readback omitted host_accept');
+    assert.equal(mcpReceipts.some((receipt) => receipt.receipt_kind === 'ack'), false, 'MCP fetch or native dispatch implicitly acknowledged the message');
+    assert.equal(mcpReceipts.some((receipt) => receipt.receipt_kind === 'disposition'), false, 'MCP fetch or native dispatch implicitly set workflow disposition');
   } finally {
-    if (host && !host.killed) host.kill('SIGTERM');
-    if (!router.killed) router.kill('SIGTERM');
+    await Promise.all([
+      terminateCodexCompanion(companionState(sessionA)),
+      terminateCodexCompanion(companionState(sessionB)),
+    ]);
+    await Promise.all([stopChild(companionA?.child), stopChild(companionB?.child), stopChild(host)]);
+    await stopChild(router);
     fs.rmSync(nativeHome, { recursive: true, force: true });
   }
 }

@@ -19,7 +19,7 @@ So — **read the real documents.** Do not restate them here.
 | Colour, type, spacing, interaction — before ANY dashboard change | [DESIGN.md](DESIGN.md) |
 | How do I report a vulnerability | [SECURITY.md](SECURITY.md) |
 | I am an agent INSTALLING memesh for a user | [llms-install.md](llms-install.md) |
-| I am an agent USING memesh (the loop, the 11 tools, hygiene) | [AGENTS.md](AGENTS.md) |
+| I am an agent USING memesh (the loop, the 12 tools, hygiene) | [AGENTS.md](AGENTS.md) |
 | What changed, and what is merged but unreleased | [CHANGELOG.md](CHANGELOG.md) (`[Unreleased]`) |
 
 ---
@@ -80,8 +80,8 @@ side of it.
 
 Do not report a test result, a CI status or a benchmark number you did not
 produce in this session. Paste the runner's actual output. `npm run verify:release` is the same gate the publish path runs, and
-`scripts/check-doc-claims.mjs` — which it calls — checks every claim the public
-documents make about the code.
+`scripts/check-doc-claims.mjs` — which it calls — checks selected source-derived
+documentation contracts. Other descriptions still need source-backed review.
 
 **Read the exit code, not a grep of the output.** `cmd 2>&1 | grep …` returns
 *grep's* status and hides every line the pattern misses. Vitest prints
@@ -133,7 +133,7 @@ Two more rules from the same night, both measured:
 - **Any probe that runs vitest goes through `scripts/run-tests-isolated.mjs`
   and `--maxWorkers=1`.** An `eg prove --all` sweep of 47 guards ran for 53
   minutes and produced zero valid verdicts: the bare `npx vitest` probe hit
-  the real graph (1536-dim embeddings vs 384-dim fixtures) and was red on
+  the maintainer's real graph instead of an isolated fixture and was red on
   the unmodified tree. Whole-tree `eg prove` is also not a release gate:
   781 guards × ~113 s per isolated run is a day. Probe the guards in the
   files a change touched, with the test file that covers each.
@@ -170,8 +170,9 @@ Rules that hold in both modes:
   release notes. The repository carries only what reproduces shipped
   behaviour: source, tests, schemas, configuration, and the public docs
   above. (This is also why this file is a pointer.)
-- **Docs move with the change** — a capability the docs do not describe, or
-  describe wrongly, fails `check-doc-claims` and is not done.
+- **Docs move with the change** — selected source-derived contracts are enforced
+  by `check-doc-claims`; the rest still require source-backed review. A
+  capability the docs omit or describe wrongly is not done.
 
 ### Git
 
@@ -195,11 +196,8 @@ Rules that hold in both modes:
   crediting an AI as author or generator. Strip it from any default template.
 - Never `git add -A` or `git add .` — stage the files you meant to change.
 
-### Two storage facts worth knowing before you touch persistence
+### A storage fact worth knowing before you touch persistence
 
 - `entities_fts` is a **contentless** FTS5 table. A delete must be issued with
   the exact text that was indexed, or the index silently keeps the old tokens
   and search answers for content that is gone.
-- `entities_vec` is one sqlite-vec table for the **whole database**, not one per
-  namespace. Dropping it drops every namespace's embeddings, and only a full
-  re-embed brings them back — on a paid provider, at cost.

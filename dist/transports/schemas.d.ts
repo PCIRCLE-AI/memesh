@@ -1,4 +1,56 @@
 import { z } from 'zod';
+export declare const WorkPackageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
+    action: z.ZodLiteral<"prepare">;
+    project: z.ZodString;
+    kind: z.ZodEnum<{
+        digest: "digest";
+        transcript: "transcript";
+    }>;
+}, z.core.$strict>, z.ZodObject<{
+    result: z.ZodObject<{
+        name: z.ZodString;
+        type: z.ZodEnum<{
+            lesson_learned: "lesson_learned";
+            decision: "decision";
+            digest: "digest";
+            fact: "fact";
+        }>;
+        observations: z.ZodArray<z.ZodString>;
+        tags: z.ZodArray<z.ZodString>;
+    }, z.core.$strict>;
+    package_id: z.ZodString;
+    ref: z.ZodDiscriminatedUnion<[z.ZodObject<{
+        kind: z.ZodLiteral<"digest">;
+        project: z.ZodString;
+        source_ids: z.ZodArray<z.ZodNumber>;
+        source_hash: z.ZodString;
+    }, z.core.$strict>, z.ZodObject<{
+        kind: z.ZodLiteral<"transcript">;
+        project: z.ZodString;
+        session_id: z.ZodString;
+        modified_at: z.ZodISODateTime;
+        source_hash: z.ZodString;
+        workspace_hash: z.ZodString;
+    }, z.core.$strict>], "kind">;
+    action: z.ZodLiteral<"submit">;
+}, z.core.$strict>, z.ZodObject<{
+    reason: z.ZodLiteral<"not_now">;
+    package_id: z.ZodString;
+    ref: z.ZodDiscriminatedUnion<[z.ZodObject<{
+        kind: z.ZodLiteral<"digest">;
+        project: z.ZodString;
+        source_ids: z.ZodArray<z.ZodNumber>;
+        source_hash: z.ZodString;
+    }, z.core.$strict>, z.ZodObject<{
+        kind: z.ZodLiteral<"transcript">;
+        project: z.ZodString;
+        session_id: z.ZodString;
+        modified_at: z.ZodISODateTime;
+        source_hash: z.ZodString;
+        workspace_hash: z.ZodString;
+    }, z.core.$strict>], "kind">;
+    action: z.ZodLiteral<"defer">;
+}, z.core.$strict>], "action">;
 export declare const RememberSchema: z.ZodObject<{
     name: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
     type: z.ZodString;

@@ -1,13 +1,8 @@
 /**
  * The release scripts must not touch the maintainer's real data to do their job.
  *
- * `release-verify.sh` used to strip the `llm` block out of
- * `~/.memesh/config.json` so the suite would run without credentials, park the
- * only copy of live API keys in a world-readable `/tmp` file, and rely on an
- * EXIT trap to put them back. A SIGKILL, a crash between the two writes, or a
- * `/tmp` sweep lost them. What the suite needs is an environment with NO LLM
- * credentials — not this machine's environment minus its credentials — so it
- * now runs under a throwaway HOME, which has no config to strip.
+ * A release check once rewrote `~/.memesh/config.json` and relied on an EXIT
+ * trap to restore it. The suite now runs under a throwaway HOME instead.
  *
  * This is a shell script, so there is no unit to call. The assertions are
  * structural, and they are the ones that matter: the regression is not "the
@@ -24,6 +19,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 import { buildIsolatedRuntimeEnv, buildIsolatedSuiteEnv } from '../scripts/lib/isolated-env.mjs';
+import { findOrphanedTypeScriptOutputs } from '../scripts/check-generated-mirror.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -77,8 +73,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
   });
 
   it('runs every gate that opens the database under the throwaway HOME', () => {
-    // `doctor` calls openDatabase(), which runs schema migrations, the FTS
-    // rebuild and the telemetry prune — so an unisolated gate MUTATES the
+    // `doctor` calls openDatabase(), which runs schema and FTS migrations plus
+    // lifecycle maintenance — so an unisolated gate MUTATES the
     // maintainer's real knowledge-graph.db as a side effect of verifying a
     // release. The commit that introduced the throwaway HOME isolated the test
     // suite and stopped one gate short, which is why this asserts the set
@@ -115,6 +111,10 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(buildAt, 'the gate does not run the build').toBeGreaterThan(-1);
     expect(diffAt, 'the gate does not diff the build outputs').toBeGreaterThan(-1);
     expect(buildAt, 'the gate diffs before it builds').toBeLessThan(diffAt);
+    expect(
+      text.slice(diffAt, diffAt + 120),
+      'the gate compares only working tree to index, so staged generated output can false-green',
+    ).toContain("'HEAD'");
     // A failed build must fail the gate. Reporting "output is current" because
     // the compiler crashed is the same class of lie one level up.
     //
@@ -139,6 +139,37 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       text.slice(buildCatchStart, buildCatchEnd),
       'a failed build no longer fails the gate: it falls through to the diff, which is empty on any tree whose committed output already matches HEAD',
     ).toContain('process.exit(1)');
+  });
+
+  it('the build-output gate detects compiler artifacts whose source module was deleted', () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-generated-parity-'));
+    try {
+      fs.mkdirSync(path.join(fixture, 'src/core'), { recursive: true });
+      fs.mkdirSync(path.join(fixture, 'dist/core'), { recursive: true });
+      fs.mkdirSync(path.join(fixture, 'dist/cli/assets'), { recursive: true });
+      fs.writeFileSync(path.join(fixture, 'src/core/kept.ts'), 'export const kept = true;\n');
+      for (const family of ['kept', 'deleted']) {
+        for (const suffix of ['.js', '.js.map', '.d.ts', '.d.ts.map']) {
+          fs.writeFileSync(path.join(fixture, 'dist/core', `${family}${suffix}`), 'generated');
+        }
+      }
+      fs.writeFileSync(path.join(fixture, 'dist/cli/assets/d3.v7.min.js'), 'asset');
+      fs.writeFileSync(path.join(fixture, 'dist/skills-manifest.json'), '{}');
+
+      expect(findOrphanedTypeScriptOutputs(fixture)).toEqual([{
+        family: 'core/deleted',
+        files: [
+          'core/deleted.d.ts', 'core/deleted.d.ts.map',
+          'core/deleted.js', 'core/deleted.js.map',
+        ],
+      }]);
+      for (const file of fs.readdirSync(path.join(fixture, 'dist/core'))) {
+        if (file.startsWith('deleted.')) fs.rmSync(path.join(fixture, 'dist/core', file));
+      }
+      expect(findOrphanedTypeScriptOutputs(fixture)).toEqual([]);
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it('installs dashboard deps from the lockfile, not the ranges', () => {
@@ -261,6 +292,9 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(upgrade).toContain('auto-update-runner.mjs');
     expect(upgrade).toContain('SUCCESS target=${candidateVersion} installed=${candidateVersion}');
     expect(upgrade).toContain('MEMESH_UPGRADE_FORCE_FAILURE');
+    expect(upgrade).toContain('fs.copyFileSync(candidateTarball, invalidCandidate)');
+    expect(upgrade).toContain('fs.truncateSync(invalidCandidate');
+    expect(upgrade).not.toContain('not-a-memesh-v${candidateVersion}-candidate.tgz');
     expect(read('.github/workflows/ci.yml')).toContain('run: npm run test:packaged:upgrade');
   });
 
@@ -290,7 +324,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     const releaseJob = ci.match(/\n {2}release-verify:\n[\s\S]*?(?=\n {2}[A-Za-z0-9_-]+:\n|$)/)?.[0] ?? '';
     expect(releaseJob).not.toBe('');
     expect(releaseJob).toMatch(/timeout-minutes:\s*40/);
-    expect(releaseJob).toContain('bash scripts/release-verify.sh --skip-llm-probe');
+    expect(releaseJob).toContain('bash scripts/release-verify.sh');
+    expect(releaseJob).not.toContain('--skip-llm-probe');
     expect(releaseJob).not.toContain('--quick');
   });
 
@@ -340,36 +375,70 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         write(`src/host-runtime/${runtime}.ts`);
         for (const extension of ['.js', '.js.map', '.d.ts', '.d.ts.map']) write(`dist/host-runtime/${runtime}${extension}`);
       }
-      const codexSession = "CODEX_THREAD_ID hook_event_name !== 'SessionStart' adapter_kind: 'codex-cli-queue' workspace !== cwd";
-      write('src/host-runtime/codex-session.ts', codexSession);
+      const codexSession = "CODEX_THREAD_ID hook_event_name !== 'SessionStart' hook_event_name !== 'SessionEnd' adapter_kind: 'codex-cli-queue' launchDetachedCompanion detached: true requestExactCompanionControl(state, 'retire') SESSION_END_GRACE_MS automaticCodexSessionConfig readCodexSessionConfigIfPresent codex-thread-${session.threadId}";
+      write('src/host-runtime/codex-session.ts', codexSession + [
+        "\nif (hookInput.hook_event_name !== 'SessionStart') return null;",
+        "if (hookInput.source !== 'startup' && hookInput.source !== 'resume') return null;",
+        "const identity = { session_instance_id: session.threadId, adapter_kind: 'codex-cli-queue' };",
+      ].join('\n'));
       write('dist/host-runtime/codex-session.js', codexSession);
+      write('tests/host-runtime/codex-session.test.ts', 'automatically registers an ordinary SessionStart without writing a host config accepts a resume SessionStart for automatic registration');
+      write('tests/core/agent-router.test.ts', 'never reroutes or later replays an exact-session delivery and drains principal pending after router restart');
       write('src/host-runtime/acp.ts', 'session_update_file O_NOFOLLOW');
       write('dist/host-runtime/acp.js', 'session_update_file O_NOFOLLOW');
       write('docs/api/API_REFERENCE.md', actions.join(' ') + ' principal session generation host_kind work_summary lease_expires_at_ms Local Cloud message storage storage_quota_exceeded');
-      write('docs/platforms/agent-messaging.md', 'principal session generation host_kind work_summary lease_expires_at_ms exact-session principal target Local Cloud Bounded storage and audit retention');
-      write('skills/memesh/SKILL.md', 'message polling active compatible managed host stopped, missing, or replaced session message storage report');
-      write('llms-install.md', '22.13.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report');
+      const canonicalMessageDoc = [
+        '# Message contract',
+        'principal session generation host_kind work_summary lease_expires_at_ms exact-session principal target Local Cloud Bounded storage and audit retention',
+        '### Ordinary active Codex CLI session',
+        'An ordinary local Codex session requires the MeMesh Codex plugin and packaged SessionStart integration. Each startup or resumed thread then registers automatically under the current project with a thread-scoped principal.',
+        "This guide's supported documented path is ordinary Codex CLI `SessionStart`. Codex Desktop or an unattached task is not user-visible native-delivery evidence unless that exact live session registers with the router and the result is directly verified. This is a scope boundary for evidence, not a claim that Codex Desktop is universally unsupported.",
+        'If the target Codex session is stopped, missing, disconnected, or no longer matches its configured workspace, MeMesh does not start or replace it. It reports recipient_unavailable. Exact-session failures are not automatically replayed through the native channel on a later registration; the sender must retry deliberately if live delivery is still wanted.',
+        '## Other path',
+      ].join('\n');
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc);
+      write('skills/memesh/SKILL.md', [
+        '# Skill',
+        '## Durable messages and active-host delivery',
+        'message polling. On macOS and Linux, an ordinary Codex CLI session with the MeMesh plugin registers automatically at SessionStart. SessionEnd retains a bounded 45-second idle queue window. This does not wake a stopped UI. Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`. Do not promise a stopped, missing, or replaced session will wake: a failed exact-session native delivery is not replayed automatically. message storage report',
+      ].join('\n'));
+      write('llms-install.md', [
+        '# Install',
+        '## 2. Terminal / CLI (npm global)',
+        '22.13.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report. The ordinary Codex path below is the documented bounded native queue path.',
+        'If the session is stopped, missing, or disconnected, MeMesh neither starts nor replaces it. Failed exact-session native delivery is not replayed automatically after a later registration; the sender must retry deliberately.',
+        '## 3. Codex CLI',
+      ].join('\n'));
       write('README.md', [
-        'message memesh agent setup codex-session without polling or a human reminder stopped, missing, or disconnected Codex session message storage report',
+        '# README',
+        '## The fine print',
+        'message registers automatically no manual `agent setup` is required without polling or a human reminder bounded 45-second idle queue window stopped, missing, or disconnected Codex session message storage report',
         'untrusted JSON-encoded payload is limited to 65,536 UTF-8 bytes (64 KiB); intake, acknowledgement, and workflow disposition are separate facts.',
         'The complete native envelope is limited to 16,384 bytes (16 KiB); native_message_too_large and recipient_unavailable are distinct. Principal targets retain durable store-and-forward behavior.',
+        'With the plugin, each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity, and a failed exact-session native delivery is not replayed automatically; the sender must retry deliberately. Do not assume Codex Desktop or an unattached task registers unless that exact running session appears in `message discover`.',
       ].join('\n'));
       write('README.zh-TW.md', [
-        'message memesh agent setup codex-session 沒有輪詢或人工提醒 停止、缺失或斷線 message storage report',
+        '# README',
+        '## 細節',
+        'message 自動以 thread-scoped identity 註冊 不需要手動執行 `agent setup` 沒有輪詢或人工提醒 45 秒的有限 idle queue 視窗 停止、缺失或斷線 message storage report',
         'JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload；intake、acknowledgement 與 workflow disposition 分開記錄。',
         '完整 native envelope 不超過 16,384 bytes（16 KiB）；native_message_too_large 與 recipient_unavailable 分開回報。Principal target 保留 durable store-and-forward。',
+        '具有有效 identity 並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊。失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試。不要假設 Codex Desktop 或未連接的 task 已註冊，除非確切 session 出現在 `message discover`。',
       ].join('\n'));
       write('README.de.md', [
-        'message memesh agent setup codex-session ohne Polling oder menschliche Erinnerung gestoppte, fehlende oder getrennte Codex-Session message storage report',
+        '# README',
+        '## Das Kleingedruckte',
+        'message registriert sich ein manuelles `agent setup` ist nicht erforderlich ohne Polling oder menschliche Erinnerung begrenztes 45-Sekunden-Fenster gestoppte, fehlende oder getrennte Codex-Session message storage report',
         'Beim nicht vertrauenswürdigen, JSON-kodierten Payload gelten 65.536 UTF-8-Bytes (64 KiB); Intake, Bestätigung und Workflow-Status werden getrennt protokollieren.',
         'Die vollständige native Envelope ist auf 16.384 Bytes (16 KiB) begrenzt; native_message_too_large und recipient_unavailable bleiben getrennt. Principal-Ziele behalten Durable Store-and-Forward.',
+        'Mit dem Plugin registriert sich jeder gestartete oder fortgesetzte gewöhnliche Codex-CLI-Thread mit gültiger Thread-Identität und vorhandenem Arbeitsverzeichnis automatisch mit einer threadbezogenen Identität, und eine fehlgeschlagene native Exact-Session-Zustellung wird nicht automatisch wiederholt, der Absender muss bewusst erneut senden. Nimm bei Codex Desktop oder einem nicht angehängten Task keine Registrierung an, sofern er nicht in `message discover` erscheint.',
       ].join('\n'));
       write('.claude-plugin/mcp.json', 'memesh ${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js');
       write('.claude-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.claude-plugin/mcp.json"');
       write('.codex-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.codex-plugin/mcp.json"');
-      write('.codex-plugin/mcp.json', '"memesh" "command": "node" "./dist/mcp/server.js" "cwd": "."');
+      write('.codex-plugin/mcp.json', '"mcpServers" "memesh" "command": "node" "args": ["./dist/mcp/server.js"] "cwd": "."');
       write('.claude-plugin/marketplace.json', '"name": "pcircle-memesh" "version"');
-      write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume "async": true');
+      write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume SessionEnd');
       write('package.json', JSON.stringify({
         engines: { node: '>=22.13.0' },
         scripts: { release: 'check-agent-message-sync.mjs test:packaged' },
@@ -382,7 +451,21 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         },
       }));
       const pass = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(pass.status).toBe(0);
+      expect(pass.status, pass.stderr).toBe(0);
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace('registers automatically', 'does not register automatically'));
+      const negatedRegistration = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+      expect(negatedRegistration.status).toBe(1);
+      expect(negatedRegistration.stderr).toContain('positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract');
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace('not automatically replayed', 'automatically replayed'));
+      const negatedNoReplay = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+      expect(negatedNoReplay.status).toBe(1);
+      expect(negatedNoReplay.stderr).toContain('positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract');
+      const desktopSentence = "This guide's supported documented path is ordinary Codex CLI `SessionStart`. Codex Desktop or an unattached task is not user-visible native-delivery evidence unless that exact live session registers with the router and the result is directly verified. This is a scope boundary for evidence, not a claim that Codex Desktop is universally unsupported.";
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace(desktopSentence, '').replace('## Other path', `## Other path\n${desktopSentence}`));
+      const relocatedDesktopBoundary = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+      expect(relocatedDesktopBoundary.status).toBe(1);
+      expect(relocatedDesktopBoundary.stderr).toContain('positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract');
+      write('docs/platforms/agent-messaging.md', canonicalMessageDoc);
       write('src/transports/mcp/handlers.ts', "name: 'message' name === 'message' MessageSchema executeAgentMessageAction");
       const missingPublicTargetKind = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
       expect(missingPublicTargetKind.status).toBe(1);
@@ -478,58 +561,15 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     // 'buildIsolatedSuiteEnv deletes the memesh path variables' below.
     expect(text).toMatch(/buildIsolatedSuiteEnv\(process\.env, \{ runtimeHome: home \}\)/);
     // MEMESH_DB_PATH must stay unset — pointing it at an existing file breaks
-    // session-start-telemetry's "short-circuits on missing DB" case. This is
+    // session-start's no-database-yet cases. This is
     // the assertion the helper cannot make for the runner: the runner must not
     // pin one of its own after building the env.
     expect(text).not.toMatch(/MEMESH_DB_PATH:/);
   });
 
-  it('removes ambient provider settings without printing their values', () => {
-    const providerKeys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST'];
-    // The deletions used to be inlined here; they now live in the one helper
-    // every isolating script shares. The spawn below is the assertion that
-    // actually matters either way — it runs the real runner with sentinel
-    // credentials exported and proves none of them reach the child.
-    const lib = read('scripts/lib/isolated-env.mjs');
-    for (const key of providerKeys) {
-      expect(lib).toContain(`delete isolatedEnv.${key}`);
-    }
-
-    const sentinels = {
-      ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
-      OPENAI_API_KEY: 'ambient-openai-sentinel',
-      OLLAMA_HOST: 'http://ambient-ollama.invalid',
-    };
-    const result = spawnSync(
-      process.execPath,
-      [
-        path.join(repoRoot, 'scripts/run-tests-isolated.mjs'),
-        'tests/fixtures/isolated-provider-env.probe.test.ts',
-        '--maxWorkers=1',
-      ],
-      {
-        cwd: repoRoot,
-        encoding: 'utf8',
-        env: {
-          ...process.env,
-          ...sentinels,
-          MEMESH_PROVIDER_ISOLATION_PROBE: '1',
-        },
-      },
-    );
-    const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-    expect(result.status, output).toBe(0);
-    for (const value of Object.values(sentinels)) {
-      expect(output).not.toContain(value);
-    }
-  });
-
-  it('buildIsolatedRuntimeEnv strips provider variables, and every packaged/dashboard smoke that spawns the runtime uses it', () => {
-    // GitHub issue #271: the packaged Dashboard E2E gave the child runtime
-    // an isolated MEMESH_DB_PATH but otherwise spread the maintainer's real
-    // process.env, so a shell with a configured provider made the "isolated"
-    // server start in Smart Mode against a real LLM. buildIsolatedRuntimeEnv
-    // is the fix, extracted into a pure function (scripts/lib/isolated-env.mjs,
+  it('buildIsolatedRuntimeEnv strips common credentials, and every packaged/dashboard smoke uses it', () => {
+    // buildIsolatedRuntimeEnv is extracted into a pure function
+    // (scripts/lib/isolated-env.mjs,
     // shared by both smokes) so this test can call it directly instead of
     // running the full smoke (npm pack + install + Playwright).
     //
@@ -543,23 +583,10 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     // `router.token`. Moving the helper to scripts/lib/ and asserting every
     // smoke imports it (below) is what keeps this from drifting apart again.
 
-    // Derive the provider variable list from detectFromEnv() itself, rather
-    // than re-typing it here, so a provider added to config.ts without
-    // updating the shared helper's delete list fails this test instead of
-    // leaking silently. Falls back to nothing if the function is ever
-    // rewritten in a way the regex can't follow — the assertions right
-    // after this catch that case loudly instead of the loop passing
-    // vacuously over an empty list.
-    const configSource = read('src/core/config.ts');
-    const detectFromEnvBody = configSource.match(/function detectFromEnv\(\)[^{]*\{([\s\S]*?)\n\}/)?.[1] ?? '';
-    const providerKeys = [...new Set(
-      [...detectFromEnvBody.matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((m) => m[1])
-    )];
-    expect(providerKeys.length).toBeGreaterThan(0);
-    expect(providerKeys).toEqual(expect.arrayContaining(['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST']));
+    const credentialKeys = ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST'];
 
     const libSource = read('scripts/lib/isolated-env.mjs');
-    for (const key of providerKeys) {
+    for (const key of credentialKeys) {
       expect(libSource).toContain(`delete isolatedEnv.${key}`);
     }
 
@@ -637,7 +664,6 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       OLLAMA_HOST: 'http://ambient-ollama.invalid',
       OPENAI_API_KEY: 'ambient-openai-sentinel',
       ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
-      MEMESH_AUTO_DETECT_LLM: '1',
     };
 
     // Nothing about building this env should print anything — the isolated
@@ -660,19 +686,15 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(env.USERPROFILE).toBe(paths.runtimeHome);
     expect(env.MEMESH_DIR).toBe(paths.memeshDir);
     expect(env.MEMESH_DB_PATH).toBe(paths.dbPath);
-    expect(env.MEMESH_AUTO_DETECT_LLM).toBe('0');
-
-    // Every provider variable detectFromEnv() reads is gone, not merely
-    // overwritten. Asserted key by key (never the whole `env` object) so a
+    // Common credential variables are gone, not merely overwritten. Asserted
+    // key by key (never the whole `env` object) so a
     // failure here can never print a sentinel — or, on a real machine, a
     // real credential — into the test log.
-    for (const key of providerKeys) {
+    for (const key of credentialKeys) {
       expect(env[key]).toBeUndefined();
     }
 
-    // This isolates the provider surface, not the whole environment —
-    // unrelated ambient state (PATH, needed to spawn npm/node at all)
-    // still passes through.
+    // Unrelated ambient state (PATH, needed to spawn npm/node) still passes through.
     expect(env.PATH).toBe(pollutedBaseEnv.PATH);
   });
 

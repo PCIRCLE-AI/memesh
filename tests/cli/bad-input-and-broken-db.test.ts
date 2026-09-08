@@ -146,9 +146,9 @@ describe('a database that will not open', () => {
   });
 
   it('`status` reports the broken database instead of a clean-looking summary', () => {
-    // `status` touches capabilities, install channel and the update check —
+    // `status` touches retained settings, install channel and the update check —
     // none of which open the database — so this used to print a
-    // healthy-looking report (search level, embeddings, install method) with
+    // healthy-looking report (search mode, install method) with
     // no mention that the database underneath it could not be read at all.
     const r = run(['status']);
 

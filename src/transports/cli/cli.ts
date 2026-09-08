@@ -1,20 +1,17 @@
 #!/usr/bin/env node
 
-import { Command, Option } from 'commander';
+import { Command } from 'commander';
 import { randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   openDatabase, closeDatabase, getDatabase, reindexFts,
-  readVectorGeneration, generationRowIds, discardVectorGeneration,
 } from '../../db.js';
-import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, reindex, setPinned } from '../../core/operations.js';
-import { readConfig, writeConfig, maskApiKey, detectCapabilities } from '../../core/config.js';
-import { MAX_LANGUAGE_LENGTH, languageValueError } from '../../core/output-language.js';
-import { getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
+import { readConfig, updateConfig } from '../../core/config.js';
+import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
-import { flushPendingEmbeddings, canRefillVectorIndex } from '../../core/embedder.js';
 import { NAMESPACES } from '../../core/types.js';
 import { assembleBriefing } from '../../core/briefing.js';
 import { inspectHosts, allWired, type SetupSeams, type HostStatus } from '../../core/setup.js';
@@ -59,19 +56,6 @@ async function withDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
   try {
     return await fn();
   } finally {
-    // Flush BEFORE closing, and here rather than in each command.
-    //
-    // `remember` SCHEDULES the embedding and returns; the write lands later.
-    // In the MCP and HTTP servers the process outlives the promise, but a CLI
-    // process does not — and `closeDatabase()` beats the pending write, so
-    // the vector is written against a closed handle and lost.
-    //
-    // Close and flush are inherently ordered against each other, which is
-    // exactly why one owner should hold both. Three commands had remembered
-    // to flush by hand and `memesh learn` had not, so every lesson recorded
-    // from the shell reached the graph with no vector — invisible to semantic
-    // recall, the same failure `memesh task` had.
-    await flushPendingEmbeddings();
     closeDatabase();
   }
 }
@@ -402,8 +386,8 @@ program
   .action(async (query, opts) => {
     requireOneOf(opts.namespace, NAMESPACES, '--namespace');
     await withDatabase(async () => {
-      // recallWithConflicts: FTS5 + sqlite-vec recall + conflict annotation,
-      // owned by core so the transports can't drift on the wrapping rule.
+      // FTS5 recall and conflict annotation are owned by core so transports
+      // cannot drift on the wrapping rule.
       const { entities, conflicts, retrieval } = await recallWithConflicts({
         query: query || undefined,
         tag: opts.tag,
@@ -417,42 +401,17 @@ program
         // One envelope shape, always — the old output was a bare array
         // normally and an object when conflicts existed, so every consumer
         // had to special-case it; and it had nowhere to carry `retrieval`,
-        // which is the point (a degraded or limit-full recall must say so
-        // in-band). MCP and HTTP already answer with this object envelope.
+        // which is the point (a limit-full recall must say so in-band). MCP
+        // and HTTP already answer with this object envelope.
         console.log(JSON.stringify(
           conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval },
         ));
       } else if (entities.length === 0) {
-        // A zero-hit on a keyword-only search (no semantic supplement ran)
-        // and a zero-hit after BOTH keyword and semantic ran are different
-        // levels of confidence — the first means "there might be something
-        // related this pass could not see", the second means "this really
-        // searched everything". Both used to print the identical line, so a
-        // caller had no way to tell a Core Mode gap from an exhaustive miss.
-        // `retrieval.mode` only means something for a real query — an empty
-        // query's zero-hit is "nothing in the graph yet", not a search gap.
-        if (query && retrieval.degraded) {
-          console.log('No results found. Semantic search is configured but could not run for this query (provider or index issue) — this was keyword-only. Run `memesh doctor` to check.');
-        } else if (query && retrieval.mode === 'fts') {
-          console.log('No results found. This was a keyword-only search — no semantic search is configured. See `memesh doctor` for Smart Mode.');
-        } else {
-          console.log('No results found.');
-        }
+        console.log(query ? 'No results found in the keyword index.' : 'No results found.');
       } else {
-        // Semantic-only result sets get an honest header instead of being
-        // dressed as matches: the junk-vs-genuine distance distributions
-        // overlap (see Entity.match), so when the keyword index found
-        // NOTHING, "closest by meaning" is the most this output can claim.
-        const allSemantic = query && entities.every((e) => e.match?.source === 'semantic');
-        if (allSemantic) {
-          console.log('No keyword matches. Closest memories by meaning — may be unrelated:');
-        }
         for (const e of entities) {
           const badge = e.archived ? ' [archived]' : '';
-          const semantic = e.match?.source === 'semantic'
-            ? ` (~${Math.round((e.match.relevance ?? 0) * 100)}% semantic)`
-            : '';
-          console.log(`  ${e.name}${badge} (${e.type})${semantic}`);
+          console.log(`  ${e.name}${badge} (${e.type})`);
           for (const obs of e.observations.slice(0, 3)) {
             // Display cap only — storage is untouched. A single 324KB
             // observation used to flood the terminal on every hit.
@@ -472,11 +431,6 @@ program
         }
         const truncatedNote = retrieval.truncated ? ' (limit reached — more may exist)' : '';
         console.log(`\n${entities.length} result(s)${truncatedNote}`);
-        if (retrieval.degraded) {
-          // Embeddings are configured but the vector side could not run —
-          // silence here is exactly the fake-working shape this line removes.
-          console.log('Warning: semantic search unavailable right now — keyword-only results (degraded). Run `memesh doctor` to see why.');
-        }
         if (conflicts.length > 0) {
           console.log('\nWarning: Conflicts detected:');
           for (const c of conflicts) {
@@ -556,78 +510,10 @@ function registerPinCommand(name: string, description: string, pinned: boolean, 
     });
 }
 
-registerPinCommand('pin', 'Protect an entity from the dreamer’s auto-compaction', true,
-  (e) => `📌 Pinned "${e}" — the dreamer will not compact it`);
-registerPinCommand('unpin', 'Allow the dreamer to auto-compact an entity again', false,
+registerPinCommand('pin', 'Exclude an entity from digest work packages', true,
+  (e) => `📌 Pinned "${e}" — excluded from digest work packages`);
+registerPinCommand('unpin', 'Allow an entity in digest work packages again', false,
   (e) => `📍 Unpinned "${e}"`);
-
-// --- consolidate (retired) ---
-// The command is kept only to say it is gone. Deleting it outright makes
-// Commander answer `memesh consolidate` with "unknown command", which reads as
-// a typo or a broken install and tells a user nothing about where their
-// compression went. This block is deletable at the next major.
-//
-// What it used to do: delete an entity's observations and write an LLM summary
-// in their place, immediately, with no proposal and no way back. It also
-// ignored pins, and reset confidence to 1.0 on success. `memesh dream` is the
-// reviewed form of the same idea, so nothing here points at a like-for-like
-// replacement -- see `dream --help`.
-program
-  .command('consolidate')
-  .description('(retired) Use `memesh dream` — see the message this prints')
-  .allowUnknownOption()
-  .action(() => {
-    console.error('`memesh consolidate` has been retired.');
-    console.error('');
-    console.error('It rewrote a memory with an LLM summary and deleted the originals on the spot —');
-    console.error('no proposal, no review, and nothing to restore from if the summary was wrong.');
-    console.error('');
-    console.error('`memesh dream` is the reviewed version of the same idea:');
-    console.error('  memesh dream run       propose digests for clusters of noisy memories');
-    console.error('  memesh dream list      see what it proposed');
-    console.error('  memesh dream accept <id> / reject <id>');
-    console.error('');
-    console.error('Nothing is changed until you accept a proposal, and sources are archived');
-    console.error('rather than deleted. It works on episodic memories (commits, session notes)');
-    console.error('and never touches lessons, decisions, architecture notes, or pinned entities —');
-    console.error('so it is not a like-for-like replacement for compressing one named entity.');
-    process.exitCode = 1;
-  });
-
-// --- verify / patterns (retired) ---
-// Removed with the agentic-orchestration experiment. Deleting the commands
-// outright would make Commander answer "unknown command", which reads as a
-// broken install rather than a deliberate retirement — the exact failure mode
-// the consolidate signpost above exists to prevent. Same convention: a
-// signpost that names what happened and where to go, exiting non-zero so a
-// script gating on `memesh verify … && deploy` fails loudly instead of
-// deploying on a command that no longer checks anything.
-program
-  .command('verify')
-  .description('(retired) Removed with the agentic-orchestration experiment — see the message this prints')
-  .allowUnknownOption()
-  .action(() => {
-    console.error('`memesh verify` has been retired, along with the agentic-orchestration experiment.');
-    console.error('');
-    console.error('It recorded a verification report for background-agent work. The protocol it');
-    console.error('served was removed without ever leaving opt-in. Run your own verification');
-    console.error('(typecheck / tests / lint) and store conclusions with `memesh remember` if you');
-    console.error('want them remembered. Existing verification_record entities are untouched.');
-    process.exitCode = 1;
-  });
-
-program
-  .command('patterns')
-  .description('(retired) Removed with the agentic-orchestration experiment — see the message this prints')
-  .allowUnknownOption()
-  .action(() => {
-    console.error('`memesh patterns` has been retired, along with the agentic-orchestration experiment.');
-    console.error('');
-    console.error('It displayed the experiment\'s local skill-usage telemetry, which is no longer');
-    console.error('written. A leftover ~/.memesh/skill-usage.jsonl is inert and safe to delete.');
-    console.error('For work-pattern insights, use the `user_patterns` MCP tool or GET /v1/patterns.');
-    process.exitCode = 1;
-  });
 
 // --- export ---
 program
@@ -1093,7 +979,8 @@ messageStorageCmd
 // This writes reusable owner-private configuration only. Managed hosts create
 // a fresh exact session after their native input boundary is ready. The
 // ordinary Codex path instead binds only the thread ID supplied by its own
-// SessionStart hook and only for an explicitly configured real workspace.
+// SessionStart hook. Its explicit config is an optional stable-principal
+// override for one real workspace; plugin sessions auto-register without it.
 const agentCmd = program
   .command('agent')
   .description('Set up reusable owner-private local host configuration');
@@ -1123,7 +1010,7 @@ agentCmd
     const routerTokenFile = path.join(messageDir, 'agent-router.token');
     ensureRouterTokenFile(routerTokenFile);
     const common = {
-      router_socket: path.join(messageDir, 'agent-router.sock'),
+      router_socket: getAgentRouterSocketPath(),
       token_file: routerTokenFile,
       // The fourth producer of a routing identity, after the MCP, HTTP and CLI
       // message surfaces. `send` refuses a path-shaped project or recipient,
@@ -1162,16 +1049,19 @@ agentCmd
         ? 'ordinary-session-native-queue'
         : host === 'claude' ? 'session-owned-channel' : 'memesh-managed-session',
       session_identity: host === 'codex-session' ? 'codex-thread-id-at-session-start' : 'generated-per-process',
-      ordinary_sessions: host === 'codex-session' ? 'explicit-workspace-opt-in' : 'presence-only/inbound-unavailable',
+      ordinary_sessions: host === 'codex-session' ? 'automatic-thread-scoped-with-workspace-override' : 'presence-only/inbound-unavailable',
       registration_command: registrationCommand,
       launch_command: launchCommand,
-      next_command: registrationCommand ?? launchCommand ?? 'Restart Codex in the configured workspace',
+      next_command: registrationCommand ?? launchCommand ?? 'Restart Codex in the configured workspace to apply the identity override',
     };
     console.log(opts.json ? JSON.stringify(result) : [
       `Created owner-private ${host} config: ${configPath}`,
       'No active or stopped ordinary session was attached.',
       ...(registrationCommand ? [`Register once: ${registrationCommand}`] : []),
-      ...(launchCommand ? [`Launch: ${launchCommand}`] : ['Restart Codex in the configured workspace.']),
+      ...(launchCommand ? [`Launch: ${launchCommand}`] : [
+        'This optional override gives that workspace a stable named principal.',
+        'Restart Codex in the configured workspace to apply it.',
+      ]),
     ].join('\n'));
   });
 
@@ -1452,9 +1342,6 @@ program
         return;
       }
 
-      // `setTaskState` goes through `remember`, which SCHEDULES the embedding
-      // and returns — `withDatabase` awaits it before closing, for this
-      // command and every other one.
       const result = setTaskState({ project: opts.project, patch, sourceHost: 'cli' });
       if (opts.json) {
         console.log(JSON.stringify(result));
@@ -1477,147 +1364,22 @@ configCmd
   .description('Show current configuration')
   .action(() => {
     const config = readConfig();
-    const caps = detectCapabilities(config);
     console.log('Configuration (~/.memesh/config.json):');
-    // Iterate ALLOWED_KEYS (the single source of truth for settable keys) so
-    // `list` and `set` can't drift — previously `list` hard-coded only the
-    // three llm.* keys, so a user who set sessionLimit / llmFallbacks /
-    // embedder.* got "✅ Set" but saw no trace of it here.
+    // Iterate ALLOWED_KEYS so `list` and `set` cannot drift.
     const rows = buildConfigListing(config as unknown as Record<string, unknown>);
     if (rows.length === 0) {
       console.log('  (no keys set — all defaults)');
     } else {
       for (const { key, value } of rows) console.log(`  ${key}: ${value}`);
     }
-    console.log(`\nSearch level: ${caps.searchLevel} (${caps.searchLevel === 1 ? 'Smart Mode' : 'Core'})`);
   });
 
-// Allowlist of nested keys we accept for set/unset. Each entry is
-// the dotted path the user types. Anything outside this list is
-// rejected — preferring an explicit allowlist keeps `memesh config`
-// from accidentally writing arbitrary deep-nested junk into config.json.
-//
-// `aliases` lets the legacy `llm.api-key` (with hyphen) keep working
-// while the canonical key (used everywhere in code) is `llm.apiKey`.
-const SET_KEY_ALIASES: Record<string, string> = {
-  'llm.api-key': 'llm.apiKey',
-};
-
-const ALLOWED_KEYS = new Set([
-  'llm.provider',
-  'llm.apiKey',
-  'llm.model',
-  'embedder.provider',
-  // 'embedder.model' is deliberately absent — see EmbedderConfig in config.ts.
-  // It printed "✅ Set" and changed nothing, because the value never reached the
-  // embedding call.
-  'autoUpdate',
-  'sessionLimit',
-  'autoCapture',
-  // Cross-provider LLM failover. Shipped in v4.2.0 with a full consumer
-  // side (config.ts, consolidator, dream, session-summary) but NO setter:
-  // it was absent here and the dashboard never sent it, so the only way to
-  // populate it was hand-editing config.json. Effectively every install ran
-  // with `llmFallbacks: []`, meaning the failover feature never engaged for
-  // anyone. Takes a JSON array because it is a list of provider objects.
-  'llmFallbacks',
-  // Output language for LLM-generated content (dreamer digests, patterns,
-  // lessons, validator reasons). Free-form — 'zh-TW' and '繁體中文' both
-  // work; it becomes a prompt instruction, not a parsed locale. Unset =
-  // English. See src/core/output-language.ts.
-  'language',
-  // Transcript mining opt-in for the dreamer (B1-B4). Both doctor.ts and
-  // the dream CLI tell users to run `memesh config set transcriptMining
-  // true` — this entry is what makes that documented command actually
-  // succeed (it was missing, so the printed fix exited 1 "Unknown key").
-  'transcriptMining',
-]);
+const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture']);
 
 const KEY_VALIDATORS: Record<string, (value: string) => string | null> = {
-  'llm.provider': (v) => ['anthropic', 'openai', 'ollama'].includes(v) ? null : `must be one of: anthropic, openai, ollama`,
-  'language': (v) => {
-    if (v.trim().length === 0) return 'must not be blank — use `memesh config unset language` to clear it';
-    if (v.length > MAX_LANGUAGE_LENGTH) return `must be ${MAX_LANGUAGE_LENGTH} characters or fewer (a language name or locale code)`;
-    // The value lands inside every content-generating LLM prompt; a newline
-    // would let it smuggle in a free-standing instruction line. Shared with
-    // the HTTP write surface via languageValueError.
-    return languageValueError(v);
-  },
-  'embedder.provider': (v) => ['openai', 'ollama'].includes(v) ? null : `must be one of: openai, ollama`,
-  'autoUpdate': (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : `must be one of: off, patch, minor, major`,
-  // The coercion below only recognises 'true'/'1' as true; everything else
-  // — 'yes', 'on', 'True' — silently became false, printed as if it had
-  // been accepted verbatim (the success line echoes the raw value, not
-  // what was actually stored). Reject anything the coercion cannot read
-  // instead of storing the opposite of what the user asked for.
-  'autoCapture': (v) => ['true', 'false', '1', '0'].includes(v) ? null : `must be one of: true, false, 1, 0`,
-  'transcriptMining': (v) => ['true', 'false', '1', '0'].includes(v) ? null : `must be one of: true, false, 1, 0`,
-  'llmFallbacks': (v) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(v);
-    } catch {
-      return 'must be a JSON array, e.g. \'[{"provider":"openai","model":"gpt-4o-mini","apiKey":"sk-..."}]\'';
-    }
-    if (!Array.isArray(parsed)) return 'must be a JSON ARRAY of provider objects';
-    for (const entry of parsed) {
-      if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
-        return 'every entry must be an object like {"provider":"openai"}';
-      }
-      const provider = (entry as { provider?: unknown }).provider;
-      if (!['anthropic', 'openai', 'ollama'].includes(String(provider))) {
-        return `every entry needs provider = anthropic | openai | ollama (got ${JSON.stringify(provider)})`;
-      }
-    }
-    return null;
-  },
+  autoUpdate: (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : 'must be one of: off, patch, minor, major',
+  autoCapture: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
 };
-
-function setNested(obj: Record<string, unknown>, path: string[], value: unknown): void {
-  let cur = obj;
-  for (let i = 0; i < path.length - 1; i++) {
-    const part = path[i];
-    if (typeof cur[part] !== 'object' || cur[part] === null) {
-      cur[part] = {};
-    }
-    cur = cur[part] as Record<string, unknown>;
-  }
-  cur[path[path.length - 1]] = value;
-}
-
-/** Read a dotted path (mirror of setNested); undefined if any segment is absent. */
-function getNested(obj: Record<string, unknown>, path: string[]): unknown {
-  return path.reduce<unknown>(
-    (cur, part) => (cur && typeof cur === 'object' ? (cur as Record<string, unknown>)[part] : undefined),
-    obj,
-  );
-}
-
-/** Marker shown in place of any secret in the `config list` dump. Full
- *  redaction (not maskApiKey's first4+last4) because `list` prints EVERY key
- *  including the whole fallback chain — a broad dump should reveal no key
- *  bytes at all, and it keeps the tainted value out of the log entirely. */
-const REDACTED = '***';
-
-/** Format a value for display, dropping every apiKey so no key bytes reach the
- *  log (same leak class as the HTTP config response). Secrets are removed from
- *  the value before it is stringified, not merely overwritten. */
-function formatConfigValue(key: string, raw: unknown): string {
-  if (key.toLowerCase().includes('key')) return REDACTED;
-  if (key === 'llmFallbacks' && Array.isArray(raw)) {
-    const redacted = raw.map((fb) => {
-      if (fb && typeof fb === 'object') {
-        // Destructure apiKey OUT so the raw value never flows into the result.
-        const { apiKey, ...rest } = fb as Record<string, unknown>;
-        return apiKey ? { ...rest, apiKey: REDACTED } : rest;
-      }
-      return fb;
-    });
-    return JSON.stringify(redacted);
-  }
-  if (typeof raw === 'object') return JSON.stringify(raw);
-  return String(raw);
-}
 
 /**
  * Build the `config list` rows from ALLOWED_KEYS — the single source of truth
@@ -1627,35 +1389,20 @@ function formatConfigValue(key: string, raw: unknown): string {
 function buildConfigListing(config: Record<string, unknown>): Array<{ key: string; value: string }> {
   const rows: Array<{ key: string; value: string }> = [];
   for (const key of Array.from(ALLOWED_KEYS).sort()) {
-    const raw = getNested(config, key.split('.'));
+    const raw = config[key];
     if (raw === undefined || raw === null) continue;
-    rows.push({ key, value: formatConfigValue(key, raw) });
+    rows.push({ key, value: String(raw) });
   }
   return rows;
 }
 
-function deleteNested(obj: Record<string, unknown>, path: string[]): boolean {
-  if (path.length === 0) return false;
-  if (path.length === 1) {
-    if (path[0] in obj) { delete obj[path[0]]; return true; }
-    return false;
-  }
-  const head = path[0];
-  if (typeof obj[head] !== 'object' || obj[head] === null) return false;
-  const child = obj[head] as Record<string, unknown>;
-  const removed = deleteNested(child, path.slice(1));
-  // Prune empty parent so { llm: {} } doesn't linger after unsetting last key
-  if (removed && Object.keys(child).length === 0) delete obj[head];
-  return removed;
-}
-
 configCmd
   .command('set')
-  .description('Set a config value (e.g. llm.provider, embedder.provider)')
+  .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .argument('<value>', 'Config value')
   .action((key, value) => {
-    const canonical = SET_KEY_ALIASES[key] ?? key;
+    const canonical = key;
     if (!ALLOWED_KEYS.has(canonical)) {
       console.error(`Unknown key: ${key}`);
       console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
@@ -1678,49 +1425,32 @@ configCmd
       // vanished and nothing said why. Same predicate, same message.
       coerced = wholeNumber('sessionLimit')(value);
     }
-    if (canonical === 'llmFallbacks') coerced = JSON.parse(value);
     if (canonical === 'autoCapture') {
       coerced = value === 'true' || value === '1';
     }
-    if (canonical === 'transcriptMining') {
-      // The consumer (isTranscriptMiningEnabled) checks `=== true`, so a
-      // raw "true" string would silently leave the feature off.
-      coerced = value === 'true' || value === '1';
-    }
-
-    const config = readConfig() as Record<string, unknown>;
-    setNested(config, canonical.split('.'), coerced);
-    writeConfig(config as never);
-    const displayValue = canonical.toLowerCase().includes('key') ? maskApiKey(String(value)) : String(value);
+    updateConfig({ [canonical]: coerced } as never);
+    const displayValue = String(value);
     console.log(`✅ Set ${canonical} = ${displayValue}`);
 
-    // A key without a provider configures nothing. Say so here, where the user
-    // is looking, instead of letting them discover it from features that
-    // quietly do nothing.
-    if (canonical === 'llm.apiKey' && !(config.llm as { provider?: string } | undefined)?.provider) {
-      console.log('⚠️  No llm.provider is set, so this key is not used yet and LLM features stay off.');
-      console.log('    Set one with: memesh config set llm.provider <anthropic|openai|ollama>');
-    }
   });
 
 configCmd
   .command('unset')
-  .description('Remove a config value (supports nested keys like llm.apiKey)')
+  .description('Remove a config value (ordinary settings only)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .action((key) => {
-    const canonical = SET_KEY_ALIASES[key] ?? key;
+    const canonical = key;
     if (!ALLOWED_KEYS.has(canonical)) {
       console.error(`Unknown key: ${key}`);
       console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
       process.exit(1);
     }
-    const config = readConfig() as Record<string, unknown>;
-    const removed = deleteNested(config, canonical.split('.'));
+    const removed = canonical in readConfig();
+    updateConfig({ [canonical]: undefined } as never);
     if (!removed) {
       console.log(`(no change — ${canonical} was not set)`);
       return;
     }
-    writeConfig(config as never);
     console.log(`✅ Removed ${canonical}`);
   });
 
@@ -1933,89 +1663,10 @@ program
     process.exit(run.status ?? 1);
   });
 
-// --- telemetry ---
-//
-// Exposes the contents of the `llm_telemetry` table written by every
-// callLLM attempt across the 5 Smart-Mode flows. Lets a user answer
-// "is my LLM pipeline actually working?" without diving into SQLite —
-// surfaces the same data the Insights / Analytics dashboard tabs
-// will consume programmatically. Default window is 30 days.
-program
-  .command('telemetry')
-  .description('Show LLM call telemetry (per-flow scorecard for the last N days)')
-  .option('--window <days>', 'Look-back window in days (default 30)', wholeNumber('--window'), 30)
-  .option('--prune <days>', 'Delete rows older than N days BEFORE rendering (closes v4.2.0 retention gap)', wholeNumber('--prune', 0))
-  .option('--json', 'Output as JSON')
-  .action(async (opts) => {
-    // `--window abc` parses to NaN, which reached `new Date(NaN).toISOString()`
-    // and threw a RangeError with a stack trace. The guard that used to sit
-    // here — "Commander's parser cannot reject it, so the check belongs
-    // here" — was right about the OLD parser, which returned NaN and let it
-    // through. `wholeNumber` on the option declarations above rejects it
-    // before the action runs, for these two flags and for every other
-    // numeric flag in the CLI, which is why this block is gone rather than
-    // duplicated.
-    await withDatabase(async () => {
-      const { summariseTelemetry, pruneTelemetry } = await import('../../core/llm-telemetry.js');
-      let pruneResult: { deletedRows: number; cutoffIso: string; totalRowsAfter: number } | null = null;
-      if (typeof opts.prune === 'number' && Number.isFinite(opts.prune) && opts.prune >= 0) {
-        pruneResult = pruneTelemetry({ olderThanDays: opts.prune });
-      }
-      const summaries = summariseTelemetry(opts.window);
-      if (opts.json) {
-        console.log(JSON.stringify({ pruned: pruneResult, summaries }, null, 2));
-        return;
-      }
-      if (pruneResult) {
-        console.log(`Pruned ${pruneResult.deletedRows} row${pruneResult.deletedRows === 1 ? '' : 's'} older than ${opts.prune} days.`);
-        console.log('');
-      }
-      if (summaries.length === 0) {
-        console.log(`No LLM telemetry recorded in the last ${opts.window} days.`);
-        console.log(`(Smart-Mode flows write rows automatically — run \`memesh dream run\`, \`memesh dream patterns\`, or trigger a session with errors to populate.)`);
-        return;
-      }
-      console.log(`LLM telemetry — last ${opts.window} days`);
-      console.log('');
-      for (const s of summaries) {
-        const successRate = s.total_attempts > 0 ? Math.round((s.successes / s.total_attempts) * 100) : 0;
-        console.log(`▸ ${s.flow}`);
-        console.log(`    calls:        ${s.total_calls} (${s.total_attempts} provider attempts)`);
-        console.log(`    success rate: ${successRate}%  (${s.successes} ok, ${s.failures} failed)`);
-        if (s.fallback_used > 0) {
-          console.log(`    fallback used: ${s.fallback_used} time${s.fallback_used === 1 ? '' : 's'}  ⚠️  primary failed`);
-        }
-        if (s.median_latency_ms != null) {
-          console.log(`    median latency: ${s.median_latency_ms}ms`);
-        }
-        const okFail = (rec: Record<string, { ok: number; fail: number }>) =>
-          Object.entries(rec).map(([k, v]) => `${k}=${v.ok}/${v.ok + v.fail}`).join(', ');
-        const providers = okFail(s.by_provider);
-        if (providers) console.log(`    by provider:  ${providers}`);
-        const models = okFail(s.by_model);
-        if (models) console.log(`    by model:     ${models}`);
-        const projects = okFail(s.by_project);
-        if (projects) console.log(`    by project:   ${projects}`);
-        const errors = Object.entries(s.by_error_class);
-        if (errors.length > 0) {
-          const errStr = errors.sort((a, b) => b[1] - a[1]).map(([c, n]) => `${c}=${n}`).join(', ');
-          console.log(`    error classes: ${errStr}`);
-        }
-        if (s.sample_errors.length > 0) {
-          console.log(`    recent errors:`);
-          for (const e of s.sample_errors) {
-            console.log(`      • [${e.error_class ?? 'unknown'}] ${e.message.slice(0, 100)}`);
-          }
-        }
-        console.log('');
-      }
-    });
-  });
-
 // --- kg backfill ---
 //
 // Heuristic relation backfill — fixes the orphan-entity problem in
-// the KG without an LLM call. Two rules: tag co-occurrence (≥ 2
+// the KG using deterministic rules. Two rules: tag co-occurrence (≥ 2
 // shared topical tags → `related-to`) and project clustering
 // (orphan lesson / decision in project X → `belongs-to-project`
 // edge to the most-recent release / feature in that project).
@@ -2025,7 +1676,7 @@ const kgCmd = program
 
 kgCmd
   .command('backfill-relations')
-  .description('Propose / apply heuristic relations to connect orphan entities (no LLM)')
+  .description('Propose / apply deterministic relations to connect orphan entities')
   .option('--project <name>', 'Restrict to one project')
   .option('--dry-run', 'Show proposals without writing (default off — use to preview)')
   .option('--max-per-source <n>', 'Max edges per orphan (default 3)', wholeNumber('--max-per-source'), 3)
@@ -2201,7 +1852,6 @@ program
   .description('Verify local install health and show actionable fixes')
   .option('--json', 'Output machine-readable diagnostics as JSON')
   .option('--probe-http', 'Also probe the local HTTP server health endpoint')
-  .option('--probe', 'Make one small live call to the configured LLM to confirm it actually answers')
   .option('--url <url>', 'Base URL for --probe-http', 'http://127.0.0.1:3737')
   .option('--fix', 'Apply the whitelisted fixes doctor prescribes (asks per fix; --yes skips asking)')
   .option('--yes', 'With --fix: apply without asking')
@@ -2211,7 +1861,6 @@ program
       packageRoot,
       packageVersion: pkg.version,
       probeHttp: opts.probeHttp,
-      probeCapabilities: opts.probe,
       httpBaseUrl: opts.url,
     });
 
@@ -2219,10 +1868,8 @@ program
     // diagnosing branch in doctor.ts, never parsed from the human fix text.
     // The whitelist is deliberately short: hook wiring (installHooks backs
     // up settings.json and refuses on plugin machines), the keyword-index
-    // rebuild (free, local), and the db chmod. NOT here on purpose:
-    // `memesh reindex` (vector_index) re-embeds the whole database — on a
-    // paid provider that costs real money — and the rm/mv database branches
-    // destroy or move user data. Those stay human decisions.
+    // rebuild (free, local), and the db chmod. Destructive database repair
+    // branches remain human decisions.
     if (opts.fix) {
       // The dispatch is a Record, not an if-chain, so a fourth fixId added
       // in doctor.ts fails to COMPILE here instead of prompting the user
@@ -2269,9 +1916,8 @@ program
 
         // The verdict is a fresh doctor run, not trust in the fixes (the
         // inspectors are module-private, so re-run + diff beats an export
-        // refactor). Probes are FORCED OFF here whatever the original flags
-        // said: no whitelisted fix can change what a live LLM/HTTP probe
-        // answers, and --probe --fix would otherwise pay the LLM call twice.
+        // refactor). Probes are forced off because none of these local fixes
+        // can change a live HTTP result.
         // The diff is scoped to fixable checks for the same reason — a
         // "probe: pass → skipped" flip would be noise from the re-run's own
         // flags, not a fix taking effect.
@@ -2286,7 +1932,6 @@ program
           packageRoot,
           packageVersion: pkg.version,
           probeHttp: false,
-          probeCapabilities: false,
           httpBaseUrl: opts.url,
         });
         for (const c of result.checks) {
@@ -2317,249 +1962,12 @@ program
     }
   });
 
-// --- dream (LLM cluster compactor — #39 Phase 2) ---
+// --- proposal review ---
 //
-// `memesh dream` — runs the dreamer on recent episodic clusters,
-// writes pending proposals to dream_proposals (NEVER touches source
-// entities). User reviews via `memesh dream list` + `dream accept`
-// or `dream reject`. Mirrors Mem0's 4-op + Graphiti's
-// invalidate-don't-delete + Anthropic AutoDream's safety promise.
-const dreamCmd = program.command('dream').description('Consolidate noisy episodic memories into digests (LLM-driven, opt-in review)');
-
-dreamCmd
-  .command('run', { isDefault: true })
-  .description('Run a dream pass — propose digests for clusters of compactable entities')
-  .option('--project <name>', 'Restrict to one project')
-  .option('--dry-run', 'Compute proposals without writing to dream_proposals')
-  .option('--max-llm-calls <n>', 'Hard cap on LLM calls (default 100)', wholeNumber('--max-llm-calls'))
-  .option('--window-days <n>', 'Look-back window in days (default 56 = 8 weeks)', wholeNumber('--window-days'))
-  .option('--validate', 'Run a second LLM pass to cross-check each digest against its sources (doubles LLM calls per proposal; surfaces under flow=digest_validator in `memesh telemetry`)')
-  .option('--from-transcripts', 'EXPERIMENTAL: mine Claude Code session transcripts for this project (decisions/lessons/facts hidden in the conversation) and STAGE them as proposals for `dream accept`, instead of clustering existing entities. Scoped to the current project only — --project does not apply here. With --dry-run, lists sessions and conversation-turn counts without calling an LLM.')
-  .option('--if-due', 'For a scheduler (cron/launchd): only mine if `transcriptMining` is enabled in config AND at least --min-interval-hours have passed since this project was last mined; otherwise exit 0 doing nothing. Lets one frequently-firing entry self-throttle. Only meaningful with --from-transcripts.')
-  .option('--min-interval-hours <n>', 'With --if-due: minimum hours between mined runs for this project (default 24).', wholeNumber('--min-interval-hours'))
-  .action(async (opts) => {
-    // --from-transcripts is the transcript-source path (Task #18). B1 shipped
-    // discovery; B2 adds extraction + staging (still REVERSIBLE — proposals sit
-    // in dream_proposals for a human `dream accept`; nothing enters the KG).
-    if (opts.fromTranscripts) {
-      const windowDays = typeof opts.windowDays === 'number' && !Number.isNaN(opts.windowDays) ? opts.windowDays : 3;
-
-      // --dry-run: discovery + a real, cheap conversation-turn count. No LLM,
-      // no DB writes. (A "how many candidates" number would need an LLM pass or
-      // a new unpinned classifier — deliberately not shown, to avoid fake
-      // precision reading as "how many memories you'd get".)
-      if (opts.dryRun) {
-        const { scanTranscripts } = await import('../../core/transcript-source.js');
-        const { countConversationTurns } = await import('../../core/transcript-extractor.js');
-        const sessions = scanTranscripts({ windowDays });
-        console.log(`[dry-run] transcript sessions for this project in the last ${windowDays} day(s): ${sessions.length}`);
-        let totalTurns = 0;
-        for (const s of sessions) {
-          const turns = countConversationTurns(s.path);
-          totalTurns += turns;
-          console.log(`  ${s.sessionId}  ${turns} conversation turns  ${s.lineCount} lines  ${(s.sizeBytes / 1024).toFixed(0)}KB  ${s.modifiedAt}`);
-        }
-        console.log(`  total: ${totalTurns} conversation turns across ${sessions.length} session(s)`);
-        console.log('');
-        console.log('Run without --dry-run to extract high-value memories and stage them as proposals.');
-        return;
-      }
-
-      // --if-due (for a scheduler): gate on the opt-in switch + a per-project
-      // throttle BEFORE opening the DB or calling an LLM. Either "off" or "not
-      // due yet" exits 0 doing nothing, so a frequently-firing cron/launchd entry
-      // is harmless while the switch is off and self-paces once it is on.
-      if (opts.ifDue) {
-        const { isTranscriptMiningEnabled } = await import('../../core/config.js');
-        if (!isTranscriptMiningEnabled(readConfig())) {
-          console.log('Scheduled transcript mining is off (opt-in). Enable it with `memesh config set transcriptMining true`; this scheduled run will then start mining when due.');
-          return;
-        }
-        const { getProjectName } = await import('../../core/paths.js');
-        const { lastTranscriptMineAt, transcriptMiningDue } = await import('../../core/transcript-source.js');
-        const projectKey = getProjectName(process.cwd());
-        const intervalH = typeof opts.minIntervalHours === 'number' && !Number.isNaN(opts.minIntervalHours) ? opts.minIntervalHours : 24;
-        const last = lastTranscriptMineAt(projectKey);
-        if (!transcriptMiningDue(Date.now(), last, intervalH)) {
-          const agoH = last === null ? null : (Date.now() - last) / 3600_000;
-          console.log(`Not due yet: this project was mined ${agoH === null ? 'recently' : `${agoH.toFixed(1)}h ago`}; interval is ${intervalH}h. Nothing to do.`);
-          return;
-        }
-      }
-
-      // Real run: extract + stage. Requires an LLM (semantic extraction is not
-      // a rule). Same detectCapabilities + fallback wiring as `dream run`.
-      if (opts.project) {
-        console.log('note: --project does not scope --from-transcripts — the transcript source is always the current project. Ignoring --project.');
-      }
-      await withDatabase(async () => {
-        const { runTranscriptSource } = await import('../../core/transcript-extractor.js');
-        const { getDatabase } = await import('../../db.js');
-        const cfg = readConfig();
-        const llm = detectCapabilities().llm;
-        if (!llm) {
-          console.error('No LLM configured. Run `memesh config set llm.provider <anthropic|openai|ollama>` first (or set ANTHROPIC_API_KEY / OPENAI_API_KEY).');
-          console.error('LLM is required for `--from-transcripts` because extracting durable memory from prose is a semantic decision, not a rule.');
-          process.exit(1);
-        }
-        const result = await runTranscriptSource(getDatabase(), llm, {
-          windowDays,
-          maxLlmCalls: opts.maxLlmCalls,
-          fallbacks: cfg.llmFallbacks,
-        });
-        // Advance the per-project throttle on ANY completed run — manual or
-        // scheduled — so an `--if-due` cron does not re-mine right after a hand
-        // run. A scan that found nothing still counts: it did the work of looking.
-        const { getProjectName } = await import('../../core/paths.js');
-        const { recordTranscriptMine } = await import('../../core/transcript-source.js');
-        recordTranscriptMine(getProjectName(process.cwd()), Date.now());
-        console.log(`Transcript mining complete in ${result.durationMs}ms`);
-        console.log(`  sessions scanned:    ${result.sessionsScanned}`);
-        console.log(`  LLM calls:           ${result.llmCalls}`);
-        console.log(`  candidates extracted: ${result.candidatesExtracted}`);
-        console.log(`  proposals created:   ${result.proposalsCreated}`);
-        if (result.duplicatesSkipped > 0) console.log(`  duplicates skipped:  ${result.duplicatesSkipped} (already a pending proposal)`);
-        // B3: near-duplicates of an EXISTING entity are never a silent drop —
-        // name each candidate and the memory it matched so the reviewer can
-        // audit the decision (and re-remember it manually if the match was wrong).
-        if (result.nearDuplicatesSkipped > 0) {
-          console.log(`  near-duplicates skipped: ${result.nearDuplicatesSkipped} candidate(s) skipped as near-duplicates of existing memories`);
-          for (const d of result.nearDuplicates) {
-            console.log(`    - "${d.candidateName}" ~= existing "${d.matchedEntityName}" (distance ${d.distance.toFixed(3)})`);
-          }
-        }
-        if (result.secretsDropped > 0) console.log(`  secret-bearing candidates dropped: ${result.secretsDropped}`);
-        if (result.llmFailures > 0) console.log(`  LLM call failures:   ${result.llmFailures} (sessions not mined — retry when the provider is reachable)`);
-        if (result.parseFailures > 0) console.log(`  unparsable replies:  ${result.parseFailures} (chunk reply not valid JSON — likely truncated; those candidates were lost, retry)`);
-        // Never let a size-cap truncation be a silent 0: name each session that
-        // lost tail turns (the newest content, likeliest to hold a reversal).
-        if (result.cappedTurns > 0) {
-          console.log(
-            `  per-turn cap: ${result.cappedTurns} turn(s) were analysed only in part `
-            + `(the first 4,000 characters); the rest of each was not sent`,
-          );
-        }
-        if (result.truncatedTurns > 0) {
-          console.log(`  size-cap truncation: ${result.truncatedTurns} conversation turn(s) beyond the cap were NOT analysed`);
-          for (const t of result.truncatedSessions) {
-            console.log(`    - session ${t.sessionId}: ${t.truncatedTurns} tail turn(s) not analysed`);
-          }
-        }
-        if (result.skipped.length > 0) {
-          const reasonCounts = new Map<string, number>();
-          for (const s of result.skipped) reasonCounts.set(s.reason, (reasonCounts.get(s.reason) ?? 0) + 1);
-          console.log(`  skipped:             ${result.skipped.length}`);
-          for (const [reason, n] of reasonCounts) console.log(`    - ${reason}${n > 1 ? ` (×${n})` : ''}`);
-        }
-        if (result.proposalsCreated > 0) {
-          console.log('');
-          console.log('Review with: memesh dream list');
-          console.log('Accept:      memesh dream accept <id>');
-        }
-      });
-      return;
-    }
-    await withDatabase(async () => {
-      const { runDreamer } = await import('../../core/dreamer.js');
-      const { getDatabase } = await import('../../db.js');
-      // Fallback chain still comes from the config file — there is no env
-      // shape for it; only the PRIMARY provider is env-detectable.
-      const cfg = readConfig();
-      // detectCapabilities, not readConfig: `status` and `doctor` count an
-      // env-var API key as Smart Mode, and this gate reading only the config
-      // file made the same machine say "Smart Mode" and "No LLM configured"
-      // in consecutive commands.
-      const llm = detectCapabilities().llm;
-      if (!llm) {
-        console.error('No LLM configured. Run `memesh config set llm.provider <anthropic|openai|ollama>` first (or set ANTHROPIC_API_KEY / OPENAI_API_KEY).');
-        console.error('LLM is required for `memesh dream` because consolidation is a semantic decision, not a rule.');
-        process.exit(1);
-      }
-      const result = await runDreamer(getDatabase(), llm, {
-        project: opts.project,
-        dryRun: !!opts.dryRun,
-        maxLlmCalls: opts.maxLlmCalls,
-        windowDays: opts.windowDays,
-        fallbacks: cfg.llmFallbacks,
-        validateBeforeStage: !!opts.validate,
-      });
-      console.log(`${opts.dryRun ? '[dry-run] ' : ''}Dream pass complete in ${result.durationMs}ms`);
-      console.log(`  clusters scanned: ${result.clustersScanned}`);
-      // Grouping by calendar week instead of by meaning changes what gets
-      // proposed, so it is stated rather than left to be inferred from the
-      // digests. Same for candidates that carry no vector.
-      if (result.clusteringMode) {
-        console.log(`  grouped by:       ${result.clusteringMode === 'semantic' ? 'meaning (embeddings)' : 'calendar week (no embeddings)'}`);
-      }
-      if (result.clusteringNote) console.log(`    note: ${result.clusteringNote}`);
-      console.log(`  LLM calls:        ${result.llmCalls}`);
-      console.log(`  proposals created: ${result.proposalsCreated}`);
-      if (result.skipped.length > 0) {
-        console.log(`  skipped:           ${result.skipped.length}`);
-        // Group by the FULL reason text — earlier we split on ':' which
-        // truncated "LLM call failed: Anthropic API error: 401" down to
-        // just "LLM call failed" and silently dropped the actual error
-        // class. Surfacing the full reason makes outages debuggable
-        // without dropping into the dreamer module directly.
-        const reasonCounts = new Map<string, number>();
-        for (const s of result.skipped) {
-          reasonCounts.set(s.reason, (reasonCounts.get(s.reason) ?? 0) + 1);
-        }
-        for (const [reason, n] of reasonCounts) {
-          console.log(`    - ${reason}${n > 1 ? ` (×${n})` : ''}`);
-        }
-      }
-      if (!opts.dryRun && result.proposalsCreated > 0) {
-        console.log('');
-        console.log(`Review with: memesh dream list`);
-        console.log(`Accept all:  memesh dream accept --all`);
-      }
-    });
-  });
-
-dreamCmd
-  .command('patterns')
-  .description('Run pattern detector — surface emerging patterns/conventions/repeated mistakes per project (Phase 3)')
-  .option('--project <name>', 'Restrict to one project (default: all projects)')
-  .option('--dry-run', 'Compute proposals without writing to dream_proposals')
-  .option('--max-llm-calls <n>', 'Hard cap on LLM calls (default 10)', wholeNumber('--max-llm-calls'))
-  .option('--window-days <n>', 'Look-back window in days (default 30)', wholeNumber('--window-days'))
-  .option('--min-signal <n>', 'Minimum signal_score to include in scan (default 0.3)', unitFraction('--min-signal'))
-  .action(async (opts) => {
-    await withDatabase(async () => {
-      const { runPatternDetector } = await import('../../core/dreamer.js');
-      const { getDatabase } = await import('../../db.js');
-      const cfg = readConfig();
-      const llm = detectCapabilities().llm;
-      if (!llm) {
-        console.error('No LLM configured. Pattern detection requires an LLM.');
-        console.error('Run `memesh config set llm.provider <anthropic|openai|ollama>` first (or set ANTHROPIC_API_KEY / OPENAI_API_KEY).');
-        process.exit(1);
-      }
-      const result = await runPatternDetector(getDatabase(), llm, {
-        project: opts.project,
-        dryRun: !!opts.dryRun,
-        maxLlmCalls: opts.maxLlmCalls,
-        windowDays: opts.windowDays,
-        minSignal: opts.minSignal,
-        fallbacks: cfg.llmFallbacks,
-      });
-      console.log(`${opts.dryRun ? '[dry-run] ' : ''}Pattern detector complete in ${result.durationMs}ms`);
-      console.log(`  entities scanned: ${result.entitiesScanned}`);
-      console.log(`  LLM calls:        ${result.llmCalls}`);
-      console.log(`  patterns proposed: ${result.proposalsCreated}`);
-      if (result.skipped.length > 0) {
-        console.log(`  skipped:           ${result.skipped.length}`);
-        for (const s of result.skipped.slice(0, 5)) {
-          console.log(`    - ${s.project ?? '?'}: ${s.reason}`);
-        }
-      }
-      if (!opts.dryRun && result.proposalsCreated > 0) {
-        console.log('');
-        console.log(`Review with: memesh dream list`);
-      }
-    });
-  });
+// `memesh dream` is the compatibility name for reviewing proposals already
+// staged by an agent work package or deterministic rule. It never generates
+// a proposal or invokes a model.
+const dreamCmd = program.command('dream').description('Review agent-submitted proposals: list, show, accept, or reject');
 
 dreamCmd
   .command('list')
@@ -2584,8 +1992,8 @@ dreamCmd
       for (const p of proposals) {
         // Label transcript-sourced proposals distinctly so a reviewer knows a
         // digest was mined from a session's conversation, not clustered from
-        // existing entities — and conflict-judge proposals, whose acceptance
-        // creates a relation instead of an entity.
+        // existing entities — and retained legacy relation proposals, whose
+        // acceptance creates a relation instead of an entity.
         const srcLabel = p.kind === 'relation' ? ' (conflict)'
           : p.kind === 'product_improvement' ? ' (product improvement)'
             : p.source_kind === 'transcript' ? ' (transcript)' : '';
@@ -2599,64 +2007,6 @@ dreamCmd
         console.log('');
       }
       console.log(`Inspect: memesh dream show <id>   |   Apply: memesh dream accept <id>   |   Reject: memesh dream reject <id>`);
-    });
-  });
-
-// --- dream conflicts (contradiction judge — conflict pipeline P2) ---
-//
-// Candidate generation (conflict-candidates.ts) is deterministic and free;
-// this command spends the LLM on the tightest pairs and STAGES verdicts as
-// kind='relation' proposals for the same `dream list`/`accept`/`reject`
-// review every other machine proposal goes through. Nothing applies
-// automatically; UNRELATED verdicts are remembered so a pair is never
-// re-bought.
-dreamCmd
-  .command('conflicts')
-  .description('Judge semantically-close memory pairs for contradiction / supersession / duplication (LLM) and stage relation proposals for review')
-  .option('--max-pairs <n>', 'Judge at most N of the tightest candidate pairs this run (default 20)', wholeNumber('--max-pairs'))
-  .option('--dry-run', 'Show how many candidates are queued without calling an LLM or writing anything')
-  .action(async (opts) => {
-    await withDatabase(async () => {
-      const cfg = readConfig();
-      const llm = detectCapabilities().llm;
-      if (!llm) {
-        console.error('No LLM configured. Run `memesh config set llm.provider <anthropic|openai|ollama>` first (or set ANTHROPIC_API_KEY / OPENAI_API_KEY).');
-        console.error('LLM is required for `memesh dream conflicts` because "do these two entries disagree" is a semantic judgement, not a rule.');
-        process.exit(1);
-      }
-      const { judgeConflicts, CONFLICT_JUDGE_MAX_PAIRS } = await import('../../core/conflict-judge.js');
-      const { getDatabase } = await import('../../db.js');
-      const result = await judgeConflicts(getDatabase(), llm, {
-        maxPairs: typeof opts.maxPairs === 'number' && !Number.isNaN(opts.maxPairs) ? opts.maxPairs : CONFLICT_JUDGE_MAX_PAIRS,
-        dryRun: !!opts.dryRun,
-        fallbacks: cfg.llmFallbacks,
-      });
-      console.log(`${opts.dryRun ? '[dry-run] ' : ''}Conflict pass complete in ${result.durationMs}ms`);
-      console.log(`  candidate pairs available: ${result.candidatesAvailable}`);
-      if (opts.dryRun) {
-        console.log('  (dry run — no LLM called, nothing judged or written)');
-        return;
-      }
-      console.log(`  LLM calls:      ${result.llmCalls}`);
-      console.log(`  judged:         ${result.judged} (${result.unrelated} unrelated, remembered so they are never re-bought)`);
-      console.log(`  staged:         ${result.staged} relation proposal(s)`);
-      if (result.llmFailures > 0) {
-        // A parse failure is NOT a verdict — those pairs stay unjudged and
-        // return as candidates next run, AT THE HEAD of the list (it is
-        // sorted tightest-first): a model that reliably fails on the same
-        // pairs will re-buy them every run, which this line makes visible.
-        console.log(`  failed:         ${result.llmFailures} (unparseable or errored LLM responses; those pairs stay at the head of the candidate list and are retried next run)`);
-      }
-      if (result.aborted) {
-        // Everything counted above is real, committed work — say so before
-        // the error, or a re-run's smaller numbers look like the whole story.
-        console.error(`  ABORTED after the work above: ${result.aborted}`);
-        process.exit(1);
-      }
-      if (result.staged > 0) {
-        console.log('');
-        console.log('Review: memesh dream list   |   Apply: memesh dream accept <id>   |   Reject: memesh dream reject <id>');
-      }
     });
   });
 
@@ -2747,11 +2097,6 @@ dreamCmd
         console.error('See pending ids with: memesh dream list');
         process.exit(1);
       }
-      // A transcript accept schedules a fire-and-forget embed for the new entity
-      // (so the next transcript run's vector dedup can see it). withDatabase
-      // closes the DB in its finally, so flush BEFORE it does or the write lands
-      // on a closing DB and the dedup gap stays open in the real path. remember
-      // flushes for the same reason (see the remember command).
       console.log(`Applied proposal #${result.proposalId}`);
       if (result.kind === 'product_improvement') {
         console.log(`  product improvement: ${result.digestEntityName}`);
@@ -2904,8 +2249,8 @@ program
 //
 // CLI counterpart to the dashboard FeedbackWidget. Builds the same
 // pre-filled GitHub issue URL (title + body + labels) and opens it
-// in the default browser. Same transparency contract: install_id
-// and doctor diagnostics are only included when the user opts in.
+// in the default browser. The command previews the public body; diagnostics
+// are included by default and can be omitted with --no-diagnostics.
 program
   .command('feedback')
   .description('Open a pre-filled GitHub issue (bug / feature / question) with optional diagnostics')
@@ -2982,244 +2327,41 @@ program
     const { command, args } = feedbackBrowserOpenCommand(process.platform, url);
     try {
       const child = spawn(command, args, { stdio: 'ignore', detached: true });
-      child.unref();
-      console.log(`Opened browser to file ${fbType} issue.`);
-      console.log('Edit the title + body before submitting.');
+      const opened = await new Promise<boolean>((resolve) => {
+        child.once('spawn', () => resolve(true));
+        child.once('error', () => resolve(false));
+      });
+      if (opened) {
+        child.unref();
+        console.log(`Opened browser to file ${fbType} issue.`);
+        console.log('Edit the title + body before submitting.');
+      } else {
+        console.log('Could not open browser. URL:');
+        console.log(url);
+      }
     } catch {
       console.log('Could not open browser. URL:');
       console.log(url);
     }
   });
-
-// --- reindex ---
-program
-  .command('reindex')
-  .description('Regenerate vector embeddings for all entities (--fts rebuilds the keyword index instead)')
-  .option('--namespace <namespace>', 'Reindex only entities in this namespace')
-  .option('--fts', 'Rebuild the full-text keyword index instead of the vector index')
-  .option(
-    '--discard-generation',
-    'Throw away a half-built vector index left by an interrupted rebuild, without rebuilding',
-  )
+program.command('reindex')
+  .description('Rebuild the full-text keyword index')
+  .requiredOption('--fts', 'Rebuild the full-text keyword index')
   .option('--json', 'Output as JSON')
-  // `--vectors` is retired. It is registered here ONLY so Commander does not
-  // answer with its bare "unknown option" — which reads as a typo and teaches
-  // nothing — and the action refuses it below with what to run instead. Same
-  // treatment the retired `consolidate` command gets. Deletable at the next
-  // major. It is hidden so it does not appear in --help as a live option.
-  .addOption(new Option('--vectors').hideHelp())
   .action(async (opts) => {
-    if (opts.vectors) {
-      if (opts.json) {
-        console.log(JSON.stringify({
-          refused: true,
-          reason: 'the --vectors flag is retired',
-          fix: 'run plain memesh reindex; to change provider first: memesh config set embedder.provider ollama|openai',
-          indexTouched: false,
-        }));
-        process.exit(1);
-      }
-      console.error('`memesh reindex --vectors` has been retired.'); // retired-flag-message: scan skips this line
-      console.error('');
-      console.error('It existed to consent to dropping every stored embedding before a refill.');
-      console.error('A rebuild now happens beside the live index and replaces it only when');
-      console.error('complete, so there is nothing left to consent to.');
-      console.error('');
-      console.error('Run plain `memesh reindex`. To change embedding provider first:');
-      console.error('  memesh config set embedder.provider ollama   (or openai)');
-      process.exit(1);
-    }
-    requireOneOf(opts.namespace, NAMESPACES, '--namespace');
-
-    // The deliberate way out of a half-built generation. Two situations need it:
-    // a rebuild the user has decided to abandon (the staging index otherwise sits
-    // on disk indefinitely, roughly doubling vector storage, and nothing reclaims
-    // it), and a generation whose marker cannot be read, where the code refuses
-    // to guess between resuming — which could merge two embedding spaces — and
-    // discarding, which throws away work already paid for.
-    if (opts.discardGeneration) {
-      await withDatabase(async () => {
-        const read = readVectorGeneration();
-        const staged = generationRowIds().size;
-        if (read.state === 'none' && staged === 0) {
-          if (opts.json) console.log(JSON.stringify({ discarded: false, staged: 0 }));
-          else console.log('Nothing to discard: there is no half-built vector index.');
-          return;
-        }
-        const describe = read.state === 'open'
-          ? `${read.info.dimension}-dim, provider ${read.info.provider}, started ${read.info.startedAt}`
-          : read.state === 'unreadable'
-            ? `marker unreadable (${read.detail})`
-            : 'no marker';
-        discardVectorGeneration();
-        if (opts.json) {
-          console.log(JSON.stringify({ discarded: true, staged, generation: read, liveIndexTouched: false }));
-        } else {
-          console.log(
-            `Discarded a half-built vector index: ${staged} staged vectors (${describe}).\n` +
-            '   Your live index was not touched. Run `memesh reindex` to build a new one.'
-          );
-        }
-      });
-      return;
-    }
-    try {
-      // The keyword index normally rebuilds itself once, on the first open
-      // after an upgrade, guarded by a version marker in memesh_metadata. That
-      // marker only moves forward, which leaves one state it cannot describe:
-      // a database migrated by this version, then written to by an older one
-      // that does not know the marker exists. Those memories are indexed with
-      // the old rules and re-upgrading short-circuits past them, so a
-      // partial-phrase query never finds them.
-      //
-      // Users reach that state legitimately — an npm-global and a
-      // plugin-marketplace install side by side, or a downgrade to recover
-      // from a bad release. This is the way out, and `memesh doctor` points
-      // here when it detects it.
-      if (opts.fts) {
-        await withDatabase(async () => {
-          const { entities } = reindexFts();
-          if (opts.json) {
-            console.log(JSON.stringify({ rebuilt: 'fts', entities }));
-          } else {
-            console.log(`✅ Keyword index rebuilt from ${entities} active memories.`);
-          }
-        });
-        return;
-      }
-
-      // A full rebuild builds a new generation before anything is replaced, so
-      // it is no longer destructive — but a provider that cannot produce a
-      // vector at the configured width will fill nothing, and the run would
-      // spend its whole length discovering that. `canRefillVectorIndex`
-      // embeds one probe string and measures it, which is the only honest
-      // form of the question. `isEmbeddingAvailable` cannot answer it: it
-      // reports which provider the CONFIG names and says yes for openai and
-      // ollama without checking a key, reaching an endpoint or comparing a
-      // width.
-      if (!opts.namespace && !(await canRefillVectorIndex())) {
-        // Two different problems wore one message. "Unconfigured" and
-        // "configured but not answering" need opposite advice: the first user
-        // has no key or server to check, and was told to check one.
-        const embedder = detectCapabilities().embeddings;
-        const written = readConfig().embedder?.provider;
-        // Three states, three sentences. "Absent" and "set to something MeMesh
-        // does not know" both resolve to keyword-only, and the first version of
-        // this message called both "no provider is configured" — so a user with
-        // a typo'd provider saw `config list` name one and this line deny it.
-        const known = embedder === 'openai' || embedder === 'ollama';
-        const invalid = written !== undefined && !known;
-        const unconfigured = written === undefined && !known;
-        const reason = invalid
-          ? `embedder.provider is set to '${written}', which is not a provider MeMesh knows`
-          : unconfigured
-            ? 'no embedding provider is configured, so there is nothing to build vectors with'
-            : 'could not produce a test embedding at the configured vector width';
-        const fix = invalid || unconfigured
-          ? (invalid ? 'Set it to one MeMesh knows: ' : 'Pick one first: ') +
-            '`memesh config set embedder.provider ollama` (local, needs `ollama serve`) ' +
-            'or `memesh config set embedder.provider openai` (needs OPENAI_API_KEY). Until then, recall ' +
-            'runs on keyword search, which needs no rebuild.'
-          : 'Check that Ollama is running (or that your OpenAI API key is valid), then run this again. ' +
-            '`memesh doctor` reports which provider is configured.';
-        if (opts.json) {
-          console.log(JSON.stringify({ refused: true, reason, fix, indexTouched: false }));
-        } else {
-          console.error(
-            `❌ Nothing was rebuilt: ${reason}.\n` +
-            '   Your existing index is untouched and still answering queries.\n' +
-            `   ${fix}`
-          );
-        }
-        process.exit(1);
-      }
-
-      await withDatabase(async () => {
-        const result = await reindex({ namespace: opts.namespace });
-
-        // Two questions, and the tick requires both answered yes: is every
-        // memory holding a vector, and did everything this run tried to write
-        // actually get written. The row count alone answers only the first,
-        // and when the index is already full it answers it with the STALE
-        // vectors — so a provider switch that refused every write reported
-        // itself complete and exited 0. That is the case the command is for.
-        // A third question, because the first two cannot see it. `missingVectors`
-        // is counted against whatever is LIVE, so when the staging index was
-        // refused that is the old index — complete by construction — and the run
-        // read as success while stderr said the new one was not switched in.
-        const incomplete = result.missingVectors > 0
-          || result.failed > 0
-          || result.generationSwapped === false
-          || result.abortedAfter !== null;
-
-        if (opts.json) {
-          console.log(JSON.stringify(result));
-        } else {
-          // Not a tick when the run could not embed everything. Saying so is the
-          // whole point of counting outcomes.
-          console.log(incomplete ? `⚠️  Reindex incomplete:` : `✅ Reindex complete:`);
-          console.log(`   Processed: ${result.processed}`);
-          console.log(`   Embedded:  ${result.embedded}`);
-          console.log(`   Skipped:   ${result.skipped}`);
-
-          if (incomplete) {
-            if (result.abortedAfter !== null) {
-              console.log(
-                `   Stopped early after ${result.abortedAfter} entities: the provider failed ` +
-                `repeatedly. Everything embedded so far is kept — run this again to continue.`
-              );
-            }
-            if (result.generationSwapped === false) {
-              console.log(
-                `   The new index was NOT switched in, so your existing index is untouched ` +
-                `and still answering queries.`
-              );
-            }
-            if (result.missingVectors > 0) {
-              console.log(`   Still without a vector: ${result.missingVectors}`);
-            }
-            if (result.failed > 0 && result.missingVectors === 0) {
-              console.log(
-                `   Could not be regenerated: ${result.failed} ` +
-                `(these still hold their previous embedding)`
-              );
-            }
-            for (const [outcome, count] of Object.entries(result.outcomes)) {
-              if (outcome !== 'stored' && count > 0) console.log(`     ${outcome}: ${count}`);
-            }
-          } else if (!result.pendingReindexCleared) {
-            // Everything asked for succeeded, but another namespace is behind, so
-            // the database-wide flag stays set. Saying so beats a bare tick next
-            // to a `memesh doctor` that still reports a reindex as outstanding.
-            console.log(
-              `   Note: ${result.missingVectorsDatabaseWide} memories in other namespaces still ` +
-              `have no vector, so the reindex-needed flag stays set.`
-            );
-          }
-        }
-
-        // Exit non-zero so a script that shells out to this can tell an
-        // incomplete run from a complete one. `✅` on stdout was the only
-        // signal before, and it was printed either way.
-        if (incomplete) process.exitCode = 1;
-      });
-    } catch (err) {
-      if (err instanceof Error) {
-        if (opts.json) console.log(JSON.stringify({ refused: true, reason: err.message, indexTouched: false }));
-        else console.error(`❌ Reindex failed: ${err.message}`);
-        process.exit(1);
-      }
-      throw err;
-    }
+    await withDatabase(() => {
+      const result = reindexFts();
+      console.log(opts.json ? JSON.stringify(result) : `Keyword index rebuilt (${result.entities} entities).`);
+    });
   });
 
 // --- status ---
 program
   .command('status')
-  .description('Show MeMesh status and capabilities')
+  .description('Show MeMesh status')
   .option('--cached', 'Use cached update info only (skip fresh npm lookup)')
   .action(async (opts) => {
-    // Every other line below reports on capabilities, install channel and
+    // Every other line below reports on the install channel and
     // the update check — none of which touch the database — so a corrupt
     // or unreadable file was invisible here and `status` printed as though
     // everything were fine. `withDatabase` is the one open every other
@@ -3228,7 +2370,6 @@ program
     // prints a single "healthy-looking" line.
     await withDatabase(() => {});
 
-    const caps = detectCapabilities();
     const { getCurrentInstallChannel, getInstallChannelSupport } = await import('../../core/install-channel.js');
     const install = getCurrentInstallChannel({ packageRoot });
     const installSupport = getInstallChannelSupport(install, packageRoot);
@@ -3236,14 +2377,6 @@ program
     const update = await getUpdateCheck(pkg.version, { preferFresh: !opts.cached });
 
     console.log(`MeMesh v${pkg.version}`);
-    console.log(`Search level: ${caps.searchLevel} (${caps.searchLevel === 1 ? 'Smart Mode' : 'Core'})`);
-    console.log(`Embeddings: ${caps.embeddings}`);
-    // `?? 'default'` and not `${model}`: a provider set without a model is
-    // normal — each one has a built-in default — and printing the literal
-    // word "undefined" made a working setup look broken. The other half of
-    // `LLM: undefined (undefined)`, a key with no provider, is now filtered
-    // out in detectCapabilities and reaches this line as "not configured".
-    console.log(`LLM: ${caps.llm ? `${caps.llm.provider} (${caps.llm.model ?? 'default'})` : 'not configured'}`);
     console.log(`Install method: ${installSupport.label}`);
 
     for (const line of formatUpdateCheckStatus(update)) {

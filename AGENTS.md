@@ -23,7 +23,18 @@ host is recallable from all of them. Not installed yet? Follow
      field out if it was not said.
 3. **"What do you remember?"** — call `briefing` and relay its content. Do
    not answer from your own conversation context.
-4. **When you need another agent** — to hand off, to ask, to report back —
+4. **When memory could be condensed from a calendar cluster or a recent Claude Code session** —
+   when the host supports interactive prompts, offer concise choices in the
+   user's conversation language, such as **Dispatch agent task**, **Later**, or
+   **Don't suggest again this session**.
+   The last choice suppresses only this session's prompt; it does not create a
+   durable opt-out. Dispatch means
+   using `work_package` in this already-running agent session; it does not mean
+   the Dashboard can start or wake an agent. Prepare either one calendar-selected
+   digest package or, when the MCP client supplies one unambiguous matching
+   workspace root, one package from its newest Claude Code session's visible
+   turns. Submit one bounded result for human review or defer without writing.
+5. **When you need another agent** — to hand off, to ask, to report back —
    first use `message discover` with the exact project when you do not already
    know the recipient. It lists only live registrations and their routing IDs,
    host kind, declared model/current work, generation, and lease; missing
@@ -35,10 +46,11 @@ host is recallable from all of them. Not installed yet? Follow
    `recipient`; poll first, then fetch each returned `message_id`. Fetching
    does not acknowledge.
 
-## All 11 MCP tools
+## All 12 MCP tools
 
 | Tool | Purpose |
 |---|---|
+| `work_package` | Prepare one bounded untrusted digest (calendar-selected) or transcript package from the newest Claude Code session under the client's single matching MCP workspace root; submit one strictly validated result for pending human review or defer without durable change. Submission retains bounded redacted source turns for comparison; agents cannot apply or reject, and hashes identify freshness and workspace scope rather than authentication. |
 | `remember` | Store knowledge as an entity with observations, tags, and relations |
 | `recall` | Search stored knowledge (words are OR-ed, ranked by relevance); empty query lists recent |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |
@@ -78,9 +90,8 @@ host is recallable from all of them. Not installed yet? Follow
   before concluding anything.
 - Every recall answer carries a `retrieval` block that says how it was
   produced — read it instead of guessing: `truncated: true` means the
-  window filled and more may exist; `degraded: true` means semantic search
-  is configured but could not run, so you are seeing keyword-only results
-  right now (worth telling the user, and `memesh doctor` explains why).
+  window filled and more may exist. Recall is local FTS5 search; do not
+  describe results as semantic, vector-ranked, or model-generated.
 
 ## What Claude Code already does — do not double-write
 
@@ -94,7 +105,7 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
 - **PostToolUse (ExitPlanMode|AskUserQuestion)** reminds you to `remember` a
   decision just made — once per tool per session. It only reminds; unlike
   the hooks above, it writes nothing to the graph itself.
-- **Stop** captures session knowledge and turns failures into lessons.
+- **Stop** captures bounded session evidence, including observed error/fix signals.
 - **PreCompact** saves important knowledge before history is compressed.
 - **UserPromptSubmit** detects "remember this" intent in the prompt.
 - **PreToolUse (Bash)** fires accepted lesson-guards: a fenced warning
@@ -112,12 +123,16 @@ actually get stored.
 On a host with no hooks (Gemini CLI, Cursor, an MCP-only setup, …) the loop is
 fully manual, and it is worth running.
 
-Codex CLI can be either. Wired as an MCP server it has no hooks, like the
-above. Installed as a plugin (`codex plugin add memesh@pcircle-memesh`) it
-reads the same `hooks/hooks.json` manifest Claude Code does and runs the same
-hook scripts, so the topology is injected for you there too. If you are unsure
-which one you are in, `memesh doctor` names it: the "Hooks wired into Claude
-Code" row says which plugin runtime it found.
+Codex CLI can be either. Wired only as an MCP server it has no hooks, so call
+`briefing` yourself. Installed as a plugin
+(`codex plugin add memesh@pcircle-memesh`) it wires the MCP server and the
+separate SessionStart companion. On macOS or Linux, an eligible ordinary Codex
+CLI startup or resume registers that exact active thread for native delivery.
+The companion does not run Claude Code's eight capture/recall hooks or prove
+that topology was injected. Do not assume Codex Desktop or an unattached task
+registered; confirm the exact live session with `message discover`.
+`memesh doctor` reports installation and local integration health, but it does
+not prove host acceptance or model-visible delivery.
 
 ## Working on this repository (contributing agents)
 

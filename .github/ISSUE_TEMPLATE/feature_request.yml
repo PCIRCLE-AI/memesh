@@ -15,14 +15,16 @@ body:
       label: Component
       description: Which component would this feature affect?
       options:
-        - MCP Tools
-        - Memory System
-        - Knowledge Graph
-        - Agents
-        - Orchestrator
-        - Installation/Setup
+        - CLI
+        - MCP server/tools
+        - Dashboard
+        - Hooks/plugin
+        - Memory/knowledge graph
+        - Agent messaging
+        - Work packages/proposal review
+        - Installation/setup
         - Documentation
-        - New Component
+        - New component
     validations:
       required: true
 

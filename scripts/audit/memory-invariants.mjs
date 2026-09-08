@@ -105,9 +105,7 @@ function resolveDbPath(argv) {
  * Every durable-message column that holds a routing identity — mirrored from
  * `AGENT_MESSAGE_SCOPE_COLUMNS` in src/core/agent-scope-id.ts (this script
  * cannot import TypeScript). Keep the two in step: the set the write path
- * refuses, the set src/storage/graph-repairs.ts rewrites, and the set this
- * invariant watches must be equal, or the result is either a hole or an
- * invariant that is red forever.
+ * refuses and the set this read-only invariant reports must be equal.
  */
 const AGENT_MESSAGE_SCOPE_COLUMNS = [
   ['agent_messages', ['project', 'recipient']],
@@ -179,7 +177,7 @@ const INVARIANTS = [
     // Every reader that consumes observations AS CONTENT selects `content`
     // and nothing else (`grep -rn 'FROM observations' src/ dashboard/src/` —
     // `src/db.ts`, `src/knowledge-graph.ts`, `src/core/{operations,dreamer,
-    // why,conflict-judge}.ts`; the dashboard and HTTP transport read none of
+    // why}.ts`; the dashboard and HTTP transport read none of
     // it directly). The single place `created_at` is selected is
     // `splitFusedLessons` (src/storage/graph-repairs.ts), which MOVES rows and
     // never displays the column. So a second row with identical content is
@@ -300,51 +298,6 @@ const INVARIANTS = [
     row: (r) => r.name,
   },
   {
-    id: 'archived-entities-not-in-vector-index',
-    refs: '#D11',
-    says: 'no archived entity keeps a row in the vector index',
-    // Every slot an archived entity takes in a k-NN result is a slot an active
-    // memory does not get — the LIMIT is spent before any status filter can
-    // run. Measured on the maintainer's graph before the fix: 413 of 1013
-    // vectors belonged to archived entities, and 41 synthetic 1536-dim queries
-    // against a copy of it spent 290 of 820 top-20 slots (35.4%) on them.
-    //
-    // NO LIMIT: it would bound candidates, not violations. The cap is applied
-    // after the post-filter, by the caller.
-    sql: `SELECT e.id AS id, e.name AS name FROM entities e WHERE e.status = 'archived' ORDER BY e.id`,
-    // `entities_vec` is a vec0 virtual table, and this audit opens the database
-    // read-only without loading the extension — selecting from it raises
-    // "no such module: vec0", which the caller would print as a benign `skip`.
-    // A silent pass is the one outcome an invariant must never have, so the
-    // vector side is read from sqlite-vec's plain rowid map instead, here in
-    // the post-filter where a throw is exit 2 rather than a skip.
-    rows: (db, rows) => {
-      const table = (name) =>
-        db.prepare("SELECT 1 AS ok FROM sqlite_master WHERE type IN ('table','view') AND name = ?").get(name);
-      // No vector index in this database at all (sqlite-vec never loaded here,
-      // or a keyword-only install). Nothing to violate.
-      if (!table('entities_vec')) return [];
-      // The vec0 table exists but its rowid map does not: sqlite-vec changed
-      // its internal layout under us. Throwing is correct — this invariant can
-      // no longer answer its question, and saying nothing would read as "holds".
-      if (!table('entities_vec_rowids')) {
-        throw new Error(
-          'entities_vec exists but entities_vec_rowids does not — sqlite-vec shadow-table layout changed; this invariant needs updating',
-        );
-      }
-      // `id` carries the user rowid when the vec0 table declares a rowid alias
-      // and is NULL when it does not (memesh's does not). COALESCE reads both.
-      const indexed = new Set(
-        db
-          .prepare('SELECT COALESCE(id, rowid) AS entity_id FROM entities_vec_rowids')
-          .all()
-          .map((r) => Number(r.entity_id)),
-      );
-      return rows.filter((r) => indexed.has(r.id));
-    },
-    row: (r) => r.name,
-  },
-  {
     id: 'split-lesson-shell-carries-no-recall-history',
     refs: 'D15',
     says: 'an archived, emptied lesson shell that fed a split does not keep recall_hits/recall_misses that belong to no lesson',
@@ -391,8 +344,9 @@ const INVARIANTS = [
     // identity are two inboxes: a recipient that fetches under one never sees
     // what was sent under the other, and briefing counts unread per spelling.
     // A filesystem path is the spelling that is provably wrong rather than
-    // merely different — getProjectName cannot produce one at any of its three
-    // layers — so it is the shape the write path refuses and this watches.
+    // merely different — getProjectName cannot produce one — so it is the
+    // shape the write path refuses and this watches. Historical rows are
+    // reported, never rewritten: their intended identity is not inferable.
     // Measured before the fix on the maintainer's graph: recipient `/root` 20
     // rows beside `root` 25, and one project `/Users/…/memesh-llm-memory`.
     // No LIMIT inside the UNION: it would bound candidates per table, not

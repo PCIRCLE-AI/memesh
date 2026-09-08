@@ -58,13 +58,14 @@ describe('Installation Verification', () => {
       });
     });
 
-    it('should have a native Codex plugin manifest for the packaged MCP server', () => {
+    it('declares the bundled MCP server in the Codex plugin manifest', () => {
       const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
       const plugin = JSON.parse(fs.readFileSync('.codex-plugin/plugin.json', 'utf8'));
-      const mcp = JSON.parse(fs.readFileSync('.codex-plugin/mcp.json', 'utf8'));
       expect(plugin.version).toBe(pkg.version);
       expect(plugin.mcpServers).toBe('./.codex-plugin/mcp.json');
-      expect(mcp.memesh).toEqual({
+      const mcp = JSON.parse(fs.readFileSync(plugin.mcpServers, 'utf8'));
+      expect(Object.keys(mcp)).toEqual(['mcpServers']);
+      expect(mcp.mcpServers.memesh).toEqual({
         command: 'node',
         args: ['./dist/mcp/server.js'],
         cwd: '.',
@@ -184,7 +185,8 @@ describe('Installation Verification', () => {
 
     it('teaches durable message delivery without claiming stopped-session wakeup', () => {
       const skill = fs.readFileSync('skills/memesh/SKILL.md', 'utf8');
-      expect(skill).toContain('active compatible managed host');
+      expect(skill).toContain('bounded 45-second idle queue window');
+      expect(skill).toContain('This does not wake a stopped UI');
       expect(skill).toContain('removes polling');
       expect(skill).toContain('stopped, missing, or replaced session');
     });
@@ -201,8 +203,14 @@ describe('Installation Verification', () => {
       expect(install).not.toContain('memesh agent setup gemini');
       expect(guide).toContain('Experimental ACP runner (not release-gated)');
       expect(guide).toContain('owner-private');
-      expect(guide).toContain('presence-only/inbound-unavailable');
+      expect(install).toContain('No manual host setup is required');
+      expect(guide).toContain('No manual `agent setup` is required');
       expect(guide).toContain('stopped, missing, disconnected, or replaced');
+      for (const document of [install, guide]) {
+        expect(document).toContain('complete `project`');
+        expect(document).toContain('memesh briefing --json');
+        expect(document).toContain('repository basename');
+      }
     });
   });
 

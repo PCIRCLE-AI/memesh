@@ -12,10 +12,8 @@
  *                       vanished from every scoped view including the dashboard.
  *   --severity whatever was written into the graph as a tag nothing filters on.
  *
- * Two more commands crashed instead of answering: `export -o` into a directory
- * that does not exist, and `telemetry --window abc` (NaN reaching
- * `new Date().toISOString()`), each dumping a Node stack trace with the
- * absolute install path.
+ * Another command crashed instead of answering: `export -o` into a directory
+ * that does not exist dumped a Node stack trace with the absolute install path.
  *
  * Every test here asserts the exit code as well as the message. A validation
  * that prints a complaint and exits 0 is not a validation — a script cannot see
@@ -171,20 +169,6 @@ describe('CLI: flags reject values they do not understand', () => {
       const out = path.join(home, 'out.json');
       expect(runCli(['export', '-o', out]).exitCode).toBe(0);
       expect(fs.existsSync(out)).toBe(true);
-    });
-
-    it('`telemetry --window abc` says it needs a number', () => {
-      const r = runCli(['telemetry', '--window', 'abc']);
-      expect(r.exitCode).toBe(1);
-      // The message now comes from `wholeNumber`, the one coercion every
-      // numeric flag in the CLI shares, rather than from a guard this
-      // command carried alone.
-      expect(r.stderr + r.stdout).toContain('--window needs a whole number');
-      expect(r.stderr).not.toContain('RangeError');
-    });
-
-    it('`telemetry --window 7` still runs', () => {
-      expect(runCli(['telemetry', '--window', '7']).exitCode).toBe(0);
     });
   });
 

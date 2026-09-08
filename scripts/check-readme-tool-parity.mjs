@@ -22,8 +22,15 @@ const tools = [...contract.matchAll(/^\s{4}name:\s*'([^']+)',\n\s{4}(?:\/\/[^\n]
   .map(match => ({ name: match[1], description: match[3].trim() }));
 const names = tools.map(tool => tool.name);
 const nameSet = new Set(names);
-if (names.length !== 11 || nameSet.size !== names.length) {
-  errors.push(`canonical MCP source must contain 11 uniquely parseable top-level tools; found ${names.length}`);
+const definitions = [...contract.matchAll(/^\s{2}\{\n/gm)];
+if (names.length === 0) {
+  errors.push('canonical MCP source must contain at least one parseable top-level tool');
+}
+if (tools.length !== definitions.length) {
+  errors.push(`canonical MCP source has ${definitions.length} top-level tool definitions but only ${tools.length} parseable definitions`);
+}
+if (nameSet.size !== names.length) {
+  errors.push(`canonical MCP source must contain uniquely named top-level tools; found ${names.length} definitions`);
 }
 for (const tool of tools) {
   if (!tool.description) errors.push(`canonical MCP tool ${tool.name} has an empty description`);
@@ -41,28 +48,33 @@ const surfaceDigest = (surface) => createHash('sha256')
 const checkedSurfaces = new Set();
 if (lock.schema_version !== 'mcp-doc-contract/v2') errors.push('scripts/mcp-doc-contract.json: unsupported schema_version');
 if (lock.source_sha256 !== contractDigest) {
-  errors.push('scripts/mcp-doc-contract.json: canonical MCP source digest is stale; review every documented tool description');
+  errors.push(`scripts/mcp-doc-contract.json: canonical MCP source digest is stale; review every documented tool description, then set source_sha256 to ${contractDigest}`);
 }
 const checkLockedSurface = (file, surface) => {
   checkedSurfaces.add(file);
-  if (lock.surfaces?.[file] !== surfaceDigest(surface)) {
-    errors.push(`${file}: certified MCP documentation surface is stale for the current source contract; review its tool names and descriptions, then recertify scripts/mcp-doc-contract.json`);
+  const expected = surfaceDigest(surface);
+  if (lock.surfaces?.[file] !== expected) {
+    errors.push(`${file}: certified MCP documentation surface is stale for the current source contract; review its tool names and descriptions, then set its scripts/mcp-doc-contract.json hash to ${expected}`);
   }
 };
 const tableDocs = [
-  ['README.md', /## All 11[^\n]*\n([\s\S]*?)\n---/m],
-  ['README.zh-TW.md', /## .*11[^\n]*\n([\s\S]*?)\n---/m],
-  ['README.de.md', /## .*11[^\n]*\n([\s\S]*?)\n---/m],
-  ['AGENTS.md', /## All 11 MCP tools\n([\s\S]*?)(?=\n## )/m],
-  ['skills/memesh/SKILL.md', /## All 11 MCP tools\n([\s\S]*?)(?=\n## )/m],
+  ['README.md', /## All (\d+)[^\n]*\n([\s\S]*?)\n---/m],
+  ['README.zh-TW.md', /## [^\n]*?(\d+)[^\n]*(?:[Tt]ools|工具)\n([\s\S]*?)\n---/m],
+  ['README.de.md', /## [^\n]*?(\d+)[^\n]*(?:[Tt]ools|工具)\n([\s\S]*?)\n---/m],
+  ['AGENTS.md', /## All (\d+) MCP tools\n([\s\S]*?)(?=\n## )/m],
+  ['skills/memesh/SKILL.md', /## All (\d+) MCP tools\n([\s\S]*?)(?=\n## )/m],
 ];
 
 for (const [file, sectionPattern] of tableDocs) {
   const text = read(file);
-  const section = text.match(sectionPattern)?.[1];
+  const match = text.match(sectionPattern);
+  const section = match?.[2];
   if (!section) {
-    errors.push(`${file}: missing the bounded 11-tool table`);
+    errors.push(`${file}: missing the bounded tool table`);
     continue;
+  }
+  if (Number(match[1]) !== names.length) {
+    errors.push(`${file}: declares ${match[1]} tools, but the canonical registry contains ${names.length}`);
   }
   checkLockedSurface(file, section);
   const rows = [...section.matchAll(/^\|\s*`([^`]+)`\s*\|\s*([^|\n]+?)\s*\|\s*$/gm)]

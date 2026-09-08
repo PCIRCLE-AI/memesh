@@ -4,7 +4,6 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { redactSecrets, redactUserPaths, SECRET_PATTERN_SOURCES } from '../../src/core/paths.js';
-import { containsSecret, scrubSecrets } from '../../src/core/transcript-extractor.js';
 
 /**
  * redactSecrets guards two PUBLIC egresses — the dashboard's /v1/doctor and
@@ -176,8 +175,7 @@ describe('the pattern list is safe for the transcript drop gate too', () => {
   it.each(negatives.map((line) => [line.slice(0, 44), line]))(
     'does not drop %s…',
     (_label, line) => {
-      expect(containsSecret(line)).toBe(false);
-      expect(scrubSecrets(line)).toBe(line);
+      expect(redactSecrets(line)).toBe(line);
     },
   );
 
@@ -186,15 +184,15 @@ describe('the pattern list is safe for the transcript drop gate too', () => {
     // used 'gi'. `DB_PASSWORD=…` therefore passed the gate and reached the LLM
     // prompt while the same bytes were masked on the way out.
     for (const s of ['DB_PASSWORD=hunter2secret', 'export OPENAI_API_KEY=abcdef0123456789', 'SK-ANT-API03-abcdefghij', 'BEARER abcdefghijklmnopqrstuvwxyz0123']) {
-      expect(containsSecret(s), s).toBe(true);
-      expect(scrubSecrets(s), s).not.toBe(s);
+      expect(redactSecrets(s) !== s, s).toBe(true);
+      expect(redactSecrets(s), s).not.toBe(s);
     }
   });
 
   it('still drops and scrubs a real credential', () => {
     const secret = 'sk-ant-' + 'a1B2'.repeat(6);
-    expect(containsSecret(`context ${secret} context`)).toBe(true);
-    expect(scrubSecrets(`context ${secret} context`)).not.toContain(secret);
+    expect(redactSecrets(`context ${secret} context`) !== `context ${secret} context`).toBe(true);
+    expect(redactSecrets(`context ${secret} context`)).not.toContain(secret);
   });
 
   it('redacts an unusually long credential completely, with no tail left over', () => {
@@ -244,8 +242,8 @@ describe('the pattern list is safe for the transcript drop gate too', () => {
   it('requires a word boundary before the key prefix', () => {
     // Removing the leading \b makes every one of these true.
     for (const word of ['task-runner-v2', 'disk-usage-report', 'risk-level-high']) {
-      expect(containsSecret(word)).toBe(false);
+      expect(redactSecrets(word) !== word).toBe(false);
     }
-    expect(containsSecret('sk-proj-**********ZfQ9')).toBe(true);
+    expect(redactSecrets('sk-proj-**********ZfQ9') !== 'sk-proj-**********ZfQ9').toBe(true);
   });
 });

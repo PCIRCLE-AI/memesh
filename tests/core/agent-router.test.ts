@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { closeDatabase, openDatabase } from '../../src/db.js';
 import { sendAgentMessage } from '../../src/core/agent-messaging.js';
 import {
+  AGENT_ROUTER_PROTOCOL_VERSION,
   AgentRouter,
   AgentRouterProtocolError,
   createAgentRouterNotifier,
@@ -128,7 +129,7 @@ class RouterHostClient {
     clients.push(client);
     const requestId = randomUUID();
     client.write({
-      version: 1,
+      version: AGENT_ROUTER_PROTOCOL_VERSION,
       type: 'register',
       request_id: requestId,
       project: input.project,
@@ -152,7 +153,7 @@ class RouterHostClient {
 
   accept(frame: Frame): void {
     this.write({
-      version: 1,
+      version: AGENT_ROUTER_PROTOCOL_VERSION,
       type: 'host_accept',
       request_id: randomUUID(),
       attempt_id: frame.attempt_id,
@@ -166,7 +167,7 @@ class RouterHostClient {
 
   reject(frame: Frame, failureCode = 'busy'): void {
     this.write({
-      version: 1,
+      version: AGENT_ROUTER_PROTOCOL_VERSION,
       type: 'host_reject',
       request_id: randomUUID(),
       attempt_id: frame.attempt_id,
@@ -218,6 +219,64 @@ function send(db: ReturnType<typeof openDatabase>, recipient: string, key: strin
 }
 
 describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite + UDS integration', () => {
+  it('uses protocol version 2', () => {
+    expect(AGENT_ROUTER_PROTOCOL_VERSION).toBe(2);
+  });
+
+  it('preserves an invalid-field parse error from the live router', async () => {
+    const { db, socketPath, token } = setup();
+    await startRouter(db, socketPath, token);
+
+    await expect(sendAgentRouterRequest(socketPath, {
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(),
+      project: '', limit: 10, hops: 0,
+    })).rejects.toMatchObject({ code: 'invalid_field', message: expect.stringContaining('project') });
+  });
+
+  it.each([
+    { name: 'current parse error', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: '', ok: false,
+      error: { code: 'invalid_field', message: 'project must be a string.' }, expectedCode: 'invalid_field' },
+    { name: 'historical v1 unsupported type', version: 1, requestId: '', ok: false,
+      error: { code: 'unsupported_type', message: 'Unsupported router frame type.' }, expectedCode: 'router_version_mismatch' },
+    { name: 'legacy unsupported version', version: 1, requestId: '', ok: false,
+      error: { code: 'unsupported_version', message: 'Unsupported router protocol version.' }, expectedCode: 'router_version_mismatch' },
+    { name: 'foreign error ID', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: 'foreign', ok: false,
+      error: { code: 'invalid_field', message: 'project must be a string.' }, expectedCode: 'invalid_response' },
+    { name: 'empty success ID', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: '', ok: true,
+      error: undefined, expectedCode: 'invalid_response' },
+    { name: 'foreign success ID', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: 'foreign', ok: true,
+      error: undefined, expectedCode: 'invalid_response' },
+    { name: 'wrong-version parse error', version: 99, requestId: '', ok: false,
+      error: { code: 'invalid_field', message: 'project must be a string.' }, expectedCode: 'invalid_response' },
+    { name: 'malformed parse error', version: AGENT_ROUTER_PROTOCOL_VERSION, requestId: '', ok: false,
+      error: { code: 'invalid_field' }, expectedCode: 'invalid_response' },
+  ])('validates the one-shot response envelope: $name', async ({ version, requestId, ok, error, expectedCode }) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-envelope-'));
+    fs.chmodSync(dir, 0o700);
+    tempDirs.push(dir);
+    const socketPath = path.join(dir, 'router.sock');
+    const server = net.createServer(socket => {
+      socket.once('data', () => socket.end(`${JSON.stringify({
+        version, request_id: requestId, ok, error, result: { cards: [] },
+      })}\n`));
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      await expect(sendAgentRouterRequest(socketPath, {
+        version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(),
+        project: 'project-a', limit: 10, hops: 0,
+      })).rejects.toMatchObject({
+        code: expectedCode,
+        ...(expectedCode === 'invalid_field' ? { message: error?.message } : {}),
+      });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it('rejects a nominally successful response that omits its result object', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-response-'));
     fs.chmodSync(dir, 0o700);
@@ -226,7 +285,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     const server = net.createServer((socket) => {
       socket.once('data', (chunk) => {
         const request = JSON.parse(chunk.toString('utf8').trim()) as Frame;
-        socket.write(`${JSON.stringify({ version: 1, request_id: request.request_id, ok: true })}\n`);
+        socket.write(`${JSON.stringify({ version: AGENT_ROUTER_PROTOCOL_VERSION, request_id: request.request_id, ok: true })}\n`);
       });
     });
     await new Promise<void>((resolve, reject) => {
@@ -235,7 +294,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     });
     try {
       await expect(sendAgentRouterRequest(socketPath, {
-        version: 1,
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
         type: 'notify',
         request_id: randomUUID(),
         project: 'project-a',
@@ -256,7 +315,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
       socket.once('data', (chunk) => {
         const request = JSON.parse(chunk.toString('utf8').trim()) as Frame;
         socket.write(`${JSON.stringify({
-          version: 1,
+          version: AGENT_ROUTER_PROTOCOL_VERSION,
           request_id: request.request_id,
           ok: true,
           result: {},
@@ -269,7 +328,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     });
     try {
       await expect(sendAgentRouterRequest(socketPath, {
-        version: 1,
+        version: AGENT_ROUTER_PROTOCOL_VERSION,
         type: 'notify',
         request_id: randomUUID(),
         project: 'project-a',
@@ -290,7 +349,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
       socket.once('data', (chunk) => {
         const request = JSON.parse(chunk.toString('utf8').trim()) as Frame;
         socket.write(`${JSON.stringify({
-          version: 1,
+          version: AGENT_ROUTER_PROTOCOL_VERSION,
           request_id: request.request_id,
           ok: true,
           result: {
@@ -310,7 +369,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     });
     try {
       await expect(sendAgentRouterRequest(socketPath, {
-        version: 1, type: 'discover', request_id: randomUUID(),
+        version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(),
         project: 'project-a', limit: 10, hops: 0,
       })).rejects.toMatchObject({ code: 'invalid_response' });
     } finally {
@@ -512,7 +571,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     expect(second.generation).toBe(first.generation + 1);
     const message = send(db, 'principal-a', 'replacement');
     await expect(sendAgentRouterRequest(socketPath, {
-      version: 1, type: 'notify', request_id: randomUUID(), project: 'project-b',
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'notify', request_id: randomUUID(), project: 'project-b',
       delivery_id: message.delivery_id, hops: 0,
     })).rejects.toBeInstanceOf(AgentRouterProtocolError);
     await createAgentRouterNotifier(socketPath).notify({
@@ -653,7 +712,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     };
 
     const result = await sendAgentRouterRequest(socketPath, {
-      version: 1, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
     });
     expect(result.cards).toEqual([expect.objectContaining({
       session_id: 'session-codex',
@@ -683,7 +742,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     }
 
     const result = await sendAgentRouterRequest(socketPath, {
-      version: 1, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
     });
     expect((result.cards as Frame[]).map(card => [card.session_id, card.host_kind])).toEqual([
       ['session-codex-cli-queue', 'codex'],
@@ -707,7 +766,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
       socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-a',
     });
     const discover = () => sendAgentRouterRequest(socketPath, {
-      version: 1, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
     });
     const initial = await discover();
     expect(initial.cards).toEqual([expect.objectContaining({
@@ -717,7 +776,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     const initialLease = (initial.cards as Frame[])[0].lease_expires_at_ms as number;
     await new Promise(resolve => setTimeout(resolve, 10));
     await expect(sendAgentRouterRequest(socketPath, {
-      version: 1, type: 'heartbeat', request_id: randomUUID(), project: 'project-a',
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'heartbeat', request_id: randomUUID(), project: 'project-a',
       session_instance_id: 'session-a', connection_id: host.connectionId, generation: host.generation, hops: 0,
     })).resolves.toMatchObject({ generation: host.generation, lease_ms: 5_000 });
     const refreshed = await discover();
@@ -741,7 +800,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
       socketPath, token, project: 'project-a', principal: 'principal-superseded', session: 'session-superseded',
     });
     const current = await sendAgentRouterRequest(socketPath, {
-      version: 1, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
     });
     expect(current.cards).toEqual([expect.objectContaining({
       session_id: 'session-superseded', generation: replacement.generation,
@@ -751,12 +810,33 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
       'UPDATE agent_session_connections SET lease_expires_at_ms = ? WHERE connection_id = ?',
     ).run(Date.now() - 1, replacement.connectionId);
     const result = await sendAgentRouterRequest(socketPath, {
-      version: 1, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
     });
     const sessions = (result.cards as Frame[]).map(card => card.session_id);
     expect(sessions).not.toContain('session-superseded');
     expect(sessions).not.toContain('session-disconnected');
     expect(result.cards).toEqual([]);
+  });
+
+  it('does not dispatch an exact-session delivery through an expired registration', async () => {
+    const { db, socketPath, token } = setup();
+    await startRouter(db, socketPath, token, { lease_ms: 10_000 });
+    const expired = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-expired', session: 'session-expired',
+    });
+    db.prepare(
+      'UPDATE agent_session_connections SET lease_expires_at_ms = ? WHERE connection_id = ?',
+    ).run(Date.now() - 1, expired.connectionId);
+    const message = send(db, 'session-expired', 'exact-expired', 'session');
+
+    await expect(sendAgentRouterRequest(socketPath, {
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'notify', request_id: randomUUID(), project: 'project-a',
+      delivery_id: message.delivery_id, hops: 0,
+    })).resolves.toEqual({ delivered: false });
+    expect(expired.deliveries).toHaveLength(0);
+    expect(db.prepare(
+      'SELECT COUNT(*) AS count FROM agent_host_accepts WHERE delivery_id = ?',
+    ).get(message.delivery_id)).toEqual({ count: 0 });
   });
 
   it('retries after an adapter crash, dedupes host acceptance, and enforces hop/frame bounds', async () => {
@@ -787,7 +867,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     ).get(message.delivery_id)).toEqual({ count: 2 });
 
     await expect(sendAgentRouterRequest(socketPath, {
-      version: 1, type: 'notify', request_id: randomUUID(), project: 'project-a',
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'notify', request_id: randomUUID(), project: 'project-a',
       delivery_id: message.delivery_id, hops: 2,
     })).rejects.toMatchObject({ code: 'hop_limit' });
 

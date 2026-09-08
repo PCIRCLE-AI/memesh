@@ -22,23 +22,39 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_WAIT_MS,
   MAX_SOCKET_PATH_BYTES,
   REQUIRED_DIST,
+  assertClaudeModelIntakeArmingConfirmation,
+  assertClaudePluginIsolationConfirmation,
   assertCodexRanNoCommands,
   assertCodexReply,
+  assertInstalledCodexPluginJourney,
+  assertCompanionRunning,
   assertDistPresent,
+  assertExactCodexQueueRouting,
+  assertHostAcceptOnly,
+  assertNoHostOutcomeReceipts,
   assertIntakeReceipt,
+  assertMcpDiscoverCards,
+  assertMcpDenied,
+  assertMcpFetchedMessage,
   assertNativeAccepted,
+  assertNoLiveRegistrations,
   assertNotCi,
   assertSupportedPlatform,
   assertOutsideOwnerMemesh,
+  assertTaskOwnedCodexHome,
   assertRecipientUnavailable,
   assertSocketPathFits,
   awaitSessionDisconnect,
+  buildJourneyEnv,
+  buildLiveJourneyPayload,
+  claudeTrustedIntakePrompt,
   collectCodexAgentMessages,
   findIntakeReceipt,
   findLiveCards,
@@ -47,8 +63,16 @@ import {
   parseArgs,
   parseCodexThreadId,
   realpathAsFarAsPossible,
+  requestClaudePluginIsolationConfirmation,
+  requestClaudeModelIntakeArmingConfirmation,
   shouldRemoveWorkingDirectories,
 } from '../../scripts/qa/live-journey.mjs';
+import {
+  CLAUDE_PLUGIN_ISOLATION_CONFIRMATION,
+  LIVE_JOURNEY_SCHEMA_VERSION,
+  REQUIRED_LIVE_JOURNEY_STEPS,
+  REQUIRED_REGISTRATION_EVIDENCE,
+} from '../../scripts/lib/live-journey-contract.mjs';
 
 const THREAD = '01a05ead-98e8-7091-a770-81f7339d3b29';
 const MESSAGE_ID = 'b234ba88-fe4b-4f75-98b2-259c17097f41';
@@ -120,13 +144,20 @@ const RECEIPTS_WITH_INTAKE = [
 const RECEIPTS_WITHOUT_INTAKE = [RECEIPTS_WITH_INTAKE[0]];
 
 describe('parseArgs', () => {
+  it('accepts the bounded automatic Codex registration mode without a host', () => {
+    expect(parseArgs(['--codex-session-auto-registration'])).toMatchObject({
+      host: null,
+      mode: 'codex-session-auto-registration',
+    });
+  });
+
   it('accepts each supported host', () => {
-    expect(parseArgs(['--host', 'codex']).host).toBe('codex');
+    expect(parseArgs(['--host', 'codex', '--codex-home', '/private/tmp/codex-home']).host).toBe('codex');
     expect(parseArgs(['--host', 'claude']).host).toBe('claude');
   });
 
   it('defaults out/keep/wait-ms', () => {
-    const parsed = parseArgs(['--host', 'codex']);
+    const parsed = parseArgs(['--host', 'codex', '--codex-home', '/private/tmp/codex-home']);
     expect(parsed.out).toBeNull();
     expect(parsed.keep).toBe(false);
     expect(parsed.waitMs).toBe(DEFAULT_WAIT_MS);
@@ -137,8 +168,19 @@ describe('parseArgs', () => {
     expect(parsed).toMatchObject({ host: 'claude', out: 'report.json', keep: true, waitMs: 30_000 });
   });
 
+  it('requires an isolated Codex home instead of falling back to the owner configuration', () => {
+    expect(() => parseArgs(['--host', 'codex'])).toThrow(/requires --codex-home/);
+    expect(() => parseArgs(['--host', 'claude', '--codex-home', '/private/tmp/codex-home']))
+      .toThrow(/only with --host codex/);
+  });
+
   it('requires a host', () => {
-    expect(() => parseArgs([])).toThrow(/--host is required/);
+    expect(() => parseArgs([])).toThrow(/--host is required.*codex-session-auto-registration/);
+  });
+
+  it('rejects combining automatic registration with a host mode', () => {
+    expect(() => parseArgs(['--codex-session-auto-registration', '--host', 'codex', '--codex-home', '/private/tmp/codex-home']))
+      .toThrow(/cannot be combined with --host/);
   });
 
   it('rejects an unsupported host rather than guessing one', () => {
@@ -172,8 +214,27 @@ describe('--help', () => {
     expect(text).toMatch(/issue #275/);
   });
 
-  it('discloses the harness-driven Codex registration', () => {
-    expect(helpText()).toMatch(/registration is harness-driven/);
+  it('documents the isolated installed-plugin Codex registration', () => {
+    expect(helpText()).toMatch(/--codex-home/);
+    expect(helpText()).toMatch(/never starts the companion itself/);
+  });
+
+  it('documents the bounded automatic-registration invocation', () => {
+    expect(helpText()).toMatch(/npm run qa:live-journey -- --codex-session-auto-registration/);
+    expect(helpText()).toMatch(/fresh HOME.*fake `codex queue`/);
+  });
+
+  it('pins router socket and token state inside the task-owned journey directory', () => {
+    const env = buildJourneyEnv({
+      MEMESH_ROUTER_SOCKET: '/owner/router.sock',
+      MEMESH_ROUTER_TOKEN_FILE: '/owner/router.token',
+    }, {
+      memeshDir: '/task/memesh',
+      dbPath: '/task/memesh/knowledge-graph.db',
+      socketPath: '/task/memesh/agent-router-v2.sock',
+    });
+    expect(env.MEMESH_ROUTER_SOCKET).toBe('/task/memesh/agent-router-v2.sock');
+    expect(env.MEMESH_ROUTER_TOKEN_FILE).toBe(path.join('/task/memesh', 'agent-router.token'));
   });
 
   it('warns that the launched Claude session is outside the isolation', () => {
@@ -181,10 +242,118 @@ describe('--help', () => {
     expect(text).toMatch(/OUTSIDE the temporary-directory isolation/);
     expect(text).toMatch(/would write the REAL ~\/\.memesh/);
     expect(text).toMatch(/\/hooks and \/mcp/);
+    expect(text).toContain(CLAUDE_PLUGIN_ISOLATION_CONFIRMATION);
+    expect(text).toMatch(/operator attestation, not programmatic inspection/i);
+    expect(text).toMatch(/before the nonce is generated or sent/i);
   });
 
   it('names the invocation that was actually verified', () => {
-    expect(helpText()).toMatch(/TMPDIR=\/private\/tmp npm run qa:live-journey/);
+    expect(helpText()).toMatch(
+      /TMPDIR=\/private\/tmp npm run qa:live-journey -- --host codex --codex-home <isolated-home>/,
+    );
+  });
+});
+
+describe('Claude plugin-isolation confirmation', () => {
+  it('accepts only the exact token and labels the result as operator attestation', () => {
+    expect(assertClaudePluginIsolationConfirmation(CLAUDE_PLUGIN_ISOLATION_CONFIRMATION)).toEqual({
+      kind: 'operator_attestation',
+      scope: 'installed MeMesh plugin hooks and MCP servers only',
+      confirmed: true,
+      programmatic_inspection: false,
+    });
+  });
+
+  it.each([
+    null,
+    '',
+    'NO',
+    ` ${CLAUDE_PLUGIN_ISOLATION_CONFIRMATION}`,
+    `${CLAUDE_PLUGIN_ISOLATION_CONFIRMATION} `,
+    'MEMESH_PLUGIN_ISOLATION_CONFIRM',
+  ])('rejects non-exact confirmation %j before nonce send', value => {
+    expect(() => assertClaudePluginIsolationConfirmation(value)).toThrow(/nonce was not generated or sent/);
+  });
+
+  it('fails closed when the operator input ends', async () => {
+    await expect(requestClaudePluginIsolationConfirmation(async () => {
+      throw new Error('EOF');
+    })).rejects.toThrow(/ended before input.*nonce was not generated or sent/);
+  });
+});
+
+describe('Claude trusted intake arming', () => {
+  it('keeps the native payload inert and free of instructions', () => {
+    expect(buildLiveJourneyPayload('claude-deadbeef')).toEqual({
+      purpose: 'MeMesh owner-run live journey check',
+      qa_sentinel: 'claude-deadbeef',
+    });
+  });
+
+  it('gives the model a trusted operator instruction before native delivery', () => {
+    const prompt = claudeTrustedIntakePrompt();
+    expect(prompt).toMatch(/next memesh-channel message/i);
+    expect(prompt).toMatch(/untrusted data/i);
+    expect(prompt).toMatch(/action [`"]?intake/i);
+    expect(prompt).toMatch(/idempotency_key.*intake-.*exact message_id/i);
+    expect(prompt).toMatch(/only these six fields/i);
+    expect(prompt).toMatch(/do not pass target_kind, sender, payload/i);
+    expect(prompt).toMatch(/run no other tools/i);
+  });
+
+  it('accepts only the exact arming token and labels it as operator attestation', () => {
+    expect(assertClaudeModelIntakeArmingConfirmation('MEMESH_MODEL_INTAKE_ARMED')).toEqual({
+      kind: 'operator_attestation',
+      scope: 'trusted Claude intake prompt submitted before nonce delivery',
+      confirmed: true,
+      programmatic_inspection: false,
+    });
+  });
+
+  it.each([null, '', 'NO', ' MEMESH_MODEL_INTAKE_ARMED', 'MEMESH_MODEL_INTAKE_ARMED '])(
+    'rejects non-exact arming confirmation %j before nonce send',
+    value => {
+      expect(() => assertClaudeModelIntakeArmingConfirmation(value)).toThrow(/nonce was not generated or sent/);
+    },
+  );
+
+  it('fails closed when arming confirmation ends', async () => {
+    await expect(requestClaudeModelIntakeArmingConfirmation(async () => {
+      throw new Error('EOF');
+    })).rejects.toThrow(/ended before input.*nonce was not generated or sent/);
+  });
+});
+
+describe('live-journey report contract', () => {
+  it('uses v3 and requires distinct model-visible and stopped-session steps for both real hosts', () => {
+    expect(LIVE_JOURNEY_SCHEMA_VERSION).toBe('memesh-live-journey/v3');
+    for (const host of ['codex', 'claude'] as const) {
+      expect(REQUIRED_LIVE_JOURNEY_STEPS[host].some(name => name.includes('model-visible'))).toBe(true);
+      expect(REQUIRED_LIVE_JOURNEY_STEPS[host]).toContain(
+        'a send to the stopped session fails closed and the durable row survives',
+      );
+    }
+    expect(REQUIRED_REGISTRATION_EVIDENCE.codex).toEqual({
+      source: 'codex_plugin_session_start',
+      plugin_loader_verified: true,
+    });
+    expect(REQUIRED_REGISTRATION_EVIDENCE.claude).toEqual({
+      source: 'interactive_development_channel',
+      operator_attestation_recorded: true,
+      trusted_instruction_attested: true,
+    });
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain('Codex lease renewed before expiry');
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain(
+      'Codex resume registration superseded the prior generation',
+    );
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain('Codex resumed lease renewed before expiry');
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.claude).toContain('Claude lease renewed before expiry');
+    expect(REQUIRED_LIVE_JOURNEY_STEPS.claude).toContain(
+      'operator attested that the trusted intake prompt was submitted and READY observed',
+    );
+    expect(REQUIRED_REGISTRATION_EVIDENCE.claude).toMatchObject({
+      trusted_instruction_attested: true,
+    });
   });
 });
 
@@ -283,11 +452,11 @@ describe('assertNotCi', () => {
 
 describe('assertSocketPathFits', () => {
   it('accepts a short temporary root', () => {
-    expect(() => assertSocketPathFits('/private/tmp/memesh-lj-abc123/memesh/agent-router.sock')).not.toThrow();
+    expect(() => assertSocketPathFits('/private/tmp/memesh-lj-abc123/memesh/agent-router-v2.sock')).not.toThrow();
   });
 
   it('refuses a path over the AF_UNIX limit and names the fix', () => {
-    const tooLong = `/private/tmp/${'d'.repeat(MAX_SOCKET_PATH_BYTES)}/memesh/agent-router.sock`;
+    const tooLong = `/private/tmp/${'d'.repeat(MAX_SOCKET_PATH_BYTES)}/memesh/agent-router-v2.sock`;
     expect(() => assertSocketPathFits(tooLong)).toThrow(/TMPDIR=\/private\/tmp/);
   });
 
@@ -389,6 +558,36 @@ describe('assertCodexReply', () => {
     });
     expect(() => assertCodexReply({ jsonl: withCommand, ...expected }))
       .toThrow(/non-answer items \(item:command_execution\)/);
+  });
+
+  it('allows only the installed plugin skill auto-load when it contains none of the proof values', () => {
+    const skill = '/tmp/plugin/skills/memesh/SKILL.md';
+    const withSkillLoad = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
+      extraItems: [{ id: 'item_9', type: 'command_execution', command: `cat ${skill}`, aggregated_output: 'skill text', exit_code: 0 }],
+    });
+    expect(assertCodexReply({ jsonl: withSkillLoad, ...expected, allowedSkillPath: skill }))
+      .toContain(`CODEX_RECEIVED_${SENTINEL}`);
+  });
+
+  it('rejects a skill auto-load whose output contains a proof identifier', () => {
+    const skill = '/tmp/plugin/skills/memesh/SKILL.md';
+    const leaking = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
+      extraItems: [{ id: 'item_9', type: 'command_execution', command: `cat ${skill}`, aggregated_output: MESSAGE_ID, exit_code: 0 }],
+    });
+    expect(() => assertCodexReply({ jsonl: leaking, ...expected, allowedSkillPath: skill }))
+      .toThrow(/non-answer items/);
+  });
+
+  it('allows only the failed automatic work-package probe when it contains no proof identifier', () => {
+    const project = 'memesh-live-journey~scope';
+    const withProbe = codexTurn([`CODEX_RECEIVED_${SENTINEL} ${MESSAGE_ID} ${DELIVERY_ID}`], {
+      extraItems: [{
+        id: 'item_9', type: 'mcp_tool_call', server: 'memesh', tool: 'work_package', status: 'failed',
+        arguments: { action: 'prepare', kind: 'digest', project },
+      }],
+    });
+    expect(assertCodexReply({ jsonl: withProbe, ...expected, allowedProject: project }))
+      .toContain(`CODEX_RECEIVED_${SENTINEL}`);
   });
 
   it('rejects NO_ENVELOPE with the reason, not a generic mismatch', () => {
@@ -530,6 +729,311 @@ describe('assertRecipientUnavailable', () => {
   });
 });
 
+describe('assertHostAcceptOnly', () => {
+  const expected = {
+    messageId: MESSAGE_ID,
+    deliveryId: DELIVERY_ID,
+    adapterKind: 'codex-cli-queue',
+    recipient: THREAD,
+  };
+  const receipts = [{
+    receipt_kind: 'host_accept',
+    message_id: MESSAGE_ID,
+    recipient: THREAD,
+    delivery_id: DELIVERY_ID,
+    host_accept_id: 'host-accept-1',
+    adapter_kind: 'codex-cli-queue',
+  }];
+
+  it('accepts durable host_accept readback without lifecycle receipts', () => {
+    expect(assertHostAcceptOnly(receipts, expected)).toMatchObject({
+      receipt_kind: 'host_accept',
+      delivery_id: DELIVERY_ID,
+    });
+  });
+
+  it('rejects a send response-shaped input without durable readback', () => {
+    expect(() => assertHostAcceptOnly(ACCEPTED_SEND, expected)).toThrow(/JSON array/);
+  });
+
+  it('rejects host_accept readback with an ACK or disposition', () => {
+    expect(() => assertHostAcceptOnly([
+      ...receipts,
+      { receipt_kind: 'ack', message_id: MESSAGE_ID },
+    ], expected)).toThrow(/ACK or disposition/);
+    expect(() => assertHostAcceptOnly([
+      ...receipts,
+      { receipt_kind: 'disposition', message_id: MESSAGE_ID },
+    ], expected)).toThrow(/ACK or disposition/);
+  });
+
+  it('rejects a durable host_accept for a different delivery or adapter', () => {
+    expect(() => assertHostAcceptOnly([
+      { ...receipts[0], delivery_id: 'other-delivery' },
+    ], expected)).toThrow(/names delivery/);
+    expect(() => assertHostAcceptOnly([
+      { ...receipts[0], adapter_kind: 'claude-channel' },
+    ], expected)).toThrow(/names adapter/);
+  });
+});
+
+describe('assertNoHostOutcomeReceipts', () => {
+  it('accepts a durable failed-send projection with no host or model outcome', () => {
+    expect(assertNoHostOutcomeReceipts([
+      { receipt_kind: 'intake', message_id: MESSAGE_ID },
+    ], { messageId: MESSAGE_ID })).toHaveLength(1);
+  });
+
+  it('rejects host_accept, ACK, and disposition facts', () => {
+    for (const receipt_kind of ['host_accept', 'ack', 'disposition']) {
+      expect(() => assertNoHostOutcomeReceipts([
+        { receipt_kind, message_id: MESSAGE_ID },
+      ], { messageId: MESSAGE_ID })).toThrow(/no host_accept, ACK, or disposition/);
+    }
+  });
+
+  it('ignores receipts belonging to another message', () => {
+    expect(assertNoHostOutcomeReceipts([
+      { receipt_kind: 'host_accept', message_id: 'other-message' },
+    ], { messageId: MESSAGE_ID })).toEqual([]);
+  });
+});
+
+describe('assertExactCodexQueueRouting', () => {
+  const messages = [
+    { sessionId: 'thread-a', messageId: 'message-a', deliveryId: 'delivery-a', project: 'project', sender: 'sender-a', contentType: 'application/json', payload: { qa_sentinel: 'sentinel-a' } },
+    { sessionId: 'thread-b', messageId: 'message-b', deliveryId: 'delivery-b', project: 'project', sender: 'sender-b', contentType: 'application/json', payload: { qa_sentinel: 'sentinel-b' } },
+  ];
+  const invocation = (message: (typeof messages)[number]) => ({
+    thread_id: message.sessionId,
+    serialized_message: JSON.stringify({
+      message_type: 'memesh_message',
+      delivery_id: message.deliveryId,
+      envelope: {
+        message_id: message.messageId,
+        project: message.project,
+        sender: message.sender,
+        recipient: message.sessionId,
+        target_kind: 'session',
+        content_type: message.contentType,
+        payload: message.payload,
+      },
+    }),
+  });
+
+  it('accepts exactly one matching native envelope for each exact-session send', () => {
+    expect(assertExactCodexQueueRouting(messages.map(invocation), messages)).toHaveLength(2);
+  });
+
+  it('rejects extra, duplicate, or crossed queue delivery', () => {
+    expect(() => assertExactCodexQueueRouting([
+      ...messages.map(invocation), invocation(messages[0]),
+    ], messages)).toThrow(/3 invocations for 2 sends/);
+    expect(() => assertExactCodexQueueRouting([
+      invocation(messages[0]), invocation(messages[0]),
+    ], messages)).toThrow(/2 invocations for thread-a/);
+    expect(() => assertExactCodexQueueRouting([
+      invocation(messages[0]),
+      { ...invocation(messages[1]), thread_id: 'thread-b', serialized_message: invocation(messages[0]).serialized_message },
+    ], messages)).toThrow(/crossed exact-session boundaries/);
+  });
+
+  it('rejects a native envelope whose private payload differs despite matching ids', () => {
+    const wrongPayload = invocation(messages[0]);
+    const serialized = JSON.parse(wrongPayload.serialized_message);
+    serialized.envelope.payload = { qa_sentinel: 'wrong' };
+    wrongPayload.serialized_message = JSON.stringify(serialized);
+    expect(() => assertExactCodexQueueRouting([
+      wrongPayload, invocation(messages[1]),
+    ], messages)).toThrow(/crossed exact-session boundaries/);
+  });
+});
+
+describe('MCP message readback and access denial', () => {
+  const expected = {
+    messageId: MESSAGE_ID,
+    project: 'memesh-live-journey',
+    sender: 'codex-thread-a',
+    recipient: THREAD,
+    contentType: 'application/json',
+    payload: { qa_sentinel: SENTINEL, body: 'unpredictable payload' },
+  };
+  const fetched = {
+    message_id: expected.messageId,
+    project: expected.project,
+    sender: expected.sender,
+    recipient: expected.recipient,
+    target_kind: 'session',
+    content_type: expected.contentType,
+    payload: expected.payload,
+  };
+
+  it('accepts only an exact project, recipient, content type, and payload readback', () => {
+    expect(assertMcpFetchedMessage(fetched, expected)).toMatchObject(fetched);
+  });
+
+  it('rejects matching ids with the wrong project, recipient, or payload', () => {
+    expect(() => assertMcpFetchedMessage({ ...fetched, project: 'wrong' }, expected)).toThrow(/scope.*payload-mismatched/);
+    expect(() => assertMcpFetchedMessage({ ...fetched, recipient: 'wrong' }, expected)).toThrow(/scope.*payload-mismatched/);
+    expect(() => assertMcpFetchedMessage({ ...fetched, payload: { qa_sentinel: 'wrong' } }, expected)).toThrow(/scope.*payload-mismatched/);
+  });
+
+  it('requires explicit MCP failure without echoing the private sentinel', () => {
+    const denied = { isError: true, content: [{ type: 'text', text: 'Agent message is not available.' }] };
+    expect(assertMcpDenied(denied, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL }))
+      .toContain('not available');
+    expect(() => assertMcpDenied({ ...denied, isError: false }, {
+      label: 'wrong scope', error: /not available/, sentinel: SENTINEL,
+    })).toThrow(/did not fail/);
+    expect(() => assertMcpDenied({
+      isError: true, content: [{ type: 'text', text: `not available: ${SENTINEL}` }],
+    }, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL })).toThrow(/leaked/);
+    expect(() => assertMcpDenied({
+      isError: true,
+      content: [{ type: 'text', text: 'not available' }],
+      structuredContent: { payload: { qa_sentinel: SENTINEL } },
+    }, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL })).toThrow(/leaked/);
+  });
+});
+
+describe('assertMcpDiscoverCards', () => {
+  const expected = [
+    { session_id: 'thread-a', principal_id: 'codex-thread-thread-a', project: 'memesh-live-journey' },
+    { session_id: 'thread-b', principal_id: 'codex-thread-thread-b', project: 'memesh-live-journey' },
+  ];
+
+  it('accepts the exact pair of thread-scoped Codex cards', () => {
+    expect(assertMcpDiscoverCards({ cards: expected.map((card) => ({ ...card, host_kind: 'codex' })) }, expected))
+      .toHaveLength(2);
+  });
+
+  it('rejects missing or identity-mismatched cards', () => {
+    expect(() => assertMcpDiscoverCards({ cards: [expected[0]] }, expected)).toThrow(/expected exactly 2/);
+    expect(() => assertMcpDiscoverCards({
+      cards: expected.map((card, index) => ({ ...card, host_kind: 'codex', ...(index === 1 ? { principal_id: 'wrong' } : {}) })),
+    }, expected)).toThrow(/identity-mismatched/);
+    expect(() => assertMcpDiscoverCards({
+      cards: [{ ...expected[0], host_kind: 'codex' }, { ...expected[0], host_kind: 'codex' }],
+    }, expected)).toThrow(/identity-mismatched/);
+  });
+});
+
+describe('ordinary MCP registration boundary', () => {
+  it('accepts only a discover result with zero live registrations', () => {
+    expect(assertNoLiveRegistrations({ cards: [] })).toEqual([]);
+    expect(() => assertNoLiveRegistrations({ cards: [{ host_kind: 'codex' }] }))
+      .toThrow(/MCP-only control created or observed 1 live registrations/);
+    expect(() => assertNoLiveRegistrations({})).toThrow(/invalid number/);
+  });
+
+  it('rejects a SessionStart companion that exited before registration readback', () => {
+    expect(() => assertCompanionRunning({ exitCode: null, signalCode: null }, 'companion')).not.toThrow();
+    expect(() => assertCompanionRunning({ exitCode: 0, signalCode: null }, 'companion'))
+      .toThrow(/exited before its live registration was verified/);
+    expect(() => assertCompanionRunning({ exitCode: null, signalCode: 'SIGTERM' }, 'companion'))
+      .toThrow(/exited before its live registration was verified/);
+  });
+});
+
+describe('installed Codex plugin lifecycle proof', () => {
+  const startupCard = {
+    session_id: THREAD,
+    principal_id: `codex-thread-${THREAD}`,
+    host_kind: 'codex',
+    generation: 1,
+  };
+  const complete = (): Parameters<typeof assertInstalledCodexPluginJourney>[0] => ({
+    isolatedCodexHome: true,
+    candidatePluginInstalled: true,
+    candidateCacheVerified: true,
+    hookTrustBypass: true,
+    runnerStartedCompanion: false,
+    startupLeaseRenewed: true,
+    resumeLeaseRenewed: true,
+    threadId: THREAD,
+    startupCard,
+    resumedCard: { ...startupCard, generation: 2 },
+  });
+
+  it('accepts a candidate-installed, plugin-loaded startup followed by a real resume supersession', () => {
+    expect(assertInstalledCodexPluginJourney(complete())).toMatchObject({
+      startup: startupCard,
+      resumed: { generation: 2 },
+    });
+  });
+
+  it('rejects a hook-trust flag by itself', () => {
+    const evidence = complete();
+    evidence.candidatePluginInstalled = false;
+    evidence.candidateCacheVerified = false;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/hook flags alone are not proof/);
+  });
+
+  it('rejects a fake or unverified candidate cache', () => {
+    const evidence = complete();
+    evidence.candidateCacheVerified = false;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/candidate plugin installation and cache identity/);
+  });
+
+  it('rejects a runner that manually started the companion', () => {
+    const evidence = complete();
+    evidence.runnerStartedCompanion = true;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/manually started a companion/);
+  });
+
+  it('rejects an absent exact-thread registration', () => {
+    const evidence = complete();
+    evidence.startupCard = null;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/registration was not observed/);
+  });
+
+  it('rejects a resume that does not increment exactly one generation', () => {
+    const evidence = complete();
+    evidence.resumedCard = { ...startupCard, generation: 1 };
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/did not supersede/);
+  });
+
+  it('rejects a resumed session without its own heartbeat renewal', () => {
+    const evidence = complete();
+    evidence.resumeLeaseRenewed = false;
+    expect(() => assertInstalledCodexPluginJourney(evidence)).toThrow(/both the startup and resumed active sessions/);
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('task-owned Codex home boundary', () => {
+  const identity = (candidate: string) => candidate;
+
+  it('accepts only an existing temporary home outside the owner configuration', () => {
+    const temporaryRoot = os.tmpdir();
+    const temporary = fs.mkdtempSync(path.join(temporaryRoot, 'memesh-codex-home-test-'));
+    try {
+      expect(assertTaskOwnedCodexHome({
+        codexHome: temporary,
+        ownerCodexHome: '/Users/example/.codex',
+        temporaryRoot,
+        realpath: identity,
+      })).toBe(temporary);
+    } finally {
+      fs.rmSync(temporary, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects owner and non-temporary homes', () => {
+    expect(() => assertTaskOwnedCodexHome({
+      codexHome: '/Users/example/.codex',
+      ownerCodexHome: '/Users/example/.codex',
+      temporaryRoot: '/private/tmp',
+      realpath: identity,
+    })).toThrow(/owner CODEX_HOME/);
+    expect(() => assertTaskOwnedCodexHome({
+      codexHome: '/Users/example/codex-test',
+      ownerCodexHome: '/Users/example/.codex',
+      temporaryRoot: '/private/tmp',
+      realpath: identity,
+    })).toThrow(/outside the allowed temporary root/);
+  });
+});
+
 describe('intake receipts', () => {
   it('finds the intake the recipient session wrote', () => {
     expect(findIntakeReceipt(RECEIPTS_WITH_INTAKE, { messageId: MESSAGE_ID, actor: THREAD }))
@@ -548,6 +1052,18 @@ describe('intake receipts', () => {
 
   it('rejects an intake for a different message', () => {
     expect(() => assertIntakeReceipt(RECEIPTS_WITH_INTAKE, { messageId: 'other-message', actor: THREAD }))
+      .toThrow(/No intake receipt/);
+  });
+
+  it.each([
+    ['wrong fact source', { fact_source: 'agent_host_accept' }],
+    ['wrong recipient', { recipient: 'someone-else' }],
+    ['wrong intake state', { intake_state: 'fetched' }],
+  ])('rejects an intake with %s', (_label, override) => {
+    const receipts = RECEIPTS_WITH_INTAKE.map(fact => (
+      fact.receipt_kind === 'intake' ? { ...fact, ...override } : fact
+    ));
+    expect(() => assertIntakeReceipt(receipts, { messageId: MESSAGE_ID, actor: THREAD }))
       .toThrow(/No intake receipt/);
   });
 

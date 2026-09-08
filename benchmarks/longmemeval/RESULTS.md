@@ -3,12 +3,10 @@
 **Measured through:** `recallEnhanced()` — the function every transport calls for `recall`.
 **Status:** PUBLIC — recomputed from raw per-question JSON, dataset SHA256 cross-checked.
 
-> **Historical embedder note:** the Mode B/C figures below were measured on the
-> local ONNX `Xenova/all-MiniLM-L6-v2` (384-dim) embedder that MeMesh shipped at
-> the time. That embedder has since been removed — MeMesh now standardises on
-> ollama (nomic-embed-text) — so these Mode B/C numbers are historical for that
-> model and have not been re-measured for the current embedder. Mode A (FTS5)
-> is unaffected.
+> **Historical embedder note:** the Mode B/C figures below were measured on a
+> retired local ONNX vector path. MeMesh now ships FTS5 keyword retrieval only.
+> Those figures are preserved as historical experiment evidence, not as a
+> current product mode. Mode A is the only reproducible current mode.
 
 > See METHODOLOGY.md for technical details. See REPRODUCE.md to run this yourself.
 
@@ -43,9 +41,10 @@ question, retrieve the relevant session(s) from a haystack of ~50 sessions.
 
 What that number is not: it is a keyword-retrieval score on a small, fresh
 corpus. Every database is new, so recency, frequency and recall-impact are
-uniform and only relevance does any work. Nothing here tests auto-capture,
-consolidation, knowledge evolution, or whether an answer is correct. See
-METHODOLOGY.md §3 — which used to claim this benchmark was a "conservative lower
+uniform and only relevance does any work. Nothing here tests deterministic
+hook capture, work-package staging, human proposal review, knowledge evolution,
+or whether an answer is correct. See
+[METHODOLOGY.md §3](METHODOLOGY.md#3-what-this-benchmark-does-and-does-not-cover) — which used to claim this benchmark was a "conservative lower
 bound" on production quality, a claim the 5.20% measurement disproved.
 
 Against published baselines (Supermemory ~82%, Zep 63.8%, Mem0 49%) and within
@@ -67,11 +66,8 @@ curl -L "https://huggingface.co/datasets/xiaowu0162/longmemeval/resolve/main/lon
 # Build — the runner measures compiled code, so this must run first
 npm run build
 
-# Run the benchmark (Mode A, no embeddings, ~10 seconds)
+# Run the current FTS5 benchmark (~10 seconds)
 npm run bench:longmemeval
-
-# Or with embeddings populated (~14 minutes, downloads the ONNX model once)
-node benchmarks/longmemeval/run.mjs --mode B --dataset /tmp/longmemeval_s.json
 ```
 
 See [REPRODUCE.md](REPRODUCE.md) for the full step-by-step walkthrough.
@@ -91,14 +87,9 @@ API and calls it. No schema, no query builder, no ranking of its own.
 - Seeded through `KnowledgeGraph.createEntity()`, the call `remember()` makes
 - Retrieved through `recallEnhanced()`, the call every transport makes
 
-**Mode definitions** — real product configurations, not adapter strategies:
-- **Mode A:** no embeddings stored. FTS5 + BM25, then the five-factor scorer.
-- **Mode B:** embeddings populated via the product's own `embedAndStore()`, so
-  `recallEnhanced()`'s vector supplement can contribute.
-- **Mode C removed.** It applied a 60/40 weighted fusion that MeMesh has never
-  implemented. Its historical result file is retained.
-
-**Embedding model (Mode B):** Xenova/all-MiniLM-L6-v2 (384 dimensions, ONNX Runtime)
+**Current mode:** Mode A uses FTS5 + BM25, then the five-factor scorer. Mode B
+and Mode C below are retained historical vector experiments and are not
+available in the current product or runner.
 
 **Metric:** R@k = fraction of questions where any answer session appears in top-k results. MRR = mean(1/rank_of_first_answer_session).
 
@@ -117,16 +108,16 @@ For contrast, the same 500 questions through the same function **before** the
 retrieval fixes in this release: R@5 **5.20%**, R@10 5.20%, MRR 0.0520, and
 **473 of 500** questions returning nothing.
 
-### What the embeddings buy: 14 changed result lists and nothing at the cut-off
+### What the historical embeddings bought: 14 changed result lists and nothing at the cut-off
 
-Before the vector threshold was fixed, Mode B was identical to Mode A to sixteen
-decimal places — `MAX_VECTOR_DISTANCE = 1` discarded essentially every hit
-sqlite-vec returned, so storing 25 000 embeddings changed not one result. The
-cut-off is now 1.30 and the supplement does reach the ranker: **14 of the 500
-result lists differ between the modes.**
+Before that retired vector experiment raised its threshold, Mode B was identical
+to Mode A to sixteen decimal places — `MAX_VECTOR_DISTANCE = 1` discarded
+essentially every hit sqlite-vec returned, so storing 25 000 embeddings changed
+not one result. At 1.30 the historical supplement reached the ranker: **14 of
+the 500 result lists differed between the modes.**
 
-It still does not move the metric. R@5 and R@10 are unchanged, and only **two**
-questions move the position of the correct session at all:
+It still did not move the metric. R@5 and R@10 were unchanged, and only **two**
+questions moved the position of the correct session at all:
 
 | Question | Type | Mode A | Mode B |
 |---|---|---|---|
@@ -137,12 +128,13 @@ One recovery and one small regression, both far outside the top 10. MRR moves
 from 0.8929348706848708 to 0.8930598706848707 — a gain of 0.000125 for **89×
 the wall-clock** (807.7s against 9.1s).
 
-This refutes a prediction this file used to make. It said the 22 remaining Mode
+This refuted a prediction this file used to make. It said the 22 remaining Mode
 A failures were "dominated by vocabulary mismatch — exactly what a working
-vector supplement would cover". The supplement now works, and it covers one of
-the 22, at a rank no one would ever see. Vocabulary mismatch may still be the
-right diagnosis; MiniLM-L6 at 384 dimensions is not the cure. Recall stays
-LLM-free and embeddings stay optional, which is what these numbers support.
+vector supplement would cover". The retired supplement did run, and it covered
+one of the 22, at a rank no one would ever see. Vocabulary mismatch may still
+be the right diagnosis; MiniLM-L6 at 384 dimensions was not the cure in that
+experiment. Current MeMesh recall is LLM-free, FTS5-only, and has no embedding
+mode; the historical numbers do not describe a current product option.
 
 The 95.40% Mode B figure published previously came from the adapter
 reimplementation and does not carry over; do not quote it.
@@ -158,7 +150,7 @@ Dataset SHA256 `08d8dad4...` verified against the on-disk file and against
    recency, frequency, confidence and recall-impact are uniform across
    candidates and only the 0.30 relevance factor distinguishes anything. Those
    four factors matter in an aged memory base; this benchmark cannot see them.
-3. **What the number does not cover** is in METHODOLOGY.md §3 — and that section
+3. **What the number does not cover** is in [METHODOLOGY.md §3](METHODOLOGY.md#3-what-this-benchmark-does-and-does-not-cover) — and that section
    used to draw the opposite conclusion, calling this a "conservative lower
    bound" on production quality. It was not.
 
@@ -209,7 +201,8 @@ Dataset SHA256 `08d8dad4...` verified against the on-disk file and against
 - **Scale.** ~50 sessions per question. A real base is thousands, where `LIMIT`
   binds harder and term frequencies differ.
 - Cross-entity linking and knowledge graph retrieval.
-- Auto-capture, consolidation, knowledge evolution, conflict detection.
+- Deterministic hook capture, work-package staging, human proposal review,
+  knowledge evolution, conflict detection, and relation backfill/traversal.
 - Whether an answer is correct. No LLM answers anything here.
 
 Earlier versions of this section said the omitted scoring factors and LLM query
@@ -225,8 +218,9 @@ Every one of the 22 is a ranking failure, not a retrieval failure: **no question
 returned zero results**, and 18 of the 22 had the right session somewhere in the
 returned set, below position 5. The remaining 4 fell outside the top 10.
 Vocabulary mismatch is the recurring cause — the question's words do not appear
-in the session that answers it, which is precisely the case a working vector
-supplement would cover (see METHODOLOGY.md §4.2 on why it currently does not).
+in the session that answers it. The retired vector experiment tested that gap
+and did not improve the cut-off metrics (see [METHODOLOGY.md §4.2](METHODOLOGY.md#42-adapter-limitations)). Current
+MeMesh recall is FTS5-only.
 
 ### Dataset note
 We use `longmemeval_s`, the original public dataset (ICLR 2025 paper). A `longmemeval-cleaned` variant exists with some data corrections — recent competitors may use this. We have not tested the cleaned variant.

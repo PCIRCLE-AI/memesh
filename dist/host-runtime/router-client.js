@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import net from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { AGENT_ROUTER_MAX_FRAME_BYTES } from '../core/agent-router.js';
+import { AGENT_ROUTER_MAX_FRAME_BYTES, AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterProtocolError, isLegacyAgentRouterVersionMismatchResponse, } from '../core/agent-router.js';
 import { assertSecureLocalHostRuntimeSupported } from './config.js';
 const DEFAULT_INITIAL_RETRY_MS = 100;
 const DEFAULT_MAX_RETRY_MS = 5_000;
@@ -70,7 +70,7 @@ class ActiveRouterHostConnection {
             return;
         try {
             this.write(socket, {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type: 'disconnect',
                 request_id: randomUUID(),
                 project: this.input.identity.project,
@@ -150,14 +150,27 @@ class ActiveRouterHostConnection {
                     buffer = buffer.subarray(newline + 1);
                     if (raw.length === 0 || raw.length > AGENT_ROUTER_MAX_FRAME_BYTES)
                         continue;
-                    let frame;
+                    let parsed;
                     try {
-                        frame = JSON.parse(raw.toString('utf8'));
+                        parsed = JSON.parse(raw.toString('utf8'));
                     }
                     catch {
                         continue;
                     }
+                    if (!isRecord(parsed)) {
+                        socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router frame must be a JSON object.'));
+                        return;
+                    }
+                    const frame = parsed;
+                    if (!registrationSettled && isLegacyAgentRouterVersionMismatchResponse(frame)) {
+                        finish(new AgentRouterProtocolError('router_version_mismatch', 'router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.'));
+                        continue;
+                    }
                     if (!registrationSettled && frame.request_id === registerId) {
+                        if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION) {
+                            finish(new AgentRouterProtocolError('invalid_response', 'Router response identity does not match.'));
+                            continue;
+                        }
                         if (frame.ok !== true || !isRecord(frame.result)) {
                             finish(new Error('Router registration was rejected.'));
                             continue;
@@ -174,9 +187,13 @@ class ActiveRouterHostConnection {
                         }
                         continue;
                     }
-                    if (frame.type === 'session_superseded'
-                        && frame.connection_id === connectionId
-                        && frame.generation === generation) {
+                    if (frame.type === 'session_superseded') {
+                        if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION
+                            || frame.connection_id !== connectionId
+                            || frame.generation !== generation) {
+                            socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router frame identity does not match the registered host.'));
+                            return;
+                        }
                         this.closed = true;
                         this.clearHeartbeat();
                         if (this.currentSocket === socket)
@@ -186,6 +203,14 @@ class ActiveRouterHostConnection {
                     }
                     if (frame.type !== 'deliver')
                         continue;
+                    if (!registrationSettled) {
+                        socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router delivered a message before registration completed.'));
+                        return;
+                    }
+                    if (!isDelivery(frame, connectionId, generation, this.input.identity)) {
+                        socket.destroy(new AgentRouterProtocolError('invalid_response', 'Router frame identity does not match the registered host.'));
+                        return;
+                    }
                     this.deliveryTail = this.deliveryTail.then(() => this.handleDelivery(socket, frame, connectionId, generation)).catch(() => undefined);
                 }
             });
@@ -201,7 +226,7 @@ class ActiveRouterHostConnection {
                 this.handleDisconnect(socket);
             });
             this.write(socket, {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type: 'register',
                 request_id: registerId,
                 ...this.input.identity,
@@ -219,7 +244,7 @@ class ActiveRouterHostConnection {
             if (this.closed || this.currentSocket !== socket)
                 return;
             this.write(socket, {
-                version: 1,
+                version: AGENT_ROUTER_PROTOCOL_VERSION,
                 type: 'heartbeat',
                 request_id: randomUUID(),
                 project: this.input.identity.project,
@@ -232,10 +257,10 @@ class ActiveRouterHostConnection {
         this.heartbeat.unref();
     }
     async handleDelivery(socket, frame, connectionId, generation) {
-        if (this.closed || !isDelivery(frame, connectionId, generation))
+        if (this.closed || !isDelivery(frame, connectionId, generation, this.input.identity))
             return;
         const common = {
-            version: 1,
+            version: AGENT_ROUTER_PROTOCOL_VERSION,
             request_id: randomUUID(),
             attempt_id: frame.attempt_id,
             delivery_id: frame.delivery_id,
@@ -412,14 +437,36 @@ function startPackagedRouter() {
         child.once('error', reject);
     });
 }
-function isDelivery(value, connectionId, generation) {
+function isDelivery(value, connectionId, generation, identity) {
+    const envelope = value.envelope;
     return value.type === 'deliver'
+        && value.version === AGENT_ROUTER_PROTOCOL_VERSION
+        && value.project === identity.project
+        && value.principal_id === identity.principal_id
+        && value.session_instance_id === identity.session_instance_id
         && value.connection_id === connectionId
         && value.generation === generation
-        && typeof value.attempt_id === 'string'
-        && typeof value.delivery_id === 'string'
+        && value.untrusted_payload === true
+        && requiredNonEmptyString(value.attempt_id)
+        && requiredNonEmptyString(value.delivery_id)
         && Number.isInteger(value.hops)
-        && isRecord(value.envelope);
+        && isRecord(envelope)
+        && requiredNonEmptyString(envelope.message_id)
+        && envelope.project === identity.project
+        && requiredNonEmptyString(envelope.sender)
+        && (envelope.sender_host === null || requiredNonEmptyString(envelope.sender_host))
+        && ((envelope.target_kind === 'principal' && envelope.recipient === identity.principal_id)
+            || (envelope.target_kind === 'session' && envelope.recipient === identity.session_instance_id))
+        && (envelope.content_type === 'text/plain' || envelope.content_type === 'application/json')
+        && (envelope.correlation_id === null || requiredNonEmptyString(envelope.correlation_id))
+        && (envelope.reply_to === null || requiredNonEmptyString(envelope.reply_to))
+        && (envelope.privacy === 'private' || envelope.privacy === 'team')
+        && requiredNonEmptyString(envelope.created_at)
+        && Object.hasOwn(envelope, 'payload')
+        && isRecord(envelope.provenance);
+}
+function requiredNonEmptyString(value) {
+    return typeof value === 'string' && value.length > 0;
 }
 function isRouterUnavailable(error) {
     const code = error?.code;

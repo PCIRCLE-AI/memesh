@@ -41,8 +41,8 @@ Minimum viable exports (all required by the OpenClaw plugin contract):
 | **Config schema** (TypeBox `Type.Object()`) | — | At minimum: `baseUrl` (default `http://localhost:3737`), optionally `autoCapture`/`autoRecall` booleans. |
 | **Tool: `memory_recall`** | `POST /v1/recall` | Search. Param: `query` (string), `limit` (optional int, default 5). Return: `{ content: [{type:"text", text:"..."}], details: {count: N} }`. On empty: `"No relevant memories found."` |
 | **Tool: `memory_store`** | `POST /v1/remember` | Persist. Params: `text` (required), `category` (optional, default `"note"`), `importance` (optional, 1-10). Reject if `looksLikePromptInjection(text)`. |
-| **Tool: `memory_forget`** | `POST /v1/forget` | Delete. Param: `query` (string for semantic search, or accept `id` if MeMesh's `/v1/forget` supports ID-based delete). |
-| **Hook: `api.on("before_prompt_build", ...)`** | `POST /v1/recall` | Automatic recall. Extract `extractLatestUserText(event.messages)`, normalize query, embed + search, inject top-N (default 3) into prompt context. Guard on `autoRecall` config. Skip on cooldown (if recall timed out recently). |
+| **Tool: `memory_forget`** | `POST /v1/forget` | Archive by stable entity name. Resolve and preview the target before sending the write. |
+| **Hook: `api.on("before_prompt_build", ...)`** | `POST /v1/recall` | Automatic recall. Extract `extractLatestUserText(event.messages)`, normalize the query, run local FTS5 search, and inject a bounded top-N result. Guard on `autoRecall` config. Skip on cooldown after a timeout. |
 | *(Optional)* **Hook: after-turn capture** | `POST /v1/remember` | Only if mirroring OpenClaw's auto-capture. Gate on `autoCapture` config, trigger-phrase detection, character threshold. Cap at 3/turn. Sanitize (`sanitizeForMemoryCapture`, `dropMediaNoteLines`) before sending. |
 
 ## Configuration shape
@@ -86,13 +86,13 @@ Or manually: drop `extensions/memory-memesh/` into an OpenClaw checkout, add to 
 
 ## Tool implementation notes (from LanceDB reference)
 
-1. **Timeout + cooldown**: Recall embedding should timeout after ~15s. On timeout, enter a cooldown (60s) to avoid stalling subsequent turns. LanceDB reference uses `runWithTimeout()` + `readMemoryRecallCooldown()` / `recordMemoryRecallCooldown()`.
+1. **Timeout + cooldown**: Recall should timeout after ~15s. On timeout, enter a cooldown (60s) to avoid stalling subsequent turns. LanceDB reference uses `runWithTimeout()` + `readMemoryRecallCooldown()` / `recordMemoryRecallCooldown()`.
 
 2. **Over-fetch + filter**: Auto-recall should over-fetch (e.g., 10 results) from MeMesh, filter out any contaminated memories (prompt injection, envelope sludge), then cap the surviving results (e.g., 3) before injecting into the prompt. This keeps prompt-budget impact bounded.
 
 3. **Prompt injection defense**: `memory_store` must reject if `looksLikePromptInjection(text)` returns true. LanceDB's definition: text that contains directives ("ignore previous", "disregard", "new instructions", etc.). Adapt or copy LanceDB's `looksLikePromptInjection()` implementation.
 
-4. **Sanitization**: Before calling `POST /v1/remember`, run `sanitizeForMemoryCapture(text)` and `dropMediaNoteLines(text)` (from LanceDB's `memory-capture-sanitization.ts`). These strip media annotations and other non-semantic noise that degrades recall quality.
+4. **Sanitization**: Before calling `POST /v1/remember`, run `sanitizeForMemoryCapture(text)` and `dropMediaNoteLines(text)` (from LanceDB's `memory-capture-sanitization.ts`). These strip media annotations and other irrelevant noise that degrades recall quality.
 
 5. **Error handling**: If `POST /v1/recall` returns HTTP 500 or times out, return `{ content: [{type:"text", text:"Memory recall unavailable: <reason>"}] }` instead of throwing — a recall failure should not crash the turn.
 
@@ -116,7 +116,7 @@ Unlike the HTTP-only platforms in this directory, OpenClaw is listed as a **nati
 
 ## Reference implementation
 
-The official LanceDB memory plugin (`@openclaw/memory-lancedb`) is the canonical reference: https://github.com/openclaw/openclaw/blob/main/extensions/memory-lancedb/index.ts (711 lines, full production implementation with error handling, timeouts, cooldowns, sanitization, prompt-injection defense, and CLI commands). Copy its structure and adapt the vector-DB calls to MeMesh's HTTP API.
+The official LanceDB memory plugin (`@openclaw/memory-lancedb`) is the canonical reference for the OpenClaw plugin lifecycle. Reuse its error handling, timeouts, cooldowns, sanitization, prompt-injection defense, and CLI structure while mapping storage calls to MeMesh's HTTP API.
 
 ## Status
 

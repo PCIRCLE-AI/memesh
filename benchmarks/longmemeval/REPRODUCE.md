@@ -1,11 +1,6 @@
 # Reproducing the MeMesh LongMemEval Benchmark
 
-Anyone — journalist, competitor, researcher — can reproduce these results in under 10 commands. Total time: ~10 seconds (Mode A).
-
-> **Mode B is historical.** It was measured on the local ONNX MiniLM-L6 embedder
-> that has since been removed. To reproduce a Mode B run today you must configure
-> an embedder (`ollama serve` + `memesh config set embedder.provider ollama`, or
-> openai); the numbers you get belong to that model, not to the original MiniLM run.
+Anyone — journalist, competitor, researcher — can reproduce these results in under 10 commands. Setup and dataset-download time varies; the benchmark execution itself is about 10 seconds on the reference run.
 
 The runner calls MeMesh's shipped retrieval path (`recallEnhanced()`), so what
 you measure here is what a `recall` call does. That was not true before 2026-07;
@@ -13,9 +8,8 @@ see RESULTS.md if you are comparing against an older figure.
 
 ## Prerequisites
 
-- Node.js >= 20.0.0
+- Node.js >= 22.13.0
 - ~500MB disk space (dataset)
-- For Mode B only: a configured embedder (ollama or openai) reachable from the runner
 
 ## Step-by-step
 
@@ -37,11 +31,8 @@ curl -L "https://huggingface.co/datasets/xiaowu0162/longmemeval/resolve/main/lon
 # Expected SHA256: 08d8dad4be43ee2049a22ff5674eb86725d0ce5ff434cde2627e5e8e7e117894
 shasum -a 256 /tmp/longmemeval_s.json
 
-# 5. Run Mode A (no embeddings — ~10 seconds)
+# 5. Run the shipped FTS5 retrieval path (~10 seconds)
 node benchmarks/longmemeval/run.mjs --mode A --dataset /tmp/longmemeval_s.json
-
-# 6. Run Mode B (embeddings populated — ~14 minutes, downloads model on first run)
-node benchmarks/longmemeval/run.mjs --mode B --dataset /tmp/longmemeval_s.json
 ```
 
 The runner sets `HOME` to a throwaway directory for the duration of the run, so
@@ -50,7 +41,7 @@ graph. Nothing you have stored is touched.
 
 ## Expected Output
 
-Mode A (no embeddings):
+FTS5 retrieval:
 ```
 R@5:  95.60%
 R@10: 97.80%
@@ -91,10 +82,6 @@ LongMemEval is released under the MIT license by Xiaowu0162/LongMemEval. The dat
 ## Troubleshooting
 
 **"Cannot find module 'better-sqlite3'"** — Run `npm install` first.
-
-**"Cannot find module 'sqlite-vec'"** — Same; ensure you're on Node >= 20.
-
-**Mode B needs an embedder** — the local ONNX model is gone; Mode B calls the configured provider (ollama/openai). Ensure it is running/reachable before the run, or Mode B exits with a message telling you so.
 
 **Different results** — If your numbers differ by more than ±0.5pp, check:
 1. Dataset SHA256 matches the value above

@@ -6,7 +6,6 @@ import { MemoryTimeline } from './MemoryTimeline';
 import { MemoryAgeMatrix } from './MemoryAgeMatrix';
 import { KnowledgeRadar } from './KnowledgeRadar';
 import { UserPatterns } from './UserPatterns';
-import { LlmTelemetryPanel } from './LlmTelemetryPanel';
 import { PmAnalyticsPanel } from './PmAnalyticsPanel';
 import { t, getLocale } from '../lib/i18n';
 import { classifyLoadError, failureMessage, type LoadFailure } from '../lib/failure';
@@ -201,7 +200,7 @@ export function AnalyticsTab({ dataRevision = 0 }: { dataRevision?: number }) {
           gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)',
           gap: 8,
         }}>
-          {/* `?? []` only covers null/undefined, and `{}` is neither. */}
+          {/* Reject non-array version-skew payloads at this rendering boundary. */}
           <MemoryAgeMatrix data={Array.isArray(analytics.ageMatrix) ? analytics.ageMatrix : []} />
           <KnowledgeRadar data={Array.isArray(analytics.knowledgeRadar) ? analytics.knowledgeRadar : []} />
         </div>
@@ -214,14 +213,7 @@ export function AnalyticsTab({ dataRevision = 0 }: { dataRevision?: number }) {
         </div>
       )}
 
-      {/* Row 5b: LLM telemetry — quantifies "memesh did X for you"
-          across the 5 Smart-Mode flows. Renders even when other
-          analytics fail; sourced from a separate endpoint. */}
-      <div style={{ marginTop: 8 }}>
-        <LlmTelemetryPanel dataRevision={dataRevision} />
-      </div>
-
-      {/* Row 5c: PM metrics — velocity, open decisions, KG orphan rate. */}
+      {/* PM metrics — velocity, open decisions, KG orphan rate. */}
       <PmAnalyticsPanel dataRevision={dataRevision} />
 
       {/* Row 6: Topics cloud */}
@@ -236,8 +228,8 @@ export function AnalyticsTab({ dataRevision = 0 }: { dataRevision?: number }) {
             <div class="card-title">{t('analytics.topics')}</div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {userTags.slice(0, 30).map((tg) => (
-                <span key={tg.tag} class="tag" style={{ fontSize: Math.max(11, Math.min(15, 10 + Math.log2(tg.count + 1))) + 'px' }}>
-                  {tg.tag} <span style={{ opacity: 0.5 }}>({tg.count})</span>
+                <span key={tg.tag} class="tag" style={{ fontSize: 14 }}>
+                  {tg.tag} <span>({tg.count})</span>
                 </span>
               ))}
             </div>

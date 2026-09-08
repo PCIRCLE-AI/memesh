@@ -1,6 +1,6 @@
 {
   "name": "@pcircle/memesh",
-  "version": "4.8.5",
+  "version": "4.9.0",
   "description": "MeMesh — agentic memory for coding agents. Captured from the agent's real work via hooks, recalled when it acts. One SQLite file, zero cloud required.",
   "main": "dist/index.js",
   "type": "module",
@@ -30,13 +30,11 @@
     "AGENTS.md"
   ],
   "scripts": {
-    "build": "node scripts/check-schema-drift.mjs && tsc && node scripts/generate-hook-core.mjs && node scripts/copy-cli-assets.mjs && node scripts/set-executable-bits.mjs && node scripts/generate-skills-manifest.mjs && npm run build:dashboard && node scripts/smoke-test.mjs",
+    "build": "node scripts/check-schema-drift.mjs && tsc && node scripts/build-mcp-bundle.mjs && node scripts/generate-hook-core.mjs && node scripts/copy-cli-assets.mjs && node scripts/set-executable-bits.mjs && node scripts/generate-skills-manifest.mjs && npm run build:dashboard && node scripts/smoke-test.mjs",
     "build:dashboard": "node scripts/build-dashboard.mjs",
     "test": "vitest",
     "test:e2e-dashboard": "node scripts/dashboard-e2e-smoke.mjs",
     "test:issue-224": "vitest run tests/dashboard/issue-224-data-refresh.test.tsx --maxWorkers=1",
-    "test:issue-225": "vitest run tests/dashboard/issue-225-language-persistence.test.tsx --maxWorkers=1",
-    "test:issue-226": "vitest run tests/dashboard/SettingsTab-primary-llm.test.tsx tests/transports/http.test.ts --maxWorkers=1",
     "test:issue-227": "vitest run tests/dashboard/ProjectRoadmap.test.tsx --maxWorkers=1",
     "test:issue-228": "vitest run tests/dashboard/FeedbackWidget.test.tsx --maxWorkers=1",
     "test:issue-229": "vitest run tests/dashboard/OnboardingBanner.test.tsx tests/dashboard-i18n.test.ts --maxWorkers=1",
@@ -62,6 +60,7 @@
     "bench:longmemeval": "node benchmarks/longmemeval/run.mjs --mode A --dataset /tmp/longmemeval_s.json",
     "qa:live-journey": "node scripts/qa/live-journey.mjs",
     "qa:pre-release": "node scripts/qa/pre-release.mjs",
+    "qa:ui-review": "node scripts/qa/ui-review.mjs",
     "qa:post-release": "node scripts/qa/post-release.mjs",
     "test:isolated": "node scripts/run-tests-isolated.mjs",
     "test:coverage": "node scripts/run-tests-isolated.mjs --coverage"
@@ -93,7 +92,6 @@
     "commander": "^14.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "8.5.1",
-    "sqlite-vec": "^0.1.9",
     "ws": "^8.21.3",
     "zod": "4.4.3"
   },
@@ -121,6 +119,7 @@
     "@types/node": "25.6.2",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "4.1.5",
+    "esbuild": "0.28.1",
     "eslint": "^10.3.0",
     "happy-dom": "^20.9.0",
     "playwright": "^1.59.1",

@@ -4,6 +4,7 @@ import { executeAgentMessageAction } from '../../src/transports/agent-messaging.
 import { getDatabase } from '../../src/db.js';
 import { MessageSchema } from '../../src/transports/schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES } from '../../src/core/agent-messaging.js';
+import { AGENT_ROUTER_PROTOCOL_VERSION } from '../../src/core/agent-router.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 useTestDatabase('memesh-agent-message-transport-');
@@ -120,7 +121,7 @@ describe('agent message transport', () => {
     expect(result).toBe(routerResult);
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({ request: {
-      version: 1, type: 'discover', project: 'directory', limit: 50, hops: 0,
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', project: 'directory', limit: 50, hops: 0,
     } });
     expect(getDatabase().prepare('SELECT COUNT(*) AS count FROM agent_messages').get()).toEqual(beforeMessages);
     expect(getDatabase().prepare('SELECT COUNT(*) AS count FROM agent_message_receipts').get()).toEqual(beforeReceipts);

@@ -1042,7 +1042,7 @@ process.stdin.on('end', async () => {
       // nothing — a fenced block containing only a branch name tells the
       // agent something it can already see. briefing.test.ts's parity case
       // is what keeps this identical to the tool side.
-      let memoryContext = '';
+      let memoryContext = workPackageGuidance;
       if (memoryLines.length > 0) {
         const repoLines = repoStateLines(readRepoState(data.cwd));
         if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
@@ -1055,7 +1055,7 @@ process.stdin.on('end', async () => {
         // charges task state plus project/foreign sections against the main
         // ceiling and global context against its small additive ceiling. It
         // returns whole lines only, so the closing fence cannot be cut.
-        memoryContext = buildReferenceContext(memoryLines);
+        memoryContext = buildReferenceContext(memoryLines) + '\n\n' + workPackageGuidance;
         // The citation contract — OUTSIDE the fence on purpose: the fence
         // declares its content "background data, not instructions", and
         // this line IS an instruction. One line is the entire write side of
@@ -1221,9 +1221,9 @@ process.stdin.on('end', async () => {
     } catch (err) {
       // Non-critical — noise compression failed, will retry next session.
       // Trace because this catch previously hid an off-by-one regression
-      // in resolvePluginRoot (4.0.4-4.1.0) that silently disabled both
-      // noise compression AND LLM failure analysis for three minor
-      // releases. A one-line stderr would have surfaced it on day 1.
+      // in resolvePluginRoot (4.0.4-4.1.0) that silently disabled noise
+      // compression for three minor releases. A one-line stderr would have
+      // surfaced it on day 1.
       try { process.stderr.write(`[memesh session-start] noise-compression: ${err?.message || err}\n`); } catch {}
     }
 
@@ -1267,7 +1267,9 @@ process.stdin.on('end', async () => {
  *
  * The shape is asserted by tests/helpers/hook-output-contract.ts.
  */
-function output(text, memoryContext) {
+const workPackageGuidance = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
+
+function output(text, memoryContext = workPackageGuidance) {
   const payload = { systemMessage: text };
   if (memoryContext) {
     payload.hookSpecificOutput = {

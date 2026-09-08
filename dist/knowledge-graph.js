@@ -1,7 +1,7 @@
 import { findConflicts, trackAccess } from './storage/conflicts.js';
 import { indexedObservationText, insertFtsRow, joinIndexedObservations, removeFromFts, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
-import { dropEntityFromIndexes, removeVectorRow } from './storage/entity-index.js';
+import { dropEntityFromIndexes } from './storage/entity-index.js';
 const MAX_QUERY_TERMS = 32;
 function buildMatchExpression(db, query) {
     const terms = tokenizeQuery(query);
@@ -495,66 +495,75 @@ export class KnowledgeGraph {
         return results;
     }
     clearEntityData(name) {
-        const row = this.db
-            .prepare('SELECT id, title FROM entities WHERE name = ?')
-            .get(name);
-        if (!row)
-            return;
-        const prevObsText = indexedObservationText(this.db, row.id);
         this.db.transaction(() => {
+            const row = this.db
+                .prepare('SELECT id, title FROM entities WHERE name = ?')
+                .get(name);
+            if (!row)
+                return;
+            const prevObsText = indexedObservationText(this.db, row.id);
             this.db.prepare('DELETE FROM observations WHERE entity_id = ?').run(row.id);
             this.db.prepare('DELETE FROM tags WHERE entity_id = ?').run(row.id);
             this.rebuildFts(row.id, name, prevObsText, row.title);
-            removeVectorRow(this.db, row.id);
-        })();
+        }).immediate();
     }
     archiveEntity(name) {
-        const row = this.db
-            .prepare('SELECT id, status, title FROM entities WHERE name = ?')
-            .get(name);
-        if (!row)
-            return { archived: false };
-        this.db.transaction(() => {
-            dropEntityFromIndexes(this.db, row.id, name);
+        return this.db.transaction(() => {
+            const row = this.db
+                .prepare('SELECT id, name, status FROM entities WHERE name = ?')
+                .get(name);
+            if (!row)
+                return { archived: false };
+            dropEntityFromIndexes(this.db, row.id, row.name);
             this.db
                 .prepare("UPDATE entities SET status = 'archived' WHERE id = ?")
                 .run(row.id);
+            return { archived: true, name: row.name, previousStatus: row.status };
         }).immediate();
-        return { archived: true, name, previousStatus: row.status };
     }
     removeObservation(entityName, observationContent) {
-        const row = this.db
-            .prepare('SELECT id, title FROM entities WHERE name = ?')
-            .get(entityName);
-        if (!row)
-            return { removed: false, remainingObservations: 0, entityFound: false };
-        const prevObs = this.db
-            .prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id')
-            .all(row.id);
-        const prevObsText = joinIndexedObservations(prevObs.map((o) => o.content));
-        const deleteResult = this.db
-            .prepare('DELETE FROM observations WHERE entity_id = ? AND content = ?')
-            .run(row.id, observationContent);
-        if (deleteResult.changes === 0) {
-            return { removed: false, remainingObservations: prevObs.length, entityFound: true };
-        }
-        this.rebuildFts(row.id, entityName, prevObsText, row.title);
-        const remaining = this.db
-            .prepare('SELECT COUNT(*) as c FROM observations WHERE entity_id = ?')
-            .get(row.id);
-        return { removed: true, remainingObservations: remaining.c, entityFound: true };
+        return this.db.transaction(() => {
+            const row = this.db
+                .prepare('SELECT id, title, status FROM entities WHERE name = ?')
+                .get(entityName);
+            if (!row)
+                return { removed: false, remainingObservations: 0, entityFound: false };
+            const prevObs = this.db
+                .prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id')
+                .all(row.id);
+            const prevObsText = joinIndexedObservations(prevObs.map((o) => o.content));
+            const deleteResult = this.db
+                .prepare(`DELETE FROM observations
+          WHERE id = (
+            SELECT id FROM observations
+            WHERE entity_id = ? AND content = ?
+            ORDER BY id
+            LIMIT 1
+          )`)
+                .run(row.id, observationContent);
+            if (deleteResult.changes === 0) {
+                return { removed: false, remainingObservations: prevObs.length, entityFound: true };
+            }
+            if (row.status !== 'archived') {
+                this.rebuildFts(row.id, entityName, prevObsText, row.title);
+            }
+            const remaining = this.db
+                .prepare('SELECT COUNT(*) as c FROM observations WHERE entity_id = ?')
+                .get(row.id);
+            return { removed: true, remainingObservations: remaining.c, entityFound: true };
+        }).immediate();
     }
     deleteEntity(name) {
-        const row = this.db
-            .prepare('SELECT id, title FROM entities WHERE name = ?')
-            .get(name);
-        if (!row)
-            return { deleted: false };
-        this.db.transaction(() => {
-            dropEntityFromIndexes(this.db, row.id, name);
+        return this.db.transaction(() => {
+            const row = this.db
+                .prepare('SELECT id, name FROM entities WHERE name = ?')
+                .get(name);
+            if (!row)
+                return { deleted: false };
+            dropEntityFromIndexes(this.db, row.id, row.name);
             this.db.prepare('DELETE FROM entities WHERE id = ?').run(row.id);
+            return { deleted: true };
         }).immediate();
-        return { deleted: true };
     }
     parseMetadata(rawMetadata) {
         if (!rawMetadata)

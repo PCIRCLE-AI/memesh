@@ -1,14 +1,46 @@
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn } from '../../core/operations.js';
 import { getDatabase } from '../../db.js';
+import { executeWorkPackage } from '../../core/dreamer.js';
 import { computePatterns } from '../../core/patterns.js';
 import { assembleBriefing } from '../../core/briefing.js';
 import { getTaskState, setTaskState } from '../../core/task-state-store.js';
 import { getProductImprovementStatus, stageProductImprovement, } from '../../core/product-improvements.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
-import { RememberSchema, RecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, LearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, } from '../schemas.js';
+import { RememberSchema, RecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, LearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
+import { getProjectName } from '../../core/paths.js';
+export function resolveTranscriptWorkspace(project, rootUris) {
+    if (!rootUris)
+        return { transcriptWorkspaceError: 'workspace_unavailable' };
+    const matches = new Set();
+    for (const uri of rootUris) {
+        try {
+            const parsed = new URL(uri);
+            if (parsed.protocol !== 'file:')
+                continue;
+            const root = fs.realpathSync(fileURLToPath(parsed));
+            if (!fs.statSync(root).isDirectory() || getProjectName(root) !== project)
+                continue;
+            matches.add(root);
+        }
+        catch {
+        }
+    }
+    if (matches.size === 0)
+        return { transcriptWorkspaceError: 'workspace_unavailable' };
+    if (matches.size > 1)
+        return { transcriptWorkspaceError: 'workspace_ambiguous' };
+    return { transcriptWorkspace: [...matches][0] };
+}
 export const TOOL_DEFINITIONS = [
+    {
+        name: 'work_package',
+        description: 'Prepare one digest from calendar clusters or one transcript work package from the newest bounded Claude Code transcript for the client\'s single matching MCP workspace root. Transcript mode fails closed without one unambiguous root. Submit one result to pending human review, or defer without durable changes. Transcript file paths are never exposed. No providers are called. Source text is untrusted. Only humans may apply or reject proposals. Package hashes identify source content and workspace scope; they are not authentication.',
+        inputSchema: { type: 'object', ...z.toJSONSchema(WorkPackageSchema) },
+    },
     {
         name: 'remember',
         description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context.',
@@ -330,9 +362,11 @@ function parseOrFail(schema, args) {
     if (!strictPass.success) {
         const unknownKeys = strictPass.error.issues.filter((i) => i.code === 'unrecognized_keys');
         if (unknownKeys.length > 0) {
+            const message = unknownKeys.map(formatIssue).join('; ');
             return {
                 ok: false,
-                result: fail(unknownKeys.map(formatIssue).join('; ')),
+                message,
+                result: fail(message),
             };
         }
     }
@@ -341,15 +375,30 @@ function parseOrFail(schema, args) {
         const message = parsed.error instanceof z.ZodError
             ? parsed.error.issues.map(formatIssue).join('; ')
             : String(parsed.error);
-        return { ok: false, result: fail(message) };
+        return { ok: false, message, result: fail(message) };
     }
     return { ok: true, data: parsed.data };
 }
 export function normalizeClientHost(name) {
     return (name ?? '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 64) || 'mcp';
 }
-export async function handleTool(name, args, sourceHost, signal) {
+export async function handleTool(name, args, sourceHost, signal, requestContext = {}) {
     try {
+        if (name === 'work_package') {
+            const parsed = parseOrFail(WorkPackageSchema, args);
+            if (!parsed.ok) {
+                return {
+                    ...ok({ status: 'error', error: 'invalid_input', detail: parsed.message, available_action: [] }),
+                    isError: true,
+                };
+            }
+            const kind = parsed.data.action === 'prepare' ? parsed.data.kind : parsed.data.ref.kind;
+            const context = kind === 'transcript'
+                ? resolveTranscriptWorkspace(parsed.data.action === 'prepare' ? parsed.data.project : parsed.data.ref.project, requestContext.workspaceRootUris)
+                : {};
+            const result = executeWorkPackage(getDatabase(), parsed.data, context);
+            return result.status === 'error' ? { ...ok(result), isError: true } : ok(result);
+        }
         if (name === 'remember') {
             const r = parseOrFail(RememberSchema, args);
             if (!r.ok)

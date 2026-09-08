@@ -115,7 +115,7 @@ export function InsightsBanner({ currentTab, onNavigateToInsights }: Props) {
         background: 'var(--life-soft)', /* flattened: a decorative gradient is ornament (DESIGN.md) */
         color: 'var(--text-1)',
         cursor: 'pointer',
-        fontSize: 13,
+        fontSize: 14,
         lineHeight: 1.5,
         display: 'flex',
         alignItems: 'center',

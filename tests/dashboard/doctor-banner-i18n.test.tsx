@@ -101,7 +101,7 @@ describe('doctor banner: silence when nothing is wrong', () => {
 
   it('still surfaces action-needed warns and every FAIL', () => {
     expect(isBannerWorthy(warn('update-status.update-available'))).toBe(true);
-    expect(isBannerWorthy(warn('embeddings.threw'))).toBe(true);
+    expect(isBannerWorthy(warn('native-binding.load-failed'))).toBe(true);
     expect(isBannerWorthy(warn('hook-wiring.no-marker'))).toBe(true);
     expect(isBannerWorthy({ ...warn('update-status.no-cache'), status: 'fail' as const })).toBe(true);
     expect(isBannerWorthy({ id: 'database', label: 'x', status: 'fail' as const, summary: 's', code: 'database.broken' })).toBe(true);
