@@ -318,6 +318,23 @@ describe('Feature: recall relevance', () => {
       expect(kg.search(q, { includeArchived: true }).map((e) => e.name)).toContain('archived-grad');
     });
 
+    it('keeps archived supplement on the same strict matching mode as active results', () => {
+      for (let i = 0; i < 30; i++) {
+        kg.createEntity(`recall-filler-${i}`, 'note', { observations: [`filler memory ${i}`] });
+      }
+      kg.createEntity('active-thermal', 'note', {
+        observations: ['heat sink thermal simulation models a cooling loop'],
+      });
+      kg.createEntity('archived-security', 'note', {
+        observations: ['security source to sink flow notes'],
+      });
+      kg.archiveEntity('archived-security');
+
+      const names = kg.search('heat sink thermal simulation', { includeArchived: true }).map((e) => e.name);
+      expect(names).toContain('active-thermal');
+      expect(names).not.toContain('archived-security');
+    });
+
     it('cannot let a LIKE wildcard widen an archived match', () => {
       // `%` and `_` ARE wildcards in the archived branch's LIKE. They cannot
       // reach it: the tokeniser emits only [\p{L}\p{N}\p{M}]+, so a query of

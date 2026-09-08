@@ -3770,6 +3770,9 @@ function buildRecallMatchExpressions(db2, query) {
   const broad = buildMatchExpression(db2, query);
   if (!broad)
     return null;
+  if (tokenizeQuery(query).length < 3) {
+    return { strict: broad, broad };
+  }
   return { strict: broad.replaceAll(" OR ", " "), broad };
 }
 function archivedLikeTerms(db2, query) {
@@ -4083,6 +4086,7 @@ var init_knowledge_graph = __esm({
           filterParams.push(opts.namespace);
         filterParams.push(limit);
         let ftsRows;
+        let strictSelected = false;
         const findFtsRows = (ftsQuery) => {
           const queryParams = [ftsQuery, ...filterParams];
           return this.db.prepare(`SELECT e.id FROM entities_fts f
@@ -4104,6 +4108,8 @@ var init_knowledge_graph = __esm({
           ftsRows = findFtsRows(matchExpressions.strict);
           if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
             ftsRows = findFtsRows(matchExpressions.broad);
+          } else if (ftsRows.length > 0 && matchExpressions.strict !== matchExpressions.broad) {
+            strictSelected = true;
           }
         } catch (err) {
           if (err instanceof Error && err.message?.includes("fts5"))
@@ -4122,7 +4128,7 @@ var init_knowledge_graph = __esm({
           const archivedNamespaceFilter = opts?.namespace ? "AND e.namespace = ?" : "";
           const likeTerms = archivedLikeTerms(this.db, query);
           registerNfcFunction(this.db);
-          const termClause = likeTerms.map(() => `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`).join(" OR ");
+          const termClause = likeTerms.map(() => `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`).join(strictSelected ? " AND " : " OR ");
           const archivedParams = likeTerms.flatMap((t) => [t, t, t]);
           if (opts?.tag)
             archivedParams.push(opts.tag);

@@ -13,6 +13,9 @@ function buildRecallMatchExpressions(db, query) {
     const broad = buildMatchExpression(db, query);
     if (!broad)
         return null;
+    if (tokenizeQuery(query).length < 3) {
+        return { strict: broad, broad };
+    }
     return { strict: broad.replaceAll(' OR ', ' '), broad };
 }
 function archivedLikeTerms(db, query) {
@@ -377,6 +380,7 @@ export class KnowledgeGraph {
             filterParams.push(opts.namespace);
         filterParams.push(limit);
         let ftsRows;
+        let strictSelected = false;
         const findFtsRows = (ftsQuery) => {
             const queryParams = [ftsQuery, ...filterParams];
             return this.db
@@ -401,6 +405,9 @@ export class KnowledgeGraph {
             if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
                 ftsRows = findFtsRows(matchExpressions.broad);
             }
+            else if (ftsRows.length > 0 && matchExpressions.strict !== matchExpressions.broad) {
+                strictSelected = true;
+            }
         }
         catch (err) {
             if (err instanceof Error && err.message?.includes('fts5'))
@@ -423,7 +430,7 @@ export class KnowledgeGraph {
                 .map(() => `(${SQL_NFC_FUNCTION}(e.name) LIKE ? ESCAPE '\\' ` +
                 `OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
                 `OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`)
-                .join(' OR ');
+                .join(strictSelected ? ' AND ' : ' OR ');
             const archivedParams = likeTerms.flatMap((t) => [t, t, t]);
             if (opts?.tag)
                 archivedParams.push(opts.tag);

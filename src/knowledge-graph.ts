@@ -78,6 +78,13 @@ function buildMatchExpression(db: MemeshDatabase, query: string): string | null 
 function buildRecallMatchExpressions(db: MemeshDatabase, query: string): { strict: string; broad: string } | null {
   const broad = buildMatchExpression(db, query);
   if (!broad) return null;
+  // Keep short two-word lookups on the historical OR path. They are commonly
+  // a pair of related labels ("deployment window"), and callers rely on a
+  // small corpus returning either label. The precision guard targets the
+  // longer natural-language queries where one ambient token creates noise.
+  if (tokenizeQuery(query).length < 3) {
+    return { strict: broad, broad };
+  }
   return { strict: broad.replaceAll(' OR ', ' '), broad };
 }
 
@@ -877,6 +884,7 @@ export class KnowledgeGraph {
     if (opts?.namespace) filterParams.push(opts.namespace);
     filterParams.push(limit);
     let ftsRows: Array<{ id: number }>;
+    let strictSelected = false;
     const findFtsRows = (ftsQuery: string): Array<{ id: number }> => {
       const queryParams = [ftsQuery, ...filterParams];
       return this.db
@@ -902,6 +910,8 @@ export class KnowledgeGraph {
       ftsRows = findFtsRows(matchExpressions.strict);
       if (ftsRows.length === 0 && matchExpressions.strict !== matchExpressions.broad) {
         ftsRows = findFtsRows(matchExpressions.broad);
+      } else if (ftsRows.length > 0 && matchExpressions.strict !== matchExpressions.broad) {
+        strictSelected = true;
       }
     } catch (err) {
       // FTS5 syntax error from user query — return empty results
@@ -955,7 +965,7 @@ export class KnowledgeGraph {
             `OR ${SQL_NFC_FUNCTION}(COALESCE(e.title, '')) LIKE ? ESCAPE '\\' ` +
             `OR ${SQL_NFC_FUNCTION}(o.content) LIKE ? ESCAPE '\\')`
         )
-        .join(' OR ');
+        .join(strictSelected ? ' AND ' : ' OR ');
       const archivedParams: (string | number)[] = likeTerms.flatMap((t) => [t, t, t]);
       if (opts?.tag) archivedParams.push(opts.tag);
       if (opts?.namespace) archivedParams.push(opts.namespace);
