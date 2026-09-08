@@ -100,6 +100,19 @@ function tcpPortOpen(port: number): Promise<boolean> {
   });
 }
 
+async function freeTcpPort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolve());
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('Could not allocate a TCP port for the packaged server test.');
+  const port = address.port;
+  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+  return port;
+}
+
 function packagedPluginWithoutNodeModules(): string {
   // AF_UNIX socket paths are capped at 103 bytes; keep this root short enough
   // for the automatic `<MEMESH_DIR>/agent-router-v2.sock` path on macOS.
@@ -211,7 +224,8 @@ describe('Codex plugin fresh consumer', () => {
   it.skipIf(process.platform === 'win32')('serve binds only the requested port in the packaged CLI', async () => {
     const pluginRoot = packagedPluginWithoutNodeModules();
     const dataDirectory = path.join(pluginRoot, 'data');
-    const child = spawn(process.execPath, [path.join(pluginRoot, 'dist/transports/cli/cli.js'), 'serve', '--port', '43751'], {
+    const requestedPort = await freeTcpPort();
+    const child = spawn(process.execPath, [path.join(pluginRoot, 'dist/transports/cli/cli.js'), 'serve', '--port', String(requestedPort)], {
       cwd: pluginRoot,
       env: {
         ...process.env,
@@ -226,7 +240,8 @@ describe('Codex plugin fresh consumer', () => {
     let stderr = '';
     child.stderr!.setEncoding('utf8');
     child.stderr!.on('data', (chunk: string) => { stderr += chunk; });
-    await waitFor(async () => await tcpPortOpen(43751), 'the packaged server to bind the requested port');
+    await waitFor(async () => await tcpPortOpen(requestedPort), 'the packaged server to bind the requested port');
+    expect(child.exitCode, stderr).toBeNull();
     expect(await tcpPortOpen(3737), stderr).toBe(false);
     await stop(child);
     children.splice(children.indexOf(child), 1);
