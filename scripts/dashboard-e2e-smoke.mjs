@@ -243,6 +243,10 @@ async function main() {
       await page.locator('.search-bar').getByRole('button', { name: 'Search' }).click();
       await expectVisible(page, 'ranked by relevance');
       await expectVisible(page, 'dashboard-e2e-memory');
+      await page.getByRole('button', { name: /Back to list/i }).click();
+      await expectVisible(page, 'All Memories');
+      await expectVisible(page, 'dashboard-e2e-memory');
+      assert.equal(await page.getByPlaceholder(/Filter as you type/i).inputValue(), '', 'Back to list clears the ranked-search filter');
 
       // Tab switching on a real browser: the nav is a WAI-ARIA tablist
       // (tabs are role=tab, not plain buttons). The Project tab derives its
