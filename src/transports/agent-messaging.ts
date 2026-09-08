@@ -19,6 +19,7 @@ import {
 import { MessageSchema } from './schemas.js';
 import {
   AGENT_ROUTER_PROTOCOL_VERSION,
+  AgentRouterError,
   createAgentRouterNotifier,
   sendAgentRouterRequest,
   type AgentRouterNotifyRequest,
@@ -173,6 +174,12 @@ async function requireExactSessionNativeAcceptance(
       error instanceof AgentRecipientUnavailableError
       || error instanceof AgentNativeMessageTooLargeError
     ) throw error;
+    if (error instanceof AgentRouterError) {
+      // Preserve protocol/identity errors: they indicate a broken or skewed
+      // router, not an unreachable socket. Connection-level failures are the
+      // only router errors that should use the sender-side reachability code.
+      if (!['timeout', 'connection_closed'].includes(error.code)) throw error;
+    }
     throw new AgentRouterUnavailableError();
   }
 

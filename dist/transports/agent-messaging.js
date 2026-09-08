@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { AgentMessageAccessError, AgentMessagingError, AgentNativeMessageTooLargeError, fetchAgentMessage, pollAgentEvents, readAgentMessageReceipts, recordAgentReceipt, sendAgentMessage, waitForAgentEvents, } from '../core/agent-messaging.js';
 import { MessageSchema } from './schemas.js';
-import { AGENT_ROUTER_PROTOCOL_VERSION, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
+import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterError, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
@@ -79,6 +79,10 @@ async function requireExactSessionNativeAcceptance(db, sent, dependencies) {
         if (error instanceof AgentRecipientUnavailableError
             || error instanceof AgentNativeMessageTooLargeError)
             throw error;
+        if (error instanceof AgentRouterError) {
+            if (!['timeout', 'connection_closed'].includes(error.code))
+                throw error;
+        }
         throw new AgentRouterUnavailableError();
     }
     const accepted = readHostAccept(db, sent.delivery_id);

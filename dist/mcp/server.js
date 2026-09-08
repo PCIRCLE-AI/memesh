@@ -29868,6 +29868,10 @@ async function requireExactSessionNativeAcceptance(db2, sent, dependencies) {
   } catch (error51) {
     if (error51 instanceof AgentRecipientUnavailableError || error51 instanceof AgentNativeMessageTooLargeError)
       throw error51;
+    if (error51 instanceof AgentRouterError) {
+      if (!["timeout", "connection_closed"].includes(error51.code))
+        throw error51;
+    }
     throw new AgentRouterUnavailableError();
   }
   const accepted = readHostAccept(db2, sent.delivery_id);
