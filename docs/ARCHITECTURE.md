@@ -178,7 +178,7 @@ CRUD operations and full-text search over the entity graph.
 - `getRelations(entityName)` -- All outgoing relations for an entity
 
 **Search**:
-- `search(query?, opts?)` -- FTS5 MATCH query with optional tag filtering; tracks access on returned entities. With `includeArchived`, archived rows are matched by `LIKE` because `archiveEntity()` removes them from FTS5. Query terms are OR-ed and rows are ordered by BM25 rank before multi-factor scoring. Terms are bounded and ubiquitous terms are removed on larger corpora. Both indexed text and queries use the same NFC normalisation and unspaced-script segmentation, so CJK, kana, hangul, Thai, Lao and Khmer remain searchable without a second retrieval path.
+- `search(query?, opts?)` -- FTS5 MATCH query with optional tag filtering; tracks access on returned entities. With `includeArchived`, archived rows are matched by `LIKE` because `archiveEntity()` removes them from FTS5. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits. Rows are ordered by BM25 rank before multi-factor scoring. Terms are bounded and ubiquitous terms are removed on larger corpora. Both indexed text and queries use the same NFC normalisation and unspaced-script segmentation, so CJK, kana, hangul, Thai, Lao and Khmer remain searchable without a second retrieval path.
 - `listRecent(limit?)` -- Most recent entities by ID
 - `findConflicts(entityNames[])` -- Returns conflict descriptions for any `contradicts` relations among the given entity names; surfaced as warnings by all three transports
 
