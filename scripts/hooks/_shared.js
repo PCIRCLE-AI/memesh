@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -854,6 +854,22 @@ export function claimUpdatePrompt(sessionId, currentVersion, latestVersion, chan
   if (!path || typeof channel !== 'string' || channel.length === 0) return false;
   try {
     ensurePrivateDir(join(memeshDir(), 'update-prompt-claims'));
+    // A crash can leave a pending claim before the hook emits its output.
+    // Reclaim only when that owner process is definitely gone; emitted
+    // claims remain session-scoped and continue suppressing duplicates.
+    try {
+      const existing = JSON.parse(readFileSync(path, 'utf8'));
+      const ownerPid = Number(existing?.ownerPid);
+      if (existing?.decision === 'pending' && Number.isInteger(ownerPid) && ownerPid > 0) {
+        try {
+          process.kill(ownerPid, 0);
+        } catch (err) {
+          if (err?.code === 'ESRCH') unlinkSync(path);
+        }
+      }
+    } catch {
+      // A corrupt claim fails closed at the O_EXCL step below.
+    }
     const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
     try {
       writeFileSync(fd, JSON.stringify({
@@ -862,11 +878,25 @@ export function claimUpdatePrompt(sessionId, currentVersion, latestVersion, chan
         latestVersion,
         channel,
         decision: 'pending',
+        ownerPid: process.pid,
         recordedAt: new Date().toISOString(),
       }));
     } finally {
       closeSync(fd);
     }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function finalizeUpdatePromptClaim(sessionId, currentVersion, latestVersion) {
+  const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
+  if (!path || !existsSync(path)) return false;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    if (value?.decision !== 'pending' || Number(value.ownerPid) !== process.pid) return false;
+    writePrivateJson(path, { ...value, decision: 'emitted', emittedAt: new Date().toISOString() });
     return true;
   } catch {
     return false;

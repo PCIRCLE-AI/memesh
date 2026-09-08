@@ -3,8 +3,10 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   claimUpdatePrompt,
+  finalizeUpdatePromptClaim,
   findAutoUpdateConsent,
   readUpdatePromptClaim,
   writeAutoUpdateConsent,
@@ -90,6 +92,27 @@ describe('Feature: per-session update consent', () => {
         channel: 'source-checkout',
         decision: 'pending',
       });
+      expect(finalizeUpdatePromptClaim('same-session', '4.9.0', '4.10.0')).toBe(true);
+      expect(claimUpdatePrompt('same-session', '4.9.0', '4.10.0', 'source-checkout')).toBe(false);
+    } finally {
+      if (previousDir === undefined) delete process.env.MEMESH_DIR;
+      else process.env.MEMESH_DIR = previousDir;
+    }
+  });
+
+  it('reclaims a pending claim when its owner process crashed before emission', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'memesh-update-crash-'));
+    const shared = path.resolve('scripts/hooks/_shared.js');
+    const env = { ...process.env, MEMESH_DIR: dir };
+    const previousDir = process.env.MEMESH_DIR;
+    process.env.MEMESH_DIR = dir;
+    try {
+      const child = spawnSync(process.execPath, ['--input-type=module', '-e',
+        `import { claimUpdatePrompt } from ${JSON.stringify(pathToFileURL(shared).href)};\n`
+        + `process.exit(claimUpdatePrompt('crashed-session', '4.9.0', '4.10.0', 'source-checkout') ? 0 : 1);`,
+      ], { env, encoding: 'utf8' });
+      expect(child.status, child.stderr).toBe(0);
+      expect(claimUpdatePrompt('crashed-session', '4.9.0', '4.10.0', 'source-checkout')).toBe(true);
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;

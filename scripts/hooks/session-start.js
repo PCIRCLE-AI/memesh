@@ -28,6 +28,7 @@ import {
   readRepoState,
   readAutoUpdateConsent,
   claimUpdatePrompt,
+  finalizeUpdatePromptClaim,
   readUpdatePromptClaim,
   readUpdateCheckCache,
   repoStateLines,
@@ -722,16 +723,19 @@ process.stdin.on('end', async () => {
       // contradict it one line later.
       const emptySummary = combineWithBanner(captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work');
       let consent = null;
+      let consentVersion = null;
+      let consentCache = null;
       try {
         const pluginRoot = resolvePluginRoot(import.meta.url);
         const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
-        const version = typeof pkg.version === 'string' ? pkg.version : null;
-        const cache = readUpdateCheckCache(version);
+        consentVersion = typeof pkg.version === 'string' ? pkg.version : null;
+        consentCache = readUpdateCheckCache(consentVersion);
         const channel = detectInstallChannelHook(pluginRoot);
-        consent = buildUpdateConsentPrompt(data.session_id, version, cache, channel);
+        consent = buildUpdateConsentPrompt(data.session_id, consentVersion, consentCache, channel);
       } catch { /* best-effort */ }
       output(consent ? `${consent.system}\n${emptySummary}` : emptySummary,
         consent ? `${consent.context}\n\n${workPackageGuidance}` : workPackageGuidance);
+      if (consent) finalizeUpdatePromptClaim(data.session_id, consentVersion, consentCache?.latestVersion);
       return;
     }
 
@@ -1234,6 +1238,9 @@ process.stdin.on('end', async () => {
       output(withCaptureWarning(finalMessage), updateConsentContext
         ? `${updateConsentContext}\n\n${memoryContext}`
         : memoryContext);
+      if (updateConsentContext) {
+        finalizeUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion);
+      }
 
       // Pre-read the noise-compression throttle on the handle we already
       // hold. compressWeeklyNoise() re-checks under its own connection, but

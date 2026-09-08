@@ -93,8 +93,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "29eef114ea38f6c09a33bdc662417b868e97efb94e3033eabb72cbdeab01be4d",
-      "bytes": 47502
+      "sha256": "4474f784643a3384a066b508473ff17ee39beecd86d57451300592971528d3c4",
+      "bytes": 48742
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
@@ -123,8 +123,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "939f76c68dfbf27086e17320ea8839f05972bd3fe4dd5d97db8859a271976596",
-      "bytes": 67100
+      "sha256": "cf7535921e5f0758a18e4d7010854762d0372d70db185a578e7a1b3ca61807a4",
+      "bytes": 67464
     },
     {
       "path": "scripts/hooks/session-summary.js",
