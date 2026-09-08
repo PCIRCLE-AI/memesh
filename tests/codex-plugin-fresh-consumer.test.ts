@@ -218,7 +218,7 @@ describe('Codex plugin fresh consumer', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe('4.9.0');
+    expect(result.stdout.trim()).toBe('4.9.1');
   });
 
   it.skipIf(process.platform === 'win32')('serve binds only the requested port in the packaged CLI', async () => {
