@@ -48,6 +48,9 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **Dashboard memory dates interpret SQLite timestamps as UTC.** Relative ages,
+  date labels and capture-density buckets share the existing UTC parser instead
+  of interpreting database timestamps in the browser's local timezone.
 - **Update availability follows semantic version precedence.** An older public
   release is no longer offered as an update to a newer local candidate. Local
   CLI/plugin version differences alone no longer trigger upgrade advice, while

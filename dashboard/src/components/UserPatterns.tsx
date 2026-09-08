@@ -35,7 +35,7 @@ export function UserPatterns({ data }: Props) {
       {/* Work Schedule Heatmap */}
       <div style={{ marginBottom: 16 }}>
         <div style={{
-          fontSize: 11,
+          fontSize: 14,
           fontWeight: 600,
           color: 'var(--text-3)',
           textTransform: 'uppercase',
@@ -53,14 +53,14 @@ export function UserPatterns({ data }: Props) {
                 key={hour}
                 title={`${hour.toString().padStart(2, '0')}:00 — ${count}`}
                 style={{
-                  width: 18,
-                  height: 18,
+                  width: 28,
+                  height: 28,
                   borderRadius: 'var(--radius-xs)',
                   background: intensity > 0
                     ? `rgba(143, 242, 92, ${0.1 + intensity * 0.7})`
                     : 'var(--bg-0)',
                   border: '1px solid var(--border-subtle)',
-                  fontSize: 9,
+                  fontSize: 14,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
@@ -73,7 +73,7 @@ export function UserPatterns({ data }: Props) {
             );
           })}
         </div>
-        <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 6, fontFamily: 'var(--mono)' }}>
+        <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 6, fontFamily: 'var(--mono)' }}>
           {t('patterns.peakHours')}: {peakHours.join(', ')}
           {busiestDays.length > 0 && (
             <span> · {t('patterns.busiestDays')}: {busiestDays.join(', ')}</span>
@@ -84,7 +84,7 @@ export function UserPatterns({ data }: Props) {
       {/* Workflow Stats */}
       <div style={{ marginBottom: 16 }}>
         <div style={{
-          fontSize: 11,
+          fontSize: 14,
           fontWeight: 600,
           color: 'var(--text-3)',
           textTransform: 'uppercase',
@@ -107,7 +107,7 @@ export function UserPatterns({ data }: Props) {
       {focusAreas.length > 0 && (
         <div style={{ marginBottom: 16 }}>
           <div style={{
-            fontSize: 11,
+            fontSize: 14,
             fontWeight: 600,
             color: 'var(--text-3)',
             textTransform: 'uppercase',
@@ -121,7 +121,7 @@ export function UserPatterns({ data }: Props) {
               <span
                 key={fa.type}
                 class="tag"
-                style={{ fontSize: 11, padding: '2px 8px' }}
+                style={{ fontSize: 14, padding: '2px 8px' }}
               >
                 {typeLabel(fa.type)} <span style={{ opacity: 0.5 }}>({fa.count})</span>
               </span>
@@ -136,7 +136,7 @@ export function UserPatterns({ data }: Props) {
           {/* Strengths */}
           <div>
             <div style={{
-              fontSize: 11,
+              fontSize: 14,
               fontWeight: 600,
               color: 'var(--text-3)',
               textTransform: 'uppercase',
@@ -148,8 +148,8 @@ export function UserPatterns({ data }: Props) {
             {strengths.slice(0, 5).map((s) => (
               <div key={s.type} style={{ marginBottom: 6 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
-                  <span style={{ fontSize: 12, color: 'var(--text-1)' }}>{typeLabel(s.type)}</span>
-                  <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--life)' }}>
+                  <span style={{ fontSize: 14, color: 'var(--text-1)' }}>{typeLabel(s.type)}</span>
+                  <span style={{ fontFamily: 'var(--mono)', fontSize: 14, color: 'var(--life)' }}>
                     {Math.round(s.avgConfidence * 100)}%
                   </span>
                 </div>
@@ -165,14 +165,14 @@ export function UserPatterns({ data }: Props) {
               </div>
             ))}
             {strengths.length === 0 && (
-              <div style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic' }}>—</div>
+              <div style={{ fontSize: 14, color: 'var(--text-3)', fontStyle: 'italic' }}>—</div>
             )}
           </div>
 
           {/* Learning Areas */}
           <div>
             <div style={{
-              fontSize: 11,
+              fontSize: 14,
               fontWeight: 600,
               color: 'var(--text-3)',
               textTransform: 'uppercase',
@@ -189,17 +189,17 @@ export function UserPatterns({ data }: Props) {
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   marginBottom: 6,
-                  fontSize: 12,
+                  fontSize: 14,
                 }}
               >
                 <span style={{ color: 'var(--text-1)' }}>{la.tag}</span>
-                <span style={{ fontFamily: 'var(--mono)', fontSize: 11, color: 'var(--text-3)' }}>
+                <span style={{ fontFamily: 'var(--mono)', fontSize: 14, color: 'var(--text-3)' }}>
                   {la.count}
                 </span>
               </div>
             ))}
             {learningAreas.length === 0 && (
-              <div style={{ fontSize: 11, color: 'var(--text-3)', fontStyle: 'italic' }}>—</div>
+              <div style={{ fontSize: 14, color: 'var(--text-3)', fontStyle: 'italic' }}>—</div>
             )}
           </div>
         </div>

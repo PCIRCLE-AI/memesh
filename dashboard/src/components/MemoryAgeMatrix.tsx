@@ -60,7 +60,7 @@ export function MemoryAgeMatrix({ data }: MemoryAgeMatrixProps) {
         <table style={{
           width: '100%',
           borderCollapse: 'collapse',
-          fontSize: 12,
+          fontSize: 14,
           tableLayout: 'fixed',
         }}>
           <colgroup>
@@ -93,7 +93,7 @@ export function MemoryAgeMatrix({ data }: MemoryAgeMatrixProps) {
                   <td style={{
                     padding: '5px 8px',
                     color: 'var(--text-1)',
-                    fontSize: 11,
+                    fontSize: 14,
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis',
@@ -112,7 +112,7 @@ export function MemoryAgeMatrix({ data }: MemoryAgeMatrixProps) {
                         color: count > 0 ? 'var(--life)' : 'var(--text-3)',
                         fontFamily: 'var(--mono)',
                         fontWeight: count > 0 ? 600 : 400,
-                        fontSize: 11,
+                        fontSize: 14,
                         transition: 'background 0.2s',
                       }}>
                         {count > 0 ? count : '·'}
@@ -127,7 +127,7 @@ export function MemoryAgeMatrix({ data }: MemoryAgeMatrixProps) {
       </div>
       <div style={{
         marginTop: 10,
-        fontSize: 11,
+        fontSize: 14,
         color: 'var(--text-3)',
         display: 'flex',
         alignItems: 'center',

@@ -8,6 +8,7 @@
 import type { Entity } from './api';
 import { t, getLocale } from './i18n';
 import { isBoilerplateObservation } from '../../../src/core/title.js';
+import { parseSqliteUtcMs } from '../../../src/core/time-utils.js';
 import { CATEGORICAL_TYPE_COLORS } from './type-palette';
 
 /* ---------- type clustering ---------- */
@@ -79,11 +80,16 @@ export function relationLabel(type: string): string {
 
 /* ---------- relative time ---------- */
 
+/** SQLite CURRENT_TIMESTAMP strings are UTC despite lacking an offset. */
+export function timestampDate(value: string): Date {
+  return new Date(parseSqliteUtcMs(value) ?? value);
+}
+
 /** Human-friendly relative date, localised via i18n. Falls back to a locale
  *  date for entries older than a year. */
 export function relativeDate(iso: string | null | undefined, now: Date = new Date()): string {
   if (!iso) return '—';
-  const then = new Date(iso);
+  const then = timestampDate(iso);
   if (Number.isNaN(then.getTime())) return '—';
   const ms = now.getTime() - then.getTime();
   const days = Math.floor(ms / 86400000);
@@ -109,7 +115,7 @@ export type TimeBucket = 'today' | 'week' | 'month' | 'older';
 
 export function timeBucket(iso: string | null | undefined, now: Date = new Date()): TimeBucket {
   if (!iso) return 'older';
-  const ms = now.getTime() - new Date(iso).getTime();
+  const ms = now.getTime() - timestampDate(iso).getTime();
   const days = Math.floor(ms / 86400000);
   if (days < 1) return 'today';
   if (days < 7) return 'week';
@@ -161,7 +167,7 @@ export function displayTitle(entity: Entity): string {
   const obs = pickBestObservation(entity.observations);
   if (obs) return obs;
   const date = entity.created_at
-    ? new Date(entity.created_at).toLocaleDateString(getLocale(), { year: 'numeric', month: 'short', day: 'numeric' })
+    ? timestampDate(entity.created_at).toLocaleDateString(getLocale(), { year: 'numeric', month: 'short', day: 'numeric' })
     : '';
   return date ? `${typeLabel(entity.type)} · ${date}` : typeLabel(entity.type);
 }

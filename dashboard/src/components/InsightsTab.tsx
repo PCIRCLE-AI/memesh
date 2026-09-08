@@ -281,12 +281,12 @@ export function InsightsTab({
       <div class="card" style={{ padding: 16 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
           <h2 style={{ margin: 0, fontSize: 18 }}>{t('insights.reviewTitle')}</h2>
-          <span style={{ color: 'var(--text-2)', fontSize: 13 }}>{t('insights.reviewSubtitle')}</span>
+          <span style={{ color: 'var(--text-2)', fontSize: 14 }}>{t('insights.reviewSubtitle')}</span>
         </div>
-        <p style={{ margin: '8px 0 0', color: 'var(--text-2)', fontSize: 12, lineHeight: 1.5 }}>
+        <p style={{ margin: '8px 0 0', color: 'var(--text-2)', fontSize: 14, lineHeight: 1.5 }}>
           {t('insights.reviewBoundary')}
         </p>
-        <div style={{ marginTop: 10, display: 'flex', gap: 16, flexWrap: 'wrap', color: 'var(--text-2)', fontSize: 13 }}>
+        <div style={{ marginTop: 10, display: 'flex', gap: 16, flexWrap: 'wrap', color: 'var(--text-2)', fontSize: 14 }}>
           <span><strong style={{ color: 'var(--life)', fontFamily: 'var(--mono)' }}>{pendingCount}</strong> {t('insights.statPending')}</span>
           <span><strong style={{ fontFamily: 'var(--mono)' }}>{appliedCount}</strong> {t('insights.statApplied')}</span>
           <span><strong style={{ fontFamily: 'var(--mono)' }}>{rejectedCount}</strong> {t('insights.statRejected')}</span>
@@ -320,7 +320,7 @@ export function InsightsTab({
       </div>
 
       {error && <div class="card" role="alert" style={{ padding: 12, color: 'var(--danger)' }}>{error}</div>}
-      {loading && <div style={{ color: 'var(--text-3)', fontSize: 13 }}>{t('insights.loading')}</div>}
+      {loading && <div style={{ color: 'var(--text-3)', fontSize: 14 }}>{t('insights.loading')}</div>}
       {!loading && proposals.length === 0 && (
         <div class="card" style={{ padding: 16, textAlign: 'center', color: 'var(--text-2)' }}>
           {filter !== 'pending' ? t('insights.emptyOther') : t('insights.emptyPending')}
@@ -367,27 +367,27 @@ export function InsightsTab({
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span class="badge badge-type" style={{ textTransform: 'none', fontFamily: 'var(--mono)' }}>#{p.id}</span>
                   <span style={{ fontWeight: 600 }}>{p.digest_name}</span>
-                  <span class="tag" style={{ fontSize: 11 }}>{p.project}</span>
-                  <span class="tag" style={{ fontSize: 11 }}>{p.cluster_key}</span>
+                  <span class="tag" style={{ fontSize: 14 }}>{p.project}</span>
+                  <span class="tag" style={{ fontSize: 14 }}>{p.cluster_key}</span>
                   {p.kind === 'digest' && p.source_kind && (
-                    <span class="tag" style={{ fontSize: 11 }}>
+                    <span class="tag" style={{ fontSize: 14 }}>
                       {p.source_kind === 'transcript' ? t('insights.source.transcript') : t('insights.source.calendar')}
                     </span>
                   )}
                   {p.kind === 'product_improvement' && (
-                    <code class="tag" style={{ fontSize: 11 }}>product_improvement</code>
+                    <code class="tag" style={{ fontSize: 14 }}>product_improvement</code>
                   )}
-                  <span class="tag" style={{ fontSize: 11, color: 'var(--text-2)' }}>{p.source_count} {t('insights.sources')}</span>
-                  <span class="tag" style={{ fontSize: 11, ...statusBadgeStyle(p.status) }}>
+                  <span class="tag" style={{ fontSize: 14, color: 'var(--text-2)' }}>{p.source_count} {t('insights.sources')}</span>
+                  <span class="tag" style={{ fontSize: 14, ...statusBadgeStyle(p.status) }}>
                     {statusLabel(p.status)}
                   </span>
                 </div>
-                <div style={{ marginTop: 6, color: 'var(--text-2)', fontSize: 13, lineHeight: 1.5 }}>
+                <div style={{ marginTop: 6, color: 'var(--text-2)', fontSize: 14, lineHeight: 1.5 }}>
                   {preview !== null
                     ? <>{preview}…</>
                     : <span style={{ fontStyle: 'italic', color: 'var(--text-3)' }}>{t('insights.noPreview')}</span>}
                 </div>
-                <div style={{ marginTop: 4, color: 'var(--text-3)', fontSize: 11 }}>
+                <div style={{ marginTop: 4, color: 'var(--text-3)', fontSize: 14 }}>
                   {formatRelative(p.created_at)}
                 </div>
               </div>
@@ -429,13 +429,13 @@ export function InsightsTab({
               const [fromN, toN] = rel.relation_type === 'supersedes' && rel.direction === 'b_supersedes_a'
                 ? [rel.b?.name, rel.a?.name] : [rel.a?.name, rel.b?.name];
               return (
-                <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 13 }}>
-                  <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>{t('insights.reviewSource')}</div>
+                <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 14 }}>
+                  <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 14 }}>{t('insights.reviewSource')}</div>
                   <div style={{ marginBottom: 8 }}>
                     <strong>{rel.verdict}</strong>
-                    {rel.severity && <span class="tag" style={{ marginLeft: 8, fontSize: 11 }}>{rel.severity}</span>}
+                    {rel.severity && <span class="tag" style={{ marginLeft: 8, fontSize: 14 }}>{rel.severity}</span>}
                   </div>
-                  <div style={{ marginBottom: 8, fontFamily: 'var(--mono)', fontSize: 12 }}>
+                  <div style={{ marginBottom: 8, fontFamily: 'var(--mono)', fontSize: 14 }}>
                     {fromN} —{rel.relation_type}→ {toN}
                   </div>
                   {rel.rationale && (
@@ -445,7 +445,7 @@ export function InsightsTab({
                     <div style={{ marginBottom: 8, color: 'var(--text-2)', lineHeight: 1.5 }}>→ {rel.recommended_action}</div>
                   )}
                   {(rel.excerpts?.a || rel.excerpts?.b) && (
-                    <div style={{ marginBottom: 4, color: 'var(--text-2)', fontSize: 12 }}>
+                    <div style={{ marginBottom: 4, color: 'var(--text-2)', fontSize: 14 }}>
                       <div><code>A</code> {rel.a?.name}: “{rel.excerpts?.a}”</div>
                       <div><code>B</code> {rel.b?.name}: “{rel.excerpts?.b}”</div>
                     </div>
@@ -464,33 +464,33 @@ export function InsightsTab({
                 source_lesson?: { name?: string; title?: string | null };
               };
               return (
-                <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 13 }}>
-                  <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>{t('insights.reviewSource')}</div>
+                <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 14 }}>
+                  <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 14 }}>{t('insights.reviewSource')}</div>
                   <div style={{ marginBottom: 8 }}>
-                    <span class="tag" style={{ fontSize: 11 }}>{g.guard?.tool}</span>
-                    <span style={{ marginLeft: 8, color: 'var(--text-3)', fontSize: 11 }}>{t('guard.sourceLesson')}:</span>{' '}
-                    <span style={{ fontSize: 12 }}>{g.source_lesson?.title || g.source_lesson?.name}</span>
+                    <span class="tag" style={{ fontSize: 14 }}>{g.guard?.tool}</span>
+                    <span style={{ marginLeft: 8, color: 'var(--text-3)', fontSize: 14 }}>{t('guard.sourceLesson')}:</span>{' '}
+                    <span style={{ fontSize: 14 }}>{g.source_lesson?.title || g.source_lesson?.name}</span>
                   </div>
                   <div style={{ marginBottom: 8 }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>{t('guard.pattern')}</div>
-                    <code style={{ fontFamily: 'var(--mono)', fontSize: 12, wordBreak: 'break-all' }}>{g.guard?.pattern}</code>
+                    <div style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 2 }}>{t('guard.pattern')}</div>
+                    <code style={{ fontFamily: 'var(--mono)', fontSize: 14, wordBreak: 'break-all' }}>{g.guard?.pattern}</code>
                   </div>
                   <div style={{ marginBottom: 8 }}>
-                    <div style={{ fontSize: 11, color: 'var(--text-3)', marginBottom: 2 }}>{t('guard.message')}</div>
+                    <div style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 2 }}>{t('guard.message')}</div>
                     <div style={{ lineHeight: 1.5 }}>{g.guard?.message}</div>
                   </div>
                   {(g.guard?.should_match?.length || g.guard?.should_not_match?.length) ? (
-                    <div style={{ fontSize: 12, color: 'var(--text-2)' }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-2)' }}>
                       {g.guard?.should_match?.length ? (
                         <div style={{ marginBottom: 4 }}>
-                          <span style={{ color: 'var(--text-3)', fontSize: 11 }}>{t('guard.shouldMatch')}:</span>{' '}
-                          {g.guard.should_match.map((ex, i) => <code key={i} style={{ fontFamily: 'var(--mono)', fontSize: 11, marginRight: 8 }}>{ex}</code>)}
+                          <span style={{ color: 'var(--text-3)', fontSize: 14 }}>{t('guard.shouldMatch')}:</span>{' '}
+                          {g.guard.should_match.map((ex, i) => <code key={i} style={{ fontFamily: 'var(--mono)', fontSize: 14, marginRight: 8 }}>{ex}</code>)}
                         </div>
                       ) : null}
                       {g.guard?.should_not_match?.length ? (
                         <div>
-                          <span style={{ color: 'var(--text-3)', fontSize: 11 }}>{t('guard.shouldNotMatch')}:</span>{' '}
-                          {g.guard.should_not_match.map((ex, i) => <code key={i} style={{ fontFamily: 'var(--mono)', fontSize: 11, marginRight: 8 }}>{ex}</code>)}
+                          <span style={{ color: 'var(--text-3)', fontSize: 14 }}>{t('guard.shouldNotMatch')}:</span>{' '}
+                          {g.guard.should_not_match.map((ex, i) => <code key={i} style={{ fontFamily: 'var(--mono)', fontSize: 14, marginRight: 8 }}>{ex}</code>)}
                         </div>
                       ) : null}
                     </div>
@@ -500,11 +500,11 @@ export function InsightsTab({
             })()}
 
             {detail && detail.proposed_digest && p.kind !== 'relation' && p.kind !== 'guard' && (
-              <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 13 }}>
+              <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 14 }}>
                 {p.kind === 'product_improvement'
-                  ? <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}><code>product_improvement</code></div>
+                  ? <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 14 }}><code>product_improvement</code></div>
                   : (
-                    <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>
+                    <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 14 }}>
                       {detail.source_kind === 'transcript' ? t('insights.source.transcript') : t('insights.source.calendar')}
                     </div>
                   )}
@@ -529,7 +529,7 @@ export function InsightsTab({
                         <li key={i} style={{ marginBottom: 6, lineHeight: 1.5 }}>
                           <div>
                             <span style={{ color: 'var(--text-3)' }}>{t('insights.validationClaim')}: </span>
-                            <code style={{ fontSize: 12 }}>{w.claim}</code>
+                            <code style={{ fontSize: 14 }}>{w.claim}</code>
                           </div>
                           <div>
                             <span style={{ color: 'var(--text-3)' }}>{t('insights.validationReason')}: </span>
@@ -551,17 +551,17 @@ export function InsightsTab({
                 <div style={{ marginBottom: 4 }}>
                   <strong>{t('insights.tags')}:</strong>{' '}
                   {detail.proposed_digest.tags.map(tag => (
-                    <span key={tag} class="tag" style={{ marginLeft: 4, fontSize: 11 }}>{tag}</span>
+                    <span key={tag} class="tag" style={{ marginLeft: 4, fontSize: 14 }}>{tag}</span>
                   ))}
                 </div>
                 {Array.isArray(detail.source_ids) && (
-                  <div style={{ color: 'var(--text-3)', fontSize: 11, marginTop: 6 }}>
+                  <div style={{ color: 'var(--text-3)', fontSize: 14, marginTop: 6 }}>
                     {t('insights.sourceIds')}: {t('insights.entitiesCount', { n: detail.source_ids.length })} ({detail.source_ids.slice(0, 8).join(', ')}{detail.source_ids.length > 8 ? '…' : ''})
                   </div>
                 )}
                 {isTranscriptSourceEvidence(detail.source_ids) && (
                   <div data-testid="transcript-source-evidence" style={{ marginTop: 12, padding: 10, background: 'var(--bg-2)', borderRadius: 'var(--radius)' }}>
-                    <div style={{ color: 'var(--text-2)', fontSize: 12, marginBottom: 6 }}>
+                    <div style={{ color: 'var(--text-2)', fontSize: 14, marginBottom: 6 }}>
                       <strong>{t('insights.source.transcript')}</strong>{' '}
                       <code>{detail.source_ids.source.host}</code> · <code>{detail.source_ids.sessionId}</code> ·{' '}
                       {detail.source_ids.coverage.included_turns}/{detail.source_ids.coverage.total_turns} {t('insights.sources')}
@@ -570,7 +570,7 @@ export function InsightsTab({
                     <ol style={{ margin: '0 0 0 18px', padding: 0 }}>
                       {detail.source_ids.sources.map((source, index) => (
                         <li key={index} style={{ marginBottom: 6, lineHeight: 1.5 }}>
-                          <code style={{ fontSize: 11 }}>{source.role}</code>{' '}{source.text}
+                          <code style={{ fontSize: 14 }}>{source.role}</code>{' '}{source.text}
                         </li>
                       ))}
                     </ol>

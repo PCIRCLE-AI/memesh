@@ -1858,11 +1858,14 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
             {/* The headline, not `egoEntity.name`: this banner names the node
                 the user is focused on, and a dedup key like
                 `pre-compact-<sessionId>` does not name anything to a human. */}
-            <span style={{ color: 'var(--text-0)' }}>{displayTitle(egoEntity)}</span>
+            <span style={{ color: 'var(--text-0)', minWidth: 0, overflowWrap: 'anywhere' }}>{displayTitle(egoEntity)}</span>
             <button
               onClick={() => setEgoNodeId(null)}
               style={{
                 marginLeft: 'auto',
+                flexShrink: 0,
+                whiteSpace: 'nowrap',
+                minHeight: 32,
                 padding: '2px 8px',
                 background: 'rgba(143, 242, 92, 0.12)',
                 border: '1px solid rgba(143, 242, 92, 0.2)',

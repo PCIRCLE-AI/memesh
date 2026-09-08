@@ -108,24 +108,24 @@ export function PatternCard(props: PatternCardProps) {
         <div style={{ flex: '1 1 60%', minWidth: 240 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span class="badge badge-type" style={{ textTransform: 'none' }}>#{p.id}</span>
-            <span class="tag" style={{ fontSize: 11, background: 'var(--warning)', color: 'var(--bg-0)', fontWeight: 600 }}>
+            <span class="tag" style={{ fontSize: 14, background: 'var(--warning)', color: 'var(--bg-0)', fontWeight: 600 }}>
               {t('pattern.title')}
             </span>
             <span style={{ fontWeight: 600 }}>{p.digest_name}</span>
-            <span class="tag" style={{ fontSize: 11 }}>{p.project}</span>
-            <span class="tag" style={{ fontSize: 11, color: 'var(--text-2)' }}>
+            <span class="tag" style={{ fontSize: 14 }}>{p.project}</span>
+            <span class="tag" style={{ fontSize: 14, color: 'var(--text-2)' }}>
               {t('pattern.evidenceCount', { n: String(p.source_count) })}
             </span>
             {severity && (
-              <span class="tag" style={{ fontSize: 11, color: severityColor(severity), borderColor: severityColor(severity) }}>
+              <span class="tag" style={{ fontSize: 14, color: severityColor(severity), borderColor: severityColor(severity) }}>
                 {t('pattern.severity')}: {t(`pattern.severity.${severity}`)}
               </span>
             )}
-            <span class="tag" style={{ fontSize: 11, ...badgeStyle }}>
+            <span class="tag" style={{ fontSize: 14, ...badgeStyle }}>
               {statusLabel(p.status)}
             </span>
           </div>
-          <div style={{ marginTop: 6, color: 'var(--text-2)', fontSize: 13, lineHeight: 1.5 }}>
+          <div style={{ marginTop: 6, color: 'var(--text-2)', fontSize: 14, lineHeight: 1.5 }}>
             {/* null = no observations at all (the server used to send the
                 literal '(empty)' sentinel) — render a localised empty state,
                 never a dangling ellipsis. */}
@@ -133,7 +133,7 @@ export function PatternCard(props: PatternCardProps) {
               ? <>{p.digest_observations_preview}…</>
               : <span style={{ fontStyle: 'italic', color: 'var(--text-3)' }}>{t('insights.noPreview')}</span>}
           </div>
-          <div style={{ marginTop: 4, color: 'var(--text-3)', fontSize: 11 }}>
+          <div style={{ marginTop: 4, color: 'var(--text-3)', fontSize: 14 }}>
             {formatRelative(p.created_at)}
           </div>
         </div>
@@ -160,8 +160,8 @@ export function PatternCard(props: PatternCardProps) {
       </div>
 
       {detail && detail.proposed_digest && (
-        <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 13 }}>
-          <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 11 }}>{t('insights.reviewSource')}</div>
+        <div style={{ marginTop: 12, padding: 12, background: 'var(--bg-1)', borderRadius: 'var(--radius-xs)', fontSize: 14 }}>
+          <div style={{ marginBottom: 8, color: 'var(--text-3)', fontSize: 14 }}>{t('insights.reviewSource')}</div>
           {/* Stored warnings stay above the description so reviewers see
               caveats before deciding whether to accept the legacy row. */}
           {Array.isArray(detail.proposed_digest.validation_warnings)
@@ -183,7 +183,7 @@ export function PatternCard(props: PatternCardProps) {
                   <li key={i} style={{ marginBottom: 6, lineHeight: 1.5 }}>
                     <div>
                       <span style={{ color: 'var(--text-3)' }}>{t('insights.validationClaim')}: </span>
-                      <code style={{ fontSize: 12 }}>{w.claim}</code>
+                      <code style={{ fontSize: 14 }}>{w.claim}</code>
                     </div>
                     <div>
                       <span style={{ color: 'var(--text-3)' }}>{t('insights.validationReason')}: </span>
@@ -205,11 +205,11 @@ export function PatternCard(props: PatternCardProps) {
           <div style={{ marginBottom: 4 }}>
             <strong>{t('insights.tags')}:</strong>{' '}
             {detail.proposed_digest.tags.map(tag => (
-              <span key={tag} class="tag" style={{ marginLeft: 4, fontSize: 11 }}>{tag}</span>
+              <span key={tag} class="tag" style={{ marginLeft: 4, fontSize: 14 }}>{tag}</span>
             ))}
           </div>
           {Array.isArray(detail.source_ids) && (
-            <div style={{ color: 'var(--text-3)', fontSize: 11, marginTop: 6 }}>
+            <div style={{ color: 'var(--text-3)', fontSize: 14, marginTop: 6 }}>
               {t('insights.sourceIds')}: {detail.source_ids.length} ({detail.source_ids.slice(0, 8).join(', ')}{detail.source_ids.length > 8 ? '…' : ''})
             </div>
           )}

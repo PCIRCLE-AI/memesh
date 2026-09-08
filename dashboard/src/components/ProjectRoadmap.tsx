@@ -427,11 +427,11 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                 <path d="M2 4 a1 1 0 0 1 1 -1 h4 l2 2 h5 a1 1 0 0 1 1 1 v6 a1 1 0 0 1 -1 1 H3 a1 1 0 0 1 -1 -1 z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
               </svg>
               <span>{projectName}</span>
-              <span style={{ color: 'var(--text-3)', fontWeight: 400, fontSize: 13 }}>
+              <span style={{ color: 'var(--text-3)', fontWeight: 400, fontSize: 14 }}>
                 · {t('roadmap.title')}
               </span>
             </div>
-            <div style={{ fontSize: 12, color: 'var(--text-2)', marginTop: 4 }}>
+            <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 4 }}>
               {t('roadmap.summary', {
                 count: stats.total,
                 first: stats.first ? stats.first.slice(0, 10) : '—',
@@ -471,7 +471,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                       color: active ? 'var(--life)' : 'var(--text-2)',
                       border: 'none',
                       borderRadius: 'var(--radius-hairline)',
-                      fontSize: 11,
+                      fontSize: 14,
                       fontFamily: 'inherit',
                       cursor: 'pointer',
                       fontWeight: active ? 600 : 400,
@@ -492,13 +492,13 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
               <span
                 key={type}
                 class="tag"
-                style={{ fontSize: 11, background: 'var(--border-subtle)' }}
+                style={{ fontSize: 14, background: 'var(--border-subtle)' }}
               >
                 {typeLabel(type)} <span style={{ opacity: 0.6, fontFamily: 'var(--mono)' }}>{count}</span>
               </span>
             ))}
             {stats.types.length > 8 && (
-              <span class="tag" style={{ opacity: 0.5, fontSize: 11 }}>
+              <span class="tag" style={{ opacity: 0.5, fontSize: 14 }}>
                 +{stats.types.length - 8}
               </span>
             )}
@@ -531,7 +531,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
         >
           <span
             style={{
-              fontSize: 10,
+              fontSize: 14,
               textTransform: 'uppercase',
               letterSpacing: '0.08em',
               color: 'var(--text-3)',
@@ -565,10 +565,10 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
               }}
               title={`${phase.startIso.slice(0, 10)} → ${phase.endIso.slice(0, 10)}`}
             >
-              <span style={{ fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>
+              <span style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 240 }}>
                 {phase.label}
               </span>
-              <span style={{ fontSize: 10, color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>
+              <span style={{ fontSize: 14, color: 'var(--text-3)', fontFamily: 'var(--mono)' }}>
                 {phase.entityCount} · {relativeDate(phase.startIso)}
               </span>
             </button>
@@ -618,7 +618,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
               arcs below; counts are of DRAWN arcs, never of edges that
               could not be placed. */}
           {(drawnSupersedes > 0 || drawnContradicts > 0) && (
-            <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 6, fontFamily: 'var(--font-ui)' }}>
+            <div style={{ fontSize: 14, color: 'var(--text-3)', marginBottom: 6, fontFamily: 'var(--font-ui)' }}>
               {drawnSupersedes > 0 && (
                 <span style={{ marginRight: 10 }}>— {t('roadmap.lineageSupersedes', { n: drawnSupersedes })}</span>
               )}
@@ -740,7 +740,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                           >
                             <span
                               style={{
-                                fontSize: 13,
+                                fontSize: 14,
                                 fontWeight: 600,
                                 color: 'var(--text-0)',
                                 whiteSpace: 'nowrap',
@@ -754,7 +754,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                                 <span
                                   style={{
                                     marginLeft: 8,
-                                    fontSize: 10,
+                                    fontSize: 14,
                                     color: 'var(--life)',
                                     fontFamily: 'var(--mono)',
                                     fontWeight: 500,
@@ -766,7 +766,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                             </span>
                             <span
                               style={{
-                                fontSize: 11,
+                                fontSize: 14,
                                 color: 'var(--text-3)',
                                 fontFamily: 'var(--mono)',
                               }}
@@ -840,7 +840,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                         />
                         <div
                           style={{
-                            fontSize: 12,
+                            fontSize: 14,
                             color: 'var(--text-2)',
                             fontFamily: 'var(--mono)',
                             marginBottom: 8,
@@ -903,7 +903,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                 >
                   <span
                     style={{
-                      fontSize: 11,
+                      fontSize: 14,
                       textTransform: 'uppercase',
                       letterSpacing: '0.08em',
                       fontWeight: 600,
@@ -913,7 +913,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                   >
                     {group.label}
                   </span>
-                  <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+                  <span style={{ fontSize: 14, color: 'var(--text-3)' }}>
                     {group.entries.length}
                   </span>
                 </div>
@@ -940,10 +940,10 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'sticky', top: 16 }}>
           {milestones.length > 0 && (
             <div class="card" style={{ padding: 14 }}>
-              <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--text-2)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
+              <div style={{ fontSize: 14, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--text-2)', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 4 }}>
                 {t('roadmap.milestones')}
                 {filteredMilestoneCount > 0 && (
-                  <span style={{ fontSize: 10, fontWeight: 400, opacity: 0.55, textTransform: 'none', letterSpacing: 0 }}>
+                  <span style={{ fontSize: 14, fontWeight: 400, opacity: 0.55, textTransform: 'none', letterSpacing: 0 }}>
                     {t('roadmap.lowSignalHidden', { count: filteredMilestoneCount })}
                   </span>
                 )}
@@ -969,10 +969,10 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                 >
                   <span style={{ flexShrink: 0, color: 'var(--life)' }}><EntityIcon type={m.type} size={14} /></span>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 12, color: 'var(--text-1)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-1)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {displayTitle(m)}
                     </div>
-                    <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>
+                    <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 2 }}>
                       {relativeDate(m.created_at)}
                     </div>
                   </div>
@@ -983,7 +983,7 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
 
           {keyLessons.length > 0 && (
             <div class="card" style={{ padding: 14 }}>
-              <div style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--text-2)', marginBottom: 10 }}>
+              <div style={{ fontSize: 14, textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600, color: 'var(--text-2)', marginBottom: 10 }}>
                 {t('roadmap.keyLessons')}
               </div>
               {keyLessons.map((l) => {
@@ -1009,10 +1009,10 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                   >
                     <span style={{ flexShrink: 0, color: 'var(--text-2)' }}><EntityIcon type={l.type} size={14} /></span>
                     <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12, color: 'var(--text-1)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <div style={{ fontSize: 14, color: 'var(--text-1)', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {displayTitle(l)}
                       </div>
-                      <div style={{ fontSize: 10, color: sig.tone === 'high' ? 'var(--life)' : 'var(--text-3)', marginTop: 2, fontFamily: 'var(--mono)' }}>
+                      <div style={{ fontSize: 14, color: sig.tone === 'high' ? 'var(--life)' : 'var(--text-3)', marginTop: 2, fontFamily: 'var(--mono)' }}>
                         {sig.tone !== 'none' ? sig.label : t('memory.access.never')}
                       </div>
                     </div>
@@ -1132,12 +1132,12 @@ function DecisionsView({ entities, onJump }: { entities: Entity[]; onJump: (id: 
               <span style={{ fontFamily: 'var(--font-memory)', fontSize: 15, color: 'var(--text-0)', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {displayTitle(e)}
               </span>
-              <span style={{ fontFamily: 'var(--mono)', fontSize: 10, color: 'var(--text-3)', flexShrink: 0 }}>
+              <span style={{ fontFamily: 'var(--mono)', fontSize: 14, color: 'var(--text-3)', flexShrink: 0 }}>
                 {e.created_at.slice(0, 10)}
               </span>
               <span
                 style={{
-                  fontSize: 10,
+                  fontSize: 14,
                   padding: '2px 8px',
                   borderRadius: 9999,
                   flexShrink: 0,
@@ -1157,7 +1157,7 @@ function DecisionsView({ entities, onJump }: { entities: Entity[]; onJump: (id: 
                 ))}
                 <EntityTechnicalDetails entity={e} />
                 {(supersedesTargets.length > 0 || replacedBy.length > 0) && (
-                  <div style={{ fontSize: 11, color: 'var(--text-2)', marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <div style={{ fontSize: 14, color: 'var(--text-2)', marginTop: 6, display: 'flex', flexDirection: 'column', gap: 3 }}>
                     {supersedesTargets.map((name) => (
                       <span key={`s-${name}`}>{t('adr.supersedes')} → {chainLink(name)}</span>
                     ))}
@@ -1224,8 +1224,11 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
   const cx = W / 2;
   const cy = H / 2;
   const R_PHASE = 170;
-  const R_ENTITY_INNER = 230;
-  const R_ENTITY_STEP = 30;
+  // Leave a real text gutter around the 900×600 viewBox: 14px leaf labels
+  // above/below the outer ring otherwise clip at the initial zoom.
+  const R_ENTITY_INNER = 220;
+  const R_ENTITY_STEP = 20;
+  const MAP_LABEL_FONT_SIZE = 14;
 
   // Spread phases evenly around the circle, starting from -90deg (top)
   const phaseAngle = (i: number) => (2 * Math.PI * i) / phases.length - Math.PI / 2;
@@ -1368,7 +1371,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
           right: 8,
           zIndex: 2,
           padding: '4px 10px',
-          fontSize: 11,
+          fontSize: 14,
           fontFamily: 'inherit',
           background: 'rgba(0,0,0,0.4)',
           color: 'var(--text-1)',
@@ -1386,7 +1389,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
           bottom: 8,
           left: 12,
           zIndex: 2,
-          fontSize: 10,
+          fontSize: 14,
           fontFamily: 'var(--mono)',
           color: 'var(--text-3)',
           pointerEvents: 'none',
@@ -1394,17 +1397,22 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
       >
         {t('roadmap.zoomHint', { pct: Math.round(scale * 100) })}
       </div>
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${W} ${H}`}
-        width="100%"
-        style={{
-          display: 'block',
-          minHeight: 600,
-          cursor: grabbing ? 'grabbing' : 'grab',
-          userSelect: 'none',
-          touchAction: 'none',
-        }}
+      <div style={{ overflowX: 'auto', overflowY: 'hidden' }}>
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${W} ${H}`}
+          width={W}
+          height={H}
+          style={{
+            display: 'block',
+            width: W,
+            minWidth: W,
+            height: H,
+            minHeight: H,
+            cursor: grabbing ? 'grabbing' : 'grab',
+            userSelect: 'none',
+            touchAction: 'pan-x',
+          }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
         onMouseUp={endPan}
@@ -1459,7 +1467,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
             y={cy}
             textAnchor="middle"
             dominantBaseline="central"
-            fontSize={11}
+            fontSize={MAP_LABEL_FONT_SIZE}
             fontWeight={600}
             fill="var(--text-0)"
             style={{ pointerEvents: 'none' }}
@@ -1499,15 +1507,15 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
               />
               <text
                 x={px}
-                y={py - 4}
+                y={py - 8}
                 textAnchor="middle"
-                fontSize={10}
+                fontSize={MAP_LABEL_FONT_SIZE}
                 fontWeight={600}
                 fill="var(--text-0)"
                 style={{ pointerEvents: 'none' }}
               >
                 <tspan x={px} dy={0}>{labelTrunc}</tspan>
-                <tspan x={px} dy={12} fontSize={9} fill="var(--text-3)" fontWeight={400} fontFamily="var(--mono)">
+                <tspan x={px} dy={18} fontSize={MAP_LABEL_FONT_SIZE} fill="var(--text-3)" fontWeight={400} fontFamily="var(--mono)">
                   {phase.entityCount} · {phase.startIso.slice(5, 10)}
                 </tspan>
               </text>
@@ -1528,6 +1536,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
                 const r = R_ENTITY_INNER + R_ENTITY_STEP * (j % 3);
                 const ex = cx + r * Math.cos(ang);
                 const ey = cy + r * Math.sin(ang);
+                const labelY = ey + (Math.sin(ang) < -0.3 ? -12 : Math.sin(ang) > 0.3 ? 16 : 5);
                 const label = displayTitle(e);
                 const labelTrunc = label.length > 22 ? label.slice(0, 20) + '…' : label;
                 return (
@@ -1554,9 +1563,10 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
                     />
                     <text
                       x={ex}
-                      y={ey - 8}
+                      y={labelY}
                       textAnchor={Math.cos(ang) > 0.2 ? 'start' : Math.cos(ang) < -0.2 ? 'end' : 'middle'}
-                      fontSize={9}
+                      dominantBaseline="middle"
+                      fontSize={MAP_LABEL_FONT_SIZE}
                       fill="var(--text-1)"
                       style={{ pointerEvents: 'none' }}
                     >
@@ -1575,7 +1585,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
                     x={ex}
                     y={ey}
                     textAnchor="middle"
-                    fontSize={9}
+                    fontSize={MAP_LABEL_FONT_SIZE}
                     fill="var(--text-3)"
                     fontStyle="italic"
                   >
@@ -1587,7 +1597,8 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
           );
         })}
         </g>
-      </svg>
+        </svg>
+      </div>
     </div>
   );
 }

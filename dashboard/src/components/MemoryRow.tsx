@@ -2,6 +2,7 @@ import { t as translate } from '../lib/i18n';
 import type { Entity } from '../lib/api';
 import {
   relativeDate,
+  timestampDate,
   displayTitle,
   accessSignal,
   extractProject,
@@ -19,7 +20,7 @@ function truncate(s: string, n: number): string {
  *  having to hover the row or open it. */
 function formatCreatedAt(iso: string): string {
   if (!iso) return '';
-  const d = new Date(iso);
+  const d = timestampDate(iso);
   if (Number.isNaN(d.getTime())) return iso.slice(0, 16).replace('T', ' ');
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -57,7 +58,7 @@ export function MemoryRow({ entity: e, actions, highlight }: Props) {
         <div style={{ height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-2)' }}>
           <EntityIcon type={e.type} size={18} />
         </div>
-        <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 2 }}>{relTime}</div>
+        <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 2 }}>{relTime}</div>
       </div>
       <div class="mem-body">
         {/* The machine key (e.name) is deliberately NOT in the primary row or
@@ -102,7 +103,7 @@ export function MemoryRow({ entity: e, actions, highlight }: Props) {
           <span
             style={{
               color: 'var(--text-3)',
-              fontSize: 10,
+              fontSize: 14,
               fontFamily: 'var(--mono)',
               opacity: 0.85,
             }}
@@ -111,7 +112,7 @@ export function MemoryRow({ entity: e, actions, highlight }: Props) {
             · {formatCreatedAt(e.created_at)}
           </span>
           {obsCount > 1 && (
-            <span style={{ color: 'var(--text-3)', fontSize: 11 }}>
+            <span style={{ color: 'var(--text-3)', fontSize: 14 }}>
               · {translate('memory.factsCount', { count: obsCount })}
             </span>
           )}

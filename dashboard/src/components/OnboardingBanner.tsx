@@ -130,11 +130,11 @@ export function OnboardingBanner({ health }: Props) {
       <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-0)', marginBottom: 6 }}>
         {showDemoCleanup ? t('onboarding.demoLoadedTitle') : t('onboarding.title')}
       </div>
-      <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--text-1)' }}>
+      <div style={{ fontSize: 14, lineHeight: 1.55, color: 'var(--text-1)' }}>
         {showDemoCleanup ? t('onboarding.demoLoadedBody', { count: demoCount }) : t('onboarding.body')}
       </div>
       {showOnboarding && (
-        <ul style={{ fontSize: 11, lineHeight: 1.55, color: 'var(--text-3)', margin: '6px 0 0', paddingLeft: 18 }}>
+        <ul style={{ fontSize: 14, lineHeight: 1.55, color: 'var(--text-3)', margin: '6px 0 0', paddingLeft: 18 }}>
           <li>{t('onboarding.coreHint')}</li>
           <li>{t('onboarding.searchHint')}</li>
           <li>{t('onboarding.reviewHint')}</li>
@@ -152,7 +152,7 @@ export function OnboardingBanner({ health }: Props) {
         >
           {pending === 'seed' ? t('onboarding.seedingButton') : t('onboarding.seedButton')}
         </button>
-        <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+        <span style={{ fontSize: 14, color: 'var(--text-3)' }}>
           {t('onboarding.seedHint')}
         </span>
       </div>}
@@ -167,18 +167,18 @@ export function OnboardingBanner({ health }: Props) {
           >
             {pending === 'reset' ? t('onboarding.resettingButton') : t('onboarding.resetButton')}
           </button>
-          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+          <span style={{ fontSize: 14, color: 'var(--text-3)' }}>
             {t('onboarding.hintReset')}
           </span>
         </div>
       )}
 
       {/* Power-user CLI reference — kept for headless / CI flows. */}
-      {showOnboarding && <details style={{ marginTop: 10, fontSize: 12, color: 'var(--text-3)' }}>
+      {showOnboarding && <details style={{ marginTop: 10, fontSize: 14, color: 'var(--text-3)' }}>
         <summary style={{ cursor: 'pointer' }}>{t('onboarding.cliReference')}</summary>
         <TerminalHandoff id="demo-cli-fallback" command="memesh demo" />
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, marginTop: 8 }}>
-          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+          <span style={{ fontSize: 14, color: 'var(--text-3)' }}>
             {t('onboarding.hintDemo')}
           </span>
         </div>
@@ -189,11 +189,11 @@ export function OnboardingBanner({ health }: Props) {
             class="btn"
             onClick={runReset}
             disabled={pending !== null}
-            style={{ fontSize: 11, padding: '4px 10px' }}
+            style={{ fontSize: 14, padding: '4px 10px' }}
           >
             {pending === 'reset' ? t('onboarding.resettingButton') : t('onboarding.resetButton')}
           </button>
-          <span style={{ fontSize: 12, color: 'var(--text-3)' }}>
+          <span style={{ fontSize: 14, color: 'var(--text-3)' }}>
             {t('onboarding.hintReset')}
           </span>
         </div>
@@ -205,7 +205,7 @@ export function OnboardingBanner({ health }: Props) {
         // readers two contradictory politeness levels for one region.
         <div
           role="alert"
-          style={{ marginTop: 10, fontSize: 12, color: 'var(--danger)' }}
+          style={{ marginTop: 10, fontSize: 14, color: 'var(--danger)' }}
         >
           {error}
         </div>

@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const css = readFileSync('dashboard/src/styles/global.css', 'utf8');
@@ -38,5 +38,18 @@ describe('dashboard readability baseline', () => {
   it('does not shrink shared interface text below 14px', () => {
     expect(css).not.toMatch(/font-size:\s*(?:[0-9]|1[0-3])px\b/);
     expect(css).not.toMatch(/font:\s*[^;\n]*\b(?:[0-9]|1[0-3])px\b/);
+  });
+  it('does not override readable shared styles with smaller component text', () => {
+    const violations = readdirSync('dashboard/src/components')
+      .filter(file => file.endsWith('.tsx'))
+      .flatMap(file => readFileSync(`dashboard/src/components/${file}`, 'utf8')
+        .split('\n')
+        .flatMap((line, index) => !(file === 'ProjectRoadmap.tsx' && line.includes('aria-hidden="true"') && line.includes('fontSize: 10, width: 10, flexShrink: 0')) && /fontSize:\s*(?:(?:[0-9]|1[0-3])\b|['"](?:[0-9]|1[0-3])px['"])|font:\s*['"][^'"\n]*\b(?:[0-9]|1[0-3])px\b/.test(line)
+          ? [`${file}:${index + 1}: ${line.trim()}`] : []));
+    expect(violations).toEqual([]);
+  });
+  it('keeps tag counts from shrinking analytics labels', () => {
+    const source = readFileSync('dashboard/src/components/AnalyticsTab.tsx', 'utf8');
+    expect(source).toContain('key={tg.tag} class="tag" style={{ fontSize: 14 }}');
   });
 });

@@ -43,7 +43,7 @@ export function EmptyLibraryState() {
       <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-0)', marginBottom: 6 }}>
         {t('emptyLibrary.title')}
       </div>
-      <div style={{ fontSize: 13, lineHeight: 1.55, color: 'var(--text-1)', maxWidth: 480, margin: '0 auto 14px' }}>
+      <div style={{ fontSize: 14, lineHeight: 1.55, color: 'var(--text-1)', maxWidth: 480, margin: '0 auto 14px' }}>
         {t('emptyLibrary.body')}
       </div>
       <button
@@ -55,11 +55,11 @@ export function EmptyLibraryState() {
       >
         {pending ? t('onboarding.seedingButton') : t('onboarding.seedButton')}
       </button>
-      <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 8 }}>
+      <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 8 }}>
         {t('onboarding.seedHint')}
       </div>
       {error && (
-        <div role="alert" style={{ marginTop: 10, fontSize: 12, color: 'var(--danger)' }}>
+        <div role="alert" style={{ marginTop: 10, fontSize: 14, color: 'var(--danger)' }}>
           {error}
         </div>
       )}

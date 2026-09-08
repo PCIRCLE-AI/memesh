@@ -121,7 +121,7 @@ export function HomeTab({
             cursor: 'pointer',
             padding: 0,
             color: 'var(--text-0)',
-            font: '600 13px var(--font-ui)',
+            font: '600 14px var(--font-ui)',
             textAlign: 'left',
           }}
         >

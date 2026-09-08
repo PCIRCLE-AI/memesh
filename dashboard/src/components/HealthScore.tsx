@@ -61,7 +61,7 @@ export function HealthScore({ score, factors }: Props) {
           </div>
           <span style={{
             marginTop: '6px',
-            fontSize: '11px',
+            fontSize: 14,
             fontWeight: 500,
             color: 'var(--text-2)',
           }}>
@@ -83,12 +83,12 @@ export function HealthScore({ score, factors }: Props) {
                   alignItems: 'center',
                   marginBottom: '4px',
                 }}>
-                  <span style={{ fontSize: '12px', color: 'var(--text-2)' }}>
+                  <span style={{ fontSize: 14, color: 'var(--text-2)' }}>
                     {t(`health.${key}`)}
                   </span>
                   <span style={{
                     fontFamily: 'var(--mono)',
-                    fontSize: '11px',
+                    fontSize: 14,
                     color: 'var(--text-3)',
                   }}>
                     {pct}%
