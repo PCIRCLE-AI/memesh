@@ -229,7 +229,7 @@ export function AnalyticsTab({ dataRevision = 0 }: { dataRevision?: number }) {
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
               {userTags.slice(0, 30).map((tg) => (
                 <span key={tg.tag} class="tag" style={{ fontSize: 14 }}>
-                  {tg.tag} <span style={{ opacity: 0.5 }}>({tg.count})</span>
+                  {tg.tag} <span>({tg.count})</span>
                 </span>
               ))}
             </div>

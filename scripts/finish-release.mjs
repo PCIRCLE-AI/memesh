@@ -196,7 +196,7 @@ const qaPreReleaseStatus = qaPreReleaseResult.status;
 
 // `qa:live-journey` needs a Codex login or a person at an interactive Claude
 // Code session — nothing this script can open itself, so this stays
-// receipt-based. Each host writes its own `memesh-live-journey/v2` report.
+// receipt-based. Each host writes its own `memesh-live-journey/v3` report.
 // Both are required because one host's delivery path says nothing about the
 // other's registration, native adapter, model visibility, or disconnect path.
 const liveJourneyCandidates = LIVE_JOURNEY_RECEIPT_PATHS.map(({ host, relativePath }) => {

@@ -22,6 +22,30 @@ function contrast(a: string, b: string): number {
 // Source-level guard only: actual cascade, opacity, clipping and zoom need
 // browser review in qa:ui-review on the frozen candidate.
 describe('dashboard readability baseline', () => {
+  it('keeps heatmap text readable through the full intensity range', () => {
+    for (const file of ['MemoryAgeMatrix', 'UserPatterns']) {
+      const source = readFileSync(`dashboard/src/components/${file}.tsx`, 'utf8');
+      expect(source).toContain('0.05 + intensity * 0.15');
+      expect(source).toContain("'var(--text-1)'");
+      for (const intensity of [0, 0.01, 0.49, 0.5, 0.51, 1]) {
+        const alpha = 0.05 + intensity * 0.15;
+        for (const background of ['bg-0', 'bg-1', 'bg-2', 'bg-hover']) {
+          const base = token(background);
+          const composite = '#' + [143, 242, 92].map((channel, i) =>
+            Math.round(channel * alpha + parseInt(base.slice(1 + i * 2, 3 + i * 2), 16) * (1 - alpha))
+              .toString(16).padStart(2, '0')).join('');
+          expect(contrast(token('text-1'), composite)).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+  });
+  it('does not fade populated topic, focus or project counts', () => {
+    for (const file of ['AnalyticsTab', 'UserPatterns', 'ProjectRoadmap']) {
+      const source = readFileSync(`dashboard/src/components/${file}.tsx`, 'utf8');
+      expect(source).not.toMatch(/<span[^>]*opacity:\s*0\.[56][^>]*>\(?\{(?:tg|fa)\.count\}/);
+      expect(source).not.toMatch(/<span[^>]*opacity:\s*0\.6[^>]*>\{count\}/);
+    }
+  });
   for (const text of ['text-0', 'text-1', 'text-2', 'text-3']) {
     for (const background of ['bg-0', 'bg-1', 'bg-2', 'bg-hover']) {
       it(`${text} remains readable on ${background}`, () => {

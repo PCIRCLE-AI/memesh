@@ -494,11 +494,11 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
                 class="tag"
                 style={{ fontSize: 14, background: 'var(--border-subtle)' }}
               >
-                {typeLabel(type)} <span style={{ opacity: 0.6, fontFamily: 'var(--mono)' }}>{count}</span>
+                {typeLabel(type)} <span style={{ fontFamily: 'var(--mono)' }}>{count}</span>
               </span>
             ))}
             {stats.types.length > 8 && (
-              <span class="tag" style={{ opacity: 0.5, fontSize: 14 }}>
+              <span class="tag" style={{ fontSize: 14 }}>
                 +{stats.types.length - 8}
               </span>
             )}

@@ -19,6 +19,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { NOT_CHECKED, STEPS, formatVerdict, unknownSteps } from '../scripts/qa/pre-release.mjs';
+import { LIVE_JOURNEY_SCHEMA_VERSION } from '../scripts/lib/live-journey-contract.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const gate = path.join(repoRoot, 'scripts', 'qa', 'pre-release.mjs');
@@ -85,6 +86,9 @@ describe('the plan', () => {
     // so the negative assertion matters as much as the positive ones.
     const text = NOT_CHECKED.join('\n');
     expect(text).toMatch(/live-journey/);
+    expect(text).toContain('Both --host codex and --host claude receipts are required');
+    expect(text).toContain(LIVE_JOURNEY_SCHEMA_VERSION);
+    expect(text).not.toContain('--host codex or --host claude');
     expect(text).toMatch(/qa:post-release/);
     expect(text).not.toMatch(/entry-point/);
   });

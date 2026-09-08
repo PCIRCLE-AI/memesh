@@ -257,12 +257,9 @@ against the exact clean commit being released, with current `dist/`, ordered
 lifecycle steps, lease renewal, model-visible evidence, and the stopped-session
 failure path. The installed Codex receipt also requires actual plugin
 SessionStart loading and a resume that supersedes the prior generation.
-One host can never satisfy the other host's gate. The Codex release receipt is
-`.qa/codex-report.json`, produced by the installed-plugin SessionStart lifecycle
-harness; the `--host codex` command above deliberately writes a different
-model-path report because it injects SessionStart into the companion itself and
-does not prove that the Codex plugin loader ran. The directory is gitignored;
-reports are owner-machine evidence, never shipped.
+One host can never satisfy the other host's gate. The commands above produce
+`.qa/codex-report.json` and `.qa/claude-report.json`, respectively. The directory
+is gitignored; reports are owner-machine evidence, never shipped.
 
 `TMPDIR` is not decoration on macOS. The router's Unix socket lives beside the
 database inside the temporary directory, and `AF_UNIX` caps a socket path at
@@ -295,23 +292,22 @@ only then removes the directory; if a session is still connected when the wait
 expires it keeps the directory rather than racing that spawn. The same sequence
 runs on failures and on `SIGINT`/`SIGTERM`.
 
-**`--host codex`** starts the router with no `codex-session.json`, creates one
-real Codex CLI thread with `codex exec`, registers that thread through the
-automatic companion path,
-sends one exact-session message, and then resumes the thread with a fixed
-prompt that names neither the sentinel nor any identifier. The reply must quote
-the envelope's `message_id` and `delivery_id` back, **and** that turn must have
-produced nothing but an answer. Both halves matter: a `read-only` Codex sandbox
-still permits reads, so a turn that ran one command could have taken the
-identifiers off disk instead of out of the envelope. The Codex workspace is a
-separate temporary tree for the same reason — the database and this run's own
-logs are not one `..` away from it. The check then stops the companion and requires the next send to return
-`recipient_unavailable` while `message fetch` still returns the payload.
-Before delivery it waits for `lease_expires_at_ms` to advance, proving at least
-one real heartbeat rather than accepting the initial registration alone.
-Its v2 report labels registration as `harness_injected_session_start` with
-`plugin_loader_verified: false`; `release:finish` rejects that report as proof
-of automatic installed-plugin registration.
+**`--host codex`** installs the candidate plugin into the caller-prepared
+authenticated `--codex-home`, verifies its cache, and creates a real Codex CLI
+thread. The installed plugin's SessionStart hook registers the thread; the
+runner never starts its companion. The check verifies lease renewal,
+exact-session delivery, resume-generation supersession, renewed lease, and a
+reply quoting the envelope's sentinel, `message_id`, and `delivery_id`.
+
+The proof rejects other command/tool activity except the narrowly allowed
+installed-skill read and failed work-package prepare probe; neither may contain
+proof identifiers. After SessionEnd retirement, the next send must return
+`recipient_unavailable` while the durable payload remains fetchable.
+Its v3 report requires registration from `codex_plugin_session_start` with
+`plugin_loader_verified: true`, including a renewed lease after resume supersedes
+the startup generation. `release:finish` requires separate current-candidate
+v3 receipts for both Codex and Claude; an old harness-injected v2 report does not
+prove automatic installed-plugin registration and is rejected.
 
 **`--host claude`** starts the router, runs `memesh agent setup claude`, writes
 a temporary MCP config, and prints the exact interactive launch command — which

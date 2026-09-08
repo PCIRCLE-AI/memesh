@@ -57,14 +57,14 @@ export function UserPatterns({ data }: Props) {
                   height: 28,
                   borderRadius: 'var(--radius-xs)',
                   background: intensity > 0
-                    ? `rgba(143, 242, 92, ${0.1 + intensity * 0.7})`
+                    ? `rgba(143, 242, 92, ${0.05 + intensity * 0.15})`
                     : 'var(--bg-0)',
                   border: '1px solid var(--border-subtle)',
                   fontSize: 14,
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'center',
-                  color: intensity > 0.5 ? 'var(--bg-0)' : 'var(--text-3)',
+                  color: 'var(--text-1)',
                   fontFamily: 'var(--mono)',
                 }}
               >
@@ -123,7 +123,7 @@ export function UserPatterns({ data }: Props) {
                 class="tag"
                 style={{ fontSize: 14, padding: '2px 8px' }}
               >
-                {typeLabel(fa.type)} <span style={{ opacity: 0.5 }}>({fa.count})</span>
+                {typeLabel(fa.type)} <span>({fa.count})</span>
               </span>
             ))}
           </div>
