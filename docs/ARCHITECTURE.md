@@ -288,9 +288,10 @@ not a second durable registry, and the read creates no message or receipt facts.
 ```
 Tool call: recall({query, tag, limit})
   -> Zod validation (RecallSchema)
-  -> recallEnhanced() in core/operations
-     -> KnowledgeGraph.search() — FTS5 keyword match
-     -> rankEntities() applies multi-factor scoring (relevance, recency, frequency, confidence, impact)
+  -> recallWithConflicts() in core/operations
+     -> recallEnhanced()
+        -> KnowledgeGraph.search() — FTS5 keyword match
+        -> rankEntities() applies multi-factor scoring (relevance, recency, frequency, confidence, impact)
      -> KnowledgeGraph.findConflicts() checks for contradicts relations among results
   -> Return {entities, retrieval}; add conflicts only when non-empty (never a bare array)
 ```
