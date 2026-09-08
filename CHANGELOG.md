@@ -20,6 +20,15 @@ All notable changes to MeMesh are documented here.
 
 ### Changed
 
+- **Dashboard text is larger and higher contrast.** Installation version details
+  are available on demand in Settings rather than interrupting the dashboard
+  with a warning merely because two local installations differ. The graph
+  explains that it displays saved memories and recorded links.
+- **Pre-release checks require an independent browser-review record.** The
+  record covers every advertised language and tab, readable text, responsive
+  layout, diagnostic clarity, failure states, and state-change readback. The
+  validator checks candidate and evidence binding; it does not establish the
+  truth of the observations or replace the independent review.
 - **Recall and capture now use one local, deterministic memory path.** MeMesh
   uses SQLite FTS5 and rule-based hooks; built-in LLM providers, API-key setup,
   embeddings, vectors, model probes, Dream-run generation, and LLM telemetry
@@ -39,6 +48,10 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **Update availability follows semantic version precedence.** An older public
+  release is no longer offered as an update to a newer local candidate. Local
+  CLI/plugin version differences alone no longer trigger upgrade advice, while
+  genuinely stale plugin-cache source revisions remain diagnosable.
 - **Codex companion state reads validate and read the same open file.**
   Lifecycle and launch-input reads reject symlinks at open time and check the
   opened file's type and permissions before parsing its contents.

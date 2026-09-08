@@ -371,7 +371,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
           <div>
             <div class="card-title" style={{ margin: 0 }}>{t('browse.title')}</div>
             {!loading && (
-              <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
+              <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 2 }}>
                 <span style={{ fontFamily: 'var(--mono)' }}>{activeTotal.toLocaleString(getLocale())}</span> {t('browse.active')}
                 {archivedAll.length > 0 ? <> · <span style={{ fontFamily: 'var(--mono)' }}>{archivedAll.length}</span> {t('browse.archived')}</> : ''}
                 {/* The header (via /v1/health) shows the true count; this tab
@@ -407,7 +407,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
 
         <div
           role="status"
-          style={{ fontSize: 12, color: 'var(--text-2)', padding: '8px 10px', marginBottom: 10, background: 'var(--bg-2)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xs)' }}
+          style={{ fontSize: 14, color: 'var(--text-2)', padding: '8px 10px', marginBottom: 10, background: 'var(--bg-2)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xs)' }}
         >
           {t(signalMode ? 'globalFilter.focusedStatus' : 'globalFilter.allStatus')}
         </div>
@@ -430,7 +430,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
 
         {/* Scope chips — the work-topology axis, plus the archived shelf. */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 11, color: 'var(--text-3)', marginRight: 4 }}>{t('memories.scopeLabel')}</span>
+          <span style={{ fontSize: 14, color: 'var(--text-3)', marginRight: 4 }}>{t('memories.scopeLabel')}</span>
           <Chip label={t('memories.scopeWork')} active={scope.kind === 'layer' && scope.v === 'work'} onClick={() => setScope({ kind: 'layer', v: 'work' })} count={layerCounts.work} />
           <Chip label={t('memories.scopeEvidence')} active={scope.kind === 'layer' && scope.v === 'evidence'} onClick={() => setScope({ kind: 'layer', v: 'evidence' })} count={layerCounts.evidence} />
           <Chip label={t('memories.scopeAll')} active={scope.kind === 'layer' && scope.v === 'all'} onClick={() => setScope({ kind: 'layer', v: 'all' })} count={activeTotal} />
@@ -449,7 +449,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
               ))}
             </div>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-3)', marginRight: 4 }}>{t('memories.composition')}</span>
+              <span style={{ fontSize: 14, color: 'var(--text-3)', marginRight: 4 }}>{t('memories.composition')}</span>
               {CLUSTERS.map((c) => (
                 <Chip
                   key={c}
@@ -466,7 +466,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
 
         {/* Time + value chips — secondary */}
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
-          <span style={{ fontSize: 11, color: 'var(--text-3)', alignSelf: 'center', marginRight: 4 }}>{t('browse.filterTime')}</span>
+          <span style={{ fontSize: 14, color: 'var(--text-3)', alignSelf: 'center', marginRight: 4 }}>{t('browse.filterTime')}</span>
           <Chip label={t('browse.timeToday')} active={time === 'today'} onClick={() => setTime(time === 'today' ? 'all' : 'today')} />
           <Chip label={t('browse.timeWeek')} active={time === 'week'} onClick={() => setTime(time === 'week' ? 'all' : 'week')} />
           <Chip label={t('browse.timeMonth')} active={time === 'month'} onClick={() => setTime(time === 'month' ? 'all' : 'month')} />
@@ -474,14 +474,14 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
 
           <span style={{ width: 1, background: 'var(--border-subtle)', margin: '0 6px' }} />
 
-          <span style={{ fontSize: 11, color: 'var(--text-3)', alignSelf: 'center', marginRight: 4 }}>{t('browse.filterValue')}</span>
+          <span style={{ fontSize: 14, color: 'var(--text-3)', alignSelf: 'center', marginRight: 4 }}>{t('browse.filterValue')}</span>
           <Chip label={t('browse.valueRecalled')} active={value === 'recalled'} onClick={() => setValue(value === 'recalled' ? 'all' : 'recalled')} />
           <Chip label={t('browse.valueNever')} active={value === 'never'} onClick={() => setValue(value === 'never' ? 'all' : 'never')} />
         </div>
 
         {projects.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-3)', alignSelf: 'center', marginRight: 4 }}>{t('browse.filterProject')}</span>
+            <span style={{ fontSize: 14, color: 'var(--text-3)', alignSelf: 'center', marginRight: 4 }}>{t('browse.filterProject')}</span>
             <Chip label={t('cluster.all')} active={project === 'all'} onClick={() => setProject('all')} />
             {projects.map((p) => (
               <Chip
@@ -497,11 +497,11 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
 
         {/* Sort dropdown */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14, paddingBottom: 12, borderBottom: '1px solid var(--border-subtle)' }}>
-          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>{t('browse.filterSort')}</span>
+          <span style={{ fontSize: 14, color: 'var(--text-3)' }}>{t('browse.filterSort')}</span>
           <select
             value={sort}
             onChange={(e) => setSort((e.target as HTMLSelectElement).value as SortKey)}
-            style={{ padding: '3px 8px', fontSize: 12 }}
+            style={{ padding: '3px 8px', fontSize: 14 }}
           >
             <option value="most-recalled">{t('browse.sortMostRecalled')}</option>
             <option value="recent">{t('browse.sortRecent')}</option>
@@ -515,7 +515,7 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
         {/* Ranked results — server order, no client sort, no paging. */}
         {!loading && !recallLoading && inRecallMode && (
           <div>
-            <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, color: 'var(--text-3)', marginBottom: 8 }}>
+            <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 14, color: 'var(--text-3)', marginBottom: 8 }}>
               <span>
                 <span style={{ fontFamily: 'var(--mono)' }}>{recallResults!.length}</span>{' '}
                 {recallResults!.length !== 1 ? t('search.results') : t('search.result')} · {t('memories.rankedBy')}
@@ -554,9 +554,9 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
             <div>
               {pageItems.map((e) => renderRow(e, filter))}
               {totalPages > 1 && (
-                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '16px 0', fontSize: 13 }}>
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', gap: 12, padding: '16px 0', fontSize: 14 }}>
                   <button class="btn btn-sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>{t('browse.prev')}</button>
-                  <span style={{ color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 12 }}>
+                  <span style={{ color: 'var(--text-3)', fontFamily: 'var(--mono)', fontSize: 14 }}>
                     {page + 1} / {totalPages}
                   </span>
                   <button class="btn btn-sm" disabled={page >= totalPages - 1} onClick={() => setPage((p) => p + 1)}>{t('browse.next')}</button>

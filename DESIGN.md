@@ -220,7 +220,7 @@ they are touched.
 
 - **Chip** (shared): token-only styling. Inactive: `--border` border,
   `--text-2` text, transparent fill. Active: `--life` border, `--life-soft`
-  fill, `--life` text. Radius `--radius`, 11px `--font-ui`, count in
+  fill, `--life` text. Radius `--radius`, 14px `--font-ui`, count in
   `--mono`. `aria-pressed` always.
 - **Composition bar**: cluster segments coloured by the species formula,
   height 6px, `--radius-hairline`, on a `--bg-0` track. The bar itself is

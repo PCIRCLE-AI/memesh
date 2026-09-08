@@ -3451,12 +3451,8 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
 });
 
 describe('npm-global vs. discovered plugin-cache version skew (F3/F5)', () => {
-  // The #247 incident (see project memory / CHANGELOG) was about the SHA a
-  // cache was staged from vs the marketplace HEAD. This is the sibling gap:
-  // a discovered plugin cache and the npm-global process asking about it can
-  // simply be on different VERSIONS, with the plugin's own auto-updater
-  // structurally unable to reach the npm-global copy — see
-  // `annotateNpmGlobalPluginCacheVersion`'s docstring on doctor.ts.
+  // Local version differences cannot establish an available published update.
+  // The independent marketplace SHA comparison must still diagnose stale caches.
   function registryWithEntry(packageRoot: string, entry: Record<string, unknown>): string {
     const registry = path.join(packageRoot, 'installed_plugins.json');
     writeJson(registry, { plugins: { 'memesh@pcircle-memesh': [entry] } });
@@ -3488,7 +3484,7 @@ describe('npm-global vs. discovered plugin-cache version skew (F3/F5)', () => {
     });
   }
 
-  it('WARNs and names both versions when the npm-global process is behind the discovered Claude Code plugin cache', async () => {
+  it.each([false, true])('local version skew does not override genuine cache currency: stale=%s', async (stale) => {
     const packageRoot = createPackageRoot();
     tempRoots.push(packageRoot);
     const installPath = path.join(packageRoot, 'claude-cache', 'memesh', '4.8.3');
@@ -3498,14 +3494,12 @@ describe('npm-global vs. discovered plugin-cache version skew (F3/F5)', () => {
 
     const result = await runNpmGlobal(packageRoot, '4.8.2', [
       { host: 'claude-code', packageRoot: installPath, installedPluginsPath: registry },
-    ], sha); // SHA matches — commit-currency ALONE would say PASS.
+    ], stale ? 'd'.repeat(40) : sha);
 
     const check = result.checks.find((c) => c.id === 'plugin-cache-claude-code');
-    expect(check?.status).toBe('warn');
-    expect(check?.summary).toContain('4.8.2');
-    expect(check?.summary).toContain('4.8.3');
-    expect(check?.summary).toContain('npm-global');
-    expect(check?.fix).toContain('memesh update');
+    expect(check?.status).toBe(stale ? 'warn' : 'pass');
+    if (stale) expect(check?.code).toBe('plugin-cache.stale');
+    expect(check?.fix ?? '').not.toContain('memesh update');
   });
 
   it('stays PASS when the npm-global process and the discovered plugin cache agree on version', async () => {
@@ -3541,7 +3535,7 @@ describe('npm-global vs. discovered plugin-cache version skew (F3/F5)', () => {
     expect(check?.summary).not.toContain('npm-global install is on');
   });
 
-  it('adds an informational note, not a status change, when more than two versioned copies are cached (F5)', async () => {
+  it('does not append deletion advice when old cache directories exist', async () => {
     const packageRoot = createPackageRoot();
     tempRoots.push(packageRoot);
     const cacheRoot = path.join(packageRoot, 'claude-cache', 'memesh');
@@ -3560,8 +3554,7 @@ describe('npm-global vs. discovered plugin-cache version skew (F3/F5)', () => {
     // Same version, same SHA — nothing here should warn; this is purely
     // informational disk-usage bookkeeping.
     expect(check?.status).toBe('pass');
-    expect(check?.summary).toContain('4 versioned copies');
-    expect(check?.summary).toContain('rm -rf');
+    expect(check?.summary).not.toContain('rm -rf');
   });
 });
 

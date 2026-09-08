@@ -1980,87 +1980,6 @@ function inspectPluginCacheCurrency(
   );
 }
 
-/**
- * F3/F5 (2026-09-02 dogfood): the npm-global discovery loop that calls
- * `inspectPluginCacheCurrency` above only ever compared the commit the
- * cache was staged from against the marketplace HEAD. It never compared
- * the cache's own VERSION against the npm-global process asking the
- * question, so a real machine with npm-global at 4.8.2 and a Claude Code
- * plugin cache at 4.8.3 got a clean `[PASS] Plugin cache source record is
- * current` — true about the commit, silent about the fact that this
- * npm-global copy is a full version behind and CANNOT be reached by the
- * plugin's own auto-updater: `getCurrentInstallChannel` for a hook always
- * resolves to whichever copy is executing it (here, the plugin), so
- * `~/.memesh/auto-update.log` on that machine logged 45 consecutive
- * `SKIPPED: install channel 'plugin-marketplace' does not support
- * self-update` lines — correct for the copy that wrote them, and silently
- * incomplete for the npm-global copy sitting right next to it, which
- * genuinely does need `memesh update` run by hand.
- *
- * The discovered cache's own version is read for free from its directory
- * name (`<cacheRoot>/<version>/`, the same layout `versionedPluginCacheRoots`
- * already depends on) — no extra file I/O, and no risk of trusting a
- * `--version` subprocess call. Callers only invoke this for a CLEAN
- * discovery (no `unverifiableReason`): an ambiguous or unreadable registry
- * should not also make a confident version claim.
- *
- * F5 rides along here because it needs the exact same `cacheRoot`: old
- * versioned copies accumulate under it forever (nothing in the upgrade
- * path removes them), so once there are more than a couple this appends
- * one informational sentence naming the count and a cleanup command — the
- * same `rm -rf <old-copy>` shape `scripts/upgrade-plugin.sh` itself prints
- * when it cannot remove the copy it just replaced. This never moves
- * `status`: unused disk space is not a correctness problem, and counting
- * `versionedPluginCacheRoots(cacheRoot).length` costs one `readdirSync` —
- * no directory is walked and no size is computed, which would mean a full
- * `du` over a node_modules-sized tree on every `memesh doctor` run.
- */
-function annotateNpmGlobalPluginCacheVersion(
-  check: DoctorCheck,
-  discoveredPackageRoot: string,
-  hostLabel: string,
-  runningVersion: string,
-): DoctorCheck {
-  const cacheRoot = path.dirname(discoveredPackageRoot);
-  const discoveredVersion = path.basename(discoveredPackageRoot);
-  let amended = check;
-
-  // classifyBump(from, to) is truthy only when `to` is a real upgrade over
-  // `from` — this only fires when the npm-global copy is the OLD one. The
-  // reverse (npm-global ahead of the plugin cache) is not this machine's
-  // problem: the plugin cache being behind is what the SHA/commit check
-  // above already exists to catch.
-  if (discoveredVersion !== runningVersion && classifyBump(runningVersion, discoveredVersion)) {
-    const skewNote = `This npm-global install is on ${runningVersion}; the ${hostLabel} plugin cache is on ${discoveredVersion}. `
-      + 'The plugin marketplace\'s own auto-updater only ever refreshes its plugin copy — it cannot and will not update this separate npm-global install.';
-    const skewFix = `Run \`memesh update\` to bring this npm-global install to ${discoveredVersion} (or newer) — it does not update itself automatically.`;
-    amended = {
-      ...amended,
-      status: amended.status === 'pass' ? 'warn' : amended.status,
-      summary: `${amended.summary} ${skewNote}`,
-      fix: amended.fix ? `${amended.fix} Also: ${skewFix}` : skewFix,
-      // Dropping the code: the appended sentence is not in the i18n
-      // catalogue, and keeping the old code would make the dashboard show
-      // ONLY the stale catalogue text, silently dropping this fact — see
-      // `DoctorCheck.code`'s own docstring for the documented fallback
-      // this relies on (raw `summary`/`fix`, in English, when `code` is
-      // absent).
-      code: undefined,
-      params: undefined,
-    };
-  }
-
-  const cachedVersions = versionedPluginCacheRoots(cacheRoot);
-  if (cachedVersions.length > 2) {
-    amended = {
-      ...amended,
-      summary: `${amended.summary} ${cachedVersions.length} versioned copies of the ${hostLabel} plugin are cached under ${cacheRoot}; old ones are never removed automatically. `
-        + `Delete ones you no longer need once no ${hostLabel} process is using them, e.g. \`rm -rf "${cachedVersions[0]}"\`.`,
-    };
-  }
-
-  return amended;
-}
 
 function isClaudeChannelCommand(command: unknown): boolean {
   if (command === 'memesh-host-claude') return true;
@@ -3123,23 +3042,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     for (const discovered of discoveredPluginCaches) {
       if (discovered.host === 'codex') codexPluginCacheDetected = true;
       if (discovered.host === 'claude-code') claudePluginCacheDetected = true;
-      let check = discovered.unverifiableReason
+      const check = discovered.unverifiableReason
         ? pluginCacheUnverifiable(discovered.host, discovered.unverifiableReason)
         : inspectPluginCacheCurrency(
           'plugin-marketplace', discovered.host, discovered.packageRoot,
           discovered.installedPluginsPath, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl,
         );
-      // Only for a CLEAN discovery — see annotateNpmGlobalPluginCacheVersion's
-      // docstring for why an ambiguous/unreadable registry should not also
-      // carry a confident version claim.
-      if (check && !discovered.unverifiableReason) {
-        check = annotateNpmGlobalPluginCacheVersion(
-          check,
-          discovered.packageRoot,
-          discovered.host === 'codex' ? 'Codex' : 'Claude Code',
-          packageVersion,
-        );
-      }
       if (check) {
         const hostName = discovered.host;
         const index = (discoveredCounts.get(discovered.host) ?? 0) + 1;

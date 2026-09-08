@@ -864,33 +864,6 @@ function inspectPluginCacheCurrency(installChannel, pluginHost, packageRoot, ins
     }
     return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'warn', `The plugin cache records commit ${installedSha.slice(0, 8)}, but the marketplace has moved to ${marketplaceSha.slice(0, 8)} under the same version — ${hostLabel} does not normally refresh a cache whose version did not change, so refresh the cache before relying on the newer marketplace code.`, `Run \`${command}\` to refresh the cache in place, then restart ${hostLabel}.`, { code: 'plugin-cache.stale', params: { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command } });
 }
-function annotateNpmGlobalPluginCacheVersion(check, discoveredPackageRoot, hostLabel, runningVersion) {
-    const cacheRoot = path.dirname(discoveredPackageRoot);
-    const discoveredVersion = path.basename(discoveredPackageRoot);
-    let amended = check;
-    if (discoveredVersion !== runningVersion && classifyBump(runningVersion, discoveredVersion)) {
-        const skewNote = `This npm-global install is on ${runningVersion}; the ${hostLabel} plugin cache is on ${discoveredVersion}. `
-            + 'The plugin marketplace\'s own auto-updater only ever refreshes its plugin copy — it cannot and will not update this separate npm-global install.';
-        const skewFix = `Run \`memesh update\` to bring this npm-global install to ${discoveredVersion} (or newer) — it does not update itself automatically.`;
-        amended = {
-            ...amended,
-            status: amended.status === 'pass' ? 'warn' : amended.status,
-            summary: `${amended.summary} ${skewNote}`,
-            fix: amended.fix ? `${amended.fix} Also: ${skewFix}` : skewFix,
-            code: undefined,
-            params: undefined,
-        };
-    }
-    const cachedVersions = versionedPluginCacheRoots(cacheRoot);
-    if (cachedVersions.length > 2) {
-        amended = {
-            ...amended,
-            summary: `${amended.summary} ${cachedVersions.length} versioned copies of the ${hostLabel} plugin are cached under ${cacheRoot}; old ones are never removed automatically. `
-                + `Delete ones you no longer need once no ${hostLabel} process is using them, e.g. \`rm -rf "${cachedVersions[0]}"\`.`,
-        };
-    }
-    return amended;
-}
 function isClaudeChannelCommand(command) {
     if (command === 'memesh-host-claude')
         return true;
@@ -1433,12 +1406,9 @@ export async function runDoctor(options) {
                 codexPluginCacheDetected = true;
             if (discovered.host === 'claude-code')
                 claudePluginCacheDetected = true;
-            let check = discovered.unverifiableReason
+            const check = discovered.unverifiableReason
                 ? pluginCacheUnverifiable(discovered.host, discovered.unverifiableReason)
                 : inspectPluginCacheCurrency('plugin-marketplace', discovered.host, discovered.packageRoot, discovered.installedPluginsPath, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl);
-            if (check && !discovered.unverifiableReason) {
-                check = annotateNpmGlobalPluginCacheVersion(check, discovered.packageRoot, discovered.host === 'codex' ? 'Codex' : 'Claude Code', packageVersion);
-            }
             if (check) {
                 const hostName = discovered.host;
                 const index = (discoveredCounts.get(discovered.host) ?? 0) + 1;

@@ -35,4 +35,8 @@ describe('dashboard readability baseline', () => {
   it('keeps the body baseline at a readable size', () => {
     expect(css).toMatch(/html\s*\{\s*font-size:\s*16px;/);
   });
+  it('does not shrink shared interface text below 14px', () => {
+    expect(css).not.toMatch(/font-size:\s*(?:[0-9]|1[0-3])px\b/);
+    expect(css).not.toMatch(/font:\s*[^;\n]*\b(?:[0-9]|1[0-3])px\b/);
+  });
 });

@@ -1552,7 +1552,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
   const globalFilterStatus = (
     <div
       role="status"
-      style={{ fontSize: 12, color: 'var(--text-2)', padding: '8px 10px', marginBottom: 8, background: 'var(--bg-2)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xs)' }}
+      style={{ fontSize: 14, color: 'var(--text-2)', padding: '8px 10px', marginBottom: 8, background: 'var(--bg-2)', border: '1px solid var(--border-subtle)', borderRadius: 'var(--radius-xs)' }}
     >
       {t(signalMode ? 'globalFilter.focusedStatus' : 'globalFilter.allStatus')}
     </div>
@@ -1616,7 +1616,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
       </div>
 
       {isCapped && (
-        <div role="status" style={{ fontSize: 11, color: 'var(--text-2)', margin: '0 0 8px' }}>
+        <div role="status" style={{ fontSize: 14, color: 'var(--text-2)', margin: '0 0 8px' }}>
           {t('graph.cappedNote', {
             shown: data.entities.length.toLocaleString(getLocale()),
             total: totalEntities.toLocaleString(getLocale()),
@@ -1635,7 +1635,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               aria-pressed={layer === v}
               onClick={() => setLayer(v)}
               style={{
-                fontSize: 11,
+                fontSize: 14,
                 padding: '3px 10px',
                 borderRadius: 'var(--radius)',
                 cursor: 'pointer',
@@ -1648,7 +1648,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
             </button>
           ))}
         </div>
-        <span style={{ fontSize: 11, color: 'var(--text-2)' }}>
+        <span style={{ fontSize: 14, color: 'var(--text-2)' }}>
           {activeLayer === 'work' ? t('graph.layerWorkHint') : t('graph.layerAllHint')}
         </span>
       </div>
@@ -1656,7 +1656,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
       {/* The fallback is announced, never silent: the user asked for the
           work layer and is looking at something else. */}
       {fellBack && (
-        <div role="status" style={{ fontSize: 11, color: 'var(--text-2)', margin: '0 0 8px' }}>
+        <div role="status" style={{ fontSize: 14, color: 'var(--text-2)', margin: '0 0 8px' }}>
           {t('graph.layerFellBack', { min: WORK_LAYER_MIN_NODES })}
         </div>
       )}
@@ -1690,7 +1690,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: 4,
-                  fontSize: 11,
+                  fontSize: 14,
                   color: 'var(--text-1)',
                   opacity: checked ? 1 : 0.4,
                   cursor: 'pointer',
@@ -1755,7 +1755,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               border: '1px solid var(--border)',
               borderRadius: 'var(--radius-xs)',
               color: 'var(--text-0)',
-              fontSize: 12,
+              fontSize: 14,
               fontFamily: 'var(--font-ui)',
             }}
           />
@@ -1764,7 +1764,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               id="graph-search-hint"
               role="status"
               style={{
-                fontSize: 11,
+                fontSize: 14,
                 fontFamily: 'var(--mono)',
                 color: 'var(--text-2)',
               }}
@@ -1785,7 +1785,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               border: '1px solid var(--border)',
               borderRadius: 'var(--radius-xs)',
               color: 'var(--text-2)',
-              fontSize: 11,
+              fontSize: 14,
               cursor: 'pointer',
             }}
           >
@@ -1801,7 +1801,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               border: `1px solid ${driftMode ? 'rgba(143,242,92,0.4)' : 'var(--border)'}`,
               borderRadius: 'var(--radius-xs)',
               color: driftMode ? 'var(--life)' : 'var(--text-2)',
-              fontSize: 11,
+              fontSize: 14,
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
@@ -1832,7 +1832,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
               padding: '4px 10px',
               background: 'var(--life-soft)',
               borderRadius: 'var(--radius-xs)',
-              fontSize: 12,
+              fontSize: 14,
             }}
           >
             <span style={{ color: 'var(--life)', fontWeight: 600 }}>
@@ -1851,7 +1851,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
                 border: '1px solid rgba(143, 242, 92, 0.2)',
                 borderRadius: 'var(--radius-hairline)',
                 color: 'var(--life)',
-                fontSize: 11,
+                fontSize: 14,
                 cursor: 'pointer',
               }}
             >
@@ -1864,7 +1864,7 @@ export function GraphTab({ dataRevision = 0 }: { dataRevision?: number }) {
         {!egoNodeId && (
           <div
             style={{
-              fontSize: 11,
+              fontSize: 14,
               color: 'var(--text-3)',
               marginBottom: 6,
             }}

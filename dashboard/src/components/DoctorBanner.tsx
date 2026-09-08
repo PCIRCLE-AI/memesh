@@ -238,10 +238,10 @@ export function DoctorBanner() {
       >
         ×
       </button>
-      <div style={{ fontSize: 13, fontWeight: 600, color: tone, marginBottom: 6 }}>
+      <div style={{ fontSize: 14, fontWeight: 600, color: tone, marginBottom: 6 }}>
         {isFail ? t('doctorBanner.failTitle') : t('doctorBanner.warnTitleSoft')}
       </div>
-      <ul style={{ margin: '6px 0 10px', paddingLeft: 18, fontSize: 12, lineHeight: 1.5, color: 'var(--text-2)' }}>
+      <ul style={{ margin: '6px 0 10px', paddingLeft: 18, fontSize: 14, lineHeight: 1.5, color: 'var(--text-2)' }}>
         {concerns.slice(0, 3).map(c => {
           const fix = trFix(c);
           return (
@@ -266,17 +266,17 @@ export function DoctorBanner() {
           escalation route would be premature and noisy. */}
       {isFail && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <button type="button" class="btn" onClick={getHelp} style={{ fontSize: 12, padding: '4px 12px' }}>
+          <button type="button" class="btn" onClick={getHelp} style={{ fontSize: 14, padding: '4px 12px' }}>
             {t('doctorBanner.getHelp')}
           </button>
           <GitHubDestination id="doctor-help" />
-          <span style={{ fontSize: 11, color: 'var(--text-3)' }}>
+          <span style={{ fontSize: 14, color: 'var(--text-3)' }}>
             {t('doctorBanner.helpHint')}
           </span>
         </div>
       )}
       {helpUrl && (
-        <div role="alert" style={{ marginTop: 8, fontSize: 12 }}>
+        <div role="alert" style={{ marginTop: 8, fontSize: 14 }}>
           <div>{t('feedback.popupBlocked')}</div>
           <a href={helpUrl} target="_blank" rel="noopener noreferrer">{t('feedback.retry')}</a>{' '}
           <button type="button" class="btn btn-sm" onClick={() => { void copyHelpLink(); }}>
