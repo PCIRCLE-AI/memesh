@@ -57845,7 +57845,7 @@ var init_server = __esm({
         error: `No route for ${req.method} ${req.path}`
       });
     });
-    isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"));
+    isMain = process.env.MEMESH_CLI_SERVE !== "1" && process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"));
     if (isMain || process.argv[1]?.endsWith("memesh-http")) {
       let shutdown2 = function() {
         server.close();
@@ -60037,6 +60037,7 @@ program2.command("demo").description("Seed (or reset) a 30-entity onboarding tou
   });
 });
 program2.command("serve").description("Start the HTTP API server and web dashboard").option("--port <port>", "Port number", wholeNumber("--port", 0), 3737).option("--host <host>", "Host to bind", "127.0.0.1").option("--allow-remote", "Permit binding to a non-loopback host. Pair it with --host; on a non-loopback bind a bearer token is generated and REQUIRED for every /v1 request, and the startup output says where it lives. On the default loopback host this flag changes nothing.").action(async (opts) => {
+  process.env.MEMESH_CLI_SERVE = "1";
   const { startServer: startServer2 } = await Promise.resolve().then(() => (init_server(), server_exports));
   try {
     startServer2(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true });

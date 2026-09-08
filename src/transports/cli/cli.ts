@@ -1518,6 +1518,10 @@ program
   // both. Measured: `/v1/entities` answered 200 unauthenticated.
   .option('--allow-remote', 'Permit binding to a non-loopback host. Pair it with --host; on a non-loopback bind a bearer token is generated and REQUIRED for every /v1 request, and the startup output says where it lives. On the default loopback host this flag changes nothing.')
   .action(async (opts) => {
+    // The packaged CLI bundles the HTTP server module. Mark this path so the
+    // server module's standalone-entry guard cannot mistake the bundle itself
+    // for the `memesh-http` binary and open its default 3737 listener too.
+    process.env.MEMESH_CLI_SERVE = '1';
     const { startServer } = await import('../http/server.js');
     try {
       // autoUpdateCheck: a user-launched serve is online by definition, so it

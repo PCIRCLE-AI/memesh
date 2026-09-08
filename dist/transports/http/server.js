@@ -704,7 +704,9 @@ export function startServer(host = HOST, port = PORT, opts) {
 export function __setRemoteTokenForTest(value) {
     remoteToken = value;
 }
-const isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
+const isMain = process.env.MEMESH_CLI_SERVE !== '1'
+    && process.argv[1]
+    && import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'));
 if (isMain || process.argv[1]?.endsWith('memesh-http')) {
     let server;
     try {
