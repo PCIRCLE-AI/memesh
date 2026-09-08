@@ -28,7 +28,26 @@ import {
   writeAutoUpdateConsent,
 } from './_shared.js';
 import { join } from 'path';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+
+let installChannelMod = null;
+try {
+  const pluginRoot = resolvePluginRoot(import.meta.url);
+  const modulePath = join(pluginRoot, 'dist/core/install-channel.js');
+  if (existsSync(modulePath)) installChannelMod = await import(pathToFileURL(modulePath).href);
+} catch {
+  // Source checkouts without a build remain non-blocking and cannot self-update.
+}
+
+function currentInstallChannel() {
+  try {
+    return installChannelMod?.getCurrentInstallChannel({
+      packageRoot: resolvePluginRoot(import.meta.url),
+    }) ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
 
 function currentInstalledVersion() {
   try {
@@ -40,10 +59,15 @@ function currentInstalledVersion() {
 function recordUpdateConsent(sessionId, prompt) {
   const current = currentInstalledVersion();
   if (!current || !sessionId) return null;
+  const channel = currentInstallChannel();
+  // Only npm-global has a hook-owned installer. Other channels receive an
+  // actionable notice at SessionStart and must not turn an "Upgrade" word
+  // into a misleading approval marker for a different installation path.
+  if (channel !== 'npm-global') return null;
   const cache = readUpdateCheckCache(current);
   const latest = cache?.latestVersion;
   if (typeof latest !== 'string' || !latest) return null;
-  const pending = findAutoUpdateConsent(sessionId, current, latest);
+  const pending = findAutoUpdateConsent(sessionId, current, latest, channel);
   if (!pending || !['pending'].includes(pending.decision)) return null;
   const decision = parseAutoUpdateConsent(prompt);
   if (!decision) return null;

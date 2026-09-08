@@ -3,10 +3,15 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { findAutoUpdateConsent, writeAutoUpdateConsent } from '../../scripts/hooks/_shared.js';
+import {
+  claimUpdatePrompt,
+  findAutoUpdateConsent,
+  readUpdatePromptClaim,
+  writeAutoUpdateConsent,
+} from '../../scripts/hooks/_shared.js';
 
 describe('Feature: per-session update consent', () => {
-  it('asks once on SessionStart and records an explicit Upgrade response', () => {
+  it('gives a channel-accurate first-use action for a source checkout', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'memesh-update-consent-'));
     const dbPath = path.join(dir, 'memesh.db');
     const cachePath = path.join(dir, 'update-cache.json');
@@ -22,8 +27,11 @@ describe('Feature: per-session update consent', () => {
       env,
       encoding: 'utf8',
     }).trim());
-    expect(String(first.systemMessage)).toContain('Reply “Upgrade”');
-    expect(String(first.hookSpecificOutput?.additionalContext)).toContain('Ask the user whether to upgrade');
+    expect(String(first.systemMessage)).toContain('cannot be upgraded automatically');
+    expect(String(first.systemMessage)).toContain('git pull && npm install && npm run build');
+    expect(String(first.systemMessage).match(/MeMesh 4\.10\.0 is available/g)).toHaveLength(1);
+    expect(String(first.hookSpecificOutput?.additionalContext)).toContain('no safe in-session installer');
+    expect(String(first.hookSpecificOutput?.additionalContext)).not.toContain('Ask the user whether to upgrade');
 
     const second = JSON.parse(execFileSync('node', [sessionStart], {
       input: JSON.stringify({ cwd: dir, session_id: 'consent-session-1' }),
@@ -31,17 +39,8 @@ describe('Feature: per-session update consent', () => {
       encoding: 'utf8',
     }).trim());
     expect(String(second.systemMessage)).not.toContain('Reply “Upgrade”');
-
-    const userPrompt = path.resolve('scripts/hooks/user-prompt-intent.js');
-    execFileSync('node', [userPrompt], {
-      input: JSON.stringify({ session_id: 'consent-session-1', prompt: 'Upgrade' }),
-      env,
-      encoding: 'utf8',
-    });
-    const consentFiles = readdirSync(path.join(dir, 'update-consent'));
-    expect(consentFiles).toHaveLength(1);
-    const consent = JSON.parse(readFileSync(path.join(dir, 'update-consent', consentFiles[0]), 'utf8'));
-    expect(consent).toMatchObject({ sessionId: 'consent-session-1', decision: 'approved' });
+    expect(String(second.systemMessage)).not.toContain('MeMesh update available');
+    expect(existsSync(path.join(dir, 'update-consent'))).toBe(false);
   });
 
   it('records Not now, suppresses the same session, and isolates another session/channel', () => {
@@ -58,20 +57,39 @@ describe('Feature: per-session update consent', () => {
     const runStart = (session_id: string) => JSON.parse(execFileSync('node', [sessionStart], {
       input: input(session_id), env, encoding: 'utf8',
     }).trim());
-    expect(String(runStart('decline-session').systemMessage)).toContain('Reply “Upgrade”');
+    expect(String(runStart('decline-session').systemMessage)).toContain('cannot be upgraded automatically');
 
     const userPrompt = path.resolve('scripts/hooks/user-prompt-intent.js');
     execFileSync('node', [userPrompt], {
-      input: JSON.stringify({ session_id: 'decline-session', prompt: 'Not now' }), env, encoding: 'utf8',
+      input: JSON.stringify({ session_id: 'decline-session', prompt: 'Upgrade' }), env, encoding: 'utf8',
     });
     expect(String(runStart('decline-session').systemMessage)).not.toContain('Reply “Upgrade”');
-    expect(String(runStart('new-session').systemMessage)).toContain('Reply “Upgrade”');
+    expect(String(runStart('new-session').systemMessage)).toContain('cannot be upgraded automatically');
+    expect(existsSync(path.join(dir, 'update-consent'))).toBe(false);
 
     const previousDir = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = dir;
     try {
       writeAutoUpdateConsent('channel-session', '4.9.0', '4.10.0', 'npm-global', 'approved');
       expect(findAutoUpdateConsent('channel-session', '4.9.0', '4.10.0', 'plugin-marketplace')).toBeNull();
+    } finally {
+      if (previousDir === undefined) delete process.env.MEMESH_DIR;
+      else process.env.MEMESH_DIR = previousDir;
+    }
+  });
+
+  it('atomically claims one first-use notice for concurrent host hooks', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'memesh-update-claim-'));
+    const previousDir = process.env.MEMESH_DIR;
+    process.env.MEMESH_DIR = dir;
+    try {
+      expect(claimUpdatePrompt('same-session', '4.9.0', '4.10.0', 'source-checkout')).toBe(true);
+      expect(claimUpdatePrompt('same-session', '4.9.0', '4.10.0', 'plugin-marketplace')).toBe(false);
+      expect(readUpdatePromptClaim('same-session', '4.9.0', '4.10.0')).toMatchObject({
+        sessionId: 'same-session',
+        channel: 'source-checkout',
+        decision: 'pending',
+      });
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;

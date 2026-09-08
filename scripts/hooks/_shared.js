@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -834,6 +834,54 @@ function autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel
     .update(`${sessionId}\0${currentVersion}\0${latestVersion}\0${channel}`)
     .digest('hex');
   return join(memeshDir(), 'update-consent', `${key}.json`);
+}
+
+function updatePromptClaimPath(sessionId, currentVersion, latestVersion) {
+  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId === 'unknown') return null;
+  const key = createHash('sha256')
+    .update(`${sessionId}\0${currentVersion}\0${latestVersion}`)
+    .digest('hex');
+  return join(memeshDir(), 'update-prompt-claims', `${key}.json`);
+}
+
+/**
+ * Atomically claim the one first-use update notice for a session/version.
+ * Separate host hooks can start at the same time; a read-then-write pending
+ * marker lets both print the prompt. O_EXCL makes the claim the decision.
+ */
+export function claimUpdatePrompt(sessionId, currentVersion, latestVersion, channel) {
+  const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
+  if (!path || typeof channel !== 'string' || channel.length === 0) return false;
+  try {
+    ensurePrivateDir(join(memeshDir(), 'update-prompt-claims'));
+    const fd = openSync(path, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);
+    try {
+      writeFileSync(fd, JSON.stringify({
+        sessionId,
+        currentVersion,
+        latestVersion,
+        channel,
+        decision: 'pending',
+        recordedAt: new Date().toISOString(),
+      }));
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function readUpdatePromptClaim(sessionId, currentVersion, latestVersion) {
+  const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
+  if (!path || !existsSync(path)) return null;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    return value && typeof value === 'object' ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 export function readAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel = 'unknown') {

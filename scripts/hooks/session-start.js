@@ -27,6 +27,8 @@ import {
   parseTaskState,
   readRepoState,
   readAutoUpdateConsent,
+  claimUpdatePrompt,
+  readUpdatePromptClaim,
   readUpdateCheckCache,
   repoStateLines,
   resolvePluginRoot,
@@ -333,12 +335,32 @@ function buildUpdateConsentPrompt(sessionId, currentVersion, cache, channel) {
   if (!cache.latestVersion || !isStrictlyOlder(currentVersion, cache.latestVersion)) return null;
   const existing = readAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel);
   if (existing?.decision) return null;
-  // Claim this session's prompt before emitting it. A resumed hook or a
-  // concurrent host process sees `pending` and does not duplicate the ask.
-  writeAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel, 'pending');
+  // Claim the session-level notice before emitting it. A resumed hook or a
+  // concurrent host process (including a second host channel) sees the
+  // atomic claim and does not duplicate the ask.
+  if (readUpdatePromptClaim(sessionId, currentVersion, cache.latestVersion)
+    || !claimUpdatePrompt(sessionId, currentVersion, cache.latestVersion, channel)) return null;
   const target = channel === 'plugin-marketplace'
     ? 'the installed marketplace plugin'
     : channel === 'npm-global' ? 'the global memesh installation' : 'this MeMesh installation';
+  if (channel !== 'npm-global') {
+    const pluginRoot = resolvePluginRoot(import.meta.url);
+    const action = channel === 'plugin-marketplace'
+      ? pluginUpgradeLine(pluginRoot)
+      : channel === 'source-checkout'
+        ? '    Source checkout: pull and rebuild (`git pull && npm install && npm run build`).'
+        : channel === 'npm-local'
+          ? '    Project-local install: run `npm install @pcircle/memesh@latest` in the project that installed it.'
+          : '    Update it through the tool or package manager that installed MeMesh.';
+    return {
+      system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. This installation cannot be upgraded automatically from this session.\n${action}`,
+      context: `MeMesh ${cache.latestVersion} is available for ${target}, but this channel has no safe in-session installer. Show the user the channel-specific update action and do not claim that an Upgrade reply will install it.`,
+    };
+  }
+  // The npm-global channel is the only hook-owned installer. Record a
+  // channel-specific pending consent for the Stop hook after the global
+  // session notice has been claimed.
+  if (!writeAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel, 'pending')) return null;
   return {
     system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. Reply “Upgrade” to install it, or “Not now” to skip for this session.`,
     context: `MeMesh update consent is pending for this session. Ask the user whether to upgrade from ${currentVersion} to ${cache.latestVersion} for the ${target}. Wait for an explicit Upgrade or Not now response; do not install without affirmative consent.`,
@@ -1187,11 +1209,21 @@ process.stdin.on('end', async () => {
           bannerLines = deprecation;
         } else {
           const channel = detectInstallChannelHook(resolvePluginRoot(import.meta.url));
-          bannerLines = buildUpdateAvailableBanner(installedVersion, updateCache, () => channel);
           const consent = buildUpdateConsentPrompt(data.session_id, installedVersion, updateCache, channel);
           if (consent) {
-            bannerLines = [consent.system, ...bannerLines];
+            // The first-use notice is the authoritative update message for
+            // this session. Do not append the softer 24h banner as well; a
+            // source/plugin user would otherwise see two contradictory
+            // update instructions in one SessionStart payload.
+            bannerLines = [consent.system];
             updateConsentContext = consent.context;
+          } else if (readUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion)) {
+            // A first-use notice was already shown (and may have been
+            // answered by UserPromptSubmit). Suppress the routine banner for
+            // the rest of this session as well.
+            bannerLines = [];
+          } else {
+            bannerLines = buildUpdateAvailableBanner(installedVersion, updateCache, () => channel);
           }
         }
       }

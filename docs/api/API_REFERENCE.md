@@ -875,12 +875,15 @@ Capability diagnosis belongs to `GET /v1/doctor`, not this response.
 Dashboard locale is browser-local UI state and is not part of this server
 configuration.
 
-`autoUpdate` controls the maximum permitted bump, not unattended consent. When
-an update is available, the first MeMesh use in a session requests a
+`autoUpdate` controls the maximum permitted bump, not unattended consent. On a
+supported npm-global install, the first MeMesh use in a session requests a
 host-mediated consent prompt once; an explicit `Upgrade` records
 session-scoped consent and `Not now` records a decline. The Stop hook
-dispatches only after affirmative consent. `MEMESH_AUTO_UPDATE` overrides the
-configured bump limit, but never bypasses this consent gate.
+dispatches only after affirmative consent. Project-local, source-checkout, and
+marketplace installs receive a channel-specific update action instead; they are
+never described as self-updating when the hook cannot safely install them.
+`MEMESH_AUTO_UPDATE` overrides the configured bump limit, but never bypasses
+this consent gate.
 
 ### GET /v1/update-status
 
