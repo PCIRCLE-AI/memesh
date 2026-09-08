@@ -45,11 +45,11 @@ async function terminateCompanionAt(statePath: string): Promise<void> {
   await waitFor(() => !fs.existsSync(statePath), 'the packaged Codex companion lifecycle state to disappear');
 }
 
-function waitFor(predicate: () => boolean, description: string): Promise<void> {
+function waitFor(predicate: () => boolean | Promise<boolean>, description: string): Promise<void> {
   const deadline = Date.now() + 10_000;
   return new Promise((resolve, reject) => {
-    const check = () => {
-      if (predicate()) return resolve();
+    const check = async () => {
+      if (await predicate()) return resolve();
       if (Date.now() >= deadline) return reject(new Error(`Timed out waiting for ${description}.`));
       setTimeout(check, 25);
     };
@@ -89,6 +89,15 @@ function routerOwners(socketPath: string): string[] {
   const result = spawnSync('lsof', ['-t', '--', socketPath], { encoding: 'utf8' });
   if (result.error) throw result.error;
   return result.stdout.trim().split(/\s+/).filter(Boolean);
+}
+
+function tcpPortOpen(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('error', () => resolve(false));
+    socket.setTimeout(500, () => { socket.destroy(); resolve(false); });
+  });
 }
 
 function packagedPluginWithoutNodeModules(): string {
@@ -197,5 +206,29 @@ describe('Codex plugin fresh consumer', () => {
     });
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout.trim()).toBe('4.9.0');
+  });
+
+  it.skipIf(process.platform === 'win32')('serve binds only the requested port in the packaged CLI', async () => {
+    const pluginRoot = packagedPluginWithoutNodeModules();
+    const dataDirectory = path.join(pluginRoot, 'data');
+    const child = spawn(process.execPath, [path.join(pluginRoot, 'dist/transports/cli/cli.js'), 'serve', '--port', '43751'], {
+      cwd: pluginRoot,
+      env: {
+        ...process.env,
+        HOME: path.join(pluginRoot, 'home'),
+        MEMESH_DIR: dataDirectory,
+        MEMESH_DB_PATH: path.join(dataDirectory, 'knowledge-graph.db'),
+        MEMESH_AUTO_UPDATE: '0',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    children.push(child);
+    let stderr = '';
+    child.stderr!.setEncoding('utf8');
+    child.stderr!.on('data', (chunk: string) => { stderr += chunk; });
+    await waitFor(async () => await tcpPortOpen(43751), 'the packaged server to bind the requested port');
+    expect(await tcpPortOpen(3737), stderr).toBe(false);
+    await stop(child);
+    children.splice(children.indexOf(child), 1);
   });
 });
