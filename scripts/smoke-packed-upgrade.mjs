@@ -331,7 +331,7 @@ function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cac
     {
       status: 'warn',
       code: 'config-parse.retired-settings',
-      fixId: undefined,
+      fixId: 'config-retired-settings',
       count: 5,
       keys: 'llm, llmFallbacks, embedder, language, transcriptMining',
     },
