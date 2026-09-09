@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const packageVersion = (JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')) as { version: string }).version;
 const temporaryDirectories: string[] = [];
 const children: ChildProcess[] = [];
 const routerSockets: string[] = [];
@@ -218,7 +219,7 @@ describe('Codex plugin fresh consumer', () => {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout.trim()).toBe('4.9.2');
+    expect(result.stdout.trim()).toBe(packageVersion);
   });
 
   it.skipIf(process.platform === 'win32')('serve binds only the requested port in the packaged CLI', async () => {
