@@ -11,6 +11,7 @@ import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
 import { getProjectName } from '../src/core/paths.js';
 import { projectTranscriptSlug } from '../src/core/transcript-source.js';
+import { removeTempDir } from './helpers/temp-dir.js';
 
 it('stages digest and visible transcript work through the actual MCP stdio process with read-only deferral', async () => {
   const repo = fileURLToPath(new URL('../', import.meta.url));
@@ -250,7 +251,7 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     try { await client.close(); }
     finally {
       await transport.close();
-      fs.rmSync(runtime, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      removeTempDir(runtime);
     }
   }
 }, 30000);

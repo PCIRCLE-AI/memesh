@@ -948,6 +948,18 @@ export function assertCompanionRunning(companion, label) {
 }
 
 /**
+ * The SessionStart hook is only a launcher: it exits after publishing a
+ * detached companion. Discoverable live cards are the proof that the detached
+ * process is running; the launcher itself should merely have exited cleanly.
+ */
+export function assertSessionStartLauncherSucceeded(companion, label) {
+  if (companion.signalCode !== null || (companion.exitCode !== null && companion.exitCode !== 0)) {
+    throw new Error(`${label} failed before its detached companion registered.`);
+  }
+  return companion;
+}
+
+/**
  * Wait for one live host session to leave the router directory.
  *
  * This is the decision that keeps a shutdown from creating an orphan, so it is
@@ -1375,6 +1387,28 @@ fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record
   async stopCodexCompanion(companion) {
     await stopChild(companion);
     this.companions = this.companions.filter((candidate) => candidate !== companion);
+  }
+
+  async terminateCodexDetachedCompanion(threadId) {
+    const statePath = path.join(this.memeshDir, 'runtime', 'codex-session', `${threadId}.json`);
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    await new Promise((resolve, reject) => {
+      const socket = net.createConnection(state.control_socket);
+      let response = '';
+      const timer = setTimeout(() => {
+        socket.destroy();
+        reject(new Error(`Detached Codex companion ${threadId} did not acknowledge termination.`));
+      }, 2_000);
+      socket.setEncoding('utf8');
+      socket.on('data', (chunk) => { response += chunk; });
+      socket.once('error', (error) => { clearTimeout(timer); reject(error); });
+      socket.once('close', () => {
+        clearTimeout(timer);
+        if (response.trim() !== 'terminated') reject(new Error(`Detached Codex companion ${threadId} rejected termination.`));
+        else resolve();
+      });
+      socket.once('connect', () => socket.end(`${JSON.stringify({ action: 'terminate', token: state.token })}\n`));
+    });
   }
 
   trackCodexProcess(child) {
@@ -1990,8 +2024,8 @@ async function runCodexSessionAutoRegistration(journey) {
       },
       15_000,
     );
-    assertCompanionRunning(firstCompanion, 'First packaged Codex SessionStart companion');
-    assertCompanionRunning(secondCompanion, 'Second packaged Codex SessionStart companion');
+    assertSessionStartLauncherSucceeded(firstCompanion, 'First packaged Codex SessionStart launcher');
+    assertSessionStartLauncherSucceeded(secondCompanion, 'Second packaged Codex SessionStart launcher');
     if (fs.existsSync(configPath)) {
       throw new Error('Automatic Codex SessionStart registration unexpectedly created hosts/codex-session.json.');
     }
@@ -2029,10 +2063,6 @@ async function runCodexSessionAutoRegistration(journey) {
   });
 
   const cliSentinel = `codex-auto-first-${randomUUID().slice(0, 8)}`;
-  const cliPayload = {
-    qa_sentinel: cliSentinel,
-    instruction: 'No action required. MeMesh owner-run live journey check; run no commands.',
-  };
   const sent = [
     mcpRun.result.sent,
     {
@@ -2041,7 +2071,7 @@ async function runCodexSessionAutoRegistration(journey) {
       project: journey.project,
       sender: 'memesh-live-journey-harness',
       contentType: 'application/json',
-      payload: cliPayload,
+      payload: buildLiveJourneyPayload(cliSentinel),
       ...journey.sendAccepted(threadId, cliSentinel, cliSentinel, 'codex-cli-queue'),
     },
   ];
@@ -2068,9 +2098,7 @@ async function runCodexSessionAutoRegistration(journey) {
   }
   await journey.assertLegacyRouterUntouched();
 
-  if (firstCompanion.exitCode !== null) {
-    throw new Error('The original first Codex companion exited before the resume registration was attempted.');
-  }
+  assertSessionStartLauncherSucceeded(firstCompanion, 'Original first Codex SessionStart launcher');
   const resumedCompanion = journey.startCodexCompanion(threadId, workspace, 'codex-session-auto-resume.log', 'resume');
   const resumedCard = await journey.until(
     'The resumed first Codex thread never superseded its original generation',
@@ -2095,8 +2123,9 @@ async function runCodexSessionAutoRegistration(journey) {
   for (const companion of journey.companions) await stopChild(companion);
   journey.companions = [];
   for (const sessionId of [threadId, secondThreadId]) {
+    await journey.terminateCodexDetachedCompanion(sessionId);
     await journey.until(
-      `The automatic Codex session ${sessionId} remained live after all companions stopped`,
+      `The automatic Codex session ${sessionId} was still registered after its detached companion was terminated`,
       () => journey.sessionGone(sessionId),
       15_000,
     );

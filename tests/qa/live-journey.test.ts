@@ -50,6 +50,7 @@ import {
   assertOutsideOwnerMemesh,
   assertTaskOwnedCodexHome,
   assertRecipientUnavailable,
+  assertSessionStartLauncherSucceeded,
   assertSocketPathFits,
   awaitSessionDisconnect,
   buildJourneyEnv,
@@ -932,6 +933,15 @@ describe('ordinary MCP registration boundary', () => {
       .toThrow(/exited before its live registration was verified/);
     expect(() => assertCompanionRunning({ exitCode: null, signalCode: 'SIGTERM' }, 'companion'))
       .toThrow(/exited before its live registration was verified/);
+  });
+
+  it('accepts a cleanly exited SessionStart launcher after discover proves the detached companion', () => {
+    expect(() => assertSessionStartLauncherSucceeded({ exitCode: 0, signalCode: null }, 'launcher')).not.toThrow();
+    expect(() => assertSessionStartLauncherSucceeded({ exitCode: null, signalCode: null }, 'launcher')).not.toThrow();
+    expect(() => assertSessionStartLauncherSucceeded({ exitCode: 1, signalCode: null }, 'launcher'))
+      .toThrow(/failed before its detached companion registered/);
+    expect(() => assertSessionStartLauncherSucceeded({ exitCode: null, signalCode: 'SIGTERM' }, 'launcher'))
+      .toThrow(/failed before its detached companion registered/);
   });
 });
 

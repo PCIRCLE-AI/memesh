@@ -2,6 +2,31 @@
 
 All notable changes to MeMesh are documented here.
 
+## [4.9.4] — 2026-09-09
+
+### Fixed
+
+- **Plugin upgrades now fail closed before cache replacement when the staged
+  artifact is incomplete.** Before an upgrade can swap the live cache, the
+  updater validates every hook, plugin manifest, and MCP entrypoint in the
+  staged copy; missing or swapped targets leave the existing cache and
+  registry unchanged. The release gate runs the same checker and additionally
+  confirms every target is present in the npm-packed artifact.
+- **Release audits no longer inherit an unsafe or unbounded npm cache.** The
+  consumer audit uses a private temporary cache and bounded subprocess
+  lifetimes, reporting a controlled failure instead of hanging or being
+  affected by root-owned cache state.
+- **Pre-release coverage now protects the updater's own checker.** A copied
+  or incomplete updater refuses to install a plugin archive when its trusted
+  artifact-integrity checker is absent.
+- **The npm package ships the checker's one dependency.** The
+  artifact-integrity checker imports `scripts/lib/npm-bin.mjs`, which the
+  package did not include, so the checker could not load from an npm install
+  and `memesh upgrade-plugin` — which prefers the npm-installed copy of the
+  updater — would have refused every upgrade. A test now unpacks the real
+  tarball and runs the checker from it. The checker also rejects a symlinked
+  directory above a hook target, not only a symlinked file.
+
 ## [4.9.3] — 2026-09-09
 
 ### Fixed

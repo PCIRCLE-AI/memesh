@@ -77,6 +77,20 @@ describe('the plan', () => {
     expect(scripts['check:entry-points-start']).toContain('check-entry-points-start.mjs');
   });
 
+  it('reaches the plugin hook cache/artifact integrity gate transitively', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+    expect(pkg.files).toContain('scripts/check-plugin-hook-artifact.mjs');
+    expect(pkg.scripts['verify:release']).toContain('check:plugin-hook-artifact');
+    expect(pkg.scripts['check:plugin-hook-artifact']).toContain('check-plugin-hook-artifact.mjs');
+  });
+
+  it('covers the detached auto-update runner in the shipped integrity manifest', () => {
+    const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, 'dist', 'skills-manifest.json'), 'utf8'));
+    expect(manifest.entries.map((entry: { path: string }) => entry.path)).toContain(
+      'scripts/hooks/auto-update-runner.mjs',
+    );
+  });
+
   it('says what it cannot check, including the one gate that still lives elsewhere', () => {
     // The entry-point start gate used to be named here too — it is not
     // anymore, because it is wired into `verify:release` (and therefore into

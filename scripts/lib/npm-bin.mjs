@@ -103,3 +103,21 @@ export function npmSync(args, opts = {}) {
 export function npxSync(args, opts = {}) {
   return runSync(NPX, args, opts);
 }
+
+/**
+ * `baseEnv` with every spelling of `npm_config_cache` removed and the private
+ * cache set. Windows environment names are case-insensitive and Node keeps
+ * the lexicographically first of two keys that differ only in case (`N`
+ * before `n`); Vitest adds an upper-cased copy of every variable to its
+ * Windows workers. So `{ ...process.env, npm_config_cache }` handed npm the
+ * runner's `NPM_CONFIG_CACHE=C:\npm\cache` and never the private directory —
+ * measured on windows-latest with the fake npm in
+ * `tests/consumer-audit-gate.test.ts`.
+ */
+export function envWithNpmCache(cacheDir, baseEnv = process.env) {
+  const env = Object.fromEntries(
+    Object.entries(baseEnv).filter(([key]) => key.toLowerCase() !== 'npm_config_cache'),
+  );
+  env.npm_config_cache = cacheDir;
+  return env;
+}
