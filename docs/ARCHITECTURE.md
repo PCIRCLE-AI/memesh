@@ -1,6 +1,6 @@
 # MeMesh Plugin Architecture
 
-**Version**: 4.9.2
+**Version**: 4.9.3
 
 > Looking for "which file do I change for X?" — see [CODEMAP.md](../CODEMAP.md).
 

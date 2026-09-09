@@ -2,6 +2,14 @@
 
 All notable changes to MeMesh are documented here.
 
+## [4.9.3] — 2026-09-09
+
+### Fixed
+
+- **Codex SessionEnd no longer requests an unsupported hook timeout.** The
+  lifecycle hook now declares the host-compatible three-second ceiling, so
+  Codex does not clamp the packaged manifest at load time.
+
 ## [4.9.2] — 2026-09-09
 
 ### Fixed
