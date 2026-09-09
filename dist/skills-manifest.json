@@ -8,7 +8,7 @@
     },
     {
       "path": ".claude-plugin/plugin.json",
-      "sha256": "e0f61b71df7525c477ce0644cbf0e1ff947bbe3d060b05fa46017e6ddc1d2425",
+      "sha256": "e1ff07fff7c5002f916e6c55172e953e726a24f46a2a705585fef53d726867d6",
       "bytes": 572
     },
     {
@@ -18,13 +18,13 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "a864c5c1108e51baf1aa8be8762b63d29059d52bf05c164779632091e9b684df",
+      "sha256": "c68af5ed07947baf7ef3d66c5262cf3a34ac20f0981cf223ecc652d6e298bca8",
       "bytes": 154
     },
     {
       "path": "hooks/hooks.json",
-      "sha256": "59a2663c82e4b54910b1eba2657f8ddcea375b54bb1e70e8c4a3fc7cb036443b",
-      "bytes": 2567
+      "sha256": "01673b7843f42206a7452e2755f0c060086fb50d3e741aa7232789f696b6718f",
+      "bytes": 2566
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",

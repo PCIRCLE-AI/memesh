@@ -12,13 +12,15 @@ import {
   writeAutoUpdateConsent,
 } from '../../scripts/hooks/_shared.js';
 
+const CURRENT_VERSION = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')).version as string;
+
 describe('Feature: per-session update consent', () => {
   it('gives a channel-accurate first-use action for a source checkout', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'memesh-update-consent-'));
     const dbPath = path.join(dir, 'memesh.db');
     const cachePath = path.join(dir, 'update-cache.json');
     writeFileSync(cachePath, JSON.stringify({
-      currentVersion: '4.9.2',
+      currentVersion: CURRENT_VERSION,
       latestVersion: '4.10.0',
       lastSuccessfulCheckAt: new Date().toISOString(),
     }));
@@ -50,7 +52,7 @@ describe('Feature: per-session update consent', () => {
     const dbPath = path.join(dir, 'memesh.db');
     const cachePath = path.join(dir, 'update-cache.json');
     writeFileSync(cachePath, JSON.stringify({
-      currentVersion: '4.9.2', latestVersion: '4.10.0',
+      currentVersion: CURRENT_VERSION, latestVersion: '4.10.0',
       lastSuccessfulCheckAt: new Date().toISOString(),
     }));
     const env = { ...process.env, MEMESH_DIR: dir, MEMESH_DB_PATH: dbPath, MEMESH_UPDATE_CHECK_PATH: cachePath };
@@ -76,8 +78,8 @@ describe('Feature: per-session update consent', () => {
     const previousDir = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = dir;
     try {
-      writeAutoUpdateConsent('channel-session', '4.9.2', '4.10.0', 'npm-global', 'approved');
-      expect(findAutoUpdateConsent('channel-session', '4.9.2', '4.10.0', 'plugin-marketplace')).toBeNull();
+      writeAutoUpdateConsent('channel-session', CURRENT_VERSION, '4.10.0', 'npm-global', 'approved');
+      expect(findAutoUpdateConsent('channel-session', CURRENT_VERSION, '4.10.0', 'plugin-marketplace')).toBeNull();
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;
@@ -89,15 +91,15 @@ describe('Feature: per-session update consent', () => {
     const previousDir = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = dir;
     try {
-      expect(claimUpdatePrompt('same-session', '4.9.2', '4.10.0', 'source-checkout')).toBe(true);
-      expect(claimUpdatePrompt('same-session', '4.9.2', '4.10.0', 'plugin-marketplace')).toBe(false);
-      expect(readUpdatePromptClaim('same-session', '4.9.2', '4.10.0')).toMatchObject({
+      expect(claimUpdatePrompt('same-session', CURRENT_VERSION, '4.10.0', 'source-checkout')).toBe(true);
+      expect(claimUpdatePrompt('same-session', CURRENT_VERSION, '4.10.0', 'plugin-marketplace')).toBe(false);
+      expect(readUpdatePromptClaim('same-session', CURRENT_VERSION, '4.10.0')).toMatchObject({
         sessionId: 'same-session',
         channel: 'source-checkout',
         decision: 'pending',
       });
-      expect(finalizeUpdatePromptClaim('same-session', '4.9.2', '4.10.0')).toBe(true);
-      expect(claimUpdatePrompt('same-session', '4.9.2', '4.10.0', 'source-checkout')).toBe(false);
+      expect(finalizeUpdatePromptClaim('same-session', CURRENT_VERSION, '4.10.0')).toBe(true);
+      expect(claimUpdatePrompt('same-session', CURRENT_VERSION, '4.10.0', 'source-checkout')).toBe(false);
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;
@@ -113,10 +115,10 @@ describe('Feature: per-session update consent', () => {
     try {
       const child = spawnSync(process.execPath, ['--input-type=module', '-e',
         `import { claimUpdatePrompt } from ${JSON.stringify(pathToFileURL(shared).href)};\n`
-        + `process.exit(claimUpdatePrompt('crashed-session', '4.9.2', '4.10.0', 'source-checkout') ? 0 : 1);`,
+        + `process.exit(claimUpdatePrompt('crashed-session', ${JSON.stringify(CURRENT_VERSION)}, '4.10.0', 'source-checkout') ? 0 : 1);`,
       ], { env, encoding: 'utf8' });
       expect(child.status, child.stderr).toBe(0);
-      expect(claimUpdatePrompt('crashed-session', '4.9.2', '4.10.0', 'source-checkout')).toBe(true);
+      expect(claimUpdatePrompt('crashed-session', CURRENT_VERSION, '4.10.0', 'source-checkout')).toBe(true);
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;
@@ -129,7 +131,7 @@ describe('Feature: per-session update consent', () => {
     const cachePath = path.join(dir, 'update-cache.json');
     const transcriptPath = path.join(dir, 'transcript.jsonl');
     writeFileSync(cachePath, JSON.stringify({
-      currentVersion: '4.9.2', latestVersion: '4.10.0',
+      currentVersion: CURRENT_VERSION, latestVersion: '4.10.0',
       lastSuccessfulCheckAt: new Date().toISOString(),
     }));
     writeFileSync(transcriptPath, [
@@ -156,12 +158,12 @@ describe('Feature: per-session update consent', () => {
     const previousDir = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = dir;
     try {
-      writeAutoUpdateConsent('stop-consent-session', '4.9.2', '4.10.0', 'source-checkout', 'approved');
-      writeAutoUpdateConsent('stop-consent-session', '4.9.2', '4.10.0', 'unknown', 'approved');
+      writeAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, '4.10.0', 'source-checkout', 'approved');
+      writeAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, '4.10.0', 'unknown', 'approved');
       for (const channel of ['npm-global', 'npm-local', 'plugin-marketplace']) {
-        writeAutoUpdateConsent('stop-consent-session', '4.9.2', '4.10.0', channel, 'approved');
+        writeAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, '4.10.0', channel, 'approved');
       }
-      expect(findAutoUpdateConsent('stop-consent-session', '4.9.2', '4.10.0', 'source-checkout')).toMatchObject({ decision: 'approved' });
+      expect(findAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, '4.10.0', 'source-checkout')).toMatchObject({ decision: 'approved' });
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;

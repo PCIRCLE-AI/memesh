@@ -51,7 +51,7 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
-            "timeout": 10
+            "timeout": 3
           }
         ]
       }
