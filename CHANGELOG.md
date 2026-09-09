@@ -18,6 +18,13 @@ All notable changes to MeMesh are documented here.
 - **Pre-release coverage now protects the updater's own checker.** A copied
   or incomplete updater refuses to install a plugin archive when its trusted
   artifact-integrity checker is absent.
+- **The npm package ships the checker's one dependency.** The
+  artifact-integrity checker imports `scripts/lib/npm-bin.mjs`, which the
+  package did not include, so the checker could not load from an npm install
+  and `memesh upgrade-plugin` — which prefers the npm-installed copy of the
+  updater — would have refused every upgrade. A test now unpacks the real
+  tarball and runs the checker from it. The checker also rejects a symlinked
+  directory above a hook target, not only a symlinked file.
 
 ## [4.9.3] — 2026-09-09
 

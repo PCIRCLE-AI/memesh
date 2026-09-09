@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hookTargetsFromManifest, validateArtifactPaths, validateHookTargets, validatePluginEntrypoints } from '../scripts/check-plugin-hook-artifact.mjs';
 
@@ -51,6 +52,51 @@ describe('plugin hook artifact integrity', () => {
       fs.rmSync(outside, { force: true });
     }
   });
+
+  it('rejects a symlinked directory above a hook target', () => {
+    // The lstat-only check saw a regular file at the leaf and passed; the
+    // directory it sat in pointed outside the staged plugin.
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-hook-outside-dir-'));
+    try {
+      fs.writeFileSync(path.join(outsideDir, 'session-start.js'), '');
+      fs.writeFileSync(path.join(outsideDir, 'pre-compact.js'), '');
+      fs.rmSync(path.join(root, 'scripts', 'hooks'), { recursive: true, force: true });
+      fs.symlinkSync(outsideDir, path.join(root, 'scripts', 'hooks'), 'dir');
+      const result = validateHookTargets(root);
+      expect(result.ok).toBe(false);
+      expect(result.missing).toHaveLength(2);
+    } finally {
+      fs.rmSync(outsideDir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads and passes from the npm tarball, not only from the repository', () => {
+    // `memesh upgrade-plugin` prefers the npm-installed copy of the updater,
+    // and the updater runs THIS checker fail-closed. v4.9.4's first candidate
+    // packed the checker without `scripts/lib/npm-bin.mjs`, so from an npm
+    // install it died on import and every upgrade was refused — while
+    // `pkg.files` contained the checker and the gate reported PASS. Only
+    // executing the unpacked artifact pins the dependency.
+    const repoRoot = path.resolve(__dirname, '..');
+    const packDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-pack-run-'));
+    try {
+      const pack = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', packDir], {
+        cwd: repoRoot, encoding: 'utf8', shell: process.platform === 'win32', timeout: 120000,
+      });
+      expect(pack.status, pack.stderr).toBe(0);
+      const tarball = path.join(packDir, JSON.parse(pack.stdout)[0].filename);
+      const untar = spawnSync('tar', ['-xzf', tarball, '-C', packDir], { encoding: 'utf8', timeout: 60000 });
+      expect(untar.status, untar.stderr).toBe(0);
+      const packageRoot = path.join(packDir, 'package');
+      const run = spawnSync(process.execPath, [
+        path.join(packageRoot, 'scripts', 'check-plugin-hook-artifact.mjs'), '--root', packageRoot, '--skip-pack',
+      ], { encoding: 'utf8', timeout: 60000 });
+      expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
+      expect(run.stdout).toMatch(/plugin artifact integrity: PASS/);
+    } finally {
+      fs.rmSync(packDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 240000);
 
   it('requires both host MCP manifests and their bundled entrypoint', () => {
     fs.writeFileSync(path.join(root, 'scripts', 'hooks', 'session-start.js'), '');

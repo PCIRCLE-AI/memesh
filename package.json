@@ -28,6 +28,7 @@
     "LICENSE",
     "llms-install.md",
     "scripts/check-plugin-hook-artifact.mjs",
+    "scripts/lib/npm-bin.mjs",
     "AGENTS.md"
   ],
   "scripts": {

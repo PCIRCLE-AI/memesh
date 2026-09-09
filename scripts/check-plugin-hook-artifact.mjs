@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { npmSync } from './lib/npm-bin.mjs';
+import { npmSync, envWithNpmCache } from './lib/npm-bin.mjs';
 
 export const CLAUDE_PLUGIN_ROOT_PREFIX = '${CLAUDE_PLUGIN_ROOT}/';
 
@@ -46,15 +46,25 @@ export function validateHookTargets(root, manifest = readHookManifest(root)) {
   for (const target of targets) {
     const resolved = path.resolve(rootPath, target.relative);
     try {
-      // lstat is intentional: stat() follows an in-root symlink to an
-      // external file, which would let a staged cache execute ambient bytes.
-      if (isSubpath(rootPath, resolved) && fs.lstatSync(resolved).isFile()) continue;
+      if (isContainedRegularFile(rootPath, resolved)) continue;
     } catch {
       // Report the same bounded finding for missing and unreadable targets.
     }
     missing.push({ ...target, resolved });
   }
   return { targets, missing, ok: missing.length === 0 };
+}
+
+/**
+ * True only for a regular file whose every path component lives inside root.
+ * `lstat` rejects a symlink as the last component; `realpathSync` on both
+ * sides rejects a symlinked directory ABOVE it — `scripts/hooks -> /elsewhere`
+ * passed the lstat-only check and would have let a staged cache execute
+ * ambient bytes. Throws on a missing path, like the fs calls it wraps.
+ */
+function isContainedRegularFile(rootPath, resolved) {
+  if (!isSubpath(rootPath, resolved) || !fs.lstatSync(resolved).isFile()) return false;
+  return isSubpath(fs.realpathSync(rootPath), fs.realpathSync(resolved));
 }
 
 function safeRelativePath(value, label) {
@@ -73,7 +83,7 @@ function regularFile(root, relative, label) {
   const resolved = path.resolve(rootPath, relative);
   if (!isSubpath(rootPath, resolved)) throw new Error(`${label} escapes plugin root: ${relative}`);
   try {
-    if (fs.lstatSync(resolved).isFile()) return relative;
+    if (isContainedRegularFile(rootPath, resolved)) return relative;
   } catch {
     // Fall through to one bounded diagnostic.
   }
@@ -126,7 +136,7 @@ function packFiles(root) {
     const stdout = npmSync(['pack', '--dry-run', '--json', '--ignore-scripts'], {
       cwd: root,
       encoding: 'utf8',
-      env: { ...process.env, npm_config_cache: npmCache },
+      env: envWithNpmCache(npmCache),
     });
     let report;
     try { report = JSON.parse(String(stdout)); } catch { throw new Error('npm pack --dry-run did not return valid JSON'); }
@@ -157,7 +167,11 @@ export function checkPluginHookArtifact(root, { checkPack = true } = {}) {
 
 function main(argv) {
   const rootIndex = argv.indexOf('--root');
-  const root = path.resolve(rootIndex === -1 ? process.cwd() : (argv[rootIndex + 1] || ''));
+  if (rootIndex !== -1 && (!argv[rootIndex + 1] || argv[rootIndex + 1].startsWith('--'))) {
+    console.error('plugin hook integrity: --root requires a directory argument');
+    process.exit(2);
+  }
+  const root = path.resolve(rootIndex === -1 ? process.cwd() : argv[rootIndex + 1]);
   const checkPack = !argv.includes('--skip-pack');
   try {
     const result = checkPluginHookArtifact(root, { checkPack });
@@ -176,4 +190,21 @@ function main(argv) {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main(process.argv.slice(2));
+/**
+ * Run `main` only when this file is the entrypoint. Both sides go through
+ * realpath: Node resolves symlinks in `import.meta.url` but not in argv[1],
+ * so `node /var/folders/.../check-plugin-hook-artifact.mjs` (macOS tmp is a
+ * symlink) compared unequal, skipped `main`, and exited 0 with no output — a
+ * silent PASS from a checker that had checked nothing. Pinned by the tarball
+ * test in tests/plugin-hook-artifact.test.ts, which asserts on the output.
+ */
+function isEntrypoint(argv1) {
+  if (!argv1) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(path.resolve(argv1));
+  } catch {
+    return false;
+  }
+}
+
+if (isEntrypoint(process.argv[1])) main(process.argv.slice(2));
