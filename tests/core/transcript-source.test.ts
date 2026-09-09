@@ -141,16 +141,29 @@ describe('work-package source boundary', () => {
     const changed = 'Foreign local evidence';
     expect(Buffer.byteLength(changed)).toBe(Buffer.byteLength(original));
     const file = writeSession(cwd, original);
-    const stableTime = new Date('2026-09-06T00:00:00.000Z');
+    // Keep the fixture inside the scanner's rolling three-day window even as
+    // the test suite ages. A fixed historical timestamp silently made the
+    // initial prepare() return none_available after the window moved on.
+    const stableTime = new Date(Date.now() - 1_000);
     fs.utimesSync(file, stableTime, stableTime);
     const pkg = prepare().package as { id: string; ref: Extract<WorkPackageInput, { action: 'submit' }>['ref'] };
     const realRead = fs.readSync;
     // A filesystem can report the same change timestamp for both snapshots.
     // Content identity must reject the rewrite without relying on clock resolution.
     const realStat = fs.fstatSync;
+    const originalStat = fs.statSync(file, { bigint: true });
     vi.spyOn(fs, 'fstatSync').mockImplementation(((...args: Parameters<typeof fs.fstatSync>) => {
       const stat = realStat(...args);
-      return Object.assign(stat, { ctimeMs: 0, ctime: new Date(0), ...('ctimeNs' in stat ? { ctimeNs: 0n } : {}) });
+      // Freeze ctime to the value captured by the discovery pass. The mock is
+      // installed after `prepare()` creates the package, so returning zero here
+      // would make the reread fail on metadata before it reaches the content
+      // hash race this test is meant to exercise.
+      const frozen = Object.assign(stat, {
+        ctimeMs: Number(originalStat.ctimeNs / 1_000_000n),
+        ctime: new Date(Number(originalStat.ctimeNs / 1_000_000n)),
+        ...('ctimeNs' in stat ? { ctimeNs: originalStat.ctimeNs } : {}),
+      });
+      return frozen;
     }) as typeof fs.fstatSync);
     let reads = 0;
     vi.spyOn(fs, 'readSync').mockImplementation((...args) => {
