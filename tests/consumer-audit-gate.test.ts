@@ -116,6 +116,21 @@ describe('Feature: the consumer audit cannot pass on an empty tree', () => {
       ].join('\n'),
     );
     fs.chmodSync(path.join(binDir, 'npm'), 0o755);
+    fs.writeFileSync(
+      path.join(binDir, 'npm.cmd'),
+      [
+        '@echo off',
+        '> "%MEMESH_TEST_CACHE_MARKER%" echo %npm_config_cache%',
+        'if "%~1"=="pack" (',
+        '  type nul > fake-package-0.0.0.tgz',
+        '  echo fake-package-0.0.0.tgz',
+        '  exit /b 0',
+        ')',
+        'if "%~1"=="audit" echo found 0 vulnerabilities',
+        'exit /b 0',
+        '',
+      ].join('\r\n'),
+    );
     const res = spawnSync('node', ['scripts/check-consumer-audit.mjs'], {
       cwd: repoRoot,
       env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH}`, MEMESH_TEST_CACHE_MARKER: marker },
@@ -132,6 +147,15 @@ describe('Feature: the consumer audit cannot pass on an empty tree', () => {
       ['#!/bin/sh', 'if [ "$1" = "pack" ]; then sleep 2; fi', 'exit 0', ''].join('\n'),
     );
     fs.chmodSync(path.join(binDir, 'npm'), 0o755);
+    fs.writeFileSync(
+      path.join(binDir, 'npm.cmd'),
+      [
+        '@echo off',
+        'if "%~1"=="pack" powershell -NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 2000"',
+        'exit /b 0',
+        '',
+      ].join('\r\n'),
+    );
     const res = spawnSync('node', ['scripts/check-consumer-audit.mjs'], {
       cwd: repoRoot,
       env: {
