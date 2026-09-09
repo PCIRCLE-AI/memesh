@@ -514,6 +514,16 @@ echo "==> Installing runtime deps (this may take a minute)..."
   exit 1
 }
 
+# Validate the exact staged plugin before moving it into the live cache. The
+# host registry may load hooks immediately after the swap; a manifest that
+# names a missing script would otherwise surface as a frightening `127` in the
+# user's next session. This check is source/artifact integrity only and never
+# mutates the live cache or registry.
+if ! node "$STAGE_PATH/scripts/check-plugin-hook-artifact.mjs" --root "$STAGE_PATH" --skip-pack; then
+  echo "ERROR: staged plugin hook integrity check failed — the live cache at $NEW_INSTALL_PATH was not touched" >&2
+  exit 1
+fi
+
 # ─── 5. Swap the staged copy in ───────────────────────────────────────────
 if [ -e "$NEW_INSTALL_PATH" ] || [ -L "$NEW_INSTALL_PATH" ]; then
   HAD_LIVE_CACHE=1

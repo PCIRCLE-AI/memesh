@@ -97,6 +97,11 @@
       "bytes": 48742
     },
     {
+      "path": "scripts/hooks/auto-update-runner.mjs",
+      "sha256": "6435dbe0d142f52349da0c2ef8f82c455935be506a1b9e78f09f117c776d02b7",
+      "bytes": 7347
+    },
+    {
       "path": "scripts/hooks/decision-nudge.js",
       "sha256": "424bf5cd4f68cb55e441a5aed1db78b262df2a5ef4a7e60a56db2f9d3f103d5d",
       "bytes": 7391

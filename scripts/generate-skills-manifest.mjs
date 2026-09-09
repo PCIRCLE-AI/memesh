@@ -15,7 +15,7 @@
 //
 // What's covered:
 //   - skills/**/SKILL.md           (loaded as Claude system prompt)
-//   - scripts/hooks/*.js           (run in user's Claude Code process)
+//   - scripts/hooks/*.{js,mjs}     (run in user's Claude Code process)
 //   - hooks/hooks.json             (declares which hooks are active)
 //   - .claude-plugin/mcp.json, .claude-plugin/plugin.json,
 //     .codex-plugin/mcp.json, .codex-plugin/plugin.json
@@ -78,8 +78,9 @@ const targets = [];
 // Skills — every file under skills/
 targets.push(...await walk(join(repoRoot, 'skills'), true));
 
-// Hooks — every .js under scripts/hooks
-targets.push(...(await walk(join(repoRoot, 'scripts', 'hooks'), true)).filter(p => p.endsWith('.js')));
+// Hooks — every JavaScript hook runtime, including the detached `.mjs`
+// auto-update runner selected by `_shared.js`.
+targets.push(...(await walk(join(repoRoot, 'scripts', 'hooks'), true)).filter(p => p.endsWith('.js') || p.endsWith('.mjs')));
 
 // Single-file artefacts (declarative wiring read by Claude Code itself).
 //
