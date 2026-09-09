@@ -2,6 +2,16 @@
 
 All notable changes to MeMesh are documented here.
 
+## [4.9.2] — 2026-09-09
+
+### Fixed
+
+- **First-use startup no longer races database initialization.** The detached
+  post-banner status refresh now waits until the user's memory database exists,
+  avoiding a partial-schema read during the same startup that initializes a new
+  installation. The first-use update consent prompt remains visible and
+  session-scoped.
+
 ## [4.9.1] — 2026-09-09
 
 ### Fixed
