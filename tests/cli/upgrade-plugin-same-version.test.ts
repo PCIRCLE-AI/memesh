@@ -228,6 +228,26 @@ function writeRegistry(entry: Record<string, unknown>): void {
   fs.writeFileSync(registry, JSON.stringify({ plugins: { 'memesh@pcircle-memesh': [entry] } }, null, 4));
 }
 
+function commitWiredMarketplace({ missingHook = false, missingServer = false } = {}): void {
+  fs.mkdirSync(path.join(marketplace, 'hooks'), { recursive: true });
+  fs.mkdirSync(path.join(marketplace, 'scripts', 'hooks'), { recursive: true });
+  fs.mkdirSync(path.join(marketplace, '.claude-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(marketplace, '.codex-plugin'), { recursive: true });
+  fs.mkdirSync(path.join(marketplace, 'dist', 'mcp'), { recursive: true });
+  fs.writeFileSync(path.join(marketplace, 'hooks', 'hooks.json'), JSON.stringify({ hooks: {
+    PreCompact: [{ hooks: [{ type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.js' }] }],
+  } }));
+  if (!missingHook) fs.writeFileSync(path.join(marketplace, 'scripts', 'hooks', 'pre-compact.js'), '');
+  if (!missingServer) fs.writeFileSync(path.join(marketplace, 'dist', 'mcp', 'server.js'), '');
+  fs.writeFileSync(path.join(marketplace, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'memesh', version: '4.8.2', mcpServers: './.claude-plugin/mcp.json' }));
+  fs.writeFileSync(path.join(marketplace, '.codex-plugin', 'plugin.json'), JSON.stringify({ name: 'memesh', version: '4.8.2', mcpServers: './.codex-plugin/mcp.json' }));
+  fs.writeFileSync(path.join(marketplace, '.claude-plugin', 'mcp.json'), JSON.stringify({ mcpServers: { memesh: { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js'] } } }));
+  fs.writeFileSync(path.join(marketplace, '.codex-plugin', 'mcp.json'), JSON.stringify({ mcpServers: { memesh: { command: 'node', args: ['./dist/mcp/server.js'] } } }));
+  git(marketplace, 'add', '-A');
+  git(marketplace, 'commit', '-q', '-m', 'test: wired plugin fixture');
+  git(marketplace, 'push', '-q', 'origin', 'main');
+}
+
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-upgrade-sha-'));
   const origin = path.join(home, 'origin.git');
@@ -260,6 +280,50 @@ describe('upgrade-plugin.sh: config-root preflight', () => {
 });
 
 describe('upgrade-plugin.sh: same version, different commit', () => {
+  posixOnly('valid wired plugin stage invokes the current checker before swap', () => {
+    commitWiredMarketplace();
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    fs.writeFileSync(path.join(live, 'LIVE-MARKER.txt'), 'old cache remains replaceable\n');
+    const headSha = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: headSha.slice(0, -1) + (headSha.endsWith('0') ? '1' : '0') });
+
+    const r = runScript();
+    expect(r.exitCode, r.stderr).toBe(0);
+    expect(fs.existsSync(path.join(live, 'scripts/hooks/pre-compact.js'))).toBe(true);
+    expect(fs.existsSync(path.join(live, 'dist/mcp/server.js'))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(registry, 'utf8')).plugins['memesh@pcircle-memesh'][0].gitCommitSha).toBe(headSha);
+  });
+
+  posixOnly('wired plugin with a missing hook fails before touching cache or registry', () => {
+    commitWiredMarketplace({ missingHook: true });
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    fs.writeFileSync(path.join(live, 'LIVE-MARKER.txt'), 'must survive integrity failure\n');
+    const headSha = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: headSha.slice(0, -1) + (headSha.endsWith('0') ? '1' : '0') });
+    const registryBefore = fs.readFileSync(registry, 'utf8');
+
+    const r = runScript();
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr).toContain('staged plugin artifact integrity check failed');
+    expect(fs.readFileSync(path.join(live, 'LIVE-MARKER.txt'), 'utf8')).toContain('must survive');
+    expect(fs.readFileSync(registry, 'utf8')).toBe(registryBefore);
+  });
+
+  posixOnly('wired plugin with a missing MCP entrypoint fails before swap', () => {
+    commitWiredMarketplace({ missingServer: true });
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    fs.writeFileSync(path.join(live, 'LIVE-MARKER.txt'), 'must survive MCP integrity failure\n');
+    const headSha = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: headSha.slice(0, -1) + (headSha.endsWith('0') ? '1' : '0') });
+    const registryBefore = fs.readFileSync(registry, 'utf8');
+
+    const r = runScript();
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr).toContain('staged plugin artifact integrity check failed');
+    expect(fs.readFileSync(path.join(live, 'LIVE-MARKER.txt'), 'utf8')).toContain('must survive');
+    expect(fs.readFileSync(registry, 'utf8')).toBe(registryBefore);
+  });
+
   posixOnly('refreshes the cache in place and records the marketplace commit', () => {
     const bumpSha = git(marketplace, 'rev-parse', 'HEAD');
     writeRegistry({ installPath: path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2'), version: '4.8.2', gitCommitSha: bumpSha });
