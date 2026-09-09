@@ -98,6 +98,33 @@ describe('Feature: the consumer audit cannot pass on an empty tree', () => {
     expect(res.status).not.toBe(0);
     expect(`${res.stdout}${res.stderr}`).toMatch(/did not install|nothing was audited/i);
   });
+
+  it('uses a private npm cache instead of inheriting the caller cache', () => {
+    const marker = path.join(binDir, 'npm-cache-seen');
+    fs.writeFileSync(
+      path.join(binDir, 'npm'),
+      [
+        '#!/bin/sh',
+        'printf "%s" "$npm_config_cache" > "$MEMESH_TEST_CACHE_MARKER"',
+        'case "$1" in',
+        '  pack) : > "fake-package-0.0.0.tgz"; echo "fake-package-0.0.0.tgz"; exit 0;;',
+        '  install) exit 0;;',
+        '  audit) echo "found 0 vulnerabilities"; exit 0;;',
+        '  *) exit 0;;',
+        'esac',
+        '',
+      ].join('\n'),
+    );
+    fs.chmodSync(path.join(binDir, 'npm'), 0o755);
+    const res = spawnSync('node', ['scripts/check-consumer-audit.mjs'], {
+      cwd: repoRoot,
+      env: { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH}`, MEMESH_TEST_CACHE_MARKER: marker },
+      encoding: 'utf8',
+      timeout: 120000,
+    });
+    expect(res.status).not.toBe(0); // fake install is still intentionally rejected
+    expect(fs.readFileSync(marker, 'utf8')).toMatch(/memesh-consumer-npm-cache-/);
+  });
 });
 
 describe('Feature: the only non-literal argument is checked, not trusted', () => {

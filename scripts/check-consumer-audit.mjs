@@ -29,6 +29,18 @@ const AUDIT_LEVEL = 'high';
 const repoRoot = process.cwd();
 
 let workDir;
+let npmCacheDir;
+
+function npmOptions(options = {}) {
+  return {
+    ...options,
+    env: {
+      ...process.env,
+      ...(options.env ?? {}),
+      npm_config_cache: npmCacheDir,
+    },
+  };
+}
 
 /**
  * `process.exit()` does NOT run a pending `finally`. Every exit path below is a
@@ -41,6 +53,10 @@ function cleanup() {
     fs.rmSync(workDir, { recursive: true, force: true });
     workDir = undefined;
   }
+  if (npmCacheDir) {
+    fs.rmSync(npmCacheDir, { recursive: true, force: true });
+    npmCacheDir = undefined;
+  }
 }
 
 /** Exit, having actually cleaned up. */
@@ -50,9 +66,14 @@ function exitWith(code) {
 }
 
 try {
+  // Never inherit a maintainer's global npm cache. It may be root-owned (or
+  // contain stale metadata), turning a release gate into an opaque exit 255
+  // before it reaches the consumer install/audit it claims to measure.
+  npmCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-consumer-npm-cache-'));
   const packOut = npmSync(['pack', '--silent'], {
     cwd: repoRoot,
     encoding: 'utf8',
+    ...npmOptions(),
   }).trim();
   // Split on CRLF too — npm's stdout on Windows ends lines with \r\n, and a
   // trailing \r would corrupt both the path join and the validation below.
@@ -76,11 +97,11 @@ try {
   fs.copyFileSync(tarballPath, path.join(workDir, tarball));
   fs.unlinkSync(tarballPath);
 
-  npmSync(['init', '-y'], { cwd: workDir, stdio: 'ignore' });
-  npmSync(['install', '--omit=dev', '--ignore-scripts', `./${tarball}`], {
+  npmSync(['init', '-y'], npmOptions({ cwd: workDir, stdio: 'ignore' }));
+  npmSync(['install', '--omit=dev', '--ignore-scripts', `./${tarball}`], npmOptions({
     cwd: workDir,
     stdio: 'ignore',
-  });
+  }));
 
   // Prove the install actually produced a tree. Auditing an empty directory
   // reports zero vulnerabilities, which would make this gate pass by doing
@@ -94,10 +115,10 @@ try {
   let auditOut = '';
   let clean = true;
   try {
-    auditOut = npmSync(['audit', '--omit=dev', `--audit-level=${AUDIT_LEVEL}`], {
+    auditOut = npmSync(['audit', '--omit=dev', `--audit-level=${AUDIT_LEVEL}`], npmOptions({
       cwd: workDir,
       encoding: 'utf8',
-    });
+    }));
   } catch (err) {
     clean = false;
     auditOut = `${err.stdout ?? ''}${err.stderr ?? ''}`;
