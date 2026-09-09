@@ -27,6 +27,7 @@ import { npmSync, assertSafeShellArg } from './lib/npm-bin.mjs';
  */
 const AUDIT_LEVEL = 'high';
 const repoRoot = process.cwd();
+const npmTimeoutMs = 180_000;
 
 let workDir;
 let npmCacheDir;
@@ -34,6 +35,8 @@ let npmCacheDir;
 function npmOptions(options = {}) {
   return {
     ...options,
+    timeout: options.timeout ?? npmTimeoutMs,
+    killSignal: options.killSignal ?? 'SIGTERM',
     env: {
       ...process.env,
       ...(options.env ?? {}),
