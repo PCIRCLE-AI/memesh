@@ -2125,7 +2125,7 @@ async function runCodexSessionAutoRegistration(journey) {
   for (const sessionId of [threadId, secondThreadId]) {
     await journey.terminateCodexDetachedCompanion(sessionId);
     await journey.until(
-      `The automatic Codex session ${sessionId} remained live after all companions stopped`,
+      `The automatic Codex session ${sessionId} was still registered after its detached companion was terminated`,
       () => journey.sessionGone(sessionId),
       15_000,
     );

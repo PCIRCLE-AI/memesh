@@ -180,7 +180,7 @@ function main(argv) {
       process.exit(1);
     }
     if (result.artifact && !result.artifact.ok) {
-      for (const item of result.artifact.missing) console.error(`Hook target omitted from npm artifact: ${item.event} -> ${item.relative}`);
+      for (const item of result.artifact.missing) console.error(`Target omitted from npm artifact: ${item.event ?? item.kind} -> ${item.relative}`);
       process.exit(1);
     }
     console.log(`plugin artifact integrity: PASS (${result.targets.length} hook targets, ${result.plugin.targets.length} plugin/MCP targets${checkPack ? ', npm artifact checked' : ''})`);
@@ -200,11 +200,13 @@ function main(argv) {
  */
 function isEntrypoint(argv1) {
   if (!argv1) return false;
-  try {
-    return fs.realpathSync(fileURLToPath(import.meta.url)) === fs.realpathSync(path.resolve(argv1));
-  } catch {
-    return false;
-  }
+  const self = fileURLToPath(import.meta.url);
+  const given = path.resolve(argv1);
+  if (self === given) return true;
+  // A realpath failure must not become "not the entrypoint": that is exit 0
+  // with nothing checked, the fail-closed guard's caller only reads the exit
+  // code, and a staged plugin would swap in unverified. Let it throw.
+  return fs.realpathSync(self) === fs.realpathSync(given);
 }
 
 if (isEntrypoint(process.argv[1])) main(process.argv.slice(2));

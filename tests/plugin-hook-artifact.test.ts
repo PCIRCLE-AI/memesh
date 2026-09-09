@@ -93,6 +93,19 @@ describe('plugin hook artifact integrity', () => {
       ], { encoding: 'utf8', timeout: 60000 });
       expect(run.status, `${run.stdout}${run.stderr}`).toBe(0);
       expect(run.stdout).toMatch(/plugin artifact integrity: PASS/);
+
+      // Through a symlink, explicitly. The guard that decides whether main()
+      // runs compares import.meta.url (symlinks resolved by Node) with argv[1]
+      // (not resolved); on macOS os.tmpdir() is itself a symlink so the run
+      // above already crosses one, on Linux CI it is not, and the regression
+      // would pass there. A named symlink makes the pin hold on every OS.
+      const linkDir = path.join(packDir, 'linkdir');
+      fs.mkdirSync(linkDir);
+      const linked = path.join(linkDir, 'checker.mjs');
+      fs.symlinkSync(path.join(packageRoot, 'scripts', 'check-plugin-hook-artifact.mjs'), linked);
+      const viaLink = spawnSync(process.execPath, [linked, '--root', packageRoot, '--skip-pack'], { encoding: 'utf8', timeout: 60000 });
+      expect(viaLink.status, `${viaLink.stdout}${viaLink.stderr}`).toBe(0);
+      expect(viaLink.stdout).toMatch(/plugin artifact integrity: PASS/);
     } finally {
       fs.rmSync(packDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
