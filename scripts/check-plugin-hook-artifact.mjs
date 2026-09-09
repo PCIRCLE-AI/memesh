@@ -3,8 +3,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { npmSync } from './lib/npm-bin.mjs';
 
 export const CLAUDE_PLUGIN_ROOT_PREFIX = '${CLAUDE_PLUGIN_ROOT}/';
 
@@ -122,24 +122,29 @@ export function validateArtifactPaths(targets, files) {
 
 function packFiles(root) {
   const npmCache = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-pack-cache-'));
-  let packed;
   try {
-    packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+    const stdout = npmSync(['pack', '--dry-run', '--json', '--ignore-scripts'], {
       cwd: root,
       encoding: 'utf8',
       env: { ...process.env, npm_config_cache: npmCache },
     });
+    let report;
+    try { report = JSON.parse(String(stdout)); } catch { throw new Error('npm pack --dry-run did not return valid JSON'); }
+    const entry = Array.isArray(report) ? report[0] : report;
+    if (!entry || !Array.isArray(entry.files)) throw new Error('npm pack --dry-run returned no file list');
+    return entry.files;
+  } catch (error) {
+    if (error instanceof Error && /npm pack --dry-run (?:did not return|returned no)/.test(error.message)) throw error;
+    const record = error && typeof error === 'object' ? /** @type {Record<string, unknown>} */ (error) : {};
+    const status = typeof record.status === 'number' ? record.status : 'unknown';
+    const stderr = typeof record.stderr === 'string' ? record.stderr.trim() : '';
+    throw new Error(
+      `npm pack --dry-run failed (exit ${status}): ${stderr || (error instanceof Error ? error.message : String(error))}`,
+      { cause: error },
+    );
   } finally {
     fs.rmSync(npmCache, { recursive: true, force: true });
   }
-  if (packed.status !== 0) {
-    throw new Error(`npm pack --dry-run failed (exit ${packed.status ?? 'unknown'}): ${(packed.stderr || '').trim()}`);
-  }
-  let report;
-  try { report = JSON.parse(packed.stdout); } catch { throw new Error('npm pack --dry-run did not return valid JSON'); }
-  const entry = Array.isArray(report) ? report[0] : report;
-  if (!entry || !Array.isArray(entry.files)) throw new Error('npm pack --dry-run returned no file list');
-  return entry.files;
 }
 
 export function checkPluginHookArtifact(root, { checkPack = true } = {}) {
