@@ -125,6 +125,26 @@ describe('Feature: the consumer audit cannot pass on an empty tree', () => {
     expect(res.status).not.toBe(0); // fake install is still intentionally rejected
     expect(fs.readFileSync(marker, 'utf8')).toMatch(/memesh-consumer-npm-cache-/);
   });
+
+  it('terminates a hung npm command and reports a bounded failure', () => {
+    fs.writeFileSync(
+      path.join(binDir, 'npm'),
+      ['#!/bin/sh', 'if [ "$1" = "pack" ]; then sleep 2; fi', 'exit 0', ''].join('\n'),
+    );
+    fs.chmodSync(path.join(binDir, 'npm'), 0o755);
+    const res = spawnSync('node', ['scripts/check-consumer-audit.mjs'], {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        PATH: `${binDir}${path.delimiter}${process.env.PATH}`,
+        MEMESH_CONSUMER_AUDIT_TIMEOUT_MS: '50',
+      },
+      encoding: 'utf8',
+      timeout: 120000,
+    });
+    expect(res.status).not.toBe(0);
+    expect(`${res.stdout}${res.stderr}`).toMatch(/timed out|ETIMEDOUT/i);
+  });
 });
 
 describe('Feature: the only non-literal argument is checked, not trusted', () => {

@@ -27,7 +27,10 @@ import { npmSync, assertSafeShellArg } from './lib/npm-bin.mjs';
  */
 const AUDIT_LEVEL = 'high';
 const repoRoot = process.cwd();
-const npmTimeoutMs = 180_000;
+const configuredTimeout = Number(process.env.MEMESH_CONSUMER_AUDIT_TIMEOUT_MS);
+const npmTimeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout > 0
+  ? configuredTimeout
+  : 180_000;
 
 let workDir;
 let npmCacheDir;
@@ -138,6 +141,10 @@ try {
       `  \`overrides\` only at the install root, so they do not reach consumers.\n`
   );
   console.error(auditOut);
+  exitWith(1);
+} catch (error) {
+  const timedOut = error?.code === 'ETIMEDOUT' || error?.signal === 'SIGTERM';
+  console.error(`✗ consumer audit could not complete${timedOut ? ' (npm command timed out)' : ''}: ${error instanceof Error ? error.message : String(error)}`);
   exitWith(1);
 } finally {
   cleanup();

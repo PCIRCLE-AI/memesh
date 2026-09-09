@@ -91,6 +91,11 @@ MARKETPLACE_DIR="$CLAUDE_CONFIG_ROOT/plugins/marketplaces/pcircle-memesh"
 INSTALL_REGISTRY="$CLAUDE_CONFIG_ROOT/plugins/installed_plugins.json"
 CACHE_ROOT="$CLAUDE_CONFIG_ROOT/plugins/cache/pcircle-memesh/memesh"
 LOCK_DIR="$CACHE_ROOT.lock"
+# Use the checker shipped beside this upgrade script, not a file newly staged
+# from the target commit. This keeps upgrades from legacy marketplace commits
+# testable and prevents a target archive from disabling its own validation.
+UPGRADE_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ARTIFACT_CHECKER="$UPGRADE_SCRIPT_DIR/check-plugin-hook-artifact.mjs"
 
 # ─── Pre-flight ────────────────────────────────────────────────────────────
 if [ ! -d "$MARKETPLACE_DIR" ]; then
@@ -514,14 +519,23 @@ echo "==> Installing runtime deps (this may take a minute)..."
   exit 1
 }
 
-# Validate the exact staged plugin before moving it into the live cache. The
+# Validate a real staged plugin before moving it into the live cache. The
 # host registry may load hooks immediately after the swap; a manifest that
 # names a missing script would otherwise surface as a frightening `127` in the
-# user's next session. This check is source/artifact integrity only and never
-# mutates the live cache or registry.
-if ! node "$STAGE_PATH/scripts/check-plugin-hook-artifact.mjs" --root "$STAGE_PATH" --skip-pack; then
-  echo "ERROR: staged plugin hook integrity check failed — the live cache at $NEW_INSTALL_PATH was not touched" >&2
-  exit 1
+# user's next session. Tiny legacy marketplace fixtures (and genuinely old
+# plugin archives) have no plugin wiring to validate, so preserve their
+# historical cache-refresh behavior; once wiring is present, the checker is
+# mandatory and fail-closed. The checker itself comes from this script's
+# installed release, never from the target archive being validated.
+if [ -f "$STAGE_PATH/hooks/hooks.json" ] || [ -f "$STAGE_PATH/.claude-plugin/plugin.json" ] || [ -f "$STAGE_PATH/.codex-plugin/plugin.json" ]; then
+  if [ ! -f "$PLUGIN_ARTIFACT_CHECKER" ]; then
+    echo "ERROR: plugin artifact checker is missing beside the upgrade script — the live cache at $NEW_INSTALL_PATH was not touched" >&2
+    exit 1
+  fi
+  if ! node "$PLUGIN_ARTIFACT_CHECKER" --root "$STAGE_PATH" --skip-pack; then
+    echo "ERROR: staged plugin artifact integrity check failed — the live cache at $NEW_INSTALL_PATH was not touched" >&2
+    exit 1
+  fi
 fi
 
 # ─── 5. Swap the staged copy in ───────────────────────────────────────────
