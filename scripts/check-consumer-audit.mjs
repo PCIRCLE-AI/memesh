@@ -41,11 +41,28 @@ function npmOptions(options = {}) {
     timeout: options.timeout ?? npmTimeoutMs,
     killSignal: options.killSignal ?? 'SIGTERM',
     env: {
-      ...process.env,
-      ...(options.env ?? {}),
+      ...withoutNpmCache(process.env),
+      ...withoutNpmCache(options.env ?? {}),
       npm_config_cache: npmCacheDir,
     },
   };
+}
+
+/**
+ * Windows environment names are case-insensitive, and Node's child_process
+ * resolves a duplicate that differs only in case by keeping the
+ * lexicographically first key (`N` sorts before `n`). Vitest deliberately adds
+ * an upper-cased copy of every variable to its Windows workers, so under the
+ * suite `process.env` carries `NPM_CONFIG_CACHE` — the GitHub runner's
+ * `C:\npm\cache` — and `{ ...process.env, npm_config_cache }` handed THAT to
+ * npm while the private directory sat unused. Measured on windows-latest:
+ * the fake npm in `tests/consumer-audit-gate.test.ts` reported the runner
+ * cache. Drop every spelling before setting ours.
+ */
+function withoutNpmCache(env) {
+  return Object.fromEntries(
+    Object.entries(env).filter(([key]) => key.toLowerCase() !== 'npm_config_cache'),
+  );
 }
 
 /**
