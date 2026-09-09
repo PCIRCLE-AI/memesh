@@ -60,6 +60,9 @@ describe('Feature: per-session update consent', () => {
       input: input(session_id), env, encoding: 'utf8',
     }).trim());
     expect(String(runStart('decline-session').systemMessage)).toContain('cannot be upgraded automatically');
+    // A first-use SessionStart must not let its detached update refresh create
+    // a partially migrated database behind the next hook invocation.
+    expect(existsSync(dbPath)).toBe(false);
 
     const userPrompt = path.resolve('scripts/hooks/user-prompt-intent.js');
     execFileSync('node', [userPrompt], {
@@ -67,6 +70,7 @@ describe('Feature: per-session update consent', () => {
     });
     expect(String(runStart('decline-session').systemMessage)).not.toContain('Reply “Upgrade”');
     expect(String(runStart('new-session').systemMessage)).toContain('cannot be upgraded automatically');
+    expect(existsSync(dbPath)).toBe(false);
     expect(existsSync(path.join(dir, 'update-consent'))).toBe(false);
 
     const previousDir = process.env.MEMESH_DIR;

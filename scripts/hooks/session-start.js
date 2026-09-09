@@ -545,6 +545,15 @@ function runPostBannerUpdateTasks() {
   if (__postBannerRan) return;
   __postBannerRan = true;
   try {
+    // A first-use session has no database yet. Starting the detached
+    // `memesh status` refresh in that state makes status create/migrate the
+    // database while the next SessionStart may already be opening it
+    // read-only. SQLite can expose that window as a partially-created schema
+    // (for example, `entities` exists while `tags` does not), turning a
+    // harmless update notice into "memories not loaded". The next session
+    // after the first capture will refresh the cache once the database is
+    // fully established; consent itself was already emitted above.
+    if (!existsSync(dbPath)) return;
     let installedVersion = null;
     try {
       const pluginRoot = resolvePluginRoot(import.meta.url);
