@@ -29,12 +29,16 @@ function git(cwd: string, ...args: string[]): string {
   }).trim();
 }
 
-function runScript(envOverride: Record<string, string> = {}): { stdout: string; stderr: string; exitCode: number } {
-  const result = spawnSync('bash', [SCRIPT], {
+function runScriptAt(scriptPath: string, envOverride: Record<string, string> = {}): { stdout: string; stderr: string; exitCode: number } {
+  const result = spawnSync('bash', [scriptPath], {
     encoding: 'utf8',
     env: { ...process.env, HOME: home, ...envOverride },
   });
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', exitCode: result.status ?? 1 };
+}
+
+function runScript(envOverride: Record<string, string> = {}): { stdout: string; stderr: string; exitCode: number } {
+  return runScriptAt(SCRIPT, envOverride);
 }
 
 function runScriptWithoutHome(): { stdout: string; stderr: string; exitCode: number } {
@@ -320,6 +324,25 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
     const r = runScript();
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr).toContain('staged plugin artifact integrity check failed');
+    expect(fs.readFileSync(path.join(live, 'LIVE-MARKER.txt'), 'utf8')).toContain('must survive');
+    expect(fs.readFileSync(registry, 'utf8')).toBe(registryBefore);
+  });
+
+  posixOnly('wired plugin refuses to swap when the updater-side checker is absent', () => {
+    commitWiredMarketplace();
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    fs.writeFileSync(path.join(live, 'LIVE-MARKER.txt'), 'must survive missing checker\n');
+    const headSha = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: headSha.slice(0, -1) + (headSha.endsWith('0') ? '1' : '0') });
+    const registryBefore = fs.readFileSync(registry, 'utf8');
+    const copiedScriptDir = fs.mkdtempSync(path.join(home, 'copied-updater-'));
+    const copiedScript = path.join(copiedScriptDir, 'upgrade-plugin.sh');
+    fs.copyFileSync(SCRIPT, copiedScript);
+    fs.chmodSync(copiedScript, 0o755);
+
+    const r = runScriptAt(copiedScript);
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr).toContain('plugin artifact checker is missing beside the upgrade script');
     expect(fs.readFileSync(path.join(live, 'LIVE-MARKER.txt'), 'utf8')).toContain('must survive');
     expect(fs.readFileSync(registry, 'utf8')).toBe(registryBefore);
   });
