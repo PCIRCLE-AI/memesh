@@ -7,10 +7,11 @@ All notable changes to MeMesh are documented here.
 ### Fixed
 
 - **Plugin upgrades now fail closed before cache replacement when the staged
-  artifact is incomplete.** The release gate validates every hook, plugin
-  manifest, MCP entrypoint, and npm-packed target before an upgrade can swap
-  the live cache; missing or swapped targets leave the existing cache and
-  registry unchanged.
+  artifact is incomplete.** Before an upgrade can swap the live cache, the
+  updater validates every hook, plugin manifest, and MCP entrypoint in the
+  staged copy; missing or swapped targets leave the existing cache and
+  registry unchanged. The release gate runs the same checker and additionally
+  confirms every target is present in the npm-packed artifact.
 - **Release audits no longer inherit an unsafe or unbounded npm cache.** The
   consumer audit uses a private temporary cache and bounded subprocess
   lifetimes, reporting a controlled failure instead of hanging or being
