@@ -555,6 +555,11 @@
       "class": "SAFE",
       "reason": "set -uo pipefail at file top (line 31) preserves the left command's verdict; printf cannot meaningfully fail on a literal string, so the `if printf ... | grep -qE ...; then` reads grep's own match result -- the intended verdict, not a swallowed one.",
       "triaged": "2026-09-05"
+    },
+    "C6 tests/plugin-hook-artifact.test.ts": {
+      "class": "WIRING-PIN",
+      "reason": "The test reads the upgrade script only to pin that artifact validation occurs before the live-cache swap; the executable behavior is separately exercised by the checker negative fixtures and the release gate.",
+      "triaged": "2026-09-09"
     }
   }
 }
