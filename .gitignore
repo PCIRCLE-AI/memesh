@@ -93,6 +93,7 @@ landing-page/
 # REPRODUCE.md tells people to download a dataset into.
 benchmarks/*
 !benchmarks/longmemeval/
+!benchmarks/token/
 experiments/
 .archive/
 MIGRATION.md

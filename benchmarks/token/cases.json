@@ -1,0 +1,108 @@
+{
+  "schema": "memesh-token-benchmark-cases/1",
+  "note": "Every case carries ONE ground_truth block that both arms seed identically; an arm never sees a different corpus. Corpus text is synthetic.",
+  "cases": [
+    {
+      "id": "TC-01-session-start",
+      "category": "session-start-helpful",
+      "ground_truth": { "memories": [{ "name": "decision-db-driver", "type": "decision", "observations": ["Use node:sqlite; better-sqlite3 was removed for native-binding drift."] }] },
+      "task_prompt": "Which SQLite driver does this project use, and why was the previous one removed?",
+      "expected_answer": { "must_contain": ["node:sqlite", "native"], "abstain": false },
+      "correct_abstention": false,
+      "failure_class_if_wrong": "wrong-answer",
+      "allowed_tools": ["recall"],
+      "time_limit_s": 120
+    },
+    {
+      "id": "TC-02-explicit-recall",
+      "category": "explicit-recall",
+      "ground_truth": { "memories": [{ "name": "pattern-dedup-threshold", "type": "pattern", "observations": ["Dedup similarity threshold is 0.44, measured on the real graph (was 0.55)."] }] },
+      "task_prompt": "Recall the dedup similarity threshold and report the number.",
+      "expected_answer": { "must_contain": ["0.44"], "abstain": false },
+      "correct_abstention": false,
+      "failure_class_if_wrong": "wrong-answer",
+      "allowed_tools": ["recall"],
+      "time_limit_s": 120
+    },
+    {
+      "id": "TC-03-no-relevant-memory",
+      "category": "no-relevant-memory",
+      "ground_truth": { "memories": [{ "name": "pattern-dedup-threshold", "type": "pattern", "observations": ["Dedup similarity threshold is 0.44."] }] },
+      "task_prompt": "What port does the project's Redis instance listen on?",
+      "expected_answer": { "must_contain": [], "abstain": true },
+      "correct_abstention": true,
+      "failure_class_if_wrong": "unsupported-claim",
+      "allowed_tools": ["recall"],
+      "time_limit_s": 120
+    },
+    {
+      "id": "TC-04-stale-answer",
+      "category": "stale-or-unsupported-answer",
+      "ground_truth": {
+        "memories": [
+          { "name": "decision-sqlite-driver-2025", "type": "decision", "archived": true, "observations": ["Use better-sqlite3 for SQLite access."] },
+          { "name": "decision-sqlite-driver-2026", "type": "decision", "supersedes": "decision-sqlite-driver-2025", "observations": ["Use node:sqlite; better-sqlite3 removed."] }
+        ]
+      },
+      "task_prompt": "Which SQLite driver should new code use?",
+      "expected_answer": { "must_contain": ["node:sqlite"], "must_not_contain": ["better-sqlite3 for SQLite access"], "abstain": false },
+      "correct_abstention": false,
+      "failure_class_if_wrong": "stale-answer-accepted",
+      "negative": true,
+      "allowed_tools": ["recall"],
+      "time_limit_s": 120
+    },
+    {
+      "id": "TC-05-degraded-search",
+      "category": "degraded-search",
+      "ground_truth": { "memories": [{ "name": "lesson-fts-contentless", "type": "lesson", "observations": ["entities_fts is contentless: delete with the exact indexed text or stale tokens stay."] }] },
+      "environment": { "vector_search": "disabled" },
+      "task_prompt": "What is the rule for deleting from the FTS index?",
+      "expected_answer": { "must_contain": ["exact"], "abstain": false },
+      "correct_abstention": false,
+      "failure_class_if_wrong": "wrong-answer",
+      "allowed_tools": ["recall"],
+      "time_limit_s": 120
+    },
+    {
+      "id": "TC-06-truncation",
+      "category": "window-or-output-truncation",
+      "ground_truth": { "memories": [{ "name": "reference-release-anchors", "type": "reference", "observations": ["Eight files must agree on the version: package.json, package-lock.json, plugin.json, marketplace.json, CHANGELOG, server.ts, cli.ts, skills-manifest.json."] }] },
+      "environment": { "output_budget_bytes": 512 },
+      "task_prompt": "List every file that must carry the release version.",
+      "expected_answer": { "must_contain": ["package-lock.json", "skills-manifest.json"], "abstain": false },
+      "correct_abstention": false,
+      "failure_class_if_wrong": "truncated-output",
+      "allowed_tools": ["recall"],
+      "time_limit_s": 120
+    },
+    {
+      "id": "TC-07-conflict",
+      "category": "conflict",
+      "ground_truth": {
+        "memories": [
+          { "name": "decision-port-a", "type": "decision", "observations": ["Dashboard serves on port 3737."] },
+          { "name": "decision-port-b", "type": "decision", "contradicts": "decision-port-a", "observations": ["Dashboard serves on port 4040."] }
+        ]
+      },
+      "task_prompt": "Which port does the dashboard serve on?",
+      "expected_answer": { "must_contain": ["conflict"], "abstain": true },
+      "correct_abstention": true,
+      "failure_class_if_wrong": "unsupported-claim",
+      "allowed_tools": ["recall"],
+      "time_limit_s": 120
+    },
+    {
+      "id": "TC-08-post-compact-lookup",
+      "category": "post-compact-exact-lookup",
+      "ground_truth": { "memories": [{ "name": "reference-audit-baseline-key", "type": "reference", "observations": ["scripts/audit/baseline.json entries are keyed by file:line; moving code re-keys them."] }] },
+      "environment": { "compact_before_task": true },
+      "task_prompt": "After context compaction, look up exactly how audit baseline entries are keyed.",
+      "expected_answer": { "must_contain": ["file:line"], "abstain": false },
+      "correct_abstention": false,
+      "failure_class_if_wrong": "wrong-answer",
+      "allowed_tools": ["recall"],
+      "time_limit_s": 120
+    }
+  ]
+}

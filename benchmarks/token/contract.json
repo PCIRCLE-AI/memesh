@@ -1,0 +1,61 @@
+{
+  "schema": "memesh-token-benchmark-contract/1",
+  "issue": 251,
+  "measurability": {
+    "verdict": "MEASURABLE",
+    "hosts": [
+      {
+        "host": "claude-code",
+        "usage_source": "session transcript ~/.claude/projects/<cwd-key>/<session>.jsonl, assistant records, message.usage",
+        "fields": ["input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens", "message.model", "requestId"],
+        "session_boundary": "one transcript file per session; one usage record per API request (requestId)",
+        "tool_definitions_itemised": false,
+        "caching": "prompt cache across sessions on the same account; context_tokens = input + cache_read + cache_creation",
+        "arm_attribution": "per request, by transcript file"
+      },
+      {
+        "host": "codex",
+        "usage_source": "session rollout ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl, event_msg token_count, info.last_token_usage",
+        "fields": ["input_tokens", "cached_input_tokens", "cache_write_input_tokens", "output_tokens", "reasoning_output_tokens", "turn_context.model"],
+        "session_boundary": "one rollout file per session; one token_count event per request",
+        "tool_definitions_itemised": false,
+        "caching": "input_tokens includes cached_input_tokens; context_tokens = input_tokens",
+        "arm_attribution": "per request, by rollout file"
+      }
+    ],
+    "forbidden_as_token_evidence": ["character counts", "serialized bytes", "tokenizer estimates", "costUSD without the usage fields it was computed from"]
+  },
+  "required_case_categories": [
+    "session-start-helpful",
+    "explicit-recall",
+    "no-relevant-memory",
+    "stale-or-unsupported-answer",
+    "degraded-search",
+    "window-or-output-truncation",
+    "conflict",
+    "post-compact-exact-lookup"
+  ],
+  "arms": {
+    "control": "packaged memesh with the current default recall output",
+    "treatment": "packaged memesh with the candidate output projection; same tools, same ground truth, same task prompt, same time limit"
+  },
+  "scoring": {
+    "dimensions": ["task_success", "unsupported_or_stale_error", "abstention", "input_tokens", "output_tokens", "context_tokens", "tool_calls", "fallbacks", "latency_ms"],
+    "rule": "each dimension is reported separately and never folded into a single score",
+    "failure_classes": ["wrong-answer", "stale-answer-accepted", "unsupported-claim", "missed-abstention", "over-abstention", "tool-error", "timeout", "truncated-output"]
+  },
+  "privacy": {
+    "corpus": "synthetic only — no owner secrets, no private transcripts, no real owner graph",
+    "ledgers": "numbers, identities and digests only — no prompt or completion text"
+  },
+  "run_manifest_required": ["source_sha", "artifact_digest", "corpus_digest", "host", "model", "usage_provenance"],
+  "statistics": {
+    "status": "pilot",
+    "paired_analysis": "paired difference per case (treatment − control), same case order in both arms",
+    "confidence_interval": 0.95,
+    "sample_size": null,
+    "repeats_per_case": null,
+    "minimum_meaningful_effect": null,
+    "freeze_rule": "sample_size, repeats_per_case and minimum_meaningful_effect are set once from the pilot variance and then status becomes frozen; official runs are refused while status is pilot; thresholds are never changed after an official result is seen"
+  }
+}
