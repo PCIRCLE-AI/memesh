@@ -133,8 +133,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "de1998df4fdbea58321f5c0c39a428123816a4764aae47ef53ae3d18fec7d6c2",
-      "bytes": 71212
+      "sha256": "21d77715cc24a64966a7ce83de79afe0e3f848b35b76bb0935b272ed2e810af3",
+      "bytes": 71626
     },
     {
       "path": "scripts/hooks/session-summary.js",

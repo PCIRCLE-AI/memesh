@@ -391,7 +391,7 @@ function buildUpdateConsentPrompt(sessionId, currentVersion, cache, channel) {
           ? '    Project-local install: run `npm install @pcircle/memesh@latest` in the project that installed it.'
           : '    Update it through the tool or package manager that installed MeMesh.';
     return {
-      system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. This installation cannot be upgraded automatically from this session.\n${action}`,
+      system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. This installation cannot be upgraded automatically from this session.\n${action}\n    Reply “Not now” to snooze this version (24h, then longer), or “Never ask again” to stop these checks.`,
       context: `MeMesh ${cache.latestVersion} is available for ${target}, but this channel has no safe in-session installer. Show the user the channel-specific update action and do not claim that an Upgrade reply will install it.`,
     };
   }
@@ -400,8 +400,8 @@ function buildUpdateConsentPrompt(sessionId, currentVersion, cache, channel) {
   // session notice has been claimed.
   if (!writeAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel, 'pending')) return null;
   return {
-    system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. Reply “Upgrade” to install it, or “Not now” to skip for this session.`,
-    context: `MeMesh update consent is pending for this session. Ask the user whether to upgrade from ${currentVersion} to ${cache.latestVersion} for the ${target}. Wait for an explicit Upgrade or Not now response; do not install without affirmative consent.`,
+    system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. Reply “Upgrade” to install it, “Not now” to snooze this version (24h, then longer), or “Never ask again” to stop these checks.`,
+    context: `MeMesh update consent is pending for this session. Ask the user whether to upgrade from ${currentVersion} to ${cache.latestVersion} for the ${target}. Wait for an explicit Upgrade, Not now, or Never ask again response; do not install without affirmative consent.`,
   };
 }
 
@@ -659,7 +659,7 @@ function captureTargetUnwritable() {
  * object on every empty/no-DB exit path so Claude Code's hook
  * contract holds.
  */
-function combineWithBanner(baseMessage) {
+function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
   let lines = [];
   try {
     const pluginRoot = resolvePluginRoot(import.meta.url);
@@ -673,7 +673,7 @@ function combineWithBanner(baseMessage) {
         lines = deprecation;
       } else if (notice.lines.length > 0) {
         lines = notice.lines;
-      } else if (notice.kind === 'UPGRADE_AVAILABLE') {
+      } else if (notice.kind === 'UPGRADE_AVAILABLE' && !skipUpdateBanner) {
         // Snoozed, disabled, failed or current: the resolver already said no.
         lines = buildUpdateAvailableBanner(
           installedVersion, cache, () => detectInstallChannelHook(pluginRoot));
@@ -773,7 +773,6 @@ process.stdin.on('end', async () => {
       // With no database there is nothing to recall either — the warning IS
       // the whole truth, and "memories will be created as you work" would
       // contradict it one line later.
-      const emptySummary = combineWithBanner(captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work');
       let consent = null;
       let consentVersion = null;
       let consentCache = null;
@@ -785,10 +784,15 @@ process.stdin.on('end', async () => {
         const channel = detectInstallChannelHook(pluginRoot);
         consent = buildUpdateConsentPrompt(data.session_id, consentVersion, consentCache, channel);
       } catch { /* best-effort */ }
-      // No consent prompt this session? The two non-prompt notices (a
-      // just-landed upgrade, a failed check) still belong on the first
-      // session of a fresh install — that is exactly when a user asks
-      // "did the upgrade take?" or "is this current?".
+      // The consent prompt IS the update message for this session; the
+      // routine "update available" banner must not repeat it one line later
+      // (the database path has had this rule since the notice was added; the
+      // no-database path printed both). Deprecation, a just-landed upgrade
+      // and a failed check still render through combineWithBanner.
+      const emptySummary = combineWithBanner(
+        captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work',
+        { skipUpdateBanner: consent !== null },
+      );
       output(consent ? `${consent.system}\n${emptySummary}` : emptySummary,
         consent ? `${consent.context}\n\n${workPackageGuidance}` : workPackageGuidance);
       if (consent) finalizeUpdatePromptClaim(data.session_id, consentVersion, consentCache?.latestVersion);

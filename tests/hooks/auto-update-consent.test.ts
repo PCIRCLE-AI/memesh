@@ -35,6 +35,10 @@ describe('Feature: per-session update consent', () => {
     expect(String(first.systemMessage)).toContain('cannot be upgraded automatically');
     expect(String(first.systemMessage)).toContain('git pull && npm install && npm run build');
     expect(String(first.systemMessage).match(/MeMesh 4\.10\.0 is available/g)).toHaveLength(1);
+    // One update message, in any wording: the routine "update available:" banner
+    // must not follow the consent prompt on the no-database path either.
+    expect(String(first.systemMessage).match(/available/g)).toHaveLength(1);
+    expect(String(first.systemMessage)).toContain('“Never ask again”');
     expect(String(first.hookSpecificOutput?.additionalContext)).toContain('no safe in-session installer');
     expect(String(first.hookSpecificOutput?.additionalContext)).not.toContain('Ask the user whether to upgrade');
 
