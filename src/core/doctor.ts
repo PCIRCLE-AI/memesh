@@ -27,7 +27,7 @@ import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
 import {
   captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends,
-  CAPTURE_HOOKS, HEARTBEAT_HOOKS, HOOK_OUTCOMES_FILENAME, SILENT_HOOK_MIN_RUNS,
+  FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, SILENT_HOOK_MIN_RUNS,
   type CaptureLivenessStatus, type HookLivenessSummary, type TypeTrend,
 } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
@@ -1469,9 +1469,9 @@ function inspectCaptureLiveness(
         ? (db.prepare('SELECT hook FROM hook_runs').all() as Array<{ hook: string }>).map((r) => r.hook)
         : [],
     );
-    // ONLY the three hooks that stamp hook_runs are FAIL-eligible; see
-    // HEARTBEAT_HOOKS for why the other five can never reach it.
-    neverRan = HEARTBEAT_HOOKS.filter((h) => !stamped.has(h));
+    // Only session-summary is FAIL-eligible; see FAIL_ELIGIBLE_HOOKS for why
+    // a hook whose trigger depends on user behaviour can never reach it.
+    neverRan = FAIL_ELIGIBLE_HOOKS.filter((h) => !stamped.has(h));
 
     const since = (db.prepare(
       "SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'",

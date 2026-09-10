@@ -119,15 +119,24 @@ export const CAPTURE_HOOKS = [
 ] as const;
 
 /**
- * The FAIL-eligible subset, and the reason it is a subset.
- *
- * Only these three stamp `hook_runs` (see `KNOWN_HOOKS` in doctor.ts) — the
- * other five have no heartbeat row BY DESIGN, so "no record AND no heartbeat"
- * is their permanent normal state and would FAIL them forever. A missing
- * record can only be read as death where a second, independent source agrees
- * it never ran.
+ * The hooks that stamp `hook_runs` (see `KNOWN_HOOKS` in doctor.ts). The
+ * other five have no heartbeat row BY DESIGN, so for them "no record AND no
+ * heartbeat" is a permanent normal state, not evidence of anything.
  */
 export const HEARTBEAT_HOOKS = ['post-commit', 'session-summary', 'pre-compact'] as const;
+
+/**
+ * The FAIL-eligible subset, and why it is ONE hook.
+ *
+ * A FAIL has to mean "this should have happened and did not". Only
+ * session-summary's trigger is guaranteed: every session ends. post-commit
+ * fires on a commit and pre-compact on a compaction, and a user who makes no
+ * commits through the agent for a fortnight is not broken — reading their
+ * silence as death would put a permanent unfixable red on an install that
+ * works. Their silence caps at the PASS_WITH_CONCERNS the run counts
+ * produce, which is the honest verdict: worth a look, not a diagnosis.
+ */
+export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
 
 /**
  * Grace period before "no records at all" is allowed to mean anything. On the
@@ -330,7 +339,7 @@ export function captureLivenessVerdict(input: CaptureLivenessInput): CaptureLive
     input.measuringHours > NEVER_RAN_GRACE_HOURS;
   const deadHooks = graceOver
     ? (input.neverRanHooks ?? []).filter(
-      (h) => (HEARTBEAT_HOOKS as readonly string[]).includes(h) && !withRecords.has(h),
+      (h) => (FAIL_ELIGIBLE_HOOKS as readonly string[]).includes(h) && !withRecords.has(h),
     ).sort()
     : [];
 

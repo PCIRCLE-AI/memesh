@@ -3,6 +3,7 @@ import { getConfigPath } from './config.js';
 import { openDatabase, closeDatabase, isDatabaseOpen } from '../db.js';
 import { getUpdateCheck } from './version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from './install-channel.js';
+import { type CaptureLivenessStatus, type HookLivenessSummary, type TypeTrend } from './capture-liveness.js';
 export type DoctorCheckStatus = 'pass' | 'warn' | 'fail';
 export type DoctorOverallStatus = 'PASS' | 'PASS_WITH_CONCERNS' | 'FAIL';
 export interface DoctorCheck {
@@ -19,6 +20,13 @@ export interface DoctorCheck {
 export interface DoctorResult {
     status: DoctorOverallStatus;
     checks: DoctorCheck[];
+    capture?: CaptureLivenessReport;
+}
+export interface CaptureLivenessReport {
+    status: CaptureLivenessStatus;
+    hooks: HookLivenessSummary[];
+    types: TypeTrend[];
+    neverRan: string[];
 }
 interface DoctorOptions {
     packageRoot: string;

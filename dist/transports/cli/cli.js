@@ -54449,6 +54449,163 @@ var init_capture_flag = __esm({
   }
 });
 
+// dist/core/capture-liveness.js
+function emptyOutcomeFile() {
+  return { version: HOOK_OUTCOMES_VERSION, hooks: {} };
+}
+function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
+  if (!raw)
+    return emptyOutcomeFile();
+  const hooks = {};
+  for (const line of raw.split("\n")) {
+    const record2 = parseHookOutcomeLine(line);
+    if (!record2)
+      continue;
+    const bucket = hooks[record2.hook] ?? (hooks[record2.hook] = []);
+    bucket.push(record2);
+    if (bucket.length > limit)
+      bucket.shift();
+  }
+  return { version: HOOK_OUTCOMES_VERSION, hooks };
+}
+function parseHookOutcomeLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed)
+    return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object")
+    return null;
+  const rec = parsed;
+  if (typeof rec.hook !== "string" || !rec.hook)
+    return null;
+  if (typeof rec.at !== "string")
+    return null;
+  if (rec.outcome !== "wrote" && rec.outcome !== "skipped" && rec.outcome !== "error")
+    return null;
+  const record2 = {
+    hook: rec.hook,
+    at: rec.at,
+    host: rec.host === "claude-code" || rec.host === "codex" ? rec.host : "unknown",
+    outcome: rec.outcome
+  };
+  if (typeof rec.reason === "string")
+    record2.reason = rec.reason;
+  if (typeof rec.entity === "string")
+    record2.entity = rec.entity;
+  if (typeof rec.session_id === "string")
+    record2.session_id = rec.session_id;
+  return record2;
+}
+function summarizeHookOutcomes(file2) {
+  const order = [...CAPTURE_HOOKS];
+  const names = Object.keys(file2.hooks).sort((a, b) => {
+    const ai = order.indexOf(a);
+    const bi = order.indexOf(b);
+    if (ai !== bi)
+      return (ai === -1 ? order.length : ai) - (bi === -1 ? order.length : bi);
+    return a.localeCompare(b);
+  });
+  return names.map((hook) => summarizeOne(hook, file2.hooks[hook] ?? []));
+}
+function summarizeOne(hook, records) {
+  let writes = 0;
+  let skips = 0;
+  let errors = 0;
+  let lastRunAt = null;
+  let lastWriteAt = null;
+  let lastEntity = null;
+  let lastSkipReason = null;
+  const skipCounts = /* @__PURE__ */ new Map();
+  const hosts = /* @__PURE__ */ new Set();
+  for (const r of records) {
+    hosts.add(r.host);
+    if (lastRunAt === null || r.at >= lastRunAt)
+      lastRunAt = r.at;
+    if (r.outcome === "wrote") {
+      writes++;
+      if (lastWriteAt === null || r.at >= lastWriteAt) {
+        lastWriteAt = r.at;
+        lastEntity = r.entity ?? null;
+      }
+    } else if (r.outcome === "skipped") {
+      skips++;
+      lastSkipReason = r.reason ?? null;
+      const key = r.reason ?? "unspecified";
+      skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
+    } else {
+      errors++;
+    }
+  }
+  let dominantSkipReason = null;
+  let dominantSkipCount = 0;
+  for (const [reason, count] of skipCounts) {
+    if (count > dominantSkipCount) {
+      dominantSkipCount = count;
+      dominantSkipReason = reason;
+    }
+  }
+  const runs = records.length;
+  return {
+    hook,
+    runs,
+    writes,
+    skips,
+    errors,
+    lastRunAt,
+    lastWriteAt,
+    lastEntity,
+    lastSkipReason,
+    dominantSkipReason,
+    dominantSkipCount,
+    hosts: [...hosts].sort(),
+    silent: runs >= SILENT_HOOK_MIN_RUNS && writes === 0
+  };
+}
+function summarizeTypeTrends(rows) {
+  return rows.map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 })).sort((a, b) => a.type.localeCompare(b.type));
+}
+function captureLivenessVerdict(input) {
+  const withRecords = new Set(input.hooks.filter((h) => h.runs > 0).map((h) => h.hook));
+  const graceOver = input.measuringHours !== null && input.measuringHours !== void 0 && input.measuringHours > NEVER_RAN_GRACE_HOURS;
+  const deadHooks = graceOver ? (input.neverRanHooks ?? []).filter((h) => HEARTBEAT_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
+  const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.runs - a.runs);
+  const stoppedTypes = input.types.filter((t) => t.stopped);
+  let status = "PASS";
+  if (deadHooks.length > 0)
+    status = "FAIL";
+  else if (silent.length > 0 || stoppedTypes.length > 0)
+    status = "PASS_WITH_CONCERNS";
+  return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
+}
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_VERSION, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, HEARTBEAT_HOOKS, NEVER_RAN_GRACE_HOURS;
+var init_capture_liveness = __esm({
+  "dist/core/capture-liveness.js"() {
+    "use strict";
+    HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
+    HOOK_OUTCOMES_VERSION = 1;
+    HOOK_OUTCOMES_PER_HOOK = 20;
+    HOOK_OUTCOMES_ROTATE_BYTES = 32 * 1024;
+    SILENT_HOOK_MIN_RUNS = 5;
+    CAPTURE_HOOKS = [
+      "post-commit",
+      "session-summary",
+      "pre-compact",
+      "pre-edit-recall",
+      "user-prompt-intent",
+      "decision-nudge",
+      "guard-check",
+      "session-start"
+    ];
+    HEARTBEAT_HOOKS = ["post-commit", "session-summary", "pre-compact"];
+    NEVER_RAN_GRACE_HOURS = 72;
+  }
+});
+
 // dist/core/guards.js
 function validateGuardSpec(spec) {
   const errors = [];
@@ -54991,6 +55148,93 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     } catch {
     }
   }
+}
+function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs17.readFileSync, memeshDirImpl = getMemeshDirFromDbPath) {
+  const TITLE = "Capture liveness";
+  if (autoCaptureOffSource() !== null) {
+    return {
+      check: createCheck("capture-liveness", TITLE, "pass", "Automatic capture is turned off, so there is nothing to keep alive. Re-enable it to resume capturing.")
+    };
+  }
+  let raw = null;
+  try {
+    raw = readFileSyncImpl(path15.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), "utf8");
+  } catch {
+    raw = null;
+  }
+  const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
+  let db2 = null;
+  let types = [];
+  let neverRan = [];
+  let measuringHours = null;
+  try {
+    db2 = openDatabaseImpl();
+    const rows = db2.prepare(`SELECT e.type AS type,
+              SUM(CASE WHEN e.created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) AS last7,
+              SUM(CASE WHEN e.created_at <= datetime('now', '-7 days')
+                        AND e.created_at > datetime('now', '-14 days') THEN 1 ELSE 0 END) AS prev7
+         FROM entities e
+         JOIN tags t ON t.entity_id = e.id
+        WHERE t.tag = ?
+          AND e.created_at > datetime('now', '-14 days')
+        GROUP BY e.type`).all(AUTO_CAPTURE_TAG);
+    types = summarizeTypeTrends(rows.map((r) => ({
+      type: String(r.type),
+      last7: Number(r.last7) || 0,
+      prev7: Number(r.prev7) || 0
+    })));
+    const tablePresent = !!db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
+    const stamped = new Set(tablePresent ? db2.prepare("SELECT hook FROM hook_runs").all().map((r) => r.hook) : []);
+    neverRan = HEARTBEAT_HOOKS.filter((h) => !stamped.has(h));
+    const since = db2.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
+    measuringHours = since !== void 0 ? hoursSince(since) : null;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      check: createCheck("capture-liveness", TITLE, "fail", `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, "The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.", { code: "capture-liveness.query-failed", params: { detail } })
+    };
+  } finally {
+    try {
+      if (db2)
+        closeDatabaseImpl();
+    } catch {
+    }
+  }
+  const verdict = captureLivenessVerdict({ hooks, types, neverRanHooks: neverRan, measuringHours });
+  const report = {
+    status: verdict.status,
+    hooks,
+    types,
+    neverRan: verdict.deadHooks
+  };
+  if (verdict.status === "FAIL") {
+    const hook = verdict.deadHooks[0];
+    return {
+      check: createCheck("capture-liveness", TITLE, "fail", `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began \u2014 it has never run, so nothing it would capture is being saved.`, "Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.", { code: "capture-liveness.never-ran", params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+      report
+    };
+  }
+  if (verdict.silentHook) {
+    const h = verdict.silentHook;
+    const reason = h.dominantSkipReason ?? "no reason recorded";
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.runs} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.runs, reason } }),
+      report
+    };
+  }
+  if (verdict.stoppedTypes.length > 0) {
+    const t = verdict.stoppedTypes[0];
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `Nothing of type '${t.type}' was captured in the last 7 days, against ${t.prev7} in the 7 days before. Something that was being remembered has stopped being remembered.`, "Run `memesh doctor --json` for the per-hook figures, and check whether the way you work changed \u2014 if it did not, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.type-stopped", params: { type: t.type, prev: t.prev7 } }),
+      report
+    };
+  }
+  const writing = hooks.filter((h) => h.writes > 0);
+  const summary = writing.length > 0 ? `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(", ")}).` : hooks.length > 0 ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.` : "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
+  return {
+    check: createCheck("capture-liveness", TITLE, "pass", summary),
+    report
+  };
 }
 function autoCaptureOffSource() {
   let configAutoCapture;
@@ -55616,6 +55860,7 @@ async function runDoctor(options) {
   const wasDbOpenBeforeUs = isDatabaseOpenImpl();
   const safeCloseDatabaseImpl = wasDbOpenBeforeUs ? () => void 0 : closeDatabaseImpl;
   const checks = [];
+  let captureReport;
   const install = getCurrentInstallChannelImpl({ packageRoot: packageRoot3 });
   const installSupport = getInstallChannelSupportImpl(install, packageRoot3);
   checks.push(createCheck("install-channel", "Install method", install === "unknown" ? "warn" : "pass", `Install method detected: ${installSupport.label}.`, install === "unknown" ? "If this is a source checkout, run MeMesh from the repo root. If this is a packaged install, reinstall with `npm install -g @pcircle/memesh`." : void 0, install === "unknown" ? { code: "install-channel.unknown" } : void 0));
@@ -55775,6 +56020,9 @@ async function runDoctor(options) {
     checks.push(codexSessionSetup);
   const captureWired = wiring.status === "pass" && (wiring.params === void 0 || wiring.params.captureWired === 1);
   checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
+  const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl);
+  checks.push(captureLiveness.check);
+  captureReport = captureLiveness.report;
   checks.push(inspectDashboardArtifact(packageRoot3, existsSyncImpl));
   checks.push(inspectNodeRuntime(packageRoot3, existsSyncImpl, readFileSyncImpl));
   checks.push(inspectNativeBinding(packageRoot3, existsSyncImpl, nativeBindingProbeImpl));
@@ -55794,7 +56042,8 @@ async function runDoctor(options) {
   }
   return {
     status: summarizeOverallStatus(checks),
-    checks
+    checks,
+    ...captureReport ? { capture: captureReport } : {}
   };
 }
 function iconForStatus(status) {
@@ -55837,6 +56086,7 @@ var init_doctor = __esm({
     init_types();
     init_time_utils();
     init_capture_flag();
+    init_capture_liveness();
     init_guards();
     init_agent_message_storage();
     init_config2();

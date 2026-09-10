@@ -19,6 +19,7 @@ import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
+import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, HEARTBEAT_HOOKS, HOOK_OUTCOMES_FILENAME, SILENT_HOOK_MIN_RUNS, } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
@@ -508,6 +509,102 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
         }
         catch { }
     }
+}
+function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs.readFileSync, memeshDirImpl = getMemeshDirFromDbPath) {
+    const TITLE = 'Capture liveness';
+    if (autoCaptureOffSource() !== null) {
+        return {
+            check: createCheck('capture-liveness', TITLE, 'pass', 'Automatic capture is turned off, so there is nothing to keep alive. Re-enable it to resume capturing.'),
+        };
+    }
+    let raw = null;
+    try {
+        raw = readFileSyncImpl(path.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), 'utf8');
+    }
+    catch {
+        raw = null;
+    }
+    const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
+    let db = null;
+    let types = [];
+    let neverRan = [];
+    let measuringHours = null;
+    try {
+        db = openDatabaseImpl();
+        const rows = db.prepare(`SELECT e.type AS type,
+              SUM(CASE WHEN e.created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) AS last7,
+              SUM(CASE WHEN e.created_at <= datetime('now', '-7 days')
+                        AND e.created_at > datetime('now', '-14 days') THEN 1 ELSE 0 END) AS prev7
+         FROM entities e
+         JOIN tags t ON t.entity_id = e.id
+        WHERE t.tag = ?
+          AND e.created_at > datetime('now', '-14 days')
+        GROUP BY e.type`).all(AUTO_CAPTURE_TAG);
+        types = summarizeTypeTrends(rows.map((r) => ({
+            type: String(r.type),
+            last7: Number(r.last7) || 0,
+            prev7: Number(r.prev7) || 0,
+        })));
+        const tablePresent = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
+        const stamped = new Set(tablePresent
+            ? db.prepare('SELECT hook FROM hook_runs').all().map((r) => r.hook)
+            : []);
+        neverRan = HEARTBEAT_HOOKS.filter((h) => !stamped.has(h));
+        const since = db.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
+        measuringHours = since !== undefined ? hoursSince(since) : null;
+    }
+    catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return {
+            check: createCheck('capture-liveness', TITLE, 'fail', `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.', { code: 'capture-liveness.query-failed', params: { detail } }),
+        };
+    }
+    finally {
+        try {
+            if (db)
+                closeDatabaseImpl();
+        }
+        catch { }
+    }
+    const verdict = captureLivenessVerdict({ hooks, types, neverRanHooks: neverRan, measuringHours });
+    const report = {
+        status: verdict.status,
+        hooks,
+        types,
+        neverRan: verdict.deadHooks,
+    };
+    if (verdict.status === 'FAIL') {
+        const hook = verdict.deadHooks[0];
+        return {
+            check: createCheck('capture-liveness', TITLE, 'fail', `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began — it has never run, so nothing it would capture is being saved.`, 'Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.', { code: 'capture-liveness.never-ran', params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+            report,
+        };
+    }
+    if (verdict.silentHook) {
+        const h = verdict.silentHook;
+        const reason = h.dominantSkipReason ?? 'no reason recorded';
+        return {
+            check: createCheck('capture-liveness', TITLE, 'warn', `${h.hook}: ${h.runs} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, 'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.', { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.runs, reason } }),
+            report,
+        };
+    }
+    if (verdict.stoppedTypes.length > 0) {
+        const t = verdict.stoppedTypes[0];
+        return {
+            check: createCheck('capture-liveness', TITLE, 'warn', `Nothing of type '${t.type}' was captured in the last 7 days, against ${t.prev7} in the 7 days before. Something that was being remembered has stopped being remembered.`, 'Run `memesh doctor --json` for the per-hook figures, and check whether the way you work changed — if it did not, run `memesh install-hooks` and restart your agent.', { code: 'capture-liveness.type-stopped', params: { type: t.type, prev: t.prev7 } }),
+            report,
+        };
+    }
+    const writing = hooks.filter((h) => h.writes > 0);
+    const summary = writing.length > 0
+        ? `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(', ')}).`
+        : hooks.length > 0
+            ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything — too early to say, which is normal on a fresh install.`
+            : 'No hook has recorded an outcome yet — the records start on the next hook run, which is normal right after an upgrade.';
+    return {
+        check: createCheck('capture-liveness', TITLE, 'pass', summary),
+        report,
+    };
 }
 function autoCaptureOffSource() {
     let configAutoCapture;
@@ -1223,6 +1320,7 @@ export async function runDoctor(options) {
         ? () => undefined
         : closeDatabaseImpl;
     const checks = [];
+    let captureReport;
     const install = getCurrentInstallChannelImpl({ packageRoot });
     const installSupport = getInstallChannelSupportImpl(install, packageRoot);
     checks.push(createCheck('install-channel', 'Install method', install === 'unknown' ? 'warn' : 'pass', `Install method detected: ${installSupport.label}.`, install === 'unknown'
@@ -1427,6 +1525,9 @@ export async function runDoctor(options) {
     const captureWired = wiring.status === 'pass'
         && (wiring.params === undefined || wiring.params.captureWired === 1);
     checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
+    const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl);
+    checks.push(captureLiveness.check);
+    captureReport = captureLiveness.report;
     checks.push(inspectDashboardArtifact(packageRoot, existsSyncImpl));
     checks.push(inspectNodeRuntime(packageRoot, existsSyncImpl, readFileSyncImpl));
     checks.push(inspectNativeBinding(packageRoot, existsSyncImpl, nativeBindingProbeImpl));
@@ -1448,6 +1549,7 @@ export async function runDoctor(options) {
     return {
         status: summarizeOverallStatus(checks),
         checks,
+        ...(captureReport ? { capture: captureReport } : {}),
     };
 }
 function iconForStatus(status) {
