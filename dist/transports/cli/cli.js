@@ -59595,7 +59595,19 @@ program2.command("task").description("Show or update where the work stands on th
         patch[field] = opts[field];
     }
     if (Object.keys(patch).length === 0) {
-      const { project, state } = getTaskState(opts.project);
+      let project;
+      let state;
+      try {
+        ({ project, state } = getTaskState(opts.project));
+      } catch (err) {
+        if (!(err instanceof TaskStateUnreadableError))
+          throw err;
+        if (opts.json)
+          console.log(JSON.stringify({ error: err.message, project: err.project }));
+        else
+          console.error(err.message);
+        process.exit(1);
+      }
       if (opts.json) {
         console.log(JSON.stringify({ project, state }));
         return;
