@@ -12,7 +12,10 @@ All notable changes to MeMesh are documented here.
   interface strings in every locale are gone. A bookmarked `?tab=Graph` or a
   stored tab preference lands on the Project tab. Owner decision recorded in
   DESIGN.md: humans could not read the raw graph, and it answered none of the
-  questions a person opens the dashboard with.
+  questions a person opens the dashboard with. The pre-build fallback page
+  (`memesh view` without a compiled dashboard) loses its Graph and Timeline
+  tabs for the same reason — both were rendered from `/v1/graph` — and the
+  bundled d3 library that only that canvas used is no longer shipped.
 
 ### Added
 

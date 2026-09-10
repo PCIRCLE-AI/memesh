@@ -77,7 +77,6 @@ export function findOrphanedTypeScriptOutputs(repoRoot) {
   const orphanFiles = new Map();
   for (const file of filesBelow(distRoot)) {
     const relative = path.relative(distRoot, file).split(path.sep).join('/');
-    if (relative.startsWith('cli/assets/')) continue;
     const suffix = COMPILER_SUFFIXES.find(candidate => relative.endsWith(candidate));
     if (!suffix) continue;
     const family = relative.slice(0, -suffix.length);

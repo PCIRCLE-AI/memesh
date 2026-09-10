@@ -40,7 +40,7 @@ describe('UI review evidence gate', () => {
   it('derives all advertised tabs and locales from actual source', () => {
     const actual = uiScope(repo);
     expect(actual.locales).toEqual(['en', 'zh-TW', 'zh-CN', 'ja', 'ko', 'pt', 'fr', 'de', 'vi', 'es', 'th']);
-    expect(actual.tabs).toEqual(['Home', 'Memories', 'Project', 'Graph', 'Settings']);
+    expect(actual.tabs).toEqual(['Home', 'Memories', 'Project', 'Settings']);
   });
   it.each([
     ['missing report', () => null],

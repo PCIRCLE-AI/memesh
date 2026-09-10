@@ -443,7 +443,7 @@ async function main() {
             body: JSON.stringify({ success: true, data: { version: 'packaged', entity_count: 1 } }),
           });
         }
-        if (['/v1/recall', '/v1/entities', '/v1/graph', '/v1/config'].includes(routeUrl.pathname)) {
+        if (['/v1/recall', '/v1/entities', '/v1/config'].includes(routeUrl.pathname)) {
           return route.fulfill({
             contentType: 'application/json',
             body: JSON.stringify({ success: true, data: {} }),
@@ -463,10 +463,6 @@ async function main() {
 
       await legacyPage.getByRole('button', { name: 'Browse', exact: true }).click();
       await legacyPage.locator('#browse-table-wrap').getByText('Invalid entities response').waitFor({ state: 'visible' });
-      await legacyPage.getByRole('button', { name: 'Graph', exact: true }).click();
-      await legacyPage.locator('#graph-svg-wrap').getByText('Invalid graph response').waitFor({ state: 'visible' });
-      await legacyPage.getByRole('button', { name: 'Timeline', exact: true }).click();
-      await legacyPage.locator('#timeline-body').getByText('Invalid graph response').waitFor({ state: 'visible' });
       await legacyPage.getByRole('button', { name: 'Manage', exact: true }).click();
       await legacyPage.locator('#manage-table-wrap').getByText('Invalid entities response').waitFor({ state: 'visible' });
       await legacyPage.getByRole('button', { name: 'Settings', exact: true }).click();

@@ -42,7 +42,7 @@ src/
 ├── host-adapters/   # native Claude/Codex adapters + experimental ACP protocol adapter
 ├── host-runtime/    # managed host processes + private-router client/server
 ├── mcp/             # stdio server (NOTE: server lives here, handlers in transports/mcp/)
-└── cli/             # view-live.ts + assets/ (dashboard fallback, NOT a transport)
+└── cli/             # view-live.ts (dashboard fallback, NOT a transport)
 scripts/hooks/       # Claude/Codex hook entrypoints + shared/generated helpers
 dashboard/src/       # Preact + Vite dashboard
 tests/               # vitest (forks pool) — mirrors src/ layout

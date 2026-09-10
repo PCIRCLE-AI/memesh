@@ -84,7 +84,7 @@ const CLIENT_ROOTS = ['dashboard/src', 'src/cli', 'scripts'];
  */
 const KNOWN_CALLS: Record<string, string> = {
   'dashboard/src': '/v1/stats',
-  'src/cli': '/v1/graph',
+  'src/cli': '/v1/entities',
   'scripts': '/v1/health',
 };
 
