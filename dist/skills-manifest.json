@@ -37,6 +37,11 @@
       "bytes": 901
     },
     {
+      "path": "scripts/hooks/_generated/capture-liveness.js",
+      "sha256": "7cf92c4f2ba9b7b6e866f19fbfdda0265672aeaedc521506441631160c33ecad",
+      "bytes": 7538
+    },
+    {
       "path": "scripts/hooks/_generated/citation-rule.js",
       "sha256": "754903707c63a2c9ad0e8307055a1c3abee2fccbd122c973d8177b22552b8fff",
       "bytes": 3743
