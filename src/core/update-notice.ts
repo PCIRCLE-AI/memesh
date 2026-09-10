@@ -18,6 +18,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import { redactUserPaths } from './paths.js';
 
 /** Re-check an "up to date" answer after this long. */
 export const UP_TO_DATE_REFRESH_MS = 60 * 60 * 1000;
@@ -44,7 +45,7 @@ export interface UpdateCheckCacheLike {
 export type UpdateNotice =
   | { kind: 'DISABLED'; currentVersion: string }
   | { kind: 'JUST_UPGRADED'; currentVersion: string; from: string; to: string }
-  | { kind: 'CHECK_FAILED'; currentVersion: string; reason: string }
+  | { kind: 'CHECK_FAILED'; currentVersion: string; reason: string; /** false = no check has ever run for this version */ attempted: boolean }
   | { kind: 'SNOOZED'; currentVersion: string; latestVersion: string; until: string; level: number }
   | { kind: 'UPGRADE_AVAILABLE'; currentVersion: string; latestVersion: string }
   | { kind: 'UP_TO_DATE'; currentVersion: string; latestVersion: string };
@@ -193,8 +194,11 @@ export function claimJustUpgradedMarker(dir: string): JustUpgradedMarker | null 
  * for a multi-line payload to masquerade as instructions.
  */
 function boundedReason(raw: string): string {
+  // npm's stderr routinely names the user's home and cache directories;
+  // the same redaction the doctor payload gets applies before the text goes
+  // anywhere a model or a terminal will read it.
   // eslint-disable-next-line no-control-regex
-  const oneLine = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const oneLine = redactUserPaths(raw).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
   return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
 }
 
@@ -257,11 +261,18 @@ export function resolveUpdateNotice(input: ResolveUpdateNoticeInput): UpdateNoti
 
   if (!answerIsCurrent(currentVersion, cache, now)) {
     let reason = 'no update check has completed yet';
+    let attempted = false;
     if (cache && cache.currentVersion === currentVersion) {
+      // "Attempted" means a lookup COMPLETED — with an error, or with an
+      // answer that has since gone stale. A bare lastAttemptAt (a check
+      // still in flight, or one that was interrupted) would make the door
+      // speak while the reason still says "no check has completed yet".
+      attempted = parseIso(cache.lastSuccessfulCheckAt) !== null
+        || (typeof cache.lastError === 'string' && cache.lastError.length > 0);
       if (typeof cache.lastError === 'string' && cache.lastError) reason = boundedReason(cache.lastError);
       else if (parseIso(cache.lastSuccessfulCheckAt) !== null) reason = 'the last successful check is more than a day old';
     }
-    return { kind: 'CHECK_FAILED', currentVersion, reason };
+    return { kind: 'CHECK_FAILED', currentVersion, reason, attempted };
   }
 
   const latestVersion = cache!.latestVersion as string;

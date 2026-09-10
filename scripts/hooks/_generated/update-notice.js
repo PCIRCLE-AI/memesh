@@ -8,6 +8,7 @@
 // ============================================================================
 import fs from 'fs';
 import path from 'path';
+import { redactUserPaths } from './core-paths.js';
 export const UP_TO_DATE_REFRESH_MS = 60 * 60 * 1000;
 export const UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1000;
 export const ANSWER_VALID_MS = 24 * 60 * 60 * 1000;
@@ -133,7 +134,7 @@ export function claimJustUpgradedMarker(dir) {
     return { from, to, at: typeof at === 'string' ? at : '' };
 }
 function boundedReason(raw) {
-    const oneLine = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const oneLine = redactUserPaths(raw).replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
     return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
 }
 function answerIsCurrent(currentVersion, cache, now) {
@@ -168,13 +169,16 @@ export function resolveUpdateNotice(input) {
     }
     if (!answerIsCurrent(currentVersion, cache, now)) {
         let reason = 'no update check has completed yet';
+        let attempted = false;
         if (cache && cache.currentVersion === currentVersion) {
+            attempted = parseIso(cache.lastSuccessfulCheckAt) !== null
+                || (typeof cache.lastError === 'string' && cache.lastError.length > 0);
             if (typeof cache.lastError === 'string' && cache.lastError)
                 reason = boundedReason(cache.lastError);
             else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
                 reason = 'the last successful check is more than a day old';
         }
-        return { kind: 'CHECK_FAILED', currentVersion, reason };
+        return { kind: 'CHECK_FAILED', currentVersion, reason, attempted };
     }
     const latestVersion = cache.latestVersion;
     if (!isStrictlyOlder(currentVersion, latestVersion)) {

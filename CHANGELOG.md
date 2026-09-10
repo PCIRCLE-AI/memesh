@@ -6,6 +6,20 @@ All notable changes to MeMesh are documented here.
 
 ### Changed
 
+- **The update notice reaches every door, not only the SessionStart hook
+  (#308).** The MCP server appends one `[memesh update] …` text item to the
+  first successful tool result of each process (as a second content item, so
+  the JSON envelope hosts parse in `content[0]` is untouched), and every CLI
+  command except the update/setup commands prints the same line to stderr once
+  a day. Both read the same resolver, snooze, receipt and `updateCheck`
+  setting as the hooks; an MCP process that starts within ten minutes of a
+  hook's notice for the same versions stays quiet instead of repeating it.
+  When the cached answer is missing or stale, both doors start the same
+  detached `memesh status` refresh the SessionStart hook runs (one npm
+  registry request, at most once every five minutes; it opens the memesh
+  database like any CLI command) and say nothing until a check has actually
+  completed — a host with no hooks gets its first notice from the process
+  that started the refresh, which looks again a minute later.
 - **First-use update notice: one resolver, escalating snooze, a receipt after
   upgrading, and a loud unknown (#308).** `src/core/update-notice.ts` now
   decides what every entry point says about updates — `UP_TO_DATE`,

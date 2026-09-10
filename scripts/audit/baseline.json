@@ -565,6 +565,11 @@
       "class": "SAFE",
       "reason": "Every emptiness assertion is paired in the same test with a positive readback: the stale-marker test asserts UP_TO_DATE first and then that the marker file is gone; the claim test asserts the first claimant received {from,to} before the second gets null and the directory listing is empty; the corrupt-snooze test writes the bad bytes it expects to be rejected; the refresh-policy test asserts true and false on both sides of each TTL.",
       "triaged": "2026-09-10 #308 update-notice resolver"
+    },
+    "C1 tests/cli/update-notice-stderr.test.ts": {
+      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
+      "reason": "The detector's `.toBe(0)` is the CLI's successful exit status, not an empty collection. The same test asserts the notice text on stderr, that stdout still parses as JSON, that a second run prints no notice, and that `status` prints none.",
+      "triaged": "2026-09-10 #308 PR-B entry-point notice"
     }
   }
 }
