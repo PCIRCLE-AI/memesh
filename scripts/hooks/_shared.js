@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -42,23 +42,33 @@ export { writeCitationRule, citationRulePath, CITATION_RULE_BODY } from './_gene
 // Imported locally (recordHookOutcome below uses them) AND re-exported, so
 // every hook reaches the same definition through one module.
 import {
-  appendHookOutcome,
   detectHookHost,
-  parseHookOutcomes,
+  serializeHookOutcome,
+  trimHookOutcomeLines,
   HOOK_OUTCOMES_FILENAME,
+  HOOK_OUTCOMES_MAX_LINES,
+  HOOK_OUTCOMES_ROTATE_BYTES,
 } from './_generated/capture-liveness.js';
 export {
-  appendHookOutcome,
+  advanceGraceState,
   captureLivenessNotice,
   captureLivenessVerdict,
   detectHookHost,
   emptyOutcomeFile,
+  graceInEffect,
+  parseGraceState,
+  parseHookOutcomeLine,
   parseHookOutcomes,
+  serializeHookOutcome,
   summarizeHookOutcomes,
   summarizeTypeTrends,
+  trimHookOutcomeLines,
   CAPTURE_HOOKS,
+  GRACE_HOURS,
+  GRACE_SESSIONS,
   HEARTBEAT_HOOKS,
   HOOK_OUTCOMES_FILENAME,
+  HOOK_OUTCOMES_MAX_LINES,
   HOOK_OUTCOMES_PER_HOOK,
   SILENT_HOOK_MIN_RUNS,
 } from './_generated/capture-liveness.js';
@@ -525,10 +535,16 @@ export function stampHookRunOnly(env, hook) {
  *   - NEVER throws. Diagnostics must not take capture down with them.
  *   - NEVER writes to stdout. The hook output contract is a single JSON
  *     document or nothing at all; one stray line breaks both hosts.
- *   - Writes atomically (temp + rename). A hook can be killed mid-write by a
- *     host timeout, and a truncated history file would read as "this hook has
- *     no records", which is the FAIL signal — a diagnostic that manufactures
- *     its own alarm is worse than none.
+ *   - APPENDS one line (O_APPEND), never read-modify-write. SessionStart,
+ *     UserPromptSubmit and a PreToolUse hook fire inside the same second on
+ *     a busy turn: three processes reading the same JSON document and
+ *     writing back what each of them read means the last one wins and the
+ *     other two records are gone — the concurrency that proves a session is
+ *     busy would be the concurrency that erases the proof. An append has no
+ *     read step to lose, and the OS orders the writes.
+ *   - Rotation (keep the last 200 lines) is the only rewrite, and it goes
+ *     through temp + rename so a reader sees the old complete file or the
+ *     new one.
  *
  * @param {Record<string,string|undefined>} env
  * @param {{hook: string, outcome: 'wrote'|'skipped'|'error', reason?: string, entity?: string, payload?: object, sessionId?: string}} info
@@ -543,8 +559,6 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload,
     const dir = getMemeshDirFromDbPath();
     ensurePrivateDir(dir);
     const filePath = join(dir, HOOK_OUTCOMES_FILENAME);
-    let raw = null;
-    try { raw = readFileSync(filePath, 'utf8'); } catch { /* first run, or unreadable — start clean */ }
     const record = {
       hook,
       at: new Date().toISOString(),
@@ -555,13 +569,11 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload,
     if (entity) record.entity = entity;
     const sid = sessionId ?? (payload && typeof payload === 'object' ? payload.session_id : undefined);
     if (typeof sid === 'string' && sid) record.session_id = sid;
-    const next = appendHookOutcome(parseHookOutcomes(raw), record);
-    // Temp name carries the pid so two hooks firing at once cannot truncate
-    // each other's partial file; rename is atomic on the same filesystem, so
-    // a reader sees either the old complete file or the new one.
-    const tmpPath = `${filePath}.${process.pid}.tmp`;
-    writePrivateFile(tmpPath, JSON.stringify(next));
-    renameSync(tmpPath, filePath);
+    // One O_APPEND write of one line. `mode` applies only when the file is
+    // being created, which is the only moment the permission can be set
+    // without a second syscall on the hot path.
+    appendFileSync(filePath, serializeHookOutcome(record), { encoding: 'utf8', mode: 0o600 });
+    rotateHookOutcomes(filePath);
   } catch (err) {
     try {
       process.stderr.write(
@@ -569,6 +581,28 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload,
           `Capture itself is unaffected, but 'memesh doctor' will under-report capture liveness.\n`,
       );
     } catch { /* stderr gone */ }
+  }
+}
+
+/**
+ * Keep the history bounded, without paying a read on every append.
+ *
+ * A line count would mean reading the file back on the hot path — the read
+ * step O_APPEND exists to remove. A `stat` is cheap, so size is the trigger
+ * and the trim is exact. The rewrite goes through temp + rename: a
+ * concurrent appender may lose ONE line to the swap, which is why the byte
+ * budget is far larger than the window any summary reads.
+ */
+function rotateHookOutcomes(filePath) {
+  try {
+    if (statSync(filePath).size <= HOOK_OUTCOMES_ROTATE_BYTES) return;
+    const trimmed = trimHookOutcomeLines(readFileSync(filePath, 'utf8'), HOOK_OUTCOMES_MAX_LINES);
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
+    writePrivateFile(tmpPath, trimmed);
+    renameSync(tmpPath, filePath);
+  } catch {
+    // An oversized history still answers every question this file exists to
+    // answer, so a failed rotation is not worth a stderr line of its own.
   }
 }
 

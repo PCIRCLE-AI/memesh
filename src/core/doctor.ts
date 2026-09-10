@@ -25,6 +25,11 @@ import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
+import {
+  captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends,
+  CAPTURE_HOOKS, HEARTBEAT_HOOKS, HOOK_OUTCOMES_FILENAME, SILENT_HOOK_MIN_RUNS,
+  type CaptureLivenessStatus, type HookLivenessSummary, type TypeTrend,
+} from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
@@ -82,6 +87,23 @@ export interface DoctorCheck {
 export interface DoctorResult {
   status: DoctorOverallStatus;
   checks: DoctorCheck[];
+  /**
+   * The capture-liveness figures behind the `capture-liveness` row (#327).
+   *
+   * A row's `summary` is one sentence for a human; this is the evidence
+   * under it — per hook, and per entity type week over week — so `--json`
+   * consumers (and a support conversation) can see WHY the verdict is what
+   * it is without a sqlite query. Absent when the check could not run.
+   */
+  capture?: CaptureLivenessReport;
+}
+
+export interface CaptureLivenessReport {
+  status: CaptureLivenessStatus;
+  hooks: HookLivenessSummary[];
+  types: TypeTrend[];
+  /** Heartbeat hooks with no outcome record AND no heartbeat row. */
+  neverRan: string[];
 }
 
 interface JsonObject {
@@ -1359,6 +1381,167 @@ function inspectHookActivity(
   } finally {
     try { if (db) closeDatabaseImpl(); } catch { /* best-effort */ }
   }
+}
+
+/**
+ * Capture liveness — has the automatic memory layer written anything lately,
+ * and if not, why not (#327)?
+ *
+ * `inspectHookActivity` next door answers "did a hook RUN". This answers the
+ * question that actually matters to a user: "and did it SAVE anything". The
+ * two came apart for two days on the owner's graph — post-commit ran on every
+ * Bash call and skipped every one of them, because the commits were made with
+ * `git commit -q` and printed no line to match (#321). Every heartbeat was
+ * green throughout.
+ *
+ * Two independent sources, deliberately:
+ *   - `hook-outcomes.json`, written by the hooks themselves, which is the
+ *     only place a SKIP REASON exists;
+ *   - the database, for what actually landed, per entity type, this week
+ *     versus last.
+ *
+ * A type that wrote last week and nothing this week is a concern even when
+ * every hook looks busy — that is the shape of a capture path that broke
+ * downstream of the hook.
+ */
+function inspectCaptureLiveness(
+  openDatabaseImpl: typeof openDatabase,
+  closeDatabaseImpl: typeof closeDatabase,
+  readFileSyncImpl: typeof fs.readFileSync = fs.readFileSync,
+  memeshDirImpl: () => string = getMemeshDirFromDbPath,
+): { check: DoctorCheck; report?: CaptureLivenessReport } {
+  const TITLE = 'Capture liveness';
+
+  // Deliberately disabled capture is a configuration, not a failure —
+  // identical reasoning to hook-activity, and every verdict below would
+  // misread it: the records legitimately stop the moment capture is off.
+  if (autoCaptureOffSource() !== null) {
+    return {
+      check: createCheck('capture-liveness', TITLE, 'pass',
+        'Automatic capture is turned off, so there is nothing to keep alive. Re-enable it to resume capturing.'),
+    };
+  }
+
+  let raw: string | null = null;
+  try {
+    raw = readFileSyncImpl(path.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), 'utf8') as string;
+  } catch {
+    // No file yet is the ordinary state right after an upgrade — the hooks
+    // create it on their next run. It is NOT evidence of death, and the
+    // never-ran branch below refuses to treat it as such.
+    raw = null;
+  }
+  const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
+
+  let db: DatabaseLike | null = null;
+  let types: TypeTrend[] = [];
+  let neverRan: string[] = [];
+  let measuringHours: number | null = null;
+  try {
+    db = openDatabaseImpl() as unknown as DatabaseLike;
+
+    // Per type, this week against the previous one. Restricted to
+    // auto-capture rows: a hand-typed `memesh learn` is not evidence that the
+    // automatic layer is alive, which is the mistake an earlier version of
+    // the hook-activity count made.
+    const rows = db.prepare(
+      `SELECT e.type AS type,
+              SUM(CASE WHEN e.created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) AS last7,
+              SUM(CASE WHEN e.created_at <= datetime('now', '-7 days')
+                        AND e.created_at > datetime('now', '-14 days') THEN 1 ELSE 0 END) AS prev7
+         FROM entities e
+         JOIN tags t ON t.entity_id = e.id
+        WHERE t.tag = ?
+          AND e.created_at > datetime('now', '-14 days')
+        GROUP BY e.type`,
+    ).all(AUTO_CAPTURE_TAG) as Array<{ type: string; last7: number; prev7: number }>;
+    types = summarizeTypeTrends(rows.map((r) => ({
+      type: String(r.type),
+      last7: Number(r.last7) || 0,
+      prev7: Number(r.prev7) || 0,
+    })));
+
+    const tablePresent = !!db.prepare(
+      "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'",
+    ).get();
+    const stamped = new Set(
+      tablePresent
+        ? (db.prepare('SELECT hook FROM hook_runs').all() as Array<{ hook: string }>).map((r) => r.hook)
+        : [],
+    );
+    // ONLY the three hooks that stamp hook_runs are FAIL-eligible; see
+    // HEARTBEAT_HOOKS for why the other five can never reach it.
+    neverRan = HEARTBEAT_HOOKS.filter((h) => !stamped.has(h));
+
+    const since = (db.prepare(
+      "SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'",
+    ).get() as { value: string } | undefined)?.value;
+    measuringHours = since !== undefined ? hoursSince(since) : null;
+  } catch (err) {
+    // A query failure is not a healthy graph and must not read as one.
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      check: createCheck('capture-liveness', TITLE, 'fail',
+        `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`,
+        'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.',
+        { code: 'capture-liveness.query-failed', params: { detail } }),
+    };
+  } finally {
+    try { if (db) closeDatabaseImpl(); } catch { /* best-effort */ }
+  }
+
+  const verdict = captureLivenessVerdict({ hooks, types, neverRanHooks: neverRan, measuringHours });
+  const report: CaptureLivenessReport = {
+    status: verdict.status,
+    hooks,
+    types,
+    neverRan: verdict.deadHooks,
+  };
+
+  if (verdict.status === 'FAIL') {
+    const hook = verdict.deadHooks[0];
+    return {
+      check: createCheck('capture-liveness', TITLE, 'fail',
+        `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began — it has never run, so nothing it would capture is being saved.`,
+        'Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.',
+        { code: 'capture-liveness.never-ran', params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+      report,
+    };
+  }
+
+  if (verdict.silentHook) {
+    const h = verdict.silentHook;
+    const reason = h.dominantSkipReason ?? 'no reason recorded';
+    return {
+      check: createCheck('capture-liveness', TITLE, 'warn',
+        `${h.hook}: ${h.runs} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`,
+        'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.',
+        { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.runs, reason } }),
+      report,
+    };
+  }
+
+  if (verdict.stoppedTypes.length > 0) {
+    const t = verdict.stoppedTypes[0];
+    return {
+      check: createCheck('capture-liveness', TITLE, 'warn',
+        `Nothing of type '${t.type}' was captured in the last 7 days, against ${t.prev7} in the 7 days before. Something that was being remembered has stopped being remembered.`,
+        'Run `memesh doctor --json` for the per-hook figures, and check whether the way you work changed — if it did not, run `memesh install-hooks` and restart your agent.',
+        { code: 'capture-liveness.type-stopped', params: { type: t.type, prev: t.prev7 } }),
+      report,
+    };
+  }
+
+  const writing = hooks.filter((h) => h.writes > 0);
+  const summary = writing.length > 0
+    ? `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(', ')}).`
+    : hooks.length > 0
+      ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything — too early to say, which is normal on a fresh install.`
+      : 'No hook has recorded an outcome yet — the records start on the next hook run, which is normal right after an upgrade.';
+  return {
+    check: createCheck('capture-liveness', TITLE, 'pass', summary),
+    report,
+  };
 }
 
 /**
@@ -2691,6 +2874,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     : closeDatabaseImpl;
 
   const checks: DoctorCheck[] = [];
+  // The figures behind the capture-liveness row, surfaced on the result so
+  // `--json` carries the evidence and not only the verdict.
+  let captureReport: CaptureLivenessReport | undefined;
 
   const install = getCurrentInstallChannelImpl({ packageRoot });
   const installSupport = getInstallChannelSupportImpl(install, packageRoot);
@@ -3076,6 +3262,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const captureWired = wiring.status === 'pass'
     && (wiring.params === undefined || wiring.params.captureWired === 1);
   checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
+  // Next to hook-activity on purpose: "did it run" and "did it write" are
+  // read together, and separating them is what let a green heartbeat cover
+  // an empty graph for two days (#327).
+  const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl);
+  checks.push(captureLiveness.check);
+  captureReport = captureLiveness.report;
   checks.push(inspectDashboardArtifact(packageRoot, existsSyncImpl));
   // Before the native-binding row, because when that one is red this one is
   // the context that explains it.
@@ -3120,6 +3312,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   return {
     status: summarizeOverallStatus(checks),
     checks,
+    ...(captureReport ? { capture: captureReport } : {}),
   };
 }
 

@@ -40,15 +40,64 @@ export interface HookOutcomeFile {
   hooks: Record<string, HookOutcomeRecord[]>;
 }
 
-export const HOOK_OUTCOMES_FILENAME = 'hook-outcomes.json';
+/**
+ * JSONL, and append-only, not a JSON document.
+ *
+ * The first version of this was a read-modify-write JSON file. That loses
+ * records by construction here: SessionStart, UserPromptSubmit and a
+ * PreToolUse hook can all fire inside the same second, each reads the file,
+ * each appends its own record to what it read, and the last writer wins —
+ * so exactly the concurrency that indicates a busy session is the
+ * concurrency that erases the evidence of it. One `O_APPEND` write of one
+ * line has no read step to lose, and the OS orders the writes.
+ *
+ * The cost is a torn last line when a host timeout kills a hook mid-write.
+ * That is a cost worth paying, and the reader drops an unparseable line
+ * instead of failing: one lost record beats a lost history.
+ */
+export const HOOK_OUTCOMES_FILENAME = 'hook-outcomes.jsonl';
 export const HOOK_OUTCOMES_VERSION = 1;
 
 /**
- * Records kept per hook. Bounded because this file is read on every
- * SessionStart: unbounded history would make the cheapest hook path grow
- * without limit, and nothing here needs more than a recent window.
+ * Records kept per hook when summarising. Bounded because this file is read
+ * on every SessionStart, and nothing here needs more than a recent window.
  */
 export const HOOK_OUTCOMES_PER_HOOK = 20;
+
+/**
+ * Lines kept in the file. Rotation rewrites the file with the last 200 lines
+ * when it grows past that — atomically, so a reader sees the old complete
+ * file or the new one. 200 is ~10 hooks x the 20-record window each
+ * summary uses, so rotation can never drop a record a summary would show.
+ */
+export const HOOK_OUTCOMES_MAX_LINES = 200;
+
+/**
+ * Rotate lazily: checking the line count on every append would mean reading
+ * the file back on the hot path, which is the read step O_APPEND exists to
+ * remove. A `stat` is cheap, so SIZE is the trigger and the trim is exact.
+ *
+ * 32 KiB is roughly HOOK_OUTCOMES_MAX_LINES typical records. Records with
+ * long reason strings are bigger, so the file can hold fewer lines than the
+ * maximum before it rotates — never more than the trim allows, which is the
+ * direction that matters: the bound is a ceiling, not a target.
+ */
+export const HOOK_OUTCOMES_ROTATE_BYTES = 32 * 1024;
+
+/** Serialise one record as a single JSONL line, newline included. */
+export function serializeHookOutcome(record: HookOutcomeRecord): string {
+  return `${JSON.stringify(record)}\n`;
+}
+
+/**
+ * Keep the last `max` complete lines. Used by rotation; pure so the bound is
+ * testable without a filesystem.
+ */
+export function trimHookOutcomeLines(raw: string, max: number = HOOK_OUTCOMES_MAX_LINES): string {
+  const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+  const kept = lines.length > max ? lines.slice(lines.length - max) : lines;
+  return kept.length ? `${kept.join('\n')}\n` : '';
+}
 
 /**
  * A hook that ran this many times inside its recorded window and never wrote
@@ -94,63 +143,58 @@ export function emptyOutcomeFile(): HookOutcomeFile {
 }
 
 /**
- * Parse the on-disk file, fail-CLOSED to empty.
+ * Parse the JSONL history into per-hook windows.
  *
- * A corrupt file must not throw into a hook (capture matters more than
- * diagnostics) and must not be half-trusted either: a partially readable
- * history would under-count runs and could turn a dead hook green.
+ * Every line is independent, so a line that does not parse — the torn last
+ * line an interrupted hook leaves behind — is DROPPED, not fatal. That is
+ * the whole reason the format is line-oriented: one lost record is a cost,
+ * a lost history is a blind spot, and the blind spot is what this file
+ * exists to close.
+ *
+ * Only the last HOOK_OUTCOMES_PER_HOOK records per hook are kept, so a
+ * caller's window does not grow with the file.
  */
-export function parseHookOutcomes(raw: string | null | undefined): HookOutcomeFile {
+export function parseHookOutcomes(
+  raw: string | null | undefined,
+  limit: number = HOOK_OUTCOMES_PER_HOOK,
+): HookOutcomeFile {
   if (!raw) return emptyOutcomeFile();
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return emptyOutcomeFile();
-  }
-  if (!parsed || typeof parsed !== 'object') return emptyOutcomeFile();
-  const hooksRaw = (parsed as { hooks?: unknown }).hooks;
-  if (!hooksRaw || typeof hooksRaw !== 'object') return emptyOutcomeFile();
   const hooks: Record<string, HookOutcomeRecord[]> = {};
-  for (const [hook, entries] of Object.entries(hooksRaw as Record<string, unknown>)) {
-    if (!Array.isArray(entries)) continue;
-    const kept: HookOutcomeRecord[] = [];
-    for (const entry of entries) {
-      if (!entry || typeof entry !== 'object') continue;
-      const rec = entry as Record<string, unknown>;
-      if (typeof rec.at !== 'string') continue;
-      if (rec.outcome !== 'wrote' && rec.outcome !== 'skipped' && rec.outcome !== 'error') continue;
-      const record: HookOutcomeRecord = {
-        hook,
-        at: rec.at,
-        host: rec.host === 'claude-code' || rec.host === 'codex' ? rec.host : 'unknown',
-        outcome: rec.outcome,
-      };
-      if (typeof rec.reason === 'string') record.reason = rec.reason;
-      if (typeof rec.entity === 'string') record.entity = rec.entity;
-      if (typeof rec.session_id === 'string') record.session_id = rec.session_id;
-      kept.push(record);
-    }
-    if (kept.length) hooks[hook] = kept;
+  for (const line of raw.split('\n')) {
+    const record = parseHookOutcomeLine(line);
+    if (!record) continue;
+    const bucket = hooks[record.hook] ?? (hooks[record.hook] = []);
+    bucket.push(record);
+    if (bucket.length > limit) bucket.shift();
   }
   return { version: HOOK_OUTCOMES_VERSION, hooks };
 }
 
-/**
- * Append one record, oldest-first, bounded. Pure: returns a new file object
- * so the writer can serialise it and the tests can pin the bound without
- * touching a disk.
- */
-export function appendHookOutcome(
-  file: HookOutcomeFile,
-  record: HookOutcomeRecord,
-  limit: number = HOOK_OUTCOMES_PER_HOOK,
-): HookOutcomeFile {
-  const hooks: Record<string, HookOutcomeRecord[]> = { ...file.hooks };
-  const existing = hooks[record.hook] ?? [];
-  const next = [...existing, record];
-  hooks[record.hook] = next.length > limit ? next.slice(next.length - limit) : next;
-  return { version: HOOK_OUTCOMES_VERSION, hooks };
+/** One JSONL line to a record, or null when it is torn, blank, or foreign. */
+export function parseHookOutcomeLine(line: string): HookOutcomeRecord | null {
+  const trimmed = line.trim();
+  if (!trimmed) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const rec = parsed as Record<string, unknown>;
+  if (typeof rec.hook !== 'string' || !rec.hook) return null;
+  if (typeof rec.at !== 'string') return null;
+  if (rec.outcome !== 'wrote' && rec.outcome !== 'skipped' && rec.outcome !== 'error') return null;
+  const record: HookOutcomeRecord = {
+    hook: rec.hook,
+    at: rec.at,
+    host: rec.host === 'claude-code' || rec.host === 'codex' ? rec.host : 'unknown',
+    outcome: rec.outcome,
+  };
+  if (typeof rec.reason === 'string') record.reason = rec.reason;
+  if (typeof rec.entity === 'string') record.entity = rec.entity;
+  if (typeof rec.session_id === 'string') record.session_id = rec.session_id;
+  return record;
 }
 
 export interface HookLivenessSummary {
@@ -325,6 +369,65 @@ export function captureLivenessNotice(verdict: CaptureLivenessVerdict): string |
     return `memesh: nothing of type ${stopped.type} was captured this week (${stopped.prev7} last week) — \`memesh doctor\` for the reason`;
   }
   return null;
+}
+
+/**
+ * The post-install / post-upgrade grace for the SessionStart line.
+ *
+ * A fresh install has no history, and an upgrade replaces the hooks — in
+ * both cases the first sessions are exactly when a hook legitimately has a
+ * run of skips and no writes yet. Warning there trains the user to ignore
+ * the line, which costs more than the two days of silence it exists to
+ * catch. The window is three sessions OR 24 hours, whichever ends LATER, so
+ * neither a burst of short sessions nor a single long one can shorten it.
+ */
+export const GRACE_SESSIONS = 3;
+export const GRACE_HOURS = 24;
+
+export interface CaptureGraceState {
+  /** The version the counter belongs to. A change resets it. */
+  version: string;
+  /** ISO timestamp of the first session seen on this version. */
+  firstSeenAt: string;
+  /** Sessions seen on this version, including the current one. */
+  sessions: number;
+}
+
+export function parseGraceState(raw: string | null | undefined): CaptureGraceState | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const rec = parsed as Record<string, unknown>;
+  if (typeof rec.version !== 'string' || typeof rec.firstSeenAt !== 'string') return null;
+  const sessions = typeof rec.sessions === 'number' && Number.isFinite(rec.sessions) ? rec.sessions : 0;
+  return { version: rec.version, firstSeenAt: rec.firstSeenAt, sessions };
+}
+
+/** Count this session against the grace, resetting on a version change. */
+export function advanceGraceState(
+  previous: CaptureGraceState | null,
+  version: string,
+  nowMs: number,
+): CaptureGraceState {
+  if (!previous || previous.version !== version) {
+    return { version, firstSeenAt: new Date(nowMs).toISOString(), sessions: 1 };
+  }
+  return { ...previous, sessions: previous.sessions + 1 };
+}
+
+/** True while the warning must stay quiet. */
+export function graceInEffect(state: CaptureGraceState, nowMs: number): boolean {
+  if (state.sessions <= GRACE_SESSIONS) return true;
+  const startedMs = Date.parse(state.firstSeenAt);
+  // An unparseable timestamp must not silence the warning forever: the
+  // session count above is then the whole grace.
+  if (!Number.isFinite(startedMs)) return false;
+  return nowMs - startedMs < GRACE_HOURS * 60 * 60 * 1000;
 }
 
 /**

@@ -23,8 +23,11 @@ import {
   // Aliased: this file already has a local `const memeshDir` (a resolved
   // db-path-derived directory string) — the helper here is the MEMESH_DIR/
   // home resolver the update-check cache itself uses.
+  advanceGraceState,
   captureLivenessNotice,
   captureLivenessVerdict,
+  graceInEffect,
+  parseGraceState,
   ensurePrivateDir as ensurePrivateDirShared,
   memeshDir as memeshHomeDir,
   parseHookOutcomes,
@@ -674,12 +677,43 @@ function captureTargetUnwritable() {
  * Suppression after the next successful write needs no marker of its own: a
  * `wrote` record makes the hook non-silent and the verdict returns to PASS,
  * so this returns null on its own. Only the throttle needs a file.
+ *
+ * It reads the JSONL and nothing else — never the database. SessionStart is
+ * on the critical path of every session start with a 10s budget, and a
+ * banner line is not worth a query against a graph that may be mid-write.
  */
 const CAPTURE_LIVENESS_THROTTLE_MS = 24 * 60 * 60 * 1000;
+const CAPTURE_GRACE_FILE = 'capture-liveness-grace.json';
 
-function captureLivenessBannerLine() {
+/**
+ * Count this session against the post-install / post-upgrade grace, and say
+ * whether the grace is still on.
+ *
+ * The counter is keyed to the installed version, so an upgrade resets it —
+ * an upgrade replaces the hooks, which is exactly when a legitimate run of
+ * skips is expected and a warning would be noise.
+ */
+function captureGraceInEffect(dir, installedVersion) {
+  try {
+    let raw = null;
+    try { raw = readFileSync(join(dir, CAPTURE_GRACE_FILE), 'utf8'); } catch { /* first session */ }
+    const next = advanceGraceState(parseGraceState(raw), installedVersion, Date.now());
+    try {
+      ensurePrivateDirShared(dir);
+      require('fs').writeFileSync(join(dir, CAPTURE_GRACE_FILE), JSON.stringify(next), { mode: 0o600 });
+    } catch { /* best-effort — a lost count only shortens the grace */ }
+    return graceInEffect(next, Date.now());
+  } catch {
+    // Cannot tell how new this install is → assume it is new. Silence is
+    // the safe default for a nudge; doctor still reports the truth.
+    return true;
+  }
+}
+
+function captureLivenessBannerLine(installedVersion) {
   try {
     const dir = memeshHomeDir();
+    if (captureGraceInEffect(dir, installedVersion ?? 'unknown')) return null;
     let raw = null;
     try { raw = readFileSync(join(dir, HOOK_OUTCOMES_FILENAME), 'utf8'); } catch { return null; }
     const verdict = captureLivenessVerdict({ hooks: summarizeHookOutcomes(parseHookOutcomes(raw)), types: [] });
@@ -712,10 +746,16 @@ function captureLivenessBannerLine() {
  */
 function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
   let lines = [];
+  // Hoisted out of the try: the capture-liveness grace is keyed to the
+  // installed version, and it must still be counted when the update-banner
+  // block below throws (a missing package.json must not silently disable the
+  // grace and start warning on a fresh install).
+  let livenessVersion = null;
   try {
     const pluginRoot = resolvePluginRoot(import.meta.url);
     const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
     const installedVersion = typeof pkg.version === 'string' ? pkg.version : null;
+    livenessVersion = installedVersion;
     const cache = readUpdateCheckCache(installedVersion);
     if (installedVersion) {
       const deprecation = buildDeprecationBanner(installedVersion, cache);
@@ -735,7 +775,7 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
   }
   // The capture-liveness line rides the same single systemMessage as every
   // other banner — stdout must stay one JSON document.
-  const liveness = captureLivenessBannerLine();
+  const liveness = captureLivenessBannerLine(livenessVersion);
   if (liveness) lines = [...lines, liveness];
   if (lines.length === 0) return baseMessage;
   return [...lines.filter((l) => l.length > 0), '', baseMessage].join('\n');
