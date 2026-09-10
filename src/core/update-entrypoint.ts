@@ -100,14 +100,10 @@ function cliThrottled(dir: string, currentVersion: string, now: Date): boolean {
       const code = (err as NodeJS.ErrnoException).code;
       if (code !== 'ENOENT') {
         // The marker exists but cannot be opened for writing (read-only
-        // ~/.memesh, another uid's file). Its mtime still answers the only
-        // question that matters; a marker we cannot refresh must not turn
-        // "once a day" into "every command".
-        try {
-          return now.getTime() - fs.statSync(marker).mtimeMs < CLI_NOTICE_THROTTLE_MS;
-        } catch {
-          return true; // unreadable: stay quiet rather than nag
-        }
+        // ~/.memesh, another uid's file). A marker we cannot refresh would
+        // turn "once a day" into "every command" the moment it expires, so
+        // it throttles for good: the hook and MCP doors still speak.
+        return true;
       }
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       try {
@@ -182,22 +178,53 @@ export interface EntryPointNoticeInput {
   refresh?: (dir: string, currentVersion: string, now: Date) => boolean;
 }
 
+/** How long the MCP door waits before re-reading a cache that had no answer. */
+export const MCP_PENDING_RETRY_MS = 60 * 1000;
+
+/**
+ * The MCP door's per-process memory, kept in the caller-owned Set so a
+ * test can hold several "processes" at once. Two shapes of entry:
+ * `<version>` — decided, silent for the rest of the process;
+ * `<version>#retry:<epoch ms>` — no answer yet, look again after that time.
+ */
+class ProcessMemo {
+  private readonly retryPrefix: string;
+  constructor(private readonly set: Set<string> | undefined, private readonly key: string, private readonly now: Date) {
+    this.retryPrefix = `${key}#retry:`;
+  }
+  decided(): boolean {
+    if (!this.set) return false;
+    if (this.set.has(this.key)) return true;
+    for (const entry of this.set) {
+      if (entry.startsWith(this.retryPrefix) && this.now.getTime() < Number(entry.slice(this.retryPrefix.length))) return true;
+    }
+    return false;
+  }
+  decide(): void { this.clearRetry(); this.set?.add(this.key); }
+  retryLater(): void { this.clearRetry(); this.set?.add(`${this.retryPrefix}${this.now.getTime() + MCP_PENDING_RETRY_MS}`); }
+  private clearRetry(): void {
+    if (!this.set) return;
+    for (const entry of [...this.set]) if (entry.startsWith(this.retryPrefix)) this.set.delete(entry);
+  }
+}
+
 /**
  * One line to show, or null. Never throws: an update notice must not break
  * a tool call or a CLI command.
  */
 export function updateNoticeForEntryPoint(input: EntryPointNoticeInput): string | null {
   try {
-    // The MCP door decides once per process, whatever the state: the memo is
-    // taken BEFORE any file is read, so a steady-state server does not re-read
-    // four files on every tool call.
-    if (input.entryPoint === 'mcp') {
-      const key = `${input.currentVersion}`;
-      if (input.processOnce?.has(key)) return null;
-      input.processOnce?.add(key);
-    }
-    const dir = input.dir ?? memeshDir();
     const now = input.now ?? new Date();
+    // The MCP door decides once per process. The memo is checked BEFORE any
+    // file is read, so a steady-state server does not re-read four files on
+    // every tool call — but it is only TAKEN once there is a decision. A
+    // first call that found no answer yet (fresh install, refresh in flight)
+    // must not spend the process's one notice on silence; it re-reads after
+    // a minute, so the process that started the refresh is the one that
+    // reports its result.
+    const memo = input.entryPoint === 'mcp' ? new ProcessMemo(input.processOnce, input.currentVersion, now) : null;
+    if (memo?.decided()) return null;
+    const dir = input.dir ?? memeshDir();
     // Everything is read from `dir` — the same directory the hooks use — not
     // from whatever the process environment happens to say, so an isolated
     // caller (and every test) sees one consistent state.
@@ -208,12 +235,16 @@ export function updateNoticeForEntryPoint(input: EntryPointNoticeInput): string 
       (input.refresh ?? spawnCacheRefresh)(dir, input.currentVersion, now);
     }
     const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
-    if (notice.kind === 'DISABLED' || notice.kind === 'SNOOZED' || notice.kind === 'UP_TO_DATE') return null;
     // Never checked yet (fresh install, or the refresh above has not landed):
-    // nothing to say. Saying "could not confirm" here would put a permanent
-    // false alarm in front of exactly the hosts this door exists for. The
-    // failed-attempt case (a lastError from a real lookup) IS said.
-    if (notice.kind === 'CHECK_FAILED' && !notice.attempted) return null;
+    // nothing to say YET. Saying "could not confirm" here would put a
+    // permanent false alarm in front of exactly the hosts this door exists
+    // for. The failed-attempt case (a lastError from a real lookup) IS said.
+    if (notice.kind === 'CHECK_FAILED' && !notice.attempted) {
+      memo?.retryLater();
+      return null;
+    }
+    memo?.decide();
+    if (notice.kind === 'DISABLED' || notice.kind === 'SNOOZED' || notice.kind === 'UP_TO_DATE') return null;
 
     // A SessionStart hook said this a moment ago, whatever it said.
     if (input.entryPoint === 'mcp'

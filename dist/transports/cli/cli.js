@@ -58947,7 +58947,7 @@ function resolveUpdateNotice(input) {
     let reason = "no update check has completed yet";
     let attempted = false;
     if (cache && cache.currentVersion === currentVersion) {
-      attempted = parseIso(cache.lastAttemptAt) !== null || parseIso(cache.lastSuccessfulCheckAt) !== null || typeof cache.lastError === "string" && cache.lastError.length > 0;
+      attempted = parseIso(cache.lastSuccessfulCheckAt) !== null || typeof cache.lastError === "string" && cache.lastError.length > 0;
       if (typeof cache.lastError === "string" && cache.lastError)
         reason = boundedReason(cache.lastError);
       else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
@@ -59035,11 +59035,7 @@ function cliThrottled(dir, currentVersion, now) {
     } catch (err) {
       const code = err.code;
       if (code !== "ENOENT") {
-        try {
-          return now.getTime() - fs6.statSync(marker).mtimeMs < CLI_NOTICE_THROTTLE_MS;
-        } catch {
-          return true;
-        }
+        return true;
       }
       fs6.mkdirSync(dir, { recursive: true, mode: 448 });
       try {
@@ -59108,16 +59104,52 @@ function spawnCacheRefresh(dir, currentVersion, now) {
     return false;
   }
 }
+var MCP_PENDING_RETRY_MS = 60 * 1e3;
+var ProcessMemo = class {
+  set;
+  key;
+  now;
+  retryPrefix;
+  constructor(set2, key, now) {
+    this.set = set2;
+    this.key = key;
+    this.now = now;
+    this.retryPrefix = `${key}#retry:`;
+  }
+  decided() {
+    if (!this.set)
+      return false;
+    if (this.set.has(this.key))
+      return true;
+    for (const entry of this.set) {
+      if (entry.startsWith(this.retryPrefix) && this.now.getTime() < Number(entry.slice(this.retryPrefix.length)))
+        return true;
+    }
+    return false;
+  }
+  decide() {
+    this.clearRetry();
+    this.set?.add(this.key);
+  }
+  retryLater() {
+    this.clearRetry();
+    this.set?.add(`${this.retryPrefix}${this.now.getTime() + MCP_PENDING_RETRY_MS}`);
+  }
+  clearRetry() {
+    if (!this.set)
+      return;
+    for (const entry of [...this.set])
+      if (entry.startsWith(this.retryPrefix))
+        this.set.delete(entry);
+  }
+};
 function updateNoticeForEntryPoint(input) {
   try {
-    if (input.entryPoint === "mcp") {
-      const key = `${input.currentVersion}`;
-      if (input.processOnce?.has(key))
-        return null;
-      input.processOnce?.add(key);
-    }
-    const dir = input.dir ?? memeshDir();
     const now = input.now ?? /* @__PURE__ */ new Date();
+    const memo = input.entryPoint === "mcp" ? new ProcessMemo(input.processOnce, input.currentVersion, now) : null;
+    if (memo?.decided())
+      return null;
+    const dir = input.dir ?? memeshDir();
     const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : "unknown";
     const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path6.join(dir, `update-check.${tag}.json`) });
@@ -59125,9 +59157,12 @@ function updateNoticeForEntryPoint(input) {
       (input.refresh ?? spawnCacheRefresh)(dir, input.currentVersion, now);
     }
     const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
-    if (notice.kind === "DISABLED" || notice.kind === "SNOOZED" || notice.kind === "UP_TO_DATE")
+    if (notice.kind === "CHECK_FAILED" && !notice.attempted) {
+      memo?.retryLater();
       return null;
-    if (notice.kind === "CHECK_FAILED" && !notice.attempted)
+    }
+    memo?.decide();
+    if (notice.kind === "DISABLED" || notice.kind === "SNOOZED" || notice.kind === "UP_TO_DATE")
       return null;
     if (input.entryPoint === "mcp" && recentHookNoticeExists(dir, notice.currentVersion, notice.kind === "UPGRADE_AVAILABLE" ? notice.latestVersion : null, now)) {
       return null;

@@ -263,7 +263,11 @@ export function resolveUpdateNotice(input: ResolveUpdateNoticeInput): UpdateNoti
     let reason = 'no update check has completed yet';
     let attempted = false;
     if (cache && cache.currentVersion === currentVersion) {
-      attempted = parseIso(cache.lastAttemptAt) !== null || parseIso(cache.lastSuccessfulCheckAt) !== null
+      // "Attempted" means a lookup COMPLETED — with an error, or with an
+      // answer that has since gone stale. A bare lastAttemptAt (a check
+      // still in flight, or one that was interrupted) would make the door
+      // speak while the reason still says "no check has completed yet".
+      attempted = parseIso(cache.lastSuccessfulCheckAt) !== null
         || (typeof cache.lastError === 'string' && cache.lastError.length > 0);
       if (typeof cache.lastError === 'string' && cache.lastError) reason = boundedReason(cache.lastError);
       else if (parseIso(cache.lastSuccessfulCheckAt) !== null) reason = 'the last successful check is more than a day old';

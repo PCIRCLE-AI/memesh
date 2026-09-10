@@ -14,5 +14,6 @@ export interface EntryPointNoticeInput {
     updateCheckEnabled?: boolean;
     refresh?: (dir: string, currentVersion: string, now: Date) => boolean;
 }
+export declare const MCP_PENDING_RETRY_MS: number;
 export declare function updateNoticeForEntryPoint(input: EntryPointNoticeInput): string | null;
 //# sourceMappingURL=update-entrypoint.d.ts.map

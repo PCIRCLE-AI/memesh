@@ -88,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_generated/update-notice.js",
-      "sha256": "5914d985354ebb10cab54ab8d6ebec888e58d625fa8105c9b64441ee1ac9cd99",
-      "bytes": 7701
+      "sha256": "76c8a3e443311a0da54dc270cb283eb47bafbe4c07b9006a592f100258337820",
+      "bytes": 7659
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",

@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   CLI_NOTICE_THROTTLE_MS,
+  MCP_PENDING_RETRY_MS,
   RECENT_HOOK_NOTICE_MS,
   formatUpdateNoticeLine,
   recentHookNoticeExists,
@@ -141,7 +142,24 @@ describe('updateNoticeForEntryPoint', () => {
     expect(updateNoticeForEntryPoint({ dir, currentVersion: '4.9.4', now: NOW, entryPoint: 'mcp', processOnce: new Set(), refresh: () => false })).toBeNull();
   });
 
-  it('mcp: the per-process memo is taken before any file is read, even when up to date', () => {
+  it('mcp: a first call with no answer yet does not spend the notice; the same process reports the refresh result after a minute', () => {
+    const fresh = tmp();
+    const once = new Set<string>();
+    const refreshed: number[] = [];
+    const opts = { dir: fresh, currentVersion: '4.9.4', entryPoint: 'mcp' as const, processOnce: once, refresh: () => { refreshed.push(1); return true; } };
+    expect(updateNoticeForEntryPoint({ ...opts, now: NOW })).toBeNull();
+    expect(once.has('4.9.4')).toBe(false); // undecided, not spent
+    // Within the minute: no file reads, no second spawn, still quiet.
+    cache(fresh, '4.10.0');
+    expect(updateNoticeForEntryPoint({ ...opts, now: new Date(NOW.getTime() + MCP_PENDING_RETRY_MS - 1) })).toBeNull();
+    expect(refreshed).toHaveLength(1);
+    // After the minute the refreshed answer is read and said — by THIS process.
+    expect(updateNoticeForEntryPoint({ ...opts, now: new Date(NOW.getTime() + MCP_PENDING_RETRY_MS) })).toContain('4.10.0 is available');
+    expect(once.has('4.9.4')).toBe(true);
+    expect(updateNoticeForEntryPoint({ ...opts, now: new Date(NOW.getTime() + MCP_PENDING_RETRY_MS + 1) })).toBeNull();
+  });
+
+  it('mcp: the per-process memo is taken as soon as there is a decision, even when up to date', () => {
     const dir = tmp();
     cache(dir, '4.9.4');
     const once = new Set<string>();
@@ -152,7 +170,7 @@ describe('updateNoticeForEntryPoint', () => {
     expect(updateNoticeForEntryPoint({ dir, currentVersion: '4.9.4', now: NOW, entryPoint: 'mcp', processOnce: once, refresh: () => false })).toBeNull();
   });
 
-  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cli: a marker that cannot be rewritten still throttles by its mtime', () => {
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('cli: a marker that cannot be rewritten throttles for good, even once it has expired', () => {
     const dir = tmp();
     cache(dir, '4.10.0');
     const opts = { dir, currentVersion: '4.9.4', now: NOW, entryPoint: 'cli' as const, refresh: () => false };
@@ -162,6 +180,8 @@ describe('updateNoticeForEntryPoint', () => {
     fs.chmodSync(marker, 0o444);
     expect(updateNoticeForEntryPoint(opts)).toBeNull();
     expect(updateNoticeForEntryPoint(opts)).toBeNull();
+    // Expired but unwritable: printing would repeat on every command.
+    expect(updateNoticeForEntryPoint({ ...opts, now: new Date(NOW.getTime() + CLI_NOTICE_THROTTLE_MS + HOUR) })).toBeNull();
     fs.chmodSync(marker, 0o600);
   });
 });

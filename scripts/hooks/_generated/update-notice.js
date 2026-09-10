@@ -171,7 +171,7 @@ export function resolveUpdateNotice(input) {
         let reason = 'no update check has completed yet';
         let attempted = false;
         if (cache && cache.currentVersion === currentVersion) {
-            attempted = parseIso(cache.lastAttemptAt) !== null || parseIso(cache.lastSuccessfulCheckAt) !== null
+            attempted = parseIso(cache.lastSuccessfulCheckAt) !== null
                 || (typeof cache.lastError === 'string' && cache.lastError.length > 0);
             if (typeof cache.lastError === 'string' && cache.lastError)
                 reason = boundedReason(cache.lastError);
