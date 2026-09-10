@@ -44,15 +44,19 @@ function readState(name: string): TaskState {
     .prepare('SELECT metadata FROM entities WHERE name = ?')
     .get(name) as { metadata: string | null } | undefined;
   if (!row?.metadata) return {};
+  let parsed: unknown;
   try {
-    return parseTaskState(JSON.parse(row.metadata));
+    parsed = JSON.parse(row.metadata);
   } catch {
-    // Unparseable metadata is treated as "no state recorded" — the same
-    // decision parseTaskState makes for a value it cannot use. Showing an
-    // agent a goal reconstructed from corrupted JSON is worse than showing
-    // none, and a throw here would take down whatever asked.
-    return {};
+    // Corrupted JSON is a failure the caller must see. Returning {} here
+    // rendered it as "nothing stated" on every surface — indistinguishable
+    // from a project nobody has described — so the Project tab, the CLI
+    // and the MCP tool would all present a broken record as an empty one.
+    throw new Error(`task state for ${name} is not readable: metadata is not valid JSON`);
   }
+  // A well-formed value of the wrong SHAPE is parseTaskState's call: it keeps
+  // the fields it can use and drops the rest.
+  return parseTaskState(parsed);
 }
 
 /** The state currently recorded for a project. Empty object when there is none. */

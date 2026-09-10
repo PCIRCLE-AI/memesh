@@ -9,12 +9,14 @@ function readState(name) {
         .get(name);
     if (!row?.metadata)
         return {};
+    let parsed;
     try {
-        return parseTaskState(JSON.parse(row.metadata));
+        parsed = JSON.parse(row.metadata);
     }
     catch {
-        return {};
+        throw new Error(`task state for ${name} is not readable: metadata is not valid JSON`);
     }
+    return parseTaskState(parsed);
 }
 export function getTaskState(project) {
     const resolved = project ?? getProjectName();

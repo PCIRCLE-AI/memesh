@@ -25,6 +25,11 @@ All notable changes to MeMesh are documented here.
   stated fields with a provenance line, an honest "nothing stated yet" empty
   state that says how to state it, and reports a failed fetch as a failure
   rather than as an empty project. Nothing is inferred from memory counts.
+- **A corrupted task-state record is reported as a failure, not shown as
+  "nothing stated" (#237).** `task_state`, `memesh task` and the new
+  `/v1/task-state` route now fail loudly when the stored metadata is not
+  valid JSON; before, every surface rendered a broken record exactly like a
+  project nobody had described.
 
 ### Changed
 

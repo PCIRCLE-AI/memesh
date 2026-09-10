@@ -1,3 +1,4 @@
+import { Fragment } from 'preact';
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
 import { api, fetchProjects, fetchTaskState, type Entity, type HealthData, type ProjectInfo, type TaskStateData } from '../lib/api';
 import { ProjectRoadmap } from './ProjectRoadmap';
@@ -90,10 +91,10 @@ export function TaskStateCard({ data, error }: { data: TaskStateData | null; err
           <>
             <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '6px 16px', margin: 0 }}>
               {present.map((f) => (
-                <>
-                  <dt key={`${f}-k`} style={{ color: f === 'blocked' ? 'var(--amber)' : 'var(--text-3)', fontSize: 14 }}>{t(`project.taskState.${f}`)}</dt>
-                  <dd key={`${f}-v`} style={{ margin: 0, color: 'var(--text-1)' }}>{data.state[f]}</dd>
-                </>
+                <Fragment key={f}>
+                  <dt style={{ color: f === 'blocked' ? 'var(--amber)' : 'var(--text-3)', fontSize: 14 }}>{t(`project.taskState.${f}`)}</dt>
+                  <dd style={{ margin: 0, color: 'var(--text-1)' }}>{data.state[f]}</dd>
+                </Fragment>
               ))}
             </dl>
             <p style={{ margin: '10px 0 0', fontSize: 14, color: 'var(--text-3)' }}>

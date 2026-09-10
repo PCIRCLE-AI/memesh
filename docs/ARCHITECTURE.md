@@ -236,7 +236,7 @@ The primary dashboard is now the packaged Preact single-page app served by `GET 
 | Project | One project behind a project selector: the owner-stated task state (`memesh task` — goal / next / blocked / done, with its timestamp and a provenance line) above the retrospective **Project History** (capture-density phases, key lessons). Absent state renders as "not stated", never as a guess |
 | Settings | Package update preferences and browser-local interface locale |
 
-The dashboard is a client of the ordinary HTTP API — no private endpoints — so the endpoint list lives in exactly one place: the route table in [API_REFERENCE.md](api/API_REFERENCE.md#http-rest-api), which `scripts/check-doc-claims.mjs` checks against `server.ts`'s registrations. A copy of it used to sit here and had already rotted: it named seven endpoints and missed `/v1/graph/evidence` and `/v1/projects`, both of which the dashboard calls. A second list nothing gates is a list that goes quietly wrong. When the packaged build is unavailable, the HTTP server falls back to the legacy `cli/view-live.ts` HTML generator for compatibility.
+The dashboard is a client of the ordinary HTTP API — no private endpoints — so the endpoint list lives in exactly one place: the route table in [API_REFERENCE.md](api/API_REFERENCE.md#http-rest-api), which `scripts/check-doc-claims.mjs` checks against `server.ts`'s registrations. A copy of it used to sit here and had already rotted: it named seven endpoints and missed two routes the dashboard called (one of them `/v1/projects`). A second list nothing gates is a list that goes quietly wrong. When the packaged build is unavailable, the HTTP server falls back to the legacy `cli/view-live.ts` HTML generator for compatibility.
 
 ---
 

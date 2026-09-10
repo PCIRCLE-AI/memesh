@@ -669,9 +669,9 @@ export function proposeBackfillCandidates(opts: BackfillOptions = {}, db?: Memes
   }
 
   // ---- Rule 5: evidence → work-node linking ----
-  // The two-layer graph counts incoming `evidences` edges for its badges;
-  // hooks capture evidence but never draw this edge, so without this rule
-  // every work node renders zero-badge. Matching is session-first: an exact
+  // An `evidences` edge is the recorded link from a capture to the work it
+  // supports; hooks capture evidence but never draw this edge, so without
+  // this rule every work node has no evidence at all. Matching is session-first: an exact
   // session id shared between the capture and the work item is the strongest
   // "this happened while that work was being done" signal we store. Evidence
   // with no session match falls back to the most recent SAME-PROJECT work

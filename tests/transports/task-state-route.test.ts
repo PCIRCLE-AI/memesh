@@ -2,9 +2,10 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { openDatabase, closeDatabase } from '../../src/db.js';
+import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { app } from '../../src/transports/http/server.js';
 import { setTaskState } from '../../src/core/task-state-store.js';
+import { taskStateName } from '../../src/core/task-state.js';
 
 let server: ReturnType<typeof app.listen>;
 let base = '';
@@ -50,6 +51,24 @@ describe('GET /v1/task-state (#237: the Project tab reads what the owner stated)
     const body = await res.json();
     expect(body.errorCode).toBe('validation.bad-param');
     expect(body.error).toContain('project');
+  });
+
+  it('rejects an empty, blank or oversized project name with 400', async () => {
+    for (const value of ['', '%20%20', 'x'.repeat(201)]) {
+      const res = await fetch(`${base}/v1/task-state?project=${value}`);
+      expect(res.status, `project=${value.slice(0, 12)}…`).toBe(400);
+      expect((await res.json()).errorCode).toBe('validation.bad-param');
+    }
+    // 200 characters is the documented maximum and is accepted.
+    expect((await fetch(`${base}/v1/task-state?project=${'y'.repeat(200)}`)).status).toBe(200);
+  });
+
+  it('answers 500, not an empty state, when the stored metadata is corrupted', async () => {
+    setTaskState({ project: 'broken', patch: { goal: 'was fine' } });
+    getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{oops', taskStateName('broken'));
+    const res = await fetch(`${base}/v1/task-state?project=broken`);
+    expect(res.status).toBe(500);
+    expect((await res.json()).success).toBe(false);
   });
 
   it('the graph routes are gone with the Graph tab', async () => {

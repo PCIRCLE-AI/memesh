@@ -11,6 +11,19 @@ function response(data: unknown): Response {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('Project tab: the stated task state (#237)', () => {
+  it('a failed task-state fetch is shown as a failure, never as "nothing stated"', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/v1/projects')) return Promise.resolve(response([{ name: 'solo', count: 1 }]));
+      if (url.includes('/v1/entities')) return Promise.resolve(response([]));
+      if (url.includes('/v1/task-state')) return Promise.resolve(new Response(JSON.stringify({ success: false, error: 'boom' }), { status: 500, headers: { 'content-type': 'application/json' } }));
+      return Promise.resolve(response({}));
+    }) as typeof fetch);
+    const { container } = render(<ProjectTab dataRevision={0} health={{ status: 'ok', version: 't', entity_count: 1 }} />);
+    await waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent ?? '').not.toBe(''));
+    expect(container.textContent).not.toContain(t('project.taskState.empty'));
+  });
+
   it('renders exactly the fields the owner stated, with provenance, and never invents progress', () => {
     const { container } = render(<TaskStateCard error="" data={{ project: 'p', state: { goal: 'Ship 4.10.0', blocked: 'CI flake', updated_at: new Date().toISOString() } }} />);
     const text = container.textContent ?? '';
