@@ -526,7 +526,7 @@ const packageVersion: string = (() => {
 })();
 let firstCallNoticeOnce = new Set<string>();
 
-/** Tests drive several "processes" through one module instance. */
+/** @internal Tests drive several "processes" through one module instance; not part of the MCP contract. */
 export function resetFirstCallNoticeForTests(): void {
   firstCallNoticeOnce = new Set<string>();
 }

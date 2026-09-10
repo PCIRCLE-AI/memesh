@@ -24793,7 +24793,7 @@ var StdioServerTransport = class {
 };
 
 // dist/mcp/server.js
-import { fileURLToPath as fileURLToPath2 } from "url";
+import { fileURLToPath as fileURLToPath3 } from "url";
 
 // dist/storage/sqlite.js
 import { createRequire } from "node:module";
@@ -25746,6 +25746,36 @@ function redactSecrets(input) {
   let out = input;
   for (const pattern of SECRET_PATTERNS)
     out = out.replace(pattern, "***REDACTED***");
+  return out;
+}
+function redactUserPaths(text) {
+  const home = homeDir();
+  const roots = /* @__PURE__ */ new Set();
+  const add = (root) => {
+    if (!root || !path.isAbsolute(root))
+      return;
+    roots.add(root);
+    try {
+      roots.add(fs.realpathSync(root));
+    } catch {
+    }
+  };
+  add(home);
+  const isInside = (child) => {
+    const rel = path.relative(home, child);
+    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  };
+  for (const dir of [memeshDir(), path.dirname(getDbPath())]) {
+    if (dir && !isInside(dir))
+      add(dir);
+  }
+  const flags = process.platform === "linux" ? "g" : "gi";
+  let out = text;
+  for (const root of [...roots].sort((a, b) => b.length - a.length)) {
+    const escaped = root.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const body = escaped.replace(/\\\\|\//g, "[\\\\/]{1,2}");
+    out = out.replace(new RegExp(`(?<![\\w~](?:[\\\\/]{1,2})?)${body}(?=[\\\\/]|$)`, flags), "~");
+  }
   return out;
 }
 
@@ -26851,7 +26881,7 @@ function getDatabase() {
 
 // dist/transports/mcp/handlers.js
 import fs10 from "node:fs";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/core/scoring.js
 var DEFAULT_WEIGHTS = {
@@ -30145,6 +30175,8 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
 // dist/core/update-entrypoint.js
 import fs9 from "fs";
 import path8 from "path";
+import { spawn } from "child_process";
+import { fileURLToPath } from "url";
 
 // dist/core/version-check.js
 import fs7 from "fs";
@@ -30406,7 +30438,7 @@ function claimJustUpgradedMarker(dir) {
   return { from, to, at: typeof at === "string" ? at : "" };
 }
 function boundedReason(raw) {
-  const oneLine = raw.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const oneLine = redactUserPaths(raw).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
   return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
 }
 function answerIsCurrent(currentVersion, cache, now) {
@@ -30418,6 +30450,14 @@ function answerIsCurrent(currentVersion, cache, now) {
   if (successAt === null)
     return false;
   return now.getTime() - successAt <= ANSWER_VALID_MS;
+}
+function shouldRefreshUpdateCache(currentVersion, cache, now = /* @__PURE__ */ new Date()) {
+  if (!answerIsCurrent(currentVersion, cache, now))
+    return true;
+  const successAt = parseIso(cache.lastSuccessfulCheckAt);
+  const age = now.getTime() - successAt;
+  const upgrade = isStrictlyOlder(currentVersion, cache.latestVersion);
+  return age > (upgrade ? UPGRADE_AVAILABLE_REFRESH_MS : UP_TO_DATE_REFRESH_MS);
 }
 function resolveUpdateNotice(input) {
   const { dir, currentVersion, cache } = input;
@@ -30433,13 +30473,15 @@ function resolveUpdateNotice(input) {
   }
   if (!answerIsCurrent(currentVersion, cache, now)) {
     let reason = "no update check has completed yet";
+    let attempted = false;
     if (cache && cache.currentVersion === currentVersion) {
+      attempted = parseIso(cache.lastAttemptAt) !== null || parseIso(cache.lastSuccessfulCheckAt) !== null || typeof cache.lastError === "string" && cache.lastError.length > 0;
       if (typeof cache.lastError === "string" && cache.lastError)
         reason = boundedReason(cache.lastError);
       else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
         reason = "the last successful check is more than a day old";
     }
-    return { kind: "CHECK_FAILED", currentVersion, reason };
+    return { kind: "CHECK_FAILED", currentVersion, reason, attempted };
   }
   const latestVersion = cache.latestVersion;
   if (!isStrictlyOlder(currentVersion, latestVersion)) {
@@ -30458,6 +30500,7 @@ function resolveUpdateNotice(input) {
 // dist/core/update-entrypoint.js
 var RECENT_HOOK_NOTICE_MS = 10 * 60 * 1e3;
 var CLI_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1e3;
+var FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1e3;
 function formatUpdateNoticeLine(notice) {
   switch (notice.kind) {
     case "UPGRADE_AVAILABLE":
@@ -30489,7 +30532,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
       const value = JSON.parse(fs9.readFileSync(fd, "utf8"));
-      if (value.currentVersion === currentVersion && value.latestVersion === latestVersion)
+      if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
@@ -30518,10 +30561,22 @@ function cliThrottled(dir, currentVersion, now) {
     try {
       fd = fs9.openSync(marker, "r+");
     } catch (err) {
-      if (err.code !== "ENOENT")
-        return false;
+      const code = err.code;
+      if (code !== "ENOENT") {
+        try {
+          return now.getTime() - fs9.statSync(marker).mtimeMs < CLI_NOTICE_THROTTLE_MS;
+        } catch {
+          return true;
+        }
+      }
       fs9.mkdirSync(dir, { recursive: true, mode: 448 });
-      fd = fs9.openSync(marker, "wx", 384);
+      try {
+        fd = fs9.openSync(marker, "wx", 384);
+      } catch (raceErr) {
+        if (raceErr.code === "EEXIST")
+          return true;
+        throw raceErr;
+      }
       fs9.writeSync(fd, String(now.getTime()));
       return false;
     }
@@ -30536,7 +30591,7 @@ function cliThrottled(dir, currentVersion, now) {
     }
     return false;
   } catch {
-    return false;
+    return true;
   } finally {
     if (fd !== null)
       try {
@@ -30545,26 +30600,68 @@ function cliThrottled(dir, currentVersion, now) {
       }
   }
 }
+function spawnCacheRefresh(dir, currentVersion, now) {
+  try {
+    const cliPath = fileURLToPath(new URL("../transports/cli/cli.js", import.meta.url));
+    if (!fs9.existsSync(cliPath))
+      return false;
+    const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
+    const marker = path8.join(dir, `last-fresh-refresh.${tag}.lock`);
+    try {
+      if (now.getTime() - fs9.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+        return false;
+      fs9.unlinkSync(marker);
+    } catch {
+    }
+    fs9.mkdirSync(dir, { recursive: true, mode: 448 });
+    try {
+      const fd = fs9.openSync(marker, "wx", 384);
+      try {
+        fs9.writeSync(fd, `${process.pid}-${now.getTime()}`);
+      } finally {
+        fs9.closeSync(fd);
+      }
+    } catch {
+      return false;
+    }
+    const child = spawn(process.execPath, [cliPath, "status"], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env },
+      windowsHide: true
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
 function updateNoticeForEntryPoint(input) {
   try {
-    const dir = input.dir ?? memeshDir();
-    const now = input.now ?? /* @__PURE__ */ new Date();
-    const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
-    const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : "unknown";
-    const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path8.join(dir, `update-check.${tag}.json`) });
-    const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
-    if (notice.kind === "DISABLED" || notice.kind === "SNOOZED" || notice.kind === "UP_TO_DATE")
-      return null;
     if (input.entryPoint === "mcp") {
       const key = `${input.currentVersion}`;
       if (input.processOnce?.has(key))
         return null;
       input.processOnce?.add(key);
-      if (notice.kind === "UPGRADE_AVAILABLE" && recentHookNoticeExists(dir, notice.currentVersion, notice.latestVersion, now))
-        return null;
-    } else if (cliThrottled(dir, input.currentVersion, now)) {
+    }
+    const dir = input.dir ?? memeshDir();
+    const now = input.now ?? /* @__PURE__ */ new Date();
+    const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
+    const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : "unknown";
+    const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path8.join(dir, `update-check.${tag}.json`) });
+    if (updateCheckEnabled && shouldRefreshUpdateCache(input.currentVersion, cache, now)) {
+      (input.refresh ?? spawnCacheRefresh)(dir, input.currentVersion, now);
+    }
+    const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
+    if (notice.kind === "DISABLED" || notice.kind === "SNOOZED" || notice.kind === "UP_TO_DATE")
+      return null;
+    if (notice.kind === "CHECK_FAILED" && !notice.attempted)
+      return null;
+    if (input.entryPoint === "mcp" && recentHookNoticeExists(dir, notice.currentVersion, notice.kind === "UPGRADE_AVAILABLE" ? notice.latestVersion : null, now)) {
       return null;
     }
+    if (input.entryPoint === "cli" && cliThrottled(dir, input.currentVersion, now))
+      return null;
     if (notice.kind === "JUST_UPGRADED") {
       const claimed = claimJustUpgradedMarker(dir);
       if (!claimed)
@@ -30587,7 +30684,7 @@ function resolveTranscriptWorkspace(project, rootUris) {
       const parsed = new URL(uri);
       if (parsed.protocol !== "file:")
         continue;
-      const root = fs10.realpathSync(fileURLToPath(parsed));
+      const root = fs10.realpathSync(fileURLToPath2(parsed));
       if (!fs10.statSync(root).isDirectory() || getProjectName(root) !== project)
         continue;
       matches.add(root);
@@ -31120,7 +31217,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
 }
 
 // dist/mcp/server.js
-var packageJsonPath = path9.resolve(path9.dirname(fileURLToPath2(import.meta.url)), "../../package.json");
+var packageJsonPath = path9.resolve(path9.dirname(fileURLToPath3(import.meta.url)), "../../package.json");
 var packageVersion2 = JSON.parse(fs11.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({

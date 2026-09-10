@@ -45,9 +45,9 @@ describe('resolveUpdateNotice — one resolver, five answers', () => {
 
   it('CHECK_FAILED — a failed or absent check is never reported as up to date', () => {
     const base = { dir: tmp(), currentVersion: '4.9.4', now: NOW };
-    expect(resolveUpdateNotice({ ...base, cache: null })).toEqual({ kind: 'CHECK_FAILED', currentVersion: '4.9.4', reason: 'no update check has completed yet' });
+    expect(resolveUpdateNotice({ ...base, cache: null })).toEqual({ kind: 'CHECK_FAILED', currentVersion: '4.9.4', reason: 'no update check has completed yet', attempted: false });
     expect(resolveUpdateNotice({ ...base, cache: { currentVersion: '4.9.4', latestVersion: null, lastSuccessfulCheckAt: null, checkSucceeded: false, lastError: 'ENOTFOUND registry.npmjs.org' } }))
-      .toEqual({ kind: 'CHECK_FAILED', currentVersion: '4.9.4', reason: 'ENOTFOUND registry.npmjs.org' });
+      .toEqual({ kind: 'CHECK_FAILED', currentVersion: '4.9.4', reason: 'ENOTFOUND registry.npmjs.org', attempted: true });
     // A cache written for another installed version says nothing about this one.
     expect(resolveUpdateNotice({ ...base, cache: { currentVersion: '4.9.3', latestVersion: '4.9.3', lastSuccessfulCheckAt: iso(-HOUR), checkSucceeded: true } }).kind)
       .toBe('CHECK_FAILED');
@@ -112,6 +112,15 @@ describe('resolveUpdateNotice — one resolver, five answers', () => {
     const reason = (notice as { reason: string }).reason;
     expect(reason).not.toMatch(/[\r\n]/);
     expect(reason.length).toBeLessThanOrEqual(160);
+  });
+
+  it('CHECK_FAILED reason does not leak the home directory npm names in its errors', () => {
+    const home = os.homedir();
+    const notice = resolveUpdateNotice({
+      dir: tmp(), currentVersion: '4.9.4', now: NOW,
+      cache: { currentVersion: '4.9.4', latestVersion: null, lastSuccessfulCheckAt: null, checkSucceeded: false, lastError: `EACCES: permission denied, open '${home}/.npm/_cacache/tmp/x'` },
+    });
+    expect((notice as { reason: string }).reason).not.toContain(home);
   });
 
   it('DISABLED when the owner said never ask again', () => {

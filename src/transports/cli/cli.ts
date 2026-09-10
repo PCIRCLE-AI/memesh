@@ -245,11 +245,16 @@ program
 // stderr, never stdout: commands that print JSON stay parseable. Commands
 // that ARE about updates or setup speak for themselves and are skipped.
 const UPDATE_NOTICE_SILENT_COMMANDS = new Set([
-  'status', 'update', 'doctor', 'config', 'set', 'unset', 'list', 'upgrade-plugin',
-  'serve', 'setup', 'install-hooks', 'uninstall-hooks',
+  'status', 'update', 'doctor', 'config', 'upgrade-plugin', 'serve', 'setup', 'install-hooks', 'uninstall-hooks',
 ]);
+/** The top-level command a leaf belongs to: `memesh config set` → `config`, `memesh dream list` → `dream`. */
+function topLevelCommandName(command: Command): string {
+  let current: Command = command;
+  while (current.parent && current.parent !== program) current = current.parent;
+  return current.name();
+}
 program.hook('preAction', (_thisCommand, actionCommand) => {
-  if (UPDATE_NOTICE_SILENT_COMMANDS.has(actionCommand.name())) return;
+  if (UPDATE_NOTICE_SILENT_COMMANDS.has(topLevelCommandName(actionCommand))) return;
   const line = updateNoticeForEntryPoint({ currentVersion: pkg.version, entryPoint: 'cli' });
   if (line) process.stderr.write(`${line}\n`);
 });

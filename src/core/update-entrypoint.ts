@@ -8,20 +8,27 @@
  * now read the same resolver (update-notice.ts) and the same snooze, receipt
  * and "never ask again" state as the hooks, so the four doors agree.
  *
- * Coordination with the hooks: a SessionStart hook that just emitted the
+ * Coordination with the hooks: a SessionStart hook that just emitted a
  * notice leaves an `update-prompt-claims/*.json` file; an MCP process that
- * starts within RECENT_HOOK_NOTICE_MS of such a claim for the same versions
- * stays quiet instead of saying it twice. The CLI throttles itself to once a
- * day per installed version with a private marker.
+ * starts within RECENT_HOOK_NOTICE_MS of such a claim for this installed
+ * version stays quiet instead of saying it twice. The CLI throttles itself to
+ * once a day per installed version with a private marker. When the cached
+ * answer is missing or stale, either door spawns the same detached refresh
+ * the hook does, so a hook-less host eventually gets a real answer instead
+ * of a permanent "could not confirm".
  */
 import fs from 'fs';
 import path from 'path';
+import { spawn } from 'child_process';
+import { fileURLToPath } from 'url';
 import { memeshDir } from './paths.js';
 import { getLastUpdateCheck } from './version-check.js';
-import { claimJustUpgradedMarker, resolveUpdateNotice, type UpdateNotice } from './update-notice.js';
+import { claimJustUpgradedMarker, resolveUpdateNotice, shouldRefreshUpdateCache, type UpdateNotice } from './update-notice.js';
 
 export const RECENT_HOOK_NOTICE_MS = 10 * 60 * 1000;
 export const CLI_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1000;
+/** Same marker and window the SessionStart hook uses for its detached refresh. */
+export const FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1000;
 
 export type EntryPoint = 'mcp' | 'cli';
 
@@ -43,7 +50,7 @@ export function formatUpdateNoticeLine(notice: UpdateNotice): string | null {
  * files are keyed by session, which this process does not know, so match on
  * versions and recency (file mtime — the hook rewrites the file on emission).
  */
-export function recentHookNoticeExists(dir: string, currentVersion: string, latestVersion: string, now: Date = new Date()): boolean {
+export function recentHookNoticeExists(dir: string, currentVersion: string, latestVersion: string | null, now: Date = new Date()): boolean {
   const claims = path.join(dir, 'update-prompt-claims');
   let names: string[];
   try { names = fs.readdirSync(claims); } catch { return false; }
@@ -59,7 +66,7 @@ export function recentHookNoticeExists(dir: string, currentVersion: string, late
       const stat = fs.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS) continue;
       const value = JSON.parse(fs.readFileSync(fd, 'utf8')) as Record<string, unknown>;
-      if (value.currentVersion === currentVersion && value.latestVersion === latestVersion) return true;
+      if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion)) return true;
     } catch {
       /* one unreadable claim is not evidence either way */
     } finally {
@@ -90,9 +97,27 @@ function cliThrottled(dir: string, currentVersion: string, now: Date): boolean {
     try {
       fd = fs.openSync(marker, 'r+');
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT') {
+        // The marker exists but cannot be opened for writing (read-only
+        // ~/.memesh, another uid's file). Its mtime still answers the only
+        // question that matters; a marker we cannot refresh must not turn
+        // "once a day" into "every command".
+        try {
+          return now.getTime() - fs.statSync(marker).mtimeMs < CLI_NOTICE_THROTTLE_MS;
+        } catch {
+          return true; // unreadable: stay quiet rather than nag
+        }
+      }
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      fd = fs.openSync(marker, 'wx', 0o600);
+      try {
+        fd = fs.openSync(marker, 'wx', 0o600);
+      } catch (raceErr) {
+        // A sibling command created it between our open and ours: it is
+        // printing the line right now, so this one is throttled.
+        if ((raceErr as NodeJS.ErrnoException).code === 'EEXIST') return true;
+        throw raceErr;
+      }
       fs.writeSync(fd, String(now.getTime()));
       return false;
     }
@@ -103,9 +128,45 @@ function cliThrottled(dir: string, currentVersion: string, now: Date): boolean {
     try { fs.fchmodSync(fd, 0o600); } catch { /* non-POSIX */ }
     return false;
   } catch {
-    return false; // cannot record: better one extra line than a crash
+    return true; // cannot record and cannot tell: silence beats a daily promise broken
   } finally {
     if (fd !== null) try { fs.closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+/**
+ * Entry points only READ the cache; the SessionStart hook is what used to
+ * refresh it, and a host that wires only the MCP server never runs that
+ * hook. So the same detached `memesh status` refresh the hook spawns runs
+ * from here when the answer is missing or stale — throttled through the
+ * hook's own marker so the two never race. Nothing is awaited: the notice
+ * for THIS call comes from the cache as it is; the next call reads the
+ * refreshed answer.
+ */
+function spawnCacheRefresh(dir: string, currentVersion: string, now: Date): boolean {
+  try {
+    const cliPath = fileURLToPath(new URL('../transports/cli/cli.js', import.meta.url));
+    if (!fs.existsSync(cliPath)) return false;
+    const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
+    const marker = path.join(dir, `last-fresh-refresh.${tag}.lock`);
+    try {
+      if (now.getTime() - fs.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS) return false;
+      fs.unlinkSync(marker);
+    } catch { /* absent or already reclaimed */ }
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      const fd = fs.openSync(marker, 'wx', 0o600);
+      try { fs.writeSync(fd, `${process.pid}-${now.getTime()}`); } finally { fs.closeSync(fd); }
+    } catch {
+      return false; // a sibling won the claim
+    }
+    const child = spawn(process.execPath, [cliPath, 'status'], {
+      detached: true, stdio: 'ignore', env: { ...process.env }, windowsHide: true,
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -117,6 +178,8 @@ export interface EntryPointNoticeInput {
   /** Per-process memory for the MCP door; the caller owns the Set. */
   processOnce?: Set<string>;
   updateCheckEnabled?: boolean;
+  /** Tests: observe the detached refresh instead of spawning `memesh status`. */
+  refresh?: (dir: string, currentVersion: string, now: Date) => boolean;
 }
 
 /**
@@ -125,6 +188,14 @@ export interface EntryPointNoticeInput {
  */
 export function updateNoticeForEntryPoint(input: EntryPointNoticeInput): string | null {
   try {
+    // The MCP door decides once per process, whatever the state: the memo is
+    // taken BEFORE any file is read, so a steady-state server does not re-read
+    // four files on every tool call.
+    if (input.entryPoint === 'mcp') {
+      const key = `${input.currentVersion}`;
+      if (input.processOnce?.has(key)) return null;
+      input.processOnce?.add(key);
+    }
     const dir = input.dir ?? memeshDir();
     const now = input.now ?? new Date();
     // Everything is read from `dir` — the same directory the hooks use — not
@@ -133,17 +204,23 @@ export function updateNoticeForEntryPoint(input: EntryPointNoticeInput): string 
     const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : 'unknown';
     const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path.join(dir, `update-check.${tag}.json`) });
+    if (updateCheckEnabled && shouldRefreshUpdateCache(input.currentVersion, cache, now)) {
+      (input.refresh ?? spawnCacheRefresh)(dir, input.currentVersion, now);
+    }
     const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
     if (notice.kind === 'DISABLED' || notice.kind === 'SNOOZED' || notice.kind === 'UP_TO_DATE') return null;
+    // Never checked yet (fresh install, or the refresh above has not landed):
+    // nothing to say. Saying "could not confirm" here would put a permanent
+    // false alarm in front of exactly the hosts this door exists for. The
+    // failed-attempt case (a lastError from a real lookup) IS said.
+    if (notice.kind === 'CHECK_FAILED' && !notice.attempted) return null;
 
-    if (input.entryPoint === 'mcp') {
-      const key = `${input.currentVersion}`;
-      if (input.processOnce?.has(key)) return null;
-      input.processOnce?.add(key);
-      if (notice.kind === 'UPGRADE_AVAILABLE' && recentHookNoticeExists(dir, notice.currentVersion, notice.latestVersion, now)) return null;
-    } else if (cliThrottled(dir, input.currentVersion, now)) {
+    // A SessionStart hook said this a moment ago, whatever it said.
+    if (input.entryPoint === 'mcp'
+      && recentHookNoticeExists(dir, notice.currentVersion, notice.kind === 'UPGRADE_AVAILABLE' ? notice.latestVersion : null, now)) {
       return null;
     }
+    if (input.entryPoint === 'cli' && cliThrottled(dir, input.currentVersion, now)) return null;
 
     if (notice.kind === 'JUST_UPGRADED') {
       // Same atomic hand-off as the hook: whoever claims the receipt says it.

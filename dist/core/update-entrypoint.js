@@ -1,10 +1,13 @@
 import fs from 'fs';
 import path from 'path';
+import { spawn } from 'child_process';
+import { fileURLToPath } from 'url';
 import { memeshDir } from './paths.js';
 import { getLastUpdateCheck } from './version-check.js';
-import { claimJustUpgradedMarker, resolveUpdateNotice } from './update-notice.js';
+import { claimJustUpgradedMarker, resolveUpdateNotice, shouldRefreshUpdateCache } from './update-notice.js';
 export const RECENT_HOOK_NOTICE_MS = 10 * 60 * 1000;
 export const CLI_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1000;
+export const FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1000;
 export function formatUpdateNoticeLine(notice) {
     switch (notice.kind) {
         case 'UPGRADE_AVAILABLE':
@@ -37,7 +40,7 @@ export function recentHookNoticeExists(dir, currentVersion, latestVersion, now =
             if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
                 continue;
             const value = JSON.parse(fs.readFileSync(fd, 'utf8'));
-            if (value.currentVersion === currentVersion && value.latestVersion === latestVersion)
+            if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
                 return true;
         }
         catch {
@@ -70,10 +73,24 @@ function cliThrottled(dir, currentVersion, now) {
             fd = fs.openSync(marker, 'r+');
         }
         catch (err) {
-            if (err.code !== 'ENOENT')
-                return false;
+            const code = err.code;
+            if (code !== 'ENOENT') {
+                try {
+                    return now.getTime() - fs.statSync(marker).mtimeMs < CLI_NOTICE_THROTTLE_MS;
+                }
+                catch {
+                    return true;
+                }
+            }
             fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-            fd = fs.openSync(marker, 'wx', 0o600);
+            try {
+                fd = fs.openSync(marker, 'wx', 0o600);
+            }
+            catch (raceErr) {
+                if (raceErr.code === 'EEXIST')
+                    return true;
+                throw raceErr;
+            }
             fs.writeSync(fd, String(now.getTime()));
             return false;
         }
@@ -89,7 +106,7 @@ function cliThrottled(dir, currentVersion, now) {
         return false;
     }
     catch {
-        return false;
+        return true;
     }
     finally {
         if (fd !== null)
@@ -99,27 +116,69 @@ function cliThrottled(dir, currentVersion, now) {
             catch { }
     }
 }
+function spawnCacheRefresh(dir, currentVersion, now) {
+    try {
+        const cliPath = fileURLToPath(new URL('../transports/cli/cli.js', import.meta.url));
+        if (!fs.existsSync(cliPath))
+            return false;
+        const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
+        const marker = path.join(dir, `last-fresh-refresh.${tag}.lock`);
+        try {
+            if (now.getTime() - fs.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+                return false;
+            fs.unlinkSync(marker);
+        }
+        catch { }
+        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+        try {
+            const fd = fs.openSync(marker, 'wx', 0o600);
+            try {
+                fs.writeSync(fd, `${process.pid}-${now.getTime()}`);
+            }
+            finally {
+                fs.closeSync(fd);
+            }
+        }
+        catch {
+            return false;
+        }
+        const child = spawn(process.execPath, [cliPath, 'status'], {
+            detached: true, stdio: 'ignore', env: { ...process.env }, windowsHide: true,
+        });
+        child.unref();
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
 export function updateNoticeForEntryPoint(input) {
     try {
-        const dir = input.dir ?? memeshDir();
-        const now = input.now ?? new Date();
-        const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
-        const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : 'unknown';
-        const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path.join(dir, `update-check.${tag}.json`) });
-        const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
-        if (notice.kind === 'DISABLED' || notice.kind === 'SNOOZED' || notice.kind === 'UP_TO_DATE')
-            return null;
         if (input.entryPoint === 'mcp') {
             const key = `${input.currentVersion}`;
             if (input.processOnce?.has(key))
                 return null;
             input.processOnce?.add(key);
-            if (notice.kind === 'UPGRADE_AVAILABLE' && recentHookNoticeExists(dir, notice.currentVersion, notice.latestVersion, now))
-                return null;
         }
-        else if (cliThrottled(dir, input.currentVersion, now)) {
+        const dir = input.dir ?? memeshDir();
+        const now = input.now ?? new Date();
+        const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
+        const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : 'unknown';
+        const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path.join(dir, `update-check.${tag}.json`) });
+        if (updateCheckEnabled && shouldRefreshUpdateCache(input.currentVersion, cache, now)) {
+            (input.refresh ?? spawnCacheRefresh)(dir, input.currentVersion, now);
+        }
+        const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
+        if (notice.kind === 'DISABLED' || notice.kind === 'SNOOZED' || notice.kind === 'UP_TO_DATE')
+            return null;
+        if (notice.kind === 'CHECK_FAILED' && !notice.attempted)
+            return null;
+        if (input.entryPoint === 'mcp'
+            && recentHookNoticeExists(dir, notice.currentVersion, notice.kind === 'UPGRADE_AVAILABLE' ? notice.latestVersion : null, now)) {
             return null;
         }
+        if (input.entryPoint === 'cli' && cliThrottled(dir, input.currentVersion, now))
+            return null;
         if (notice.kind === 'JUST_UPGRADED') {
             const claimed = claimJustUpgradedMarker(dir);
             if (!claimed)

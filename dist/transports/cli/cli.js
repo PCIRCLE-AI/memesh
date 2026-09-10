@@ -52639,7 +52639,7 @@ __export(view_live_exports, {
 });
 import fs16 from "fs";
 import path14 from "path";
-import { fileURLToPath } from "url";
+import { fileURLToPath as fileURLToPath2 } from "url";
 function generateLiveDashboardHtml() {
   const CSS = `
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -54585,7 +54585,7 @@ var moduleDir, bundledD3;
 var init_view_live = __esm({
   "dist/cli/view-live.js"() {
     "use strict";
-    moduleDir = path14.dirname(fileURLToPath(import.meta.url));
+    moduleDir = path14.dirname(fileURLToPath2(import.meta.url));
     bundledD3 = fs16.readFileSync(path14.join(moduleDir, "assets", "d3.v7.min.js"), "utf8").replace(/<\/script/gi, "<\\/script");
   }
 });
@@ -57311,7 +57311,7 @@ __export(server_exports, {
 import { randomBytes as randomBytes4, timingSafeEqual } from "crypto";
 import fs20 from "fs";
 import path18 from "path";
-import { fileURLToPath as fileURLToPath2 } from "url";
+import { fileURLToPath as fileURLToPath3 } from "url";
 function isLoopbackRequest(req) {
   const ip = req.ip ?? "";
   return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
@@ -57650,7 +57650,7 @@ var init_server = __esm({
     init_install_channel();
     init_paths();
     init_retired_routes();
-    packageJsonPath = path18.resolve(path18.dirname(fileURLToPath2(import.meta.url)), "../../../package.json");
+    packageJsonPath = path18.resolve(path18.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
     packageRoot = path18.dirname(packageJsonPath);
     packageVersion = JSON.parse(fs20.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
     app = (0, import_express.default)();
@@ -57692,7 +57692,7 @@ var init_server = __esm({
       next();
     });
     app.get("/dashboard", (_req, res) => {
-      const dashboardPath = path18.resolve(path18.dirname(fileURLToPath2(import.meta.url)), "../../../dashboard/dist/index.html");
+      const dashboardPath = path18.resolve(path18.dirname(fileURLToPath3(import.meta.url)), "../../../dashboard/dist/index.html");
       if (fs20.existsSync(dashboardPath)) {
         res.type("html").sendFile(dashboardPath, { dotfiles: "allow" });
       } else {
@@ -58799,15 +58799,18 @@ init_config();
 import { randomBytes as randomBytes5 } from "crypto";
 import fs21 from "fs";
 import path19 from "path";
-import { fileURLToPath as fileURLToPath3 } from "url";
+import { fileURLToPath as fileURLToPath4 } from "url";
 
 // dist/core/update-entrypoint.js
 init_paths();
 init_version_check();
 import fs6 from "fs";
 import path6 from "path";
+import { spawn } from "child_process";
+import { fileURLToPath } from "url";
 
 // dist/core/update-notice.js
+init_paths();
 import fs5 from "fs";
 import path5 from "path";
 var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
@@ -58907,7 +58910,7 @@ function claimJustUpgradedMarker(dir) {
   return { from, to, at: typeof at === "string" ? at : "" };
 }
 function boundedReason(raw) {
-  const oneLine = raw.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  const oneLine = redactUserPaths(raw).replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
   return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
 }
 function answerIsCurrent(currentVersion, cache, now) {
@@ -58919,6 +58922,14 @@ function answerIsCurrent(currentVersion, cache, now) {
   if (successAt === null)
     return false;
   return now.getTime() - successAt <= ANSWER_VALID_MS;
+}
+function shouldRefreshUpdateCache(currentVersion, cache, now = /* @__PURE__ */ new Date()) {
+  if (!answerIsCurrent(currentVersion, cache, now))
+    return true;
+  const successAt = parseIso(cache.lastSuccessfulCheckAt);
+  const age = now.getTime() - successAt;
+  const upgrade = isStrictlyOlder(currentVersion, cache.latestVersion);
+  return age > (upgrade ? UPGRADE_AVAILABLE_REFRESH_MS : UP_TO_DATE_REFRESH_MS);
 }
 function resolveUpdateNotice(input) {
   const { dir, currentVersion, cache } = input;
@@ -58934,13 +58945,15 @@ function resolveUpdateNotice(input) {
   }
   if (!answerIsCurrent(currentVersion, cache, now)) {
     let reason = "no update check has completed yet";
+    let attempted = false;
     if (cache && cache.currentVersion === currentVersion) {
+      attempted = parseIso(cache.lastAttemptAt) !== null || parseIso(cache.lastSuccessfulCheckAt) !== null || typeof cache.lastError === "string" && cache.lastError.length > 0;
       if (typeof cache.lastError === "string" && cache.lastError)
         reason = boundedReason(cache.lastError);
       else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
         reason = "the last successful check is more than a day old";
     }
-    return { kind: "CHECK_FAILED", currentVersion, reason };
+    return { kind: "CHECK_FAILED", currentVersion, reason, attempted };
   }
   const latestVersion = cache.latestVersion;
   if (!isStrictlyOlder(currentVersion, latestVersion)) {
@@ -58959,6 +58972,7 @@ function resolveUpdateNotice(input) {
 // dist/core/update-entrypoint.js
 var RECENT_HOOK_NOTICE_MS = 10 * 60 * 1e3;
 var CLI_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1e3;
+var FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1e3;
 function formatUpdateNoticeLine(notice) {
   switch (notice.kind) {
     case "UPGRADE_AVAILABLE":
@@ -58990,7 +59004,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
       const value = JSON.parse(fs6.readFileSync(fd, "utf8"));
-      if (value.currentVersion === currentVersion && value.latestVersion === latestVersion)
+      if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
@@ -59019,10 +59033,22 @@ function cliThrottled(dir, currentVersion, now) {
     try {
       fd = fs6.openSync(marker, "r+");
     } catch (err) {
-      if (err.code !== "ENOENT")
-        return false;
+      const code = err.code;
+      if (code !== "ENOENT") {
+        try {
+          return now.getTime() - fs6.statSync(marker).mtimeMs < CLI_NOTICE_THROTTLE_MS;
+        } catch {
+          return true;
+        }
+      }
       fs6.mkdirSync(dir, { recursive: true, mode: 448 });
-      fd = fs6.openSync(marker, "wx", 384);
+      try {
+        fd = fs6.openSync(marker, "wx", 384);
+      } catch (raceErr) {
+        if (raceErr.code === "EEXIST")
+          return true;
+        throw raceErr;
+      }
       fs6.writeSync(fd, String(now.getTime()));
       return false;
     }
@@ -59037,7 +59063,7 @@ function cliThrottled(dir, currentVersion, now) {
     }
     return false;
   } catch {
-    return false;
+    return true;
   } finally {
     if (fd !== null)
       try {
@@ -59046,26 +59072,68 @@ function cliThrottled(dir, currentVersion, now) {
       }
   }
 }
+function spawnCacheRefresh(dir, currentVersion, now) {
+  try {
+    const cliPath = fileURLToPath(new URL("../transports/cli/cli.js", import.meta.url));
+    if (!fs6.existsSync(cliPath))
+      return false;
+    const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
+    const marker = path6.join(dir, `last-fresh-refresh.${tag}.lock`);
+    try {
+      if (now.getTime() - fs6.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+        return false;
+      fs6.unlinkSync(marker);
+    } catch {
+    }
+    fs6.mkdirSync(dir, { recursive: true, mode: 448 });
+    try {
+      const fd = fs6.openSync(marker, "wx", 384);
+      try {
+        fs6.writeSync(fd, `${process.pid}-${now.getTime()}`);
+      } finally {
+        fs6.closeSync(fd);
+      }
+    } catch {
+      return false;
+    }
+    const child = spawn(process.execPath, [cliPath, "status"], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env },
+      windowsHide: true
+    });
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
 function updateNoticeForEntryPoint(input) {
   try {
-    const dir = input.dir ?? memeshDir();
-    const now = input.now ?? /* @__PURE__ */ new Date();
-    const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
-    const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : "unknown";
-    const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path6.join(dir, `update-check.${tag}.json`) });
-    const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
-    if (notice.kind === "DISABLED" || notice.kind === "SNOOZED" || notice.kind === "UP_TO_DATE")
-      return null;
     if (input.entryPoint === "mcp") {
       const key = `${input.currentVersion}`;
       if (input.processOnce?.has(key))
         return null;
       input.processOnce?.add(key);
-      if (notice.kind === "UPGRADE_AVAILABLE" && recentHookNoticeExists(dir, notice.currentVersion, notice.latestVersion, now))
-        return null;
-    } else if (cliThrottled(dir, input.currentVersion, now)) {
+    }
+    const dir = input.dir ?? memeshDir();
+    const now = input.now ?? /* @__PURE__ */ new Date();
+    const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
+    const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : "unknown";
+    const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path6.join(dir, `update-check.${tag}.json`) });
+    if (updateCheckEnabled && shouldRefreshUpdateCache(input.currentVersion, cache, now)) {
+      (input.refresh ?? spawnCacheRefresh)(dir, input.currentVersion, now);
+    }
+    const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
+    if (notice.kind === "DISABLED" || notice.kind === "SNOOZED" || notice.kind === "UP_TO_DATE")
+      return null;
+    if (notice.kind === "CHECK_FAILED" && !notice.attempted)
+      return null;
+    if (input.entryPoint === "mcp" && recentHookNoticeExists(dir, notice.currentVersion, notice.kind === "UPGRADE_AVAILABLE" ? notice.latestVersion : null, now)) {
       return null;
     }
+    if (input.entryPoint === "cli" && cliThrottled(dir, input.currentVersion, now))
+      return null;
     if (notice.kind === "JUST_UPGRADED") {
       const claimed = claimJustUpgradedMarker(dir);
       if (!claimed)
@@ -59665,7 +59733,7 @@ function wireUserHooks() {
   const r = installHooks({ pluginRoot: packageRoot2, pluginVersion: pkg.version, scope: "user" });
   return `hooks: added ${r.added}, skipped ${r.skipped} already-installed${r.backupPath ? ` (backup: ${r.backupPath})` : ""}`;
 }
-var packageJsonPath2 = path19.resolve(path19.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
+var packageJsonPath2 = path19.resolve(path19.dirname(fileURLToPath4(import.meta.url)), "../../../package.json");
 var packageRoot2 = path19.dirname(packageJsonPath2);
 var pkg = JSON.parse(fs21.readFileSync(packageJsonPath2, "utf8"));
 var program2 = new Command();
@@ -59675,17 +59743,20 @@ var UPDATE_NOTICE_SILENT_COMMANDS = /* @__PURE__ */ new Set([
   "update",
   "doctor",
   "config",
-  "set",
-  "unset",
-  "list",
   "upgrade-plugin",
   "serve",
   "setup",
   "install-hooks",
   "uninstall-hooks"
 ]);
+function topLevelCommandName(command) {
+  let current = command;
+  while (current.parent && current.parent !== program2)
+    current = current.parent;
+  return current.name();
+}
 program2.hook("preAction", (_thisCommand, actionCommand) => {
-  if (UPDATE_NOTICE_SILENT_COMMANDS.has(actionCommand.name()))
+  if (UPDATE_NOTICE_SILENT_COMMANDS.has(topLevelCommandName(actionCommand)))
     return;
   const line = updateNoticeForEntryPoint({ currentVersion: pkg.version, entryPoint: "cli" });
   if (line)
@@ -61102,10 +61173,10 @@ _Diagnostics unavailable: doctor probe failed._`;
   if (opts.diagnostics !== false) {
     console.log("Re-run with --no-diagnostics to leave out the install ID and the doctor report.");
   }
-  const { spawn } = await import("child_process");
+  const { spawn: spawn2 } = await import("child_process");
   const { command, args } = feedbackBrowserOpenCommand(process.platform, url2);
   try {
-    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    const child = spawn2(command, args, { stdio: "ignore", detached: true });
     const opened = await new Promise((resolve2) => {
       child.once("spawn", () => resolve2(true));
       child.once("error", () => resolve2(false));
@@ -61172,7 +61243,7 @@ if (cliEntryPath && isExecutedModule(cliEntryPath, import.meta.url)) {
 }
 function isExecutedModule(entryPath, moduleUrl) {
   try {
-    return fs21.realpathSync(entryPath) === fs21.realpathSync(fileURLToPath3(moduleUrl));
+    return fs21.realpathSync(entryPath) === fs21.realpathSync(fileURLToPath4(moduleUrl));
   } catch {
     return false;
   }
