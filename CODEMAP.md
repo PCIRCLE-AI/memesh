@@ -77,6 +77,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 - Heuristic relation backfill (orphan connector) → `src/core/kg-backfill.ts`
 
 ### Config / self-update
+- Stated task state read by the dashboard's Project tab → `GET /v1/task-state` in `src/transports/http/server.ts` → `src/core/task-state-store.ts`
 - Config read/write → `src/core/config.ts`
 - Path resolution (explicit `MEMESH_DIR` / `MEMESH_DB_PATH` overrides, then HOME defaults) → `src/core/paths.ts`
 - `memesh doctor` health check + real probes → `src/core/doctor.ts`

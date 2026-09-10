@@ -6702,6 +6702,151 @@ var init_agent_scope_id = __esm({
   }
 });
 
+// dist/core/task-state.js
+function taskStateName(project) {
+  return `${TASK_STATE_TYPE}:${project}`;
+}
+function parseTaskState(metadata) {
+  const state = {};
+  if (!metadata || typeof metadata !== "object")
+    return state;
+  const raw = metadata.task_state;
+  if (!raw || typeof raw !== "object")
+    return state;
+  const bag = raw;
+  for (const field of TASK_STATE_FIELDS) {
+    const value = bag[field];
+    if (typeof value !== "string")
+      continue;
+    const trimmed = value.trim();
+    if (trimmed)
+      state[field] = trimmed;
+  }
+  const updated = bag.updated_at;
+  if (typeof updated === "string" && updated.trim())
+    state.updated_at = updated.trim();
+  return state;
+}
+function normalizeFieldValue(value) {
+  const flat = value.replace(/\s+/g, " ").trim();
+  if (!flat)
+    return null;
+  return flat.length > MAX_FIELD_CHARS ? `${flat.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat;
+}
+function mergeTaskState(previous, patch, now) {
+  const state = { ...previous };
+  const changed = [];
+  const observations = [];
+  for (const field of TASK_STATE_FIELDS) {
+    const incoming = patch[field];
+    if (incoming === void 0)
+      continue;
+    const normalized = normalizeFieldValue(incoming);
+    const current = state[field];
+    if (normalized === (current ?? null))
+      continue;
+    changed.push(field);
+    if (normalized === null) {
+      delete state[field];
+      observations.push(`${field} cleared`);
+    } else {
+      state[field] = normalized;
+      observations.push(`${field}: ${normalized}`);
+    }
+  }
+  if (changed.length > 0)
+    state.updated_at = now;
+  return { state, changed, observations };
+}
+function isEmptyTaskState(state) {
+  return TASK_STATE_FIELDS.every((field) => !state[field]);
+}
+function ageInDays(updatedAt, now) {
+  if (!updatedAt)
+    return null;
+  const then = Date.parse(updatedAt);
+  if (Number.isNaN(then))
+    return null;
+  const days = Math.floor((now.getTime() - then) / 864e5);
+  return days >= 0 ? days : null;
+}
+function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
+  if (isEmptyTaskState(state))
+    return [];
+  const days = ageInDays(state.updated_at, now);
+  const age = days === null ? "at some point" : days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+  const lines = [`Stated about "${project}" ${age}, and not revisited since:`];
+  for (const field of TASK_STATE_FIELDS) {
+    const value = state[field];
+    if (value)
+      lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
+  }
+  return lines;
+}
+var TASK_STATE_TYPE, TASK_STATE_FIELDS, MAX_FIELD_CHARS, FIELD_LABELS;
+var init_task_state = __esm({
+  "dist/core/task-state.js"() {
+    "use strict";
+    TASK_STATE_TYPE = "task-state";
+    TASK_STATE_FIELDS = ["goal", "next", "blocked", "done"];
+    MAX_FIELD_CHARS = 300;
+    FIELD_LABELS = {
+      goal: "Goal",
+      next: "Next",
+      blocked: "Blocked",
+      done: "Had just finished"
+    };
+  }
+});
+
+// dist/core/task-state-store.js
+function readState(name) {
+  const row = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
+  if (!row?.metadata)
+    return {};
+  try {
+    return parseTaskState(JSON.parse(row.metadata));
+  } catch {
+    return {};
+  }
+}
+function getTaskState(project) {
+  const resolved = project ?? getProjectName();
+  return { project: resolved, state: readState(taskStateName(resolved)) };
+}
+function setTaskState(input) {
+  const project = input.project ?? getProjectName();
+  const name = taskStateName(project);
+  const previous = readState(name);
+  const { state, changed, observations } = mergeTaskState(previous, input.patch, (/* @__PURE__ */ new Date()).toISOString());
+  if (changed.length === 0)
+    return { project, state, changed };
+  const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
+  remember({
+    name,
+    type: TASK_STATE_TYPE,
+    observations,
+    tags: [`project:${project}`],
+    title,
+    sourceHost: input.sourceHost
+  });
+  new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
+    ...current,
+    task_state: state
+  }));
+  return { project, state, changed };
+}
+var init_task_state_store = __esm({
+  "dist/core/task-state-store.js"() {
+    "use strict";
+    init_db();
+    init_knowledge_graph();
+    init_paths();
+    init_operations();
+    init_task_state();
+  }
+});
+
 // dist/core/work-topology.js
 function isAutoInjectable(metadata) {
   if (metadata == null)
@@ -52202,87 +52347,6 @@ var init_projects = __esm({
   }
 });
 
-// dist/core/graph.js
-function computeGraph(db2) {
-  const kg = new KnowledgeGraph(db2);
-  const noiseList = Array.from(NOISE_TYPES);
-  const placeholders = noiseList.map(() => "?").join(",");
-  const signalRows = db2.prepare(`SELECT id FROM entities WHERE type NOT IN (${placeholders}) ORDER BY COALESCE(datetime(last_accessed_at), created_at) DESC`).all(...noiseList);
-  const noiseRows = db2.prepare(`SELECT id FROM entities WHERE type IN (${placeholders}) ORDER BY created_at DESC LIMIT 200`).all(...noiseList);
-  const allIds = [...signalRows, ...noiseRows].map((r) => r.id);
-  const entities = kg.getEntitiesByIds(allIds);
-  const relations = db2.prepare(`
-    SELECT e_from.name AS "from", e_to.name AS "to", r.relation_type AS type
-    FROM relations r
-    JOIN entities e_from ON r.from_entity_id = e_from.id
-    JOIN entities e_to ON r.to_entity_id = e_to.id
-  `).all();
-  return { entities, relations, noiseTypes: noiseList };
-}
-function computeWorkGraph(db2) {
-  const kg = new KnowledgeGraph(db2);
-  const workTypes = Array.from(WORK_LAYER_TYPES);
-  const placeholders = workTypes.map(() => "?").join(",");
-  const rows = db2.prepare(`SELECT id FROM entities WHERE type IN (${placeholders}) AND status = 'active'
-     ORDER BY COALESCE(datetime(last_accessed_at), created_at) DESC`).all(...workTypes);
-  const entities = kg.getEntitiesByIds(rows.map((r) => r.id));
-  const relations = db2.prepare(`
-    SELECT e_from.name AS "from", e_to.name AS "to", r.relation_type AS type
-    FROM relations r
-    JOIN entities e_from ON r.from_entity_id = e_from.id
-    JOIN entities e_to ON r.to_entity_id = e_to.id
-    WHERE e_from.type IN (${placeholders}) AND e_to.type IN (${placeholders})
-      AND e_from.status = 'active' AND e_to.status = 'active'
-  `).all(...workTypes, ...workTypes);
-  const countRows = db2.prepare(`
-    SELECT e_to.name AS name, COUNT(*) AS n
-    FROM relations r
-    JOIN entities e_to ON r.to_entity_id = e_to.id
-    JOIN entities e_from ON r.from_entity_id = e_from.id
-    WHERE r.relation_type = 'evidences'
-      AND e_to.type IN (${placeholders})
-      AND e_from.status = 'active'
-    GROUP BY e_to.name
-  `).all(...workTypes);
-  const evidenceCounts = {};
-  for (const row of countRows)
-    evidenceCounts[row.name] = row.n;
-  return { entities, relations, evidenceCounts };
-}
-function computeNodeEvidence(db2, nodeName) {
-  const node = db2.prepare("SELECT id, name FROM entities WHERE name = ?").get(nodeName);
-  if (!node)
-    return null;
-  const kg = new KnowledgeGraph(db2);
-  const rows = db2.prepare(`
-    SELECT e.id
-    FROM relations r
-    JOIN entities e ON r.from_entity_id = e.id
-    WHERE r.relation_type = 'evidences' AND r.to_entity_id = ?
-      AND e.status = 'active'
-    ORDER BY e.created_at DESC, e.id DESC
-    LIMIT ${EVIDENCE_CAP + 1}
-  `).all(node.id);
-  const truncated = rows.length > EVIDENCE_CAP;
-  const entities = kg.getEntitiesByIds(rows.slice(0, EVIDENCE_CAP).map((r) => r.id));
-  const relations = entities.map((e) => ({
-    from: e.name,
-    to: node.name,
-    type: "evidences"
-  }));
-  return { entities, relations, truncated };
-}
-var EVIDENCE_CAP;
-var init_graph = __esm({
-  "dist/core/graph.js"() {
-    "use strict";
-    init_knowledge_graph();
-    init_analytics();
-    init_work_topology();
-    EVIDENCE_CAP = 200;
-  }
-});
-
 // dist/core/version-check.js
 var version_check_exports = {};
 __export(version_check_exports, {
@@ -57627,7 +57691,7 @@ MeMesh HTTP: bearer token generated for remote access.
 function __setRemoteTokenForTest(value) {
   remoteToken = value;
 }
-var import_express, packageJsonPath, packageRoot, packageVersion, app, apiLimiter, remoteToken, serverAuthRequired, CROSS_SITE_REFUSAL, DoctorFixBody, HttpError, ConfigBody, DreamProposalsQuerySchema, RejectBodySchema, EntitiesQuerySchema, HOST, PORT, ALLOW_REMOTE_BY_ENV, isMain, shutdown;
+var import_express, packageJsonPath, packageRoot, packageVersion, app, apiLimiter, remoteToken, serverAuthRequired, CROSS_SITE_REFUSAL, DoctorFixBody, HttpError, ConfigBody, TaskStateQuerySchema, DreamProposalsQuerySchema, RejectBodySchema, EntitiesQuerySchema, HOST, PORT, ALLOW_REMOTE_BY_ENV, isMain, shutdown;
 var init_server = __esm({
   "dist/transports/http/server.js"() {
     "use strict";
@@ -57643,7 +57707,7 @@ var init_server = __esm({
     init_analytics();
     init_stats();
     init_projects();
-    init_graph();
+    init_task_state_store();
     init_schemas3();
     init_agent_messaging2();
     init_version_check();
@@ -57859,35 +57923,18 @@ var init_server = __esm({
         deprecationMessage: update?.deprecationMessage ?? null
       };
     }));
-    app.get("/v1/graph", (req, res) => {
-      const layer = req.query.layer;
-      if (layer !== void 0 && layer !== "work") {
+    TaskStateQuerySchema = external_exports.object({ project: external_exports.string().trim().min(1).max(200) });
+    app.get("/v1/task-state", (req, res) => {
+      const parsed = TaskStateQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
         res.status(400).json({
           success: false,
           errorCode: "validation.bad-param",
-          error: "layer must be 'work' (omit the parameter for the full graph)"
+          error: "project query parameter is required (the project name as shown by /v1/projects)"
         });
         return;
       }
-      handleGet(res, () => layer === "work" ? computeWorkGraph(getDatabase()) : computeGraph(getDatabase()));
-    });
-    app.get("/v1/graph/evidence", (req, res) => {
-      const node = req.query.node;
-      if (typeof node !== "string" || node.length === 0) {
-        res.status(400).json({
-          success: false,
-          errorCode: "validation.bad-param",
-          error: "node query parameter is required (the work-node entity name)"
-        });
-        return;
-      }
-      handleGet(res, () => {
-        const result = computeNodeEvidence(getDatabase(), node);
-        if (result === null) {
-          throw new HttpError(404, "resource.not-found", `Entity "${node}" not found`);
-        }
-        return result;
-      });
+      handleGet(res, () => getTaskState(parsed.data.project));
     });
     app.get("/v1/stats", (_req, res) => handleGet(res, () => computeStats(getDatabase())));
     app.get("/v1/analytics", (_req, res) => handleGet(res, () => computeAnalytics(getDatabase())));
@@ -58878,141 +58925,7 @@ function repoStateLines(state) {
 
 // dist/core/briefing.js
 init_scoring();
-
-// dist/core/task-state-store.js
-init_db();
-init_knowledge_graph();
-init_paths();
-init_operations();
-
-// dist/core/task-state.js
-var TASK_STATE_TYPE = "task-state";
-var TASK_STATE_FIELDS = ["goal", "next", "blocked", "done"];
-var MAX_FIELD_CHARS = 300;
-function taskStateName(project) {
-  return `${TASK_STATE_TYPE}:${project}`;
-}
-function parseTaskState(metadata) {
-  const state = {};
-  if (!metadata || typeof metadata !== "object")
-    return state;
-  const raw = metadata.task_state;
-  if (!raw || typeof raw !== "object")
-    return state;
-  const bag = raw;
-  for (const field of TASK_STATE_FIELDS) {
-    const value = bag[field];
-    if (typeof value !== "string")
-      continue;
-    const trimmed = value.trim();
-    if (trimmed)
-      state[field] = trimmed;
-  }
-  const updated = bag.updated_at;
-  if (typeof updated === "string" && updated.trim())
-    state.updated_at = updated.trim();
-  return state;
-}
-function normalizeFieldValue(value) {
-  const flat = value.replace(/\s+/g, " ").trim();
-  if (!flat)
-    return null;
-  return flat.length > MAX_FIELD_CHARS ? `${flat.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat;
-}
-function mergeTaskState(previous, patch, now) {
-  const state = { ...previous };
-  const changed = [];
-  const observations = [];
-  for (const field of TASK_STATE_FIELDS) {
-    const incoming = patch[field];
-    if (incoming === void 0)
-      continue;
-    const normalized = normalizeFieldValue(incoming);
-    const current = state[field];
-    if (normalized === (current ?? null))
-      continue;
-    changed.push(field);
-    if (normalized === null) {
-      delete state[field];
-      observations.push(`${field} cleared`);
-    } else {
-      state[field] = normalized;
-      observations.push(`${field}: ${normalized}`);
-    }
-  }
-  if (changed.length > 0)
-    state.updated_at = now;
-  return { state, changed, observations };
-}
-function isEmptyTaskState(state) {
-  return TASK_STATE_FIELDS.every((field) => !state[field]);
-}
-var FIELD_LABELS = {
-  goal: "Goal",
-  next: "Next",
-  blocked: "Blocked",
-  done: "Had just finished"
-};
-function ageInDays(updatedAt, now) {
-  if (!updatedAt)
-    return null;
-  const then = Date.parse(updatedAt);
-  if (Number.isNaN(then))
-    return null;
-  const days = Math.floor((now.getTime() - then) / 864e5);
-  return days >= 0 ? days : null;
-}
-function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
-  if (isEmptyTaskState(state))
-    return [];
-  const days = ageInDays(state.updated_at, now);
-  const age = days === null ? "at some point" : days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
-  const lines = [`Stated about "${project}" ${age}, and not revisited since:`];
-  for (const field of TASK_STATE_FIELDS) {
-    const value = state[field];
-    if (value)
-      lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
-  }
-  return lines;
-}
-
-// dist/core/task-state-store.js
-function readState(name) {
-  const row = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
-  if (!row?.metadata)
-    return {};
-  try {
-    return parseTaskState(JSON.parse(row.metadata));
-  } catch {
-    return {};
-  }
-}
-function getTaskState(project) {
-  const resolved = project ?? getProjectName();
-  return { project: resolved, state: readState(taskStateName(resolved)) };
-}
-function setTaskState(input) {
-  const project = input.project ?? getProjectName();
-  const name = taskStateName(project);
-  const previous = readState(name);
-  const { state, changed, observations } = mergeTaskState(previous, input.patch, (/* @__PURE__ */ new Date()).toISOString());
-  if (changed.length === 0)
-    return { project, state, changed };
-  const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
-  remember({
-    name,
-    type: TASK_STATE_TYPE,
-    observations,
-    tags: [`project:${project}`],
-    title,
-    sourceHost: input.sourceHost
-  });
-  new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
-    ...current,
-    task_state: state
-  }));
-  return { project, state, changed };
-}
+init_task_state_store();
 
 // dist/core/agent-message-inbox.js
 function unreadDeliveryCount(db2, project, recipient) {
@@ -59065,6 +58978,7 @@ function unreadInboxLines(count, project, recipient, everSeen) {
 
 // dist/core/briefing.js
 init_agent_scope_id();
+init_task_state();
 init_work_topology();
 var PROJECT_LIMIT = 30;
 var RECENT_LIMIT = 5;
@@ -59293,6 +59207,8 @@ function allWired(statuses) {
 
 // dist/transports/cli/cli.js
 init_install_hooks();
+init_task_state_store();
+init_task_state();
 init_agent_messaging();
 init_agent_messaging2();
 init_agent_message_storage();

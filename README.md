@@ -43,7 +43,7 @@ MeMesh remembers for it. Claude Code hooks capture and restore routine context; 
 - **Capture, recall, reminders, and safeguards at the right time.** MeMesh ships **9 hooks** (nine hook commands) across its Claude Code and Codex integrations: eight Claude Code hooks run at session start, before file edits, after `git commit`, after a plan is approved or a question answered, when Claude stops, before context compaction, when you say "remember this" (5 languages), and before a risky command that repeats an accepted lesson. The plan/question and "remember this" hooks only remind the agent to call `remember`; the ninth command handles both Codex SessionStart and SessionEnd to register and retire an eligible ordinary Codex CLI session.
 - **One memory for all your tools.** A decision stored from Claude Code is available to Codex or Cursor the next day.
 - **Agents can leave each other messages.** A durable inbox survives restarts; on macOS or Linux, an ordinary Codex CLI thread with the MeMesh plugin can keep a bounded post-turn native queue window and consume the accepted message when that same thread resumes.
-- **A dashboard** to browse it all: 5 tabs, 11 languages, at `http://localhost:3737/dashboard`.
+- **A dashboard** to browse it all: 4 tabs, 11 languages, at `http://localhost:3737/dashboard`.
 
 ---
 

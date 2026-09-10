@@ -4,6 +4,25 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Removed
+
+- **The dashboard's Knowledge Graph tab (#237).** The interactive
+  entity/relation canvas, its evidence drill-down, the `GET /v1/graph` and
+  `GET /v1/graph/evidence` routes that only it called, and 43 graph-only
+  interface strings in every locale are gone. A bookmarked `?tab=Graph` or a
+  stored tab preference lands on the Project tab. Owner decision recorded in
+  DESIGN.md: humans could not read the raw graph, and it answered none of the
+  questions a person opens the dashboard with.
+
+### Added
+
+- **The Project tab leads with the owner-stated task state (#237).** A new
+  `GET /v1/task-state?project=` route returns what `memesh task` recorded —
+  goal, next, blocked, done — with its timestamp; the tab renders exactly the
+  stated fields with a provenance line, an honest "nothing stated yet" empty
+  state that says how to state it, and reports a failed fetch as a failure
+  rather than as an empty project. Nothing is inferred from memory counts.
+
 ### Changed
 
 - **First-use update notice: one resolver, escalating snooze, a receipt after

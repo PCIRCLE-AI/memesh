@@ -1,11 +1,11 @@
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
-import { api, fetchProjects, type Entity, type HealthData, type ProjectInfo } from '../lib/api';
+import { api, fetchProjects, fetchTaskState, type Entity, type HealthData, type ProjectInfo, type TaskStateData } from '../lib/api';
 import { ProjectRoadmap } from './ProjectRoadmap';
 import { EmptyLibraryState } from './EmptyLibraryState';
 import { Chip } from './Chip';
 import { t } from '../lib/i18n';
 import { classifyLoadError, failureMessage } from '../lib/failure';
-import { extractProject } from '../lib/entity-display';
+import { extractProject, relativeDate } from '../lib/entity-display';
 import { TerminalHandoff } from './ExternalHandoff';
 
 const FETCH_LIMIT = 2000;
@@ -68,8 +68,48 @@ export function selectProjectEntities(entities: Entity[], selected: string | nul
  * dispatch here: this surface is read-only, and the event exists to sync
  * the header after mutations.
  */
+/**
+ * What the owner said about a project — goal, next, blocked, done — exactly
+ * as `memesh task` recorded it. Nothing here is derived: an absent field is
+ * "not stated", the timestamp is the owner's last statement, and the
+ * provenance line says so. The retrospective history below it is the other
+ * source, and the two are kept visibly apart (#237).
+ */
+const TASK_STATE_FIELDS = ['goal', 'next', 'blocked', 'done'] as const;
+
+export function TaskStateCard({ data, error }: { data: TaskStateData | null; error: string }) {
+  if (error) return <div class="card"><div class="error-box" role="alert">{error}</div></div>;
+  if (!data) return <div class="card"><div class="loading" role="status" /></div>;
+  const present = TASK_STATE_FIELDS.filter((f) => typeof data.state[f] === 'string' && data.state[f]!.trim().length > 0);
+  return (
+    <section class="card" aria-labelledby="task-state-title">
+      <h3 id="task-state-title" style={{ margin: '0 0 8px', fontSize: 15 }}>{t('project.taskState.title')}</h3>
+      {present.length === 0
+        ? <p style={{ margin: 0, color: 'var(--text-2)' }}>{t('project.taskState.empty')}</p>
+        : (
+          <>
+            <dl style={{ display: 'grid', gridTemplateColumns: 'max-content 1fr', gap: '6px 16px', margin: 0 }}>
+              {present.map((f) => (
+                <>
+                  <dt key={`${f}-k`} style={{ color: f === 'blocked' ? 'var(--amber)' : 'var(--text-3)', fontSize: 14 }}>{t(`project.taskState.${f}`)}</dt>
+                  <dd key={`${f}-v`} style={{ margin: 0, color: 'var(--text-1)' }}>{data.state[f]}</dd>
+                </>
+              ))}
+            </dl>
+            <p style={{ margin: '10px 0 0', fontSize: 14, color: 'var(--text-3)' }}>
+              {data.state.updated_at ? `${t('project.taskState.updated', { when: relativeDate(data.state.updated_at) })} · ` : ''}
+              {t('project.taskState.provenance')}
+            </p>
+          </>
+        )}
+    </section>
+  );
+}
+
 export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData | null; dataRevision?: number }) {
   const [entities, setEntities] = useState<Entity[]>([]);
+  const [taskState, setTaskState] = useState<TaskStateData | null>(null);
+  const [taskStateError, setTaskStateError] = useState('');
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(urlProject);
   const [loading, setLoading] = useState(true);
@@ -129,6 +169,21 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
     [entities, selected],
   );
 
+  // The stated task state is fetched per selected project. Settled, not
+  // caught: a failed fetch is reported as a failure, never rendered as
+  // "nothing stated" — the same rule the projects list follows above.
+  useEffect(() => {
+    if (!selected) { setTaskState(null); setTaskStateError(''); return; }
+    let cancelled = false;
+    setTaskState(null);
+    setTaskStateError('');
+    fetchTaskState(selected).then(
+      (data) => { if (!cancelled) setTaskState(data); },
+      (e: unknown) => { if (!cancelled) setTaskStateError(failureMessage(classifyLoadError(e))); },
+    );
+    return () => { cancelled = true; };
+  }, [selected, dataRevision]);
+
   if (loading && entities.length === 0) return <div class="empty"><div class="loading" /></div>;
   if (error && entities.length === 0) return <div class="error-box" role="alert">{error}</div>;
 
@@ -170,7 +225,12 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
         ))}
       </div>
       {selected
-        ? <div class="card"><ProjectRoadmap projectName={selected} entities={projectEntities} /></div>
+        ? (
+          <>
+            <TaskStateCard data={taskState} error={taskStateError} />
+            <div class="card" style={{ marginTop: 12 }}><ProjectRoadmap projectName={selected} entities={projectEntities} /></div>
+          </>
+        )
         : <div class="empty">{t('project.selectPrompt')}</div>}
     </div>
   );

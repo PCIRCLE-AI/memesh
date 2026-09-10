@@ -1371,7 +1371,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
           cursor: 'pointer',
         }}
       >
-        {t('graph.resetView')}
+        {t('roadmap.resetView')}
       </button>
       {/* Hint */}
       <div
