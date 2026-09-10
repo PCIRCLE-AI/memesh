@@ -92,8 +92,9 @@ export function validateContract(contract, cases) {
       if (stale.length === 0) failures.push(`${id}: a negative case must say what a stale answer would contain (must_not_contain)`);
       if (c.failure_class_if_wrong !== 'stale-answer-accepted') failures.push(`${id}: a negative case fails as stale-answer-accepted`);
       // The plausible-but-wrong answer must actually BE in the corpus, or the
-      // case tests nothing: matching is case-insensitive substring, the same
-      // rule the scorer applies to the answer.
+      // case tests nothing. This is a presence check, deliberately LOOSER than
+      // the scorer's answer_matching rule in contract.json (plain
+      // case-insensitive substring over names and observations).
       const corpus = (c.ground_truth?.memories ?? []).flatMap(m => [m.name ?? '', ...(m.observations ?? [])]).join('\n').toLowerCase();
       for (const phrase of stale) {
         if (!corpus.includes(String(phrase).toLowerCase())) failures.push(`${id}: negative case's stale phrase "${phrase}" is not present in ground_truth.memories`);

@@ -154,6 +154,7 @@ describe('benchmark contract validator', () => {
     ['an unknown failure class', (c: any, k: any) => { k.cases[0].failure_class_if_wrong = 'meh'; }, 'not a contract failure class'],
     ['a secret in the corpus', (c: any, k: any) => { k.cases[0].ground_truth.memories[0].observations.push('token sk-abcdefghijklmnop'); }, 'looks like a secret'],
     ['a real user path in a prompt', (c: any, k: any) => { k.cases[0].task_prompt += ' see /Users/someone/notes'; }, 'looks like a secret or a real user path'],
+    ['a negative case whose stale phrase appears nowhere, not even in a memory name', (c: any, k: any) => { const n = k.cases.find((x: any) => x.negative); n.ground_truth.memories[0].name = 'decision-use-libsql'; n.ground_truth.memories[0].observations = ['(moved)']; n.expected_answer.must_not_contain = ['use-libsql-now']; }, 'is not present in ground_truth.memories'],
     ['a negative case whose stale phrase is not in its corpus', (c: any, k: any) => { const n = k.cases.find((x: any) => x.negative); n.expected_answer.must_not_contain = ['use libsql']; }, 'is not present in ground_truth.memories'],
     ['frozen statistics without numbers', (c: any) => { c.statistics.status = 'frozen'; }, 'frozen statistics need a positive sample_size'],
     ['a host that does not say whether tool definitions are itemised', (c: any) => { delete c.measurability.hosts[0].tool_definitions_itemised; }, 'tool_definitions_itemised must be stated'],
@@ -172,6 +173,15 @@ describe('benchmark contract validator', () => {
     source_sha: 'b'.repeat(40), artifact_digest: 'c'.repeat(64), corpus_digest: corpusDigest(cases),
     host: 'claude-code', model: 'claude-haiku-4-5-20251001',
     usage_provenance: { control: ledger('claude-code', 'claude-haiku-4-5-20251001'), treatment: ledger('claude-code', 'claude-haiku-4-5-20251001') },
+  });
+
+  it('a negative case may carry its stale phrase in a memory NAME', () => {
+    const k = clone(cases);
+    const n = k.cases.find((x: any) => x.negative);
+    n.ground_truth.memories[0].name = 'decision-use-better-sqlite3';
+    n.ground_truth.memories[0].observations = ['(moved)'];
+    n.expected_answer.must_not_contain = ['use-better-sqlite3'];
+    expect(validateContract(contract, k)).toEqual([]);
   });
 
   it('accepts a fully bound pilot manifest', () => {
