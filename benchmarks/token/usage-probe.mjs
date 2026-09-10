@@ -69,6 +69,12 @@ function claudeTurns(records) {
   const byRequest = new Map();
   for (const r of records) {
     if (r.type !== 'assistant' || !r.message || !r.message.usage) continue;
+    // Claude Code writes host-side notices (session limit, API error) as
+    // assistant records with model "<synthetic>", an all-zero usage object
+    // and no requestId. They are not API requests: skip them, or a run that
+    // hit a rate limit reads as UNMEASURABLE and its ledger names a model
+    // that never answered.
+    if (r.message.model === '<synthetic>') continue;
     // Without requestId the per-block records of one request cannot be
     // folded back together and every block would count its usage again —
     // a silently doubled total. That is not measurable; say so.

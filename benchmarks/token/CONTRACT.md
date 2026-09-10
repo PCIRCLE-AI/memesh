@@ -108,8 +108,11 @@ The corpus is synthetic. `validate.mjs` scans every case field a runner puts
 in front of a model (memories, prompt, expected answer) and fails on anything
 shaped like a key or a real user path; no owner secret, private transcript or
 real owner graph may be seeded. Matching for `must_contain` /
-`must_not_contain` is case-insensitive substring, and a negative case's stale
-phrase must be present in its own corpus or the validator rejects it.
+`must_not_contain` is case-insensitive and whole-phrase on word boundaries;
+an occurrence under a nearby negation ("do not use better-sqlite3") does not
+count, so the ideal answer to a negative case is not scored as accepting the
+stale one. A negative case's stale phrase must be present in its own corpus
+or the validator rejects it.
 
 ### Arms
 

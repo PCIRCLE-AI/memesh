@@ -42,7 +42,7 @@
   "scoring": {
     "dimensions": ["task_success", "unsupported_or_stale_error", "abstention", "input_tokens", "output_tokens", "context_tokens", "tool_calls", "fallbacks", "latency_ms"],
     "rule": "each dimension is reported separately and never folded into a single score",
-    "answer_matching": "must_contain / must_not_contain are case-insensitive substring matches against the final answer text",
+    "answer_matching": "must_contain / must_not_contain are case-insensitive whole-phrase matches on word boundaries against the final answer text; an occurrence preceded within three words by a negation (not, never, no, don't, avoid, instead of) does not count as containing the phrase, so \"do not use better-sqlite3\" does not accept the stale answer",
     "failure_classes": ["wrong-answer", "stale-answer-accepted", "unsupported-claim", "missed-abstention", "over-abstention", "tool-error", "timeout", "truncated-output"]
   },
   "privacy": {

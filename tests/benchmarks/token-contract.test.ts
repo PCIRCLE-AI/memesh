@@ -78,6 +78,16 @@ describe('usage-probe: Claude Code transcripts', () => {
     const rec = claudeRecord('r', { type: 'text', text: 'x' }, { input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 }) as Record<string, unknown>;
     delete rec.requestId;
     expect(probeTranscript(tmpFile('q.jsonl', [rec]))).toMatchObject({ measurable: false, reason: expect.stringContaining('requestId') });
+    // …but the host's own <synthetic> notices (rate limit, API error) have no
+    // requestId and zero usage by design: they are skipped, not fatal, and
+    // never appear as a model.
+    const zero = { input_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 0 };
+    const synthetic = { type: 'assistant', uuid: 's1', message: { model: '<synthetic>', content: [{ type: 'text', text: "You've hit your session limit" }], usage: zero } };
+    const real = claudeRecord('req_9', { type: 'text', text: 'OK' }, { input_tokens: 3, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 });
+    const withNotice = probeTranscript(tmpFile('s.jsonl', [synthetic, real]));
+    expect(withNotice.measurable).toBe(true);
+    expect(withNotice.ledger.models).toEqual(['claude-haiku-4-5-20251001']);
+    expect(withNotice.ledger.totals.requests).toBe(1);
     const unknown = tmpFile('c.jsonl', [{ hello: 'world' }]);
     expect(probeTranscript(unknown)).toMatchObject({ measurable: false, reason: expect.stringContaining('not recognised') });
     expect(probeTranscript(path.join(os.tmpdir(), 'does-not-exist.jsonl'))).toMatchObject({ measurable: false, reason: expect.stringContaining('ENOENT') });
@@ -179,6 +189,7 @@ describe('benchmark contract validator', () => {
     ['a treatment ledger', (m: any) => { delete m.usage_provenance.treatment; }, 'usage_provenance.treatment missing'],
     ['a ledger from another model', (m: any) => { m.usage_provenance.control.models = ['gpt-5.6-luna']; }, 'must be exactly the manifest model'],
     ['a ledger that saw several models', (m: any) => { m.usage_provenance.control.models = ['claude-haiku-4-5-20251001', 'gpt-5.6-luna']; }, 'must be exactly the manifest model'],
+    ['a ledger with no models field', (m: any) => { delete m.usage_provenance.control.models; }, 'has no models'],
     ['a ledger without a transcript digest', (m: any) => { delete m.usage_provenance.treatment.session.transcript_sha256; }, 'transcript_sha256 missing'],
     ['a short source_sha', (m: any) => { m.source_sha = 'abc123'; }, 'full 40-hex commit SHA'],
     ['estimated tokens presented as a result', (m: any) => { m.estimated_tokens = 1234; }, 'diagnostics and may not appear'],

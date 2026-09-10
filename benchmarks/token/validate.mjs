@@ -94,7 +94,7 @@ export function validateContract(contract, cases) {
       // The plausible-but-wrong answer must actually BE in the corpus, or the
       // case tests nothing: matching is case-insensitive substring, the same
       // rule the scorer applies to the answer.
-      const corpus = (c.ground_truth?.memories ?? []).flatMap(m => m.observations ?? []).join('\n').toLowerCase();
+      const corpus = (c.ground_truth?.memories ?? []).flatMap(m => [m.name ?? '', ...(m.observations ?? [])]).join('\n').toLowerCase();
       for (const phrase of stale) {
         if (!corpus.includes(String(phrase).toLowerCase())) failures.push(`${id}: negative case's stale phrase "${phrase}" is not present in ground_truth.memories`);
       }
@@ -132,7 +132,8 @@ export function validateRunManifest(manifest, contract, cases, { official = fals
       if (ledger.host && manifest.host && ledger.host !== manifest.host) failures.push(`usage_provenance.${arm}: ledger host ${ledger.host} ≠ manifest host ${manifest.host}`);
       // One arm, one model: a ledger that saw several models cannot be bound
       // to a single model identity, however the manifest labels it.
-      if (Array.isArray(ledger.models) && manifest.model && (ledger.models.length !== 1 || ledger.models[0] !== manifest.model)) failures.push(`usage_provenance.${arm}: ledger models [${ledger.models.join(',')}] must be exactly the manifest model ${manifest.model}`);
+      if (!Array.isArray(ledger.models)) failures.push(`usage_provenance.${arm}: ledger has no models`);
+      else if (manifest.model && (ledger.models.length !== 1 || ledger.models[0] !== manifest.model)) failures.push(`usage_provenance.${arm}: ledger models [${ledger.models.join(',')}] must be exactly the manifest model ${manifest.model}`);
     }
   }
   if (manifest.estimated_tokens !== undefined || manifest.char_count_tokens !== undefined) failures.push('run manifest: estimated/char-count tokens are diagnostics and may not appear in a result');
