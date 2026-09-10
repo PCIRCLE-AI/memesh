@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -39,6 +39,29 @@ export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, DE
 export { readRepoState, repoStateLines } from './_generated/repo-state.js';
 export { matchingGuards, guardFromMetadata } from './_generated/guards.js';
 export { writeCitationRule, citationRulePath, CITATION_RULE_BODY } from './_generated/citation-rule.js';
+// Imported locally (recordHookOutcome below uses them) AND re-exported, so
+// every hook reaches the same definition through one module.
+import {
+  appendHookOutcome,
+  detectHookHost,
+  parseHookOutcomes,
+  HOOK_OUTCOMES_FILENAME,
+} from './_generated/capture-liveness.js';
+export {
+  appendHookOutcome,
+  captureLivenessNotice,
+  captureLivenessVerdict,
+  detectHookHost,
+  emptyOutcomeFile,
+  parseHookOutcomes,
+  summarizeHookOutcomes,
+  summarizeTypeTrends,
+  CAPTURE_HOOKS,
+  HEARTBEAT_HOOKS,
+  HOOK_OUTCOMES_FILENAME,
+  HOOK_OUTCOMES_PER_HOOK,
+  SILENT_HOOK_MIN_RUNS,
+} from './_generated/capture-liveness.js';
 export {
   resolveUpdateNotice,
   shouldRefreshUpdateCache,
@@ -483,6 +506,67 @@ export function stampHookRunOnly(env, hook) {
     try {
       process.stderr.write(
         `MeMesh: could not stamp the ${hook} heartbeat on a no-capture exit (${err?.message ?? err}).\n`,
+      );
+    } catch { /* stderr gone */ }
+  }
+}
+
+/**
+ * Record what `hook` DID, on every exit path (issue #327).
+ *
+ * `recordHookRun` answers "did the hook execute"; this answers "and did it
+ * write anything, and if not, why not". The gap between those two questions
+ * is where two days of an empty graph hid: post-commit was executing on every
+ * Bash call and skipping every one of them, because the commits were made
+ * with `-q` and printed no line to match. From the outside that is
+ * indistinguishable from a hook broken by an upgrade.
+ *
+ * Contract, in the same spirit as `stampHookRunOnly`:
+ *   - NEVER throws. Diagnostics must not take capture down with them.
+ *   - NEVER writes to stdout. The hook output contract is a single JSON
+ *     document or nothing at all; one stray line breaks both hosts.
+ *   - Writes atomically (temp + rename). A hook can be killed mid-write by a
+ *     host timeout, and a truncated history file would read as "this hook has
+ *     no records", which is the FAIL signal — a diagnostic that manufactures
+ *     its own alarm is worse than none.
+ *
+ * @param {Record<string,string|undefined>} env
+ * @param {{hook: string, outcome: 'wrote'|'skipped'|'error', reason?: string, entity?: string, payload?: object, sessionId?: string}} info
+ */
+export function recordHookOutcome(env, { hook, outcome, reason, entity, payload, sessionId }) {
+  try {
+    // getMemeshDirFromDbPath(), not memeshDir(): the record must sit beside
+    // the database it describes. A test (or a user) that points
+    // MEMESH_DB_PATH somewhere else would otherwise split the evidence — a
+    // graph in one directory, the liveness history of the hooks that filled
+    // it in another.
+    const dir = getMemeshDirFromDbPath();
+    ensurePrivateDir(dir);
+    const filePath = join(dir, HOOK_OUTCOMES_FILENAME);
+    let raw = null;
+    try { raw = readFileSync(filePath, 'utf8'); } catch { /* first run, or unreadable — start clean */ }
+    const record = {
+      hook,
+      at: new Date().toISOString(),
+      host: detectHookHost(payload ?? null, env),
+      outcome,
+    };
+    if (reason) record.reason = reason;
+    if (entity) record.entity = entity;
+    const sid = sessionId ?? (payload && typeof payload === 'object' ? payload.session_id : undefined);
+    if (typeof sid === 'string' && sid) record.session_id = sid;
+    const next = appendHookOutcome(parseHookOutcomes(raw), record);
+    // Temp name carries the pid so two hooks firing at once cannot truncate
+    // each other's partial file; rename is atomic on the same filesystem, so
+    // a reader sees either the old complete file or the new one.
+    const tmpPath = `${filePath}.${process.pid}.tmp`;
+    writePrivateFile(tmpPath, JSON.stringify(next));
+    renameSync(tmpPath, filePath);
+  } catch (err) {
+    try {
+      process.stderr.write(
+        `MeMesh: could not record the ${hook} hook outcome (${err?.message ?? err}). ` +
+          `Capture itself is unaffected, but 'memesh doctor' will under-report capture liveness.\n`,
       );
     } catch { /* stderr gone */ }
   }
