@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path7) {
-      let input = path7;
+    function removeDotSegments(path10) {
+      let input = path10;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path7, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path7 && path7 !== "/" ? path7 : void 0;
+        const [path10, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path10 && path10 !== "/" ? path10 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs9, exportName) {
+    function addFormats(ajv, list, fs12, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs9[f]);
+        ajv.addFormat(f, fs12[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,8 +6916,8 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs8 from "fs";
-import path6 from "path";
+import fs11 from "fs";
+import path9 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7442,10 +7442,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path7) {
-  if (!path7)
+function getElementAtPath(obj, path10) {
+  if (!path10)
     return obj;
-  return path7.reduce((acc, key) => acc?.[key], obj);
+  return path10.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7854,11 +7854,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path7, issues) {
+function prefixIssues(path10, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path7);
+    iss.path.unshift(path10);
     return iss;
   });
 }
@@ -8005,16 +8005,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path7 = []) => {
+  const processError = (error52, path10 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else {
-        const fullpath = [...path7, ...issue2.path];
+        const fullpath = [...path10, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8041,17 +8041,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path7 = []) => {
+  const processError = (error52, path10 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else {
-        const fullpath = [...path7, ...issue2.path];
+        const fullpath = [...path10, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8083,8 +8083,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path7 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path7) {
+  const path10 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path10) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -21082,13 +21082,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path7 = ref.slice(1).split("/").filter(Boolean);
-  if (path7.length === 0) {
+  const path10 = ref.slice(1).split("/").filter(Boolean);
+  if (path10.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path7[0] === defsKey) {
-    const key = path7[1];
+  if (path10[0] === defsKey) {
+    const key = path10[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -24819,8 +24819,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path7, options = {}) {
-    super(path7, options);
+  constructor(path10, options = {}) {
+    super(path10, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -26850,7 +26850,7 @@ function getDatabase() {
 }
 
 // dist/transports/mcp/handlers.js
-import fs7 from "node:fs";
+import fs10 from "node:fs";
 import { fileURLToPath } from "node:url";
 
 // dist/core/scoring.js
@@ -30142,6 +30142,418 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
   }
 }
 
+// dist/core/update-entrypoint.js
+import fs9 from "fs";
+import path8 from "path";
+
+// dist/core/version-check.js
+import fs7 from "fs";
+import path6 from "path";
+
+// dist/core/semver.js
+var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+var NUMERIC_IDENTIFIER = /^\d+$/;
+function parseSemVer(version2) {
+  const match = SEMVER.exec(version2);
+  if (!match)
+    return null;
+  const prerelease = match[4]?.split(".") ?? null;
+  if (prerelease?.some((identifier) => NUMERIC_IDENTIFIER.test(identifier) && identifier.length > 1 && identifier.startsWith("0")))
+    return null;
+  return {
+    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
+    prerelease
+  };
+}
+function compareIdentifiers(a, b) {
+  const aNumeric = NUMERIC_IDENTIFIER.test(a);
+  const bNumeric = NUMERIC_IDENTIFIER.test(b);
+  if (aNumeric && bNumeric)
+    return BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0;
+  if (aNumeric !== bNumeric)
+    return aNumeric ? -1 : 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+function compareSemVerPrecedence(a, b) {
+  for (let index = 0; index < a.core.length; index += 1) {
+    if (a.core[index] !== b.core[index])
+      return a.core[index] < b.core[index] ? -1 : 1;
+  }
+  if (a.prerelease === null || b.prerelease === null) {
+    if (a.prerelease !== b.prerelease)
+      return a.prerelease === null ? 1 : -1;
+    return 0;
+  }
+  const length = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const aIdentifier = a.prerelease[index];
+    const bIdentifier = b.prerelease[index];
+    if (aIdentifier === void 0 || bIdentifier === void 0) {
+      if (aIdentifier !== bIdentifier)
+        return aIdentifier === void 0 ? -1 : 1;
+      break;
+    }
+    const compared = compareIdentifiers(aIdentifier, bIdentifier);
+    if (compared !== 0)
+      return compared;
+  }
+  return 0;
+}
+
+// dist/core/version-check.js
+var STALE_AFTER_MS = 24 * 60 * 60 * 1e3;
+function isUpdateAvailable(currentVersion, latestVersion) {
+  if (latestVersion === null)
+    return false;
+  const current = parseSemVer(currentVersion);
+  const latest = parseSemVer(latestVersion);
+  if (!current || !latest)
+    return false;
+  return compareSemVerPrecedence(current, latest) < 0;
+}
+function getUpdateCheckPath(updateCheckPath, currentVersion) {
+  if (updateCheckPath)
+    return updateCheckPath;
+  if (process.env.MEMESH_UPDATE_CHECK_PATH)
+    return process.env.MEMESH_UPDATE_CHECK_PATH;
+  const versionTag = currentVersion && /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
+  return path6.join(memeshDir(), `update-check.${versionTag}.json`);
+}
+function parseIsoDate(value) {
+  if (!value)
+    return null;
+  const timestamp = Date.parse(value);
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+function determineFreshness(source, checkSucceeded, lastSuccessfulCheckAt, now) {
+  if (!lastSuccessfulCheckAt)
+    return "unavailable";
+  if (source === "fresh" && checkSucceeded)
+    return "fresh";
+  const successfulAt = parseIsoDate(lastSuccessfulCheckAt);
+  if (successfulAt === null)
+    return "unavailable";
+  return now.getTime() - successfulAt > STALE_AFTER_MS ? "stale" : "cached";
+}
+function buildResult(currentVersion, stored, source, now) {
+  const versionMatches = stored.currentVersion === currentVersion;
+  const deprecationMessage = versionMatches ? stored.currentVersionDeprecation : null;
+  const lastError = versionMatches ? stored.lastError : null;
+  return {
+    currentVersion,
+    latestVersion: stored.latestVersion,
+    checkedAt: stored.lastAttemptAt,
+    lastAttemptAt: stored.lastAttemptAt,
+    lastSuccessfulCheckAt: stored.lastSuccessfulCheckAt,
+    lastError,
+    updateAvailable: isUpdateAvailable(currentVersion, stored.latestVersion),
+    checkSucceeded: stored.checkSucceeded,
+    source,
+    freshness: determineFreshness(source, stored.checkSucceeded, stored.lastSuccessfulCheckAt, now),
+    currentVersionDeprecated: deprecationMessage !== null,
+    deprecationMessage
+  };
+}
+function parseStoredUpdateCheck(raw) {
+  if (!raw || typeof raw !== "object")
+    return null;
+  const candidate = raw;
+  const latestVersion = candidate.latestVersion;
+  const lastAttemptAt = "lastAttemptAt" in candidate ? candidate.lastAttemptAt : candidate.checkedAt;
+  const lastSuccessfulCheckAt = "lastSuccessfulCheckAt" in candidate ? candidate.lastSuccessfulCheckAt : candidate.checkedAt;
+  if (latestVersion !== null && latestVersion !== void 0 && typeof latestVersion !== "string")
+    return null;
+  if (lastAttemptAt !== null && lastAttemptAt !== void 0 && typeof lastAttemptAt !== "string")
+    return null;
+  if (lastSuccessfulCheckAt !== null && lastSuccessfulCheckAt !== void 0 && typeof lastSuccessfulCheckAt !== "string")
+    return null;
+  if ("lastError" in candidate && candidate.lastError !== null && typeof candidate.lastError !== "string")
+    return null;
+  if ("checkSucceeded" in candidate && typeof candidate.checkSucceeded !== "boolean")
+    return null;
+  if ("currentVersion" in candidate && candidate.currentVersion !== null && typeof candidate.currentVersion !== "string")
+    return null;
+  if ("currentVersionDeprecation" in candidate && candidate.currentVersionDeprecation !== null && typeof candidate.currentVersionDeprecation !== "string")
+    return null;
+  const normalizedLatestVersion = latestVersion ?? null;
+  const normalizedLastAttemptAt = lastAttemptAt ?? null;
+  const normalizedLastSuccessfulCheckAt = lastSuccessfulCheckAt ?? null;
+  const checkSucceeded = typeof candidate.checkSucceeded === "boolean" ? candidate.checkSucceeded : normalizedLatestVersion !== null;
+  return {
+    currentVersion: typeof candidate.currentVersion === "string" ? candidate.currentVersion : null,
+    latestVersion: normalizedLatestVersion,
+    lastAttemptAt: normalizedLastAttemptAt,
+    lastSuccessfulCheckAt: normalizedLastSuccessfulCheckAt,
+    lastError: typeof candidate.lastError === "string" ? candidate.lastError : null,
+    checkSucceeded,
+    currentVersionDeprecation: typeof candidate.currentVersionDeprecation === "string" ? candidate.currentVersionDeprecation : null
+  };
+}
+function readStoredUpdateCheck(updateCheckPath, currentVersion) {
+  try {
+    const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
+    if (!fs7.existsSync(targetPath))
+      return null;
+    return parseStoredUpdateCheck(JSON.parse(fs7.readFileSync(targetPath, "utf8")));
+  } catch {
+    return null;
+  }
+}
+function getLastUpdateCheck(currentVersion, options = {}) {
+  const stored = readStoredUpdateCheck(options.updateCheckPath, currentVersion);
+  if (!stored)
+    return null;
+  return buildResult(currentVersion, stored, "cache", options.now ?? /* @__PURE__ */ new Date());
+}
+
+// dist/core/update-notice.js
+import fs8 from "fs";
+import path7 from "path";
+var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
+var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
+var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
+var SNOOZE_LEVEL_MS = [24 * 60 * 60 * 1e3, 48 * 60 * 60 * 1e3, 7 * 24 * 60 * 60 * 1e3];
+var SNOOZE_FILE = "update-snooze.json";
+var JUST_UPGRADED_FILE = "just-upgraded.json";
+function isStrictlyOlder(a, b) {
+  const parse3 = (v) => {
+    const [main2, ...rest] = String(v).split(/[-+]/);
+    const nums = main2.split(".").map((s) => Number.parseInt(s, 10));
+    return { nums, tail: rest.join("-") };
+  };
+  const pa = parse3(a);
+  const pb = parse3(b);
+  const len = Math.max(pa.nums.length, pb.nums.length);
+  for (let i = 0; i < len; i++) {
+    const ai = Number.isFinite(pa.nums[i]) ? pa.nums[i] : 0;
+    const bi = Number.isFinite(pb.nums[i]) ? pb.nums[i] : 0;
+    if (ai !== bi)
+      return ai < bi;
+  }
+  if (pa.tail && !pb.tail)
+    return true;
+  if (!pa.tail && pb.tail)
+    return false;
+  return pa.tail < pb.tail;
+}
+function parseIso(value) {
+  if (typeof value !== "string")
+    return null;
+  const t = Date.parse(value);
+  return Number.isNaN(t) ? null : t;
+}
+function readJson(file2) {
+  try {
+    if (!fs8.existsSync(file2))
+      return null;
+    const parsed = JSON.parse(fs8.readFileSync(file2, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function readSnooze(dir) {
+  const raw = readJson(path7.join(dir, SNOOZE_FILE));
+  if (!raw)
+    return null;
+  const { target, level, since } = raw;
+  if (typeof target !== "string" || !target)
+    return null;
+  if (typeof level !== "number" || !Number.isInteger(level) || level < 1)
+    return null;
+  if (parseIso(since) === null)
+    return null;
+  return { target, level, since };
+}
+function snoozeExpiresAt(state) {
+  const since = parseIso(state.since) ?? 0;
+  const duration3 = SNOOZE_LEVEL_MS[Math.min(state.level, SNOOZE_LEVEL_MS.length) - 1];
+  return since + duration3;
+}
+function readJustUpgradedMarker(dir) {
+  const raw = readJson(path7.join(dir, JUST_UPGRADED_FILE));
+  if (!raw)
+    return null;
+  const { from, to, at } = raw;
+  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
+    return null;
+  return { from, to, at: typeof at === "string" ? at : "" };
+}
+function clearJustUpgradedMarker(dir) {
+  try {
+    fs8.unlinkSync(path7.join(dir, JUST_UPGRADED_FILE));
+  } catch {
+  }
+}
+function claimJustUpgradedMarker(dir) {
+  const file2 = path7.join(dir, JUST_UPGRADED_FILE);
+  const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    fs8.renameSync(file2, taken);
+  } catch {
+    return null;
+  }
+  const raw = readJson(taken);
+  try {
+    fs8.unlinkSync(taken);
+  } catch {
+  }
+  if (!raw)
+    return null;
+  const { from, to, at } = raw;
+  if (typeof from !== "string" || !from || typeof to !== "string" || !to)
+    return null;
+  return { from, to, at: typeof at === "string" ? at : "" };
+}
+function boundedReason(raw) {
+  const oneLine = raw.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
+}
+function answerIsCurrent(currentVersion, cache, now) {
+  if (!cache || cache.currentVersion !== currentVersion)
+    return false;
+  if (typeof cache.latestVersion !== "string" || !cache.latestVersion)
+    return false;
+  const successAt = parseIso(cache.lastSuccessfulCheckAt);
+  if (successAt === null)
+    return false;
+  return now.getTime() - successAt <= ANSWER_VALID_MS;
+}
+function resolveUpdateNotice(input) {
+  const { dir, currentVersion, cache } = input;
+  const now = input.now ?? /* @__PURE__ */ new Date();
+  if (input.updateCheckEnabled === false)
+    return { kind: "DISABLED", currentVersion };
+  const marker = readJustUpgradedMarker(dir);
+  if (marker) {
+    if (marker.to === currentVersion) {
+      return { kind: "JUST_UPGRADED", currentVersion, from: marker.from, to: marker.to };
+    }
+    clearJustUpgradedMarker(dir);
+  }
+  if (!answerIsCurrent(currentVersion, cache, now)) {
+    let reason = "no update check has completed yet";
+    if (cache && cache.currentVersion === currentVersion) {
+      if (typeof cache.lastError === "string" && cache.lastError)
+        reason = boundedReason(cache.lastError);
+      else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
+        reason = "the last successful check is more than a day old";
+    }
+    return { kind: "CHECK_FAILED", currentVersion, reason };
+  }
+  const latestVersion = cache.latestVersion;
+  if (!isStrictlyOlder(currentVersion, latestVersion)) {
+    return { kind: "UP_TO_DATE", currentVersion, latestVersion };
+  }
+  const snooze = readSnooze(dir);
+  if (snooze && snooze.target === latestVersion) {
+    const until = snoozeExpiresAt(snooze);
+    if (now.getTime() < until) {
+      return { kind: "SNOOZED", currentVersion, latestVersion, until: new Date(until).toISOString(), level: snooze.level };
+    }
+  }
+  return { kind: "UPGRADE_AVAILABLE", currentVersion, latestVersion };
+}
+
+// dist/core/update-entrypoint.js
+var RECENT_HOOK_NOTICE_MS = 10 * 60 * 1e3;
+var CLI_NOTICE_THROTTLE_MS = 24 * 60 * 60 * 1e3;
+function formatUpdateNoticeLine(notice) {
+  switch (notice.kind) {
+    case "UPGRADE_AVAILABLE":
+      return `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}). Run \`memesh update\`, or reply \u201CNot now\u201D / \u201CNever ask again\u201D in a hooked session.`;
+    case "JUST_UPGRADED":
+      return `[memesh update] Upgraded ${notice.from} \u2192 ${notice.to}. Processes started before the upgrade keep running ${notice.from} until they restart.`;
+    case "CHECK_FAILED":
+      return `[memesh update] Could not confirm whether an update exists (${notice.reason}). Status is unknown, not current \u2014 \`memesh status\` retries.`;
+    default:
+      return null;
+  }
+}
+function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__PURE__ */ new Date()) {
+  const claims = path8.join(dir, "update-prompt-claims");
+  let names;
+  try {
+    names = fs9.readdirSync(claims);
+  } catch {
+    return false;
+  }
+  for (const name of names) {
+    if (!name.endsWith(".json"))
+      continue;
+    const file2 = path8.join(claims, name);
+    try {
+      const stat = fs9.statSync(file2);
+      if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
+        continue;
+      const value = JSON.parse(fs9.readFileSync(file2, "utf8"));
+      if (value.currentVersion === currentVersion && value.latestVersion === latestVersion)
+        return true;
+    } catch {
+    }
+  }
+  return false;
+}
+function updateCheckEnabledIn(dir) {
+  try {
+    const raw = JSON.parse(fs9.readFileSync(path8.join(dir, "config.json"), "utf8"));
+    return raw.updateCheck !== false;
+  } catch {
+    return true;
+  }
+}
+function cliThrottled(dir, currentVersion, now) {
+  const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
+  const marker = path8.join(dir, `last-cli-update-notice.${tag}.lock`);
+  try {
+    const stat = fs9.statSync(marker);
+    if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
+      return true;
+  } catch {
+  }
+  try {
+    fs9.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs9.writeFileSync(marker, String(now.getTime()), { mode: 384 });
+    try {
+      fs9.chmodSync(marker, 384);
+    } catch {
+    }
+  } catch {
+  }
+  return false;
+}
+function updateNoticeForEntryPoint(input) {
+  try {
+    const dir = input.dir ?? memeshDir();
+    const now = input.now ?? /* @__PURE__ */ new Date();
+    const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
+    const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : "unknown";
+    const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path8.join(dir, `update-check.${tag}.json`) });
+    const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
+    if (notice.kind === "DISABLED" || notice.kind === "SNOOZED" || notice.kind === "UP_TO_DATE")
+      return null;
+    if (input.entryPoint === "mcp") {
+      const key = `${input.currentVersion}`;
+      if (input.processOnce?.has(key))
+        return null;
+      input.processOnce?.add(key);
+      if (notice.kind === "UPGRADE_AVAILABLE" && recentHookNoticeExists(dir, notice.currentVersion, notice.latestVersion, now))
+        return null;
+    } else if (cliThrottled(dir, input.currentVersion, now)) {
+      return null;
+    }
+    if (notice.kind === "JUST_UPGRADED") {
+      const claimed = claimJustUpgradedMarker(dir);
+      if (!claimed)
+        return null;
+      return formatUpdateNoticeLine({ ...notice, from: claimed.from, to: claimed.to });
+    }
+    return formatUpdateNoticeLine(notice);
+  } catch {
+    return null;
+  }
+}
+
 // dist/transports/mcp/handlers.js
 function resolveTranscriptWorkspace(project, rootUris) {
   if (!rootUris)
@@ -30152,8 +30564,8 @@ function resolveTranscriptWorkspace(project, rootUris) {
       const parsed = new URL(uri);
       if (parsed.protocol !== "file:")
         continue;
-      const root = fs7.realpathSync(fileURLToPath(parsed));
-      if (!fs7.statSync(root).isDirectory() || getProjectName(root) !== project)
+      const root = fs10.realpathSync(fileURLToPath(parsed));
+      if (!fs10.statSync(root).isDirectory() || getProjectName(root) !== project)
         continue;
       matches.add(root);
     } catch {
@@ -30466,8 +30878,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path7 = issue2.path.join(".");
-  return path7 ? `${path7}: ${issue2.message}` : issue2.message;
+  const path10 = issue2.path.join(".");
+  return path10 ? `${path10}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (Array.isArray(value))
@@ -30506,7 +30918,26 @@ function parseOrFail(schema, args) {
 function normalizeClientHost(name) {
   return (name ?? "").replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, 64) || "mcp";
 }
+var packageVersion = (() => {
+  try {
+    return JSON.parse(fs10.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+})();
+var firstCallNoticeOnce = /* @__PURE__ */ new Set();
+function withFirstCallNotice(result) {
+  if (result.isError)
+    return result;
+  const line = updateNoticeForEntryPoint({ currentVersion: packageVersion, entryPoint: "mcp", processOnce: firstCallNoticeOnce });
+  if (!line)
+    return result;
+  return { ...result, content: [...result.content, { type: "text", text: line }] };
+}
 async function handleTool(name, args, sourceHost, signal, requestContext = {}) {
+  return withFirstCallNotice(await handleToolInner(name, args, sourceHost, signal, requestContext));
+}
+async function handleToolInner(name, args, sourceHost, signal, requestContext = {}) {
   try {
     if (name === "work_package") {
       const parsed = parseOrFail(WorkPackageSchema, args);
@@ -30666,9 +31097,9 @@ async function handleTool(name, args, sourceHost, signal, requestContext = {}) {
 }
 
 // dist/mcp/server.js
-var packageJsonPath = path6.resolve(path6.dirname(fileURLToPath2(import.meta.url)), "../../package.json");
-var packageVersion = JSON.parse(fs8.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
-var server = new Server({ name: "memesh", version: packageVersion }, { capabilities: { tools: {} } });
+var packageJsonPath = path9.resolve(path9.dirname(fileURLToPath2(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs11.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
+var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOL_DEFINITIONS.map((t) => ({
     name: t.name,

@@ -12,6 +12,7 @@ import { executeAgentMessageAction } from '../agent-messaging.js';
 import { RememberSchema, RecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, LearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
 import { getProjectName } from '../../core/paths.js';
+import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 export function resolveTranscriptWorkspace(project, rootUris) {
     if (!rootUris)
         return { transcriptWorkspaceError: 'workspace_unavailable' };
@@ -382,7 +383,30 @@ function parseOrFail(schema, args) {
 export function normalizeClientHost(name) {
     return (name ?? '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 64) || 'mcp';
 }
+const packageVersion = (() => {
+    try {
+        return JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version ?? '0.0.0';
+    }
+    catch {
+        return '0.0.0';
+    }
+})();
+let firstCallNoticeOnce = new Set();
+export function resetFirstCallNoticeForTests() {
+    firstCallNoticeOnce = new Set();
+}
+function withFirstCallNotice(result) {
+    if (result.isError)
+        return result;
+    const line = updateNoticeForEntryPoint({ currentVersion: packageVersion, entryPoint: 'mcp', processOnce: firstCallNoticeOnce });
+    if (!line)
+        return result;
+    return { ...result, content: [...result.content, { type: 'text', text: line }] };
+}
 export async function handleTool(name, args, sourceHost, signal, requestContext = {}) {
+    return withFirstCallNotice(await handleToolInner(name, args, sourceHost, signal, requestContext));
+}
+async function handleToolInner(name, args, sourceHost, signal, requestContext = {}) {
     try {
         if (name === 'work_package') {
             const parsed = parseOrFail(WorkPackageSchema, args);
