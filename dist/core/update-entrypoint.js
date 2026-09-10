@@ -30,15 +30,25 @@ export function recentHookNoticeExists(dir, currentVersion, latestVersion, now =
         if (!name.endsWith('.json'))
             continue;
         const file = path.join(claims, name);
+        let fd = null;
         try {
-            const stat = fs.statSync(file);
+            fd = fs.openSync(file, 'r');
+            const stat = fs.fstatSync(fd);
             if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
                 continue;
-            const value = JSON.parse(fs.readFileSync(file, 'utf8'));
+            const value = JSON.parse(fs.readFileSync(fd, 'utf8'));
             if (value.currentVersion === currentVersion && value.latestVersion === latestVersion)
                 return true;
         }
-        catch { }
+        catch {
+        }
+        finally {
+            if (fd !== null)
+                try {
+                    fs.closeSync(fd);
+                }
+                catch { }
+        }
     }
     return false;
 }
@@ -54,22 +64,40 @@ function updateCheckEnabledIn(dir) {
 function cliThrottled(dir, currentVersion, now) {
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
     const marker = path.join(dir, `last-cli-update-notice.${tag}.lock`);
+    let fd = null;
     try {
-        const stat = fs.statSync(marker);
+        try {
+            fd = fs.openSync(marker, 'r+');
+        }
+        catch (err) {
+            if (err.code !== 'ENOENT')
+                return false;
+            fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+            fd = fs.openSync(marker, 'wx', 0o600);
+            fs.writeSync(fd, String(now.getTime()));
+            return false;
+        }
+        const stat = fs.fstatSync(fd);
         if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
             return true;
-    }
-    catch { }
-    try {
-        fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-        fs.writeFileSync(marker, String(now.getTime()), { mode: 0o600 });
+        fs.ftruncateSync(fd, 0);
+        fs.writeSync(fd, String(now.getTime()), 0);
         try {
-            fs.chmodSync(marker, 0o600);
+            fs.fchmodSync(fd, 0o600);
         }
         catch { }
+        return false;
     }
-    catch { }
-    return false;
+    catch {
+        return false;
+    }
+    finally {
+        if (fd !== null)
+            try {
+                fs.closeSync(fd);
+            }
+            catch { }
+    }
 }
 export function updateNoticeForEntryPoint(input) {
     try {

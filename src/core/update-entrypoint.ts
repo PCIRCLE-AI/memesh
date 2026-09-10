@@ -50,12 +50,21 @@ export function recentHookNoticeExists(dir: string, currentVersion: string, late
   for (const name of names) {
     if (!name.endsWith('.json')) continue;
     const file = path.join(claims, name);
+    // One descriptor for both the mtime and the bytes: a stat on the path
+    // followed by a read of the path is a check-then-use race (the hook may
+    // rewrite the claim in between). fstat + read on the same fd is not.
+    let fd: number | null = null;
     try {
-      const stat = fs.statSync(file);
+      fd = fs.openSync(file, 'r');
+      const stat = fs.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS) continue;
-      const value = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+      const value = JSON.parse(fs.readFileSync(fd, 'utf8')) as Record<string, unknown>;
       if (value.currentVersion === currentVersion && value.latestVersion === latestVersion) return true;
-    } catch { /* one unreadable claim is not evidence either way */ }
+    } catch {
+      /* one unreadable claim is not evidence either way */
+    } finally {
+      if (fd !== null) try { fs.closeSync(fd); } catch { /* already closed */ }
+    }
   }
   return false;
 }
@@ -73,16 +82,31 @@ function updateCheckEnabledIn(dir: string): boolean {
 function cliThrottled(dir: string, currentVersion: string, now: Date): boolean {
   const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
   const marker = path.join(dir, `last-cli-update-notice.${tag}.lock`);
+  // Open first, decide on the descriptor, write through the same descriptor:
+  // no stat-then-write window in which a concurrent CLI could slip a second
+  // line through (or CodeQL a js/file-system-race).
+  let fd: number | null = null;
   try {
-    const stat = fs.statSync(marker);
+    try {
+      fd = fs.openSync(marker, 'r+');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fd = fs.openSync(marker, 'wx', 0o600);
+      fs.writeSync(fd, String(now.getTime()));
+      return false;
+    }
+    const stat = fs.fstatSync(fd);
     if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS) return true;
-  } catch { /* no marker: not throttled */ }
-  try {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(marker, String(now.getTime()), { mode: 0o600 });
-    try { fs.chmodSync(marker, 0o600); } catch { /* non-POSIX */ }
-  } catch { /* cannot record: better one extra line than a crash */ }
-  return false;
+    fs.ftruncateSync(fd, 0);
+    fs.writeSync(fd, String(now.getTime()), 0);
+    try { fs.fchmodSync(fd, 0o600); } catch { /* non-POSIX */ }
+    return false;
+  } catch {
+    return false; // cannot record: better one extra line than a crash
+  } finally {
+    if (fd !== null) try { fs.closeSync(fd); } catch { /* already closed */ }
+  }
 }
 
 export interface EntryPointNoticeInput {

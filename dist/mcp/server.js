@@ -30482,14 +30482,22 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
     if (!name.endsWith(".json"))
       continue;
     const file2 = path8.join(claims, name);
+    let fd = null;
     try {
-      const stat = fs9.statSync(file2);
+      fd = fs9.openSync(file2, "r");
+      const stat = fs9.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
-      const value = JSON.parse(fs9.readFileSync(file2, "utf8"));
+      const value = JSON.parse(fs9.readFileSync(fd, "utf8"));
       if (value.currentVersion === currentVersion && value.latestVersion === latestVersion)
         return true;
     } catch {
+    } finally {
+      if (fd !== null)
+        try {
+          fs9.closeSync(fd);
+        } catch {
+        }
     }
   }
   return false;
@@ -30505,22 +30513,37 @@ function updateCheckEnabledIn(dir) {
 function cliThrottled(dir, currentVersion, now) {
   const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
   const marker = path8.join(dir, `last-cli-update-notice.${tag}.lock`);
+  let fd = null;
   try {
-    const stat = fs9.statSync(marker);
+    try {
+      fd = fs9.openSync(marker, "r+");
+    } catch (err) {
+      if (err.code !== "ENOENT")
+        return false;
+      fs9.mkdirSync(dir, { recursive: true, mode: 448 });
+      fd = fs9.openSync(marker, "wx", 384);
+      fs9.writeSync(fd, String(now.getTime()));
+      return false;
+    }
+    const stat = fs9.fstatSync(fd);
     if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
       return true;
-  } catch {
-  }
-  try {
-    fs9.mkdirSync(dir, { recursive: true, mode: 448 });
-    fs9.writeFileSync(marker, String(now.getTime()), { mode: 384 });
+    fs9.ftruncateSync(fd, 0);
+    fs9.writeSync(fd, String(now.getTime()), 0);
     try {
-      fs9.chmodSync(marker, 384);
+      fs9.fchmodSync(fd, 384);
     } catch {
     }
+    return false;
   } catch {
+    return false;
+  } finally {
+    if (fd !== null)
+      try {
+        fs9.closeSync(fd);
+      } catch {
+      }
   }
-  return false;
 }
 function updateNoticeForEntryPoint(input) {
   try {
