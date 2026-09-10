@@ -14,6 +14,17 @@ import {
 } from '../../scripts/hooks/_shared.js';
 
 const CURRENT_VERSION = JSON.parse(readFileSync(path.resolve('package.json'), 'utf8')).version as string;
+// The "newer release" the fixtures offer is DERIVED from the current version,
+// never written down: a literal is right until the release that catches up
+// with it, and then every "upgrade available" scenario silently reads as up
+// to date (that is exactly how the 4.10.0 bump went red).
+const bumpMinor = (by: number) => {
+  const [major, minor] = CURRENT_VERSION.split('.').map(Number);
+  return `${major}.${minor + by}.0`;
+};
+const NEWER_VERSION = bumpMinor(1);
+const EVEN_NEWER_VERSION = bumpMinor(2);
+const NEWEST_VERSION = bumpMinor(3);
 
 describe('Feature: per-session update consent', () => {
   it('gives a channel-accurate first-use action for a source checkout', () => {
@@ -22,7 +33,7 @@ describe('Feature: per-session update consent', () => {
     const cachePath = path.join(dir, 'update-cache.json');
     writeFileSync(cachePath, JSON.stringify({
       currentVersion: CURRENT_VERSION,
-      latestVersion: '4.10.0',
+      latestVersion: NEWER_VERSION,
       lastSuccessfulCheckAt: new Date().toISOString(),
     }));
     const env = { ...process.env, MEMESH_DIR: dir, MEMESH_DB_PATH: dbPath, MEMESH_UPDATE_CHECK_PATH: cachePath };
@@ -34,7 +45,7 @@ describe('Feature: per-session update consent', () => {
     }).trim());
     expect(String(first.systemMessage)).toContain('cannot be upgraded automatically');
     expect(String(first.systemMessage)).toContain('git pull && npm install && npm run build');
-    expect(String(first.systemMessage).match(/MeMesh 4\.10\.0 is available/g)).toHaveLength(1);
+    expect(String(first.systemMessage).split(`MeMesh ${NEWER_VERSION} is available`)).toHaveLength(2); // exactly one occurrence
     // One update message, in any wording: the routine "update available:" banner
     // must not follow the consent prompt on the no-database path either.
     expect(String(first.systemMessage).match(/available/g)).toHaveLength(1);
@@ -57,7 +68,7 @@ describe('Feature: per-session update consent', () => {
     const dbPath = path.join(dir, 'memesh.db');
     const cachePath = path.join(dir, 'update-cache.json');
     writeFileSync(cachePath, JSON.stringify({
-      currentVersion: CURRENT_VERSION, latestVersion: '4.10.0',
+      currentVersion: CURRENT_VERSION, latestVersion: NEWER_VERSION,
       lastSuccessfulCheckAt: new Date().toISOString(),
     }));
     const env = { ...process.env, MEMESH_DIR: dir, MEMESH_DB_PATH: dbPath, MEMESH_UPDATE_CHECK_PATH: cachePath };
@@ -83,8 +94,8 @@ describe('Feature: per-session update consent', () => {
     const previousDir = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = dir;
     try {
-      writeAutoUpdateConsent('channel-session', CURRENT_VERSION, '4.10.0', 'npm-global', 'approved');
-      expect(findAutoUpdateConsent('channel-session', CURRENT_VERSION, '4.10.0', 'plugin-marketplace')).toBeNull();
+      writeAutoUpdateConsent('channel-session', CURRENT_VERSION, NEWER_VERSION, 'npm-global', 'approved');
+      expect(findAutoUpdateConsent('channel-session', CURRENT_VERSION, NEWER_VERSION, 'plugin-marketplace')).toBeNull();
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;
@@ -96,15 +107,15 @@ describe('Feature: per-session update consent', () => {
     const previousDir = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = dir;
     try {
-      expect(claimUpdatePrompt('same-session', CURRENT_VERSION, '4.10.0', 'source-checkout')).toBe(true);
-      expect(claimUpdatePrompt('same-session', CURRENT_VERSION, '4.10.0', 'plugin-marketplace')).toBe(false);
-      expect(readUpdatePromptClaim('same-session', CURRENT_VERSION, '4.10.0')).toMatchObject({
+      expect(claimUpdatePrompt('same-session', CURRENT_VERSION, NEWER_VERSION, 'source-checkout')).toBe(true);
+      expect(claimUpdatePrompt('same-session', CURRENT_VERSION, NEWER_VERSION, 'plugin-marketplace')).toBe(false);
+      expect(readUpdatePromptClaim('same-session', CURRENT_VERSION, NEWER_VERSION)).toMatchObject({
         sessionId: 'same-session',
         channel: 'source-checkout',
         decision: 'pending',
       });
-      expect(finalizeUpdatePromptClaim('same-session', CURRENT_VERSION, '4.10.0')).toBe(true);
-      expect(claimUpdatePrompt('same-session', CURRENT_VERSION, '4.10.0', 'source-checkout')).toBe(false);
+      expect(finalizeUpdatePromptClaim('same-session', CURRENT_VERSION, NEWER_VERSION)).toBe(true);
+      expect(claimUpdatePrompt('same-session', CURRENT_VERSION, NEWER_VERSION, 'source-checkout')).toBe(false);
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;
@@ -120,10 +131,10 @@ describe('Feature: per-session update consent', () => {
     try {
       const child = spawnSync(process.execPath, ['--input-type=module', '-e',
         `import { claimUpdatePrompt } from ${JSON.stringify(pathToFileURL(shared).href)};\n`
-        + `process.exit(claimUpdatePrompt('crashed-session', ${JSON.stringify(CURRENT_VERSION)}, '4.10.0', 'source-checkout') ? 0 : 1);`,
+        + `process.exit(claimUpdatePrompt('crashed-session', ${JSON.stringify(CURRENT_VERSION)}, ${JSON.stringify(NEWER_VERSION)}, 'source-checkout') ? 0 : 1);`,
       ], { env, encoding: 'utf8' });
       expect(child.status, child.stderr).toBe(0);
-      expect(claimUpdatePrompt('crashed-session', CURRENT_VERSION, '4.10.0', 'source-checkout')).toBe(true);
+      expect(claimUpdatePrompt('crashed-session', CURRENT_VERSION, NEWER_VERSION, 'source-checkout')).toBe(true);
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;
@@ -136,7 +147,7 @@ describe('Feature: per-session update consent', () => {
     const cachePath = path.join(dir, 'update-cache.json');
     const transcriptPath = path.join(dir, 'transcript.jsonl');
     writeFileSync(cachePath, JSON.stringify({
-      currentVersion: CURRENT_VERSION, latestVersion: '4.10.0',
+      currentVersion: CURRENT_VERSION, latestVersion: NEWER_VERSION,
       lastSuccessfulCheckAt: new Date().toISOString(),
     }));
     writeFileSync(transcriptPath, [
@@ -163,12 +174,12 @@ describe('Feature: per-session update consent', () => {
     const previousDir = process.env.MEMESH_DIR;
     process.env.MEMESH_DIR = dir;
     try {
-      writeAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, '4.10.0', 'source-checkout', 'approved');
-      writeAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, '4.10.0', 'unknown', 'approved');
+      writeAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, NEWER_VERSION, 'source-checkout', 'approved');
+      writeAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, NEWER_VERSION, 'unknown', 'approved');
       for (const channel of ['npm-global', 'npm-local', 'plugin-marketplace']) {
-        writeAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, '4.10.0', channel, 'approved');
+        writeAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, NEWER_VERSION, channel, 'approved');
       }
-      expect(findAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, '4.10.0', 'source-checkout')).toMatchObject({ decision: 'approved' });
+      expect(findAutoUpdateConsent('stop-consent-session', CURRENT_VERSION, NEWER_VERSION, 'source-checkout')).toMatchObject({ decision: 'approved' });
     } finally {
       if (previousDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousDir;
@@ -215,11 +226,11 @@ describe('Feature: escalating snooze, never-ask, upgrade receipt, loud unknown (
 
   it('"Not now" snoozes that target across NEW sessions, escalates, and a newer target is offered again', () => {
     const h = harness('memesh-update-snooze-');
-    writeFileSync(h.cachePath, cacheFor('4.10.0'));
-    expect(String(h.start('s1').systemMessage)).toContain('MeMesh 4.10.0 is available');
+    writeFileSync(h.cachePath, cacheFor(NEWER_VERSION));
+    expect(String(h.start('s1').systemMessage)).toContain(`MeMesh ${NEWER_VERSION} is available`);
     h.answer('s1', 'Not now');
     const snoozePath = path.join(h.dir, 'update-snooze.json');
-    expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: '4.10.0', level: 1 });
+    expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: NEWER_VERSION, level: 1 });
     // A brand-new session used to be asked again; now it is quiet while snoozed —
     // including the routine 24h banner, so clear its throttle marker first to
     // prove the resolver (not the throttle) is what keeps it quiet.
@@ -228,33 +239,33 @@ describe('Feature: escalating snooze, never-ask, upgrade receipt, loud unknown (
     // Once s1 has answered, later ordinary words from s1 are not decisions.
     h.answer('s1', 'no');
     h.answer('s1', 'later');
-    expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: '4.10.0', level: 1 });
+    expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: NEWER_VERSION, level: 1 });
     // A second decline escalates only when a session was shown the notice again:
     // age the snooze past its 24h window (the record stays, its level is remembered).
     const aged = JSON.parse(readFileSync(snoozePath, 'utf8'));
     writeFileSync(snoozePath, JSON.stringify({ ...aged, since: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() }));
-    expect(String(h.start('s4').systemMessage)).toContain('MeMesh 4.10.0 is available');
+    expect(String(h.start('s4').systemMessage)).toContain(`MeMesh ${NEWER_VERSION} is available`);
     h.answer('s4', 'later');
-    expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: '4.10.0', level: 2 });
+    expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: NEWER_VERSION, level: 2 });
     // A newer release resets the snooze and is offered.
-    writeFileSync(h.cachePath, cacheFor('4.11.0'));
-    expect(String(h.start('s3').systemMessage)).toContain('MeMesh 4.11.0 is available');
+    writeFileSync(h.cachePath, cacheFor(EVEN_NEWER_VERSION));
+    expect(String(h.start('s3').systemMessage)).toContain(`MeMesh ${EVEN_NEWER_VERSION} is available`);
   });
 
   it('an answer from a session that never saw the notice is not a decision', () => {
     const h = harness('memesh-update-stray-');
-    writeFileSync(h.cachePath, cacheFor('4.10.0'));
+    writeFileSync(h.cachePath, cacheFor(NEWER_VERSION));
     h.answer('never-prompted', 'Not now');
     expect(existsSync(path.join(h.dir, 'update-snooze.json'))).toBe(false);
   });
 
   it('"Never ask again" turns checks off in config and silences every later session', () => {
     const h = harness('memesh-update-never-');
-    writeFileSync(h.cachePath, cacheFor('4.10.0'));
+    writeFileSync(h.cachePath, cacheFor(NEWER_VERSION));
     expect(String(h.start('n1').systemMessage)).toContain('is available');
     h.answer('n1', 'never ask again');
     expect(JSON.parse(readFileSync(path.join(h.dir, 'config.json'), 'utf8'))).toMatchObject({ updateCheck: false });
-    writeFileSync(h.cachePath, cacheFor('4.12.0'));
+    writeFileSync(h.cachePath, cacheFor(NEWEST_VERSION));
     // Clear every throttle marker: silence must come from the config, not from a 24h lock.
     for (const f of readdirSync(h.dir)) if (f.endsWith('.lock')) rmSync(path.join(h.dir, f));
     expect(String(h.start('n2').systemMessage)).not.toMatch(/available/);

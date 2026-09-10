@@ -4,6 +4,8 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+## [4.10.0] — 2026-09-11
+
 ### Removed
 
 - **The dashboard's Knowledge Graph tab (#237).** The interactive
