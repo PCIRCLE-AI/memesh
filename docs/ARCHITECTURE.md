@@ -67,12 +67,13 @@ MeMesh separates concerns into two layers:
 - `project-tags.ts` — list / merge / rename `project:<name>` tags AND the `project` scope column of the durable-message tables, in one transaction (heals tags mis-homed before git-based project identity, and the split inboxes that go with them); backs `memesh kg rename-project`
 - `agent-scope-id.ts` — the canonical form (Unicode NFC + trim) and fail-closed validation for durable-message scope identifiers (`project`, `recipient`, `actor`), plus the one list of columns that hold them; imported by the transport boundary and core write path, and mirrored by the read-only `scripts/audit/memory-invariants.mjs` detector. Historical ambiguous identities are preserved until an owner supplies a mapping.
 - `version-check.ts` — npm registry version check for update notifications
+- `update-entrypoint.ts` — the same notice for the other doors: one `[memesh update]` line on the MCP server's first successful tool result per process (appended as a second content item) and on CLI commands (stderr, once a day), suppressed when a hook announced it in the last ten minutes; when the cache is missing or stale it starts the hook's detached `memesh status` refresh (throttled to one per five minutes) and stays quiet until a check has completed
 - `update-notice.ts` — the update-status resolver the hooks read (`UP_TO_DATE` / `UPGRADE_AVAILABLE` / `SNOOZED` / `JUST_UPGRADED` / `CHECK_FAILED` / `DISABLED`), escalating snooze, the post-upgrade receipt and the two-TTL refresh policy; a runtime leaf shared with the hooks via `scripts/hooks/_generated/update-notice.js`
 - `why.ts` — file attribution (`memesh why` / `POST /v1/why`): a git half (`resolveFileCommits`, CLI-only — the HTTP route never shells out) and a DB half (`explainCommits`) joining full SHAs to the abbreviated-hash `commit-*` entity names, walking `metadata.session_id` to session entities, and collecting `file:<basename>`-tagged memories; every gap is a typed abstention
 
 **Transports** (`src/transports/`) — thin adapters that expose core operations:
 - `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, and `dream` have subcommands)
-- `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including two retired 410 routes, plus `/dashboard` and `/favicon.ico`; bearer-auth gate when bound non-loopback
+- `http/server.ts` — Express server (`memesh serve`, default port 3737): 30 `/v1` endpoints including two retired 410 routes, plus `/dashboard` and `/favicon.ico`; bearer-auth gate when bound non-loopback
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that records cooperative transport provenance (not authenticated human/model identity) and never turns a read into a receipt
 - `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
 
@@ -233,13 +234,10 @@ The primary dashboard is now the packaged Preact single-page app served by `GET 
 |-----|---------|
 | Home | Local memory status plus staged work-package review; the analytics stack — health score, 30-day timeline, **MemoryAgeMatrix** (type × age heat map), **KnowledgeRadar** (6-axis SVG), work patterns — remains read-only |
 | Memories | The whole library behind one surface: instant client filter + Enter for server-ranked recall, work-layer / evidence / all / archived scope chips (`layerOf()` over the shared `WORK_LAYER_TYPES` whitelist), cluster composition bar, per-row expandable detail (structured lesson bodies via `LessonCards`), inline archive/restore |
-| Project | One project's roadmap (phases, milestones, key lessons) behind a project selector |
-| Graph | Interactive knowledge graph with **signal-first node loading**, **access_count node sizing**, and **Drift Mode** (recency coloring) |
+| Project | One project behind a project selector: the owner-stated task state (`memesh task` — goal / next / blocked / done, with its timestamp and a provenance line) above the retrospective **Project History** (capture-density phases, key lessons). Absent state renders as "not stated", never as a guess |
 | Settings | Package update preferences and browser-local interface locale |
 
-The dashboard is a client of the ordinary HTTP API — no private endpoints — so the endpoint list lives in exactly one place: the route table in [API_REFERENCE.md](api/API_REFERENCE.md#http-rest-api), which `scripts/check-doc-claims.mjs` checks against `server.ts`'s registrations. A copy of it used to sit here and had already rotted: it named seven endpoints and missed `/v1/graph/evidence` and `/v1/projects`, both of which the dashboard calls. A second list nothing gates is a list that goes quietly wrong. When the packaged build is unavailable, the HTTP server falls back to the legacy `cli/view-live.ts` HTML generator for compatibility.
-
-**Graph data contract**: `/v1/graph` returns `{ entities, relations, noiseTypes }` — `noiseTypes` is the server-supplied list of high-volume / low-diagnostic types (`session_keypoint`, `commit`, etc.) the dashboard default-hides. Single source of truth lives in `src/core/analytics.ts NOISE_TYPES`.
+The dashboard is a client of the ordinary HTTP API — no private endpoints — so the endpoint list lives in exactly one place: the route table in [API_REFERENCE.md](api/API_REFERENCE.md#http-rest-api), which `scripts/check-doc-claims.mjs` checks against `server.ts`'s registrations. A copy of it used to sit here and had already rotted: it named seven endpoints and missed two routes the dashboard called (one of them `/v1/projects`). A second list nothing gates is a list that goes quietly wrong. When the packaged build is unavailable, the HTTP server falls back to the legacy `cli/view-live.ts` HTML generator for compatibility.
 
 ---
 

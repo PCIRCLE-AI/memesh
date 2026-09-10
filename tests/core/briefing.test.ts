@@ -8,7 +8,7 @@
  * database access (the A1a design — hooks cannot import core), so nothing
  * structural forces their outputs to agree; this test is what does.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -18,6 +18,21 @@ import { handleTool } from '../../src/mcp/tools.js';
 import { assembleBriefing } from '../../src/core/briefing.js';
 import { recipientEverSeen, unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
 import { setTaskState } from '../../src/core/task-state-store.js';
+
+// Lets one test make getTaskState fail with an error that is NOT the
+// corrupted-record error, to prove the briefing's catch is narrow.
+const taskStateFault = vi.hoisted(() => ({ error: null as Error | null }));
+vi.mock('../../src/core/task-state-store.js', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('../../src/core/task-state-store.js')>();
+  return {
+    ...mod,
+    getTaskState: (...args: Parameters<typeof mod.getTaskState>) => {
+      if (taskStateFault.error) throw taskStateFault.error;
+      return mod.getTaskState(...args);
+    },
+  };
+});
+import { taskStateName } from '../../src/core/task-state.js';
 import { remember } from '../../src/core/operations.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
@@ -60,6 +75,30 @@ function seed() {
 }
 
 describe('assembleBriefing', () => {
+  it('a corrupted task-state record costs one honest line, not the whole briefing (#237)', () => {
+    seed();
+    setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
+    getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName(PROJECT));
+
+    const result = assembleBriefing(PROJECT);
+    expect(result.hasTaskState).toBe(true);
+    expect(result.text).toContain('not valid JSON');
+    expect(result.text).toContain('memesh task');
+    expect(result.text).not.toContain('Ship A1c');
+    // The ranked memories are still there — the broken record did not take them down.
+    expect(result.entityCount).toBeGreaterThanOrEqual(3);
+  });
+
+  it('only the corrupted-record error is absorbed; any other failure still propagates', () => {
+    seed();
+    taskStateFault.error = new Error('database is locked');
+    try {
+      expect(() => assembleBriefing(PROJECT)).toThrow('database is locked');
+    } finally {
+      taskStateFault.error = null;
+    }
+  });
+
   it('assembles the topology: task state first, then sections, in one fenced block', () => {
     seed();
     setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c', next: 'Open the PR' } });

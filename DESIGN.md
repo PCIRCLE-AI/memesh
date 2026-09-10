@@ -42,8 +42,9 @@ connected.
 **Canvas cannot read a token.** `ctx.fillStyle = 'var(--life)'` is invalid
 and silently draws black. The two `<canvas>` renderers resolve the tokens
 they need from the live stylesheet via `getComputedStyle` and draw with the
-resolved values — `GraphTab` once at mount, `MemoryTimeline` per draw — so
-a palette change still reaches the canvas. Never hardcode a palette hex
+resolved values — `MemoryTimeline` per draw (the Graph tab's canvas did the
+same once at mount until its removal) — so a palette change still reaches
+the canvas. Never hardcode a palette hex
 into a canvas draw call; if `getComputedStyle` returns empty (no
 stylesheet, e.g. a test), that is a visible signal, not a value to paper
 over with a literal fallback.
@@ -122,8 +123,8 @@ parses that block as the type vocabulary.
 
 The two types that coincide with a token are NOT in the palette file:
 `decision` = `--life` (decisions are this brain's main produce) and
-`session-insight` = `--text-2` (weak signal stays grey). GraphTab resolves
-those from the tokens at runtime, so a palette change reaches them.
+`session-insight` = `--text-2` (weak signal stays grey). Canvas renderers
+resolve those from the tokens at runtime, so a palette change reaches them.
 
 **Hue encodes species; luminance encodes vitality. The two channels never
 compete.** **Amber is a state, not a species**: a pinned node keeps its
@@ -229,30 +230,14 @@ they are touched.
 - **Expander row**: a chevron button with `aria-expanded` +
   `aria-controls`; the body renders lazily on first expand.
 
-## The graph earns visibility; it does not distribute it.
+## Ranked drawing (retired with the Graph tab, kept as a rule)
 
-Uniform brightness carries no information — a graph where every edge is
-drawn at the same alpha is a hairball, and a graph where no node is named
-until hover cannot be read. The renderer therefore ranks: a small backbone
-of the highest-traffic edges (≤128, ≤5 per node) draws readable while the
-rest recede (and are deterministically sampled on dense graphs) — re-picked
-per view, so a filtered or ego neighbourhood keeps a bright skeleton
-instead of falling entirely to the faint layer; node labels follow a
-zoom-tiered budget (3/12/28) allocated by traffic-then-recency over the
-nodes actually in view, at constant screen size regardless of zoom; node
-radii stay inside a tight 3.5–9px band so hubs read as bigger without
-dominating (ranking uses the raw recall counts, never the clamped radius);
-each connected node gets a rim in its own hue stepped darker (category
-restated at the boundary — not decoration; orphans keep their dashed
-boundary); and label text is stroked in `--bg-0` — the canvas's own
-background — before filling so it stays legible over nodes (legibility is
-information, not a glow). Initial positions are seeded per type on a
-golden-angle spiral with name-hash jitter, slotted by name order rather
-than response order — the same data draws the same shape on every visit,
-and the simulation relaxes instead of untangling. What was deliberately NOT
-adopted from graph tools that look good (vignettes, ambient glows,
-background grids): ornament that carries no information stays out, per the
-direction above.
+Uniform brightness carries no information. The Knowledge Graph tab that
+drew a ranked backbone of edges and a zoom-tiered label budget was removed
+on 2026-09-10 (#237) — a raw entity/relation hairball answered none of the
+questions a person opens the dashboard with. The rule survives for any
+future canvas: rank, draw the few readable, let the rest recede; no
+vignettes, ambient glows or background grids.
 
 ---
 
@@ -317,3 +302,4 @@ English. It cannot see template-literal keys (`` t(`radar.axis.${axis}`) ``)
 | 2026-08-16 | Neutral night ground | The first VIVARIUM draft tinted ground/text/borders green and the accent stopped carrying signal ("too green") |
 | 2026-08-16 | Life accent `#8FF25C` | Chosen on a side-by-side preview over deep-sea teal, jelly pink and ice blue |
 | 2026-08-16 | Species palette by formula | `oklch(0.78 0.12 H)` replaces nine hand-picked hexes; hue=species, luminance=vitality |
+| 2026-09-10 | Knowledge Graph tab removed; Project tab leads with the owner-stated task state (#237) | Humans could not read the raw entity graph; goal / next / blocked / done from `memesh task` is what they open the dashboard for. Stated facts render with provenance; absent facts render as "not stated", never as an inferred percentage |

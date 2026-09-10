@@ -23,10 +23,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, fireEvent, waitFor } from '@testing-library/preact';
 import { api, HttpError, NetworkError, type Entity } from '../../dashboard/src/lib/api';
 import { actionFailureMessage } from '../../dashboard/src/lib/failure';
-import { t, getLocale } from '../../dashboard/src/lib/i18n';
+import { t } from '../../dashboard/src/lib/i18n';
 import { MemoriesTab } from '../../dashboard/src/components/MemoriesTab';
 import { ProjectTab } from '../../dashboard/src/components/ProjectTab';
-import { GraphTab, capGraphEntities, GRAPH_NODE_CAP } from '../../dashboard/src/components/GraphTab';
 import { InsightsTab } from '../../dashboard/src/components/InsightsTab';
 import { EmptyLibraryState } from '../../dashboard/src/components/EmptyLibraryState';
 
@@ -250,91 +249,6 @@ describe('MemoriesTab empty-state awareness', () => {
     });
     // Match the key's stable English prefix rather than re-interpolating.
     expect(container.textContent).not.toContain('showing the first');
-  });
-});
-
-/* ── GraphTab: scale guard + empty state ─────────────────────────────────── */
-
-describe('GraphTab scale guard', () => {
-  it('capGraphEntities keeps the most-recalled nodes and respects the cap', () => {
-    const many = Array.from({ length: GRAPH_NODE_CAP + 100 }, (_, i) =>
-      entity(i + 1, { access_count: i }));
-    const capped = capGraphEntities(many);
-    expect(capped.length).toBe(GRAPH_NODE_CAP);
-    // Highest access_count must survive; the lowest must not.
-    expect(capped.some((e) => e.access_count === GRAPH_NODE_CAP + 99)).toBe(true);
-    expect(capped.some((e) => e.access_count === 0)).toBe(false);
-  });
-
-  it('capGraphEntities is the identity at or under the cap', () => {
-    const few = [entity(1), entity(2)];
-    expect(capGraphEntities(few)).toBe(few);
-  });
-
-  it('the capped graph SAYS it is capped', async () => {
-    const many = Array.from({ length: GRAPH_NODE_CAP + 10 }, (_, i) =>
-      entity(i + 1, { access_count: i }));
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      jsonResponse({ success: true, data: { entities: many, relations: [], noiseTypes: [], evidenceCounts: {} } }),
-    );
-    const { container } = render(<GraphTab />);
-    const expected = t('graph.cappedNote', {
-      shown: GRAPH_NODE_CAP.toLocaleString('en'),
-      total: (GRAPH_NODE_CAP + 10).toLocaleString('en'),
-    });
-    await waitFor(() => {
-      expect(container.textContent).toContain(expected);
-    });
-  });
-
-  it('an empty database renders the instructive empty state, not a bare canvas', async () => {
-    // mockImplementation, not mockResolvedValue: an empty work layer makes the
-    // tab fall back to the full graph, so this path fetches TWICE. One shared
-    // Response object throws "Body has already been used" on the second read —
-    // a real fetch hands back a fresh body per call, and the fixture has to.
-    vi.spyOn(globalThis, 'fetch').mockImplementation(() => Promise.resolve(
-      jsonResponse({ success: true, data: { entities: [], relations: [], noiseTypes: [], evidenceCounts: {} } }),
-    ) as ReturnType<typeof fetch>);
-    const { container } = render(<GraphTab />);
-    await waitFor(() => {
-      expect(container.textContent).toContain(t('emptyLibrary.title'));
-    });
-    expect(container.querySelector('canvas')).toBeNull();
-  });
-
-  it('counts orphans over the DRAWN edge set, not the uncapped relations', async () => {
-    // Above the cap, a relation can point at a node that was capped out. The
-    // canvas draws no edge for it (both endpoints must survive), so the node
-    // is a visible orphan — and the stat must agree with what is drawn.
-    const survivors = Array.from({ length: GRAPH_NODE_CAP - 1 }, (_, i) =>
-      entity(i + 1, { name: `keep-${i + 1}`, access_count: 100 }));
-    const lonely = entity(9000, { name: 'lonely', access_count: 100 });
-    const cappedOut = entity(9001, { name: 'capped-partner', access_count: 0 });
-    // 1499 survivors + lonely + capped-partner = GRAPH_NODE_CAP + 1 → the
-    // access_count-0 partner is exactly the node the cap drops.
-    const all = [...survivors, lonely, cappedOut];
-    const relations = [
-      { from: 'keep-1', to: 'keep-2', type: 'relates-to' },     // both survive → drawn → connected
-      { from: 'lonely', to: 'capped-partner', type: 'relates-to' }, // partner capped → not drawn
-    ];
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      jsonResponse({ success: true, data: { entities: all, relations, noiseTypes: [], evidenceCounts: {} } }),
-    );
-    const { container } = render(<GraphTab />);
-    await waitFor(() => {
-      expect(container.textContent).toContain(t('graph.cappedNote', {
-        shown: GRAPH_NODE_CAP.toLocaleString(getLocale()),
-        total: (GRAPH_NODE_CAP + 1).toLocaleString(getLocale()),
-      }));
-    });
-    // Stats row: [entities(total), relations, orphans]. Only keep-1 and
-    // keep-2 have a DRAWN edge, so orphans = GRAPH_NODE_CAP - 2. The buggy
-    // version counted `lonely` as connected off the raw relation → one fewer.
-    const statVals = [...container.querySelectorAll('.stat-val')].map((n) => n.textContent);
-    const expectedOrphans = (GRAPH_NODE_CAP - 2).toLocaleString(getLocale());
-    const buggyOrphans = (GRAPH_NODE_CAP - 3).toLocaleString(getLocale());
-    expect(statVals[2]).toBe(expectedOrphans);
-    expect(statVals[2]).not.toBe(buggyOrphans);
   });
 });
 

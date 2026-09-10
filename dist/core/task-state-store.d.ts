@@ -9,6 +9,10 @@ export interface SetTaskStateResult {
     state: TaskState;
     changed: TaskStateField[];
 }
+export declare class TaskStateUnreadableError extends Error {
+    readonly project: string;
+    constructor(project: string);
+}
 export declare function getTaskState(project?: string): {
     project: string;
     state: TaskState;

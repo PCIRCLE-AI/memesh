@@ -33,6 +33,25 @@ afterEach(() => {
 const payload = (result: { content: Array<{ text: string }> }) => JSON.parse(result.content[0].text);
 
 describe('task-state store', () => {
+  it('reports corrupted metadata as a failure instead of an empty state (#237)', () => {
+    setTaskState({ project: 'alpha', patch: { goal: 'ship alpha' } });
+    getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName('alpha'));
+    // Returning {} here would show "nothing stated" on the Project tab, the
+    // CLI and the MCP tool for a record that is actually broken.
+    expect(() => getTaskState('alpha')).toThrow(/not valid JSON/);
+    // The message names the project, not the internal entity name.
+    expect(() => getTaskState('alpha')).toThrow(/project "alpha"/);
+    expect(() => getTaskState('alpha')).not.toThrow(/task-state:/);
+    // The WRITE path is the recovery path: it overwrites the broken record.
+    const written = setTaskState({ project: 'alpha', patch: { goal: 'recovered' } });
+    expect(written.state).toEqual(expect.objectContaining({ goal: 'recovered' }));
+    expect(getTaskState('alpha').state.goal).toBe('recovered');
+    getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName('alpha'));
+    // A well-formed value of an unusable shape is still "nothing usable".
+    getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('[1,2,3]', taskStateName('alpha'));
+    expect(getTaskState('alpha').state).toEqual({});
+  });
+
   it('keeps each project’s state separate', () => {
     setTaskState({ project: 'alpha', patch: { goal: 'ship alpha' } });
     setTaskState({ project: 'beta', patch: { goal: 'ship beta' } });

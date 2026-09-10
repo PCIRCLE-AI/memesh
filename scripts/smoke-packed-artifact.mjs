@@ -109,8 +109,6 @@ const requiredFiles = [
   'dist/host-runtime/codex-session.js',
   'dist/host-runtime/claude.js',
   'dist/host-runtime/acp.js',
-  // Dist — dashboard assets
-  'dist/cli/assets/d3.v7.min.js',
   // Hook support: hooks cannot import from dist/, so these are the whole of
   // their dependency surface. Missing, every hook throws on first require.
   // The hooks themselves are not listed here — they are derived from

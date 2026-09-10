@@ -273,18 +273,27 @@ export interface PatternsData {
   learningAreas: Array<{ tag: string; count: number }>;
 }
 
-export interface GraphData {
-  entities: Entity[];
-  relations: Array<{ from: string; to: string; type: string }>;
-  /** Noise type names the server marks as low-priority. Clients default-hide these. */
-  noiseTypes: string[];
-}
-
 export interface ProjectInfo {
   name: string;
   count: number;
   types: string[];
   source: 'tag' | 'heuristic' | 'mixed';
+}
+
+/** The owner-stated task state of one project (`memesh task`). Every field is
+ *  optional: absent means "never stated", never "nothing to do". */
+export interface TaskStateData {
+  project: string;
+  state: { goal?: string; next?: string; blocked?: string; done?: string; updated_at?: string };
+}
+
+export async function fetchTaskState(project: string): Promise<TaskStateData> {
+  const data = await api<TaskStateData>('GET', `/v1/task-state?project=${encodeURIComponent(project)}`);
+  if (!data || typeof data !== 'object' || typeof (data as TaskStateData).project !== 'string' || typeof (data as TaskStateData).state !== 'object') {
+    console.warn('[memesh dashboard] /v1/task-state answered with a shape this bundle cannot read:', data);
+    throw new Error('unreadable task-state payload');
+  }
+  return data;
 }
 
 export async function fetchProjects(): Promise<ProjectInfo[]> {
@@ -301,30 +310,3 @@ export async function fetchProjects(): Promise<ProjectInfo[]> {
   return data;
 }
 
-export async function fetchGraph(): Promise<GraphData> {
-  return api<GraphData>('GET', '/v1/graph');
-}
-
-/** The work layer: what was decided / learned / aimed at. No `noiseTypes` —
- *  the whole layer is signal, so the concept has no meaning here. */
-export interface WorkGraphData {
-  entities: Entity[];
-  relations: Array<{ from: string; to: string; type: string }>;
-  /** Work-node name → incoming `evidences` count. Absent name means zero. */
-  evidenceCounts: Record<string, number>;
-}
-
-export interface NodeEvidenceData {
-  entities: Entity[];
-  relations: Array<{ from: string; to: string; type: string }>;
-  /** True when more evidence exists than the server's page returned. */
-  truncated: boolean;
-}
-
-export async function fetchWorkGraph(): Promise<WorkGraphData> {
-  return api<WorkGraphData>('GET', '/v1/graph?layer=work');
-}
-
-export async function fetchNodeEvidence(node: string): Promise<NodeEvidenceData> {
-  return api<NodeEvidenceData>('GET', `/v1/graph/evidence?node=${encodeURIComponent(node)}`);
-}

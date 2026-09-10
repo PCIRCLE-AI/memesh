@@ -4,8 +4,35 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Removed
+
+- **The dashboard's Knowledge Graph tab (#237).** The interactive
+  entity/relation canvas, its evidence drill-down, the `GET /v1/graph` and
+  `GET /v1/graph/evidence` routes that only it called, and 43 graph-only
+  interface strings in every locale are gone. A bookmarked `?tab=Graph` or a
+  stored tab preference lands on the Project tab. Owner decision recorded in
+  DESIGN.md: humans could not read the raw graph, and it answered none of the
+  questions a person opens the dashboard with. The pre-build fallback page
+  (`memesh view` without a compiled dashboard) loses its Graph and Timeline
+  tabs for the same reason — both were rendered from `/v1/graph` — and the
+  bundled d3 library that only that canvas used is no longer shipped.
+
 ### Added
 
+- **The Project tab leads with the owner-stated task state (#237).** A new
+  `GET /v1/task-state?project=` route returns what `memesh task` recorded —
+  goal, next, blocked, done — with its timestamp; the tab renders exactly the
+  stated fields with a provenance line, an honest "nothing stated yet" empty
+  state that says how to state it, and reports a failed fetch as a failure
+  rather than as an empty project. Nothing is inferred from memory counts.
+- **A corrupted task-state record is reported as a failure, not shown as
+  "nothing stated" (#237).** `task_state`, `memesh task` and the new
+  `/v1/task-state` route now fail loudly when the stored metadata is not
+  valid JSON; before, every surface rendered a broken record exactly like a
+  project nobody had described. The error names the project and says how to
+  recover: any write (`memesh task --goal …`) replaces the broken record, and
+  the session briefing keeps its ranked memories and shows that one line in
+  place of the stated task state.
 - **Token-usage measurability verdict and frozen benchmark contract (#251).**
   `benchmarks/token/CONTRACT.md` records that Claude Code and Codex both
   write authoritative per-request usage to their session transcripts, with
@@ -19,6 +46,20 @@ All notable changes to MeMesh are documented here.
 
 ### Changed
 
+- **The update notice reaches every door, not only the SessionStart hook
+  (#308).** The MCP server appends one `[memesh update] …` text item to the
+  first successful tool result of each process (as a second content item, so
+  the JSON envelope hosts parse in `content[0]` is untouched), and every CLI
+  command except the update/setup commands prints the same line to stderr once
+  a day. Both read the same resolver, snooze, receipt and `updateCheck`
+  setting as the hooks; an MCP process that starts within ten minutes of a
+  hook's notice for the same versions stays quiet instead of repeating it.
+  When the cached answer is missing or stale, both doors start the same
+  detached `memesh status` refresh the SessionStart hook runs (one npm
+  registry request, at most once every five minutes; it opens the memesh
+  database like any CLI command) and say nothing until a check has actually
+  completed — a host with no hooks gets its first notice from the process
+  that started the refresh, which looks again a minute later.
 - **First-use update notice: one resolver, escalating snooze, a receipt after
   upgrading, and a loud unknown (#308).** `src/core/update-notice.ts` now
   decides what every entry point says about updates — `UP_TO_DATE`,

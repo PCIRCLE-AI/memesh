@@ -176,8 +176,9 @@ describe('Feature: the dashboard design system is actually followed', () => {
     // Engineer brand (cyan accent + old semantic hues) and the hand-picked
     // categorical palette (replaced by the oklch species formula) — writing
     // any of them again is a regression to a dead system, not a new colour.
-    // NOT here: #F87171 — it is the drift ramp's stale endpoint, still live
-    // in GraphTab's legend gradient (the gradient IS the data).
+    // NOT here: #F87171 — it was the drift ramp's stale endpoint in the
+    // removed Graph tab; kept off this list so a future drift legend can
+    // still use it as data.
     const offPaletteRgb = new Set(
       ['#ef4444', '#f59e0b', '#22c55e', '#ff5050', '#ffc800',
        'rgb(255,200,87)', 'rgb(160,160,160)',

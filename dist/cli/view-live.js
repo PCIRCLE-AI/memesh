@@ -1,10 +1,3 @@
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-const bundledD3 = fs
-    .readFileSync(path.join(moduleDir, 'assets', 'd3.v7.min.js'), 'utf8')
-    .replace(/<\/script/gi, '<\\/script');
 export function generateLiveDashboardHtml() {
     const CSS = `
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
@@ -287,35 +280,6 @@ export function generateLiveDashboardHtml() {
     .bar-count { width: 36px; text-align: right; color: var(--text-muted); flex-shrink: 0; font-family: var(--font-mono); font-size: 12px; }
     .tag-cloud { display: flex; flex-wrap: wrap; gap: 8px; }
 
-    /* Timeline */
-    .chain { display: flex; align-items: center; flex-wrap: wrap; gap: 0; margin-bottom: 16px; padding: 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); }
-    .chain-node { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 8px 14px; font-size: 13px; position: relative; transition: border-color 0.15s; }
-    .chain-node:hover { border-color: var(--accent); }
-    .chain-node.archived { opacity: 0.4; }
-    .chain-node .cn-name { font-weight: 600; color: var(--text-primary); }
-    .chain-node .cn-type { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
-    .chain-arrow { font-size: 16px; color: var(--accent); padding: 0 8px; flex-shrink: 0; opacity: 0.6; }
-
-    /* Graph */
-    .graph-svg-wrap { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; position: relative; }
-    .graph-svg-wrap svg { width: 100%; height: 520px; display: block; }
-    .graph-controls { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; font-size: 12px; color: var(--text-muted); }
-
-    /* Graph tooltip */
-    .graph-tooltip {
-      position: absolute;
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: var(--radius-sm);
-      padding: 12px 16px;
-      font-size: 12px;
-      pointer-events: none;
-      backdrop-filter: blur(12px);
-      box-shadow: var(--shadow-lg);
-      max-width: 280px;
-      z-index: 10;
-    }
-
     /* Manage */
     .manage-action-cell { display: flex; gap: 6px; flex-wrap: wrap; }
 
@@ -412,14 +376,6 @@ export function generateLiveDashboardHtml() {
     return value;
   }
 
-  function graphData(value) {
-    if (!value || typeof value !== 'object'
-        || !Array.isArray(value.entities) || !Array.isArray(value.relations)) {
-      throw new Error('Invalid graph response');
-    }
-    return value;
-  }
-
   function configData(response) {
     var value = successData(response, 'config');
     if (!value || typeof value !== 'object' || !value.config
@@ -444,14 +400,6 @@ export function generateLiveDashboardHtml() {
         // Theme is persisted client-side in localStorage only. An earlier
         // POST /v1/config { theme } wrote a config.theme that nothing ever
         // read back; removed with that dead field.
-        // Update graph label colors if graph has been rendered
-        var newLabelColor = isLight ? '#09090b' : '#fafafa';
-        var graphWrap = document.getElementById('graph-svg-wrap');
-        if (graphWrap) {
-          graphWrap.querySelectorAll('svg g text:not([font-size="9"])').forEach(function(el) {
-            el.setAttribute('fill', newLabelColor);
-          });
-        }
       });
     }
   })();
@@ -466,9 +414,7 @@ export function generateLiveDashboardHtml() {
     document.querySelectorAll('.tab-content').forEach(function (el) { el.classList.remove('active'); });
     document.getElementById('tab-' + tab).classList.add('active');
     if (tab === 'browse') loadBrowse();
-    if (tab === 'graph') loadGraph();
     if (tab === 'analytics') loadAnalytics();
-    if (tab === 'timeline') loadTimeline();
     if (tab === 'manage') loadManage();
     if (tab === 'settings') loadSettings();
   });
@@ -705,225 +651,6 @@ export function generateLiveDashboardHtml() {
   browseFilter.addEventListener('input', function () { renderBrowseTable(this.value); });
   document.getElementById('browse-refresh').addEventListener('click', loadBrowse);
 
-  // ---- Graph tab ----
-  var graphLoaded = false;
-
-  async function loadGraph() {
-    if (graphLoaded) return;
-    graphLoaded = true;
-    var wrap = document.getElementById('graph-svg-wrap');
-    showSpinner(wrap);
-    try {
-      var data = await apiCall('GET', '/v1/graph');
-      var graph = graphData(successData(data, 'graph'));
-      renderGraph(graph.entities, graph.relations, wrap);
-    } catch (err) {
-      showError(wrap, err.message);
-      graphLoaded = false;
-    }
-  }
-
-  function renderGraph(entities, relations, container) {
-    container.textContent = '';
-
-    if (entities.length === 0) {
-      showPlaceholder(container, 'No entities yet. Start remembering to build your graph.');
-      return;
-    }
-
-    var svgNS = 'http://www.w3.org/2000/svg';
-    var svg = document.createElementNS(svgNS, 'svg');
-    svg.setAttribute('width', '100%');
-    svg.setAttribute('height', '520');
-    container.appendChild(svg);
-
-    var width = container.clientWidth || 900;
-    var height = 520;
-
-    // Only show top connected nodes to keep graph readable
-    var MAX_NODES = 60;
-    var degreeMap = {};
-    relations.forEach(function (r) {
-      degreeMap[r.from] = (degreeMap[r.from] || 0) + 1;
-      degreeMap[r.to] = (degreeMap[r.to] || 0) + 1;
-    });
-
-    var topNames;
-    if (Object.keys(degreeMap).length > 0) {
-      topNames = new Set(
-        Object.entries(degreeMap)
-          .sort(function (a, b) { return b[1] - a[1]; })
-          .slice(0, MAX_NODES)
-          .map(function (e) { return e[0]; })
-      );
-    } else {
-      topNames = new Set(entities.slice(0, MAX_NODES).map(function (e) { return e.name; }));
-    }
-
-    var graphEntities = entities.filter(function (e) { return topNames.has(e.name); });
-    if (graphEntities.length === 0) graphEntities = entities.slice(0, MAX_NODES);
-
-    var colorPalette = ['#3b82f6','#8b5cf6','#10b981','#f59e0b','#ef4444','#06b6d4','#ec4899','#84cc16','#f97316','#6366f1'];
-    var typeColorMap = {};
-    var colorIdx = 0;
-    graphEntities.forEach(function (e) {
-      if (!typeColorMap[e.type]) {
-        typeColorMap[e.type] = colorPalette[colorIdx % colorPalette.length];
-        colorIdx++;
-      }
-    });
-
-    // Build nodes and links
-    var nodeMap = {};
-    var nodes = graphEntities.map(function (e, i) {
-      var firstObs = (e.observations && e.observations.length > 0) ? e.observations[0] : null;
-      var n = { id: e.name, type: e.type, status: e.status, obs: e.observations ? e.observations.length : 0, firstObs: firstObs, x: 0, y: 0, vx: 0, vy: 0, fx: null, fy: null };
-      nodeMap[e.name] = n;
-      return n;
-    });
-
-    var links = relations
-      .filter(function (r) { return nodeMap[r.from] && nodeMap[r.to]; })
-      .map(function (r) { return { source: r.from, target: r.to, type: r.type }; });
-
-    // Force simulation using pure JS (no D3 needed for basic layout)
-    // Initialize positions in a circle
-    nodes.forEach(function (n, i) {
-      var angle = (2 * Math.PI * i) / nodes.length;
-      var r = Math.min(width, height) * 0.35;
-      n.x = width / 2 + r * Math.cos(angle);
-      n.y = height / 2 + r * Math.sin(angle);
-    });
-
-    // Create SVG elements using D3 (bundled)
-    var d3svg = d3.select(svg);
-    d3svg.attr('viewBox', [0, 0, width, height]);
-
-    // Defs: arrow marker + glow filter + grid pattern
-    var defs = d3svg.append('defs');
-
-    // Arrow marker
-    defs.append('marker')
-      .attr('id', 'arrow')
-      .attr('viewBox', '0 0 10 10').attr('refX', 20).attr('refY', 5)
-      .attr('markerWidth', 6).attr('markerHeight', 6).attr('orient', 'auto')
-      .append('path').attr('d', 'M 0 0 L 10 5 L 0 10 z').attr('fill', 'rgba(59,130,246,0.4)');
-
-    // Glow filter
-    var filter = defs.append('filter').attr('id', 'node-glow').attr('x', '-50%').attr('y', '-50%').attr('width', '200%').attr('height', '200%');
-    filter.append('feGaussianBlur').attr('stdDeviation', '3').attr('result', 'coloredBlur');
-    var feMerge = filter.append('feMerge');
-    feMerge.append('feMergeNode').attr('in', 'coloredBlur');
-    feMerge.append('feMergeNode').attr('in', 'SourceGraphic');
-
-    // Grid pattern background
-    var gridSize = 32;
-    var gridPattern = defs.append('pattern')
-      .attr('id', 'grid').attr('width', gridSize).attr('height', gridSize)
-      .attr('patternUnits', 'userSpaceOnUse');
-    gridPattern.append('path')
-      .attr('d', 'M ' + gridSize + ' 0 L 0 0 0 ' + gridSize)
-      .attr('fill', 'none').attr('stroke', 'rgba(39,39,42,0.4)').attr('stroke-width', '0.5');
-
-    // Background rect with grid
-    d3svg.append('rect')
-      .attr('width', width).attr('height', height)
-      .attr('fill', 'url(#grid)');
-
-    var g = d3svg.append('g');
-
-    d3svg.call(d3.zoom().scaleExtent([0.2, 5]).on('zoom', function (event) {
-      g.attr('transform', event.transform);
-    }));
-
-    var linkSel = g.append('g')
-      .selectAll('line').data(links).join('line')
-      .attr('stroke', 'rgba(59,130,246,0.25)').attr('stroke-width', 1.5)
-      .attr('marker-end', 'url(#arrow)');
-
-    var linkLabel = g.append('g')
-      .selectAll('text').data(links).join('text')
-      .attr('font-size', 9).attr('fill', 'rgba(113,113,122,0.8)').attr('text-anchor', 'middle')
-      .attr('font-family', 'JetBrains Mono, ui-monospace, monospace')
-      .text(function (d) { return d.type; });
-
-    var nodeSel = g.append('g')
-      .selectAll('circle').data(nodes).join('circle')
-      .attr('r', function (d) { return Math.max(6, Math.min(20, 6 + d.obs * 1.5)); })
-      .attr('fill', function (d) { return typeColorMap[d.type] || '#3b82f6'; })
-      .attr('stroke', 'rgba(9,9,11,0.8)').attr('stroke-width', 1.5)
-      .attr('opacity', function (d) { return d.status === 'archived' ? 0.3 : 0.9; })
-      .attr('filter', function (d) { return d.status === 'archived' ? null : 'url(#node-glow)'; })
-      .style('cursor', 'pointer')
-      .call(d3.drag()
-        .on('start', function (event, d) { if (!event.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
-        .on('drag', function (event, d) { d.fx = event.x; d.fy = event.y; })
-        .on('end', function (event, d) { if (!event.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }));
-
-    // Hover pulse effect
-    nodeSel.on('mouseenter', function () {
-      d3.select(this).attr('stroke', '#3b82f6').attr('stroke-width', 2.5);
-    }).on('mouseleave', function () {
-      d3.select(this).attr('stroke', 'rgba(9,9,11,0.8)').attr('stroke-width', 1.5);
-    });
-
-    var labelColor = document.body.classList.contains('light') ? '#09090b' : '#fafafa';
-    var labelSel = g.append('g')
-      .selectAll('text').data(nodes).join('text')
-      .attr('font-size', 11).attr('fill', labelColor).attr('dy', 4)
-      .attr('font-family', 'Inter, system-ui, sans-serif').attr('font-weight', '500')
-      .text(function (d) {
-        var label = d.firstObs ? d.firstObs : d.id;
-        return label.length > 25 ? label.slice(0, 25) + '\u2026' : label;
-      });
-
-    // Tooltip
-    var ttEl = document.getElementById('live-tooltip');
-    nodeSel.on('mouseover', function (event, d) {
-      ttEl.style.display = 'block';
-      var obsPreview = d.firstObs ? (d.firstObs.length > 80 ? d.firstObs.slice(0, 80) + '\u2026' : d.firstObs) : '(no observations)';
-      ttEl.querySelector('.tt-name').textContent = obsPreview;
-      ttEl.querySelector('.tt-type').textContent = d.type + (d.status === 'archived' ? ' \u2014 archived' : '');
-      ttEl.querySelector('.tt-obs').textContent = d.id + ' \u00b7 ' + d.obs + ' observation' + (d.obs !== 1 ? 's' : '');
-    }).on('mousemove', function (event) {
-      ttEl.style.left = (event.pageX + 14) + 'px';
-      ttEl.style.top = (event.pageY - 10) + 'px';
-    }).on('mouseout', function () { ttEl.style.display = 'none'; });
-
-    var sim = d3.forceSimulation(nodes)
-      .force('link', d3.forceLink(links).id(function (d) { return d.id; }).distance(150))
-      .force('charge', d3.forceManyBody().strength(-400))
-      .force('center', d3.forceCenter(width / 2, height / 2))
-      .force('collision', d3.forceCollide().radius(22));
-
-    sim.on('tick', function () {
-      linkSel
-        .attr('x1', function (d) { return d.source.x; }).attr('y1', function (d) { return d.source.y; })
-        .attr('x2', function (d) { return d.target.x; }).attr('y2', function (d) { return d.target.y; });
-      linkLabel
-        .attr('x', function (d) { return (d.source.x + d.target.x) / 2; })
-        .attr('y', function (d) { return (d.source.y + d.target.y) / 2; });
-      nodeSel.attr('cx', function (d) { return d.x; }).attr('cy', function (d) { return d.y; });
-      labelSel.attr('x', function (d) { return d.x + 10; }).attr('y', function (d) { return d.y; });
-    });
-
-    // Legend
-    var legend = document.createElement('div');
-    legend.style.cssText = 'display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;font-size:12px;padding:0 2px;font-family:Inter,system-ui,sans-serif;';
-    Object.entries(typeColorMap).forEach(function (pair) {
-      var item = document.createElement('span');
-      item.style.cssText = 'display:flex;align-items:center;gap:5px;color:var(--text-secondary,#a1a1aa);';
-      var dot = document.createElement('span');
-      dot.style.cssText = 'width:8px;height:8px;border-radius:50%;display:inline-block;background:' + pair[1] + ';box-shadow:0 0 4px ' + pair[1] + '66;';
-      var lbl = document.createElement('span');
-      lbl.textContent = pair[0];
-      item.appendChild(dot);
-      item.appendChild(lbl);
-      legend.appendChild(item);
-    });
-    container.appendChild(legend);
-  }
-
   // ---- Analytics tab ----
   var analyticsLoaded = false;
 
@@ -1121,129 +848,6 @@ export function generateLiveDashboardHtml() {
 
     if (!stats.typeDistribution || stats.typeDistribution.length === 0) {
       showPlaceholder(container, 'No data yet. Start adding entities.');
-    }
-  }
-
-  // ---- Timeline tab ----
-  var timelineLoaded = false;
-
-  async function loadTimeline() {
-    if (timelineLoaded) return;
-    timelineLoaded = true;
-    var container = document.getElementById('timeline-body');
-    showSpinner(container);
-    try {
-      var data = await apiCall('GET', '/v1/graph');
-      var graph = graphData(successData(data, 'graph'));
-      renderTimeline(graph.entities, graph.relations, container);
-    } catch (err) {
-      showError(container, err.message);
-      timelineLoaded = false;
-    }
-  }
-
-  function renderTimeline(entities, relations, container) {
-    container.textContent = '';
-
-    // Build entity map
-    var entityMap = {};
-    entities.forEach(function (e) { entityMap[e.name] = e; });
-
-    // Find supersedes relations
-    var supersedes = relations.filter(function (r) { return r.type === 'supersedes'; });
-
-    if (supersedes.length === 0) {
-      showPlaceholder(container, 'No evolution chains yet. Use "supersedes" relations to track knowledge evolution.');
-      return;
-    }
-
-    // Build chains: find roots (nodes that are not a "to" in any supersedes)
-    var hasIncoming = new Set(supersedes.map(function (r) { return r.to; }));
-    var roots = [...new Set(supersedes.map(function (r) { return r.from; }))].filter(function (name) {
-      return !hasIncoming.has(name);
-    });
-
-    // If no pure roots, just use all froms
-    if (roots.length === 0) {
-      roots = [...new Set(supersedes.map(function (r) { return r.from; }))];
-    }
-
-    // Build adjacency: from -> [to, ...]
-    var nextMap = {};
-    supersedes.forEach(function (r) {
-      if (!nextMap[r.from]) nextMap[r.from] = [];
-      nextMap[r.from].push(r.to);
-    });
-
-    // Walk each chain
-    var visited = new Set();
-    var chainCount = 0;
-
-    roots.forEach(function (root) {
-      if (visited.has(root)) return;
-      var chain = [];
-      var cursor = root;
-      var safety = 0;
-      while (cursor && !visited.has(cursor) && safety < 50) {
-        visited.add(cursor);
-        chain.push(cursor);
-        var nexts = nextMap[cursor];
-        cursor = nexts && nexts[0];
-        safety++;
-      }
-      if (chain.length < 2) return;
-      chainCount++;
-
-      var chainEl = document.createElement('div');
-      chainEl.className = 'chain';
-
-      chain.forEach(function (name, idx) {
-        if (idx > 0) {
-          var arrow = document.createElement('span');
-          arrow.className = 'chain-arrow';
-          arrow.textContent = '\\u2192';
-          chainEl.appendChild(arrow);
-        }
-        var node = document.createElement('div');
-        var ent = entityMap[name];
-        node.className = 'chain-node' + (ent && ent.status === 'archived' ? ' archived' : '');
-        var nameEl = document.createElement('div');
-        nameEl.className = 'cn-name';
-        // Show first observation as primary content, fall back to entity name
-        var obsContent = (ent && ent.observations && ent.observations[0])
-          ? ent.observations[0]
-          : name;
-        nameEl.textContent = obsContent.length > 60 ? obsContent.slice(0, 60) + '\u2026' : obsContent;
-        nameEl.title = obsContent; // full text on hover
-        var typeEl = document.createElement('div');
-        typeEl.className = 'cn-type';
-        typeEl.textContent = (ent ? ent.type : '') + (ent ? ' \u00b7 ' : '');
-        // Add timestamp
-        if (ent && ent.created_at) {
-          try {
-            var tDate = new Date(ent.created_at);
-            var timeSpan = document.createElement('span');
-            timeSpan.style.cssText = 'font-size:11px;color:var(--text-muted);font-family:var(--font-mono);';
-            timeSpan.textContent = tDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-            typeEl.textContent = (ent ? ent.type + ' \u00b7 ' : '');
-            typeEl.appendChild(timeSpan);
-          } catch (_) {}
-        }
-        // Add entity name as secondary metadata
-        var entityNameEl = document.createElement('div');
-        entityNameEl.style.cssText = 'font-size:10px;color:var(--text-muted);font-family:var(--font-mono);opacity:0.7;margin-top:2px;';
-        entityNameEl.textContent = name;
-        node.appendChild(nameEl);
-        node.appendChild(typeEl);
-        node.appendChild(entityNameEl);
-        chainEl.appendChild(node);
-      });
-
-      container.appendChild(chainEl);
-    });
-
-    if (chainCount === 0) {
-      showPlaceholder(container, 'No multi-step evolution chains found.');
     }
   }
 
@@ -1808,10 +1412,6 @@ export function generateLiveDashboardHtml() {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MeMesh — Dashboard</title>
   <style>${CSS}</style>
-  <!-- bundled d3.js -->
-  <script>
-${bundledD3}
-  </script>
 </head>
 <body>
 
@@ -1832,9 +1432,7 @@ ${bundledD3}
 <nav class="nav" id="nav">
   <button class="active" data-tab="search">Search</button>
   <button data-tab="browse">Browse</button>
-  <button data-tab="graph">Graph</button>
   <button data-tab="analytics">Analytics</button>
-  <button data-tab="timeline">Timeline</button>
   <button data-tab="manage">Manage</button>
   <button data-tab="settings">Settings</button>
 </nav>
@@ -1863,28 +1461,10 @@ ${bundledD3}
     </div>
   </div>
 
-  <div class="tab-content" id="tab-graph">
-    <div class="card">
-      <h2>Knowledge Graph</h2>
-      <div class="graph-controls">
-        <span>Scroll to zoom \u00b7 Drag nodes \u00b7 Pan with mouse</span>
-      </div>
-      <div class="graph-svg-wrap" id="graph-svg-wrap"></div>
-    </div>
-  </div>
-
   <div class="tab-content" id="tab-analytics">
     <div class="card">
       <h2>Analytics</h2>
       <div id="analytics-body"></div>
-    </div>
-  </div>
-
-  <div class="tab-content" id="tab-timeline">
-    <div class="card">
-      <h2>Evolution Timeline</h2>
-      <p style="font-size:13px;color:var(--text-muted);margin-bottom:16px;">Entities connected by \u201csupersedes\u201d relations, showing knowledge evolution chains.</p>
-      <div id="timeline-body"></div>
     </div>
   </div>
 
@@ -1916,13 +1496,6 @@ ${bundledD3}
     <div id="wizard-content"></div>
     <div class="wizard-actions" id="wizard-actions"></div>
   </div>
-</div>
-
-<!-- Graph tooltip -->
-<div id="live-tooltip" class="graph-tooltip" style="display:none;">
-  <div class="tt-name" style="font-weight:600;color:var(--text-primary);font-size:13px;margin-bottom:3px;"></div>
-  <div class="tt-type" style="color:var(--accent-hover);font-size:11px;font-family:var(--font-mono);margin-bottom:4px;"></div>
-  <div class="tt-obs" style="color:var(--text-muted);font-size:12px;"></div>
 </div>
 
 <!-- Feedback widget -->

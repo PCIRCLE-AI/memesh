@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { MemoriesTab } from '../../dashboard/src/components/MemoriesTab';
 import { ProjectTab } from '../../dashboard/src/components/ProjectTab';
-import { GraphTab } from '../../dashboard/src/components/GraphTab';
 import { MetricsRow } from '../../dashboard/src/components/MetricsRow';
 import { InsightsTab } from '../../dashboard/src/components/InsightsTab';
 import { App } from '../../dashboard/src/App';
@@ -156,7 +155,6 @@ describe('issue #224 — one data revision refreshes mounted surfaces', () => {
   it('Project and Graph refetch their visible datasets when the revision changes', async () => {
     let round = 1;
     let failProject = false;
-    let failGraph = false;
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input: RequestInfo | URL) => {
       const url = String(input);
       const rows = Array.from({ length: round === 1 ? 5 : 6 }, (_, i) => entity(i + 1, `${round === 1 ? 'old' : 'new'} project ${i}`));
@@ -165,33 +163,21 @@ describe('issue #224 — one data revision refreshes mounted surfaces', () => {
         if (failProject) throw new TypeError('Failed to fetch');
         return response(rows);
       }
-      if (url.includes('/v1/graph')) {
-        if (failGraph) throw new TypeError('Failed to fetch');
-        return response({ entities: rows, relations: [], evidenceCounts: {}, noiseTypes: [] });
-      }
       return response({});
     });
 
     const project = render(<ProjectTab dataRevision={0} health={{ status: 'ok', version: 't', entity_count: 5 }} />);
     await waitFor(() => expect(project.container.textContent).toContain('old project 0'));
-    const graph = render(<GraphTab dataRevision={0} />);
-    await waitFor(() => expect(graph.container.querySelector('canvas')).not.toBeNull());
 
     round = 2;
     project.rerender(<ProjectTab dataRevision={1} health={{ status: 'ok', version: 't', entity_count: 6 }} />);
-    graph.rerender(<GraphTab dataRevision={1} />);
     await waitFor(() => expect(project.container.textContent).toContain('new project 0'));
-    await waitFor(() => expect(graph.container.textContent).toContain('6'));
     expect(project.container.textContent).not.toContain('old project 0');
 
     failProject = true;
-    failGraph = true;
     project.rerender(<ProjectTab dataRevision={2} health={{ status: 'ok', version: 't', entity_count: 6 }} />);
-    graph.rerender(<GraphTab dataRevision={2} />);
     await waitFor(() => expect(project.container.querySelector('[role="alert"]')).not.toBeNull());
-    await waitFor(() => expect(graph.container.querySelector('[role="alert"]')).not.toBeNull());
     expect(project.container.textContent).toContain('new project 0');
-    expect(graph.container.querySelector('canvas')).not.toBeNull();
   });
 
   it('Home metrics and proposals refetch, and failed metrics refresh retains the last measurement', async () => {
