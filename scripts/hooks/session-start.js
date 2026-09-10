@@ -789,9 +789,14 @@ process.stdin.on('end', async () => {
       // (the database path has had this rule since the notice was added; the
       // no-database path printed both). Deprecation, a just-landed upgrade
       // and a failed check still render through combineWithBanner.
+      // A session that was already shown the notice (claim exists, answered
+      // or not) must not get the routine banner either — same rule as the
+      // database path.
+      const alreadyNoticed = consent !== null || (consentVersion !== null
+        && readUpdatePromptClaim(data.session_id, consentVersion, consentCache?.latestVersion) !== null);
       const emptySummary = combineWithBanner(
         captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work',
-        { skipUpdateBanner: consent !== null },
+        { skipUpdateBanner: alreadyNoticed },
       );
       output(consent ? `${consent.system}\n${emptySummary}` : emptySummary,
         consent ? `${consent.context}\n\n${workPackageGuidance}` : workPackageGuidance);
