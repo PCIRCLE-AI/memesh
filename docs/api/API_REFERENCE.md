@@ -793,8 +793,6 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | GET | /v1/update-status | Current/latest package version, freshness state, and update guidance |
 | POST | /v1/config | Save supported non-model config fields as a partial update |
 | GET | /v1/stats | Aggregate counts: entities, observations, relations, tags; type/tag/status distributions |
-| GET | /v1/graph | Signal entities (all non-noise types) + up to 200 recent noise entities + all relations |
-| GET | /v1/graph/evidence | Evidence supporting one work node; requires the `node` query parameter |
 | GET | /v1/analytics | Health score/factors, memory-loop metric, criticalLessons, citationCompliance, 30-day timeline, ageMatrix, knowledgeRadar |
 | GET | /v1/analytics/pm | Project-management velocity, flow, operational signals, and recommendations |
 | GET | /v1/patterns | User work patterns: schedule, tools, focus areas, workflow, strengths, learning |
@@ -806,6 +804,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/demo/seed | Insert the demo tour dataset (entities tagged `metadata.demo = true`) |
 | POST | /v1/demo/reset | Remove every demo entity; all-or-nothing transaction |
 | GET | /v1/projects | Distinct projects from `project:*` tags and name-prefix heuristics, with per-project counts |
+| GET | /v1/task-state | The owner-stated task state of one project (`memesh task`); requires the `project` query parameter |
 All responses: `{ success: true, data: ... }` or `{ success: false, errorCode: "...", error: "..." }`
 
 ### Stable error codes
@@ -955,40 +954,15 @@ Returns aggregate counts and distributions for the knowledge graph.
 }
 ```
 
-### GET /v1/graph
+### GET /v1/task-state?project=NAME
 
-Returns entities prioritized for graph visualization: all non-noise entities (decision, lesson_learned, pattern, bug_fix, etc.) plus up to 200 recent noise entities (commit, session_keypoint, weekly-summary), and all relations.
-
-**Response**:
-
-```json
-{
-  "success": true,
-  "data": {
-    "entities": [...],
-    "relations": [{"from": "auth-decision", "to": "api-design", "type": "related-to"}, ...]
-  }
-}
-```
-
-### GET /v1/graph?layer=work
-
-The two-layer view. Returns only work-layer entities — the types
-`src/core/work-topology.ts` lists as `WORK_LAYER_TYPES` (`decision`,
-`lesson_learned`, `lesson`, `mistake`, `milestone`, `pattern`,
-`technical_pattern`, `goal`, `plan`, `task-state`) — with the relations whose
-BOTH endpoints are in that layer, and a count of the evidence supporting each
-node. Archived entities are excluded.
-
-`evidenceCounts` maps a work-node name to its number of incoming `evidences`
-edges; a node with no such edge is absent from the map. Those edges are drawn
-by `memesh kg backfill-relations`, not by the hooks — a graph where every
-count is zero means the backfill has not run, not that the work happened
-without evidence.
-
-Any other `layer` value is a `400` with `errorCode: "validation.bad-param"`.
-There is no `layer=evidence`: the evidence layer is an order of magnitude
-larger than the work layer and is fetched one node at a time, below.
+What the owner stated about one project with `memesh task` — `goal`, `next`,
+`blocked`, `done` — read from the project's task-state entity, plus the
+`updated_at` of the last statement. Fields that were never stated are absent,
+not empty strings: the dashboard's Project tab renders an absent field as "not
+stated" and never derives progress from memory counts (#237). `project` is
+required (`400`, `validation.bad-param` without it); a project with no
+statement is a `200` with `state: {}`.
 
 **Response**:
 
@@ -996,33 +970,8 @@ larger than the work layer and is fetched one node at a time, below.
 {
   "success": true,
   "data": {
-    "entities": [...],
-    "relations": [{"from": "auth-decision", "to": "api-design", "type": "supersedes"}],
-    "evidenceCounts": {"auth-decision": 12}
-  }
-}
-```
-
-### GET /v1/graph/evidence?node=NAME
-
-The drill-down: the evidence entities carrying an `evidences` edge to one work
-node, newest first, with the edges themselves. `node` is the entity NAME and is
-required (`400`, `validation.bad-param` without it); a name that matches no
-entity is a `404` with `errorCode: "resource.not-found"` — distinct from a node
-that exists and has no evidence, which is a `200` with empty arrays.
-
-At most 200 entities are returned. `truncated: true` says the page filled and
-more exist — the same in-band honesty rule `recall`'s `retrieval` block follows.
-
-**Response**:
-
-```json
-{
-  "success": true,
-  "data": {
-    "entities": [...],
-    "relations": [{"from": "commit-a1b2c3d", "to": "auth-decision", "type": "evidences"}],
-    "truncated": false
+    "project": "memesh",
+    "state": { "goal": "Ship 4.10.0", "next": "Merge #317", "updated_at": "2026-09-10T09:04:21.830Z" }
   }
 }
 ```
@@ -1203,8 +1152,7 @@ Response `data`:
 ```
 
 `session.truncated` is `true` when the session held more than 200 entities
-and only the first 200 were returned — the same cap and the same flag
-`GET /v1/graph/evidence` uses, and for the same reason: this query runs once
+and only the first 200 were returned — a ceiling with an in-band flag, because this query runs once
 per commit and the schema accepts 50 of them, so the response needs both a
 ceiling and a way to say the ceiling was hit.
 
@@ -1504,7 +1452,7 @@ Heuristic non-LLM relation backfill for orphan entities. Five rules:
 2. **Project clustering**: orphan lessons / decisions / bug-fixes / patterns in a project get a `belongs-to-project` edge to the most recent release / feature / architecture / plan in the same project.
 3. **Session co-occurrence** (`--session-cooccurrence`): high-signal orphans (signal_score ≥ 0.6) sharing a `session:*` tag get a `co-created` edge. Eligible types: lesson_learned, decision, architecture, feature, bug_fix, etc.
 4. **Name-token similarity** (`--name-tokens`): orphans whose tokenized names share ≥ 3 content tokens or Jaccard similarity ≥ 0.50 get a `shares-name-tokens` edge. Stopword list excludes generic qualifiers and month abbreviations to prevent cartesian explosion.
-5. **Evidence links** (on by default; `--no-evidence-links` disables): evidence-layer captures — commits, session insights, session summaries — get an `evidences` edge to the work item they support. Matched by exact session id (a `session:*` tag, or `metadata.session_id` for commits, which carry no session tag by design); with no session match, to the most recent same-project work item created BEFORE the capture. This is the edge `GET /v1/graph?layer=work` counts for its evidence badges, so the dashboard's two-layer graph shows zero badges until this has run. Unlike the other rules, its sources are evidence entities rather than orphans — a commit that already relates to something else is still evidence.
+5. **Evidence links** (on by default; `--no-evidence-links` disables): evidence-layer captures — commits, session insights, session summaries — get an `evidences` edge to the work item they support. Matched by exact session id (a `session:*` tag, or `metadata.session_id` for commits, which carry no session tag by design); with no session match, to the most recent same-project work item created BEFORE the capture. It is the recorded link from a capture to the work it supports; until this has run, a work item has no evidence edges at all. Unlike the other rules, its sources are evidence entities rather than orphans — a commit that already relates to something else is still evidence.
 
 **Usage**:
 

@@ -7,7 +7,6 @@ export const DASHBOARD_EXTERNAL_HANDOFFS = [
   { id: 'doctor-help', destination: 'github', surface: 'DoctorBanner' },
   { id: 'feedback-submit', destination: 'github', surface: 'FeedbackWidget' },
   { id: 'settings-update', destination: 'terminal', surface: 'SettingsTab' },
-  { id: 'graph-evidence-backfill', destination: 'terminal', surface: 'EvidencePanel' },
   { id: 'demo-cli-fallback', destination: 'terminal', surface: 'OnboardingBanner' },
   { id: 'project-hook-setup', destination: 'terminal', surface: 'ProjectTab' },
   { id: 'load-recovery', destination: 'terminal', surface: 'failure' },

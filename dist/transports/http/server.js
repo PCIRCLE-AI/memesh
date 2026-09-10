@@ -12,7 +12,7 @@ import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
 import { computeProjects } from '../../core/projects.js';
-import { computeGraph, computeWorkGraph, computeNodeEvidence } from '../../core/graph.js';
+import { getTaskState } from '../../core/task-state-store.js';
 import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, LearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, } from '../schemas.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
@@ -468,35 +468,18 @@ app.get('/v1/update-status', (req, res) => handleGet(res, async () => {
         deprecationMessage: update?.deprecationMessage ?? null,
     };
 }));
-app.get('/v1/graph', (req, res) => {
-    const layer = req.query.layer;
-    if (layer !== undefined && layer !== 'work') {
+const TaskStateQuerySchema = z.object({ project: z.string().trim().min(1).max(200) });
+app.get('/v1/task-state', (req, res) => {
+    const parsed = TaskStateQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
         res.status(400).json({
             success: false,
             errorCode: 'validation.bad-param',
-            error: "layer must be 'work' (omit the parameter for the full graph)",
+            error: 'project query parameter is required (the project name as shown by /v1/projects)',
         });
         return;
     }
-    handleGet(res, () => (layer === 'work' ? computeWorkGraph(getDatabase()) : computeGraph(getDatabase())));
-});
-app.get('/v1/graph/evidence', (req, res) => {
-    const node = req.query.node;
-    if (typeof node !== 'string' || node.length === 0) {
-        res.status(400).json({
-            success: false,
-            errorCode: 'validation.bad-param',
-            error: 'node query parameter is required (the work-node entity name)',
-        });
-        return;
-    }
-    handleGet(res, () => {
-        const result = computeNodeEvidence(getDatabase(), node);
-        if (result === null) {
-            throw new HttpError(404, 'resource.not-found', `Entity "${node}" not found`);
-        }
-        return result;
-    });
+    handleGet(res, () => getTaskState(parsed.data.project));
 });
 app.get('/v1/stats', (_req, res) => handleGet(res, () => computeStats(getDatabase())));
 app.get('/v1/analytics', (_req, res) => handleGet(res, () => computeAnalytics(getDatabase())));

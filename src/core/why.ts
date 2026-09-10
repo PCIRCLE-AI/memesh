@@ -257,8 +257,8 @@ function observationsOf(db: MemeshDatabase, entityId: number): string[] {
 }
 
 /** Per-session page size. The same number and the same honesty flag as
- *  `computeNodeEvidence`'s EVIDENCE_CAP in core/graph.ts, because it is the
- *  same question: how much of one node's neighbourhood to serialise. */
+ *  the retired graph evidence cap used (200), because it is the same
+ *  question: how much of one node's neighbourhood to serialise. */
 const SESSION_ENTITY_CAP = 200;
 
 function sessionEntities(

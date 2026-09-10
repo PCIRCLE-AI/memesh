@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { Header } from '../../dashboard/src/components/Header';
 import { MemoriesTab } from '../../dashboard/src/components/MemoriesTab';
-import { GraphTab } from '../../dashboard/src/components/GraphTab';
 import { setLocale, t } from '../../dashboard/src/lib/i18n';
 import type { Entity } from '../../dashboard/src/lib/api';
 
@@ -44,14 +43,7 @@ beforeEach(() => {
     const url = String(input);
     if (url.startsWith('/v1/entities')) return response([entity(1), entity(2, 'session_keypoint')]);
     if (url === '/v1/projects') return response([]);
-    if (url.includes('/v1/graph?layer=work')) {
-      return response({
-        entities: [entity(1), entity(2), entity(3), entity(4), entity(5)],
-        relations: [],
-        evidenceCounts: {},
-      });
-    }
-    return response({ entities: [], relations: [], noiseTypes: ['session_keypoint'], evidenceCounts: {} });
+    return response({ entities: [], noiseTypes: ['session_keypoint'] });
   });
 });
 
@@ -68,12 +60,11 @@ describe('issue #232 — understandable global memory filter', () => {
       <>
         <Header health={{ status: 'ok', version: '4.8.1', entity_count: 2 }} error="" />
         <MemoriesTab />
-        <GraphTab />
       </>,
     );
 
     const focused = t('globalFilter.focusedStatus');
-    await waitFor(() => expect(view.container.textContent?.split(focused).length).toBe(3));
+    await waitFor(() => expect(view.container.textContent?.split(focused).length).toBe(2));
 
     const toggle = view.getByRole('button', { name: /重點記憶.*session.*commit.*活動紀錄/ });
     expect(toggle.getAttribute('aria-pressed')).toBe('true');
@@ -81,7 +72,7 @@ describe('issue #232 — understandable global memory filter', () => {
 
     fireEvent.click(toggle);
     const all = t('globalFilter.allStatus');
-    await waitFor(() => expect(view.container.textContent?.split(all).length).toBe(3));
+    await waitFor(() => expect(view.container.textContent?.split(all).length).toBe(2));
     expect(toggle.getAttribute('aria-pressed')).toBe('false');
     expect(localStorage.getItem('memesh.signalMode')).toBe('false');
   });

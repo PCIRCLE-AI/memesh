@@ -18,7 +18,6 @@ export default tseslint.config(
       // determinism check in CI, not lint's job.
       'scripts/hooks/_generated/**',
       '**/*.min.js',  // Minified third-party libraries
-      'src/cli/assets/**',  // Dashboard assets (d3, etc.)
     ],
   },
   js.configs.recommended,

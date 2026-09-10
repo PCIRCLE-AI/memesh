@@ -5,7 +5,6 @@ import { HomeTab } from './components/HomeTab';
 import { MemoriesTab } from './components/MemoriesTab';
 import { ProjectTab } from './components/ProjectTab';
 import { SettingsTab } from './components/SettingsTab';
-import { GraphTab } from './components/GraphTab';
 import { FeedbackWidget } from './components/FeedbackWidget';
 import { AuthPrompt } from './components/AuthPrompt';
 import { OnboardingBanner } from './components/OnboardingBanner';
@@ -14,20 +13,21 @@ import { InsightsBanner } from './components/InsightsBanner';
 import { api, AuthRequiredError, getApiToken, setApiToken, type HealthData } from './lib/api';
 import { initLocale, t, type Locale } from './lib/i18n';
 
-// Five tabs, one job each. Home leads because it answers the visit's real
+// Four tabs, one job each. Home leads because it answers the visit's real
 // question — what did memesh do for me, and does anything need my
 // judgment. Memories is the whole library behind one surface (search,
-// scope, manage). Project is the story of one project. Graph and Settings
-// keep their jobs. Order is the source of truth for the nav bar AND the
-// panel-render block — keep them in sync.
-const TAB_KEYS = ['Home', 'Memories', 'Project', 'Graph', 'Settings'] as const;
+// scope, manage). Project is the story of one project: its stated task
+// state and its history. Settings keeps its job. The Knowledge Graph tab
+// was removed (#237): a raw entity/relation hairball answered none of the
+// questions a person opens the dashboard with. Order is the source of truth
+// for the nav bar AND the panel-render block — keep them in sync.
+const TAB_KEYS = ['Home', 'Memories', 'Project', 'Settings'] as const;
 type Tab = typeof TAB_KEYS[number];
 
 const TAB_I18N_KEYS: Record<Tab, string> = {
   Home: 'tab.home',
   Memories: 'tab.memories',
   Project: 'tab.project',
-  Graph: 'tab.graph',
   Settings: 'tab.settings',
 };
 
@@ -41,6 +41,7 @@ const LEGACY_TAB_MAP: Record<string, Tab> = {
   Browse: 'Memories',
   Manage: 'Memories',
   Lessons: 'Memories',
+  Graph: 'Project',
 };
 
 const TAB_STORAGE_KEY = 'memesh.tab';
@@ -216,7 +217,6 @@ export function App() {
         <div id="panel-Home" role="tabpanel" aria-labelledby="tab-Home" class={`panel ${tab === 'Home' ? 'active' : ''}`}>{tab === 'Home' && <HomeTab health={health} dataRevision={dataRevision} onNavigate={selectTab} />}</div>
         <div id="panel-Memories" role="tabpanel" aria-labelledby="tab-Memories" class={`panel ${tab === 'Memories' ? 'active' : ''}`}>{keepMounted('Memories') && <MemoriesTab health={health} dataRevision={dataRevision} />}</div>
         <div id="panel-Project" role="tabpanel" aria-labelledby="tab-Project" class={`panel ${tab === 'Project' ? 'active' : ''}`}>{keepMounted('Project') && <ProjectTab health={health} dataRevision={dataRevision} />}</div>
-        <div id="panel-Graph" role="tabpanel" aria-labelledby="tab-Graph" class={`panel ${tab === 'Graph' ? 'active' : ''}`}>{tab === 'Graph' && <GraphTab dataRevision={dataRevision} />}</div>
         <div id="panel-Settings" role="tabpanel" aria-labelledby="tab-Settings" class={`panel ${tab === 'Settings' ? 'active' : ''}`}>
           {tab === 'Settings' && <SettingsTab locale={locale} onLocaleChange={setLocale} />}
         </div>

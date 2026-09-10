@@ -28,7 +28,7 @@ import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
 import { computeProjects } from '../../core/projects.js';
-import { computeGraph, computeWorkGraph, computeNodeEvidence } from '../../core/graph.js';
+import { getTaskState } from '../../core/task-state-store.js';
 import type { CountRow } from '../../core/types.js';
 import {
   RememberSchema as RememberBody, RecallSchema as RecallBody,
@@ -855,44 +855,28 @@ app.get('/v1/update-status', (req, res) => handleGet(res, async () => {
     };
 }));
 
-// --- Graph / Stats / Analytics ---
-// All three pull pure read-only aggregations from the DB. Their query
-// shapes used to be inlined here; they now live in src/core/{graph,stats,
-// analytics}.ts so CLI/MCP can call the same logic without re-implementing
-// the SQL.
-// `?layer=work` answers the two-layer view: work-layer entities only, their
-// internal relations, and per-node incoming-`evidences` counts. Evidence
-// nodes load on drill-down via /v1/graph/evidence — the full evidence layer
-// is never shipped up front.
-app.get('/v1/graph', (req, res) => {
-  const layer = req.query.layer;
-  if (layer !== undefined && layer !== 'work') {
+// --- Stats / Analytics ---
+// Read-only aggregations from the DB; the query shapes live in
+// src/core/{stats,analytics}.ts so CLI/MCP can call the same logic without
+// re-implementing the SQL. (`/v1/graph` and `/v1/graph/evidence` were removed
+// with the dashboard's Knowledge Graph tab, #237 — no other client called them.)
+
+// --- Task state (Project tab) ---
+// What the owner STATED about a project with `memesh task` — goal / next /
+// blocked / done — read straight from the task-state entity. Absent fields are
+// returned absent: the dashboard renders "not stated", never a guess.
+const TaskStateQuerySchema = z.object({ project: z.string().trim().min(1).max(200) });
+app.get('/v1/task-state', (req, res) => {
+  const parsed = TaskStateQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
     res.status(400).json({
       success: false,
       errorCode: 'validation.bad-param' satisfies ErrorCode,
-      error: "layer must be 'work' (omit the parameter for the full graph)",
+      error: 'project query parameter is required (the project name as shown by /v1/projects)',
     });
     return;
   }
-  handleGet(res, () => (layer === 'work' ? computeWorkGraph(getDatabase()) : computeGraph(getDatabase())));
-});
-app.get('/v1/graph/evidence', (req, res) => {
-  const node = req.query.node;
-  if (typeof node !== 'string' || node.length === 0) {
-    res.status(400).json({
-      success: false,
-      errorCode: 'validation.bad-param' satisfies ErrorCode,
-      error: 'node query parameter is required (the work-node entity name)',
-    });
-    return;
-  }
-  handleGet(res, () => {
-    const result = computeNodeEvidence(getDatabase(), node);
-    if (result === null) {
-      throw new HttpError(404, 'resource.not-found', `Entity "${node}" not found`);
-    }
-    return result;
-  });
+  handleGet(res, () => getTaskState(parsed.data.project));
 });
 app.get('/v1/stats', (_req, res) => handleGet(res, () => computeStats(getDatabase())));
 app.get('/v1/analytics', (_req, res) => handleGet(res, () => computeAnalytics(getDatabase())));

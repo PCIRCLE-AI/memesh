@@ -62,14 +62,12 @@ import {
   isPatternsRenderable,
   isStatsRenderable,
 } from '../../dashboard/src/components/AnalyticsTab';
-import { isGraphRenderable } from '../../dashboard/src/components/GraphTab';
 import { isPmAnalyticsRenderable } from '../../dashboard/src/components/PmAnalyticsPanel';
 import { Chip } from '../../dashboard/src/components/Chip';
 import { DoctorBanner } from '../../dashboard/src/components/DoctorBanner';
 import { EmptyLibraryState } from '../../dashboard/src/components/EmptyLibraryState';
 import { TerminalHandoff } from '../../dashboard/src/components/ExternalHandoff';
 import { FeedbackWidget } from '../../dashboard/src/components/FeedbackWidget';
-import { GraphTab } from '../../dashboard/src/components/GraphTab';
 import { Header } from '../../dashboard/src/components/Header';
 import { HealthScore } from '../../dashboard/src/components/HealthScore';
 import { HomeTab } from '../../dashboard/src/components/HomeTab';
@@ -358,7 +356,6 @@ const CASES: Array<{ name: string; node: () => ComponentChildren }> = [
   { name: 'EmptyLibraryState', node: () => <EmptyLibraryState /> },
   { name: 'ExternalHandoff', node: () => <TerminalHandoff id="contract" command="memesh doctor" /> },
   { name: 'FeedbackWidget', node: () => <FeedbackWidget health={null} /> },
-  { name: 'GraphTab', node: () => <GraphTab /> },
   { name: 'Header', node: () => <Header health={null} error="" /> },
   {
     name: 'HealthScore',
@@ -446,7 +443,6 @@ const INTENTIONALLY_EXCLUDED: Record<string, string> = {
   InstallationDetails: 'tests/dashboard/installation-details.test.tsx covers lazy loading, all locales, incomplete data, request failure and retry directly',
   AuthPrompt: 'tests/dashboard/AuthPrompt.test.tsx — rendered only from a 401 path, takes no API-backed props',
   CaptureDensityBand: 'tests/dashboard/CaptureDensityBand.test.tsx covers its degenerate inputs directly',
-  EvidencePanel: 'tests/dashboard/EvidencePanel.test.tsx covers its four states (loading / empty / truncated / failed) directly',
   MetricsRow: 'tests/dashboard/MetricsRow.test.tsx tests buildTiles directly — the distinction under test is null-vs-number, which a rendered tile cannot express',
   LessonCards: 'helper renderers (severity badge, expanded bodies) with no top-level surface — exercised through MemoriesTab rows',
   MemoryLoopCard: 'tests/dashboard/MemoryLoopCard.test.tsx covers its degenerate inputs directly',
@@ -495,7 +491,6 @@ const MUST_RENDER: Record<string, { keys?: string[]; literals?: string[]; nothin
   EmptyLibraryState: { keys: ['emptyLibrary.title', 'onboarding.seedButton'] },
   ExternalHandoff: { keys: ['handoff.terminal', 'handoff.copyCommand'] },
   FeedbackWidget: { keys: ['feedback.button'] },
-  GraphTab: { keys: ['tab.graph', 'graph.entities'] },
   Header: { literals: ['MeMesh'] },
   HealthScore: { keys: ['health.title'] },
   // Home is InsightsTab (which declares its own marker above) plus the
@@ -722,12 +717,6 @@ const GUARD_LEAVES: Array<{
     ],
   },
   {
-    name: 'isGraphRenderable',
-    guard: isGraphRenderable as (v: unknown) => boolean,
-    valid: () => ({ entities: [], relations: [] }),
-    leaves: ['entities', 'relations'],
-  },
-  {
     name: 'isConfigRenderable',
     guard: isConfigRenderable as (v: unknown) => boolean,
     valid: () => ({ config: {} }),
@@ -951,8 +940,6 @@ describe('dashboard components on degenerate data', () => {
     const PAIRS: Array<{ name: string; node: () => ComponentChildren; install: () => void; kind: 'down' | 'skew' }> = [
       { name: 'AnalyticsTab', node: () => <AnalyticsTab />, install: stubFailingApi, kind: 'down' },
       { name: 'AnalyticsTab', node: () => <AnalyticsTab />, install: stubPartialApi, kind: 'skew' },
-      { name: 'GraphTab', node: () => <GraphTab />, install: stubFailingApi, kind: 'down' },
-      { name: 'GraphTab', node: () => <GraphTab />, install: stubEmptyApi, kind: 'skew' },
       { name: 'MemoriesTab', node: () => <MemoriesTab />, install: stubFailingApi, kind: 'down' },
       { name: 'MemoriesTab', node: () => <MemoriesTab />, install: stubEmptyApi, kind: 'skew' },
       { name: 'InsightsTab', node: () => <InsightsTab />, install: stubFailingApi, kind: 'down' },
@@ -961,7 +948,6 @@ describe('dashboard components on degenerate data', () => {
       // labelled every catch "unreachable", which mislabelled the most
       // common real failure with the one instruction that cannot help.
       { name: 'AnalyticsTab', node: () => <AnalyticsTab />, install: stubErroringApi, kind: 'skew' },
-      { name: 'GraphTab', node: () => <GraphTab />, install: stubErroringApi, kind: 'skew' },
     ];
     for (const c of PAIRS) {
       const label = c.kind === 'down' ? 'the server is down' : 'the reply was unreadable (version skew)';

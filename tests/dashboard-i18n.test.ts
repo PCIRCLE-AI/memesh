@@ -2,7 +2,6 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { RADAR_AXES } from '../src/core/analytics.js';
-import { DERIVED_RELATION_TYPES } from '../src/core/kg-backfill.js';
 
 const i18nSource = readFileSync('dashboard/src/lib/i18n.ts', 'utf8');
 
@@ -156,7 +155,6 @@ describe('dashboard i18n', () => {
     const memoriesSource = readFileSync('dashboard/src/components/MemoriesTab.tsx', 'utf8');
     const memoryRowSource = readFileSync('dashboard/src/components/MemoryRow.tsx', 'utf8');
     const analyticsSource = readFileSync('dashboard/src/components/AnalyticsTab.tsx', 'utf8');
-    const graphSource = readFileSync('dashboard/src/components/GraphTab.tsx', 'utf8');
     const settingsSource = readFileSync('dashboard/src/components/SettingsTab.tsx', 'utf8');
     const apiSource = readFileSync('dashboard/src/lib/api.ts', 'utf8');
 
@@ -171,7 +169,6 @@ describe('dashboard i18n', () => {
     const insightsSource = readFileSync('dashboard/src/components/InsightsTab.tsx', 'utf8');
     expect(insightsSource).not.toMatch(/\}[smhd] ago/);
     expect(insightsSource).toContain('relativeDate(');
-    expect(graphSource).not.toContain(': No data');
     expect(settingsSource).not.toContain('>Level ');
     expect(apiSource).not.toContain('Unknown error');
     expect(apiSource).not.toContain('Request timed out');
@@ -344,15 +341,11 @@ describe('dashboard i18n', () => {
         .map((m) => m[1] ?? m[2]);
       expect(clusterTypes.length).toBeGreaterThanOrEqual(25);
 
-      // Entity-type colours moved out of one TYPE_COLORS map: the token-backed
-      // types are now in GraphTab's TOKEN_TYPE_VARS (value `'--token'`, resolved
-      // for the canvas — see DESIGN.md), the category-only hues in
-      // lib/type-palette.ts (value `'#hex'`). Both together are the vocabulary.
-      const graphSrc = readFileSync('dashboard/src/components/GraphTab.tsx', 'utf8');
-      const tokenBlock = graphSrc.match(/const TOKEN_TYPE_VARS[\s\S]*?\n\};/);
-      expect(tokenBlock).not.toBeNull();
-      const tokenTypes = [...tokenBlock![0].matchAll(/(?:'([^']+)'|([\w-]+)):\s*'--/g)]
-        .map((m) => m[1] ?? m[2]);
+      // The two token-backed types (DESIGN.md: `decision` = --life,
+      // `session-insight` = --text-2) used to be read off GraphTab's
+      // TOKEN_TYPE_VARS; with the graph tab gone they are named here so the
+      // vocabulary check cannot quietly shrink.
+      const tokenTypes = ['decision', 'session-insight'];
 
       const paletteSrc = readFileSync('dashboard/src/lib/type-palette.ts', 'utf8');
       const paletteBlock = paletteSrc.match(/CATEGORICAL_TYPE_COLORS[\s\S]*?\n\};/);
@@ -364,27 +357,6 @@ describe('dashboard i18n', () => {
       expect(colorTypes.length).toBeGreaterThanOrEqual(10);
 
       expectAllPresent([...new Set([...clusterTypes, ...colorTypes])].map((t) => `type.${t}`));
-    });
-
-    // relationLabel(): t(`relation.${type}`) — the relation vocabulary this
-    // codebase emits lives in three places: the demo seed's relation
-    // triples, kg-backfill's relationType union, and the two
-    // behaviour-changing types documented in core/types.ts.
-    it('covers every relation type the codebase emits', () => {
-      const demoSrc = readFileSync('src/core/demo.ts', 'utf8');
-      const demoRelations = [...demoSrc.matchAll(/\['[^']+', '([a-z_-]+)', '[^']+'\]/g)].map((m) => m[1]);
-      expect(demoRelations.length).toBeGreaterThanOrEqual(5);
-
-      // The exported constant, not a regex over the interface: the union used
-      // to be written inline and this scan read it as text, so naming it
-      // `DerivedRelationType` — a refactor that changed no behaviour — made
-      // the match null and the check vacuous. Importing the list means it
-      // cannot silently stop finding them.
-      const backfillRelations = [...DERIVED_RELATION_TYPES];
-      expect(backfillRelations.length).toBeGreaterThanOrEqual(4);
-
-      const all = [...new Set([...demoRelations, ...backfillRelations, 'supersedes', 'contradicts'])];
-      expectAllPresent(all.map((r) => `relation.${r}`));
     });
 
     // UserPatterns: t(`patterns.day.${dayNum}`) — SQLite strftime %w is

@@ -18,9 +18,8 @@
  *
  * The two types that coincide with a token are NOT here: `decision` =
  * `--life` (decisions are this brain's main produce) and `session-insight`
- * = `--text-2` (weak signal stays grey). GraphTab resolves those from the
- * tokens at runtime (canvas cannot read `var()`), so a palette change
- * reaches them.
+ * = `--text-2` (weak signal stays grey). `entity-display.ts` resolves those
+ * from the tokens at runtime, so a palette change reaches them.
  */
 export const CATEGORICAL_TYPE_COLORS: Record<string, string> = {
   lesson_learned: '#DBB155',      // H=85 (anchor — earthy; amber differs by chroma)

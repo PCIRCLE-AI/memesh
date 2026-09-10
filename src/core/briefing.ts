@@ -29,7 +29,7 @@ import { getDatabase } from '../db.js';
 import { getProjectName } from './paths.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { rankEntities } from './scoring.js';
-import { getTaskState } from './task-state-store.js';
+import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { taskStateLines } from './task-state.js';
@@ -163,7 +163,16 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
 
   // The one stated line, before anything ranked — same reasoning as the
   // hook: ranking cannot know what you meant to do next.
-  const { state } = getTaskState(projectName);
+  // A corrupted record must not cost the agent the rest of the briefing:
+  // it becomes one line that says the record is unreadable and how to
+  // replace it, in the slot the stated lines would have taken.
+  let taskLines: string[];
+  try {
+    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
+  } catch (err) {
+    if (!(err instanceof TaskStateUnreadableError)) throw err;
+    taskLines = [`task state for ${projectName}: ${err.message}`];
+  }
   const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
   // The inbox line rides WITH the stated lines, not among the ranked
   // memories: like goal / next / blocked it is a fact the agent must act
@@ -186,7 +195,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
     : undefined;
   const stateLines = [
-    ...taskStateLines(state, projectName),
+    ...taskLines,
     ...unreadInboxLines(
       unreadCount,
       canonicalAgentScopeId(projectName),

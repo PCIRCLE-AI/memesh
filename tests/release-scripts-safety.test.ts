@@ -146,14 +146,12 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     try {
       fs.mkdirSync(path.join(fixture, 'src/core'), { recursive: true });
       fs.mkdirSync(path.join(fixture, 'dist/core'), { recursive: true });
-      fs.mkdirSync(path.join(fixture, 'dist/cli/assets'), { recursive: true });
       fs.writeFileSync(path.join(fixture, 'src/core/kept.ts'), 'export const kept = true;\n');
       for (const family of ['kept', 'deleted']) {
         for (const suffix of ['.js', '.js.map', '.d.ts', '.d.ts.map']) {
           fs.writeFileSync(path.join(fixture, 'dist/core', `${family}${suffix}`), 'generated');
         }
       }
-      fs.writeFileSync(path.join(fixture, 'dist/cli/assets/d3.v7.min.js'), 'asset');
       fs.writeFileSync(path.join(fixture, 'dist/skills-manifest.json'), '{}');
 
       expect(findOrphanedTypeScriptOutputs(fixture)).toEqual([{

@@ -18,7 +18,7 @@ import { NAMESPACES } from '../../core/types.js';
 import { assembleBriefing } from '../../core/briefing.js';
 import { inspectHosts, allWired, type SetupSeams, type HostStatus } from '../../core/setup.js';
 import { installHooks } from '../../core/install-hooks.js';
-import { getTaskState, setTaskState } from '../../core/task-state-store.js';
+import { getTaskState, setTaskState, TaskStateUnreadableError } from '../../core/task-state-store.js';
 import { TASK_STATE_FIELDS, taskStateLines, type TaskStateField } from '../../core/task-state.js';
 import type { LessonSeverity, MergeStrategy, ExportResult } from '../../core/types.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
@@ -1347,7 +1347,18 @@ program
       }
 
       if (Object.keys(patch).length === 0) {
-        const { project, state } = getTaskState(opts.project);
+        let project: string;
+        let state: ReturnType<typeof getTaskState>['state'];
+        try {
+          ({ project, state } = getTaskState(opts.project));
+        } catch (err) {
+          // A corrupted record is a user-facing failure with a recovery
+          // step, not a stack trace: the message already says what to do.
+          if (!(err instanceof TaskStateUnreadableError)) throw err;
+          if (opts.json) console.log(JSON.stringify({ error: err.message, project: err.project }));
+          else console.error(err.message);
+          process.exit(1);
+        }
         if (opts.json) {
           console.log(JSON.stringify({ project, state }));
           return;

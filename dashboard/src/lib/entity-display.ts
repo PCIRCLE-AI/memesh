@@ -69,15 +69,6 @@ export function typeLabel(type: string): string {
   return translated === key ? type : translated;
 }
 
-/** Localised label for a relation type (graph edge labels). Same open-set
- *  contract and miss detection as typeLabel — relations are free-form
- *  labels; only the ones this codebase emits are in the catalogue. */
-export function relationLabel(type: string): string {
-  const key = `relation.${type}`;
-  const translated = t(key);
-  return translated === key ? type : translated;
-}
-
 /* ---------- relative time ---------- */
 
 /** SQLite CURRENT_TIMESTAMP strings are UTC despite lacking an offset. */

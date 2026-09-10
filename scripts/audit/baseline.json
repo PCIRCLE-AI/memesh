@@ -291,11 +291,6 @@
       "reason": "the `toEqual([])` assertions on `actions` are each pinned by non-empty counterparts asserting exact action kinds and arg arrays; emptiness is the positive claim (nothing to prescribe on a wired host), not vacuity.",
       "triaged": "2026-08-16 (P1 memesh setup; re-applied after merge took main baseline)"
     },
-    "C5 dashboard/src/components/GraphTab.tsx:372": {
-      "class": "SAFE-GUARDED",
-      "reason": "computeGraph always returns noiseTypes; same-origin fetch",
-      "triaged": "2026-08-04 (re-keyed: the Batch-D token-resolver + palette refactor shifted 208→233; same code verified before re-keying); re-keyed 2026-08-13 233->276 (graph visual-hierarchy helpers added above; same statement, classification unchanged — verified); re-keyed 2026-08-14 276->285 (review-fix comments above shifted it; same statement — verified); re-keyed 2026-08-15 285→286 (merge main shifted lines +1; same statement — verified) (re-keyed: UX-4 inserted Rule 5 above it; statement unchanged)"
-    },
     "C5 dashboard/src/components/LessonCards.tsx:59": {
       "class": "SAFE-DISPLAY",
       "reason": "display fallbacks; empty renders an explicit notice",
@@ -325,16 +320,6 @@
       "class": "SAFE",
       "reason": "emptiness (silent-pass) assertions paired with positive fire assertions in the same file — the silence IS the contract under test (guard failure must degrade to no output)",
       "triaged": "2026-08-16"
-    },
-    "C5 dashboard/src/lib/entity-display.ts:200": {
-      "class": "SAFE-DISPLAY",
-      "reason": "classification falls through to the freeform bucket",
-      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified)"
-    },
-    "C5 dashboard/src/lib/entity-display.ts:202": {
-      "class": "SAFE-DISPLAY",
-      "reason": "classification falls through to the freeform bucket",
-      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified)"
     },
     "C1 tests/dashboard/ProjectTab.select.test.ts": {
       "class": "SAFE",
@@ -476,11 +461,6 @@
       "reason": "`(e.relations ?? []).filter` listing outgoing supersedes chain lines — absence renders no chain section at all rather than an empty claim. (re-keyed 1102→1107 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view)"
     },
-    "C5 dashboard/src/components/ProjectTab.tsx:44": {
-      "class": "SAFE-DISPLAY",
-      "reason": "`e.relations ?? []` in selectProjectEntities — an entity without relations simply readmits nothing; the readmission rule is pinned by tests/dashboard/ProjectTab.select.test.ts including the no-relations path. (re-keyed 43→44 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 readmission rule)"
-    },
     "C1 tests/cli/briefing-recipient.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
       "reason": "The detector's `.toBe(0)` matches successful CLI exit-status assertions, not empty collections. The test separately pins generic briefing suppression, exact recipient/project output, and exclusion of the other recipient.",
@@ -565,6 +545,26 @@
       "class": "SAFE",
       "reason": "Every emptiness assertion is paired in the same test with a positive readback: the stale-marker test asserts UP_TO_DATE first and then that the marker file is gone; the claim test asserts the first claimant received {from,to} before the second gets null and the directory listing is empty; the corrupt-snooze test writes the bad bytes it expects to be rejected; the refresh-policy test asserts true and false on both sides of each TTL.",
       "triaged": "2026-09-10 #308 update-notice resolver"
+    },
+    "C5 dashboard/src/lib/entity-display.ts:191": {
+      "class": "SAFE-DISPLAY",
+      "reason": "classification falls through to the freeform bucket",
+      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified)"
+    },
+    "C5 dashboard/src/lib/entity-display.ts:193": {
+      "class": "SAFE-DISPLAY",
+      "reason": "classification falls through to the freeform bucket",
+      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified)"
+    },
+    "C5 dashboard/src/components/ProjectTab.tsx:45": {
+      "class": "SAFE-DISPLAY",
+      "reason": "`e.relations ?? []` in selectProjectEntities — an entity without relations simply readmits nothing; the readmission rule is pinned by tests/dashboard/ProjectTab.select.test.ts including the no-relations path. (re-keyed 43→44 on 2026-08-29; line shift only, classification unchanged)",
+      "triaged": "2026-08-16 (UX-3 readmission rule); re-keyed 2026-09-10 (#237: Fragment import added above; same statement — verified)"
+    },
+    "C1 tests/cli/task-corrupted-record.test.ts": {
+      "class": "SAFE",
+      "reason": "the not.toMatch/not.toContain assertions (no stack frames, no install path, no internal entity name) are the contract under test and each is paired with positive assertions on the same output (status 1, recovery text present, JSON error object)",
+      "triaged": "2026-09-10 (#237)"
     },
     "C1 tests/cli/update-notice-stderr.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",

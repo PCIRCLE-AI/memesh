@@ -4,6 +4,36 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Removed
+
+- **The dashboard's Knowledge Graph tab (#237).** The interactive
+  entity/relation canvas, its evidence drill-down, the `GET /v1/graph` and
+  `GET /v1/graph/evidence` routes that only it called, and 43 graph-only
+  interface strings in every locale are gone. A bookmarked `?tab=Graph` or a
+  stored tab preference lands on the Project tab. Owner decision recorded in
+  DESIGN.md: humans could not read the raw graph, and it answered none of the
+  questions a person opens the dashboard with. The pre-build fallback page
+  (`memesh view` without a compiled dashboard) loses its Graph and Timeline
+  tabs for the same reason — both were rendered from `/v1/graph` — and the
+  bundled d3 library that only that canvas used is no longer shipped.
+
+### Added
+
+- **The Project tab leads with the owner-stated task state (#237).** A new
+  `GET /v1/task-state?project=` route returns what `memesh task` recorded —
+  goal, next, blocked, done — with its timestamp; the tab renders exactly the
+  stated fields with a provenance line, an honest "nothing stated yet" empty
+  state that says how to state it, and reports a failed fetch as a failure
+  rather than as an empty project. Nothing is inferred from memory counts.
+- **A corrupted task-state record is reported as a failure, not shown as
+  "nothing stated" (#237).** `task_state`, `memesh task` and the new
+  `/v1/task-state` route now fail loudly when the stored metadata is not
+  valid JSON; before, every surface rendered a broken record exactly like a
+  project nobody had described. The error names the project and says how to
+  recover: any write (`memesh task --goal …`) replaces the broken record, and
+  the session briefing keeps its ranked memories and shows that one line in
+  place of the stated task state.
+
 ### Changed
 
 - **The update notice reaches every door, not only the SessionStart hook

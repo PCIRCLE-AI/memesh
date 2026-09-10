@@ -38,13 +38,13 @@ describe('legacy live dashboard retained settings', () => {
       : style === 'end-tag-space' ? generated.replaceAll('</script>', '</script >') : generated;
     const scripts = parseScriptContents(html);
 
-    expect(scripts).toHaveLength(2);
+    expect(scripts).toHaveLength(1); // the page script; the d3 bundle left with the Graph tab (#237)
     for (const script of scripts) expect(() => new vm.Script(script)).not.toThrow();
   });
 
   it('rejects malformed script end tags instead of silently skipping the missing script', () => {
     const malformed = generateLiveDashboardHtml().replaceAll('</script>', '</script/>');
 
-    expect(parseScriptContents(malformed)).not.toHaveLength(2);
+    expect(parseScriptContents(malformed)).not.toHaveLength(1);
   });
 });
