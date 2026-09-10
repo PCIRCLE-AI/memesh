@@ -68,7 +68,10 @@ describe('GET /v1/task-state (#237: the Project tab reads what the owner stated)
     getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{oops', taskStateName('broken'));
     const res = await fetch(`${base}/v1/task-state?project=broken`);
     expect(res.status).toBe(500);
-    expect((await res.json()).success).toBe(false);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error).toContain('not valid JSON');
+    expect(body.error).not.toContain('task-state:');
   });
 
   it('the graph routes are gone with the Graph tab', async () => {

@@ -18,6 +18,7 @@ import { handleTool } from '../../src/mcp/tools.js';
 import { assembleBriefing } from '../../src/core/briefing.js';
 import { recipientEverSeen, unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
 import { setTaskState } from '../../src/core/task-state-store.js';
+import { taskStateName } from '../../src/core/task-state.js';
 import { remember } from '../../src/core/operations.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
@@ -60,6 +61,20 @@ function seed() {
 }
 
 describe('assembleBriefing', () => {
+  it('a corrupted task-state record costs one honest line, not the whole briefing (#237)', () => {
+    seed();
+    setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
+    getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName(PROJECT));
+
+    const result = assembleBriefing(PROJECT);
+    expect(result.hasTaskState).toBe(true);
+    expect(result.text).toContain('not valid JSON');
+    expect(result.text).toContain('memesh task');
+    expect(result.text).not.toContain('Ship A1c');
+    // The ranked memories are still there — the broken record did not take them down.
+    expect(result.entityCount).toBeGreaterThanOrEqual(3);
+  });
+
   it('assembles the topology: task state first, then sections, in one fenced block', () => {
     seed();
     setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c', next: 'Open the PR' } });

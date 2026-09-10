@@ -29,7 +29,10 @@ All notable changes to MeMesh are documented here.
   "nothing stated" (#237).** `task_state`, `memesh task` and the new
   `/v1/task-state` route now fail loudly when the stored metadata is not
   valid JSON; before, every surface rendered a broken record exactly like a
-  project nobody had described.
+  project nobody had described. The error names the project and says how to
+  recover: any write (`memesh task --goal …`) replaces the broken record, and
+  the session briefing keeps its ranked memories and shows that one line in
+  place of the stated task state.
 
 ### Changed
 

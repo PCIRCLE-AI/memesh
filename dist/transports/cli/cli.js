@@ -6803,23 +6803,26 @@ var init_task_state = __esm({
 function readState(name) {
   const row = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
   if (!row?.metadata)
-    return {};
+    return { state: {}, corrupted: false };
   let parsed;
   try {
     parsed = JSON.parse(row.metadata);
   } catch {
-    throw new Error(`task state for ${name} is not readable: metadata is not valid JSON`);
+    return { state: {}, corrupted: true };
   }
-  return parseTaskState(parsed);
+  return { state: parseTaskState(parsed), corrupted: false };
 }
 function getTaskState(project) {
   const resolved = project ?? getProjectName();
-  return { project: resolved, state: readState(taskStateName(resolved)) };
+  const { state, corrupted } = readState(taskStateName(resolved));
+  if (corrupted)
+    throw new TaskStateUnreadableError(resolved);
+  return { project: resolved, state };
 }
 function setTaskState(input) {
   const project = input.project ?? getProjectName();
   const name = taskStateName(project);
-  const previous = readState(name);
+  const { state: previous } = readState(name);
   const { state, changed, observations } = mergeTaskState(previous, input.patch, (/* @__PURE__ */ new Date()).toISOString());
   if (changed.length === 0)
     return { project, state, changed };
@@ -6838,6 +6841,7 @@ function setTaskState(input) {
   }));
   return { project, state, changed };
 }
+var TaskStateUnreadableError;
 var init_task_state_store = __esm({
   "dist/core/task-state-store.js"() {
     "use strict";
@@ -6846,6 +6850,14 @@ var init_task_state_store = __esm({
     init_paths();
     init_operations();
     init_task_state();
+    TaskStateUnreadableError = class extends Error {
+      project;
+      constructor(project) {
+        super(`task state for project "${project}" is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal \u2026\` (any write replaces the broken record).`);
+        this.project = project;
+        this.name = "TaskStateUnreadableError";
+      }
+    };
   }
 });
 
@@ -58599,12 +58611,19 @@ function assembleBriefing(project, recipient) {
   const projectName = project ?? getProjectName();
   const db2 = getDatabase();
   const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
-  const { state } = getTaskState(projectName);
+  let taskLines;
+  try {
+    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
+  } catch (err) {
+    if (!(err instanceof TaskStateUnreadableError))
+      throw err;
+    taskLines = [`task state for ${projectName}: ${err.message}`];
+  }
   const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
   const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient);
   const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName), inboxRecipient) : void 0;
   const stateLines = [
-    ...taskStateLines(state, projectName),
+    ...taskLines,
     ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)
   ];
   const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");

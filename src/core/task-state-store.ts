@@ -39,30 +39,44 @@ export interface SetTaskStateResult {
   changed: TaskStateField[];
 }
 
-function readState(name: string): TaskState {
+/**
+ * What is on disk for a project: the parsed state, or `corrupted` when the
+ * stored metadata is not JSON. Tri-state on purpose — "{}" and "unreadable"
+ * are different facts and each caller decides what to do with the second.
+ */
+function readState(name: string): { state: TaskState; corrupted: boolean } {
   const row = getDatabase()
     .prepare('SELECT metadata FROM entities WHERE name = ?')
     .get(name) as { metadata: string | null } | undefined;
-  if (!row?.metadata) return {};
+  if (!row?.metadata) return { state: {}, corrupted: false };
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.metadata);
   } catch {
-    // Corrupted JSON is a failure the caller must see. Returning {} here
-    // rendered it as "nothing stated" on every surface — indistinguishable
-    // from a project nobody has described — so the Project tab, the CLI
-    // and the MCP tool would all present a broken record as an empty one.
-    throw new Error(`task state for ${name} is not readable: metadata is not valid JSON`);
+    return { state: {}, corrupted: true };
   }
   // A well-formed value of the wrong SHAPE is parseTaskState's call: it keeps
   // the fields it can use and drops the rest.
-  return parseTaskState(parsed);
+  return { state: parseTaskState(parsed), corrupted: false };
+}
+
+/** Thrown by the READ surfaces when the stored record is not JSON. */
+export class TaskStateUnreadableError extends Error {
+  constructor(public readonly project: string) {
+    super(`task state for project "${project}" is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal …\` (any write replaces the broken record).`);
+    this.name = 'TaskStateUnreadableError';
+  }
 }
 
 /** The state currently recorded for a project. Empty object when there is none. */
 export function getTaskState(project?: string): { project: string; state: TaskState } {
   const resolved = project ?? getProjectName();
-  return { project: resolved, state: readState(taskStateName(resolved)) };
+  const { state, corrupted } = readState(taskStateName(resolved));
+  // Corrupted JSON is a failure the reader must see. Returning {} here
+  // rendered it as "nothing stated" on every surface — indistinguishable
+  // from a project nobody has described.
+  if (corrupted) throw new TaskStateUnreadableError(resolved);
+  return { project: resolved, state };
 }
 
 /**
@@ -76,7 +90,10 @@ export function getTaskState(project?: string): { project: string; state: TaskSt
 export function setTaskState(input: SetTaskStateInput): SetTaskStateResult {
   const project = input.project ?? getProjectName();
   const name = taskStateName(project);
-  const previous = readState(name);
+  // The WRITE path does not throw on a corrupted record: replacing it is the
+  // one in-product way to recover, so a broken record merges as "nothing
+  // stated before" and the write below overwrites it.
+  const { state: previous } = readState(name);
   const { state, changed, observations } = mergeTaskState(
     previous,
     input.patch,
