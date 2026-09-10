@@ -21,11 +21,16 @@
 import { pathToFileURL } from 'url';
 import {
   findAutoUpdateConsent,
+  importFromPluginRoot,
   isAutoCaptureEnabled,
+  markUpdatePromptAnswered,
+  memeshDir,
   parseAutoUpdateConsent,
   readUpdateCheckCache,
+  readUpdatePromptClaim,
   resolvePluginRoot,
   writeAutoUpdateConsent,
+  writeSnooze,
 } from './_shared.js';
 import { join } from 'path';
 import { existsSync, readFileSync } from 'fs';
@@ -56,24 +61,64 @@ function currentInstalledVersion() {
   } catch { return null; }
 }
 
-function recordUpdateConsent(sessionId, prompt) {
+/**
+ * Record the owner's answer to this session's first-use update notice.
+ *
+ * Returns 'approved' | 'declined' | 'never' | null. The answer counts only
+ * when THIS session was actually shown the notice (a prompt claim exists for
+ * session/current/latest), so a stray "no" in unrelated conversation is not
+ * a decision about updates.
+ *
+ *   approved — npm-global only (the one channel with a hook-owned installer);
+ *              other channels were told their manual action and cannot be
+ *              approved into an install.
+ *   declined — "Not now": escalating snooze for this target version, on
+ *              every channel. A distinct newer target is offered again.
+ *   never    — "Never ask again": config.updateCheck = false; also snoozed so
+ *              a host that already read the old config stays quiet.
+ */
+async function recordUpdateConsent(sessionId, prompt) {
   const current = currentInstalledVersion();
   if (!current || !sessionId) return null;
-  const channel = currentInstallChannel();
-  // Only npm-global has a hook-owned installer. Other channels receive an
-  // actionable notice at SessionStart and must not turn an "Upgrade" word
-  // into a misleading approval marker for a different installation path.
-  if (channel !== 'npm-global') return null;
   const cache = readUpdateCheckCache(current);
   const latest = cache?.latestVersion;
   if (typeof latest !== 'string' || !latest) return null;
-  const pending = findAutoUpdateConsent(sessionId, current, latest, channel);
-  if (!pending || !['pending'].includes(pending.decision)) return null;
   const decision = parseAutoUpdateConsent(prompt);
   if (!decision) return null;
-  return writeAutoUpdateConsent(
-    sessionId, current, latest, pending.channel ?? 'unknown', decision,
-  ) ? decision : null;
+  const channel = currentInstallChannel();
+  const pending = channel === 'npm-global'
+    ? findAutoUpdateConsent(sessionId, current, latest, channel)
+    : null;
+  const claim = readUpdatePromptClaim(sessionId, current, latest);
+  // The notice must have been shown to THIS session and not answered yet.
+  // Once answered, later "no"/"later" in ordinary conversation is not a
+  // decision about updates (it used to escalate the snooze every time).
+  const open = (claim && claim.decision !== 'answered') || pending?.decision === 'pending';
+  if (!open) return null;
+
+  if (decision === 'approved') {
+    if (!pending || pending.decision !== 'pending') return null;
+    if (!writeAutoUpdateConsent(sessionId, current, latest, pending.channel ?? channel, 'approved')) return null;
+    markUpdatePromptAnswered(sessionId, current, latest, 'approved');
+    return 'approved';
+  }
+  // declined | never
+  try { writeSnooze(memeshDir(), latest); } catch { /* best-effort */ }
+  if (pending?.decision === 'pending') {
+    writeAutoUpdateConsent(sessionId, current, latest, pending.channel ?? channel, 'declined');
+  }
+  let recorded = decision;
+  if (decision === 'never') {
+    try {
+      const configMod = await importFromPluginRoot(resolvePluginRoot(import.meta.url), 'dist/core/config.js');
+      configMod.updateConfig({ updateCheck: false });
+    } catch (err) {
+      logError('user-prompt-intent', `could not persist updateCheck=false: ${err?.message || err}`);
+      recorded = 'declined';
+    }
+  }
+  markUpdatePromptAnswered(sessionId, current, latest, recorded);
+  return recorded;
 }
 
 // Patterns compiled at module load — invalid regex MUST fail loudly. Do
@@ -174,7 +219,7 @@ if (isMainModule) {
   let input = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => { input += chunk; });
-  process.stdin.on('end', () => {
+  process.stdin.on('end', async () => {
     try {
       // Distinguish empty stdin (legitimate degenerate event) from malformed
       // input (protocol drift). Both stay non-blocking, but only malformed
@@ -195,7 +240,7 @@ if (isMainModule) {
       // we accept either name to survive a similar rename. If both are absent
       // or non-string, detectRememberIntent's type guard returns false safely.
       const prompt = data.prompt ?? data.user_prompt ?? '';
-      const updateDecision = recordUpdateConsent(data.session_id, prompt);
+      const updateDecision = await recordUpdateConsent(data.session_id, prompt);
       const rememberIntent = detectRememberIntent(prompt);
       if (!rememberIntent && !updateDecision) return process.exit(0);
       // Update consent is a user-authorized control decision, not memory
@@ -203,10 +248,12 @@ if (isMainModule) {
       if (!isAutoCaptureEnabled(process.env) && !updateDecision) return process.exit(0);
 
       const contexts = [];
-      if (updateDecision) {
-        contexts.push(updateDecision === 'approved'
-          ? 'The user explicitly approved the MeMesh upgrade. The Stop hook may now update the consented installation.'
-          : 'The user declined the MeMesh upgrade for this session. Do not install it or ask again in this session.');
+      if (updateDecision === 'approved') {
+        contexts.push('The user explicitly approved the MeMesh upgrade. The Stop hook may now update the consented installation.');
+      } else if (updateDecision === 'declined') {
+        contexts.push('The user declined the MeMesh upgrade. It is snoozed for this target version (24h, then 48h, then 7 days on repeated declines); do not install it or mention it again unless a newer version appears.');
+      } else if (updateDecision === 'never') {
+        contexts.push('The user asked never to be asked about MeMesh updates again. updateCheck is now off; do not mention updates. `memesh config set updateCheck true` turns checks back on.');
       }
       if (rememberIntent) contexts.push(buildHint());
       const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: contexts.join('\n\n') } };

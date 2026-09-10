@@ -4,6 +4,22 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **First-use update notice: one resolver, escalating snooze, a receipt after
+  upgrading, and a loud unknown (#308).** `src/core/update-notice.ts` now
+  decides what every entry point says about updates — `UP_TO_DATE`,
+  `UPGRADE_AVAILABLE`, `SNOOZED`, `JUST_UPGRADED`, `CHECK_FAILED` or
+  `DISABLED` — and the SessionStart, UserPromptSubmit and Stop hooks read it
+  from the same compiled leaf. "Not now" snoozes that target version for 24
+  hours, then 48 hours, then 7 days on repeated declines, and a newer release
+  resets the snooze; "Never ask again" sets `updateCheck: false`. A
+  readback-verified upgrade leaves a receipt that the next session announces
+  once, including that running hosts keep the old version until they restart.
+  A failed or absent registry check is announced as unknown (once a day) and
+  never rendered as up to date. The background refresh re-verifies a current
+  answer hourly and a known upgrade every 12 hours instead of every session.
+
 ### Fixed
 
 - **Dashboard header counts one memory as "memory".** The badge used the

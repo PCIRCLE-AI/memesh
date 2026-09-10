@@ -189,6 +189,11 @@ describe.skipIf(process.platform === 'win32')('auto-update runner process bounda
     expect(result.stderr).not.toContain('FAILED');
     expect(fs.readFileSync(fake.statePath, 'utf8')).toBe('4.8.0');
     expect(fs.existsSync(lockPath)).toBe(false);
+    // The receipt the next session announces once (#308): installed on disk,
+    // but running hosts keep the previous version until they restart.
+    expect(result.stdout).toContain('RECEIPT just-upgraded');
+    const packageVersion = JSON.parse(fs.readFileSync(path.resolve('package.json'), 'utf8')).version as string;
+    expect(JSON.parse(fs.readFileSync(path.join(tempDir, 'just-upgraded.json'), 'utf8'))).toMatchObject({ from: packageVersion, to: '4.8.0' });
   });
 
   it('emits terminal FAILED on a nonzero install and releases the lock', async () => {

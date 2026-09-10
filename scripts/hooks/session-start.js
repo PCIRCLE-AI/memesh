@@ -31,6 +31,11 @@ import {
   finalizeUpdatePromptClaim,
   readUpdatePromptClaim,
   readUpdateCheckCache,
+  resolveUpdateNotice,
+  shouldRefreshUpdateCache,
+  claimJustUpgradedMarker,
+  isStrictlyOlder,
+  isUpdateCheckEnabled,
   repoStateLines,
   resolvePluginRoot,
   resolveSessionLimit,
@@ -191,33 +196,59 @@ function buildDeprecationBanner(currentVersion, cache) {
  */
 const UPDATE_BANNER_THROTTLE_MS = 24 * 60 * 60 * 1000;
 
+// `isStrictlyOlder` now comes from the shared update-notice leaf (one
+// semver rule for hooks, CLI and the resolver).
+
+const CHECK_FAILED_BANNER_THROTTLE_MS = 24 * 60 * 60 * 1000;
+
 /**
- * Return true iff `a` is strictly older than `b` under semver-ish
- * ordering. Compares the dot-separated numeric portion of each version
- * componentwise (so 4.2.10 > 4.2.9, unlike string compare). Anything
- * after the first non-numeric char falls back to lex compare on the
- * trailing fragment — fine for the prerelease / 4-segment build tags
- * memesh uses (e.g. 4.2.5-rc.1).
+ * Banner lines for the two update states that are NOT a consent prompt:
+ * JUST_UPGRADED (said once, then the receipt is consumed) and CHECK_FAILED
+ * (unknown is not "up to date"; throttled to once a day). Everything else
+ * returns [] so the caller falls through to its consent/banner logic.
  */
-function isStrictlyOlder(a, b) {
-  const parse = (v) => {
-    const [main, ...rest] = String(v).split(/[-+]/);
-    const nums = main.split('.').map((s) => Number.parseInt(s, 10));
-    return { nums, tail: rest.join('-') };
-  };
-  const pa = parse(a);
-  const pb = parse(b);
-  const len = Math.max(pa.nums.length, pb.nums.length);
-  for (let i = 0; i < len; i++) {
-    const ai = Number.isFinite(pa.nums[i]) ? pa.nums[i] : 0;
-    const bi = Number.isFinite(pb.nums[i]) ? pb.nums[i] : 0;
-    if (ai !== bi) return ai < bi;
+function updateNoticeBanner(installedVersion, cache) {
+  if (!installedVersion) return { kind: 'UNKNOWN_VERSION', lines: [] };
+  const notice = resolveUpdateNotice({
+    dir: memeshHomeDir(), currentVersion: installedVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
+  });
+  if (notice.kind === 'JUST_UPGRADED') {
+    // Take the receipt atomically: two host hooks starting together must not
+    // both announce. The loser sees null and says nothing about it.
+    const claimed = claimJustUpgradedMarker(memeshHomeDir());
+    if (!claimed) return { kind: 'UP_TO_DATE', lines: [] };
+    return {
+      kind: notice.kind,
+      lines: [`✅ MeMesh upgraded ${claimed.from} → ${claimed.to}. Hosts already running keep the old version until they restart; this session's hooks and MCP server pick up ${claimed.to} on the next start.`],
+    };
   }
-  // Numeric prefix tied. A prerelease tail counts as OLDER than no
-  // tail (semver: 1.0.0-rc.1 < 1.0.0); otherwise lex on tail.
-  if (pa.tail && !pb.tail) return true;
-  if (!pa.tail && pb.tail) return false;
-  return pa.tail < pb.tail;
+  if (notice.kind === 'CHECK_FAILED') return { kind: notice.kind, lines: buildCheckFailedBanner(installedVersion, notice.reason) };
+  return { kind: notice.kind, lines: [] };
+}
+
+/**
+ * The update status is UNKNOWN (no completed check, or the registry lookup
+ * failed and the last good answer is older than a day). Silence here would
+ * read as "up to date", so say it — once a day per installed version.
+ */
+function buildCheckFailedBanner(currentVersion, reason) {
+  try {
+    const fs = require('fs');
+    const dir = memeshHomeDir();
+    try { ensurePrivateDir(dir); } catch { /* best-effort */ }
+    const versionTag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
+    const markerPath = join(dir, `last-check-failed-banner.${versionTag}.lock`);
+    let stat;
+    try { stat = fs.statSync(markerPath); } catch { stat = null; }
+    if (stat && Date.now() - stat.mtimeMs < CHECK_FAILED_BANNER_THROTTLE_MS) return [];
+    try {
+      fs.writeFileSync(markerPath, String(Date.now()), { mode: 0o600 });
+      try { fs.chmodSync(markerPath, 0o600); } catch { /* non-POSIX */ }
+    } catch { /* best-effort */ }
+  } catch {
+    return [];
+  }
+  return [`ℹ️  MeMesh could not confirm whether an update exists (${reason}). Update status is unknown, not current — run \`memesh status\` to retry.`];
 }
 
 function buildUpdateAvailableBanner(currentVersion, cache, getChannel) {
@@ -333,7 +364,13 @@ function detectInstallChannelHook(pluginRoot) {
 
 function buildUpdateConsentPrompt(sessionId, currentVersion, cache, channel) {
   if (!sessionId || sessionId === 'unknown' || !cache || cache.currentVersion !== currentVersion) return null;
-  if (!cache.latestVersion || !isStrictlyOlder(currentVersion, cache.latestVersion)) return null;
+  // One resolver decides. Snoozed ("Not now" within its window), disabled
+  // ("Never ask again"), a just-landed upgrade, or a failed check all mean:
+  // no consent prompt this session. Those states get their own banner line.
+  const notice = resolveUpdateNotice({
+    dir: memeshHomeDir(), currentVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
+  });
+  if (notice.kind !== 'UPGRADE_AVAILABLE') return null;
   const existing = readAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel);
   if (existing?.decision) return null;
   // Claim the session-level notice before emitting it. A resumed hook or a
@@ -354,7 +391,7 @@ function buildUpdateConsentPrompt(sessionId, currentVersion, cache, channel) {
           ? '    Project-local install: run `npm install @pcircle/memesh@latest` in the project that installed it.'
           : '    Update it through the tool or package manager that installed MeMesh.';
     return {
-      system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. This installation cannot be upgraded automatically from this session.\n${action}`,
+      system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. This installation cannot be upgraded automatically from this session.\n${action}\n    Reply “Not now” to snooze this version (24h, then longer), or “Never ask again” to stop these checks.`,
       context: `MeMesh ${cache.latestVersion} is available for ${target}, but this channel has no safe in-session installer. Show the user the channel-specific update action and do not claim that an Upgrade reply will install it.`,
     };
   }
@@ -363,8 +400,8 @@ function buildUpdateConsentPrompt(sessionId, currentVersion, cache, channel) {
   // session notice has been claimed.
   if (!writeAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel, 'pending')) return null;
   return {
-    system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. Reply “Upgrade” to install it, or “Not now” to skip for this session.`,
-    context: `MeMesh update consent is pending for this session. Ask the user whether to upgrade from ${currentVersion} to ${cache.latestVersion} for the ${target}. Wait for an explicit Upgrade or Not now response; do not install without affirmative consent.`,
+    system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. Reply “Upgrade” to install it, “Not now” to snooze this version (24h, then longer), or “Never ask again” to stop these checks.`,
+    context: `MeMesh update consent is pending for this session. Ask the user whether to upgrade from ${currentVersion} to ${cache.latestVersion} for the ${target}. Wait for an explicit Upgrade, Not now, or Never ask again response; do not install without affirmative consent.`,
   };
 }
 
@@ -563,6 +600,11 @@ function runPostBannerUpdateTasks() {
     if (!installedVersion) return;
     // Auto-update spawn moved to Stop hook (v4.1.4) to avoid TOCTOU race
     // where npm install -g overwrites dist/ while peer hooks are still reading it.
+    // Two TTLs (update-notice.ts): a current answer is re-verified hourly, a
+    // known upgrade is not re-fetched for 12h; a failed or missing check is
+    // always retried. "Never ask again" also stops the background refresh.
+    if (!isUpdateCheckEnabled()) return;
+    if (!shouldRefreshUpdateCache(installedVersion, readUpdateCheckCache(installedVersion))) return;
     spawnFreshUpdateCheck(installedVersion);
   } catch {
     // Best-effort — never crash the hook on a network or fs hiccup.
@@ -617,7 +659,7 @@ function captureTargetUnwritable() {
  * object on every empty/no-DB exit path so Claude Code's hook
  * contract holds.
  */
-function combineWithBanner(baseMessage) {
+function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
   let lines = [];
   try {
     const pluginRoot = resolvePluginRoot(import.meta.url);
@@ -626,12 +668,13 @@ function combineWithBanner(baseMessage) {
     const cache = readUpdateCheckCache(installedVersion);
     if (installedVersion) {
       const deprecation = buildDeprecationBanner(installedVersion, cache);
-      // Deprecation owns the spot when present; the update-available
-      // banner is the fallback for the much more common "not flagged,
-      // just out of date" case.
+      const notice = updateNoticeBanner(installedVersion, cache);
       if (deprecation.length > 0) {
         lines = deprecation;
-      } else {
+      } else if (notice.lines.length > 0) {
+        lines = notice.lines;
+      } else if (notice.kind === 'UPGRADE_AVAILABLE' && !skipUpdateBanner) {
+        // Snoozed, disabled, failed or current: the resolver already said no.
         lines = buildUpdateAvailableBanner(
           installedVersion, cache, () => detectInstallChannelHook(pluginRoot));
       }
@@ -730,7 +773,6 @@ process.stdin.on('end', async () => {
       // With no database there is nothing to recall either — the warning IS
       // the whole truth, and "memories will be created as you work" would
       // contradict it one line later.
-      const emptySummary = combineWithBanner(captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work');
       let consent = null;
       let consentVersion = null;
       let consentCache = null;
@@ -742,6 +784,20 @@ process.stdin.on('end', async () => {
         const channel = detectInstallChannelHook(pluginRoot);
         consent = buildUpdateConsentPrompt(data.session_id, consentVersion, consentCache, channel);
       } catch { /* best-effort */ }
+      // The consent prompt IS the update message for this session; the
+      // routine "update available" banner must not repeat it one line later
+      // (the database path has had this rule since the notice was added; the
+      // no-database path printed both). Deprecation, a just-landed upgrade
+      // and a failed check still render through combineWithBanner.
+      // A session that was already shown the notice (claim exists, answered
+      // or not) must not get the routine banner either — same rule as the
+      // database path.
+      const alreadyNoticed = consent !== null || (consentVersion !== null
+        && readUpdatePromptClaim(data.session_id, consentVersion, consentCache?.latestVersion) !== null);
+      const emptySummary = combineWithBanner(
+        captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work',
+        { skipUpdateBanner: alreadyNoticed },
+      );
       output(consent ? `${consent.system}\n${emptySummary}` : emptySummary,
         consent ? `${consent.context}\n\n${workPackageGuidance}` : workPackageGuidance);
       if (consent) finalizeUpdatePromptClaim(data.session_id, consentVersion, consentCache?.latestVersion);
@@ -1218,8 +1274,16 @@ process.stdin.on('end', async () => {
       let updateConsentContext = null;
       if (installedVersion) {
         const deprecation = buildDeprecationBanner(installedVersion, updateCache);
+        const notice = updateNoticeBanner(installedVersion, updateCache);
         if (deprecation.length > 0) {
           bannerLines = deprecation;
+        } else if (notice.lines.length > 0) {
+          bannerLines = notice.lines;
+        } else if (notice.kind !== 'UPGRADE_AVAILABLE') {
+          // Snoozed ("Not now"), disabled ("Never ask again"), current, or
+          // unknown-but-throttled: the resolver decided, so the routine
+          // banner below must not undo it.
+          bannerLines = [];
         } else {
           const channel = detectInstallChannelHook(resolvePluginRoot(import.meta.url));
           const consent = buildUpdateConsentPrompt(data.session_id, installedVersion, updateCache, channel);

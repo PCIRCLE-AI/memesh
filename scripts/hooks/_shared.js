@@ -39,6 +39,18 @@ export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, DE
 export { readRepoState, repoStateLines } from './_generated/repo-state.js';
 export { matchingGuards, guardFromMetadata } from './_generated/guards.js';
 export { writeCitationRule, citationRulePath, CITATION_RULE_BODY } from './_generated/citation-rule.js';
+export {
+  resolveUpdateNotice,
+  shouldRefreshUpdateCache,
+  readSnooze,
+  writeSnooze,
+  clearSnooze,
+  readJustUpgradedMarker,
+  writeJustUpgradedMarker,
+  clearJustUpgradedMarker,
+  claimJustUpgradedMarker,
+  isStrictlyOlder,
+} from './_generated/update-notice.js';
 import { guardFromMetadata as guardFromMetadataLocal } from './_generated/guards.js';
 
 /**
@@ -903,6 +915,23 @@ export function finalizeUpdatePromptClaim(sessionId, currentVersion, latestVersi
   }
 }
 
+/**
+ * The owner answered this session's notice. After this, further words in the
+ * same session ("no" to an unrelated question, a stray "never") are not
+ * decisions about updates. Returns false when there was no claim to mark.
+ */
+export function markUpdatePromptAnswered(sessionId, currentVersion, latestVersion, decision) {
+  const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
+  if (!path || !existsSync(path)) return false;
+  try {
+    const value = JSON.parse(readFileSync(path, 'utf8'));
+    writePrivateJson(path, { ...value, decision: 'answered', answer: decision, answeredAt: new Date().toISOString() });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function readUpdatePromptClaim(sessionId, currentVersion, latestVersion) {
   const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
   if (!path || !existsSync(path)) return null;
@@ -968,12 +997,28 @@ export function writeAutoUpdateConsent(sessionId, currentVersion, latestVersion,
   }
 }
 
+/**
+ * Owner's answer to the first-use update notice.
+ *   'approved' — install (npm-global only; other channels have no in-session installer)
+ *   'declined' — "Not now": snooze this target (24h, then 48h, then 7d)
+ *   'never'    — "Never ask again": config.updateCheck = false
+ */
 export function parseAutoUpdateConsent(prompt) {
   if (typeof prompt !== 'string') return null;
   const value = prompt.trim().toLowerCase().replace(/[.!?。！？]+$/u, '');
+  // "never" alone is NOT enough: it is an ordinary English word, and this
+  // hook sees every prompt in a session that was shown the notice. The
+  // phrases below are the ones the Settings hint tells users to type, in
+  // each of the 11 dashboard locales.
+  if (/^(?:never ask(?: me)?(?: again)?|don'?t ask(?: me)?(?: again)?|stop asking|不要再問|別再問|不再提醒|不要再问|今後は確認しない|다시 묻지 않기|não voltar a perguntar|ne plus demander|nicht mehr fragen|không hỏi lại|no volver a preguntar|ไม่ต้องถามอีก)$/.test(value)) return 'never';
   if (/^(?:yes|y|upgrade|update|install(?: it)?|go ahead|是|好|升級|更新|安裝)$/.test(value)) return 'approved';
-  if (/^(?:no|n|not now|later|不要|不用|稍後|暫時不要)$/.test(value)) return 'declined';
+  if (/^(?:no|n|not now|later|不要|不用|稍後|暫時不要|稍后|後で|나중에|agora não|pas maintenant|jetzt nicht|để sau|ahora no|ไว้ก่อน)$/.test(value)) return 'declined';
   return null;
+}
+
+/** `config.updateCheck` — false means the owner said never ask again. */
+export function isUpdateCheckEnabled(env = process.env) {
+  return readHookConfig(env).updateCheck !== false;
 }
 
 export function decideAutoUpdateHook(currentVersion, cache, policy) {

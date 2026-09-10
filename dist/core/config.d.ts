@@ -2,6 +2,7 @@ export interface MeMeshConfig {
     autoCapture?: boolean;
     sessionLimit?: number;
     autoUpdate?: 'off' | 'patch' | 'minor' | 'major';
+    updateCheck?: boolean;
     setupCompleted?: boolean;
 }
 export declare const RETIRED_CONFIG_KEYS: readonly ["llm", "llmFallbacks", "embedder", "language", "transcriptMining"];

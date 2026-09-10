@@ -560,6 +560,11 @@
       "class": "WIRING-PIN",
       "reason": "The test reads the upgrade script only to pin that artifact validation occurs before the live-cache swap; the executable behavior is separately exercised by the checker negative fixtures and the release gate.",
       "triaged": "2026-09-09"
+    },
+    "C1 tests/update-notice.test.ts": {
+      "class": "SAFE",
+      "reason": "Every emptiness assertion is paired in the same test with a positive readback: the stale-marker test asserts UP_TO_DATE first and then that the marker file is gone; the claim test asserts the first claimant received {from,to} before the second gets null and the directory listing is empty; the corrupt-snooze test writes the bad bytes it expects to be rejected; the refresh-policy test asserts true and false on both sides of each TTL.",
+      "triaged": "2026-09-10 #308 update-notice resolver"
     }
   }
 }
