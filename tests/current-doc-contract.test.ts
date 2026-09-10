@@ -48,7 +48,8 @@ describe('current source-backed documentation contracts', () => {
     ['analytics timeline key', { apiReference: baseline.apiReference.replace('{ "date": "2026-09-01", "created": 5, "recalled": 12 }', '{ "day": "2026-09-01", "created": 5, "recalled": 12 }') }, 'timeline'],
     ['analytics aliased return key', { analytics: baseline.analytics.replace('    knowledgeRadar,', '    knowledgeRadar,\n    extraField: true,') }, 'top-level keys differ'],
     ['nonexistent benchmark symbol', { methodology: baseline.methodology.replaceAll('buildMatchExpression()', 'buildQueryTerms()') }, 'buildMatchExpression'],
-    ['missing changelog anchor', { methodology: baseline.methodology.replace('#4211--2026-08-03', '#unreleased') }, 'missing CHANGELOG heading'],
+    // `#unreleased` is NOT a safe stand-in for a missing heading: CHANGELOG.md carries a `## [Unreleased]` section whenever something is merged but not yet released (CLAUDE.md), and that heading's anchor is exactly `unreleased`.
+    ['missing changelog anchor', { methodology: baseline.methodology.replace('#4211--2026-08-03', '#no-such-changelog-heading') }, 'missing CHANGELOG heading'],
     ['collapsed GitHub punctuation anchor', { methodology: baseline.methodology.replace('#4211--2026-08-03', '#4211-2026-08-03') }, 'must link to CHANGELOG.md headings'],
     ['missing methodology anchor', { benchmarkResults: baseline.benchmarkResults.replace('#42-adapter-limitations', '#missing-section') }, 'missing METHODOLOGY heading'],
     ['removed internal methodology link', { methodology: baseline.methodology.replace('[§2.3 below](#23-fts5-query-construction)', '§2.3 below') }, 'METHODOLOGY.md must link'],
