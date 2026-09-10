@@ -174,7 +174,7 @@ function removeStaleState(statePath, state) {
             throw error;
     }
 }
-async function requestExactCompanionControl(state, action) {
+export async function requestExactCompanionControl(state, action) {
     return new Promise((resolve) => {
         const socket = net.createConnection(state.control_socket);
         let response = '';
