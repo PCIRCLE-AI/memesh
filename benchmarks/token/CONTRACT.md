@@ -104,9 +104,12 @@ abstaining is the correct outcome, and the failure class when it goes wrong.
 At least one case is marked `negative`: a plausible but superseded answer is
 present in the corpus and accepting it fails as `stale-answer-accepted`.
 
-The corpus is synthetic. `validate.mjs` fails on anything shaped like a key
-or a real user path; no owner secret, private transcript or real owner graph
-may be seeded.
+The corpus is synthetic. `validate.mjs` scans every case field a runner puts
+in front of a model (memories, prompt, expected answer) and fails on anything
+shaped like a key or a real user path; no owner secret, private transcript or
+real owner graph may be seeded. Matching for `must_contain` /
+`must_not_contain` is case-insensitive substring, and a negative case's stale
+phrase must be present in its own corpus or the validator rejects it.
 
 ### Arms
 
@@ -162,6 +165,10 @@ node benchmarks/token/usage-probe.mjs ~/.claude/projects/<cwd-key>/<session_id>.
 node benchmarks/token/validate.mjs
 node benchmarks/token/validate.mjs --run results/<run>.json --official
 ```
+
+A run manifest holds ledgers (numbers and digests). Never copy the raw
+transcript into `results/`: it carries prompt text, and nothing under
+`benchmarks/token/` is ignored by git.
 
 `--mcp-config` takes several paths, so the prompt goes on stdin; a prompt
 given as a trailing argument is read as another config file.

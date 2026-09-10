@@ -108,6 +108,7 @@ All notable changes to MeMesh are documented here.
 ## [4.9.0] — 2026-09-07
 
 ### Added
+
 - **Automatic exact-session registration support for eligible ordinary Codex CLI plugin sessions.**
   The packaged SessionStart hook accepts startup and resume on macOS or Linux,
   launches an owner-private detached thread-scoped companion, and keeps a bounded

@@ -69,7 +69,11 @@ function claudeTurns(records) {
   const byRequest = new Map();
   for (const r of records) {
     if (r.type !== 'assistant' || !r.message || !r.message.usage) continue;
-    const key = r.requestId || r.uuid;
+    // Without requestId the per-block records of one request cannot be
+    // folded back together and every block would count its usage again —
+    // a silently doubled total. That is not measurable; say so.
+    if (typeof r.requestId !== 'string' || r.requestId === '') return { error: 'an assistant usage record has no requestId; per-request usage cannot be de-duplicated' };
+    const key = r.requestId;
     const names = Array.isArray(r.message.content)
       ? r.message.content.filter(c => c && c.type === 'tool_use').map(c => c.name)
       : [];
@@ -87,7 +91,7 @@ function claudeTurns(records) {
       tool_uses: names,
     });
   }
-  return [...byRequest.values()];
+  return { turns: [...byRequest.values()] };
 }
 
 /** Codex: one turn per token_count event that carries last_token_usage. */
@@ -122,7 +126,7 @@ function codexTurns(records) {
       tool_uses,
     });
   }
-  return turns;
+  return { turns };
 }
 
 /**
@@ -137,10 +141,12 @@ export function probeTranscript(file, { arm = null } = {}) {
   const records = parseLines(buf.toString('utf8'));
   const host = detectHost(records);
   if (!host) return { measurable: false, reason: 'transcript shape not recognised (neither claude-code nor codex)' };
-  const turns = host === 'claude-code' ? claudeTurns(records) : codexTurns(records);
+  const extracted = host === 'claude-code' ? claudeTurns(records) : codexTurns(records);
+  if (extracted.error) return { measurable: false, reason: `${host}: ${extracted.error}` };
+  const turns = extracted.turns;
   if (turns.length === 0) return { measurable: false, reason: `${host}: no usage records in transcript` };
   const missing = turns.flatMap((t, i) => REQUIRED_TURN_FIELDS.filter(f => t[f] === null).map(f => `turn ${i}: ${f}`));
-  if (missing.length > 0) return { measurable: false, reason: `usage record incomplete — ${missing.join(', ')}` };
+  if (missing.length > 0) return { measurable: false, reason: `usage record incomplete or not a non-negative integer — ${missing.join(', ')}` };
   const models = [...new Set(turns.map(t => t.model).filter(Boolean))];
   if (models.length === 0) return { measurable: false, reason: `${host}: no model identity in transcript` };
 

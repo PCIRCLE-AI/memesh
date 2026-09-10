@@ -33,7 +33,13 @@ export function corpusDigest(casesJson) {
 }
 
 function readJson(file) {
-  return JSON.parse(fs.readFileSync(file, 'utf8'));
+  try {
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    // A usage error, reported as one: no stack trace, no absolute path echo.
+    console.error(`cannot read ${path.basename(file)}: ${err.code || 'not valid JSON'}`);
+    process.exit(2);
+  }
 }
 
 /** @returns {string[]} failures (empty = valid) */
@@ -82,13 +88,21 @@ export function validateContract(contract, cases) {
     if (typeof c.time_limit_s !== 'number') failures.push(`${id}: time_limit_s missing`);
     if (c.negative === true) {
       negatives++;
-      if (!(c.expected_answer?.must_not_contain?.length > 0)) failures.push(`${id}: a negative case must say what a stale answer would contain (must_not_contain)`);
+      const stale = c.expected_answer?.must_not_contain ?? [];
+      if (stale.length === 0) failures.push(`${id}: a negative case must say what a stale answer would contain (must_not_contain)`);
       if (c.failure_class_if_wrong !== 'stale-answer-accepted') failures.push(`${id}: a negative case fails as stale-answer-accepted`);
+      // The plausible-but-wrong answer must actually BE in the corpus, or the
+      // case tests nothing: matching is case-insensitive substring, the same
+      // rule the scorer applies to the answer.
+      const corpus = (c.ground_truth?.memories ?? []).flatMap(m => m.observations ?? []).join('\n').toLowerCase();
+      for (const phrase of stale) {
+        if (!corpus.includes(String(phrase).toLowerCase())) failures.push(`${id}: negative case's stale phrase "${phrase}" is not present in ground_truth.memories`);
+      }
     }
-    for (const m of c.ground_truth?.memories ?? []) {
-      const text = JSON.stringify(m);
-      if (/sk-[A-Za-z0-9]{8,}|BEGIN (RSA|OPENSSH) PRIVATE KEY|\/Users\/[a-z]/.test(text)) failures.push(`${id}: corpus contains what looks like a secret or a real user path`);
-    }
+    // Everything a runner will put in front of a model is scanned, not only
+    // the memories: a prompt or an expected answer can leak a path too.
+    const scanned = JSON.stringify({ g: c.ground_truth, p: c.task_prompt, e: c.expected_answer });
+    if (/sk-[A-Za-z0-9]{8,}|BEGIN (RSA|OPENSSH) PRIVATE KEY|\/Users\/[a-z]|\/home\/[a-z]/.test(scanned)) failures.push(`${id}: case contains what looks like a secret or a real user path`);
   }
   for (const cat of categories) if (!covered.has(cat)) failures.push(`no case covers required category ${cat}`);
   if (negatives === 0) failures.push('no negative case rejects a plausible but stale/unsupported answer');
@@ -116,7 +130,9 @@ export function validateRunManifest(manifest, contract, cases, { official = fals
       if (!/^[0-9a-f]{64}$/.test(ledger.session?.transcript_sha256 ?? '')) failures.push(`usage_provenance.${arm}: transcript_sha256 missing`);
       if (!(ledger.turns?.length > 0)) failures.push(`usage_provenance.${arm}: no turns`);
       if (ledger.host && manifest.host && ledger.host !== manifest.host) failures.push(`usage_provenance.${arm}: ledger host ${ledger.host} ≠ manifest host ${manifest.host}`);
-      if (ledger.models && manifest.model && !ledger.models.includes(manifest.model)) failures.push(`usage_provenance.${arm}: ledger models ${ledger.models.join(',')} do not include manifest model ${manifest.model}`);
+      // One arm, one model: a ledger that saw several models cannot be bound
+      // to a single model identity, however the manifest labels it.
+      if (Array.isArray(ledger.models) && manifest.model && (ledger.models.length !== 1 || ledger.models[0] !== manifest.model)) failures.push(`usage_provenance.${arm}: ledger models [${ledger.models.join(',')}] must be exactly the manifest model ${manifest.model}`);
     }
   }
   if (manifest.estimated_tokens !== undefined || manifest.char_count_tokens !== undefined) failures.push('run manifest: estimated/char-count tokens are diagnostics and may not appear in a result');
@@ -131,6 +147,10 @@ function main(argv) {
   const args = argv.slice(2);
   const runIdx = args.indexOf('--run');
   const official = args.includes('--official');
+  if (official && runIdx < 0) {
+    console.error('--official only means something with --run <manifest.json>: there is no run to refuse or accept');
+    process.exit(2);
+  }
   const contract = readJson(path.join(here, 'contract.json'));
   const cases = readJson(path.join(here, 'cases.json'));
   let failures = validateContract(contract, cases);

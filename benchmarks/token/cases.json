@@ -45,7 +45,7 @@
         ]
       },
       "task_prompt": "Which SQLite driver should new code use?",
-      "expected_answer": { "must_contain": ["node:sqlite"], "must_not_contain": ["better-sqlite3 for SQLite access"], "abstain": false },
+      "expected_answer": { "must_contain": ["node:sqlite"], "must_not_contain": ["use better-sqlite3"], "abstain": false },
       "correct_abstention": false,
       "failure_class_if_wrong": "stale-answer-accepted",
       "negative": true,

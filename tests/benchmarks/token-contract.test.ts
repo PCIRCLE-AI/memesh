@@ -72,6 +72,12 @@ describe('usage-probe: Claude Code transcripts', () => {
     expect(probeTranscript(noCache)).toMatchObject({ measurable: false, reason: expect.stringContaining('cache_read_input_tokens') });
     const noModel = tmpFile('b.jsonl', [{ ...claudeRecord('r', { type: 'text', text: 'x' }, { input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 }), message: { content: [], usage: { input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 } } }]);
     expect(probeTranscript(noModel)).toMatchObject({ measurable: false, reason: expect.stringContaining('model') });
+    const negative = tmpFile('n.jsonl', [claudeRecord('r', { type: 'text', text: 'x' }, { input_tokens: -5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 })]);
+    expect(probeTranscript(negative)).toMatchObject({ measurable: false, reason: expect.stringContaining('input_tokens') });
+    // No requestId: the per-block records cannot be folded back into one request.
+    const rec = claudeRecord('r', { type: 'text', text: 'x' }, { input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, output_tokens: 1 }) as Record<string, unknown>;
+    delete rec.requestId;
+    expect(probeTranscript(tmpFile('q.jsonl', [rec]))).toMatchObject({ measurable: false, reason: expect.stringContaining('requestId') });
     const unknown = tmpFile('c.jsonl', [{ hello: 'world' }]);
     expect(probeTranscript(unknown)).toMatchObject({ measurable: false, reason: expect.stringContaining('not recognised') });
     expect(probeTranscript(path.join(os.tmpdir(), 'does-not-exist.jsonl'))).toMatchObject({ measurable: false, reason: expect.stringContaining('ENOENT') });
@@ -108,6 +114,18 @@ describe('usage-probe CLI', () => {
   });
 });
 
+describe('validate.mjs CLI', () => {
+  it('treats a missing manifest and --official without --run as usage errors (exit 2), without a stack trace', () => {
+    const script = path.join(repoRoot, 'benchmarks/token/validate.mjs');
+    const missing = spawnSync(process.execPath, [script, '--run', '/nonexistent/manifest.json'], { encoding: 'utf8' });
+    expect(missing.status).toBe(2);
+    expect(missing.stderr).not.toContain('    at ');
+    expect(missing.stderr).not.toContain('/nonexistent/');
+    const officialAlone = spawnSync(process.execPath, [script, '--official'], { encoding: 'utf8' });
+    expect(officialAlone.status).toBe(2);
+  });
+});
+
 describe('benchmark contract validator', () => {
   const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
@@ -125,6 +143,8 @@ describe('benchmark contract validator', () => {
     ['abstention fields that disagree', (c: any, k: any) => { k.cases[2].correct_abstention = false; }, 'disagree'],
     ['an unknown failure class', (c: any, k: any) => { k.cases[0].failure_class_if_wrong = 'meh'; }, 'not a contract failure class'],
     ['a secret in the corpus', (c: any, k: any) => { k.cases[0].ground_truth.memories[0].observations.push('token sk-abcdefghijklmnop'); }, 'looks like a secret'],
+    ['a real user path in a prompt', (c: any, k: any) => { k.cases[0].task_prompt += ' see /Users/someone/notes'; }, 'looks like a secret or a real user path'],
+    ['a negative case whose stale phrase is not in its corpus', (c: any, k: any) => { const n = k.cases.find((x: any) => x.negative); n.expected_answer.must_not_contain = ['use libsql']; }, 'is not present in ground_truth.memories'],
     ['frozen statistics without numbers', (c: any) => { c.statistics.status = 'frozen'; }, 'frozen statistics need a positive sample_size'],
     ['a host that does not say whether tool definitions are itemised', (c: any) => { delete c.measurability.hosts[0].tool_definitions_itemised; }, 'tool_definitions_itemised must be stated'],
   ])('rejects %s', (_name, mutate, expected) => {
@@ -157,7 +177,10 @@ describe('benchmark contract validator', () => {
     ['usage_provenance', (m: any) => { delete m.usage_provenance; }, 'missing usage_provenance'],
     ['a corpus digest that does not match cases.json', (m: any) => { m.corpus_digest = 'd'.repeat(64); }, 'does not match cases.json'],
     ['a treatment ledger', (m: any) => { delete m.usage_provenance.treatment; }, 'usage_provenance.treatment missing'],
-    ['a ledger from another model', (m: any) => { m.usage_provenance.control.models = ['gpt-5.6-luna']; }, 'do not include manifest model'],
+    ['a ledger from another model', (m: any) => { m.usage_provenance.control.models = ['gpt-5.6-luna']; }, 'must be exactly the manifest model'],
+    ['a ledger that saw several models', (m: any) => { m.usage_provenance.control.models = ['claude-haiku-4-5-20251001', 'gpt-5.6-luna']; }, 'must be exactly the manifest model'],
+    ['a ledger without a transcript digest', (m: any) => { delete m.usage_provenance.treatment.session.transcript_sha256; }, 'transcript_sha256 missing'],
+    ['a short source_sha', (m: any) => { m.source_sha = 'abc123'; }, 'full 40-hex commit SHA'],
     ['estimated tokens presented as a result', (m: any) => { m.estimated_tokens = 1234; }, 'diagnostics and may not appear'],
   ])('refuses a manifest missing or contradicting %s', (_name, mutate, expected) => {
     const m = manifest(); mutate(m);
