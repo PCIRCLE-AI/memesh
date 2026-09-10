@@ -33,6 +33,16 @@ All notable changes to MeMesh are documented here.
   recover: any write (`memesh task --goal …`) replaces the broken record, and
   the session briefing keeps its ranked memories and shows that one line in
   place of the stated task state.
+- **Token-usage measurability verdict and frozen benchmark contract (#251).**
+  `benchmarks/token/CONTRACT.md` records that Claude Code and Codex both
+  write authoritative per-request usage to their session transcripts, with
+  the probe results (control / tool-schema / tool-result) that prove it;
+  `usage-probe.mjs` turns such a transcript into a ledger of numbers and
+  digests only, and `validate.mjs` (`npm run bench:token:validate`) refuses a
+  case corpus or run manifest that lacks shared ground truth, a negative
+  stale-answer case, source SHA, artifact and corpus digests, host/model
+  identity or usage provenance, and refuses official runs before the
+  statistics are frozen. Evidence tooling only; nothing ships in the package.
 
 ### Changed
 

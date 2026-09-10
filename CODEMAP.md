@@ -47,6 +47,7 @@ scripts/hooks/       # Claude/Codex hook entrypoints + shared/generated helpers
 dashboard/src/       # Preact + Vite dashboard
 tests/               # vitest (forks pool) — mirrors src/ layout
 benchmarks/longmemeval/  # public LongMemEval-S evidence (REPRODUCE.md)
+benchmarks/token/        # token-usage measurability verdict + frozen benchmark contract (CONTRACT.md)
 docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 ```
 
