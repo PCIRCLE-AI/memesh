@@ -55,6 +55,10 @@ function readJson(file) {
 function writePrivateJson(file, value) {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     fs.writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 });
+    try {
+        fs.chmodSync(file, 0o600);
+    }
+    catch { }
 }
 export function readSnooze(dir) {
     const raw = readJson(path.join(dir, SNOOZE_FILE));
@@ -107,6 +111,31 @@ export function clearJustUpgradedMarker(dir) {
     }
     catch { }
 }
+export function claimJustUpgradedMarker(dir) {
+    const file = path.join(dir, JUST_UPGRADED_FILE);
+    const taken = `${file}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+    try {
+        fs.renameSync(file, taken);
+    }
+    catch {
+        return null;
+    }
+    const raw = readJson(taken);
+    try {
+        fs.unlinkSync(taken);
+    }
+    catch { }
+    if (!raw)
+        return null;
+    const { from, to, at } = raw;
+    if (typeof from !== 'string' || !from || typeof to !== 'string' || !to)
+        return null;
+    return { from, to, at: typeof at === 'string' ? at : '' };
+}
+function boundedReason(raw) {
+    const oneLine = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+    return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
+}
 function answerIsCurrent(currentVersion, cache, now) {
     if (!cache || cache.currentVersion !== currentVersion)
         return false;
@@ -131,14 +160,17 @@ export function resolveUpdateNotice(input) {
     if (input.updateCheckEnabled === false)
         return { kind: 'DISABLED', currentVersion };
     const marker = readJustUpgradedMarker(dir);
-    if (marker && marker.to === currentVersion) {
-        return { kind: 'JUST_UPGRADED', currentVersion, from: marker.from, to: marker.to };
+    if (marker) {
+        if (marker.to === currentVersion) {
+            return { kind: 'JUST_UPGRADED', currentVersion, from: marker.from, to: marker.to };
+        }
+        clearJustUpgradedMarker(dir);
     }
     if (!answerIsCurrent(currentVersion, cache, now)) {
         let reason = 'no update check has completed yet';
         if (cache && cache.currentVersion === currentVersion) {
             if (typeof cache.lastError === 'string' && cache.lastError)
-                reason = cache.lastError;
+                reason = boundedReason(cache.lastError);
             else if (parseIso(cache.lastSuccessfulCheckAt) !== null)
                 reason = 'the last successful check is more than a day old';
         }

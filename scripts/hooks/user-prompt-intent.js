@@ -23,6 +23,7 @@ import {
   findAutoUpdateConsent,
   importFromPluginRoot,
   isAutoCaptureEnabled,
+  markUpdatePromptAnswered,
   memeshDir,
   parseAutoUpdateConsent,
   readUpdateCheckCache,
@@ -89,27 +90,35 @@ async function recordUpdateConsent(sessionId, prompt) {
     ? findAutoUpdateConsent(sessionId, current, latest, channel)
     : null;
   const claim = readUpdatePromptClaim(sessionId, current, latest);
-  if (!claim && !pending) return null;
+  // The notice must have been shown to THIS session and not answered yet.
+  // Once answered, later "no"/"later" in ordinary conversation is not a
+  // decision about updates (it used to escalate the snooze every time).
+  const open = (claim && claim.decision !== 'answered') || pending?.decision === 'pending';
+  if (!open) return null;
 
   if (decision === 'approved') {
     if (!pending || pending.decision !== 'pending') return null;
-    return writeAutoUpdateConsent(sessionId, current, latest, pending.channel ?? channel, 'approved') ? 'approved' : null;
+    if (!writeAutoUpdateConsent(sessionId, current, latest, pending.channel ?? channel, 'approved')) return null;
+    markUpdatePromptAnswered(sessionId, current, latest, 'approved');
+    return 'approved';
   }
   // declined | never
   try { writeSnooze(memeshDir(), latest); } catch { /* best-effort */ }
   if (pending?.decision === 'pending') {
     writeAutoUpdateConsent(sessionId, current, latest, pending.channel ?? channel, 'declined');
   }
+  let recorded = decision;
   if (decision === 'never') {
     try {
       const configMod = await importFromPluginRoot(resolvePluginRoot(import.meta.url), 'dist/core/config.js');
       configMod.updateConfig({ updateCheck: false });
     } catch (err) {
       logError('user-prompt-intent', `could not persist updateCheck=false: ${err?.message || err}`);
-      return 'declined';
+      recorded = 'declined';
     }
   }
-  return decision;
+  markUpdatePromptAnswered(sessionId, current, latest, recorded);
+  return recorded;
 }
 
 // Patterns compiled at module load — invalid regex MUST fail loudly. Do
@@ -244,7 +253,7 @@ if (isMainModule) {
       } else if (updateDecision === 'declined') {
         contexts.push('The user declined the MeMesh upgrade. It is snoozed for this target version (24h, then 48h, then 7 days on repeated declines); do not install it or mention it again unless a newer version appears.');
       } else if (updateDecision === 'never') {
-        contexts.push('The user asked never to be asked about MeMesh updates again. updateCheck is now off; do not mention updates. `memesh update` or the dashboard Settings can turn checks back on.');
+        contexts.push('The user asked never to be asked about MeMesh updates again. updateCheck is now off; do not mention updates. `memesh config set updateCheck true` turns checks back on.');
       }
       if (rememberIntent) contexts.push(buildHint());
       const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: contexts.join('\n\n') } };

@@ -55,6 +55,7 @@ export declare function snoozeExpiresAt(state: SnoozeState): number;
 export declare function readJustUpgradedMarker(dir: string): JustUpgradedMarker | null;
 export declare function writeJustUpgradedMarker(dir: string, from: string, to: string, now?: Date): void;
 export declare function clearJustUpgradedMarker(dir: string): void;
+export declare function claimJustUpgradedMarker(dir: string): JustUpgradedMarker | null;
 export declare function shouldRefreshUpdateCache(currentVersion: string, cache: UpdateCheckCacheLike | null | undefined, now?: Date): boolean;
 export interface ResolveUpdateNoticeInput {
     dir: string;

@@ -88,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_generated/update-notice.js",
-      "sha256": "53f435634c29c7c1d6fe5fab5479d0509cc8e6103f9c2a8e182306e137023071",
-      "bytes": 6437
+      "sha256": "f0f9501c2c184b9c9f0521ee8b12b0a7de8ea0b44bdb0d1ef45e3a3fd5e167e1",
+      "bytes": 7390
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
@@ -98,13 +98,13 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "cd66607820b040ead353dad6e4420ea4dd897d6a61d74d66ca55fd5c8fd51879",
-      "bytes": 49619
+      "sha256": "e540fb5be2a6c387bfb0588854ab23e3c0db29903580612c7fa2b987453117a9",
+      "bytes": 50900
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
-      "sha256": "ede2663e935ad3f77a3cc2104ccd25df2df0b66457e09d0be53d701aa46936ee",
-      "bytes": 8270
+      "sha256": "a06f1cdc98c1841d6629bfced39c5fe7b66a982bb9301241b8a4c1884b119383",
+      "bytes": 8573
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
@@ -133,8 +133,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "35d08aeb82a06ddc5480e538f4708cb815861ce57d811820a1cc3173df88c5a9",
-      "bytes": 70775
+      "sha256": "de1998df4fdbea58321f5c0c39a428123816a4764aae47ef53ae3d18fec7d6c2",
+      "bytes": 71212
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -143,8 +143,8 @@
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "3b33465565b1d49510d4b061919133fc47c8b6648fc6f542974165e92b030371",
-      "bytes": 12069
+      "sha256": "821efab8d0f142122fb3bd9396325a3472eb3b8613e3b52f2915e3fb77343ccc",
+      "bytes": 12570
     },
     {
       "path": "skills/memesh-review/SKILL.md",

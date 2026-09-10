@@ -33,7 +33,7 @@ import {
   readUpdateCheckCache,
   resolveUpdateNotice,
   shouldRefreshUpdateCache,
-  clearJustUpgradedMarker,
+  claimJustUpgradedMarker,
   isStrictlyOlder,
   isUpdateCheckEnabled,
   repoStateLines,
@@ -207,19 +207,23 @@ const CHECK_FAILED_BANNER_THROTTLE_MS = 24 * 60 * 60 * 1000;
  * (unknown is not "up to date"; throttled to once a day). Everything else
  * returns [] so the caller falls through to its consent/banner logic.
  */
-function updateNoticeBannerLines(installedVersion, cache) {
-  if (!installedVersion) return [];
+function updateNoticeBanner(installedVersion, cache) {
+  if (!installedVersion) return { kind: 'UNKNOWN_VERSION', lines: [] };
   const notice = resolveUpdateNotice({
     dir: memeshHomeDir(), currentVersion: installedVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
   });
   if (notice.kind === 'JUST_UPGRADED') {
-    // The install is on disk; the host process that loaded the previous
-    // version keeps running it until it restarts.
-    try { clearJustUpgradedMarker(memeshHomeDir()); } catch { /* best-effort */ }
-    return [`✅ MeMesh upgraded ${notice.from} → ${notice.to}. Hosts already running keep the old version until they restart; this session's hooks and MCP server pick up ${notice.to} on the next start.`];
+    // Take the receipt atomically: two host hooks starting together must not
+    // both announce. The loser sees null and says nothing about it.
+    const claimed = claimJustUpgradedMarker(memeshHomeDir());
+    if (!claimed) return { kind: 'UP_TO_DATE', lines: [] };
+    return {
+      kind: notice.kind,
+      lines: [`✅ MeMesh upgraded ${claimed.from} → ${claimed.to}. Hosts already running keep the old version until they restart; this session's hooks and MCP server pick up ${claimed.to} on the next start.`],
+    };
   }
-  if (notice.kind === 'CHECK_FAILED') return buildCheckFailedBanner(installedVersion, notice.reason);
-  return [];
+  if (notice.kind === 'CHECK_FAILED') return { kind: notice.kind, lines: buildCheckFailedBanner(installedVersion, notice.reason) };
+  return { kind: notice.kind, lines: [] };
 }
 
 /**
@@ -237,7 +241,10 @@ function buildCheckFailedBanner(currentVersion, reason) {
     let stat;
     try { stat = fs.statSync(markerPath); } catch { stat = null; }
     if (stat && Date.now() - stat.mtimeMs < CHECK_FAILED_BANNER_THROTTLE_MS) return [];
-    try { fs.writeFileSync(markerPath, String(Date.now())); } catch { /* best-effort */ }
+    try {
+      fs.writeFileSync(markerPath, String(Date.now()), { mode: 0o600 });
+      try { fs.chmodSync(markerPath, 0o600); } catch { /* non-POSIX */ }
+    } catch { /* best-effort */ }
   } catch {
     return [];
   }
@@ -661,12 +668,13 @@ function combineWithBanner(baseMessage) {
     const cache = readUpdateCheckCache(installedVersion);
     if (installedVersion) {
       const deprecation = buildDeprecationBanner(installedVersion, cache);
-      // Deprecation owns the spot when present; the update-available
-      // banner is the fallback for the much more common "not flagged,
-      // just out of date" case.
+      const notice = updateNoticeBanner(installedVersion, cache);
       if (deprecation.length > 0) {
         lines = deprecation;
-      } else {
+      } else if (notice.lines.length > 0) {
+        lines = notice.lines;
+      } else if (notice.kind === 'UPGRADE_AVAILABLE') {
+        // Snoozed, disabled, failed or current: the resolver already said no.
         lines = buildUpdateAvailableBanner(
           installedVersion, cache, () => detectInstallChannelHook(pluginRoot));
       }
@@ -781,9 +789,7 @@ process.stdin.on('end', async () => {
       // just-landed upgrade, a failed check) still belong on the first
       // session of a fresh install — that is exactly when a user asks
       // "did the upgrade take?" or "is this current?".
-      const noticeLines = consent ? [] : updateNoticeBannerLines(consentVersion, consentCache);
-      const summaryWithNotice = noticeLines.length > 0 ? `${noticeLines.join('\n')}\n${emptySummary}` : emptySummary;
-      output(consent ? `${consent.system}\n${summaryWithNotice}` : summaryWithNotice,
+      output(consent ? `${consent.system}\n${emptySummary}` : emptySummary,
         consent ? `${consent.context}\n\n${workPackageGuidance}` : workPackageGuidance);
       if (consent) finalizeUpdatePromptClaim(data.session_id, consentVersion, consentCache?.latestVersion);
       return;
@@ -1259,11 +1265,16 @@ process.stdin.on('end', async () => {
       let updateConsentContext = null;
       if (installedVersion) {
         const deprecation = buildDeprecationBanner(installedVersion, updateCache);
-        const noticeLines = updateNoticeBannerLines(installedVersion, updateCache);
+        const notice = updateNoticeBanner(installedVersion, updateCache);
         if (deprecation.length > 0) {
           bannerLines = deprecation;
-        } else if (noticeLines.length > 0) {
-          bannerLines = noticeLines;
+        } else if (notice.lines.length > 0) {
+          bannerLines = notice.lines;
+        } else if (notice.kind !== 'UPGRADE_AVAILABLE') {
+          // Snoozed ("Not now"), disabled ("Never ask again"), current, or
+          // unknown-but-throttled: the resolver decided, so the routine
+          // banner below must not undo it.
+          bannerLines = [];
         } else {
           const channel = detectInstallChannelHook(resolvePluginRoot(import.meta.url));
           const consent = buildUpdateConsentPrompt(data.session_id, installedVersion, updateCache, channel);

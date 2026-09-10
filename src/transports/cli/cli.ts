@@ -1375,11 +1375,13 @@ configCmd
     }
   });
 
-const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture']);
+const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck']);
 
 const KEY_VALIDATORS: Record<string, (value: string) => string | null> = {
   autoUpdate: (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : 'must be one of: off, patch, minor, major',
   autoCapture: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
+  // "Never ask again" sets this to false from a hook; this is the way back.
+  updateCheck: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
 };
 
 /**
@@ -1399,7 +1401,7 @@ function buildConfigListing(config: Record<string, unknown>): Array<{ key: strin
 
 configCmd
   .command('set')
-  .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate)')
+  .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .argument('<value>', 'Config value')
   .action((key, value) => {
@@ -1426,7 +1428,7 @@ configCmd
       // vanished and nothing said why. Same predicate, same message.
       coerced = wholeNumber('sessionLimit')(value);
     }
-    if (canonical === 'autoCapture') {
+    if (canonical === 'autoCapture' || canonical === 'updateCheck') {
       coerced = value === 'true' || value === '1';
     }
     updateConfig({ [canonical]: coerced } as never);

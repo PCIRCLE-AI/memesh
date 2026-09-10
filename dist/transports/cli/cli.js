@@ -60123,10 +60123,11 @@ configCmd.command("list").description("Show current configuration").action(() =>
       console.log(`  ${key}: ${value}`);
   }
 });
-var ALLOWED_KEYS = /* @__PURE__ */ new Set(["autoUpdate", "sessionLimit", "autoCapture"]);
+var ALLOWED_KEYS = /* @__PURE__ */ new Set(["autoUpdate", "sessionLimit", "autoCapture", "updateCheck"]);
 var KEY_VALIDATORS = {
   autoUpdate: (v) => ["off", "patch", "minor", "major"].includes(v) ? null : "must be one of: off, patch, minor, major",
-  autoCapture: (v) => ["true", "false", "1", "0"].includes(v) ? null : "must be one of: true, false, 1, 0"
+  autoCapture: (v) => ["true", "false", "1", "0"].includes(v) ? null : "must be one of: true, false, 1, 0",
+  updateCheck: (v) => ["true", "false", "1", "0"].includes(v) ? null : "must be one of: true, false, 1, 0"
 };
 function buildConfigListing(config2) {
   const rows = [];
@@ -60138,7 +60139,7 @@ function buildConfigListing(config2) {
   }
   return rows;
 }
-configCmd.command("set").description("Set an ordinary config value (autoCapture, sessionLimit, autoUpdate)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value").action((key, value) => {
+configCmd.command("set").description("Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value").action((key, value) => {
   const canonical = key;
   if (!ALLOWED_KEYS.has(canonical)) {
     console.error(`Unknown key: ${key}`);
@@ -60157,7 +60158,7 @@ configCmd.command("set").description("Set an ordinary config value (autoCapture,
   if (canonical === "sessionLimit") {
     coerced = wholeNumber("sessionLimit")(value);
   }
-  if (canonical === "autoCapture") {
+  if (canonical === "autoCapture" || canonical === "updateCheck") {
     coerced = value === "true" || value === "1";
   }
   updateConfig({ [canonical]: coerced });

@@ -1,5 +1,8 @@
 /**
- * The one update-status resolver every entry point reads.
+ * The update-status resolver the hooks read (SessionStart, UserPromptSubmit,
+ * the Stop-hook updater). `memesh status` still renders version-check.ts
+ * directly; wiring the CLI and the MCP first call to this resolver is the
+ * follow-up PR for issue #308.
  *
  * Before this module the SessionStart hook, the Stop hook and `memesh status`
  * each derived "is there an update?" from the raw cache with their own rules,
@@ -100,6 +103,9 @@ function readJson(file: string): Record<string, unknown> | null {
 function writePrivateJson(file: string, value: unknown): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 });
+  // `mode` applies only on create; an existing file (the snooze is rewritten
+  // on every decline) keeps whatever mode it had.
+  try { fs.chmodSync(file, 0o600); } catch { /* non-POSIX */ }
 }
 
 export function readSnooze(dir: string): SnoozeState | null {
@@ -156,6 +162,42 @@ export function clearJustUpgradedMarker(dir: string): void {
   try { fs.unlinkSync(path.join(dir, JUST_UPGRADED_FILE)); } catch { /* absent is the goal */ }
 }
 
+/**
+ * Take the receipt so that exactly ONE announcer gets it. Two host hooks
+ * (Claude and Codex SessionStart) can start in the same second; a read-then-
+ * unlink would let both print "upgraded". `rename` is atomic on every
+ * platform Node supports — one caller's rename succeeds, the other's fails
+ * with ENOENT and returns null. The renamed file is removed afterwards; if
+ * that removal fails the marker is already out of the resolver's path, so
+ * nothing is announced twice.
+ */
+export function claimJustUpgradedMarker(dir: string): JustUpgradedMarker | null {
+  const file = path.join(dir, JUST_UPGRADED_FILE);
+  const taken = `${file}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+  try {
+    fs.renameSync(file, taken);
+  } catch {
+    return null;
+  }
+  const raw = readJson(taken);
+  try { fs.unlinkSync(taken); } catch { /* best-effort; already out of the way */ }
+  if (!raw) return null;
+  const { from, to, at } = raw;
+  if (typeof from !== 'string' || !from || typeof to !== 'string' || !to) return null;
+  return { from, to, at: typeof at === 'string' ? at : '' };
+}
+
+/**
+ * `lastError` comes from npm's stderr and ends up inside a system message the
+ * model reads. Keep it one line and short: no control characters, no room
+ * for a multi-line payload to masquerade as instructions.
+ */
+function boundedReason(raw: string): string {
+  // eslint-disable-next-line no-control-regex
+  const oneLine = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  return oneLine.length > 160 ? `${oneLine.slice(0, 157)}...` : oneLine;
+}
+
 function answerIsCurrent(currentVersion: string, cache: UpdateCheckCacheLike | null | undefined, now: Date): boolean {
   if (!cache || cache.currentVersion !== currentVersion) return false;
   if (typeof cache.latestVersion !== 'string' || !cache.latestVersion) return false;
@@ -204,14 +246,19 @@ export function resolveUpdateNotice(input: ResolveUpdateNoticeInput): UpdateNoti
   if (input.updateCheckEnabled === false) return { kind: 'DISABLED', currentVersion };
 
   const marker = readJustUpgradedMarker(dir);
-  if (marker && marker.to === currentVersion) {
-    return { kind: 'JUST_UPGRADED', currentVersion, from: marker.from, to: marker.to };
+  if (marker) {
+    if (marker.to === currentVersion) {
+      return { kind: 'JUST_UPGRADED', currentVersion, from: marker.from, to: marker.to };
+    }
+    // A receipt for some other version (the user jumped versions by hand, or
+    // a downgrade) would otherwise sit in ~/.memesh forever. Drop it.
+    clearJustUpgradedMarker(dir);
   }
 
   if (!answerIsCurrent(currentVersion, cache, now)) {
     let reason = 'no update check has completed yet';
     if (cache && cache.currentVersion === currentVersion) {
-      if (typeof cache.lastError === 'string' && cache.lastError) reason = cache.lastError;
+      if (typeof cache.lastError === 'string' && cache.lastError) reason = boundedReason(cache.lastError);
       else if (parseIso(cache.lastSuccessfulCheckAt) !== null) reason = 'the last successful check is more than a day old';
     }
     return { kind: 'CHECK_FAILED', currentVersion, reason };

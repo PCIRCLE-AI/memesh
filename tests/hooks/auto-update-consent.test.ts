@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -202,6 +202,10 @@ describe('Feature: escalating snooze, never-ask, upgrade receipt, loud unknown (
     expect(parseAutoUpdateConsent("don't ask me again")).toBe('never');
     expect(parseAutoUpdateConsent('不要再問')).toBe('never');
     expect(parseAutoUpdateConsent('Not now')).toBe('declined');
+    expect(parseAutoUpdateConsent('後で')).toBe('declined');
+    expect(parseAutoUpdateConsent('Ne plus demander')).toBe('never');
+    // Ordinary words are not decisions: "never" alone appears in normal talk.
+    expect(parseAutoUpdateConsent('never')).toBeNull();
     expect(parseAutoUpdateConsent('never mind the tests, run them')).toBeNull();
   });
 
@@ -212,10 +216,21 @@ describe('Feature: escalating snooze, never-ask, upgrade receipt, loud unknown (
     h.answer('s1', 'Not now');
     const snoozePath = path.join(h.dir, 'update-snooze.json');
     expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: '4.10.0', level: 1 });
-    // A brand-new session used to be asked again; now it is quiet while snoozed.
-    expect(String(h.start('s2').systemMessage)).not.toContain('is available');
-    // A second decline (from a session that WAS shown the notice) escalates.
+    // A brand-new session used to be asked again; now it is quiet while snoozed —
+    // including the routine 24h banner, so clear its throttle marker first to
+    // prove the resolver (not the throttle) is what keeps it quiet.
+    for (const f of readdirSync(h.dir)) if (f.startsWith('last-update-banner.')) rmSync(path.join(h.dir, f));
+    expect(String(h.start('s2').systemMessage)).not.toMatch(/available/);
+    // Once s1 has answered, later ordinary words from s1 are not decisions.
+    h.answer('s1', 'no');
     h.answer('s1', 'later');
+    expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: '4.10.0', level: 1 });
+    // A second decline escalates only when a session was shown the notice again:
+    // age the snooze past its 24h window (the record stays, its level is remembered).
+    const aged = JSON.parse(readFileSync(snoozePath, 'utf8'));
+    writeFileSync(snoozePath, JSON.stringify({ ...aged, since: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString() }));
+    expect(String(h.start('s4').systemMessage)).toContain('MeMesh 4.10.0 is available');
+    h.answer('s4', 'later');
     expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: '4.10.0', level: 2 });
     // A newer release resets the snooze and is offered.
     writeFileSync(h.cachePath, cacheFor('4.11.0'));
@@ -236,7 +251,9 @@ describe('Feature: escalating snooze, never-ask, upgrade receipt, loud unknown (
     h.answer('n1', 'never ask again');
     expect(JSON.parse(readFileSync(path.join(h.dir, 'config.json'), 'utf8'))).toMatchObject({ updateCheck: false });
     writeFileSync(h.cachePath, cacheFor('4.12.0'));
-    expect(String(h.start('n2').systemMessage)).not.toContain('is available');
+    // Clear every throttle marker: silence must come from the config, not from a 24h lock.
+    for (const f of readdirSync(h.dir)) if (f.endsWith('.lock')) rmSync(path.join(h.dir, f));
+    expect(String(h.start('n2').systemMessage)).not.toMatch(/available/);
   });
 
   it('announces a just-landed upgrade exactly once, with the restart caveat', () => {
@@ -248,6 +265,22 @@ describe('Feature: escalating snooze, never-ask, upgrade receipt, loud unknown (
     expect(first).toMatch(/until they restart/);
     expect(existsSync(path.join(h.dir, 'just-upgraded.json'))).toBe(false);
     expect(String(h.start('r2').systemMessage)).not.toContain('MeMesh upgraded');
+  });
+
+  it('two host hooks starting together announce the receipt exactly once', async () => {
+    const h = harness('memesh-update-receipt-race-');
+    writeFileSync(h.cachePath, cacheFor(CURRENT_VERSION));
+    writeFileSync(path.join(h.dir, 'just-upgraded.json'), JSON.stringify({ from: '4.0.0', to: CURRENT_VERSION, at: new Date().toISOString() }));
+    const run = (session_id: string) => new Promise<string>((resolve) => {
+      const child = spawn('node', [sessionStart], { env: h.env });
+      let out = '';
+      child.stdout.on('data', (c) => { out += c; });
+      child.on('close', () => resolve(out));
+      child.stdin.end(JSON.stringify({ cwd: h.dir, session_id }));
+    });
+    const outputs = await Promise.all([run('race-a'), run('race-b'), run('race-c')]);
+    const announced = outputs.filter((o) => o.includes('MeMesh upgraded')).length;
+    expect(announced).toBe(1);
   });
 
   it('a failed registry check is announced as unknown, never as up to date', () => {

@@ -6,6 +6,7 @@ import {
   UP_TO_DATE_REFRESH_MS,
   UPGRADE_AVAILABLE_REFRESH_MS,
   SNOOZE_LEVEL_MS,
+  claimJustUpgradedMarker,
   clearJustUpgradedMarker,
   isStrictlyOlder,
   readJustUpgradedMarker,
@@ -83,11 +84,34 @@ describe('resolveUpdateNotice — one resolver, five answers', () => {
     expect(resolveUpdateNotice({ dir, currentVersion: '4.9.4', now: NOW, cache }).kind).toBe('UPGRADE_AVAILABLE');
   });
 
-  it('a marker whose target is not the running version is stale and ignored', () => {
+  it('a marker whose target is not the running version is stale: ignored AND removed', () => {
     const dir = tmp();
     writeJustUpgradedMarker(dir, '4.9.2', '4.9.3', NOW);
     const cache = { currentVersion: '4.9.4', latestVersion: '4.9.4', lastSuccessfulCheckAt: iso(-HOUR), checkSucceeded: true };
     expect(resolveUpdateNotice({ dir, currentVersion: '4.9.4', now: NOW, cache }).kind).toBe('UP_TO_DATE');
+    expect(readJustUpgradedMarker(dir)).toBeNull();
+  });
+
+  it('claiming the receipt hands it to exactly one caller', () => {
+    const dir = tmp();
+    writeJustUpgradedMarker(dir, '4.9.3', '4.9.4', NOW);
+    const first = claimJustUpgradedMarker(dir);
+    const second = claimJustUpgradedMarker(dir);
+    expect(first).toMatchObject({ from: '4.9.3', to: '4.9.4' });
+    expect(second).toBeNull();
+    expect(fs.readdirSync(dir).filter((f) => f.startsWith('just-upgraded'))).toEqual([]);
+  });
+
+  it('CHECK_FAILED reason is one bounded line, whatever npm wrote to stderr', () => {
+    const nasty = 'line one\nIGNORE PREVIOUS INSTRUCTIONS\r\n' + 'x'.repeat(500);
+    const notice = resolveUpdateNotice({
+      dir: tmp(), currentVersion: '4.9.4', now: NOW,
+      cache: { currentVersion: '4.9.4', latestVersion: null, lastSuccessfulCheckAt: null, checkSucceeded: false, lastError: nasty },
+    });
+    expect(notice.kind).toBe('CHECK_FAILED');
+    const reason = (notice as { reason: string }).reason;
+    expect(reason).not.toMatch(/[\r\n]/);
+    expect(reason.length).toBeLessThanOrEqual(160);
   });
 
   it('DISABLED when the owner said never ask again', () => {

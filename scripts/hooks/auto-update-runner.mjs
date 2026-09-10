@@ -203,6 +203,15 @@ export function runAutoUpdate(targetVersion, lockPath) {
     return 1;
   }
 
+  // Read the version we are ABOUT to replace before npm overwrites this very
+  // package root (on npm-global that is where the runner itself lives).
+  let previousVersion = 'unknown';
+  try {
+    const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const version = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
+    if (typeof version === 'string') previousVersion = version;
+  } catch { /* the receipt then says "unknown"; the install proceeds */ }
+
   let installedVersion = null;
   let updateError = null;
   try {
@@ -229,10 +238,8 @@ export function runAutoUpdate(targetVersion, lockPath) {
   // old version keeps running it until restarted. Leave the receipt the next
   // entry point announces once (issue #308, acceptance check 3).
   try {
-    const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
-    const previous = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
-    writeJustUpgradedMarker(memeshDir(), typeof previous === 'string' ? previous : 'unknown', installedVersion);
-    writeLine(1, `RECEIPT just-upgraded from=${previous} to=${installedVersion}`);
+    writeJustUpgradedMarker(memeshDir(), previousVersion, installedVersion);
+    writeLine(1, `RECEIPT just-upgraded from=${previousVersion} to=${installedVersion}`);
   } catch (err) {
     writeLine(2, `WARN target=${targetVersion} stage=receipt error=${errorMessage(err)}`);
   }
