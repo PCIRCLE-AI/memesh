@@ -1,7 +1,25 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'child_process';
-import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+
+// The parsed payload, hoisted so the outcome recorder below can read
+// session_id and the host signal from ANY exit path — including the ones
+// that fire before or instead of a capture.
+let payload = null;
+
+/**
+ * Leave a record on this exit path (issue #327).
+ *
+ * Every `return exit0()` below is a decision this hook made about a real
+ * event, and until now every one of them was indistinguishable from the hook
+ * not running at all. That is exactly how #321 hid: `git commit -q` prints no
+ * line, so `no commit line in output` fired on every commit for two days and
+ * the graph looked identical to a hook broken by an upgrade.
+ */
+function record(outcome, reason, entity) {
+  recordHookOutcome(process.env, { hook: 'post-commit', outcome, reason, entity, payload });
+}
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -12,9 +30,13 @@ process.stdin.on('end', () => {
     // years while its two siblings honoured it — with capture disabled it
     // kept writing commit entities AND stamping the heartbeat, which made
     // doctor's "capture is off, hook silence is expected" message false.
-    if (!isAutoCaptureEnabled(process.env)) return exit0();
+    if (!isAutoCaptureEnabled(process.env)) {
+      record('skipped', 'auto-capture is turned off');
+      return exit0();
+    }
 
     const data = JSON.parse(input);
+    payload = data;
 
     // tool_name absent is a schema-flip signal (Claude Code has done
     // tool_name renames historically — e.g. tool_use/tool_result
@@ -23,9 +45,13 @@ process.stdin.on('end', () => {
     // `was_in_agentic_loop`).
     if (data.tool_name === undefined) {
       try { process.stderr.write(`[memesh post-commit] tool_name absent in payload (keys: ${Object.keys(data).join(',')}); skipping\n`); } catch {}
+      record('skipped', 'tool_name absent in payload');
       return exit0();
     }
-    if (data.tool_name !== 'Bash') return exit0();
+    if (data.tool_name !== 'Bash') {
+      record('skipped', 'not a Bash tool call');
+      return exit0();
+    }
 
     // Claude Code's PostToolUse hook payload has had two field-name shapes:
     // legacy `tool_output: <string>` and current
@@ -54,7 +80,13 @@ process.stdin.on('end', () => {
     // for a repo's FIRST commit, and the old pattern silently skipped exactly
     // that one, so no repository's first commit was ever remembered.
     const commitMatch = toolOutput.match(/\[[\w/.-]+(?: \([\w -]+\))? ([a-f0-9]{7,})\] (.+)/);
-    if (!commitMatch) return exit0();
+    if (!commitMatch) {
+      // The #321 reason, spelled out for doctor: this is what `git commit -q`
+      // looks like from here, and it is also what a genuinely broken capture
+      // looks like. The COUNT is what tells them apart.
+      record('skipped', 'no commit line in output');
+      return exit0();
+    }
 
     // The OUTPUT looking like a commit is not evidence that a commit happened.
     // This hook stopped at the regex above, so any Bash output containing a
@@ -67,6 +99,7 @@ process.stdin.on('end', () => {
     const issuedCommand = typeof data.tool_input?.command === 'string' ? data.tool_input.command : '';
     if (!/\bgit\b[^|;&]*\bcommit\b/.test(issuedCommand)) {
       try { process.stderr.write(`[memesh post-commit] output looks like a commit but the command was not a git commit; skipping ${commitMatch[1]}\n`); } catch {}
+      record('skipped', 'output looks like a commit but the command was not a git commit');
       return exit0();
     }
 
@@ -84,6 +117,7 @@ process.stdin.on('end', () => {
     // instead — better to miss one commit than to tag it wrong.
     if (!data.cwd) {
       try { process.stderr.write(`[memesh post-commit] data.cwd absent — cannot resolve project / repo; skipping commit ${commitHash}\n`); } catch {}
+      record('skipped', 'data.cwd absent — cannot resolve project or repo');
       return exit0();
     }
     // And the commit has to actually be in THIS repository.
@@ -100,6 +134,7 @@ process.stdin.on('end', () => {
       });
     } catch {
       try { process.stderr.write(`[memesh post-commit] ${commitHash} is not a commit in ${data.cwd}; nothing written\n`); } catch {}
+      record('skipped', 'the hash is not a commit in this repository');
       return exit0();
     }
 
@@ -191,13 +226,22 @@ process.stdin.on('end', () => {
       // Heartbeat AFTER capture, so the stamp certifies "the capture loop
       // completed", not "a database handle existed". A throw above skips it,
       // and so does a null return (the write did not land).
-      if (written) recordHookRun(db, 'post-commit');
+      if (written) {
+        recordHookRun(db, 'post-commit');
+        record('wrote', undefined, entityName);
+      } else {
+        // captureEntity's null means the write did not land. Recording this
+        // as an ERROR, not a skip: a skip is a decision, this is a failure,
+        // and a run of these must not be summarised as "nothing worth saving".
+        record('error', 'captureEntity did not land the write', entityName);
+      }
     } finally {
       db.close();
     }
   } catch (err) {
     // Never crash Claude Code — but leave a trace for debugging
     try { process.stderr.write(`[memesh post-commit] ${err?.message || err}\n`); } catch {}
+    record('error', String(err?.message || err).slice(0, 200));
   }
   // Emit NOTHING on success — not `{"suppressOutput": true}`.
   //

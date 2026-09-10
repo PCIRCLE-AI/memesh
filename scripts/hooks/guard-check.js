@@ -28,10 +28,20 @@ import {
   matchingGuards,
   guardWarningLines,
   recordGuardFires,
+  recordHookOutcome,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
 
 const dbPath = getDbPath();
+
+// See post-commit.js for why every exit path leaves a record (#327). This
+// hook never writes a MEMORY — its "wrote" is the guard-fire counter, the
+// only durable thing it produces — so a run of skips here is normal and the
+// record exists to distinguish "no guard matched" from "never ran".
+let payload = null;
+function record(outcome, reason, entity) {
+  recordHookOutcome(process.env, { hook: 'guard-check', outcome, reason, entity, payload });
+}
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -39,9 +49,16 @@ process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
+    payload = data;
     const command = data?.tool_input?.command;
-    if (!command || typeof command !== 'string') return pass();
-    if (!existsSync(dbPath)) return pass();
+    if (!command || typeof command !== 'string') {
+      record('skipped', 'no Bash command in the payload');
+      return pass();
+    }
+    if (!existsSync(dbPath)) {
+      record('skipped', 'no database yet — nothing to guard against');
+      return pass();
+    }
 
     // `readOnly`, not `readonly`: node:sqlite ignores the lowercase
     // spelling and hands back a WRITABLE handle. This hook only reads;
@@ -57,9 +74,13 @@ process.stdin.on('end', () => {
     } finally {
       db.close();
     }
-    if (!matches || matches.length === 0) return pass();
+    if (!matches || matches.length === 0) {
+      record('skipped', 'no active guard matched this command');
+      return pass();
+    }
 
     recordGuardFires(dbPath, matches.map((g) => g.lessonId));
+    record('wrote', undefined, `guard-fires:${matches.length}`);
 
     console.log(JSON.stringify({
       hookSpecificOutput: {
@@ -72,6 +93,7 @@ process.stdin.on('end', () => {
     // Never crash Claude Code, but trace — a silent break here means
     // every accepted guard stops firing and nothing reports it.
     try { process.stderr.write(`[memesh guard-check] ${err?.message || err}\n`); } catch {}
+    record('error', String(err?.message || err).slice(0, 200));
     pass();
   }
 });

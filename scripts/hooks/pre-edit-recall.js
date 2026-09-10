@@ -26,6 +26,7 @@ import {
   matchingGuards,
   guardWarningLines,
   recordGuardFires,
+  recordHookOutcome,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
 
@@ -35,15 +36,23 @@ const THROTTLE_FILE = join(memeshDir, 'session-recalled-files.json');
 const MAX_RESULTS = 3;
 
 let input = '';
+// See post-commit.js for why every exit path leaves a record (#327).
+let payload = null;
+function record(outcome, reason, entity) {
+  recordHookOutcome(process.env, { hook: 'pre-edit-recall', outcome, reason, entity, payload });
+}
+
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
+    payload = data;
     if (!data.tool_input) {
       // Schema-flip signal — Claude Code has renamed `tool_input` for
       // transcript blocks before. Trace so the rename surfaces day-1.
       try { process.stderr.write(`[memesh pre-edit-recall] tool_input absent (keys: ${Object.keys(data).join(',')}); skipping\n`); } catch {}
+      record('skipped', 'tool_input absent in payload');
       return pass();
     }
     const toolInput = data.tool_input;
@@ -51,6 +60,7 @@ process.stdin.on('end', () => {
 
     // Only process if we have a file path
     if (!filePath || typeof filePath !== 'string') {
+      record('skipped', 'no file_path in the tool input');
       return pass();
     }
 
@@ -69,7 +79,10 @@ process.stdin.on('end', () => {
     }
     const throttled = seenFiles.includes(fileKey);
 
-    if (!existsSync(dbPath)) return pass();
+    if (!existsSync(dbPath)) {
+      record('skipped', 'no database yet — nothing to recall');
+      return pass();
+    }
 
     // Get project name from cwd for project-scoped RECALL filtering — this
     // spawns 1-2 git subprocesses, and the throttled path (every repeat
@@ -102,6 +115,7 @@ process.stdin.on('end', () => {
       db.prepare('SELECT 1').get();
     } catch {
       db.close();
+      record('error', 'the database stayed locked past the hook busy timeout');
       return pass();
     }
     let guardMatches = [];
@@ -236,6 +250,7 @@ process.stdin.on('end', () => {
     }
 
     if (guardMatches.length === 0 && recallLines.length === 0) {
+      record('skipped', 'no guard matched and nothing to recall for this file');
       return pass();
     }
 
@@ -257,6 +272,10 @@ process.stdin.on('end', () => {
         additionalContext: buildReferenceContext(lines),
       },
     }));
+    // "Wrote" for a recall hook is the INJECTION it produced — the only
+    // durable effect it has. A run of skips here is normal; a long run of
+    // them on a machine that edits files daily is not (#327).
+    record('wrote', undefined, `injected:${guardMatches.length}g+${recallLines.length}r`);
   } catch (err) {
     // Never crash Claude Code, but trace — peer hooks (post-commit,
     // pre-compact, session-summary) all stderr-trace their outer
@@ -264,6 +283,7 @@ process.stdin.on('end', () => {
     // would silently break continuous recall on every Edit/Write
     // tool call indefinitely.
     try { process.stderr.write(`[memesh pre-edit-recall] ${err?.message || err}\n`); } catch {}
+    record('error', String(err?.message || err).slice(0, 200));
     pass();
   }
 });

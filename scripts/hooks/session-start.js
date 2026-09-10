@@ -23,7 +23,14 @@ import {
   // Aliased: this file already has a local `const memeshDir` (a resolved
   // db-path-derived directory string) — the helper here is the MEMESH_DIR/
   // home resolver the update-check cache itself uses.
+  captureLivenessNotice,
+  captureLivenessVerdict,
+  ensurePrivateDir as ensurePrivateDirShared,
   memeshDir as memeshHomeDir,
+  parseHookOutcomes,
+  recordHookOutcome,
+  summarizeHookOutcomes,
+  HOOK_OUTCOMES_FILENAME,
   parseTaskState,
   readRepoState,
   readAutoUpdateConsent,
@@ -654,6 +661,50 @@ function captureTargetUnwritable() {
 }
 
 /**
+ * Once per 24h, one line when automatic capture has gone quiet (#327).
+ *
+ * The verdict is computed in the HOOK layer because a hook cannot import
+ * `src/` — but from the SAME leaf `memesh doctor` uses, so the banner and
+ * the report can never disagree about whether capture is alive. The hook
+ * sees only `hook-outcomes.json`: doctor additionally reads the database for
+ * per-type trends and the `hook_runs` heartbeats, so doctor can reach a FAIL
+ * this line never will. That is the right asymmetry — a SessionStart line is
+ * a nudge towards `memesh doctor`, not a replacement for it.
+ *
+ * Suppression after the next successful write needs no marker of its own: a
+ * `wrote` record makes the hook non-silent and the verdict returns to PASS,
+ * so this returns null on its own. Only the throttle needs a file.
+ */
+const CAPTURE_LIVENESS_THROTTLE_MS = 24 * 60 * 60 * 1000;
+
+function captureLivenessBannerLine() {
+  try {
+    const dir = memeshHomeDir();
+    let raw = null;
+    try { raw = readFileSync(join(dir, HOOK_OUTCOMES_FILENAME), 'utf8'); } catch { return null; }
+    const verdict = captureLivenessVerdict({ hooks: summarizeHookOutcomes(parseHookOutcomes(raw)), types: [] });
+    const line = captureLivenessNotice(verdict);
+    if (!line) return null;
+
+    // Same throttle primitive as the update banner: file mtime, touched
+    // BEFORE the line is emitted so two sessions starting at once cannot
+    // both print it.
+    const markerPath = join(dir, 'last-capture-liveness-notice.lock');
+    let stat;
+    try { stat = require('fs').statSync(markerPath); } catch { stat = null; }
+    if (stat && Date.now() - stat.mtimeMs < CAPTURE_LIVENESS_THROTTLE_MS) return null;
+    try {
+      ensurePrivateDirShared(dir);
+      require('fs').writeFileSync(markerPath, String(Date.now()), { mode: 0o600 });
+    } catch { /* best-effort — worst case the line shows twice */ }
+    return line;
+  } catch {
+    // Diagnostics must never cost a session its banner.
+    return null;
+  }
+}
+
+/**
  * Build a "base message + optional deprecation banner" combined
  * single-line systemMessage payload. Keeps stdout a single JSON
  * object on every empty/no-DB exit path so Claude Code's hook
@@ -682,6 +733,10 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
   } catch {
     // Best-effort — fall through to base message only.
   }
+  // The capture-liveness line rides the same single systemMessage as every
+  // other banner — stdout must stay one JSON document.
+  const liveness = captureLivenessBannerLine();
+  if (liveness) lines = [...lines, liveness];
   if (lines.length === 0) return baseMessage;
   return [...lines.filter((l) => l.length > 0), '', baseMessage].join('\n');
 }
@@ -1381,6 +1436,11 @@ process.stdin.on('end', async () => {
       // Hooks must never crash Claude Code — but report honestly.
       // Inner catch so the outer finally can still run the post-
       // banner update tasks even when the recall flow blew up.
+      recordHookOutcome(process.env, {
+        hook: 'session-start',
+        outcome: 'error',
+        reason: String(err?.message || 'unknown error').slice(0, 200),
+      });
       console.log(JSON.stringify({ systemMessage: withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`) }));
     }
   } finally {
@@ -1420,6 +1480,15 @@ process.stdin.on('end', async () => {
 const workPackageGuidance = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
 
 function output(text, memoryContext = workPackageGuidance) {
+  // session-start's "wrote" is the context it injected — the only durable
+  // effect it has. Recorded here rather than at each of the handler's many
+  // returns because output() is the single emit point they all funnel
+  // through, so no path can add itself later and stay invisible (#327).
+  recordHookOutcome(process.env, {
+    hook: 'session-start',
+    outcome: 'wrote',
+    entity: memoryContext ? 'session-start-context' : 'session-start-banner',
+  });
   const payload = { systemMessage: text };
   if (memoryContext) {
     payload.hookSpecificOutput = {
