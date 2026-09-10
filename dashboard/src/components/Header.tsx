@@ -41,7 +41,7 @@ export function Header({ health, error }: { health: HealthData | null; error: st
           {health ? (
             <>
               <span><span class="dot dot-ok" />{t('header.connected')}</span>
-              <span class="badge-version">v{health.version} · {health.entity_count.toLocaleString(getLocale())} {t('header.memories')}</span>
+              <span class="badge-version">v{health.version} · {health.entity_count.toLocaleString(getLocale())} {t(health.entity_count === 1 ? 'header.memory' : 'header.memories')}</span>
             </>
           ) : error ? (
             <span><span class="dot dot-err" />{t('header.disconnected')}</span>

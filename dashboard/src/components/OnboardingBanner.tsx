@@ -122,6 +122,8 @@ export function OnboardingBanner({ health }: Props) {
             lineHeight: 1,
             cursor: 'pointer',
             padding: 4,
+            minWidth: 24,
+            minHeight: 24,
           }}
         >
           ×

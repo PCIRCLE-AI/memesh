@@ -74,7 +74,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -1392,23 +1392,12 @@ fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record
   async terminateCodexDetachedCompanion(threadId) {
     const statePath = path.join(this.memeshDir, 'runtime', 'codex-session', `${threadId}.json`);
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    await new Promise((resolve, reject) => {
-      const socket = net.createConnection(state.control_socket);
-      let response = '';
-      const timer = setTimeout(() => {
-        socket.destroy();
-        reject(new Error(`Detached Codex companion ${threadId} did not acknowledge termination.`));
-      }, 2_000);
-      socket.setEncoding('utf8');
-      socket.on('data', (chunk) => { response += chunk; });
-      socket.once('error', (error) => { clearTimeout(timer); reject(error); });
-      socket.once('close', () => {
-        clearTimeout(timer);
-        if (response.trim() !== 'terminated') reject(new Error(`Detached Codex companion ${threadId} rejected termination.`));
-        else resolve();
-      });
-      socket.once('connect', () => socket.end(`${JSON.stringify({ action: 'terminate', token: state.token })}\n`));
-    });
+    // One protocol, one owner: the same client the product uses to supersede a
+    // companion (src/host-runtime/codex-session.ts), loaded from the built dist
+    // this journey already requires to be fresh.
+    const { requestExactCompanionControl } = await import(pathToFileURL(dist('dist/host-runtime/codex-session.js')).href);
+    const acknowledged = await requestExactCompanionControl(state, 'terminate');
+    if (!acknowledged) throw new Error(`Detached Codex companion ${threadId} did not acknowledge termination.`);
   }
 
   trackCodexProcess(child) {

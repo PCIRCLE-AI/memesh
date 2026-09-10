@@ -212,7 +212,8 @@ function removeStaleState(statePath: string, state: CodexCompanionState): void {
   }
 }
 
-async function requestExactCompanionControl(
+/** Ask a running companion to terminate/retire over its control socket. Exported so `scripts/qa/live-journey.mjs` speaks the one protocol instead of a copy. */
+export async function requestExactCompanionControl(
   state: CodexCompanionState,
   action: 'terminate' | 'retire',
 ): Promise<boolean> {

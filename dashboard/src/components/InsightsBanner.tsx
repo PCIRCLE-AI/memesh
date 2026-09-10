@@ -142,6 +142,8 @@ export function InsightsBanner({ currentTab, onNavigateToInsights }: Props) {
           lineHeight: 1,
           cursor: 'pointer',
           padding: 4,
+          minWidth: 24,
+          minHeight: 24,
         }}
       >
         ×

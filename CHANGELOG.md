@@ -2,6 +2,22 @@
 
 All notable changes to MeMesh are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Dashboard header counts one memory as "memory".** The badge used the
+  plural label for every count; each locale now carries a singular form and the
+  header picks it when the count is exactly one.
+- **Banner dismiss controls meet the 24×24 CSS px target size.** The three ×
+  buttons (onboarding, insights, doctor) measured 18.5×26; they now reserve a
+  24×24 hit area so WCAG 2.2 SC 2.5.8 holds without relying on the spacing
+  exception.
+- **The live-journey harness reuses the product's companion control client.**
+  `requestExactCompanionControl` is exported from the codex-session runtime and
+  the QA script calls it from the built dist instead of carrying its own copy of
+  the control-socket protocol.
+
 ## [4.9.4] — 2026-09-09
 
 ### Fixed
