@@ -10,6 +10,7 @@ import {
 } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { readConfig, updateConfig } from '../../core/config.js';
+import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
@@ -237,6 +238,26 @@ program
   // is the documented Commander 12+ escape hatch for this case.
   .allowExcessArguments(true)
   .showSuggestionAfterError(true);
+
+// First-use update notice at the terminal (#308: any door). One stderr line,
+// once a day per installed version, from the same resolver the hooks use —
+// so a snooze or "never ask again" given in a session also silences the CLI.
+// stderr, never stdout: commands that print JSON stay parseable. Commands
+// that ARE about updates or setup speak for themselves and are skipped.
+const UPDATE_NOTICE_SILENT_COMMANDS = new Set([
+  'status', 'update', 'doctor', 'config', 'upgrade-plugin', 'serve', 'setup', 'install-hooks', 'uninstall-hooks',
+]);
+/** The top-level command a leaf belongs to: `memesh config set` → `config`, `memesh dream list` → `dream`. */
+function topLevelCommandName(command: Command): string {
+  let current: Command = command;
+  while (current.parent && current.parent !== program) current = current.parent;
+  return current.name();
+}
+program.hook('preAction', (_thisCommand, actionCommand) => {
+  if (UPDATE_NOTICE_SILENT_COMMANDS.has(topLevelCommandName(actionCommand))) return;
+  const line = updateNoticeForEntryPoint({ currentVersion: pkg.version, entryPoint: 'cli' });
+  if (line) process.stderr.write(`${line}\n`);
+});
 
 // --- remember ---
 // Two forms:

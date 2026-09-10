@@ -25,6 +25,7 @@ import {
 } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
 import { getProjectName } from '../../core/paths.js';
+import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 
 export interface McpRequestContext {
   workspaceRootUris?: readonly string[];
@@ -509,7 +510,45 @@ export function normalizeClientHost(name: string | undefined): string {
  * operations as provenance and is NOT a tool parameter: a provenance field
  * the model could set is not provenance.
  */
+// ---------------------------------------------------------------------------
+// First-call update notice (#308: "first use" means any door, not only the
+// SessionStart hook). Appended as a SECOND content item so content[0] stays
+// the JSON envelope hosts parse (Gemini reads content[0] into
+// structuredContent). Once per server process; never on an error result.
+// ---------------------------------------------------------------------------
+
+const packageVersion: string = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version ?? '0.0.0';
+  } catch {
+    return '0.0.0';
+  }
+})();
+let firstCallNoticeOnce = new Set<string>();
+
+/** @internal Tests drive several "processes" through one module instance; not part of the MCP contract. */
+export function resetFirstCallNoticeForTests(): void {
+  firstCallNoticeOnce = new Set<string>();
+}
+
+function withFirstCallNotice(result: ToolResult): ToolResult {
+  if (result.isError) return result;
+  const line = updateNoticeForEntryPoint({ currentVersion: packageVersion, entryPoint: 'mcp', processOnce: firstCallNoticeOnce });
+  if (!line) return result;
+  return { ...result, content: [...result.content, { type: 'text', text: line }] };
+}
+
 export async function handleTool(
+  name: string,
+  args: Record<string, unknown> | undefined,
+  sourceHost?: string,
+  signal?: AbortSignal,
+  requestContext: McpRequestContext = {},
+): Promise<ToolResult> {
+  return withFirstCallNotice(await handleToolInner(name, args, sourceHost, signal, requestContext));
+}
+
+async function handleToolInner(
   name: string,
   args: Record<string, unknown> | undefined,
   sourceHost?: string,

@@ -536,6 +536,7 @@ type ToolResult = {
     isError?: boolean;
 };
 export declare function normalizeClientHost(name: string | undefined): string;
+export declare function resetFirstCallNoticeForTests(): void;
 export declare function handleTool(name: string, args: Record<string, unknown> | undefined, sourceHost?: string, signal?: AbortSignal, requestContext?: McpRequestContext): Promise<ToolResult>;
 export {};
 //# sourceMappingURL=handlers.d.ts.map

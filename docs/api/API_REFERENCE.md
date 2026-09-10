@@ -154,6 +154,8 @@ A query that is not empty but contains nothing searchable — `???`, `@#$%` — 
 
 Returns an object whose `entities` array holds the matching entities ranked by multi-factor score — relevance 0.30, recency 0.25, frequency 0.18, confidence 0.17, recall-effectiveness impact 0.10. The envelope is an object, never a bare array: Gemini CLI JSON-parses a tool's text payload into the MCP result's `structuredContent`, which the protocol requires to be an object — a bare array failed every Gemini recall while other hosts read it fine:
 
+On the first successful tool call of a server process, any tool's result may carry a second content item `{ "type": "text", "text": "[memesh update] …" }` — the update notice (available upgrade, just-upgraded receipt, or a failed check). `content[0]` is always the tool's own payload; clients that read only the first item are unaffected.
+
 ```json
 {
   "entities": [

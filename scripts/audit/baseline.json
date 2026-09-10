@@ -565,6 +565,11 @@
       "class": "SAFE",
       "reason": "the not.toMatch/not.toContain assertions (no stack frames, no install path, no internal entity name) are the contract under test and each is paired with positive assertions on the same output (status 1, recovery text present, JSON error object)",
       "triaged": "2026-09-10 (#237)"
+    },
+    "C1 tests/cli/update-notice-stderr.test.ts": {
+      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
+      "reason": "The detector's `.toBe(0)` is the CLI's successful exit status, not an empty collection. The same test asserts the notice text on stderr, that stdout still parses as JSON, that a second run prints no notice, and that `status` prints none.",
+      "triaged": "2026-09-10 #308 PR-B entry-point notice"
     }
   }
 }

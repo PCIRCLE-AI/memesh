@@ -22,6 +22,7 @@ export type UpdateNotice = {
     kind: 'CHECK_FAILED';
     currentVersion: string;
     reason: string;
+    attempted: boolean;
 } | {
     kind: 'SNOOZED';
     currentVersion: string;
