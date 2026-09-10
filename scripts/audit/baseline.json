@@ -461,11 +461,6 @@
       "reason": "`(e.relations ?? []).filter` listing outgoing supersedes chain lines — absence renders no chain section at all rather than an empty claim. (re-keyed 1102→1107 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view)"
     },
-    "C5 dashboard/src/components/ProjectTab.tsx:44": {
-      "class": "SAFE-DISPLAY",
-      "reason": "`e.relations ?? []` in selectProjectEntities — an entity without relations simply readmits nothing; the readmission rule is pinned by tests/dashboard/ProjectTab.select.test.ts including the no-relations path. (re-keyed 43→44 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 readmission rule)"
-    },
     "C1 tests/cli/briefing-recipient.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
       "reason": "The detector's `.toBe(0)` matches successful CLI exit-status assertions, not empty collections. The test separately pins generic briefing suppression, exact recipient/project output, and exclusion of the other recipient.",
@@ -560,6 +555,11 @@
       "class": "SAFE-DISPLAY",
       "reason": "classification falls through to the freeform bucket",
       "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified)"
+    },
+    "C5 dashboard/src/components/ProjectTab.tsx:45": {
+      "class": "SAFE-DISPLAY",
+      "reason": "`e.relations ?? []` in selectProjectEntities — an entity without relations simply readmits nothing; the readmission rule is pinned by tests/dashboard/ProjectTab.select.test.ts including the no-relations path. (re-keyed 43→44 on 2026-08-29; line shift only, classification unchanged)",
+      "triaged": "2026-08-16 (UX-3 readmission rule); re-keyed 2026-09-10 (#237: Fragment import added above; same statement — verified)"
     }
   }
 }
