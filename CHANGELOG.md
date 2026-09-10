@@ -4,6 +4,19 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Token-usage measurability verdict and frozen benchmark contract (#251).**
+  `benchmarks/token/CONTRACT.md` records that Claude Code and Codex both
+  write authoritative per-request usage to their session transcripts, with
+  the probe results (control / tool-schema / tool-result) that prove it;
+  `usage-probe.mjs` turns such a transcript into a ledger of numbers and
+  digests only, and `validate.mjs` (`npm run bench:token:validate`) refuses a
+  case corpus or run manifest that lacks shared ground truth, a negative
+  stale-answer case, source SHA, artifact and corpus digests, host/model
+  identity or usage provenance, and refuses official runs before the
+  statistics are frozen. Evidence tooling only; nothing ships in the package.
+
 ### Changed
 
 - **First-use update notice: one resolver, escalating snooze, a receipt after
@@ -95,7 +108,6 @@ All notable changes to MeMesh are documented here.
 ## [4.9.0] — 2026-09-07
 
 ### Added
-
 - **Automatic exact-session registration support for eligible ordinary Codex CLI plugin sessions.**
   The packaged SessionStart hook accepts startup and resume on macOS or Linux,
   launches an owner-private detached thread-scoped companion, and keeps a bounded
