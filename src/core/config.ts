@@ -6,10 +6,12 @@ export interface MeMeshConfig {
   autoCapture?: boolean;
   sessionLimit?: number;
   autoUpdate?: 'off' | 'patch' | 'minor' | 'major';
+  /** false = "never ask again": no first-use update notice, no refresh spawn. Default true. */
+  updateCheck?: boolean;
   setupCompleted?: boolean;
 }
 
-const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'setupCompleted'] as const;
+const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'setupCompleted'] as const;
 export const RETIRED_CONFIG_KEYS = [
   'llm',
   'llmFallbacks',
@@ -88,6 +90,7 @@ function selectConfig(raw: RawConfig): MeMeshConfig {
   ) {
     config.autoUpdate = raw.autoUpdate;
   }
+  if (typeof raw.updateCheck === 'boolean') config.updateCheck = raw.updateCheck;
   if (typeof raw.setupCompleted === 'boolean') config.setupCompleted = raw.setupCompleted;
   return config;
 }

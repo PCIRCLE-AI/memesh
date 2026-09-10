@@ -8,6 +8,7 @@ import {
   claimUpdatePrompt,
   finalizeUpdatePromptClaim,
   findAutoUpdateConsent,
+  parseAutoUpdateConsent,
   readUpdatePromptClaim,
   writeAutoUpdateConsent,
 } from '../../scripts/hooks/_shared.js';
@@ -175,3 +176,91 @@ describe('Feature: per-session update consent', () => {
     expect(readFileSync(updateLog, 'utf8')).toContain('auto-update SKIPPED');
   });
 });
+
+describe('Feature: escalating snooze, never-ask, upgrade receipt, loud unknown (#308)', () => {
+  const sessionStart = path.resolve('scripts/hooks/session-start.js');
+  const userPrompt = path.resolve('scripts/hooks/user-prompt-intent.js');
+  const cacheFor = (latest: string) => JSON.stringify({
+    currentVersion: CURRENT_VERSION, latestVersion: latest, checkSucceeded: true,
+    lastSuccessfulCheckAt: new Date().toISOString(),
+  });
+  function harness(prefix: string) {
+    const dir = mkdtempSync(path.join(tmpdir(), prefix));
+    const cachePath = path.join(dir, 'update-cache.json');
+    const env = { ...process.env, MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'memesh.db'), MEMESH_UPDATE_CHECK_PATH: cachePath };
+    const start = (session_id: string) => JSON.parse(execFileSync('node', [sessionStart], {
+      input: JSON.stringify({ cwd: dir, session_id }), env, encoding: 'utf8',
+    }).trim());
+    const answer = (session_id: string, prompt: string) => execFileSync('node', [userPrompt], {
+      input: JSON.stringify({ session_id, prompt }), env, encoding: 'utf8',
+    });
+    return { dir, cachePath, env, start, answer };
+  }
+
+  it('parses "never ask again" as its own decision', () => {
+    expect(parseAutoUpdateConsent('Never ask again')).toBe('never');
+    expect(parseAutoUpdateConsent("don't ask me again")).toBe('never');
+    expect(parseAutoUpdateConsent('不要再問')).toBe('never');
+    expect(parseAutoUpdateConsent('Not now')).toBe('declined');
+    expect(parseAutoUpdateConsent('never mind the tests, run them')).toBeNull();
+  });
+
+  it('"Not now" snoozes that target across NEW sessions, escalates, and a newer target is offered again', () => {
+    const h = harness('memesh-update-snooze-');
+    writeFileSync(h.cachePath, cacheFor('4.10.0'));
+    expect(String(h.start('s1').systemMessage)).toContain('MeMesh 4.10.0 is available');
+    h.answer('s1', 'Not now');
+    const snoozePath = path.join(h.dir, 'update-snooze.json');
+    expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: '4.10.0', level: 1 });
+    // A brand-new session used to be asked again; now it is quiet while snoozed.
+    expect(String(h.start('s2').systemMessage)).not.toContain('is available');
+    // A second decline (from a session that WAS shown the notice) escalates.
+    h.answer('s1', 'later');
+    expect(JSON.parse(readFileSync(snoozePath, 'utf8'))).toMatchObject({ target: '4.10.0', level: 2 });
+    // A newer release resets the snooze and is offered.
+    writeFileSync(h.cachePath, cacheFor('4.11.0'));
+    expect(String(h.start('s3').systemMessage)).toContain('MeMesh 4.11.0 is available');
+  });
+
+  it('an answer from a session that never saw the notice is not a decision', () => {
+    const h = harness('memesh-update-stray-');
+    writeFileSync(h.cachePath, cacheFor('4.10.0'));
+    h.answer('never-prompted', 'Not now');
+    expect(existsSync(path.join(h.dir, 'update-snooze.json'))).toBe(false);
+  });
+
+  it('"Never ask again" turns checks off in config and silences every later session', () => {
+    const h = harness('memesh-update-never-');
+    writeFileSync(h.cachePath, cacheFor('4.10.0'));
+    expect(String(h.start('n1').systemMessage)).toContain('is available');
+    h.answer('n1', 'never ask again');
+    expect(JSON.parse(readFileSync(path.join(h.dir, 'config.json'), 'utf8'))).toMatchObject({ updateCheck: false });
+    writeFileSync(h.cachePath, cacheFor('4.12.0'));
+    expect(String(h.start('n2').systemMessage)).not.toContain('is available');
+  });
+
+  it('announces a just-landed upgrade exactly once, with the restart caveat', () => {
+    const h = harness('memesh-update-receipt-');
+    writeFileSync(h.cachePath, cacheFor(CURRENT_VERSION));
+    writeFileSync(path.join(h.dir, 'just-upgraded.json'), JSON.stringify({ from: '4.0.0', to: CURRENT_VERSION, at: new Date().toISOString() }));
+    const first = String(h.start('r1').systemMessage);
+    expect(first).toContain(`MeMesh upgraded 4.0.0 → ${CURRENT_VERSION}`);
+    expect(first).toMatch(/until they restart/);
+    expect(existsSync(path.join(h.dir, 'just-upgraded.json'))).toBe(false);
+    expect(String(h.start('r2').systemMessage)).not.toContain('MeMesh upgraded');
+  });
+
+  it('a failed registry check is announced as unknown, never as up to date', () => {
+    const h = harness('memesh-update-failed-');
+    writeFileSync(h.cachePath, JSON.stringify({
+      currentVersion: CURRENT_VERSION, latestVersion: null, checkSucceeded: false,
+      lastSuccessfulCheckAt: null, lastAttemptAt: new Date().toISOString(), lastError: 'ENOTFOUND registry.npmjs.org',
+    }));
+    const msg = String(h.start('f1').systemMessage);
+    expect(msg).toContain('could not confirm whether an update exists (ENOTFOUND registry.npmjs.org)');
+    expect(msg).not.toContain('is available');
+    // Once a day, not every session.
+    expect(String(h.start('f2').systemMessage)).not.toContain('could not confirm');
+  });
+});
+

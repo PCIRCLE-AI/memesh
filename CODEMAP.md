@@ -80,6 +80,8 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 - Config read/write → `src/core/config.ts`
 - Path resolution (explicit `MEMESH_DIR` / `MEMESH_DB_PATH` overrides, then HOME defaults) → `src/core/paths.ts`
 - `memesh doctor` health check + real probes → `src/core/doctor.ts`
+- What every entry point says about updates (snooze, just-upgraded receipt, failed check) → `src/core/update-notice.ts`
+  (build-generated as `scripts/hooks/_generated/update-notice.js` for the SessionStart / UserPromptSubmit / Stop hooks)
 - npm version check / self-update → `src/core/version-check.ts`, `src/core/updater.ts`, `src/core/install-channel.ts`, `src/core/install-hooks.ts`
 
 ### Durable local agent messaging + active-host delivery

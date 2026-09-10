@@ -52,6 +52,10 @@ const SOURCES = [
   { from: 'dist/core/repo-state.js', to: 'repo-state.js', src: 'src/core/repo-state.ts' },
   { from: 'dist/core/guards.js', to: 'guards.js', src: 'src/core/guards.ts' },
   { from: 'dist/core/time-utils.js', to: 'time-utils.js', src: 'src/core/time-utils.ts' },
+  // The one update-status resolver (issue #308): SessionStart, UserPromptSubmit,
+  // the Stop-hook updater and `memesh status` must agree on what "an update
+  // is available", "snoozed", "just upgraded" and "check failed" mean.
+  { from: 'dist/core/update-notice.js', to: 'update-notice.js', src: 'src/core/update-notice.ts' },
   // The citation contract. Mirrored because a PLUGIN install never runs
   // `install-hooks` — the npm-only path — so the hooks are the only place
   // that can put the rule on disk for those users, and they are the majority.

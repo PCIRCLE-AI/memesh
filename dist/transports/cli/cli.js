@@ -6221,6 +6221,8 @@ function selectConfig(raw) {
   if (raw.autoUpdate === "off" || raw.autoUpdate === "patch" || raw.autoUpdate === "minor" || raw.autoUpdate === "major") {
     config2.autoUpdate = raw.autoUpdate;
   }
+  if (typeof raw.updateCheck === "boolean")
+    config2.updateCheck = raw.updateCheck;
   if (typeof raw.setupCompleted === "boolean")
     config2.setupCompleted = raw.setupCompleted;
   return config2;
@@ -6275,7 +6277,7 @@ var init_config = __esm({
   "dist/core/config.js"() {
     "use strict";
     init_paths();
-    CONFIG_KEYS = ["autoCapture", "sessionLimit", "autoUpdate", "setupCompleted"];
+    CONFIG_KEYS = ["autoCapture", "sessionLimit", "autoUpdate", "updateCheck", "setupCompleted"];
     RETIRED_CONFIG_KEYS = [
       "llm",
       "llmFallbacks",

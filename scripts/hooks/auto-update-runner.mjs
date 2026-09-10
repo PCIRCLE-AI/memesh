@@ -13,6 +13,10 @@ import {
 import { createHash, randomBytes } from 'crypto';
 import { pathToFileURL } from 'url';
 import { runGlobalUpdate } from '../../dist/core/updater.js';
+import { memeshDir } from '../../dist/core/paths.js';
+import { writeJustUpgradedMarker } from '../../dist/core/update-notice.js';
+import { dirname, join } from 'path';
+import { fileURLToPath } from 'url';
 
 export const AUTO_UPDATE_LOCK_TTL_MS = 10 * 60 * 1000;
 export const AUTO_UPDATE_RECOVERY_TTL_MS = 30 * 1000;
@@ -221,6 +225,17 @@ export function runAutoUpdate(targetVersion, lockPath) {
     return 1;
   }
 
+  // The install is on disk, but every host process that already loaded the
+  // old version keeps running it until restarted. Leave the receipt the next
+  // entry point announces once (issue #308, acceptance check 3).
+  try {
+    const packageRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const previous = JSON.parse(readFileSync(join(packageRoot, 'package.json'), 'utf8')).version;
+    writeJustUpgradedMarker(memeshDir(), typeof previous === 'string' ? previous : 'unknown', installedVersion);
+    writeLine(1, `RECEIPT just-upgraded from=${previous} to=${installedVersion}`);
+  } catch (err) {
+    writeLine(2, `WARN target=${targetVersion} stage=receipt error=${errorMessage(err)}`);
+  }
   writeLine(1, `SUCCESS target=${targetVersion} installed=${installedVersion}`);
   return 0;
 }
