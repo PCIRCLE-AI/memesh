@@ -19,6 +19,7 @@ import queue
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -39,6 +40,8 @@ _RECALL_LIMIT = 5
 # `memesh` process from holding up Hermes's shutdown.
 _CAPTURE_TIMEOUT_SECS = 20.0
 _TURN_TIMEOUT_SECS = 30.0
+# How long session end / shutdown waits for queued turns to finish capturing.
+_DRAIN_TIMEOUT_SECS = _TURN_TIMEOUT_SECS
 
 
 def _load_config(hermes_home: str) -> dict:
@@ -114,7 +117,19 @@ class MemeshProvider(MemoryProvider):
             "as a cue to reorganize or rewrite existing memory files."
         )
 
+    def _drain_turns_before_exit(self) -> None:
+        # The worker is a daemon thread: whatever is still queued when Hermes
+        # exits is lost. Wait for it, bounded, and say how many did not make
+        # it — a lost capture must not look like one that never happened.
+        deadline = time.monotonic() + _DRAIN_TIMEOUT_SECS
+        while self._turn_queue.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.05)
+        pending = self._turn_queue.unfinished_tasks
+        if pending:
+            logger.warning("MeMesh: %d turn(s) not captured before shutdown", pending)
+
     def shutdown(self) -> None:
+        self._drain_turns_before_exit()
         try:
             self._client.close()
         except Exception:
@@ -329,6 +344,9 @@ class MemeshProvider(MemoryProvider):
         )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        # shutdown() follows ~1 ms later (Pitfall 5); drain queued turns
+        # first so the session's last decisions are not the ones lost.
+        self._drain_turns_before_exit()
         self._capture_session(messages)
 
     def on_session_switch(

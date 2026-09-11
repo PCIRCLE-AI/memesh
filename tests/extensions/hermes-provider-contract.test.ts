@@ -105,6 +105,12 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     expect(queue.queue_full_warnings).toBeGreaterThan(0);
   });
 
+  it('turns still queued at session end are drained; any left after the bounded wait are reported (re-review P1)', () => {
+    expect(queue.drained_captures).toBe(3);
+    expect(queue.drained_unfinished).toBe(0);
+    expect(queue.lost_warnings).toEqual(['MeMesh: 3 turn(s) not captured before shutdown']);
+  });
+
   it('non-primary skips and non-object CLI output leave a log line (F5)', () => {
     expect(queue.non_primary_debug).toBe(2);
     expect(queue.non_dict_result).toBeNull();

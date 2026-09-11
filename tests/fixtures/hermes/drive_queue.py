@@ -55,4 +55,29 @@ r = mod.MemeshProvider()
 r.initialize("r-session", hermes_home=hermes_home, agent_context="primary")
 out["non_dict_result"] = r._run_capture(["hermes", "capture-turn", "--session", "r"], {}, 10)
 out["non_dict_warnings"] = sum(1 for lvl, msg in records if lvl == "WARNING" and "not a JSON object" in msg)
+# Queued turns at session end are drained, not dropped silently.
+records.clear()
+d = mod.MemeshProvider()
+d.initialize("d-session", hermes_home=hermes_home, agent_context="primary")
+done = []
+d._run_capture = lambda args, payload, timeout: (time.sleep(0.3), done.append(payload["assistant"]))
+for i in range(3):
+    d.sync_turn(f"u{i}", f"We decided on option {i}.")
+d.on_session_end([])
+d.shutdown()
+out["drained_captures"] = len(done)
+out["drained_unfinished"] = d._turn_queue.unfinished_tasks
+
+# A capture that outlives the bounded wait is reported, with the count.
+records.clear()
+mod._DRAIN_TIMEOUT_SECS = 0.5
+h = mod.MemeshProvider()
+h.initialize("h-session", hermes_home=hermes_home, agent_context="primary")
+stuck = threading.Event()
+h._run_capture = lambda *a, **k: stuck.wait(10)
+for i in range(3):
+    h.sync_turn(f"u{i}", f"a{i}")
+h.shutdown()
+out["lost_warnings"] = [msg for lvl, msg in records if lvl == "WARNING" and "not captured before shutdown" in msg]
+stuck.set()
 print(json.dumps(out))
