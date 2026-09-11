@@ -271,4 +271,70 @@ describe('ingestNoteDirectory', () => {
     const history = e.metadata?.replaced_history as Array<{ observations: string[] }>;
     expect(history.at(-1)!.observations).toEqual(['from the file', 'added by hand']);
   });
+
+  it('P1: a renamed file is one replace, not a replace plus a false "missing"', () => {
+    const dir = makeDir({ 'A.md': note('x1', 'X', 'fact', 'x body') });
+    ingestNoteDirectory({ dir });
+    fs.renameSync(path.join(dir, 'A.md'), path.join(dir, 'B.md'));
+    const moved = ingestNoteDirectory({ dir });
+    expect(moved.replaced).toEqual(['x1']);
+    expect(moved.markedMissing).toHaveLength(0);
+    expect(kg().getEntity('x1')!.tags).not.toContain(NOTE_FILE_MISSING_TAG);
+    const settled = ingestNoteDirectory({ dir });
+    expect(settled).toMatchObject({ replaced: [], unchanged: 1 });
+    expect((kg().getEntity('x1')!.metadata?.replaced_history as unknown[]).length).toBe(1);
+  });
+
+  it('P2-a: a duplicate-name file is fingerprinted too, so it does not eat the cap', () => {
+    const dir = makeDir({
+      'a.md': note('same', 'A', 'fact', 'a'),
+      'b.md': note('same', 'B', 'fact', 'b'),
+      'c.md': note('good_c', 'C', 'fact', 'c'),
+    });
+    for (let i = 0; i < 4; i++) ingestNoteDirectory({ dir, maxFiles: 1 });
+    const last = ingestNoteDirectory({ dir, maxFiles: 1 });
+    expect(kg().getEntity('good_c')).not.toBeNull();
+    expect(last.more).toBe(0);
+    expect(last.skipped.map((x) => x.path)).toContain('b.md');
+  });
+
+  it('P2-a: a duplicate reclaims the name once its owner is gone', () => {
+    const dir = makeDir({
+      'a.md': note('same2', 'A', 'fact', 'from a'),
+      'b.md': note('same2', 'B', 'fact', 'from b'),
+    });
+    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ dir });
+    fs.rmSync(path.join(dir, 'a.md'));
+    const r = ingestNoteDirectory({ dir });
+    expect(r.replaced).toEqual(['same2']);
+    expect(kg().getEntity('same2')!.observations).toEqual(['from b']);
+    expect(kg().getEntity('same2')!.tags).not.toContain(NOTE_FILE_MISSING_TAG);
+  });
+
+  it('P2-a: when the owner renames its frontmatter name, the duplicate takes the old one', () => {
+    const dir = makeDir({
+      'a.md': note('same3', 'A', 'fact', 'from a'),
+      'b.md': note('same3', 'B', 'fact', 'from b'),
+    });
+    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ dir });
+    fs.writeFileSync(path.join(dir, 'a.md'), note('renamed_a', 'A2', 'fact', 'from a, renamed'));
+    const r = ingestNoteDirectory({ dir });
+    expect(r.created).toEqual(['renamed_a']);
+    expect(r.replaced).toEqual(['same3']);
+    expect(kg().getEntity('same3')!.observations).toEqual(['from b']);
+  });
+
+  it('P3-a: no skip-cache row is left behind when nothing is skipped', () => {
+    const dir = makeDir({ 'bad.md': 'no frontmatter\n' });
+    const r = ingestNoteDirectory({ dir });
+    expect(r.skipped).toHaveLength(1);
+    const key = `note_ingest_skips:${r.dirId}`;
+    const count = () => (getDatabase().prepare('SELECT COUNT(*) AS c FROM memesh_metadata WHERE key = ?').get(key) as { c: number }).c;
+    expect(count()).toBe(1);
+    fs.rmSync(path.join(dir, 'bad.md'));
+    ingestNoteDirectory({ dir });
+    expect(count()).toBe(0);
+  });
 });

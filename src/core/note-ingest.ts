@@ -219,7 +219,8 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   // hook's "more to do" flag never cleared.
   const skipKey = `note_ingest_skips:${dirId}`;
   const skipRow = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(skipKey) as { value: string } | undefined;
-  let priorSkips: Record<string, { mtime: number; size: number; reason: string }> = {};
+  type SkipPrint = { mtime: number; size: number; reason: string; owner?: { rel: string; mtime: number; size: number } };
+  let priorSkips: Record<string, SkipPrint> = {};
   try {
     const parsedSkips = skipRow ? JSON.parse(skipRow.value) as unknown : {};
     if (parsedSkips && typeof parsedSkips === 'object') priorSkips = parsedSkips as typeof priorSkips;
@@ -229,13 +230,41 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     priorSkips = {};
   }
   const nextSkips: typeof priorSkips = {};
+  // A duplicate-name skip holds only while the file that owns the name is
+  // still there and unchanged; otherwise the duplicate is read again, so it
+  // can claim the name (owner deleted) or be re-judged (owner renamed its
+  // `name`).
+  const ownerUnchanged = (print: SkipPrint): boolean => {
+    if (!print.owner) return true;
+    try {
+      const st = fs.lstatSync(path.join(realDir, print.owner.rel));
+      return st.mtimeMs === print.owner.mtime && st.size === print.owner.size;
+    } catch {
+      return false; // owner gone: re-read the duplicate
+    }
+  };
+  // Memories written this run. The missing sweep below works from the
+  // snapshot taken before the loop, in which a RENAMED file still has its old
+  // path — it must not tag the memory the loop just re-pointed.
+  const touchedIds = new Set<number>();
   // name → the file that owns it. Seeded with every file this directory
   // already contributed, so a second file claiming the name is refused even
   // when the owner is unchanged (and therefore never read this run), and
   // whichever of the two sorts first.
   const seenNames = new Map<string, string>();
   const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
-  for (const [rel, k] of known) if (presentRels.has(rel)) seenNames.set(k.name, rel);
+  // Only an UNCHANGED owner seeds its stored name: a changed one is read
+  // below and claims whatever name it now carries, so a file that renamed
+  // its `name` does not keep blocking the old one.
+  for (const [rel, k] of known) {
+    if (!presentRels.has(rel)) continue;
+    try {
+      const st = fs.lstatSync(path.join(realDir, rel));
+      if (st.mtimeMs === k.mtime && st.size === k.size) seenNames.set(k.name, rel);
+    } catch {
+      // Vanished since discovery: nothing to seed.
+    }
+  }
 
   let read = 0;
   for (const abs of files) {
@@ -258,7 +287,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
         continue;
       }
       const priorSkip = priorSkips[rel];
-      if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size) {
+      if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
         continue;
@@ -283,7 +312,18 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     // Two files claiming one name would take turns replacing the same memory
     // on every run. The first in path order keeps it; the other is reported.
     const firstWithName = seenNames.get(name);
-    if (firstWithName && firstWithName !== rel) { skip(`name "${name}" already used by ${firstWithName} in this directory`); continue; }
+    if (firstWithName && firstWithName !== rel) {
+      const reason = `name "${name}" already used by ${firstWithName} in this directory`;
+      skip(reason);
+      try {
+        const ownerStat = fs.lstatSync(path.join(realDir, firstWithName));
+        nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason, owner: { rel: firstWithName, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
+      } catch {
+        // Owner unreadable: leave this duplicate unfingerprinted; it is read
+        // again next run and re-judged.
+      }
+      continue;
+    }
     seenNames.set(name, rel);
 
     const metaBlock = parsed.data.metadata;
@@ -334,7 +374,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     const hasProject = keptTags.some((t) => t.startsWith('project:'));
     const tags = [NOTE_FILE_TAG, ...keptTags, ...(!hasProject && opts.project ? [`project:${opts.project}`] : [])];
 
-    remember({
+    const written = remember({
       name,
       type,
       title,
@@ -354,10 +394,15 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       },
       sourceHost: 'note-file',
     });
+    touchedIds.add(written.entityId);
     (existing ? result.replaced : result.created).push(name);
   }
 
-  db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
+  if (Object.keys(nextSkips).length > 0) {
+    db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
+  } else {
+    db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run(skipKey);
+  }
 
   // Missing sweep. The "present" set is EVERY discovered file, not only the
   // processed ones: a file past the per-run cap, or skipped for its size, is
@@ -367,7 +412,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   // adding one needs no index rebuild.
   const tagMissing = db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)');
   for (const row of noteRows) {
-    if (row.is_missing) continue;
+    if (row.is_missing || touchedIds.has(row.id)) continue;
     const prov = parseProvenance(row.metadata);
     if (prov.note_dir_id !== dirId || typeof prov.note_path !== 'string') continue;
     if (present.has(prov.note_path)) continue;
