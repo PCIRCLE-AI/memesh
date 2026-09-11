@@ -1029,6 +1029,10 @@ Runs the same check suite as `memesh doctor` and returns the structured result. 
 
 **Response:** `{ "success": true, "data": { ...doctor result... } }`, or `500` with `{ "success": false, "error": "..." }` if the suite itself failed to run.
 
+The result carries a `capture` object next to `checks` whenever the
+capture-liveness check could run — the same figures as `memesh doctor --json`,
+described under [memesh doctor — capture liveness](#memesh-doctor--capture-liveness).
+
 ### POST /v1/doctor/fix
 
 Applies one repair identified by a current doctor check's `id`. The route
@@ -1274,6 +1278,61 @@ A relation whose target does not exist is reported on stderr and exits `1`:
 the consequence you asked for did not happen, so the command does not claim it
 did. Free-form relation labels are MCP/HTTP only — as a tag with extra steps,
 they have no CLI flag.
+
+### memesh doctor — capture liveness
+
+`memesh doctor` has a `capture-liveness` row that answers "has the automatic
+memory layer saved anything lately, and if not, why not". `memesh doctor --json`
+(and `GET /v1/doctor`) carry the evidence under a top-level `capture` field:
+
+```json
+{
+  "status": "PASS_WITH_CONCERNS",
+  "hooks": [
+    {
+      "hook": "post-commit", "runs": 20, "triggeredRuns": 5, "writes": 0,
+      "skips": 20, "errors": 0,
+      "lastRunAt": "2026-09-08T00:00:00.000Z", "firstTriggeredAt": "2026-09-04T00:00:00.000Z",
+      "lastWriteAt": null, "lastEntity": null, "lastSkipReason": "a git commit ran but printed no commit line",
+      "dominantSkipReason": "a git commit ran but printed no commit line", "dominantSkipCount": 5,
+      "hosts": ["claude-code"], "silent": true
+    }
+  ],
+  "types": [{ "type": "commit", "last7": 0, "prev7": 31, "stopped": true }],
+  "neverRan": []
+}
+```
+
+- `hooks` — one summary per hook, over its last 20 outcome records. `runs`
+  counts every record; `triggeredRuns` leaves out skips where the hook's
+  trigger did not apply (post-commit on a Bash call that is not a git commit,
+  session-summary on a Stop after the session was already captured).
+  `silent` is true only for post-commit, session-summary and pre-compact, when
+  `triggeredRuns` is at least 5 and `writes` is 0.
+- `types` — auto-capture entities per type, this week (`last7`) against the
+  week before (`prev7`); `stopped` means the type wrote last week and nothing
+  this week.
+- `neverRan` — session-summary when it has neither an outcome record nor a
+  heartbeat 72 hours after tracking began.
+
+`status` is `FAIL` for `neverRan`, `PASS_WITH_CONCERNS` for a silent hook, a
+stopped type, or heartbeats with no outcome record at all past the grace
+(`capture-liveness.no-records`), and `PASS` otherwise.
+
+The figures come from `hook-outcomes.jsonl` beside the database (the directory
+of `MEMESH_DB_PATH`, `~/.memesh` by default): every capture hook appends one
+JSON line per run — `hook`, `at`, `host`, `outcome` (`wrote` / `skipped` /
+`error`), and a `reason` or `entity` — on every exit path. Errors record only
+`uncaught <code or name>`, never the exception text. Records naming a hook
+MeMesh does not ship are ignored, and reason text is stripped of control
+characters and capped at 200 characters before it is shown.
+
+When capture has gone quiet, SessionStart adds one line to its banner
+(`memesh: post-commit ran 5 times since 2026-09-04 and wrote nothing —
+\`memesh doctor\` for the reason`), at most once a day
+(`last-capture-liveness-notice.lock`), and not during the first 3 sessions or
+24 hours after an install or upgrade, whichever ends later
+(`capture-liveness-grace.json`). The line disappears once the hook writes again.
 
 ### memesh reindex
 
