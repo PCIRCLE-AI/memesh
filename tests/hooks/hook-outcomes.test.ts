@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, execFile } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -63,6 +63,25 @@ describe('hook outcome records', () => {
       encoding: 'utf8',
       timeout: 20000,
       stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  }
+
+  /** Async sibling of runHook, for genuinely concurrent fan-out. */
+  function runHookAsync(hook: string, input: object, extraEnv: Record<string, string> = {}): Promise<void> {
+    return new Promise((resolve) => {
+      const child = execFile('node', [path.resolve(`scripts/hooks/${hook}.js`)], {
+        env: { ...process.env, MEMESH_DIR: memeshDir, HOME: testDir, ...extraEnv },
+        timeout: 20000,
+      }, (err) => {
+        // A hook's own error is not the subject here — the record is. Trace
+        // and move on, or one bad process fails the whole fan-out assertion.
+        if (err) {
+          try { process.stderr.write(`[test] ${hook} exited ${err?.message ?? err}\n`); } catch {}
+        }
+        resolve();
+      });
+      child.stdin?.write(JSON.stringify(input));
+      child.stdin?.end();
     });
   }
 
@@ -205,22 +224,65 @@ describe('hook outcome records', () => {
     expect(rows[0].reason).toBe('auto-capture is turned off');
   });
 
+  // ── the remaining five hooks ─────────────────────────────────────────────
+  // post-commit, session-summary and pre-compact are covered above; these
+  // five record on every path too, and each needs its own "remove the
+  // record(...) call and this goes red" pin.
+
+  it('pre-edit-recall records a SKIPPED when the tool input has no file path', () => {
+    runHook('pre-edit-recall', { tool_name: 'Edit', tool_input: {} });
+    const rows = records('pre-edit-recall');
+    expect(rows.length, 'pre-edit-recall left no record').toBe(1);
+    expect(rows[0].outcome).toBe('skipped');
+    expect(rows[0].reason).toBe('no file_path in the tool input');
+  });
+
+  it('user-prompt-intent records a SKIPPED for a prompt with no intent', () => {
+    runHook('user-prompt-intent', { prompt: 'hello there' });
+    const rows = records('user-prompt-intent');
+    expect(rows.length).toBe(1);
+    expect(rows[0].outcome).toBe('skipped');
+    expect(rows[0].reason).toBe('the prompt carried no remember intent and no update decision');
+  });
+
+  it('decision-nudge records a WROTE naming the nudged tool', () => {
+    runHook('decision-nudge', { tool_name: 'ExitPlanMode', session_id: 'nudge-1' });
+    const rows = records('decision-nudge');
+    expect(rows.length).toBe(1);
+    expect(rows[0].outcome).toBe('wrote');
+    expect(rows[0].entity).toBe('nudge:ExitPlanMode');
+  });
+
+  it('guard-check records a SKIPPED when the payload has no Bash command', () => {
+    runHook('guard-check', { tool_name: 'Bash', tool_input: {} });
+    const rows = records('guard-check');
+    expect(rows.length).toBe(1);
+    expect(rows[0].outcome).toBe('skipped');
+    expect(rows[0].reason).toBe('no Bash command in the payload');
+  });
+
+  it('session-start records a WROTE when it injects context', () => {
+    runHook('session-start', { session_id: 'ss-1', cwd: repoDir });
+    const rows = records('session-start');
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows[0].outcome).toBe('wrote');
+  });
+
   // ── the file itself ──────────────────────────────────────────────────────
 
-  it('is append-only JSONL: concurrent hooks cannot overwrite each other', () => {
-    // Three hooks firing in the same second is ordinary on a busy turn. A
-    // read-modify-write JSON file loses two of these three by construction;
-    // an O_APPEND line write cannot.
-    const inputs = [
-      ['pre-compact', { trigger: 'auto' }],
-      ['post-commit', { tool_name: 'Read', tool_input: {} }],
-      ['pre-compact', { trigger: 'manual' }],
-    ] as const;
-    for (const [hook, payload] of inputs) runHook(hook, payload);
+  it('is append-only JSONL: concurrent hooks cannot overwrite each other', async () => {
+    // A read-modify-write JSON file loses records under contention; an
+    // O_APPEND line write cannot. A sequential loop (execFileSync, one at a
+    // time) would NOT catch an RMW regression — it never overlaps — so this
+    // fans 40 real hook processes out at once and asserts every line lands.
+    const inputs: Array<[string, object]> = [];
+    for (let i = 0; i < 20; i++) inputs.push(['pre-compact', { trigger: 'auto' }]);
+    for (let i = 0; i < 20; i++) inputs.push(['post-commit', { tool_name: 'Read', tool_input: {} }]);
+    await Promise.all(inputs.map(([hook, payload]) => runHookAsync(hook, payload)));
     const raw = fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8');
-    expect(raw.trim().split('\n')).toHaveLength(3);
-    expect(records('pre-compact')).toHaveLength(2);
-    expect(records('post-commit')).toHaveLength(1);
+    expect(raw.trim().split('\n')).toHaveLength(40);
+    expect(records('pre-compact')).toHaveLength(20);
+    expect(records('post-commit')).toHaveLength(20);
   });
 
   it('tolerates a torn last line instead of losing the history', () => {

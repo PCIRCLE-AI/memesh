@@ -54450,12 +54450,9 @@ var init_capture_flag = __esm({
 });
 
 // dist/core/capture-liveness.js
-function emptyOutcomeFile() {
-  return { version: HOOK_OUTCOMES_VERSION, hooks: {} };
-}
 function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
   if (!raw)
-    return emptyOutcomeFile();
+    return { hooks: {} };
   const hooks = {};
   for (const line of raw.split("\n")) {
     const record2 = parseHookOutcomeLine(line);
@@ -54466,7 +54463,7 @@ function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
     if (bucket.length > limit)
       bucket.shift();
   }
-  return { version: HOOK_OUTCOMES_VERSION, hooks };
+  return { hooks };
 }
 function parseHookOutcomeLine(line) {
   const trimmed = line.trim();
@@ -54582,12 +54579,11 @@ function captureLivenessVerdict(input) {
     status = "PASS_WITH_CONCERNS";
   return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
 }
-var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_VERSION, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, NEVER_RAN_GRACE_HOURS;
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, NEVER_RAN_GRACE_HOURS;
 var init_capture_liveness = __esm({
   "dist/core/capture-liveness.js"() {
     "use strict";
     HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
-    HOOK_OUTCOMES_VERSION = 1;
     HOOK_OUTCOMES_PER_HOOK = 20;
     HOOK_OUTCOMES_ROTATE_BYTES = 32 * 1024;
     SILENT_HOOK_MIN_RUNS = 5;

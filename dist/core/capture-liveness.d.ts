@@ -10,21 +10,17 @@ export interface HookOutcomeRecord {
     session_id?: string;
 }
 export interface HookOutcomeFile {
-    version: number;
     hooks: Record<string, HookOutcomeRecord[]>;
 }
 export declare const HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
-export declare const HOOK_OUTCOMES_VERSION = 1;
 export declare const HOOK_OUTCOMES_PER_HOOK = 20;
 export declare const HOOK_OUTCOMES_ROTATE_BYTES: number;
 export declare function serializeHookOutcome(record: HookOutcomeRecord): string;
 export declare function trimHookOutcomeLines(raw: string, max?: number): string;
 export declare const SILENT_HOOK_MIN_RUNS = 5;
 export declare const CAPTURE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start"];
-export declare const HEARTBEAT_HOOKS: readonly ["post-commit", "session-summary", "pre-compact"];
 export declare const FAIL_ELIGIBLE_HOOKS: readonly ["session-summary"];
 export declare const NEVER_RAN_GRACE_HOURS = 72;
-export declare function emptyOutcomeFile(): HookOutcomeFile;
 export declare function parseHookOutcomes(raw: string | null | undefined, limit?: number): HookOutcomeFile;
 export declare function parseHookOutcomeLine(line: string): HookOutcomeRecord | null;
 export interface HookLivenessSummary {

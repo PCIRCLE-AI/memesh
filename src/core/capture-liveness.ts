@@ -36,7 +36,6 @@ export interface HookOutcomeRecord {
 }
 
 export interface HookOutcomeFile {
-  version: number;
   hooks: Record<string, HookOutcomeRecord[]>;
 }
 
@@ -51,12 +50,13 @@ export interface HookOutcomeFile {
  * concurrency that erases the evidence of it. One `O_APPEND` write of one
  * line has no read step to lose, and the OS orders the writes.
  *
- * The cost is a torn last line when a host timeout kills a hook mid-write.
- * That is a cost worth paying, and the reader drops an unparseable line
- * instead of failing: one lost record beats a lost history.
+ * The cost is a torn last line when a host timeout kills a hook mid-write:
+ * the torn line has no trailing newline, so the next append joins onto it and
+ * two records are lost rather than one. That is still a cost worth paying,
+ * and the reader drops unparseable lines instead of failing: two lost
+ * records beat a lost history.
  */
 export const HOOK_OUTCOMES_FILENAME = 'hook-outcomes.jsonl';
-export const HOOK_OUTCOMES_VERSION = 1;
 
 /**
  * Records kept per hook: this is BOTH the summarising window and the
@@ -134,13 +134,6 @@ export const CAPTURE_HOOKS = [
 ] as const;
 
 /**
- * The hooks that stamp `hook_runs` (see `KNOWN_HOOKS` in doctor.ts). The
- * other five have no heartbeat row BY DESIGN, so for them "no record AND no
- * heartbeat" is a permanent normal state, not evidence of anything.
- */
-export const HEARTBEAT_HOOKS = ['post-commit', 'session-summary', 'pre-compact'] as const;
-
-/**
  * The FAIL-eligible subset, and why it is ONE hook.
  *
  * A FAIL has to mean "this should have happened and did not". Only
@@ -162,10 +155,6 @@ export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
  */
 export const NEVER_RAN_GRACE_HOURS = 72;
 
-export function emptyOutcomeFile(): HookOutcomeFile {
-  return { version: HOOK_OUTCOMES_VERSION, hooks: {} };
-}
-
 /**
  * Parse the JSONL history into per-hook windows.
  *
@@ -182,7 +171,7 @@ export function parseHookOutcomes(
   raw: string | null | undefined,
   limit: number = HOOK_OUTCOMES_PER_HOOK,
 ): HookOutcomeFile {
-  if (!raw) return emptyOutcomeFile();
+  if (!raw) return { hooks: {} };
   const hooks: Record<string, HookOutcomeRecord[]> = {};
   for (const line of raw.split('\n')) {
     const record = parseHookOutcomeLine(line);
@@ -191,7 +180,7 @@ export function parseHookOutcomes(
     bucket.push(record);
     if (bucket.length > limit) bucket.shift();
   }
-  return { version: HOOK_OUTCOMES_VERSION, hooks };
+  return { hooks };
 }
 
 /** One JSONL line to a record, or null when it is torn, blank, or foreign. */

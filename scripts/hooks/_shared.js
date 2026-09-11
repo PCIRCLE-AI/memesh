@@ -52,23 +52,11 @@ export {
   advanceGraceState,
   captureLivenessNotice,
   captureLivenessVerdict,
-  detectHookHost,
-  emptyOutcomeFile,
   graceInEffect,
   parseGraceState,
-  parseHookOutcomeLine,
   parseHookOutcomes,
-  serializeHookOutcome,
   summarizeHookOutcomes,
-  summarizeTypeTrends,
-  trimHookOutcomeLines,
-  CAPTURE_HOOKS,
-  GRACE_HOURS,
-  GRACE_SESSIONS,
-  HEARTBEAT_HOOKS,
   HOOK_OUTCOMES_FILENAME,
-  HOOK_OUTCOMES_PER_HOOK,
-  SILENT_HOOK_MIN_RUNS,
 } from './_generated/capture-liveness.js';
 export {
   resolveUpdateNotice,
@@ -563,7 +551,12 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload,
       host: detectHookHost(payload ?? null, env),
       outcome,
     };
-    if (reason) record.reason = reason;
+    // A hook's `reason` is, on the error path, the exception message — which
+    // may echo a credential a failed request or git command surfaced. Skip
+    // reasons are hard-coded literals and pass through unchanged, but the
+    // error ones are redacted before they persist: stderr is transient, this
+    // JSONL file is a permanent, exportable copy.
+    if (reason) record.reason = redactSecrets(String(reason).slice(0, 200));
     if (entity) record.entity = entity;
     const sid = sessionId ?? (payload && typeof payload === 'object' ? payload.session_id : undefined);
     if (typeof sid === 'string' && sid) record.session_id = sid;

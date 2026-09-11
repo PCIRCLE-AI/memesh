@@ -7,7 +7,6 @@
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
 export const HOOK_OUTCOMES_FILENAME = 'hook-outcomes.jsonl';
-export const HOOK_OUTCOMES_VERSION = 1;
 export const HOOK_OUTCOMES_PER_HOOK = 20;
 export const HOOK_OUTCOMES_ROTATE_BYTES = 32 * 1024;
 export function serializeHookOutcome(record) {
@@ -43,15 +42,11 @@ export const CAPTURE_HOOKS = [
     'guard-check',
     'session-start',
 ];
-export const HEARTBEAT_HOOKS = ['post-commit', 'session-summary', 'pre-compact'];
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
 export const NEVER_RAN_GRACE_HOURS = 72;
-export function emptyOutcomeFile() {
-    return { version: HOOK_OUTCOMES_VERSION, hooks: {} };
-}
 export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
     if (!raw)
-        return emptyOutcomeFile();
+        return { hooks: {} };
     const hooks = {};
     for (const line of raw.split('\n')) {
         const record = parseHookOutcomeLine(line);
@@ -62,7 +57,7 @@ export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
         if (bucket.length > limit)
             bucket.shift();
     }
-    return { version: HOOK_OUTCOMES_VERSION, hooks };
+    return { hooks };
 }
 export function parseHookOutcomeLine(line) {
     const trimmed = line.trim();

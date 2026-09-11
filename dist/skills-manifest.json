@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "48b1e7fe1ec4a1b4af134bd14b3c0572bac62098cb383a5ee467382701371906",
-      "bytes": 9186
+      "sha256": "a1880e9c49a2490eb88218ac4b6d5669d84d4b3d480ccca6470349353911b928",
+      "bytes": 8930
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -103,8 +103,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "66c706b945c36a94aa207a2586c84fcdc8abb05aafb179f3dc6e2f59455bbeac",
-      "bytes": 55848
+      "sha256": "af3fee8bdba38a98d8b5286a74fecd91b140bd097724986bc1fb2d2129feb8b0",
+      "bytes": 55993
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
