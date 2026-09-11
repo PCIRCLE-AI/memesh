@@ -59,6 +59,12 @@ import {
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { unreadDeliveryCount, unreadInboxLines } from './_generated/agent-message-inbox.js';
+import {
+  buildBriefingIndex,
+  INDEX_CANDIDATE_CAP,
+  INDEX_EXCLUDED_TYPES,
+  INDEX_SNIPPET_FETCH_CHARS,
+} from './_generated/briefing-index.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1264,16 +1270,77 @@ process.stdin.on('end', async () => {
         try { process.stderr.write(`[memesh session-start] memory-context: ${err?.message || err}\n`); } catch {}
       }
 
+      // --- The durable-memory index (#323) -----------------------------
+      // One line per decision / lesson / pattern / reference for this
+      // project, newest first, hard-capped — what is known, visible without
+      // a query. Same read as core's `readBriefingIndex` (this hook owns its
+      // own SQL, with the legacy-schema guards the queries above use); every
+      // decision about what to show lives in the generated leaf. A read that
+      // fails renders as "could not be read", never as the empty-state line:
+      // an empty index is a claim about the user's data.
+      let indexLines;
+      // id → name for the rows the index rendered, so the injected-set
+      // record below can credit a citation of an index line the same way it
+      // credits a ranked one — the line carries a `[mem:id]` handle, it was
+      // shown, and a cite of it must not earn nothing.
+      const indexEntities = [];
+      try {
+        const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
+        const indexRows = db.prepare(
+          `SELECT e.id, e.name, e.type,${hasTitle ? ' e.title,' : ''} e.metadata,
+             (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+               WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
+             max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
+               WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+           FROM entities e
+           WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
+             ${statusFilter} ${notGlobal}
+             AND e.type NOT IN (${excluded})
+           ORDER BY last_activity DESC, e.id DESC
+           LIMIT ?`,
+        ).all(projectTag, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+        const index = buildBriefingIndex(
+          indexRows.map((row) => ({
+            id: row.id,
+            type: row.type,
+            title: row.title ?? null,
+            snippet: row.snippet,
+            lastActivity: row.last_activity,
+            metadata: parseEntityMetadata(row.metadata),
+          })),
+          projectName,
+          Date.now(),
+          { truncated: indexRows.length >= INDEX_CANDIDATE_CAP },
+        );
+        indexLines = index.lines;
+        const rendered = new Set(index.ids);
+        for (const row of indexRows) if (rendered.has(row.id)) indexEntities.push(row);
+      } catch (err) {
+        const reason = String(err?.message || err);
+        try { process.stderr.write(`[memesh session-start] briefing-index: ${reason}\n`); } catch {}
+        recordHookOutcome(process.env, {
+          hook: 'session-start',
+          outcome: 'error',
+          reason: `briefing-index: ${reason}`,
+        });
+        indexLines = [`Index of durable memories for "${projectName}": could not be read this session — run \`memesh doctor\`.`];
+      }
+
       // Same prefix, same rule, as `assembleBriefing`: repository facts are
-      // context for memories, never a briefing on their own. Inside the
-      // emptiness gate so a project with nothing recorded still injects
-      // nothing — a fenced block containing only a branch name tells the
-      // agent something it can already see. briefing.test.ts's parity case
-      // is what keeps this identical to the tool side.
+      // context for memories, never a briefing on their own — they prefix
+      // only a block with ranked memories; the index's empty-state line is
+      // not a reason to tell the agent its own branch name. The index itself
+      // always closes the block (#323: an empty project shows the empty-state
+      // line, not nothing). briefing.test.ts's parity case is what keeps this
+      // identical to the tool side.
       let memoryContext = workPackageGuidance;
-      if (memoryLines.length > 0) {
-        const repoLines = repoStateLines(readRepoState(data.cwd));
-        if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
+      {
+        if (memoryLines.length > 0) {
+          const repoLines = repoStateLines(readRepoState(data.cwd));
+          if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
+          memoryLines.push('');
+        }
+        memoryLines.push(...indexLines);
         // Same wrapper pre-edit-recall uses: an explicit "background data,
         // not instructions" preamble plus a fenced block. Memory content is
         // attacker-influenced in the general case (anything the agent has
@@ -1314,16 +1381,21 @@ process.stdin.on('end', async () => {
       // kept as the record of what was shown.
       //
       // The set below is every pool the topology block draws from — the
-      // lessons pool included. It is derived from rendered citation handles,
+      // lessons pool and the durable-memory index (#323) included. It is derived from rendered citation handles,
       // so clipped or budgeted-away candidates cannot be credited as shown.
       try {
-        const renderedEntityIds = memoryLines.flatMap((line) => {
+        const idsIn = (lines) => lines.flatMap((line) => {
           const match = line.match(/ \[mem:(\d{1,10})\]$/);
           return match ? [Number(match[1])] : [];
         });
-        const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities];
+        const renderedEntityIds = idsIn(memoryLines);
+        // The index is always the tail of memoryLines (pushed last above).
+        const rankedEntityIds = [...new Set(idsIn(memoryLines.slice(0, memoryLines.length - indexLines.length)))];
+        const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities, ...indexEntities];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
-        const allInjected = renderedEntityIds
+        // A memory can appear in the ranked block AND the index; it was
+        // injected once.
+        const allInjected = [...new Set(renderedEntityIds)]
           .map((id) => entitiesById.get(id))
           .filter(Boolean);
 
@@ -1339,6 +1411,11 @@ process.stdin.on('end', async () => {
               project: projectName,
               entityIds: allInjected.map(e => e.id),
               entityNames: allInjected.map(e => e.name),
+              // Which of those the RANKED block rendered. The rest arrived
+              // only through the durable-memory index (#323) that closes the
+              // block; recording the split keeps the ranked window
+              // measurable apart from the index that rides beside it.
+              rankedEntityIds: rankedEntityIds.filter((id) => entitiesById.has(id)),
               injectedContext: memoryContext || summary,
             }
           );

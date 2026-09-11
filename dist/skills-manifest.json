@@ -32,6 +32,11 @@
       "bytes": 2596
     },
     {
+      "path": "scripts/hooks/_generated/briefing-index.js",
+      "sha256": "cf50ee2a8238ff228973d3c063d501c4c1fc66c8f8f0647216631f8edf5babf3",
+      "bytes": 5370
+    },
+    {
       "path": "scripts/hooks/_generated/capture-flag.js",
       "sha256": "926c85a60b4ff4ac391666dad392f16358e875a14f2dda66edf99b1d636a0a38",
       "bytes": 901
@@ -138,8 +143,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "c3db1f92dc270cf2e2c640c072a3087c2bb054a8600e7f71deaaa66f85aa081e",
-      "bytes": 78593
+      "sha256": "acb9cdbb400d573edebba48d07af78048f6adbda4a10db0b2ef8b51ddeb038c2",
+      "bytes": 82577
     },
     {
       "path": "scripts/hooks/session-summary.js",

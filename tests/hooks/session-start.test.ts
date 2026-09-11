@@ -50,6 +50,7 @@ describe('Feature: Session Start Hook', () => {
     project: string;
     entityIds: number[];
     entityNames: string[];
+    rankedEntityIds?: number[];
     injectedContext: string;
   } | null {
     if (!fs.existsSync(sessionsDir)) return null;
@@ -60,6 +61,14 @@ describe('Feature: Session Start Hook', () => {
       .sort((a, b) => b.mtime - a.mtime);
     if (files.length === 0) return null;
     return JSON.parse(fs.readFileSync(path.join(sessionsDir, files[0].f), 'utf8'));
+  }
+
+  /** Names the RANKED block injected — the durable-memory index (#323) that
+   *  closes the block is recorded too, and would otherwise read as the
+   *  ranked window overflowing its limit. */
+  function rankedNames(session: NonNullable<ReturnType<typeof readLatestSessionFile>>): string[] {
+    const ranked = new Set(session.rankedEntityIds ?? []);
+    return session.entityNames.filter((_, i) => ranked.has(session.entityIds[i]));
   }
 
   function createTestDb(): Database {
@@ -302,7 +311,10 @@ describe('Feature: Session Start Hook', () => {
       // A phrase that occurs ONCE in the fixture's observation — "deadlock"
       // appears twice inside that one sentence and would count 2 for a
       // correctly deduped block.
-      const occurrences = injected.split('raising the vitest timeout').length - 1;
+      // Counted in the ranked part only: the durable-memory index (#323)
+      // closes the block and lists the same lesson again by design.
+      const ranked = injected.split('Index of durable memories for')[0];
+      const occurrences = ranked.split('raising the vitest timeout').length - 1;
       expect(occurrences).toBe(1);
     });
 
@@ -518,6 +530,44 @@ describe('Feature: Session Start Hook', () => {
     expect(session?.entityNames, 'global memory must reach a project it was never tagged with').toContain('always-memesh-on-failure');
   });
 
+  it('#323: the injected block closes with the durable-memory index, and its ids are recorded as shown', () => {
+    const db = createTestDb();
+    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const d = ins.run('idx-decision', 'decision').lastInsertRowid as number;
+    obs.run(d, 'Keep the index capped at forty lines');
+    tag.run(d, projTag('indexproj'));
+    const c = ins.run('commit-idx', 'commit').lastInsertRowid as number;
+    obs.run(c, 'chore: bump the lockfile');
+    tag.run(c, projTag('indexproj'));
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/indexproj' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const name = projTag('indexproj').slice('project:'.length);
+    const section = injected.split(`Index of durable memories for "${name}" (newest first):`)[1];
+    expect(section, 'index section present').toBeDefined();
+    expect(section).toContain(`- [decision] Keep the index capped at forty lines [mem:${d}]`);
+    expect(section).not.toContain('bump the lockfile');
+    expect(section).toMatch(/\(index cost: 1 line, \d+ bytes ≈ \d+ tokens; cap 40 lines \/ 3072 bytes\)/);
+    const session = readLatestSessionFile();
+    expect(session!.entityIds).toContain(d);
+  });
+
+  it('#323: a project with no durable memories injects the empty-state line, not nothing', () => {
+    const db = createTestDb();
+    const c = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('commit-only', 'commit').lastInsertRowid as number;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(c, 'fix: something');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(c, projTag('otherproj'));
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/emptyindexproj' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const name = projTag('emptyindexproj').slice('project:'.length);
+    expect(injected).toContain(`- No durable memories (decisions, lessons, patterns, references) for "${name}" yet.`);
+  });
+
   it('Regression #242: global memories do not displace the project window', () => {
     const db = createTestDb();
     const cols = new Set((db.prepare('PRAGMA table_info(entities)').all() as any[]).map((c) => c.name));
@@ -536,7 +586,7 @@ describe('Feature: Session Start Hook', () => {
     runHook({ cwd: '/tmp/testproj' }, { MEMESH_SESSION_LIMIT: '5' });
     const session = readLatestSessionFile();
     expect(session, 'session file was written').toBeTruthy();
-    const names = session!.entityNames;
+    const names = rankedNames(session!);
     const projectHits = names.filter((n: string) => n.startsWith('p')).length;
     const globalHits = names.filter((n: string) => n.startsWith('g')).length;
     expect(projectHits, 'the project keeps its full window').toBe(5);
@@ -682,7 +732,7 @@ describe('Feature: Session Start Hook', () => {
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toMatch(/5 project/);
     const session = readLatestSessionFile();
-    const projectNames = (session?.entityNames ?? []).filter((n) => n.startsWith('entity-'));
+    const projectNames = (session ? rankedNames(session) : []).filter((n) => n.startsWith('entity-'));
     expect(projectNames.length).toBe(5);
   });
 

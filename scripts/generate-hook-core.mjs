@@ -65,6 +65,9 @@ const SOURCES = [
   // `install-hooks` — the npm-only path — so the hooks are the only place
   // that can put the rule on disk for those users, and they are the majority.
   { from: 'dist/core/citation-rule.js', to: 'citation-rule.js', src: 'src/core/citation-rule.ts' },
+  // The durable-memory index (#323): SessionStart and `briefing` must render
+  // the same index under the same frozen caps, so the builder is mirrored.
+  { from: 'dist/core/briefing-index.js', to: 'briefing-index.js', src: 'src/core/briefing-index.ts' },
   { from: 'dist/storage/fts-index.js', to: 'fts-index.js', src: 'src/storage/fts-index.ts' },
   { from: 'dist/storage/schema.js', to: 'schema.js', src: 'src/storage/schema.ts' },
   // The SQLite driver. A leaf by construction — it imports `node:module` and

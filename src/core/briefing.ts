@@ -34,6 +34,15 @@ import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agen
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { taskStateLines } from './task-state.js';
 import {
+  INDEX_CANDIDATE_CAP,
+  INDEX_EXCLUDED_TYPES,
+  INDEX_SNIPPET_FETCH_CHARS,
+  buildBriefingIndex,
+  type BriefingIndex,
+  type IndexCandidate,
+} from './briefing-index.js';
+import type { MemeshDatabase } from '../storage/sqlite.js';
+import {
   GLOBAL_TOPOLOGY_LIMIT,
   SNIPPET_FETCH_CHARS,
   TOPOLOGY_CANDIDATE_CAP,
@@ -54,6 +63,10 @@ export interface BriefingResult {
   entityCount: number;
   /** Whether a recorded task state leads the block. */
   hasTaskState: boolean;
+  /** The durable-memory index (#323) that closes the block — counts, cost
+   *  and the rendered lines. Always present: an empty project renders the
+   *  empty-state line rather than nothing. */
+  index: BriefingIndex;
 }
 
 interface CandidateRow {
@@ -134,6 +147,50 @@ function toTopologyEntity(row: PoolRow, snippet: string | null): TopologyEntity 
     snippet,
     signalScore: typeof signal === 'number' ? signal : null,
   };
+}
+
+/**
+ * The durable-memory index for one project (#323): project-tagged, active,
+ * non-global, durable-typed rows, newest activity first. Every decision
+ * about what to show and how lives in briefing-index.ts; this is only the
+ * read. The session-start hook issues the same query against its own handle
+ * (A1a: each consumer owns its SQL) — the parity test in briefing.test.ts
+ * holds the two together.
+ *
+ * Team-namespace rows are included exactly as the ranked project pool
+ * includes them: only `global` is excluded, and only rows carrying this
+ * project's tag are read, so the index is never cross-project.
+ */
+export function readBriefingIndex(db: MemeshDatabase, projectName: string, now: number = Date.now()): BriefingIndex {
+  const hasNamespace = (db.prepare('PRAGMA table_info(entities)').all() as Array<{ name: string }>)
+    .some((column) => column.name === 'namespace');
+  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : '';
+  const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT e.id, e.type, e.title, e.metadata,
+       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+         WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
+       max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
+         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+     FROM entities e
+     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
+       AND e.status = 'active'${nonGlobal}
+       AND e.type NOT IN (${excluded})
+     ORDER BY last_activity DESC, e.id DESC
+     LIMIT ?`,
+  ).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP) as Array<{
+    id: number; type: string | null; title: string | null; metadata: string | null;
+    snippet: string | null; last_activity: string | null;
+  }>;
+  const candidates: IndexCandidate[] = rows.map((row) => ({
+    id: row.id,
+    type: row.type,
+    title: row.title,
+    snippet: row.snippet,
+    lastActivity: row.last_activity,
+    metadata: parseMetadata(row.metadata),
+  }));
+  return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
 }
 
 /**
@@ -288,10 +345,21 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     ? [...repoLines, '', ...lines]
     : lines;
 
+  // The index closes the block, after the ranked sections, and is always
+  // there — including for a project with nothing ranked, where it is the
+  // honest empty state (#323). Repository facts still prefix only a block
+  // that has ranked memories: the index's empty-state line is not a reason
+  // to tell the agent its own branch name.
+  const index = readBriefingIndex(db, projectName);
+  const block = withRepo.length > 0 ? [...withRepo, '', ...index.lines] : index.lines;
+
   return {
     project: projectName,
-    text: lines.length > 0 ? buildReferenceContext(withRepo) : '',
+    text: buildReferenceContext(block),
+    // Counted from the ranked lines only — the index's lines carry the same
+    // `- [type] … [mem:id]` shape and are reported under `index` instead.
     entityCount: lines.filter((l) => l.startsWith('- [')).length,
     hasTaskState: stateLines.length > 0,
+    index,
   };
 }

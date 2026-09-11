@@ -307,11 +307,55 @@ describe('assembleBriefing', () => {
     });
   });
 
-  it('returns empty text, not an empty fence, when there is nothing to say', () => {
+  it('a project with nothing recorded gets the index empty-state line, not nothing (#323)', () => {
     const result = assembleBriefing('no-such-project');
-    expect(result.text).toBe('');
+    expect(result.text).toContain('Index of durable memories for "no-such-project" (newest first):');
+    expect(result.text).toContain('- No durable memories (decisions, lessons, patterns, references) for "no-such-project" yet.');
+    // Repository facts still prefix only ranked memories: the empty-state
+    // line is not a reason to tell the agent its own branch name.
+    expect(result.text).not.toMatch(/branch/i);
     expect(result.entityCount).toBe(0);
     expect(result.hasTaskState).toBe(false);
+    expect(result.index.shown).toBe(0);
+  });
+
+  it('closes the block with the durable-memory index: project-scoped, evidence and archived excluded (#323)', () => {
+    seed();
+    remember({
+      name: 'other-project-decision', type: 'decision', title: 'Another project decided this',
+      observations: ['Not ours.'], tags: ['project:someone-else'],
+    });
+    remember({
+      name: 'global-directive', type: 'directive', namespace: 'global', title: 'Global directive in index?',
+      observations: ['Applies everywhere.'], tags: [`project:${PROJECT}`],
+    });
+    remember({
+      name: 'secret-note', type: 'reference', title: 'Deploy notes',
+      observations: ['token sk-proj-abcdefghijklmnopqrstuvwxyz0123456789 lives in the vault'], tags: [`project:${PROJECT}`],
+    });
+    const db = getDatabase();
+    db.prepare(
+      "INSERT INTO entities (name, type, title, status) VALUES ('archived-decision', 'decision', 'Archived decision', 'archived')",
+    ).run();
+    const archivedId = (db.prepare("SELECT id FROM entities WHERE name = 'archived-decision'").get() as { id: number }).id;
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(archivedId, `project:${PROJECT}`);
+
+    const result = assembleBriefing(PROJECT);
+    const section = result.text.split('Index of durable memories for')[1] ?? '';
+    expect(section).toContain('Use PKCE for the CLI');
+    expect(section).toContain('Raising the timeout hid a deadlock');
+    expect(section).toContain('Deploy notes');
+    expect(section).toMatch(/\[mem:\d+\]/);
+    expect(section).not.toContain('repair the parser'); // commit: evidence layer
+    expect(section).not.toContain('Another project decided this');
+    expect(section).not.toContain('Global directive in index?');
+    expect(section).not.toContain('Archived decision');
+    expect(result.text).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    expect(section).toMatch(/\(index cost: 3 lines, \d+ bytes ≈ \d+ tokens; cap 40 lines \/ 3072 bytes\)/);
+    expect(result.index.shown).toBe(3);
+    // entityCount stays the RANKED count; the index reports its own.
+    expect(result.entityCount).toBe(result.text.split('Index of durable memories for')[0]
+      .split('\n').filter((l) => l.startsWith('- [')).length);
   });
 
   it('excludes what the auto-injection gate blocks, without restricting explicit recall', async () => {
@@ -431,6 +475,20 @@ describe('assembleBriefing', () => {
     // context, the separate cap, and trust/status rejection without pinning a
     // database-specific ranking implementation.
     expect(contentLines(briefing)).toEqual(contentLines(injected));
+    // The durable-memory index (#323) is compared byte-for-byte, footer
+    // included: its caps are a frozen contract and both sides render it
+    // from the same leaf, so there is no legitimate tail difference.
+    const indexSection = (block: string) => {
+      const start = block.indexOf('Index of durable memories for');
+      if (start < 0) return null;
+      const lines = block.slice(start).split('\n');
+      const fenceAt = lines.findIndex((l) => /^`{3,}$/.test(l));
+      return fenceAt < 0 ? lines : lines.slice(0, fenceAt);
+    };
+    expect(indexSection(briefing)).not.toBeNull();
+    expect(indexSection(briefing)).toEqual(indexSection(injected));
+    expect(indexSection(briefing)!.join('\n')).not.toContain('Global rule 3');
+    expect(indexSection(briefing)!.join('\n')).toContain('Project decision 6');
     expect(briefing).toContain('Prove the parity');
     expect(briefing).toContain('Global memory — applies across projects:');
     expect(briefing).toContain('Global rule 2');
