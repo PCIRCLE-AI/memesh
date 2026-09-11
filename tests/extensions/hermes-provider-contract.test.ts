@@ -108,7 +108,16 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
   it('turns still queued at session end are drained; any left after the bounded wait are reported (re-review P1)', () => {
     expect(queue.drained_captures).toBe(3);
     expect(queue.drained_unfinished).toBe(0);
-    expect(queue.lost_warnings).toEqual(['MeMesh: 3 turn(s) not captured before shutdown']);
+    // One shared deadline for session end + shutdown (round 3 P2-2), one
+    // warning, and queued vs still-running reported apart (P3-3).
+    expect(queue.end_plus_shutdown_secs).toBeLessThan(0.9);
+    expect(queue.lost_warnings).toEqual([
+      'MeMesh: 2 queued turn(s) not captured before shutdown; 1 capture(s) still running and may finish',
+    ]);
+  });
+
+  it('shutdown() before initialize() does not raise (round 3 P2-1)', () => {
+    expect(queue.shutdown_before_initialize).toBe('ok');
   });
 
   it('non-primary skips and non-object CLI output leave a log line (F5)', () => {

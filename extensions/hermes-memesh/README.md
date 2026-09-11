@@ -67,8 +67,9 @@ require a bearer token when bound to `localhost`.
   by query or by the `platform:hermes` tag.
 - `sync_turn()` never waits: turns go to one background worker through a
   queue of 8; when it is full the turn is dropped with a warning in the log.
-  At session end and shutdown the plugin waits up to 30 s for queued turns;
-  any still pending are named in a warning, not dropped silently.
+  At session end and shutdown the plugin waits up to 5 s in total (one
+  deadline shared by both) for queued turns; what is left is logged once,
+  queued turns and still-running captures counted separately.
 - `on_session_switch()`: keeps the cached `session_id` current across
   `/reset`, `/resume`, `/branch`, and context-compression session rotation,
   so memories written after a switch aren't mistagged with the pre-switch

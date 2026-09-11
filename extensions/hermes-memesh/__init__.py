@@ -38,10 +38,13 @@ _RECALL_LIMIT = 5
 # Session capture runs synchronously at a session/compression boundary (see
 # Pitfall 5 in docs/platforms/hermes-agent.md); the bound keeps a wedged
 # `memesh` process from holding up Hermes's shutdown.
-_CAPTURE_TIMEOUT_SECS = 20.0
+# Worst case the host waits at session end: the turn drain (_DRAIN_TIMEOUT_SECS,
+# shared by on_session_end and shutdown) plus the session capture — 5 + 15 =
+# 20 s, the same bound the session-end archive had before turns were queued.
+_CAPTURE_TIMEOUT_SECS = 15.0
 _TURN_TIMEOUT_SECS = 30.0
-# How long session end / shutdown waits for queued turns to finish capturing.
-_DRAIN_TIMEOUT_SECS = _TURN_TIMEOUT_SECS
+# How long session end + shutdown together wait for queued turns (one deadline).
+_DRAIN_TIMEOUT_SECS = 5.0
 
 
 def _load_config(hermes_home: str) -> dict:
@@ -102,6 +105,8 @@ class MemeshProvider(MemoryProvider):
         # concurrent `memesh` processes contending for the SQLite write lock.
         self._turn_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_TURN_QUEUE_MAX)
         self._turn_worker: Optional[threading.Thread] = None
+        self._drain_deadline: Optional[float] = None
+        self._drain_warned = False
 
     def system_prompt_block(self) -> str:
         # Deliberately minimal. Recall/storage already happen automatically
@@ -119,14 +124,29 @@ class MemeshProvider(MemoryProvider):
 
     def _drain_turns_before_exit(self) -> None:
         # The worker is a daemon thread: whatever is still queued when Hermes
-        # exits is lost. Wait for it, bounded, and say how many did not make
-        # it — a lost capture must not look like one that never happened.
-        deadline = time.monotonic() + _DRAIN_TIMEOUT_SECS
-        while self._turn_queue.unfinished_tasks and time.monotonic() < deadline:
+        # exits is lost. Wait for it — bounded, with ONE deadline shared by
+        # on_session_end() and the shutdown() that follows it, so a stuck
+        # capture cannot hold the host twice — and say what did not make it:
+        # a lost capture must not look like one that never happened.
+        q = getattr(self, "_turn_queue", None)
+        if q is None:
+            return  # never initialized: nothing was queued
+        if self._drain_deadline is None:
+            self._drain_deadline = time.monotonic() + _DRAIN_TIMEOUT_SECS
+        while q.unfinished_tasks and time.monotonic() < self._drain_deadline:
             time.sleep(0.05)
-        pending = self._turn_queue.unfinished_tasks
-        if pending:
-            logger.warning("MeMesh: %d turn(s) not captured before shutdown", pending)
+        if not q.unfinished_tasks or self._drain_warned:
+            return
+        self._drain_warned = True
+        queued = q.qsize()
+        running = q.unfinished_tasks - queued
+        # An in-flight turn is a separate `memesh` process that keeps running
+        # after Hermes exits and usually finishes; the queued ones never start.
+        logger.warning(
+            "MeMesh: %d queued turn(s) not captured before shutdown; %d capture(s) still running and may finish",
+            queued,
+            running,
+        )
 
     def shutdown(self) -> None:
         self._drain_turns_before_exit()
@@ -229,6 +249,10 @@ class MemeshProvider(MemoryProvider):
         # ordinary chatter is not memory. Never blocks: sync_turn fires every
         # turn on the host's main thread.
         item = (sid, user_content or "", assistant_content or "")
+        # A new turn after a drain (session end, then the host carries on)
+        # earns a fresh wait at the next exit.
+        self._drain_deadline = None
+        self._drain_warned = False
         try:
             self._turn_queue.put_nowait(item)
         except queue.Full:

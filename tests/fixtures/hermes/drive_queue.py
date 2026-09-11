@@ -77,7 +77,18 @@ stuck = threading.Event()
 h._run_capture = lambda *a, **k: stuck.wait(10)
 for i in range(3):
     h.sync_turn(f"u{i}", f"a{i}")
+time.sleep(0.1)  # let the worker pick up the first turn
+start = time.monotonic()
+h.on_session_end([])
 h.shutdown()
-out["lost_warnings"] = [msg for lvl, msg in records if lvl == "WARNING" and "not captured before shutdown" in msg]
+out["end_plus_shutdown_secs"] = time.monotonic() - start
+out["lost_warnings"] = [msg for lvl, msg in records if lvl == "WARNING" and "before shutdown" in msg]
 stuck.set()
+
+# shutdown() before initialize() must not raise (the old one never did).
+try:
+    mod.MemeshProvider().shutdown()
+    out["shutdown_before_initialize"] = "ok"
+except Exception as exc:  # noqa: BLE001
+    out["shutdown_before_initialize"] = f"{type(exc).__name__}: {exc}"
 print(json.dumps(out))
