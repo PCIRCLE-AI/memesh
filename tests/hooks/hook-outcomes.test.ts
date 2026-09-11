@@ -500,6 +500,11 @@ describe('hook outcome records', () => {
     ['git -c user.name=x commit -m a', true],
     ['git --no-pager commit -q -m a', true],
     ['git --git-dir /x/.git commit -m a', true],
+    ['git --git-dir=/x commit', true],
+    ['git -C "/Users/kt/My Project" commit -m a', true],
+    ["git -C '/a b' commit -m a", true],
+    ['git -c "user.name=x y" commit -m a', true],
+    ['/usr/bin/git commit -m a', true],
     ['git commit --amend --no-edit', true],
     ['git commit', true],
     ['cd /x && git add -u && git commit -m "a"', true],
@@ -511,6 +516,7 @@ describe('hook outcome records', () => {
     ['git commit-tree HEAD^{tree}', false],
     ['git merge feature', false],
     ['legit commit', false],
+    ['xgit commit', false],
     ['npm run release:finish', false],
   ])('post-commit classifies %j as a commit: %s', (command, expected) => {
     expect(isGitCommitCommand(command as string)).toBe(expected);

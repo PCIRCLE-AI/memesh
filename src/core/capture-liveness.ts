@@ -316,14 +316,25 @@ export function renderableSkipReason(reason: string | undefined): string {
  * `git log --grep commit`, `git show HEAD -- src/commit.ts` and
  * `git commit-tree` are not commits. Matching `commit` ANYWHERE after `git`
  * classified all of those as "a git commit ran but printed no commit line",
- * which is the one skip reason that counts toward silence.
+ * which is the one skip reason that counts toward silence. An option value
+ * may be quoted (`-C "/Users/kt/My Project"`, `-c "user.name=x y"`) and git
+ * may be named by path (`/usr/bin/git`) — a quiet commit in a repository
+ * whose path has a space must not be invisible to liveness.
+ *
+ * Known deviations, accepted — this is a classifier, not a shell parser:
+ *   - text that merely CONTAINS the shape classifies as a commit: a heredoc
+ *     or a quoted string (`echo 'run git commit -m x'`), and `git -C commit
+ *     log` (a directory named `commit`);
+ *   - cherry-pick, revert, merge and `commit-tree` create commits but are not
+ *     counted. That is a product decision outside #327; #321 revisits which
+ *     commit-creating commands post-commit should capture.
  */
 export function isGitCommitCommand(command: string): boolean {
   return GIT_COMMIT_RE.test(command);
 }
 
 const GIT_COMMIT_RE =
-  /(?:^|[\s;&|(`])git(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace)\s+\S+|-\S+))*\s+commit(?=$|[\s;&|)`])/;
+  /(?:^|[\s;&|(`/])git(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace)\s+(?:"[^"]*"|'[^']*'|\S+)|-\S+))*\s+commit(?=$|[\s;&|)`])/;
 
 /**
  * Skips that mean the hook's trigger did not apply, per hook. They are not
