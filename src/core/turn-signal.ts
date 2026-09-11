@@ -37,12 +37,15 @@ const DECISION_CUES: RegExp[] = [
   /\b(?:we|i)(?:'ve| have|'ll| will)?\s+(?:decided|settled on|opted)\b/gi,
   /\bdecision\s*:/gi,
   /\blet'?s\s+(?:go with|use|switch to|stick with)\b/gi,
+  /\bi(?:'ll| will)\s+go with\b/gi,
   /\bwe(?:'re| are|'ll| will)\s+(?:going to\s+)?(?:use|go with|switch to|stick with)\b/gi,
   /(?:^|[.!?;]\s+)use\s+[^.!?\n]{1,40}?\binstead of\b/gi,
   /(?:^|[.!?;]\s+)switching to\b/gi,
   /^\s*agreed\s*[:,—-]/gim,
   /\bfrom now on\b/gi,
-  /決定|改用|就用|選擇了|拍板/g,
+  // 決定 alone is an ordinary verb (「根據 flag 決定要不要重試」); only its
+  // object form states a choice.
+  /決定(?:用|採用|改|不|要用|走)|改用|就用|選擇了|拍板/g,
 ];
 
 const LESSON_CUES: RegExp[] = [
@@ -55,9 +58,30 @@ const LESSON_CUES: RegExp[] = [
 ];
 
 // "not yet decided", "haven't settled on", "還沒決定": a cue preceded by one
-// of these within 20 characters is the opposite of a decision.
+// of these within 20 characters — and within the same clause — is the
+// opposite of a decision. The clause limit keeps "No — we decided …" and
+// "沒有問題，決定用 …" counted.
 const NEGATION = /\b(?:not|no|never|haven'?t|hasn'?t|didn'?t|won'?t)\b|還沒|尚未|沒有/i;
 const NEGATION_WINDOW = 20;
+const CLAUSE_BREAK = /[.!?;:—,，。；：]/g;
+
+/** Text after the last clause break in `before`. */
+function sameClause(before: string): string {
+  let cut = 0;
+  for (const m of before.matchAll(CLAUSE_BREAK)) cut = (m.index ?? 0) + m[0].length;
+  return before.slice(cut);
+}
+
+/**
+ * Remove what the assistant is SHOWING rather than saying: fenced code
+ * blocks and quoted text ("…", “…”, 「…」, 『…』). A reply that quotes a
+ * reviewer's "we decided to use X" has not decided anything.
+ */
+function stripShownText(text: string): string {
+  return text
+    .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+    .replace(/"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』/g, ' ');
+}
 
 /** Drop a leading `[MeMesh recall]` block (up to the first blank line). */
 function stripRecallBlock(text: string): string {
@@ -68,7 +92,7 @@ function firstUnnegated(re: RegExp, text: string): string | null {
   re.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    const before = text.slice(Math.max(0, m.index - NEGATION_WINDOW), m.index);
+    const before = sameClause(text.slice(Math.max(0, m.index - NEGATION_WINDOW), m.index));
     if (!NEGATION.test(before)) return m[0].trim();
     if (m[0] === '') re.lastIndex++;
   }
@@ -82,7 +106,7 @@ function firstUnnegated(re: RegExp, text: string): string | null {
  * accepted for the caller's convenience and deliberately not classified.
  */
 export function classifyTurn(_userText: string, assistantText: string): TurnSignal | null {
-  const text = stripRecallBlock(assistantText);
+  const text = stripShownText(stripRecallBlock(assistantText));
   for (const [kind, cues] of [['decision', DECISION_CUES], ['lesson', LESSON_CUES]] as const) {
     for (const re of cues) {
       const cue = firstUnnegated(re, text);

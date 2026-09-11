@@ -53,6 +53,27 @@ describe('classifyTurn', () => {
     expect(classifyTurn(u, a)?.kind).toBe(kind);
   });
 
+  // Re-review P2-a: a negation in an EARLIER clause must not cancel the cue.
+  it.each([
+    ['Which queue?', 'No — we decided to use BullMQ.'],
+    ['Wait?', "There is no reason to wait: let's go with pnpm."],
+    ['行嗎？', '沒有問題，決定用 SQLite。'],
+    // P3
+    ['Which framework?', "I'll go with Fastify here — it has the schema validation built in."],
+  ])('a decision after another clause still counts: %s / %s', (u, a) => {
+    expect(classifyTurn(u, a)?.kind).toBe('decision');
+  });
+
+  // Re-review P2-b: code, quotes and 決定 as an ordinary verb are not decisions.
+  it.each([
+    ['Show me', 'Here it is:\n```ts\n// we decided to use BullMQ\nconst q = new Queue();\n```\nThat is the file.'],
+    ['What did they say?', 'The reviewer wrote: "we decided to use BullMQ" — that is not confirmed.'],
+    ['他說什麼？', '他寫的是「決定用 SQLite」，但還沒確認。'],
+    ['這段在做什麼？', '這段程式碼會根據 flag 決定要不要重試。'],
+  ])('no false positive on code, quotes or a plain verb: %s', (u, a) => {
+    expect(classifyTurn(u, a)).toBeNull();
+  });
+
   it('a recall block injected into the user text does not make every later turn a decision', () => {
     const user = '[MeMesh recall]\n- (conversation) hermes-turn-s-abc: Assistant: We decided to use BullMQ.\n\nWhat time is it?';
     expect(classifyTurn(user, 'About 3pm.')).toBeNull();
