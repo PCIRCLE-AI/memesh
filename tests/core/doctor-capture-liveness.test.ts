@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { runDoctor as runDoctorImpl, formatDoctorReport } from '../../src/core/doctor.js';
 import { HOOK_OUTCOMES_FILENAME, SKIP_REASONS, type HookOutcomeRecord } from '../../src/core/capture-liveness.js';
 import type { UpdateCheck } from '../../src/core/version-check.js';
+import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
+import { AUTO_CAPTURE_TAG } from '../../src/core/types.js';
 import type { InstallChannel } from '../../src/core/install-channel.js';
 
 /**
@@ -112,12 +114,20 @@ function packageRoot(): string {
 }
 
 async function run(dbOpts: Parameters<typeof makeDatabase>[0] = {}, installChannel: InstallChannel = 'npm-global') {
+  return runWith(() => makeDatabase(dbOpts) as never, () => undefined, installChannel);
+}
+
+async function runWith(
+  openDatabaseImpl: () => never,
+  closeDatabaseImpl: () => void,
+  installChannel: InstallChannel = 'npm-global',
+) {
   return runDoctorImpl({
     pluginCacheDiscoveryImpl: () => [],
     packageRoot: packageRoot(),
     packageVersion: '4.0.3',
-    openDatabaseImpl: () => makeDatabase(dbOpts) as never,
-    closeDatabaseImpl: () => undefined,
+    openDatabaseImpl,
+    closeDatabaseImpl,
     getConfigPathImpl: () => path.join(packageRoot(), 'config.json'),
     getUpdateCheckImpl: async () => makeUpdateCheck(),
     getCurrentInstallChannelImpl: () => installChannel,
@@ -254,8 +264,9 @@ describe('doctor: capture-liveness', () => {
   it('never-ran with auto-capture entities landing is version skew, not death', async () => {
     // Legacy hooks write entities without a heartbeat or an outcome record.
     // The never-ran FAIL must not fire over a graph that is provably still
-    // being captured — the same hedge hook-activity takes.
-    memeshDirWith(skips('post-commit', 6, SKIP_REASONS.commitLineMissing));
+    // being captured — the same hedge hook-activity takes. Only with NO
+    // outcome records at all: any record proves current hooks are installed.
+    memeshDirWith([]);
     const result = await run({ stampedHooks: [], legacyCaptured: 5 }, 'plugin-marketplace');
     const check = result.checks.find((c) => c.id === 'capture-liveness')!;
     expect(check.status).toBe('warn');
@@ -289,5 +300,107 @@ describe('doctor: capture-liveness', () => {
     const check = result.checks.find((c) => c.id === 'capture-liveness')!;
     expect(check.status).toBe('pass');
     expect(check.summary).toContain('turned off');
+  });
+});
+
+/**
+ * The same row against a REAL SQLite database built by the product's own
+ * schema (#327 C9). The stub above answers by `sql.includes(...)`, so it can
+ * never run a predicate: a typo in a column, a wrong datetime comparison or a
+ * JOIN that matches nothing would all pass there. Every assertion below
+ * requires a query to return a non-zero figure, so none can pass vacuously.
+ */
+describe('doctor: capture-liveness on a real database', () => {
+  let dbPath: string;
+
+  afterEach(() => {
+    try { closeDatabase(); } catch { /* not open */ }
+  });
+
+  /** SQLite's own timestamp shape — ISO with `T`/`Z` would not compare. */
+  const sqliteTs = (hoursAgo: number) =>
+    new Date(Date.now() - hoursAgo * 3600_000).toISOString().replace('T', ' ').slice(0, 19);
+
+  function seed(opts: { stamped: Array<[string, number]>; sinceHours: number; commitsHoursAgo: number[] }) {
+    const dir = process.env.MEMESH_DIR!;
+    dbPath = path.join(dir, 'knowledge-graph.db');
+    try { closeDatabase(); } catch { /* none open */ }
+    openDatabase(dbPath);
+    const db = getDatabase();
+    db.prepare('DELETE FROM hook_runs').run();
+    for (const [hook, hoursAgo] of opts.stamped) {
+      db.prepare('INSERT INTO hook_runs (hook, last_run_at, run_count) VALUES (?, ?, 1)').run(hook, sqliteTs(hoursAgo));
+    }
+    db.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES ('hook_runs_since', ?)").run(sqliteTs(opts.sinceHours));
+    opts.commitsHoursAgo.forEach((hoursAgo, i) => {
+      const info = db.prepare('INSERT INTO entities (name, type, created_at) VALUES (?, ?, ?)')
+        .run(`commit-real${i}`, 'commit', sqliteTs(hoursAgo));
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(info.lastInsertRowid, AUTO_CAPTURE_TAG);
+    });
+    closeDatabase();
+  }
+
+  const real = (channel: InstallChannel = 'plugin-marketplace') =>
+    runWith(() => openDatabase(dbPath) as never, () => closeDatabase(), channel);
+
+  it('runs the per-type trend query for real: a type that stopped is found by SQL, not by a stub', async () => {
+    memeshDirWith([
+      { hook: 'session-summary', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'session-s1-summary' },
+    ]);
+    seed({ stamped: [['session-summary', 1]], sinceHours: 720, commitsHoursAgo: [200, 210, 220] });
+    const result = await real();
+    const commit = result.capture?.types.find((t) => t.type === 'commit');
+    expect(commit, 'the GROUP BY query returned no commit row').toEqual({ type: 'commit', last7: 0, prev7: 3, stopped: true });
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).toBe('capture-liveness.type-stopped');
+    expect(check.params?.prev).toBe(3);
+  });
+
+  it('runs the legacy-capture query for real: no outcome records + captures since tracking → version skew', async () => {
+    memeshDirWith([]);
+    seed({ stamped: [['post-commit', 1]], sinceHours: 720, commitsHoursAgo: [5, 200, 800] });
+    const result = await real();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).toBe('capture-liveness.never-ran-legacy');
+    // 800h ago is BEFORE tracking began (720h): the `created_at > since`
+    // predicate must exclude it, so the count is 2, not 3.
+    expect(check.params?.captured).toBe(2);
+  });
+
+  it('a dead Stop hook FAILs even when legacy captures exist, once current hooks are recording (C2)', async () => {
+    // post-commit is on the current version — it has outcome records — so
+    // the outcome-recording hooks ARE installed. session-summary has neither
+    // a record nor a heartbeat: that is a broken Stop hook, not version skew.
+    memeshDirWith([
+      { hook: 'post-commit', at: '2026-09-09T00:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'commit-abc1234' },
+    ]);
+    seed({ stamped: [['post-commit', 1]], sinceHours: 720, commitsHoursAgo: [1, 2, 3, 4, 5, 6] });
+    const result = await real();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('fail');
+    expect(check.code).toBe('capture-liveness.never-ran');
+    expect(check.params?.hook).toBe('session-summary');
+    expect(result.capture?.status).toBe('FAIL');
+  });
+
+  it('heartbeats but no outcome record at all, past the grace, is a warning — not "normal after an upgrade" (C3)', async () => {
+    // The 4.8.2 / 4.9.4 shape: hooks crash as they load, so nothing records;
+    // the heartbeats are from before. Must not read as a healthy PASS forever.
+    memeshDirWith([]);
+    seed({ stamped: [['session-summary', 100], ['post-commit', 100]], sinceHours: 720, commitsHoursAgo: [] });
+    const result = await real();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('warn');
+    expect(check.code).toBe('capture-liveness.no-records');
+    expect(check.params?.hours).toBe(100);
+    expect(result.capture?.status).toBe('PASS_WITH_CONCERNS');
+  });
+
+  it('no outcome records inside the grace is still the ordinary post-upgrade state', async () => {
+    memeshDirWith([]);
+    seed({ stamped: [['session-summary', 1]], sinceHours: 10, commitsHoursAgo: [] });
+    const result = await real();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('pass');
   });
 });

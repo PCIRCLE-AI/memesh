@@ -27,7 +27,7 @@ import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
 import {
   captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends,
-  FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, SILENT_HOOK_MIN_RUNS,
+  FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS,
   type CaptureLivenessStatus, type HookLivenessSummary, type TypeTrend,
 } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
@@ -1439,6 +1439,8 @@ function inspectCaptureLiveness(
   let neverRan: string[];
   let measuringHours: number | null;
   let legacyCaptured = 0;
+  let stampedCount = 0;
+  let newestHeartbeatHours: number | null = null;
   try {
     db = openDatabaseImpl() as unknown as DatabaseLike;
 
@@ -1466,11 +1468,15 @@ function inspectCaptureLiveness(
     const tablePresent = !!db.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'",
     ).get();
-    const stamped = new Set(
-      tablePresent
-        ? (db.prepare('SELECT hook FROM hook_runs').all() as Array<{ hook: string }>).map((r) => r.hook)
-        : [],
-    );
+    const heartbeats = tablePresent
+      ? db.prepare('SELECT hook, last_run_at FROM hook_runs').all() as Array<{ hook: string; last_run_at: string }>
+      : [];
+    const stamped = new Set(heartbeats.map((r) => r.hook));
+    stampedCount = stamped.size;
+    for (const r of heartbeats) {
+      const h = hoursSince(String(r.last_run_at));
+      if (h !== null && (newestHeartbeatHours === null || h < newestHeartbeatHours)) newestHeartbeatHours = h;
+    }
     // Only session-summary is FAIL-eligible; see FAIL_ELIGIBLE_HOOKS for why
     // a hook whose trigger depends on user behaviour can never reach it.
     neverRan = FAIL_ELIGIBLE_HOOKS.filter((h) => !stamped.has(h));
@@ -1532,7 +1538,12 @@ function inspectCaptureLiveness(
         report: { ...report, status: 'PASS_WITH_CONCERNS' },
       };
     }
-    if (legacyCaptured > 0) {
+    // Only when there are NO outcome records at all. Once any current-version
+    // hook has recorded an outcome, the outcome-recording hooks are
+    // installed, and a session-summary that still left nothing is a broken
+    // Stop hook — softening it to "update the hooks" would contradict
+    // hook-activity's stop-silent about the same graph.
+    if (legacyCaptured > 0 && hooks.length === 0) {
       return {
         check: createCheck('capture-liveness', TITLE, 'warn',
           `The ${hook} hook has left no record and no heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? 'y' : 'ies'} landed since tracking began — hooks from a version before outcome tracking are probably still running.`,
@@ -1559,6 +1570,25 @@ function inspectCaptureLiveness(
         'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.',
         { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
       report,
+    };
+  }
+
+  // Heartbeats but not one outcome record, well past the grace. Every
+  // current hook records on every exit path, so this is one of two things,
+  // and neither is "normal right after an upgrade" forever: hooks from a
+  // version before outcome tracking are still the ones running, or the
+  // hooks crash as they load (a missing `_generated` file — the 4.8.2 and
+  // 4.9.4 shape) and leave nothing at all, which the old heartbeats from
+  // before the crash would otherwise cover.
+  if (hooks.length === 0 && captureWired && stampedCount > 0
+    && measuringHours !== null && measuringHours > NEVER_RAN_GRACE_HOURS) {
+    const lastHeartbeat = newestHeartbeatHours === null ? null : Math.round(newestHeartbeatHours);
+    return {
+      check: createCheck('capture-liveness', TITLE, 'warn',
+        `Hooks have run on this machine (last heartbeat ${lastHeartbeat ?? '?'} hours ago), but not one has left an outcome record. Either the running hooks predate outcome tracking, or they fail as they load and record nothing.`,
+        'Update the memesh hooks (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), restart your agent, start one session, and re-run `memesh doctor`. If you just updated, start a session first — the records begin on the next hook run.',
+        { code: 'capture-liveness.no-records', params: { hours: lastHeartbeat ?? '?' } }),
+      report: { ...report, status: 'PASS_WITH_CONCERNS' },
     };
   }
 

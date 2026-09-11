@@ -637,6 +637,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': 'superseded by',
     'nav.ariaLabel': 'Dashboard sections',
     'feedback.descLabel': 'Feedback description',
+    'doctor.msg.capture-liveness.no-records.summary': 'Hooks have run on this machine (last heartbeat {hours} hours ago), but not one has left an outcome record. Either the running hooks predate outcome tracking, or they fail as they load and record nothing.',
+    'doctor.msg.capture-liveness.no-records.fix': 'Update the MeMesh hooks (plugin: `/plugin update memesh`; npm: `memesh install-hooks`), restart your agent, start one session, and run `memesh doctor` again.',
   },
   'zh-TW': {
     'auth.title': '需要驗證',
@@ -1274,6 +1276,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': '被取代',
     'nav.ariaLabel': '儀表板分頁',
     'feedback.descLabel': '意見內容',
+    'doctor.msg.capture-liveness.no-records.summary': '這台機器上的 hook 有在跑（最後一次心跳是 {hours} 小時前），但沒有任何一個留下結果記錄。可能是正在跑的 hook 版本太舊、還不會記錄結果，或是 hook 一載入就出錯，什麼都沒記下來。',
+    'doctor.msg.capture-liveness.no-records.fix': '更新 MeMesh hook（plugin 安裝：`/plugin update memesh`；npm 安裝：`memesh install-hooks`），重新啟動 agent，開始一個工作階段後再執行一次 `memesh doctor`。',
   },
   'zh-CN': {
     'auth.title': '需要验证',
@@ -1910,6 +1914,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': '被取代',
     'nav.ariaLabel': '仪表板分页',
     'feedback.descLabel': '反馈内容',
+    'doctor.msg.capture-liveness.no-records.summary': '这台机器上的 hook 在运行（最后一次心跳是 {hours} 小时前），但没有任何一个留下结果记录。可能是正在运行的 hook 版本太旧、还不会记录结果，或者 hook 一加载就出错，什么都没记下来。',
+    'doctor.msg.capture-liveness.no-records.fix': '更新 MeMesh hook（plugin 安装：`/plugin update memesh`；npm 安装：`memesh install-hooks`），重新启动 agent，开始一个会话后再运行一次 `memesh doctor`。',
   },
   ja: {
     'auth.title': '認証が必要です',
@@ -2546,6 +2552,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': '置き換え先',
     'nav.ariaLabel': 'ダッシュボードのセクション',
     'feedback.descLabel': 'フィードバックの内容',
+    'doctor.msg.capture-liveness.no-records.summary': 'このマシンではフックが動いています（最後のハートビートは {hours} 時間前）が、結果の記録を残したフックが一つもありません。動いているフックが結果記録より前のバージョンか、読み込み時に失敗して何も記録していない可能性があります。',
+    'doctor.msg.capture-liveness.no-records.fix': 'MeMesh のフックを更新し（プラグイン: `/plugin update memesh`、npm: `memesh install-hooks`）、エージェントを再起動してセッションを 1 回始めてから、もう一度 `memesh doctor` を実行してください。',
   },
   ko: {
     'auth.title': '인증 필요',
@@ -3182,6 +3190,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': '대체한 결정',
     'nav.ariaLabel': '대시보드 섹션',
     'feedback.descLabel': '피드백 내용',
+    'doctor.msg.capture-liveness.no-records.summary': '이 컴퓨터에서 훅이 실행되었지만(마지막 하트비트 {hours}시간 전) 결과 기록을 남긴 훅이 하나도 없습니다. 실행 중인 훅이 결과 기록 이전 버전이거나, 로드할 때 실패해서 아무것도 기록하지 못했을 수 있습니다.',
+    'doctor.msg.capture-liveness.no-records.fix': 'MeMesh 훅을 업데이트하고(플러그인: `/plugin update memesh`, npm: `memesh install-hooks`) 에이전트를 다시 시작한 뒤, 세션을 한 번 시작하고 `memesh doctor`를 다시 실행하세요.',
   },
   pt: {
     'auth.title': 'Autenticação necessária',
@@ -3818,6 +3828,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': 'substituída por',
     'nav.ariaLabel': 'Seções do painel',
     'feedback.descLabel': 'Descrição do feedback',
+    'doctor.msg.capture-liveness.no-records.summary': 'Os hooks rodaram nesta máquina (último sinal há {hours} horas), mas nenhum deixou um registro de resultado. Ou os hooks em execução são anteriores ao registro de resultados, ou falham ao carregar e não registram nada.',
+    'doctor.msg.capture-liveness.no-records.fix': 'Atualize os hooks do MeMesh (plugin: `/plugin update memesh`; npm: `memesh install-hooks`), reinicie o agente, inicie uma sessão e execute `memesh doctor` novamente.',
   },
   fr: {
     'auth.title': 'Authentification requise',
@@ -4454,6 +4466,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': 'remplacée par',
     'nav.ariaLabel': 'Sections du tableau de bord',
     'feedback.descLabel': 'Description du retour',
+    'doctor.msg.capture-liveness.no-records.summary': 'Des hooks ont tourné sur cette machine (dernier signal il y a {hours} heures), mais aucun n\'a laissé d\'enregistrement de résultat. Soit les hooks en service sont antérieurs à ce suivi, soit ils échouent au chargement et n\'enregistrent rien.',
+    'doctor.msg.capture-liveness.no-records.fix': 'Mettez à jour les hooks MeMesh (plugin : `/plugin update memesh` ; npm : `memesh install-hooks`), redémarrez l\'agent, lancez une session, puis relancez `memesh doctor`.',
   },
   de: {
     'auth.title': 'Authentifizierung erforderlich',
@@ -5090,6 +5104,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': 'ersetzt durch',
     'nav.ariaLabel': 'Dashboard-Bereiche',
     'feedback.descLabel': 'Feedback-Beschreibung',
+    'doctor.msg.capture-liveness.no-records.summary': 'Auf diesem Rechner sind Hooks gelaufen (letztes Lebenszeichen vor {hours} Stunden), aber keiner hat einen Ergebnis-Eintrag hinterlassen. Entweder stammen die laufenden Hooks aus einer Version vor der Ergebnis-Protokollierung, oder sie scheitern beim Laden und protokollieren nichts.',
+    'doctor.msg.capture-liveness.no-records.fix': 'Aktualisieren Sie die MeMesh-Hooks (Plugin: `/plugin update memesh`; npm: `memesh install-hooks`), starten Sie den Agenten neu, beginnen Sie eine Sitzung und führen Sie `memesh doctor` erneut aus.',
   },
   vi: {
     'auth.title': 'Yêu cầu xác thực',
@@ -5726,6 +5742,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': 'bị thay thế bởi',
     'nav.ariaLabel': 'Các mục bảng điều khiển',
     'feedback.descLabel': 'Nội dung phản hồi',
+    'doctor.msg.capture-liveness.no-records.summary': 'Các hook đã chạy trên máy này (nhịp gần nhất cách đây {hours} giờ), nhưng không hook nào để lại bản ghi kết quả. Có thể các hook đang chạy là bản cũ, chưa ghi kết quả, hoặc chúng lỗi ngay khi tải nên không ghi được gì.',
+    'doctor.msg.capture-liveness.no-records.fix': 'Cập nhật hook MeMesh (plugin: `/plugin update memesh`; npm: `memesh install-hooks`), khởi động lại agent, bắt đầu một phiên làm việc rồi chạy lại `memesh doctor`.',
   },
   es: {
     'auth.title': 'Autenticación requerida',
@@ -6362,6 +6380,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': 'reemplazada por',
     'nav.ariaLabel': 'Secciones del panel',
     'feedback.descLabel': 'Descripción del comentario',
+    'doctor.msg.capture-liveness.no-records.summary': 'Los hooks se han ejecutado en esta máquina (última señal hace {hours} horas), pero ninguno ha dejado un registro de resultado. O los hooks en uso son anteriores al registro de resultados, o fallan al cargarse y no registran nada.',
+    'doctor.msg.capture-liveness.no-records.fix': 'Actualiza los hooks de MeMesh (plugin: `/plugin update memesh`; npm: `memesh install-hooks`), reinicia el agente, inicia una sesión y vuelve a ejecutar `memesh doctor`.',
   },
   th: {
     'auth.title': 'ต้องมีการยืนยันตัวตน',
@@ -6998,6 +7018,8 @@ const translations: Record<Locale, Record<string, string>> = {
     'adr.supersededBy': 'ถูกแทนที่โดย',
     'nav.ariaLabel': 'ส่วนต่าง ๆ ของแดชบอร์ด',
     'feedback.descLabel': 'รายละเอียดข้อเสนอแนะ',
+    'doctor.msg.capture-liveness.no-records.summary': 'hook ทำงานบนเครื่องนี้แล้ว (สัญญาณล่าสุดเมื่อ {hours} ชั่วโมงก่อน) แต่ไม่มี hook ใดทิ้งบันทึกผลลัพธ์ไว้เลย อาจเป็นเพราะ hook ที่ทำงานอยู่เป็นเวอร์ชันเก่าที่ยังไม่บันทึกผลลัพธ์ หรือ hook ล้มเหลวตอนโหลดจึงไม่ได้บันทึกอะไร',
+    'doctor.msg.capture-liveness.no-records.fix': 'อัปเดต hook ของ MeMesh (plugin: `/plugin update memesh`; npm: `memesh install-hooks`) รีสตาร์ต agent เริ่มเซสชันหนึ่งครั้ง แล้วรัน `memesh doctor` อีกครั้ง',
   },
 };
 

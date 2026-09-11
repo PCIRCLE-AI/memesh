@@ -19,7 +19,7 @@ import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
-import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, SILENT_HOOK_MIN_RUNS, } from './capture-liveness.js';
+import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
@@ -530,6 +530,8 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     let neverRan;
     let measuringHours;
     let legacyCaptured = 0;
+    let stampedCount = 0;
+    let newestHeartbeatHours = null;
     try {
         db = openDatabaseImpl();
         const rows = db.prepare(`SELECT e.type AS type,
@@ -547,9 +549,16 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
             prev7: Number(r.prev7) || 0,
         })));
         const tablePresent = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
-        const stamped = new Set(tablePresent
-            ? db.prepare('SELECT hook FROM hook_runs').all().map((r) => r.hook)
-            : []);
+        const heartbeats = tablePresent
+            ? db.prepare('SELECT hook, last_run_at FROM hook_runs').all()
+            : [];
+        const stamped = new Set(heartbeats.map((r) => r.hook));
+        stampedCount = stamped.size;
+        for (const r of heartbeats) {
+            const h = hoursSince(String(r.last_run_at));
+            if (h !== null && (newestHeartbeatHours === null || h < newestHeartbeatHours))
+                newestHeartbeatHours = h;
+        }
         neverRan = FAIL_ELIGIBLE_HOOKS.filter((h) => !stamped.has(h));
         const since = db.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
         measuringHours = since !== undefined ? hoursSince(since) : null;
@@ -587,7 +596,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
                 report: { ...report, status: 'PASS_WITH_CONCERNS' },
             };
         }
-        if (legacyCaptured > 0) {
+        if (legacyCaptured > 0 && hooks.length === 0) {
             return {
                 check: createCheck('capture-liveness', TITLE, 'warn', `The ${hook} hook has left no record and no heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? 'y' : 'ies'} landed since tracking began — hooks from a version before outcome tracking are probably still running.`, 'Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.', { code: 'capture-liveness.never-ran-legacy', params: { hook, captured: legacyCaptured } }),
                 report: { ...report, status: 'PASS_WITH_CONCERNS' },
@@ -604,6 +613,14 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
         return {
             check: createCheck('capture-liveness', TITLE, 'warn', `${h.hook}: ${h.triggeredRuns} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, 'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.', { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
             report,
+        };
+    }
+    if (hooks.length === 0 && captureWired && stampedCount > 0
+        && measuringHours !== null && measuringHours > NEVER_RAN_GRACE_HOURS) {
+        const lastHeartbeat = newestHeartbeatHours === null ? null : Math.round(newestHeartbeatHours);
+        return {
+            check: createCheck('capture-liveness', TITLE, 'warn', `Hooks have run on this machine (last heartbeat ${lastHeartbeat ?? '?'} hours ago), but not one has left an outcome record. Either the running hooks predate outcome tracking, or they fail as they load and record nothing.`, 'Update the memesh hooks (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), restart your agent, start one session, and re-run `memesh doctor`. If you just updated, start a session first — the records begin on the next hook run.', { code: 'capture-liveness.no-records', params: { hours: lastHeartbeat ?? '?' } }),
+            report: { ...report, status: 'PASS_WITH_CONCERNS' },
         };
     }
     if (verdict.stoppedTypes.length > 0) {
