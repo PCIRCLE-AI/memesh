@@ -555,6 +555,36 @@ describe('Feature: Session Start Hook', () => {
     expect(session!.entityIds).toContain(d);
   });
 
+  it('#323: a memory shown ONLY through the index is recorded as injected, so citing it is credited', () => {
+    const db = createTestDb();
+    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const decisions: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = ins.run(`idx-only-${i}`, 'decision').lastInsertRowid as number;
+      obs.run(id, `Index only decision ${i}`);
+      tag.run(id, projTag('indexonly'));
+      decisions.push(id);
+    }
+    // Six newer rows elsewhere push the project's rows out of the
+    // cross-project recent pool, so with a ranked window of 1 at least two
+    // decisions can only have reached the block through the index.
+    for (let i = 0; i < 6; i++) {
+      const id = ins.run(`elsewhere-${i}`, 'note').lastInsertRowid as number;
+      obs.run(id, `elsewhere ${i}`);
+      tag.run(id, projTag('elsewhere'));
+    }
+    db.close();
+
+    runHook({ cwd: '/tmp/indexonly' }, { MEMESH_SESSION_LIMIT: '1' });
+    const session = readLatestSessionFile()!;
+    const ranked = new Set(session.rankedEntityIds ?? []);
+    const indexOnly = decisions.filter((id) => !ranked.has(id));
+    expect(indexOnly.length, 'fixture leaves decisions that only the index shows').toBeGreaterThanOrEqual(2);
+    for (const id of indexOnly) expect(session.entityIds).toContain(id);
+  });
+
   it('#323: a project with no durable memories injects the empty-state line, not nothing', () => {
     const db = createTestDb();
     const c = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('commit-only', 'commit').lastInsertRowid as number;
