@@ -6093,6 +6093,33 @@ function remember(input) {
   const { args, derived } = resolveRememberInput(input);
   return db2.transaction(() => rememberInTransaction(args, derived, db2, kg)).immediate();
 }
+function boundReplacedHistory(history) {
+  let out = history.slice(-REPLACED_HISTORY_MAX);
+  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
+    out = out.slice(1);
+  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
+    const only = out[0];
+    const kept = [];
+    const base = { ...only, observations: [], truncated: true };
+    for (const obs of only.observations) {
+      if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
+        break;
+      kept.push(obs);
+    }
+    out = [{ ...base, observations: kept }];
+  }
+  return out;
+}
+function summarizeReplacedHistory(entities) {
+  for (const e of entities) {
+    const history = e.metadata?.replaced_history;
+    if (!Array.isArray(history))
+      continue;
+    const { replaced_history: _dropped, ...rest } = e.metadata;
+    e.metadata = { ...rest, replaced_history_count: history.length };
+  }
+  return entities;
+}
 function resolveRememberInput(input) {
   if (input.note === void 0) {
     if (!input.name || !input.type)
@@ -6159,7 +6186,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     const version2 = replacedVersion;
     kg.updateEntityMetadata(args.name, (current) => {
       const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
-      return { ...current, replaced_history: [...history, version2].slice(-REPLACED_HISTORY_MAX) };
+      return { ...current, replaced_history: boundReplacedHistory([...history, version2]) };
     });
   }
   const relationsCreated = [];
@@ -6204,12 +6231,12 @@ function rememberInTransaction(args, derived, db2, kg) {
 }
 function searchAndScore(args) {
   const kg = new KnowledgeGraph(getDatabase());
-  const entities = kg.search(args.query, {
+  const entities = summarizeReplacedHistory(kg.search(args.query, {
     tag: recallTagFilter(args),
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace
-  });
+  }));
   return {
     entities,
     relevanceMap: args.query ? buildRelevanceMap(entities) : /* @__PURE__ */ new Map()
@@ -6284,7 +6311,7 @@ function setPinned(name, pinned) {
   });
   return { name, pinned, found: true };
 }
-var REPLACED_HISTORY_MAX;
+var REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES, jsonBytes;
 var init_operations = __esm({
   "dist/core/operations.js"() {
     "use strict";
@@ -6296,6 +6323,8 @@ var init_operations = __esm({
     init_note_derive();
     init_serializer();
     REPLACED_HISTORY_MAX = 20;
+    REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
+    jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
   }
 });
 
@@ -59462,9 +59491,25 @@ function ingestNoteDirectory(opts) {
   for (const row of noteRows) {
     const prov = parseProvenance(row.metadata);
     if (prov.note_dir_id === dirId && typeof prov.note_path === "string") {
-      known.set(prov.note_path, { mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
+      known.set(prov.note_path, { name: row.name, mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
     }
   }
+  const skipKey = `note_ingest_skips:${dirId}`;
+  const skipRow = db2.prepare("SELECT value FROM memesh_metadata WHERE key = ?").get(skipKey);
+  let priorSkips = {};
+  try {
+    const parsedSkips = skipRow ? JSON.parse(skipRow.value) : {};
+    if (parsedSkips && typeof parsedSkips === "object")
+      priorSkips = parsedSkips;
+  } catch {
+    priorSkips = {};
+  }
+  const nextSkips = {};
+  const seenNames = /* @__PURE__ */ new Map();
+  const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
+  for (const [rel, k] of known)
+    if (presentRels.has(rel))
+      seenNames.set(k.name, rel);
   let read = 0;
   for (const abs of files) {
     const rel = relPath(realDir, abs);
@@ -59473,6 +59518,10 @@ function ingestNoteDirectory(opts) {
     };
     let raw;
     let stat;
+    const contentSkip = (reason) => {
+      skip(reason);
+      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+    };
     try {
       stat = fs10.lstatSync(abs);
       if (stat.isSymbolicLink()) {
@@ -59484,13 +59533,19 @@ function ingestNoteDirectory(opts) {
         result.unchanged++;
         continue;
       }
+      const priorSkip = priorSkips[rel];
+      if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size) {
+        skip(priorSkip.reason);
+        nextSkips[rel] = priorSkip;
+        continue;
+      }
       if (read >= maxFiles) {
         result.more++;
         continue;
       }
       read++;
       if (stat.size > maxBytes) {
-        skip(`larger than ${Math.round(maxBytes / 1024)} KB`);
+        contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`);
         continue;
       }
       const real = fs10.realpathSync(abs);
@@ -59505,14 +59560,21 @@ function ingestNoteDirectory(opts) {
     }
     const parsed = parseFrontmatter(raw.toString("utf8"));
     if (!parsed) {
-      skip("no frontmatter \u2014 a note file needs a `---` block with a name");
+      contentSkip("no frontmatter \u2014 a note file needs a `---` block with a name");
       continue;
     }
-    const name = stringField(parsed.data, "name")?.replace(/[\r\n\t]+/g, " ").trim().slice(0, 255);
+    const rawName = stringField(parsed.data, "name");
+    const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, " ").trim().slice(0, 255) : "";
     if (!name) {
-      skip("frontmatter has no name");
+      contentSkip("frontmatter has no name");
       continue;
     }
+    const firstWithName = seenNames.get(name);
+    if (firstWithName && firstWithName !== rel) {
+      skip(`name "${name}" already used by ${firstWithName} in this directory`);
+      continue;
+    }
+    seenNames.set(name, rel);
     const metaBlock = parsed.data.metadata;
     const rawType = (typeof metaBlock === "object" ? metaBlock.type : void 0) ?? stringField(parsed.data, "type");
     const type = (rawType ? sanitizeNoteText(rawType).slice(0, 100) : "") || NOTE_DEFAULT_TYPE;
@@ -59522,7 +59584,7 @@ function ingestNoteDirectory(opts) {
     if (observations.length === 0 && cleanDescription)
       observations = [cleanDescription];
     if (observations.length === 0) {
-      skip("empty note \u2014 no description and no body");
+      contentSkip("empty note \u2014 no description and no body");
       continue;
     }
     observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
@@ -59551,12 +59613,16 @@ function ingestNoteDirectory(opts) {
         continue;
       }
     }
+    const currentTags = existing ? db2.prepare("SELECT tag FROM tags WHERE entity_id = ?").all(existing.id).map((t) => t.tag) : [];
+    const keptTags = currentTags.filter((t) => !t.startsWith("source:"));
+    const hasProject = keptTags.some((t) => t.startsWith("project:"));
+    const tags = [NOTE_FILE_TAG, ...keptTags, ...!hasProject && opts.project ? [`project:${opts.project}`] : []];
     remember({
       name,
       type,
       title,
       observations,
-      tags: [NOTE_FILE_TAG, ...opts.project ? [`project:${opts.project}`] : []],
+      tags,
       replace: true,
       trustOverride: "untrusted",
       provenanceOverride: {
@@ -59571,7 +59637,8 @@ function ingestNoteDirectory(opts) {
     });
     (existing ? result.replaced : result.created).push(name);
   }
-  const present = new Set(files.map((abs) => relPath(realDir, abs)));
+  db2.prepare("INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)").run(skipKey, JSON.stringify(nextSkips));
+  const present = presentRels;
   const tagMissing = db2.prepare("INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)");
   for (const row of noteRows) {
     if (row.is_missing)
@@ -60300,10 +60367,15 @@ program2.command("export").description("Export memories as JSON. Defaults to std
     }
   });
 });
-program2.command("import").description("Import memories from a JSON export file, or a directory of note files (--notes)").argument("[file]", "Path to JSON export file").option("--namespace <ns>", "Override namespace for all imported entities").option("--merge <strategy>", "Merge strategy: skip | overwrite | append", "skip").option("--notes <dir>", "Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.").option("--project <name>", "With --notes: the project tag for ingested memories (default: the current directory's project)").option("--json", "With --notes: output the ingestion result as JSON").action(async (file2, opts) => {
+program2.command("import").description("Import memories from a JSON export file, or a directory of note files (--notes)").argument("[file]", "Path to JSON export file").option("--namespace <ns>", "Override namespace for all imported entities").option("--merge <strategy>", "Merge strategy: skip | overwrite | append", "skip").option("--notes <dir>", "Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.").option("--project <name>", "With --notes: the project tag for ingested memories (default: the current directory's project)").option("--json", "With --notes: output the ingestion result as JSON").action(async (file2, opts, cmd) => {
   if (opts.notes !== void 0) {
     if (file2) {
       console.error("Error: pass either a JSON export file or --notes <dir>, not both.");
+      process.exit(1);
+    }
+    const ignored = ["namespace", "merge"].filter((k) => cmd.getOptionValueSource(k) === "cli");
+    if (ignored.length > 0) {
+      console.error(`Error: --notes does not take ${ignored.map((k) => `--${k}`).join(" or ")}. Note files always go to the personal namespace and a changed file replaces its memory.`);
       process.exit(1);
     }
     await withDatabase(() => {

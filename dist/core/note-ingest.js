@@ -129,15 +129,36 @@ export function ingestNoteDirectory(opts) {
     for (const row of noteRows) {
         const prov = parseProvenance(row.metadata);
         if (prov.note_dir_id === dirId && typeof prov.note_path === 'string') {
-            known.set(prov.note_path, { mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
+            known.set(prov.note_path, { name: row.name, mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
         }
     }
+    const skipKey = `note_ingest_skips:${dirId}`;
+    const skipRow = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(skipKey);
+    let priorSkips = {};
+    try {
+        const parsedSkips = skipRow ? JSON.parse(skipRow.value) : {};
+        if (parsedSkips && typeof parsedSkips === 'object')
+            priorSkips = parsedSkips;
+    }
+    catch {
+        priorSkips = {};
+    }
+    const nextSkips = {};
+    const seenNames = new Map();
+    const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
+    for (const [rel, k] of known)
+        if (presentRels.has(rel))
+            seenNames.set(k.name, rel);
     let read = 0;
     for (const abs of files) {
         const rel = relPath(realDir, abs);
         const skip = (reason) => { result.skipped.push({ path: rel, reason }); };
         let raw;
         let stat;
+        const contentSkip = (reason) => {
+            skip(reason);
+            nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+        };
         try {
             stat = fs.lstatSync(abs);
             if (stat.isSymbolicLink()) {
@@ -149,13 +170,19 @@ export function ingestNoteDirectory(opts) {
                 result.unchanged++;
                 continue;
             }
+            const priorSkip = priorSkips[rel];
+            if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size) {
+                skip(priorSkip.reason);
+                nextSkips[rel] = priorSkip;
+                continue;
+            }
             if (read >= maxFiles) {
                 result.more++;
                 continue;
             }
             read++;
             if (stat.size > maxBytes) {
-                skip(`larger than ${Math.round(maxBytes / 1024)} KB`);
+                contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`);
                 continue;
             }
             const real = fs.realpathSync(abs);
@@ -171,14 +198,21 @@ export function ingestNoteDirectory(opts) {
         }
         const parsed = parseFrontmatter(raw.toString('utf8'));
         if (!parsed) {
-            skip('no frontmatter — a note file needs a `---` block with a name');
+            contentSkip('no frontmatter — a note file needs a `---` block with a name');
             continue;
         }
-        const name = stringField(parsed.data, 'name')?.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255);
+        const rawName = stringField(parsed.data, 'name');
+        const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
         if (!name) {
-            skip('frontmatter has no name');
+            contentSkip('frontmatter has no name');
             continue;
         }
+        const firstWithName = seenNames.get(name);
+        if (firstWithName && firstWithName !== rel) {
+            skip(`name "${name}" already used by ${firstWithName} in this directory`);
+            continue;
+        }
+        seenNames.set(name, rel);
         const metaBlock = parsed.data.metadata;
         const rawType = (typeof metaBlock === 'object' ? metaBlock.type : undefined) ?? stringField(parsed.data, 'type');
         const type = (rawType ? sanitizeNoteText(rawType).slice(0, 100) : '') || NOTE_DEFAULT_TYPE;
@@ -188,7 +222,7 @@ export function ingestNoteDirectory(opts) {
         if (observations.length === 0 && cleanDescription)
             observations = [cleanDescription];
         if (observations.length === 0) {
-            skip('empty note — no description and no body');
+            contentSkip('empty note — no description and no body');
             continue;
         }
         observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
@@ -217,12 +251,18 @@ export function ingestNoteDirectory(opts) {
                 continue;
             }
         }
+        const currentTags = existing
+            ? db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(existing.id).map((t) => t.tag)
+            : [];
+        const keptTags = currentTags.filter((t) => !t.startsWith('source:'));
+        const hasProject = keptTags.some((t) => t.startsWith('project:'));
+        const tags = [NOTE_FILE_TAG, ...keptTags, ...(!hasProject && opts.project ? [`project:${opts.project}`] : [])];
         remember({
             name,
             type,
             title,
             observations,
-            tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])],
+            tags,
             replace: true,
             trustOverride: 'untrusted',
             provenanceOverride: {
@@ -237,7 +277,8 @@ export function ingestNoteDirectory(opts) {
         });
         (existing ? result.replaced : result.created).push(name);
     }
-    const present = new Set(files.map((abs) => relPath(realDir, abs)));
+    db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
+    const present = presentRels;
     const tagMissing = db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)');
     for (const row of noteRows) {
         if (row.is_missing)

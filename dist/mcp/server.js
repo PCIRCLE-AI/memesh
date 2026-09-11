@@ -27245,6 +27245,35 @@ function remember(input) {
   return db2.transaction(() => rememberInTransaction(args, derived, db2, kg)).immediate();
 }
 var REPLACED_HISTORY_MAX = 20;
+var REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
+var jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
+function boundReplacedHistory(history) {
+  let out = history.slice(-REPLACED_HISTORY_MAX);
+  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
+    out = out.slice(1);
+  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
+    const only = out[0];
+    const kept = [];
+    const base = { ...only, observations: [], truncated: true };
+    for (const obs of only.observations) {
+      if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
+        break;
+      kept.push(obs);
+    }
+    out = [{ ...base, observations: kept }];
+  }
+  return out;
+}
+function summarizeReplacedHistory(entities) {
+  for (const e of entities) {
+    const history = e.metadata?.replaced_history;
+    if (!Array.isArray(history))
+      continue;
+    const { replaced_history: _dropped, ...rest } = e.metadata;
+    e.metadata = { ...rest, replaced_history_count: history.length };
+  }
+  return entities;
+}
 function resolveRememberInput(input) {
   if (input.note === void 0) {
     if (!input.name || !input.type)
@@ -27311,7 +27340,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     const version2 = replacedVersion;
     kg.updateEntityMetadata(args.name, (current) => {
       const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
-      return { ...current, replaced_history: [...history, version2].slice(-REPLACED_HISTORY_MAX) };
+      return { ...current, replaced_history: boundReplacedHistory([...history, version2]) };
     });
   }
   const relationsCreated = [];
@@ -27356,12 +27385,12 @@ function rememberInTransaction(args, derived, db2, kg) {
 }
 function searchAndScore(args) {
   const kg = new KnowledgeGraph(getDatabase());
-  const entities = kg.search(args.query, {
+  const entities = summarizeReplacedHistory(kg.search(args.query, {
     tag: recallTagFilter(args),
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace
-  });
+  }));
   return {
     entities,
     relevanceMap: args.query ? buildRelevanceMap(entities) : /* @__PURE__ */ new Map()

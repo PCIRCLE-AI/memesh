@@ -637,10 +637,18 @@ program
   .option('--notes <dir>', 'Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.')
   .option('--project <name>', 'With --notes: the project tag for ingested memories (default: the current directory\'s project)')
   .option('--json', 'With --notes: output the ingestion result as JSON')
-  .action(async (file, opts) => {
+  .action(async (file, opts, cmd: Command) => {
     if (opts.notes !== undefined) {
       if (file) {
         console.error('Error: pass either a JSON export file or --notes <dir>, not both.');
+        process.exit(1);
+      }
+      // Both flags mean something for a JSON bundle and nothing here; taking
+      // them silently would let a user believe notes went into "team", or
+      // were merged some other way.
+      const ignored = ['namespace', 'merge'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+      if (ignored.length > 0) {
+        console.error(`Error: --notes does not take ${ignored.map((k) => `--${k}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
         process.exit(1);
       }
       await withDatabase(() => {

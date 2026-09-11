@@ -59,6 +59,15 @@ describe('memesh import --notes', () => {
     expect(r.stderr).not.toMatch(/\n\s+at /);
   }, 60_000);
 
+  it('refuses --namespace and --merge with --notes instead of ignoring them', () => {
+    const ns = runCli(['import', '--notes', notes, '--namespace', 'team'], home);
+    expect(ns.exitCode).toBe(1);
+    expect(ns.stderr).toContain('--notes does not take --namespace');
+    const merge = runCli(['import', '--notes', notes, '--merge', 'append'], home);
+    expect(merge.exitCode).toBe(1);
+    expect(merge.stderr).toContain('--merge');
+  }, 60_000);
+
   it('refuses a file and --notes together, and neither', () => {
     expect(runCli(['import', 'x.json', '--notes', notes], home).stderr).toContain('not both');
     expect(runCli(['import'], home).stderr).toContain('--notes');
