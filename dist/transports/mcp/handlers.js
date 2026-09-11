@@ -44,17 +44,27 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'remember',
-        description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context.',
+        description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. ' +
+            'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
+            'To correct a memory, call again with its `name` and `replace: true` — the old content moves to metadata.replaced_history instead of staying next to the fix.',
         inputSchema: {
             type: 'object',
             properties: {
                 name: {
                     type: 'string',
-                    description: 'Unique entity name (e.g., "auth-decision", "jwt-pattern"). Reusing a name appends observations and dedupes tags instead of replacing the entity.',
+                    description: 'Unique entity name (e.g., "auth-decision", "jwt-pattern"). Reusing a name appends observations and dedupes tags instead of replacing the entity (unless `replace` is true). Required unless `note` is given, in which case it is derived from the text (same text → same name).',
                 },
                 type: {
                     type: 'string',
-                    description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit")',
+                    description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given, in which case it defaults to "note".',
+                },
+                note: {
+                    type: 'string',
+                    description: 'Free text, instead of title + observations: the first line becomes the title and each following paragraph an observation. Cannot be combined with `title` or `observations`. Control characters and credential-shaped strings are removed before storing.',
+                },
+                replace: {
+                    type: 'boolean',
+                    description: 'Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).',
                 },
                 title: {
                     type: 'string',
@@ -96,7 +106,6 @@ export const TOOL_DEFINITIONS = [
                     description: 'Namespace for organizing the entity. Omit it to leave an existing memory where it is — supplying it MOVES a memory that already exists, and it drops out of every other scoped view. New memories default to "personal".',
                 },
             },
-            required: ['name', 'type'],
             additionalProperties: false,
         },
     },

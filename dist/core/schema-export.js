@@ -15,14 +15,16 @@ export function exportOpenAITools() {
             type: 'function',
             function: {
                 name: 'memesh_remember',
-                description: 'Store knowledge as an entity with observations, tags, and relations.',
+                description: 'Store knowledge as an entity with observations, tags, and relations. Pass only `note` to have title, observations and name derived from free text.',
                 parameters: {
                     type: 'object',
                     properties: {
-                        name: { type: 'string', description: 'Unique entity name' },
-                        type: { type: 'string', description: 'Entity type (decision, pattern, lesson, etc.)' },
+                        name: { type: 'string', description: 'Unique entity name. Required unless `note` is given (then derived from the text).' },
+                        type: { type: 'string', description: 'Entity type (decision, pattern, lesson, etc.). Required unless `note` is given (then defaults to "note").' },
                         title: { type: 'string', description: 'Short human-readable label, distinct from name (a stable machine key)' },
                         observations: { type: 'array', items: { type: 'string' }, description: 'Key facts about this entity' },
+                        note: { type: 'string', description: 'Free text instead of title + observations: first line → title, each following paragraph → one observation' },
+                        replace: { type: 'boolean', description: 'Rewrite the named memory instead of appending; the previous version moves to metadata.replaced_history' },
                         tags: { type: 'array', items: { type: 'string' }, description: 'Tags for filtering' },
                         relations: {
                             type: 'array',
@@ -38,7 +40,6 @@ export function exportOpenAITools() {
                         },
                         namespace: { type: 'string', enum: ['personal', 'team', 'global'], description: 'Storage scope (default: personal)' },
                     },
-                    required: ['name', 'type'],
                 },
             },
         },

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { NAMESPACES } from '../core/types.js';
 import { TITLE_MAX_LENGTH } from '../core/title.js';
+import { deriveNote, NOTE_MAX_CHARS, NOTE_MAX_OBSERVATIONS } from '../core/note-derive.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../core/agent-messaging.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, } from '../core/agent-scope-id.js';
 const sanitizeName = (s) => s.replace(/[\r\n\t]+/g, ' ').trim();
@@ -54,17 +55,42 @@ export const WorkPackageSchema = z.discriminatedUnion('action', [
     }).strict(),
 ]);
 export const RememberSchema = z.object({
-    name: nameField,
-    type: z.string().min(1).max(100),
+    name: nameField.optional(),
+    type: z.string().min(1).max(100).optional(),
     title: titleField,
     observations: z.array(observationField).max(100).optional(),
+    note: z.string().max(NOTE_MAX_CHARS).optional(),
+    replace: z.boolean().optional(),
     tags: z.array(z.string().max(255)).max(50).optional(),
     relations: z
         .array(z.object({ to: z.string().min(1).max(255), type: z.string().min(1).max(100) }).strict())
         .max(50)
         .optional(),
     namespace: z.enum(NAMESPACES).optional(),
-}).strict();
+}).strict().superRefine((data, ctx) => {
+    if (data.note === undefined) {
+        if (data.name === undefined)
+            ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
+        if (data.type === undefined)
+            ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note")' });
+        return;
+    }
+    for (const key of ['title', 'observations']) {
+        if (data[key] !== undefined) {
+            ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key}` });
+        }
+    }
+    if (data.replace && data.name === undefined) {
+        ctx.addIssue({ code: 'custom', path: ['name'], message: 'replace with note needs an explicit name — a derived name changes with the text, so there is nothing to replace' });
+    }
+    const derived = deriveNote(data.note);
+    if (!derived) {
+        ctx.addIssue({ code: 'custom', path: ['note'], message: 'note must contain some text' });
+    }
+    else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
+        ctx.addIssue({ code: 'custom', path: ['note'], message: `note splits into ${derived.observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+    }
+});
 export const RecallSchema = z.object({
     query: z.string().max(1000).optional(),
     tag: z.string().max(255).optional(),

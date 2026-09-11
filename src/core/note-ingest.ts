@@ -181,7 +181,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     unchanged: 0,
     markedMissing: [],
     skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: 'symlink refused' })),
-    more: Math.max(0, files.length - maxFiles),
+    more: 0,
   };
 
   const db = getDatabase();
@@ -192,13 +192,41 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
        FROM entities e WHERE e.name = ?`,
   );
 
-  for (const abs of files.slice(0, maxFiles)) {
+  // What this directory already contributed, keyed by relative path: the
+  // stat fingerprint lets an unchanged file be recognised WITHOUT reading it,
+  // so a re-run costs one lstat per file and — because such files do not
+  // count toward the per-run cap — a directory larger than the cap makes
+  // progress on every run instead of re-reading the same first files.
+  const noteRows = db.prepare(
+    `SELECT e.id, e.name, e.metadata,
+            EXISTS(SELECT 1 FROM tags m WHERE m.entity_id = e.id AND m.tag = ?) AS is_missing
+       FROM entities e
+       JOIN tags t ON t.entity_id = e.id AND t.tag = ?`,
+  ).all(NOTE_FILE_MISSING_TAG, NOTE_FILE_TAG) as Array<{ id: number; name: string; metadata: string | null; is_missing: number }>;
+  const known = new Map<string, { mtime: unknown; size: unknown; missing: boolean }>();
+  for (const row of noteRows) {
+    const prov = parseProvenance(row.metadata);
+    if (prov.note_dir_id === dirId && typeof prov.note_path === 'string') {
+      known.set(prov.note_path, { mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
+    }
+  }
+
+  let read = 0;
+  for (const abs of files) {
     const rel = relPath(realDir, abs);
     const skip = (reason: string) => { result.skipped.push({ path: rel, reason }); };
     let raw: Buffer;
+    let stat: fs.Stats;
     try {
-      const stat = fs.lstatSync(abs);
+      stat = fs.lstatSync(abs);
       if (stat.isSymbolicLink()) { skip('symlink refused'); continue; }
+      const prior = known.get(rel);
+      if (prior && !prior.missing && prior.mtime === stat.mtimeMs && prior.size === stat.size) {
+        result.unchanged++;
+        continue;
+      }
+      if (read >= maxFiles) { result.more++; continue; }
+      read++;
       if (stat.size > maxBytes) { skip(`larger than ${Math.round(maxBytes / 1024)} KB`); continue; }
       const real = fs.realpathSync(abs);
       if (!real.startsWith(realDir + path.sep)) { skip('resolves outside the directory'); continue; }
@@ -239,6 +267,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // file must not quietly undo an explicit forget.
       if (existing.status === 'archived') { skip(`memory "${name}" was archived with forget; not re-ingested`); continue; }
       if (prov.content_hash === contentHash && prov.note_path === rel && !existing.is_missing) {
+        // Same bytes, new mtime (a `touch`, a checkout): refresh the stat
+        // fingerprint so the next run can skip the read again. Provenance
+        // only — nothing searchable changes, so no FTS work.
+        const meta = JSON.parse(existing.metadata ?? '{}') as Record<string, unknown>;
+        meta.provenance = { ...prov, note_mtime_ms: stat.mtimeMs, note_size: stat.size };
+        db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), existing.id);
         result.unchanged++;
         continue;
       }
@@ -254,7 +288,14 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // Same stance as the JSON importer: text from a file is not a trusted
       // re-assertion and must not lift confidence.
       trustOverride: 'untrusted',
-      provenanceOverride: { source: 'note-file', note_path: rel, content_hash: contentHash, note_dir_id: dirId },
+      provenanceOverride: {
+        source: 'note-file',
+        note_path: rel,
+        content_hash: contentHash,
+        note_dir_id: dirId,
+        note_mtime_ms: stat.mtimeMs,
+        note_size: stat.size,
+      },
       sourceHost: 'note-file',
     });
     (existing ? result.replaced : result.created).push(name);
@@ -264,15 +305,11 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   // processed ones: a file past the per-run cap, or skipped for its size, is
   // still on disk, and tagging its memory missing would be a false report.
   const present = new Set(files.map((abs) => relPath(realDir, abs)));
-  const noteRows = db.prepare(
-    `SELECT e.id, e.name, e.metadata FROM entities e
-       JOIN tags t ON t.entity_id = e.id AND t.tag = ?
-      WHERE NOT EXISTS (SELECT 1 FROM tags m WHERE m.entity_id = e.id AND m.tag = ?)`,
-  ).all(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG) as Array<{ id: number; name: string; metadata: string | null }>;
   // Tags are not part of the FTS document (name, title, observations are), so
   // adding one needs no index rebuild.
   const tagMissing = db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)');
   for (const row of noteRows) {
+    if (row.is_missing) continue;
     const prov = parseProvenance(row.metadata);
     if (prov.note_dir_id !== dirId || typeof prov.note_path !== 'string') continue;
     if (present.has(prov.note_path)) continue;

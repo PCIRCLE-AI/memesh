@@ -1,5 +1,12 @@
 import type { RememberInput, RememberResult, RecallInput, ForgetInput, ForgetResult, LearnInput, LearnResult, Entity } from './types.js';
-export declare function remember(args: RememberInput): RememberResult;
+export declare function remember(input: RememberInput): RememberResult;
+export declare const REPLACED_HISTORY_MAX = 20;
+export interface ReplacedVersion {
+    replaced_at: string;
+    title: string | null;
+    observations: string[];
+    tags: string[];
+}
 export declare function recall(args: RecallInput): Entity[];
 export interface RetrievalMeta {
     mode: 'fts';

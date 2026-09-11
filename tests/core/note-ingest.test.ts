@@ -123,24 +123,46 @@ describe('ingestNoteDirectory', () => {
     expect(kg().getEntity('evil')).toBeNull();
   });
 
-  it('skips .git and node_modules, oversized files, and reports files past the cap without tagging them missing', () => {
+  it('skips .git and node_modules and oversized files', () => {
     const dir = makeDir({
       '1.md': note('n1', 'One', 'fact', 'one'),
-      '2.md': note('n2', 'Two', 'fact', 'two'),
       '.git/x.md': note('git_note', 'Git', 'fact', 'git'),
       'node_modules/y.md': note('nm_note', 'NM', 'fact', 'nm'),
       'big.md': note('big', 'Big', 'fact', 'x'.repeat(2000)),
     });
-    const first = ingestNoteDirectory({ dir, maxBytes: 1024 });
-    expect(first.skipped).toContainEqual({ path: 'big.md', reason: 'larger than 1 KB' });
+    const r = ingestNoteDirectory({ dir, maxBytes: 1024 });
+    expect(r.created).toEqual(['n1']);
+    expect(r.skipped).toContainEqual({ path: 'big.md', reason: 'larger than 1 KB' });
     expect(kg().getEntity('git_note')).toBeNull();
     expect(kg().getEntity('nm_note')).toBeNull();
+    expect(kg().getEntity('big')).toBeNull();
+  });
 
-    // Cap of 1: `1.md` is processed, `2.md` is past the cap.
-    const capped = ingestNoteDirectory({ dir, maxFiles: 1, maxBytes: 1024 });
-    expect(capped.more).toBe(2); // 2.md and big.md sort after 1.md
-    // A file past the cap is still on disk: its memory must not be tagged missing.
-    expect(capped.markedMissing).toEqual([]);
+  it('caps reads per run, reports the rest, and makes progress across runs', () => {
+    const dir = makeDir({
+      '1.md': note('n1', 'One', 'fact', 'one'),
+      '2.md': note('n2', 'Two', 'fact', 'two'),
+      '3.md': note('n3', 'Three', 'fact', 'three'),
+    });
+    const first = ingestNoteDirectory({ dir, maxFiles: 1 });
+    expect(first).toMatchObject({ created: ['n1'], more: 2 });
+    // Unchanged files are recognised by their stat fingerprint and do not use
+    // up the cap, so the next run reaches the next file.
+    const second = ingestNoteDirectory({ dir, maxFiles: 1 });
+    expect(second).toMatchObject({ created: ['n2'], unchanged: 1, more: 1 });
+    expect(ingestNoteDirectory({ dir, maxFiles: 1 })).toMatchObject({ created: ['n3'], unchanged: 2, more: 0 });
+  });
+
+  it('a file past the cap is still on disk: its memory is not tagged missing', () => {
+    const dir = makeDir({
+      '1.md': note('n1', 'One', 'fact', 'one'),
+      '2.md': note('n2', 'Two', 'fact', 'two'),
+    });
+    ingestNoteDirectory({ dir });
+    fs.writeFileSync(path.join(dir, '1.md'), note('n1', 'One v2', 'fact', 'one changed'));
+    fs.writeFileSync(path.join(dir, '2.md'), note('n2', 'Two v2', 'fact', 'two changed'));
+    const capped = ingestNoteDirectory({ dir, maxFiles: 1 });
+    expect(capped).toMatchObject({ replaced: ['n1'], more: 1, markedMissing: [] });
     expect(kg().getEntity('n2')!.tags).not.toContain(NOTE_FILE_MISSING_TAG);
   });
 

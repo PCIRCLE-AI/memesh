@@ -49,9 +49,11 @@ describe('memesh remember CLI: quick-capture form', () => {
     );
 
     expect(exitCode, `stderr was: ${stderr}`).toBe(0);
-    // Default success line includes the auto-generated name.
-    expect(stdout).toMatch(/Stored "quick-\d{4}-\d{2}-\d{2}-/);
+    // Default success line includes the derived name (slug + text digest)
+    // and echoes the derived title (#324).
+    expect(stdout).toMatch(/Stored "oauth-2-0-with-pkce-for-the-api-[0-9a-f]{8}"/);
     expect(stdout).toContain('1 observations');
+    expect(stdout).toContain('title: OAuth 2.0 with PKCE for the API');
   }, 60_000);
 
   it('quick-capture with --obs keeps BOTH the positional text and the flag observations', () => {
@@ -64,7 +66,7 @@ describe('memesh remember CLI: quick-capture form', () => {
       { HOME: tmpHome },
     );
     expect(exitCode, `stderr was: ${stderr}`).toBe(0);
-    expect(stdout).toMatch(/Stored "quick-\d{4}-\d{2}-\d{2}-the-actual-content-/);
+    expect(stdout).toMatch(/Stored "the-actual-content-[0-9a-f]{8}"/);
     expect(stdout).toContain('2 observations');
 
     const recalled = runCli(['recall', 'actual content', '--json'], { HOME: tmpHome });
@@ -112,27 +114,43 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(stderr).toContain('quick-capture');
   }, 60_000);
 
-  // Codex challenge regression (2026-05-05): the previous quick-capture
-  // name `quick-<date>-<slug>` was deterministic by day + first 40
-  // chars of text. Two `memesh remember "fixed bug"` calls on the same
-  // day collapsed into one entity (remember() appends observations on
-  // duplicate-name) — silent data loss for journal-style usage. Names
-  // now carry a 6-hex-char random suffix so each call is a new entity.
-  it('produces a unique entity per call for identical quick-capture text (no silent merge)', () => {
-    const r1 = runCli(['remember', 'fixed bug'], { HOME: tmpHome });
-    const r2 = runCli(['remember', 'fixed bug'], { HOME: tmpHome });
+  // Codex challenge regression (2026-05-05), restated for #324. The old
+  // `quick-<date>-<slug40>` name merged DIFFERENT texts that began alike on
+  // the same day — silent data loss. The random suffix that fixed it made
+  // every repeat of the SAME text a duplicate. The name now carries a digest
+  // of the whole text: different texts never merge, the same text is one
+  // memory.
+  it('different texts sharing a long prefix stay separate; the same text twice is one memory', () => {
+    const prefix = 'fixed the flaky lock timeout in the release pipeline again';
+    const a = runCli(['remember', `${prefix} — cause A`], { HOME: tmpHome });
+    const b = runCli(['remember', `${prefix} — cause B`], { HOME: tmpHome });
+    const a2 = runCli(['remember', `${prefix} — cause A`], { HOME: tmpHome });
+    for (const r of [a, b, a2]) expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
 
-    expect(r1.exitCode, `r1 stderr: ${r1.stderr}`).toBe(0);
-    expect(r2.exitCode, `r2 stderr: ${r2.stderr}`).toBe(0);
+    const name = (out: string) => out.match(/Stored "([\w-]+)"/)?.[1];
+    expect(name(a.stdout)).toBeDefined();
+    expect(name(a.stdout)).not.toBe(name(b.stdout));
+    expect(name(a2.stdout)).toBe(name(a.stdout));
+    expect(a2.stdout).toContain('(0 observations');
 
-    const m1 = r1.stdout.match(/Stored "(quick-[\w-]+)"/);
-    const m2 = r2.stdout.match(/Stored "(quick-[\w-]+)"/);
-    expect(m1, `r1 stdout: ${r1.stdout}`).not.toBeNull();
-    expect(m2, `r2 stdout: ${r2.stdout}`).not.toBeNull();
-    expect(m1![1]).not.toBe(m2![1]);
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const count = db.prepare("SELECT COUNT(*) AS c FROM entities WHERE type = 'note'").get() as { c: number };
+    db.close();
+    expect(count.c).toBe(2);
+  }, 60_000);
 
-    // And the trailing random suffix shape is exactly 6 lowercase hex.
-    expect(m1![1]).toMatch(/-[0-9a-f]{6}$/);
-    expect(m2![1]).toMatch(/-[0-9a-f]{6}$/);
+  it('--replace rewrites a named memory and needs --name', () => {
+    expect(runCli(['remember', '--name=r1', '--type=note', '--obs=wrong line'], { HOME: tmpHome }).exitCode).toBe(0);
+    const r = runCli(['remember', '--name=r1', '--type=note', '--obs=right line', '--replace'], { HOME: tmpHome });
+    expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toContain('replaced');
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const obs = db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'r1'").all() as { content: string }[];
+    db.close();
+    expect(obs.map((o) => o.content)).toEqual(['right line']);
+
+    const noName = runCli(['remember', 'some text', '--replace'], { HOME: tmpHome });
+    expect(noName.exitCode).not.toBe(0);
+    expect(noName.stderr).toContain('--replace needs --name');
   }, 60_000);
 });

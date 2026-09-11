@@ -26971,6 +26971,62 @@ function inferErrorPattern(error51) {
   return "other";
 }
 
+// dist/core/note-derive.js
+import { createHash as createHash3 } from "crypto";
+var NOTE_OBSERVATION_MAX_CHARS = 1e4;
+var NOTE_MAX_OBSERVATIONS = 100;
+var NOTE_MAX_CHARS = 2e4;
+var NOTE_DEFAULT_TYPE = "note";
+function sanitizeNoteText(raw) {
+  const normalized = raw.replace(/\r\n?/g, "\n");
+  const stripped = normalized.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
+  return redactSecrets(stripped).trim();
+}
+function stripLineMarker(line) {
+  return line.replace(/^\s{0,3}(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+)/, "").trim();
+}
+function splitObservations(body) {
+  const out = [];
+  for (const block of body.split(/\n\s*\n/)) {
+    const lines = block.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0)
+      continue;
+    const isList = lines.every((l) => /^(?:[-*+]\s+|\d+[.)]\s+)/.test(l));
+    const parts = isList ? lines.map(stripLineMarker) : [lines.join(" ")];
+    for (const part of parts) {
+      const text = part.replace(/\s+/g, " ").trim();
+      if (!text)
+        continue;
+      out.push(text.length > NOTE_OBSERVATION_MAX_CHARS ? `${text.slice(0, NOTE_OBSERVATION_MAX_CHARS - 1).trimEnd()}\u2026` : text);
+    }
+  }
+  return out;
+}
+function slugify2(text) {
+  return text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60).replace(/-+$/g, "");
+}
+function deriveNote(raw) {
+  const text = sanitizeNoteText(raw);
+  if (!text)
+    return null;
+  const lines = text.split("\n");
+  const firstIndex = lines.findIndex((l) => l.trim().length > 0);
+  const firstLine = stripLineMarker(lines[firstIndex]).replace(/\s+/g, " ");
+  const rest = lines.slice(firstIndex + 1).join("\n");
+  let titleSource = firstLine;
+  if (firstLine.length > TITLE_MAX_LENGTH) {
+    const sentence = /^(.+?[.!?。！？])(?:\s|$)/.exec(firstLine);
+    if (sentence)
+      titleSource = sentence[1];
+  }
+  const title = truncateTitle(titleSource) || "note";
+  const body = splitObservations(rest);
+  const observations = title === firstLine && body.length > 0 ? body : [...splitObservations(firstLine), ...body];
+  const digest = createHash3("sha256").update(text).digest("hex").slice(0, 8);
+  const name = `${slugify2(title) || NOTE_DEFAULT_TYPE}-${digest}`;
+  return { text, title, observations, name };
+}
+
 // dist/core/types.js
 var NAMESPACES = ["personal", "team", "global"];
 
@@ -27182,19 +27238,67 @@ function recallTagFilter(args) {
 function buildRelevanceMap(entities) {
   return new Map(entities.map((entity, index) => [entity.name, 1 - index / (entities.length + 1)]));
 }
-function remember(args) {
+function remember(input) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
-  return db2.transaction(() => rememberInTransaction(args, db2, kg)).immediate();
+  const { args, derived } = resolveRememberInput(input);
+  return db2.transaction(() => rememberInTransaction(args, derived, db2, kg)).immediate();
 }
-function rememberInTransaction(args, db2, kg) {
-  const existing = db2.prepare("SELECT id, namespace, type FROM entities WHERE name = ?").get(args.name);
+var REPLACED_HISTORY_MAX = 20;
+function resolveRememberInput(input) {
+  if (input.note === void 0) {
+    if (!input.name || !input.type)
+      throw new Error("remember needs `name` and `type`, or `note`");
+    return { args: input };
+  }
+  if (input.title !== void 0 || input.observations !== void 0) {
+    throw new Error("`note` derives title and observations; do not also pass `title` or `observations`");
+  }
+  const derived = deriveNote(input.note);
+  if (!derived)
+    throw new Error("`note` is empty after removing control characters");
+  if (input.replace && !input.name) {
+    throw new Error("`replace` with `note` needs an explicit `name` (a derived name changes with the text)");
+  }
+  return {
+    args: {
+      ...input,
+      name: input.name ?? derived.name,
+      type: input.type ?? NOTE_DEFAULT_TYPE,
+      title: derived.title,
+      observations: derived.observations
+    },
+    derived
+  };
+}
+function rememberInTransaction(args, derived, db2, kg) {
+  const existing = db2.prepare("SELECT id, namespace, type, title FROM entities WHERE name = ?").get(args.name);
+  let replacedVersion;
+  let tags = args.tags;
+  let title = args.title;
+  let observations = args.observations;
+  if (args.replace && existing) {
+    const previousTags = db2.prepare("SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag").all(existing.id).map((t) => t.tag);
+    replacedVersion = {
+      replaced_at: (/* @__PURE__ */ new Date()).toISOString(),
+      title: existing.title,
+      observations: db2.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(existing.id).map((o) => o.content),
+      tags: previousTags
+    };
+    kg.clearEntityData(args.name);
+    if (tags === void 0)
+      tags = previousTags;
+  } else if (derived && existing) {
+    title = void 0;
+    const stored = new Set(db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(existing.id).map((o) => o.content));
+    observations = observations?.filter((o) => !stored.has(o));
+  }
   const entityId = kg.createEntity(args.name, args.type, {
-    observations: args.observations,
-    tags: args.tags,
+    observations,
+    tags,
     namespace: args.namespace,
     trustOverride: args.trustOverride,
-    title: args.title
+    title
   });
   kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
     trust: args.trustOverride,
@@ -27203,6 +27307,13 @@ function rememberInTransaction(args, db2, kg) {
       ...args.provenanceOverride ?? {}
     }
   }));
+  if (replacedVersion) {
+    const version2 = replacedVersion;
+    kg.updateEntityMetadata(args.name, (current) => {
+      const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
+      return { ...current, replaced_history: [...history, version2].slice(-REPLACED_HISTORY_MAX) };
+    });
+  }
   const relationsCreated = [];
   const relationErrors = [];
   if (args.relations) {
@@ -27230,15 +27341,17 @@ function rememberInTransaction(args, db2, kg) {
     stored: true,
     entityId,
     name: args.name,
-    ...args.title !== void 0 ? { title: args.title } : {},
+    ...title !== void 0 ? { title } : {},
     type: existing?.type ?? args.type,
-    observations: args.observations?.length ?? 0,
-    tags: args.tags?.length ?? 0,
+    observations: observations?.length ?? 0,
+    tags: tags?.length ?? 0,
     relations: relationsCreated.length,
     ...relationsCreated.length > 0 ? { relationsCreated } : {},
     ...existing && args.namespace !== void 0 && (existing.namespace ?? "personal") !== args.namespace ? { movedFromNamespace: existing.namespace ?? "personal" } : {},
     ...superseded.length > 0 ? { superseded } : {},
-    ...relationErrors.length > 0 ? { relationErrors } : {}
+    ...relationErrors.length > 0 ? { relationErrors } : {},
+    ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
+    ...derived ? { derived: { name: args.name, type: existing?.type ?? args.type, title: derived.title, observations: derived.observations } } : {}
   };
 }
 function searchAndScore(args) {
@@ -27309,11 +27422,11 @@ function forget(args) {
 }
 
 // dist/core/dreamer.js
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 
 // dist/core/transcript-source.js
 import fs3 from "fs";
-import { createHash as createHash3 } from "node:crypto";
+import { createHash as createHash4 } from "node:crypto";
 import path3 from "path";
 var MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
 var MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
@@ -27356,7 +27469,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash3("sha256").update(bytes).digest("hex");
+    const contentHash = createHash4("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -27546,7 +27659,7 @@ function parseVisibleConversation(transcript) {
 }
 
 // dist/core/product-improvements.js
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 var PRODUCT_IMPROVEMENT_KIND = "product_improvement";
 function clean(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -27656,7 +27769,7 @@ function stageProductImprovement(db2, input) {
       success_criteria: successCriteria,
       priority
     };
-    const digest = createHash4("sha256").update(JSON.stringify(canonical)).digest("hex");
+    const digest = createHash5("sha256").update(JSON.stringify(canonical)).digest("hex");
     const clusterKey = `product-improvement:${digest}`;
     const existing = db2.prepare(`SELECT id, project, source_ids, proposed_digest, status, reason, created_at, reviewed_at
        FROM dream_proposals
@@ -27862,7 +27975,7 @@ function executeWorkPackage(db2, input, context = {}) {
   const execute = () => {
     const project = input.action === "prepare" ? input.project : input.ref.project;
     const kind = input.action === "prepare" ? input.kind : input.ref.kind;
-    const hash2 = (value) => createHash5("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash6("sha256").update(JSON.stringify(value)).digest("hex");
     if (input.action !== "prepare") {
       const submitted = input.action === "submit" ? input.result : void 0;
       if (submitted && [submitted.name, ...submitted.observations, ...submitted.tags].some((s) => redactSecrets(s) !== s)) {
@@ -28703,10 +28816,10 @@ function assembleBriefing(project, recipient) {
 import { randomUUID as randomUUID4 } from "node:crypto";
 
 // dist/core/agent-messaging.js
-import { createHash as createHash7, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash8, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash6, randomUUID } from "node:crypto";
+import { createHash as createHash7, randomUUID } from "node:crypto";
 import fs5 from "node:fs";
 var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
@@ -29354,7 +29467,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash7("sha256").update(stableStringify(value)).digest("hex");
+  return createHash8("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)
@@ -29504,14 +29617,38 @@ var WorkPackageSchema = external_exports.discriminatedUnion("action", [
   }).strict()
 ]);
 var RememberSchema = external_exports.object({
-  name: nameField,
-  type: external_exports.string().min(1).max(100),
+  name: nameField.optional(),
+  type: external_exports.string().min(1).max(100).optional(),
   title: titleField,
   observations: external_exports.array(observationField).max(100).optional(),
+  note: external_exports.string().max(NOTE_MAX_CHARS).optional(),
+  replace: external_exports.boolean().optional(),
   tags: external_exports.array(external_exports.string().max(255)).max(50).optional(),
   relations: external_exports.array(external_exports.object({ to: external_exports.string().min(1).max(255), type: external_exports.string().min(1).max(100) }).strict()).max(50).optional(),
   namespace: external_exports.enum(NAMESPACES).optional()
-}).strict();
+}).strict().superRefine((data, ctx) => {
+  if (data.note === void 0) {
+    if (data.name === void 0)
+      ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
+    if (data.type === void 0)
+      ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note")' });
+    return;
+  }
+  for (const key of ["title", "observations"]) {
+    if (data[key] !== void 0) {
+      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key}` });
+    }
+  }
+  if (data.replace && data.name === void 0) {
+    ctx.addIssue({ code: "custom", path: ["name"], message: "replace with note needs an explicit name \u2014 a derived name changes with the text, so there is nothing to replace" });
+  }
+  const derived = deriveNote(data.note);
+  if (!derived) {
+    ctx.addIssue({ code: "custom", path: ["note"], message: "note must contain some text" });
+  } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
+    ctx.addIssue({ code: "custom", path: ["note"], message: `note splits into ${derived.observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+  }
+});
 var RecallSchema = external_exports.object({
   query: external_exports.string().max(1e3).optional(),
   tag: external_exports.string().max(255).optional(),
@@ -30760,17 +30897,25 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "remember",
-    description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context.",
+    description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the old content moves to metadata.replaced_history instead of staying next to the fix.",
     inputSchema: {
       type: "object",
       properties: {
         name: {
           type: "string",
-          description: 'Unique entity name (e.g., "auth-decision", "jwt-pattern"). Reusing a name appends observations and dedupes tags instead of replacing the entity.'
+          description: 'Unique entity name (e.g., "auth-decision", "jwt-pattern"). Reusing a name appends observations and dedupes tags instead of replacing the entity (unless `replace` is true). Required unless `note` is given, in which case it is derived from the text (same text \u2192 same name).'
         },
         type: {
           type: "string",
-          description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit")'
+          description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given, in which case it defaults to "note".'
+        },
+        note: {
+          type: "string",
+          description: "Free text, instead of title + observations: the first line becomes the title and each following paragraph an observation. Cannot be combined with `title` or `observations`. Control characters and credential-shaped strings are removed before storing."
+        },
+        replace: {
+          type: "boolean",
+          description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append)."
         },
         title: {
           type: "string",
@@ -30808,7 +30953,6 @@ var TOOL_DEFINITIONS = [
           description: 'Namespace for organizing the entity. Omit it to leave an existing memory where it is \u2014 supplying it MOVES a memory that already exists, and it drops out of every other scoped view. New memories default to "personal".'
         }
       },
-      required: ["name", "type"],
       additionalProperties: false
     }
   },

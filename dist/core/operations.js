@@ -3,6 +3,7 @@ import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
+import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
 function buildLocalMetadata(existingMetadata, overrides) {
     return {
         ...(existingMetadata ?? {}),
@@ -21,21 +22,73 @@ function recallTagFilter(args) {
 function buildRelevanceMap(entities) {
     return new Map(entities.map((entity, index) => [entity.name, 1 - index / (entities.length + 1)]));
 }
-export function remember(args) {
+export function remember(input) {
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
-    return db.transaction(() => rememberInTransaction(args, db, kg)).immediate();
+    const { args, derived } = resolveRememberInput(input);
+    return db.transaction(() => rememberInTransaction(args, derived, db, kg)).immediate();
 }
-function rememberInTransaction(args, db, kg) {
+export const REPLACED_HISTORY_MAX = 20;
+function resolveRememberInput(input) {
+    if (input.note === undefined) {
+        if (!input.name || !input.type)
+            throw new Error('remember needs `name` and `type`, or `note`');
+        return { args: input };
+    }
+    if (input.title !== undefined || input.observations !== undefined) {
+        throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
+    }
+    const derived = deriveNote(input.note);
+    if (!derived)
+        throw new Error('`note` is empty after removing control characters');
+    if (input.replace && !input.name) {
+        throw new Error('`replace` with `note` needs an explicit `name` (a derived name changes with the text)');
+    }
+    return {
+        args: {
+            ...input,
+            name: input.name ?? derived.name,
+            type: input.type ?? NOTE_DEFAULT_TYPE,
+            title: derived.title,
+            observations: derived.observations,
+        },
+        derived,
+    };
+}
+function rememberInTransaction(args, derived, db, kg) {
     const existing = db
-        .prepare('SELECT id, namespace, type FROM entities WHERE name = ?')
+        .prepare('SELECT id, namespace, type, title FROM entities WHERE name = ?')
         .get(args.name);
+    let replacedVersion;
+    let tags = args.tags;
+    let title = args.title;
+    let observations = args.observations;
+    if (args.replace && existing) {
+        const previousTags = db.prepare('SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag').all(existing.id)
+            .map((t) => t.tag);
+        replacedVersion = {
+            replaced_at: new Date().toISOString(),
+            title: existing.title,
+            observations: db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(existing.id)
+                .map((o) => o.content),
+            tags: previousTags,
+        };
+        kg.clearEntityData(args.name);
+        if (tags === undefined)
+            tags = previousTags;
+    }
+    else if (derived && existing) {
+        title = undefined;
+        const stored = new Set(db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(existing.id)
+            .map((o) => o.content));
+        observations = observations?.filter((o) => !stored.has(o));
+    }
     const entityId = kg.createEntity(args.name, args.type, {
-        observations: args.observations,
-        tags: args.tags,
+        observations,
+        tags,
         namespace: args.namespace,
         trustOverride: args.trustOverride,
-        title: args.title,
+        title,
     });
     kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
         trust: args.trustOverride,
@@ -44,6 +97,13 @@ function rememberInTransaction(args, db, kg) {
             ...(args.provenanceOverride ?? {}),
         },
     }));
+    if (replacedVersion) {
+        const version = replacedVersion;
+        kg.updateEntityMetadata(args.name, (current) => {
+            const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
+            return { ...current, replaced_history: [...history, version].slice(-REPLACED_HISTORY_MAX) };
+        });
+    }
     const relationsCreated = [];
     const relationErrors = [];
     if (args.relations) {
@@ -72,10 +132,10 @@ function rememberInTransaction(args, db, kg) {
         stored: true,
         entityId,
         name: args.name,
-        ...(args.title !== undefined ? { title: args.title } : {}),
+        ...(title !== undefined ? { title } : {}),
         type: existing?.type ?? args.type,
-        observations: args.observations?.length ?? 0,
-        tags: args.tags?.length ?? 0,
+        observations: observations?.length ?? 0,
+        tags: tags?.length ?? 0,
         relations: relationsCreated.length,
         ...(relationsCreated.length > 0 ? { relationsCreated } : {}),
         ...(existing && args.namespace !== undefined && (existing.namespace ?? 'personal') !== args.namespace
@@ -83,6 +143,10 @@ function rememberInTransaction(args, db, kg) {
             : {}),
         ...(superseded.length > 0 ? { superseded } : {}),
         ...(relationErrors.length > 0 ? { relationErrors } : {}),
+        ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
+        ...(derived
+            ? { derived: { name: args.name, type: existing?.type ?? args.type, title: derived.title, observations: derived.observations } }
+            : {}),
     };
 }
 export function recall(args) {
