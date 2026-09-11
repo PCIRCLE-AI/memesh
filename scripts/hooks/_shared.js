@@ -618,17 +618,21 @@ export function hookErrorReason(err) {
  * budget is far larger than the window any summary reads.
  */
 function rotateHookOutcomes(filePath) {
-  // An unpredictable name, created exclusively ('wx' = O_CREAT|O_EXCL, which
-  // refuses an existing path — a planted symlink included). `${pid}.tmp` was
-  // guessable, and the plain write followed whatever sat at that name.
-  const tmpPath = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
+  let tmpPath = null;
   try {
+    // The size check first: it is the hot path on every append, and it
+    // needs no random name.
     if (statSync(filePath).size <= HOOK_OUTCOMES_ROTATE_BYTES) return;
+    // An unpredictable name, created exclusively ('wx' = O_CREAT|O_EXCL,
+    // which refuses an existing path — a planted symlink included).
+    // `${pid}.tmp` was guessable, and the plain write followed whatever sat
+    // at that name.
+    tmpPath = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
     const trimmed = trimHookOutcomeLines(readFileSync(filePath, 'utf8'));
     writeFileSync(tmpPath, trimmed, { encoding: 'utf8', mode: PRIVATE_FILE_MODE, flag: 'wx' });
     renameSync(tmpPath, filePath);
   } catch (err) {
-    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+    try { if (tmpPath && existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
     try {
       process.stderr.write(`[memesh hook-outcomes] rotation failed for ${filePath}: ${err?.message ?? err}\n`);
     } catch { /* stderr gone */ }
