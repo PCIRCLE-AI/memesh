@@ -196,4 +196,79 @@ describe('ingestNoteDirectory', () => {
   it('throws on a directory that does not exist', () => {
     expect(() => ingestNoteDirectory({ dir: path.join(fixture.tmpDir, 'nope') })).toThrow();
   });
+
+  it('F1: an unusable file is remembered by fingerprint, so it neither eats the cap nor starves real notes', () => {
+    const dir = makeDir({
+      '0-bad.md': '# no frontmatter here\n',
+      '1-good.md': note('good_note', 'Good', 'fact', 'good body'),
+    });
+    const first = ingestNoteDirectory({ dir, maxFiles: 1 });
+    expect(first.created).toHaveLength(0);
+    expect(first.more).toBe(1);
+    expect(first.skipped[0].path).toBe('0-bad.md');
+
+    const second = ingestNoteDirectory({ dir, maxFiles: 1 });
+    expect(second.created).toEqual(['good_note']);
+    // Still reported — but from the fingerprint, without using the cap.
+    expect(second.skipped.map((x) => x.path)).toContain('0-bad.md');
+    expect(second.more).toBe(0);
+
+    // Editing the bad file makes it eligible for a real read again.
+    fs.writeFileSync(path.join(dir, '0-bad.md'), note('fixed_note', 'Fixed', 'fact', 'now valid'));
+    expect(ingestNoteDirectory({ dir, maxFiles: 1 }).created).toEqual(['fixed_note']);
+  });
+
+  it('F3: two files with the same frontmatter name do not take turns replacing one memory', () => {
+    const dir = makeDir({
+      'a.md': note('dup_name', 'From A', 'fact', 'text a'),
+      'b.md': note('dup_name', 'From B', 'fact', 'text b'),
+    });
+    const r = ingestNoteDirectory({ dir });
+    expect(r.created).toEqual(['dup_name']);
+    expect(r.skipped).toContainEqual({ path: 'b.md', reason: 'name "dup_name" already used by a.md in this directory' });
+    const again = ingestNoteDirectory({ dir });
+    expect(again.replaced).toHaveLength(0);
+    expect(kg().getEntity('dup_name')!.observations).toEqual(['text a']);
+    expect(kg().getEntity('dup_name')!.metadata?.replaced_history).toBeUndefined();
+  });
+
+  it('F3: the owner of a name keeps it even when a later-added duplicate sorts first', () => {
+    const dir = makeDir({ 'b.md': note('dup2', 'Owner', 'fact', 'owner text') });
+    ingestNoteDirectory({ dir });
+    fs.writeFileSync(path.join(dir, 'a.md'), note('dup2', 'Intruder', 'fact', 'intruder text'));
+    const r = ingestNoteDirectory({ dir });
+    expect(r.replaced).toHaveLength(0);
+    expect(r.skipped).toContainEqual({ path: 'a.md', reason: 'name "dup2" already used by b.md in this directory' });
+    expect(kg().getEntity('dup2')!.observations).toEqual(['owner text']);
+  });
+
+  it('F4: the frontmatter name gets the same hygiene as the body', () => {
+    const secret = ['Bearer', 'placeholderplaceholder1234'].join(' ');
+    const dir = makeDir({ 'a.md': note(`leak ${secret}`, 'Alpha', 'fact', 'alpha') });
+    const r = ingestNoteDirectory({ dir });
+    expect(r.created).toHaveLength(1);
+    expect(r.created[0]).not.toContain('placeholderplaceholder');
+    expect(r.created[0]).toContain('***REDACTED***');
+  });
+
+  it('F5: a file change keeps tags a person added and the first project tag', () => {
+    const dir = makeDir({ 'a.md': note('tagged', 'Alpha', 'fact', 'alpha') });
+    ingestNoteDirectory({ dir, project: 'first' });
+    remember({ name: 'tagged', type: 'fact', tags: ['topic:auth'] });
+    fs.writeFileSync(path.join(dir, 'a.md'), note('tagged', 'Alpha v2', 'fact', 'alpha two'));
+    ingestNoteDirectory({ dir, project: 'second' });
+    expect(kg().getEntity('tagged')!.tags.sort()).toEqual([NOTE_FILE_TAG, 'project:first', 'topic:auth'].sort());
+  });
+
+  it('a note-file memory that a manual remember appended to: the next file change replaces the appended line (kept in history)', () => {
+    const dir = makeDir({ 'a.md': note('mixed', 'Alpha', 'fact', 'from the file') });
+    ingestNoteDirectory({ dir });
+    remember({ name: 'mixed', type: 'fact', observations: ['added by hand'] });
+    fs.writeFileSync(path.join(dir, 'a.md'), note('mixed', 'Alpha v2', 'fact', 'file edited'));
+    ingestNoteDirectory({ dir });
+    const e = kg().getEntity('mixed')!;
+    expect(e.observations).toEqual(['file edited']);
+    const history = e.metadata?.replaced_history as Array<{ observations: string[] }>;
+    expect(history.at(-1)!.observations).toEqual(['from the file', 'added by hand']);
+  });
 });

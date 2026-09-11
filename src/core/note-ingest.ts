@@ -203,13 +203,39 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
        FROM entities e
        JOIN tags t ON t.entity_id = e.id AND t.tag = ?`,
   ).all(NOTE_FILE_MISSING_TAG, NOTE_FILE_TAG) as Array<{ id: number; name: string; metadata: string | null; is_missing: number }>;
-  const known = new Map<string, { mtime: unknown; size: unknown; missing: boolean }>();
+  const known = new Map<string, { name: string; mtime: unknown; size: unknown; missing: boolean }>();
   for (const row of noteRows) {
     const prov = parseProvenance(row.metadata);
     if (prov.note_dir_id === dirId && typeof prov.note_path === 'string') {
-      known.set(prov.note_path, { mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
+      known.set(prov.note_path, { name: row.name, mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
     }
   }
+
+  // Files skipped for something IN the file (no frontmatter, no name, empty,
+  // too large) are remembered by the same stat fingerprint, in
+  // memesh_metadata so the CLI and the Stop hook share it. Without this they
+  // were re-read on every run and used up the per-run cap: a directory whose
+  // first files were all unusable never reached its real notes, and the
+  // hook's "more to do" flag never cleared.
+  const skipKey = `note_ingest_skips:${dirId}`;
+  const skipRow = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(skipKey) as { value: string } | undefined;
+  let priorSkips: Record<string, { mtime: number; size: number; reason: string }> = {};
+  try {
+    const parsedSkips = skipRow ? JSON.parse(skipRow.value) as unknown : {};
+    if (parsedSkips && typeof parsedSkips === 'object') priorSkips = parsedSkips as typeof priorSkips;
+  } catch {
+    // A corrupt cache only costs re-reading the skipped files once; it is
+    // rewritten below.
+    priorSkips = {};
+  }
+  const nextSkips: typeof priorSkips = {};
+  // name → the file that owns it. Seeded with every file this directory
+  // already contributed, so a second file claiming the name is refused even
+  // when the owner is unchanged (and therefore never read this run), and
+  // whichever of the two sorts first.
+  const seenNames = new Map<string, string>();
+  const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
+  for (const [rel, k] of known) if (presentRels.has(rel)) seenNames.set(k.name, rel);
 
   let read = 0;
   for (const abs of files) {
@@ -217,6 +243,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     const skip = (reason: string) => { result.skipped.push({ path: rel, reason }); };
     let raw: Buffer;
     let stat: fs.Stats;
+    // A skip decided by the file's own content: fingerprinted, so the next
+    // run reports it without reading it again.
+    const contentSkip = (reason: string) => {
+      skip(reason);
+      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+    };
     try {
       stat = fs.lstatSync(abs);
       if (stat.isSymbolicLink()) { skip('symlink refused'); continue; }
@@ -225,9 +257,15 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
         result.unchanged++;
         continue;
       }
+      const priorSkip = priorSkips[rel];
+      if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size) {
+        skip(priorSkip.reason);
+        nextSkips[rel] = priorSkip;
+        continue;
+      }
       if (read >= maxFiles) { result.more++; continue; }
       read++;
-      if (stat.size > maxBytes) { skip(`larger than ${Math.round(maxBytes / 1024)} KB`); continue; }
+      if (stat.size > maxBytes) { contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`); continue; }
       const real = fs.realpathSync(abs);
       if (!real.startsWith(realDir + path.sep)) { skip('resolves outside the directory'); continue; }
       raw = fs.readFileSync(real);
@@ -237,9 +275,16 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     }
 
     const parsed = parseFrontmatter(raw.toString('utf8'));
-    if (!parsed) { skip('no frontmatter — a note file needs a `---` block with a name'); continue; }
-    const name = stringField(parsed.data, 'name')?.replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255);
-    if (!name) { skip('frontmatter has no name'); continue; }
+    if (!parsed) { contentSkip('no frontmatter — a note file needs a `---` block with a name'); continue; }
+    // Same hygiene as every other field: the name is stored and shown too.
+    const rawName = stringField(parsed.data, 'name');
+    const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
+    if (!name) { contentSkip('frontmatter has no name'); continue; }
+    // Two files claiming one name would take turns replacing the same memory
+    // on every run. The first in path order keeps it; the other is reported.
+    const firstWithName = seenNames.get(name);
+    if (firstWithName && firstWithName !== rel) { skip(`name "${name}" already used by ${firstWithName} in this directory`); continue; }
+    seenNames.set(name, rel);
 
     const metaBlock = parsed.data.metadata;
     const rawType = (typeof metaBlock === 'object' ? metaBlock.type : undefined) ?? stringField(parsed.data, 'type');
@@ -248,7 +293,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     const cleanDescription = description ? sanitizeNoteText(description) : '';
     let observations = splitObservations(sanitizeNoteText(parsed.body));
     if (observations.length === 0 && cleanDescription) observations = [cleanDescription];
-    if (observations.length === 0) { skip('empty note — no description and no body'); continue; }
+    if (observations.length === 0) { contentSkip('empty note — no description and no body'); continue; }
     observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
     const title = truncateTitle(cleanDescription || observations[0]);
 
@@ -278,12 +323,23 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       }
     }
 
+    // Tags: the file owns `source:*`; everything else a person added to the
+    // memory survives a file change. The project tag is set on first
+    // ingestion and then kept — the CLI and the hook may run from different
+    // directories, and the memory must not flip between projects with them.
+    const currentTags = existing
+      ? (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(existing.id) as { tag: string }[]).map((t) => t.tag)
+      : [];
+    const keptTags = currentTags.filter((t) => !t.startsWith('source:'));
+    const hasProject = keptTags.some((t) => t.startsWith('project:'));
+    const tags = [NOTE_FILE_TAG, ...keptTags, ...(!hasProject && opts.project ? [`project:${opts.project}`] : [])];
+
     remember({
       name,
       type,
       title,
       observations,
-      tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])],
+      tags,
       replace: true,
       // Same stance as the JSON importer: text from a file is not a trusted
       // re-assertion and must not lift confidence.
@@ -301,10 +357,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     (existing ? result.replaced : result.created).push(name);
   }
 
+  db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
+
   // Missing sweep. The "present" set is EVERY discovered file, not only the
   // processed ones: a file past the per-run cap, or skipped for its size, is
   // still on disk, and tagging its memory missing would be a false report.
-  const present = new Set(files.map((abs) => relPath(realDir, abs)));
+  const present = presentRels;
   // Tags are not part of the FTS document (name, title, observations are), so
   // adding one needs no index rebuild.
   const tagMissing = db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)');
