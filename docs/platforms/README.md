@@ -16,6 +16,7 @@ If your goal is cross-agent collaboration rather than memory alone, start with t
 | **Other MCP coding agents (Cursor, Cline…)** | MCP Server | Point the client at `memesh-mcp` | See root [README](../../README.md) |
 | **Local agent messaging across hosts** | MCP / HTTP / CLI; native path where documented | Explicit exact-recipient local messaging today; ordinary Codex CLI has active-session native delivery, while other host behavior remains adapter-specific | [agent-messaging.md](./agent-messaging.md) |
 | **Hermes Agent (NousResearch)** | Native `MemoryProvider` plugin | Drop `plugins/memory/memesh/` into a Hermes Agent checkout; `hermes memory setup memesh` | [hermes-agent.md](./hermes-agent.md) |
+| **Delegate workers (DeepSeek worker)** | Orchestrator-side CLI record; the worker never writes | `memesh delegation record --envelope <file> --prompt-file <file>` | [deepseek-worker.md](./deepseek-worker.md) |
 | **OpenClaw** | Native memory plugin (source; not live-tested or published) | `openclaw plugins install @pcircle/openclaw-memory-memesh` when published, or drop into OpenClaw checkout; configure `plugins.slots.memory` | [openclaw.md](./openclaw.md) |
 | **Custom apps / scripts** | HTTP API | Run `memesh serve` and call `/v1/*` | [universal.md](./universal.md) |
 | **ChatGPT / Custom GPT experiments** | HTTP API | Use a local connector/proxy that can reach localhost | [chatgpt.md](./chatgpt.md) |

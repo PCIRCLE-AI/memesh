@@ -59,7 +59,14 @@ require a bearer token when bound to `localhost`.
   are stamped `metadata.provenance.source_host: "hermes"`. The HTTP API
   stamps everything it writes `http`. Recall and the explicit tools still use
   HTTP. The CLI and `memesh serve` must therefore use the same database —
-  the default when both run as the same user on the same machine.
+  the default when both run as the same user on the same machine. If
+  `memesh serve` runs under systemd with `MEMESH_DB_PATH`/`MEMESH_DIR` in its
+  unit file, give the Hermes process the same values.
+- Hermes writes have no `project:` tag, so they don't show up in
+  project-scoped views (for example the session-start briefing). Recall them
+  by query or by the `platform:hermes` tag.
+- `sync_turn()` never waits: turns go to one background worker through a
+  queue of 8; when it is full the turn is dropped with a warning in the log.
 - `on_session_switch()`: keeps the cached `session_id` current across
   `/reset`, `/resume`, `/branch`, and context-compression session rotation,
   so memories written after a switch aren't mistagged with the pre-switch

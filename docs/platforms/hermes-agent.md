@@ -64,7 +64,21 @@ payload travels on stdin, never argv. Consequence: the CLI and `memesh serve`
 must open the same database — true by default when both run as the same user
 on the same machine, not true if `base_url` points at another host. Every
 capture logs its outcome (`wrote`, `skipped` + reason, or the failure) to the
-Hermes log, including tool names the extractor did not recognise.
+Hermes log, including tool names the extractor did not recognise and tool
+results it could not read as JSON (errors inside those are not counted).
+
+Two consequences to plan for:
+
+- **Same database, same environment.** If `memesh serve` runs as a systemd
+  service with `MEMESH_DB_PATH` or `MEMESH_DIR` set in its unit file, the
+  Hermes process must carry the same values — otherwise the CLI writes to
+  one database while recall reads another, and captures look lost. Same
+  shape as Pitfall 2 (a service's `Environment=` is not your shell's).
+- **No `project:` tag.** Hermes writes carry `platform:hermes` and
+  `session:<id>`, but no project, because a gateway's working directory says
+  nothing reliable about which project a conversation is about. They
+  therefore do not appear in project-scoped views such as the session-start
+  briefing; recall them by query or by `platform:hermes`.
 
 Activate with `hermes memory setup memesh` (non-interactive: the second
 positional arg skips the picker) — this writes `memory.provider: memesh` to

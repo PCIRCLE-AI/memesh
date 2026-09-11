@@ -1609,7 +1609,9 @@ OpenAI-format message list (`tool_calls` on assistant messages, `role: "tool"`
 results) and stores up to three `session-insight` entities:
 `session-<id>-files`, `session-<id>-fixes` and `session-<id>-summary`. Fewer
 than three tool calls stores nothing. A tool result counts as an error only
-when its JSON says so (`error`, `success: false`, or a non-zero `exit_code`).
+when its JSON says so (`error`, `success: false`, or a non-zero `exit_code`);
+results that are not a JSON object are counted in `toolResultsNonJson` so a
+host that returns plain text shows up as a blind spot, not as "no errors".
 Shell commands and error text are redacted before they are stored. Running it
 again for the same session adds only observations that are not already there.
 

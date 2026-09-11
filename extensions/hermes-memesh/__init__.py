@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import shutil
 import subprocess
 import threading
@@ -28,7 +29,9 @@ from agent.memory_provider import MemoryProvider
 logger = logging.getLogger(__name__)
 
 _PREFETCH_WAIT_SECS = 3
-_SYNC_JOIN_TIMEOUT_SECS = 5.0
+# Turns waiting for capture. A full queue drops the turn (logged) rather than
+# ever making sync_turn wait: sync_turn runs on Hermes's main thread.
+_TURN_QUEUE_MAX = 8
 _DEFAULT_BASE_URL = "http://localhost:3737"
 _RECALL_LIMIT = 5
 # Session capture runs synchronously at a session/compression boundary (see
@@ -92,7 +95,10 @@ class MemeshProvider(MemoryProvider):
         self._prefetch_thread: Optional[threading.Thread] = None
         self._prefetch_query: Optional[str] = None
         self._prefetch_result: Optional[str] = None
-        self._sync_thread: Optional[threading.Thread] = None
+        # One worker drains turns in order, so captures never pile up as
+        # concurrent `memesh` processes contending for the SQLite write lock.
+        self._turn_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_TURN_QUEUE_MAX)
+        self._turn_worker: Optional[threading.Thread] = None
 
     def system_prompt_block(self) -> str:
         # Deliberately minimal. Recall/storage already happen automatically
@@ -199,24 +205,39 @@ class MemeshProvider(MemoryProvider):
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         if self._agent_context != "primary":
+            logger.debug("MeMesh turn capture skipped: not the primary agent (%s)", self._agent_context)
             return
         sid = session_id or self._session_id
 
-        # Every turn is handed to memesh, but memesh stores it only when it
-        # states a decision or a lesson (src/core/turn-signal.ts) — ordinary
-        # chatter is not memory. Background thread: sync_turn fires every
-        # turn and must not add latency.
-        def _sync() -> None:
-            self._run_capture(
-                ["hermes", "capture-turn", "--session", sid],
-                {"user": user_content or "", "assistant": assistant_content or ""},
-                _TURN_TIMEOUT_SECS,
-            )
+        # Every turn is handed to memesh, but memesh stores it only when the
+        # reply states a decision or a lesson (src/core/turn-signal.ts) —
+        # ordinary chatter is not memory. Never blocks: sync_turn fires every
+        # turn on the host's main thread.
+        item = (sid, user_content or "", assistant_content or "")
+        try:
+            self._turn_queue.put_nowait(item)
+        except queue.Full:
+            logger.warning("MeMesh capture skipped: queue full (%s turns waiting)", _TURN_QUEUE_MAX)
+            return
+        if self._turn_worker is None or not self._turn_worker.is_alive():
+            self._turn_worker = threading.Thread(target=self._drain_turns, daemon=True)
+            self._turn_worker.start()
 
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=_SYNC_JOIN_TIMEOUT_SECS)
-        self._sync_thread = threading.Thread(target=_sync, daemon=True)
-        self._sync_thread.start()
+    def _drain_turns(self) -> None:
+        while True:
+            # Blocking get, no idle exit: an exiting worker could race a put
+            # that saw it still alive and strand that turn.
+            sid, user_text, assistant_text = self._turn_queue.get()
+            try:
+                self._run_capture(
+                    ["hermes", "capture-turn", "--session", sid],
+                    {"user": user_text, "assistant": assistant_text},
+                    _TURN_TIMEOUT_SECS,
+                )
+            except Exception as exc:
+                logger.warning("MeMesh turn capture failed: %s", exc)
+            finally:
+                self._turn_queue.task_done()
 
     # -- compression / session-end capture ------------------------------------
     #
@@ -265,6 +286,14 @@ class MemeshProvider(MemoryProvider):
         except Exception:
             logger.warning("MeMesh capture returned unreadable output: %s", proc.stdout[:200])
             return None
+        if not isinstance(result, dict):
+            logger.warning("MeMesh capture output is not a JSON object: %s", proc.stdout[:200])
+            return None
+        if result.get("toolResultsNonJson"):
+            logger.info(
+                "MeMesh capture: %s tool result(s) were not JSON, so errors in them were not counted",
+                result["toolResultsNonJson"],
+            )
         if result.get("unrecognizedTools"):
             logger.info("MeMesh capture: unrecognized tool names %s", result["unrecognizedTools"])
         logger.info(
@@ -280,6 +309,7 @@ class MemeshProvider(MemoryProvider):
         # reliably lost the write (Pitfall 5). These fire once per boundary,
         # so blocking briefly adds no per-turn latency.
         if self._agent_context != "primary":
+            logger.debug("MeMesh session capture skipped: not the primary agent (%s)", self._agent_context)
             return None
         if not messages:
             logger.info("MeMesh session capture skipped: no messages")

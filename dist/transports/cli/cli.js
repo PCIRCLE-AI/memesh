@@ -59492,10 +59492,10 @@ function toolResultError(content) {
   try {
     body = JSON.parse(text);
   } catch {
-    return null;
+    return "unreadable";
   }
   if (!body || typeof body !== "object" || Array.isArray(body))
-    return null;
+    return "unreadable";
   const b = body;
   const failed = typeof b.error === "string" && b.error.trim() !== "" || b.success === false || typeof b.exit_code === "number" && b.exit_code !== 0;
   if (!failed)
@@ -59509,6 +59509,7 @@ function activityFromChatMessages(messages) {
   const errorsEncountered = [];
   const unrecognized = /* @__PURE__ */ new Set();
   let toolCallCount = 0;
+  let toolResultsNonJson = 0;
   for (const msg of Array.isArray(messages) ? messages : []) {
     if (!msg || typeof msg !== "object")
       continue;
@@ -59538,7 +59539,9 @@ function activityFromChatMessages(messages) {
       }
     } else if (m.role === "tool") {
       const err = toolResultError(m.content);
-      if (err !== null)
+      if (err === "unreadable")
+        toolResultsNonJson++;
+      else if (err !== null)
         errorsEncountered.push(redactSecrets(err).slice(0, 200));
     }
   }
@@ -59547,7 +59550,8 @@ function activityFromChatMessages(messages) {
     bashCommands,
     errorsEncountered,
     toolCallCount,
-    unrecognizedTools: [...unrecognized]
+    unrecognizedTools: [...unrecognized],
+    toolResultsNonJson
   };
 }
 function fileTagsFor(files) {
@@ -59613,7 +59617,8 @@ function captureChatSession(input) {
     toolCallCount: activity.toolCallCount,
     filesEdited: activity.filesEdited.length,
     errorsEncountered: activity.errorsEncountered.length,
-    unrecognizedTools: activity.unrecognizedTools
+    unrecognizedTools: activity.unrecognizedTools,
+    toolResultsNonJson: activity.toolResultsNonJson
   };
   const entities = buildSessionInsights(activity, {
     sessionId: input.sessionId,

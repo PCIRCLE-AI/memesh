@@ -32,6 +32,17 @@ describe('activityFromChatMessages (Hermes / OpenAI tool_calls format)', () => {
     expect(joined).not.toContain('sk-proj-abcdefghijklmnopqrstuvwxyz0123456789');
   });
 
+  it('counts tool results it could not read as JSON, so the error blind spot is visible (F3)', () => {
+    const a = activityFromChatMessages([
+      { role: 'tool', content: 'Traceback (most recent call last): boom' },
+      { role: 'tool', content: '{"error": "denied"}' },
+      { role: 'tool', content: [{ type: 'text', text: 'plain' }] },
+    ]);
+    expect(a.errorsEncountered).toHaveLength(1);
+    expect(a.toolResultsNonJson).toBe(2);
+    expect(activityFromChatMessages(fixture.messages).toolResultsNonJson).toBe(0);
+  });
+
   it('never throws on malformed entries', () => {
     const a = activityFromChatMessages([
       null, 3, { role: 'assistant', tool_calls: [null, { function: { name: 'write_file', arguments: '{not json' } }] },
@@ -61,7 +72,7 @@ describe('buildSessionInsights — the Stop hook rules', () => {
 
   it('stores nothing for a quiet session (fewer than 3 tool calls)', () => {
     const out = buildSessionInsights(
-      { filesEdited: ['a.ts'], bashCommands: [], errorsEncountered: [], toolCallCount: 2, unrecognizedTools: [] },
+      { filesEdited: ['a.ts'], bashCommands: [], errorsEncountered: [], toolCallCount: 2, unrecognizedTools: [], toolResultsNonJson: 0 },
       ctx,
     );
     expect(out).toEqual([]);
@@ -69,7 +80,7 @@ describe('buildSessionInsights — the Stop hook rules', () => {
 
   it('writes -fixes only when a file was also edited', () => {
     const out = buildSessionInsights(
-      { filesEdited: [], bashCommands: [], errorsEncountered: ['boom'], toolCallCount: 5, unrecognizedTools: [] },
+      { filesEdited: [], bashCommands: [], errorsEncountered: ['boom'], toolCallCount: 5, unrecognizedTools: [], toolResultsNonJson: 0 },
       ctx,
     );
     expect(out).toEqual([]);
@@ -106,6 +117,7 @@ describe('captureChatSession', () => {
     });
     expect(r.outcome).toBe('skipped');
     expect(r.reason).toMatch(/too little activity/);
+    expect(r.toolResultsNonJson).toBe(0);
     expect(new KnowledgeGraph(getDatabase()).getEntity('session-h-2-files')).toBeNull();
   });
 });

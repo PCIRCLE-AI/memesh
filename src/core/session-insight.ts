@@ -42,6 +42,14 @@ export interface SessionActivity {
    * silently edited nothing.
    */
   unrecognizedTools: string[];
+  /**
+   * Tool results that were not a JSON object, so the error rule could not
+   * read them. [ASSUMPTION] Hermes returns tool results as JSON; if a host
+   * returns plain text, errors are never counted and `-fixes` is never
+   * written. This count is what makes that blind spot visible instead of
+   * reading as "no errors".
+   */
+  toolResultsNonJson: number;
 }
 
 export interface InsightEntity {
@@ -123,11 +131,11 @@ function contentText(content: unknown): string {
  * a substring match on the word "Error" (which counted READMEs as failures).
  * Non-JSON results are never counted as errors.
  */
-function toolResultError(content: unknown): string | null {
+function toolResultError(content: unknown): string | null | 'unreadable' {
   const text = contentText(content);
   let body: unknown;
-  try { body = JSON.parse(text); } catch { return null; }
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
+  try { body = JSON.parse(text); } catch { return 'unreadable'; }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return 'unreadable';
   const b = body as Record<string, unknown>;
   const failed = (typeof b.error === 'string' && b.error.trim() !== '')
     || b.success === false
@@ -148,6 +156,7 @@ export function activityFromChatMessages(messages: unknown): SessionActivity {
   const errorsEncountered: string[] = [];
   const unrecognized = new Set<string>();
   let toolCallCount = 0;
+  let toolResultsNonJson = 0;
 
   for (const msg of Array.isArray(messages) ? messages : []) {
     if (!msg || typeof msg !== 'object') continue;
@@ -176,7 +185,8 @@ export function activityFromChatMessages(messages: unknown): SessionActivity {
       }
     } else if (m.role === 'tool') {
       const err = toolResultError(m.content);
-      if (err !== null) errorsEncountered.push(redactSecrets(err).slice(0, 200));
+      if (err === 'unreadable') toolResultsNonJson++;
+      else if (err !== null) errorsEncountered.push(redactSecrets(err).slice(0, 200));
     }
   }
 
@@ -186,6 +196,7 @@ export function activityFromChatMessages(messages: unknown): SessionActivity {
     errorsEncountered,
     toolCallCount,
     unrecognizedTools: [...unrecognized],
+    toolResultsNonJson,
   };
 }
 
@@ -278,6 +289,7 @@ export interface ChatSessionCaptureResult {
   filesEdited: number;
   errorsEncountered: number;
   unrecognizedTools: string[];
+  toolResultsNonJson: number;
 }
 
 /**
@@ -301,6 +313,7 @@ export function captureChatSession(input: {
     filesEdited: activity.filesEdited.length,
     errorsEncountered: activity.errorsEncountered.length,
     unrecognizedTools: activity.unrecognizedTools,
+    toolResultsNonJson: activity.toolResultsNonJson,
   };
   const entities = buildSessionInsights(activity, {
     sessionId: input.sessionId,

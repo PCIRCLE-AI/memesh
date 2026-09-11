@@ -6,6 +6,7 @@ export interface SessionActivity {
     errorsEncountered: string[];
     toolCallCount: number;
     unrecognizedTools: string[];
+    toolResultsNonJson: number;
 }
 export interface InsightEntity {
     name: string;
@@ -31,6 +32,7 @@ export interface ChatSessionCaptureResult {
     filesEdited: number;
     errorsEncountered: number;
     unrecognizedTools: string[];
+    toolResultsNonJson: number;
 }
 export declare function captureChatSession(input: {
     sessionId: string;

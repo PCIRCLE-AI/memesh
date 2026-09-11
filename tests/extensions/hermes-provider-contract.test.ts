@@ -38,6 +38,7 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
   let server: ChildProcess;
   let result: Record<string, any>;
   let dbPath: string;
+  let queue: Record<string, any>;
 
   beforeAll(async () => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-hermes-contract-'));
@@ -78,6 +79,16 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     });
     if (run.status !== 0) throw new Error(`driver exited ${run.status}:\n${run.stderr}\n${run.stdout}`);
     result = JSON.parse(run.stdout.trim().split('\n').pop()!);
+
+    const fake = path.join(home, 'fake-memesh');
+    fs.writeFileSync(fake, '#!/bin/sh\ncat >/dev/null\necho "[1]"\n', { mode: 0o755 });
+    const q = spawnSync(python!, [path.join(FIXTURES, 'drive_queue.py'), EXT_INIT, hermesHome, fake], {
+      env: { ...env, PYTHONPATH: path.join(FIXTURES, 'stubs'), PYTHONDONTWRITEBYTECODE: '1' },
+      encoding: 'utf8',
+      timeout: 60_000,
+    });
+    if (q.status !== 0) throw new Error(`queue driver exited ${q.status}:\n${q.stderr}\n${q.stdout}`);
+    queue = JSON.parse(q.stdout.trim().split('\n').pop()!);
     dbPath = path.join(home, '.memesh', 'knowledge-graph.db');
   }, 180_000);
 
@@ -87,6 +98,17 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
       await new Promise((resolve) => server.on('exit', resolve));
     }
     if (home) fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  it('sync_turn never blocks the host on a slow capture; a full queue is logged, not waited on (F4)', () => {
+    expect(queue.sync_turn_20_calls_secs).toBeLessThan(1);
+    expect(queue.queue_full_warnings).toBeGreaterThan(0);
+  });
+
+  it('non-primary skips and non-object CLI output leave a log line (F5)', () => {
+    expect(queue.non_primary_debug).toBe(2);
+    expect(queue.non_dict_result).toBeNull();
+    expect(queue.non_dict_warnings).toBe(1);
   });
 
   function query<T>(sql: string, ...params: unknown[]): T[] {
@@ -126,6 +148,11 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toMatch(/^hermes-turn-contract-session-[0-9a-f]{12}$/);
     expect(JSON.parse(rows[0].metadata).provenance.source_host).toBe('hermes');
+  });
+
+  it('a second capture of the same messages adds no observations (F7)', () => {
+    expect(result.observations_after_first).toBeGreaterThan(0);
+    expect(result.observations_after_second).toBe(result.observations_after_first);
   });
 
   it('on_session_end produces the three session-insight entities, not a transcript', () => {
