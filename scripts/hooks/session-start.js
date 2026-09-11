@@ -700,7 +700,9 @@ function captureGraceInEffect(dir, installedVersion) {
     const next = advanceGraceState(parseGraceState(raw), installedVersion, Date.now());
     try {
       ensurePrivateDirShared(dir);
-      require('fs').writeFileSync(join(dir, CAPTURE_GRACE_FILE), JSON.stringify(next), { mode: 0o600 });
+      const gracePath = join(dir, CAPTURE_GRACE_FILE);
+      require('fs').writeFileSync(gracePath, JSON.stringify(next), { mode: 0o600 });
+      try { require('fs').chmodSync(gracePath, 0o600); } catch { /* best-effort hardening */ }
     } catch { /* best-effort — a lost count only shortens the grace */ }
     return graceInEffect(next, Date.now());
   } catch {
@@ -738,6 +740,7 @@ function captureLivenessBannerLine(installedVersion) {
     try {
       ensurePrivateDirShared(dir);
       require('fs').writeFileSync(markerPath, String(Date.now()), { mode: 0o600 });
+      try { require('fs').chmodSync(markerPath, 0o600); } catch { /* best-effort hardening */ }
     } catch { /* best-effort — worst case the line shows twice */ }
     return line;
   } catch {
@@ -1407,6 +1410,13 @@ process.stdin.on('end', async () => {
           }
         }
       }
+      // The populated-database path builds its banner locally rather than
+      // going through combineWithBanner() (the no-database path does). Keep
+      // the capture-liveness notice in this path too: otherwise the warning
+      // works only for a fresh graph and disappears precisely for users whose
+      // existing memories make capture failure most costly.
+      const captureLiveness = captureLivenessBannerLine(installedVersion);
+      if (captureLiveness) bannerLines.push(captureLiveness);
       const finalMessage = bannerLines.length > 0
         ? [...bannerLines.filter(l => l.length > 0), '', summary].join('\n')
         : summary;
@@ -1487,7 +1497,7 @@ process.stdin.on('end', async () => {
       recordHookOutcome(process.env, {
         hook: 'session-start',
         outcome: 'error',
-        reason: String(err?.message || 'unknown error').slice(0, 200),
+        reason: String(err?.message || 'unknown error'),
       });
       console.log(JSON.stringify({ systemMessage: withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`) }));
     }
@@ -1532,11 +1542,6 @@ function output(text, memoryContext = workPackageGuidance) {
   // effect it has. Recorded here rather than at each of the handler's many
   // returns because output() is the single emit point they all funnel
   // through, so no path can add itself later and stay invisible (#327).
-  recordHookOutcome(process.env, {
-    hook: 'session-start',
-    outcome: 'wrote',
-    entity: memoryContext ? 'session-start-context' : 'session-start-banner',
-  });
   const payload = { systemMessage: text };
   if (memoryContext) {
     payload.hookSpecificOutput = {
@@ -1545,4 +1550,9 @@ function output(text, memoryContext = workPackageGuidance) {
     };
   }
   console.log(JSON.stringify(payload));
+  recordHookOutcome(process.env, {
+    hook: 'session-start',
+    outcome: 'wrote',
+    entity: memoryContext ? 'session-start-context' : 'session-start-banner',
+  });
 }

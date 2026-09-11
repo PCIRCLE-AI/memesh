@@ -181,4 +181,17 @@ describe('SessionStart capture-liveness line', () => {
     const message = String(runHook({ MEMESH_DB_PATH: remoteDb }).out.systemMessage ?? '');
     expect(message).toContain('wrote nothing');
   });
+
+  it('shows the warning on the populated-database path too', () => {
+    writeRecords(silentPostCommit(SILENT_HOOK_MIN_RUNS + 3));
+    graceExpired(installedVersion());
+    execFileSync(process.execPath, [path.resolve('dist/transports/cli/cli.js'), 'remember', 'an existing memory'], {
+      cwd: testDir,
+      env: { ...process.env, MEMESH_DIR: memeshDir, MEMESH_DB_PATH: dbPath, HOME: testDir },
+      encoding: 'utf8',
+      timeout: 20000,
+    });
+    expect(fs.existsSync(dbPath), 'the populated-path case must have an entities database').toBe(true);
+    expect(systemMessage()).toContain('wrote nothing');
+  });
 });

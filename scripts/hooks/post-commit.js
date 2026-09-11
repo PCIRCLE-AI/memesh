@@ -241,7 +241,7 @@ process.stdin.on('end', () => {
   } catch (err) {
     // Never crash Claude Code — but leave a trace for debugging
     try { process.stderr.write(`[memesh post-commit] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err).slice(0, 200));
+    record('error', String(err?.message || err));
   }
   // Emit NOTHING on success — not `{"suppressOutput": true}`.
   //

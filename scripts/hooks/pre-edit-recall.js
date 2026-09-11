@@ -283,7 +283,7 @@ process.stdin.on('end', () => {
     // would silently break continuous recall on every Edit/Write
     // tool call indefinitely.
     try { process.stderr.write(`[memesh pre-edit-recall] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err).slice(0, 200));
+    record('error', String(err?.message || err));
     pass();
   }
 });

@@ -118,7 +118,7 @@ process.stdin.on('end', () => {
     // Never crash Claude Code, but trace — a silent break here means the
     // nudge stops firing and nothing reports it, same as guard-check.js.
     try { process.stderr.write(`[memesh decision-nudge] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err).slice(0, 200));
+    record('error', String(err?.message || err));
     pass();
   }
 });

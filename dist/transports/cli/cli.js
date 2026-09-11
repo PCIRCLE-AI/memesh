@@ -54585,7 +54585,7 @@ var init_capture_liveness = __esm({
     "use strict";
     HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
     HOOK_OUTCOMES_PER_HOOK = 20;
-    HOOK_OUTCOMES_ROTATE_BYTES = 32 * 1024;
+    HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
     SILENT_HOOK_MIN_RUNS = 5;
     CAPTURE_HOOKS = [
       "post-commit",

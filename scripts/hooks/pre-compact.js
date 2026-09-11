@@ -193,7 +193,7 @@ process.stdin.on('end', () => {
   } catch (err) {
     // Hooks must never crash Claude Code — exit cleanly
     try { process.stderr.write(`[memesh pre-compact] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err).slice(0, 200));
+    record('error', String(err?.message || err));
   }
   exit0();
 });

@@ -557,13 +557,14 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload,
     // error ones are redacted before they persist: stderr is transient, this
     // JSONL file is a permanent, exportable copy.
     if (reason) record.reason = redactSecrets(String(reason)).slice(0, 200);
-    if (entity) record.entity = entity;
+    if (entity) record.entity = redactSecrets(String(entity)).slice(0, 200);
     const sid = sessionId ?? (payload && typeof payload === 'object' ? payload.session_id : undefined);
-    if (typeof sid === 'string' && sid) record.session_id = sid;
+    if (typeof sid === 'string' && sid) record.session_id = redactSecrets(sid).slice(0, 128);
     // One O_APPEND write of one line. `mode` applies only when the file is
     // being created, which is the only moment the permission can be set
     // without a second syscall on the hot path.
     appendFileSync(filePath, serializeHookOutcome(record), { encoding: 'utf8', mode: 0o600 });
+    try { chmodSync(filePath, 0o600); } catch { /* best-effort hardening */ }
     rotateHookOutcomes(filePath);
   } catch (err) {
     try {
@@ -585,15 +586,17 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload,
  * budget is far larger than the window any summary reads.
  */
 function rotateHookOutcomes(filePath) {
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
   try {
     if (statSync(filePath).size <= HOOK_OUTCOMES_ROTATE_BYTES) return;
     const trimmed = trimHookOutcomeLines(readFileSync(filePath, 'utf8'));
-    const tmpPath = `${filePath}.${process.pid}.tmp`;
     writePrivateFile(tmpPath, trimmed);
     renameSync(tmpPath, filePath);
-  } catch {
-    // An oversized history still answers every question this file exists to
-    // answer, so a failed rotation is not worth a stderr line of its own.
+  } catch (err) {
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+    try {
+      process.stderr.write(`[memesh hook-outcomes] rotation failed for ${filePath}: ${err?.message ?? err}\n`);
+    } catch { /* stderr gone */ }
   }
 }
 

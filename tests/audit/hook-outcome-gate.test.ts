@@ -87,11 +87,12 @@ describe('capture-hook outcome gate', () => {
 
   it('does not let an arrow record helper credit an uncovered exit', () => {
     const source = [
-      'const record = (outcome) => recordHookOutcome(outcome);',
+      'const record = (outcome) =>',
+      '  recordHookOutcome(outcome);',
       'return exit0();',
       'function exit0() { process.exit(0); }',
     ].join('\n');
-    expect(findUncoveredExits(source)).toEqual([2]);
+    expect(findUncoveredExits(source)).toEqual([3]);
   });
 
   it('recognizes exit calls with arguments, spaces, and multiline parentheses', () => {
@@ -115,5 +116,14 @@ describe('capture-hook outcome gate', () => {
       '  record("inside");',
     ].join('\n');
     expect(() => findUncoveredExits(source)).toThrow(/unbalanced/);
+  });
+
+  it('still audits ordinary named function bodies', () => {
+    const source = [
+      'function handle(input) {',
+      '  if (!input) process.exit(0);',
+      '}',
+    ].join('\n');
+    expect(findUncoveredExits(source)).toEqual([2]);
   });
 });

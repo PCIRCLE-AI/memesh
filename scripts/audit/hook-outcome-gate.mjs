@@ -48,7 +48,7 @@ const RECORD_RE = /(?<![\w$.])(?:record|recordHookOutcome)\s*\(/;
 // …). Its body must be skipped, or the `recordHookOutcome(...)` inside the
 // `record` helper would count as a hook record and every uncovered exit
 // would hide behind it.
-const FUNCTION_DEF_RE = /^(?:export\s+)?(?:async\s+)?function\s+/;
+const OUTCOME_HELPER_DEF_RE = /^(?:export\s+)?(?:async\s+)?function\s+(?:record|exit0|pass)\s*\(/;
 
 /** Mask strings, comments, and regex literals while preserving newlines. */
 function maskLexicalNoise(source) {
@@ -116,7 +116,8 @@ export function findUncoveredExits(source) {
   const uncovered = [];
   let lastExitLine = -1;
   let lastRecordLine = -1;
-  let fnDepth = 0;
+  let braceDepth = 0;
+  let helperDepth = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -125,18 +126,25 @@ export function findUncoveredExits(source) {
       continue;
     }
 
-    if (fnDepth > 0) {
-      fnDepth += braceDelta(line);
+    if (helperDepth > 0) {
+      const delta = braceDelta(line);
+      braceDepth += delta;
+      helperDepth += delta;
       continue;
     }
-    if (FUNCTION_DEF_RE.test(trimmed)) {
-      fnDepth = braceDelta(line);
+    if (OUTCOME_HELPER_DEF_RE.test(trimmed)) {
+      const delta = braceDelta(line);
+      braceDepth += delta;
+      helperDepth = Math.max(delta, 0);
       continue;
     }
 
     // user-prompt-intent defines its record helper as an arrow function;
     // do not let the helper's own recordHookOutcome call credit the hook.
-    if (/^(?:const|let|var)\s+record\s*=.*=>/.test(trimmed)) continue;
+    if (/^(?:const|let|var)\s+record\s*=.*=>/.test(trimmed)) {
+      while (i < lines.length && !lines[i].includes(';')) i++;
+      continue;
+    }
 
     if (EXIT_RE.test(line)) {
       if (lastRecordLine <= lastExitLine) {
@@ -148,9 +156,11 @@ export function findUncoveredExits(source) {
     if (RECORD_RE.test(line)) {
       lastRecordLine = i;
     }
+    braceDepth += braceDelta(line);
+    if (braceDepth < 0) throw new Error('cannot analyze hook source: closing brace has no opening brace');
   }
-  if (fnDepth !== 0) {
-    throw new Error('cannot analyze hook source: function body is unbalanced');
+  if (braceDepth !== 0 || helperDepth !== 0) {
+    throw new Error('cannot analyze hook source: braces are unbalanced');
   }
   return uncovered;
 }
@@ -190,7 +200,7 @@ export function main() {
     );
     process.exit(1);
   }
-  console.log(`✓ 7 explicit-exit hooks record outcomes; session-start output funnel verified (8 hooks)`);
+  console.log(`✓ 7 explicit-exit hooks record outcomes; session-start output() contains an outcome record (8 hooks)`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

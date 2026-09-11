@@ -81,7 +81,7 @@ export const HOOK_OUTCOMES_PER_HOOK = 20;
  * The bound is a ceiling, not a target — a file slightly under it still
  * rotates when the size crosses, and the trim is exact when it does.
  */
-export const HOOK_OUTCOMES_ROTATE_BYTES = 32 * 1024;
+export const HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
 
 /** Serialise one record as a single JSONL line, newline included. */
 export function serializeHookOutcome(record: HookOutcomeRecord): string {

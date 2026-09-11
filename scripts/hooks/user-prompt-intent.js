@@ -278,7 +278,7 @@ if (isMainModule) {
       process.exit(0);
     } catch (err) {
       logError('user-prompt-intent', err?.message || err);
-      record('error', String(err?.message || err).slice(0, 200));
+      record('error', String(err?.message || err));
       process.exit(0);
     }
   });

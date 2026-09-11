@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { binTargets, hookCommands } from '../lib/executable-targets.mjs';
 import { npmSync } from '../lib/npm-bin.mjs';
 import { fetchPackument } from '../lib/upgrade-matrix.mjs';
-import { redactSecrets } from '../../src/core/paths.js';
+import { redactSecrets } from '../../dist/core/paths.js';
 
 const packageName = '@pcircle/memesh';
 const npmTimeoutMs = 180_000;
@@ -486,7 +486,15 @@ export function captureReceipt(install, spawnHook = spawnSync) {
 
   const repoDir = path.join(install.home, 'capture-repo');
   fs.mkdirSync(repoDir, { recursive: true });
-  const git = (args) => run('git', ['-C', repoDir, ...args]);
+  const gitEnv = {
+    ...env,
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_TEMPLATE_DIR: '',
+  };
+  const git = (args) => run('git', ['-C', repoDir, ...args], { env: gitEnv });
   git(['init', '-q', '-b', 'main']);
   git(['config', 'user.email', 'capture@example.com']);
   git(['config', 'user.name', 'Capture']);

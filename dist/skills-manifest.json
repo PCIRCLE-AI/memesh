@@ -38,7 +38,7 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "a1880e9c49a2490eb88218ac4b6d5669d84d4b3d480ccca6470349353911b928",
+      "sha256": "352ec077cb76722c0c62625507f3c28b82c81d36ae998d833ed61f983fe08612",
       "bytes": 8930
     },
     {
@@ -103,8 +103,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "1b2b89f709dae9a47222947f0ecec3a8c65320ea7df43e57b42551f69a5f99f8",
-      "bytes": 55993
+      "sha256": "cb453819104ac1ac971cd087a2b55d14e5abc6783cea6742c2deb99ba9e88081",
+      "bytes": 56239
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
@@ -113,43 +113,43 @@
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
-      "sha256": "636e58fe9eb767ca2b377c10a72391ff85d33f0b4f5e4553a9176dfe8366c49c",
-      "bytes": 8365
+      "sha256": "b60ff8924580960721677fc1abb5d55a91726e7b0946ec85e5997007f0d3858f",
+      "bytes": 8351
     },
     {
       "path": "scripts/hooks/guard-check.js",
-      "sha256": "7e23ddceba632d817bc76cb18ffd88159e9f7770c19f6d703ad5c920f938e9e3",
-      "bytes": 3851
+      "sha256": "ea04f9f88bab38c13dd07ba5b637fc2a082b448b82cbcdf574d2fc10af19a4ff",
+      "bytes": 3837
     },
     {
       "path": "scripts/hooks/post-commit.js",
-      "sha256": "46daba73bfa27aa48eaded6dad51730805819ebb44cee6141da25866ec9c12ba",
-      "bytes": 13089
+      "sha256": "713aad5d6846206bbf36ccd080d05fc0eeca2e0051b79db58355b534fff42096",
+      "bytes": 13075
     },
     {
       "path": "scripts/hooks/pre-compact.js",
-      "sha256": "3ced2f9a1520d9bbce28caed347e74d2cb7a615a2c2fb4bcb3d5d818fb5d5d20",
-      "bytes": 9910
+      "sha256": "9a86ce17ed7a2bb200a58801973d11fbeb150d14ca43bb7c026902dd570c38be",
+      "bytes": 9896
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "b699c1a2ecc87dcd3c182631a978e34df304432b0a29380a8ed4f43c910d23ce",
-      "bytes": 14851
+      "sha256": "167ab39d87636f69d20b61be189f7891b385dcf1ebc38c8321ff872bde4ee1a8",
+      "bytes": 14837
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "4b66d6fa180e39addb0a7b5c2fa7f204d83010048857c9243ffdb663cdfd0252",
-      "bytes": 77484
+      "sha256": "ba0ffc80fb1d39ea9956868a2cdd5c258757dbc763231073769e9ea5084ba7c9",
+      "bytes": 78202
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "0559ca6bd2854d9f53b6d7a468cc9de7c8d9ef5b4780b673169de3e71c5b1728",
-      "bytes": 34462
+      "sha256": "bb305255cf362796b338567f058db19044c531bfc9803b4966ba7e454e547434",
+      "bytes": 34448
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "13b44689eb22e0b7d0d312f3439299fbc06745abdb6c950078b896d066d070fb",
-      "bytes": 13341
+      "sha256": "59d3c760163f6810fc88ca0a7f25648e2c84d4571cab6d6e216f6ac4621049b2",
+      "bytes": 13327
     },
     {
       "path": "skills/memesh-review/SKILL.md",

@@ -8,7 +8,7 @@
 // ============================================================================
 export const HOOK_OUTCOMES_FILENAME = 'hook-outcomes.jsonl';
 export const HOOK_OUTCOMES_PER_HOOK = 20;
-export const HOOK_OUTCOMES_ROTATE_BYTES = 32 * 1024;
+export const HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
 export function serializeHookOutcome(record) {
     return `${JSON.stringify(record)}\n`;
 }

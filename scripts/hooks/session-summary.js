@@ -631,7 +631,7 @@ process.stdin.on('end', async () => {
     // failures from this hook; with that branch gone, real capture errors stay
     // visible without crashing the host session.
     try { process.stderr.write(`[memesh session-summary] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err).slice(0, 200));
+    record('error', String(err?.message || err));
   }
 
   // Update only after all session work so installed files cannot change while
