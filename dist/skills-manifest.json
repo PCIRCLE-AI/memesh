@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "352ec077cb76722c0c62625507f3c28b82c81d36ae998d833ed61f983fe08612",
-      "bytes": 8930
+      "sha256": "e524b629e57b939ad235ecad418aa869183a6584f25123822081daa7766fb4aa",
+      "bytes": 11143
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -103,8 +103,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "cb453819104ac1ac971cd087a2b55d14e5abc6783cea6742c2deb99ba9e88081",
-      "bytes": 56239
+      "sha256": "ca1bfa8017b21a1f5664ae35ea70ba8a19805c00427a9de827cc5341f84f1896",
+      "bytes": 56026
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
@@ -123,8 +123,8 @@
     },
     {
       "path": "scripts/hooks/post-commit.js",
-      "sha256": "713aad5d6846206bbf36ccd080d05fc0eeca2e0051b79db58355b534fff42096",
-      "bytes": 13075
+      "sha256": "b12f48ac26cebb1eb3dbae6731af4b090cd3bf78a6a0fc507f4d64b8d9df599e",
+      "bytes": 13297
     },
     {
       "path": "scripts/hooks/pre-compact.js",
@@ -138,13 +138,13 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "ba0ffc80fb1d39ea9956868a2cdd5c258757dbc763231073769e9ea5084ba7c9",
-      "bytes": 78202
+      "sha256": "05d7709bd20ea0f2a0f0c4df326862d05fc25f5c04de7a12c274eb3f1e349bf4",
+      "bytes": 78203
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "bb305255cf362796b338567f058db19044c531bfc9803b4966ba7e454e547434",
-      "bytes": 34448
+      "sha256": "a0cdf1466248308557eebd279f3bc1c8b135350115a763886815a01520a75ce7",
+      "bytes": 34457
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",

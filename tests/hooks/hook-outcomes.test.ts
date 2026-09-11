@@ -13,6 +13,7 @@ import {
   HOOK_OUTCOMES_FILENAME,
   HOOK_OUTCOMES_PER_HOOK,
   SILENT_HOOK_MIN_RUNS,
+  SKIP_REASONS,
   type HookOutcomeRecord,
 } from '../../src/core/capture-liveness.js';
 import { recordHookOutcome } from '../../scripts/hooks/_shared.js';
@@ -115,7 +116,9 @@ describe('hook outcome records', () => {
     expect(rows.length, 'post-commit left no record on the write path').toBe(1);
     expect(rows[0].outcome).toBe('wrote');
     expect(rows[0].entity).toBe(`commit-${c.hash}`);
-    expect(rows[0].session_id).toBe('sess-1');
+    // No session_id: nothing reads it back, and an unread copy of an id is
+    // only more to leak from an exportable file (#327 S5).
+    expect(fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8')).not.toContain('sess-1');
   });
 
   it('post-commit records a SKIPPED naming the #321 reason when the output has no commit line', () => {
@@ -130,7 +133,7 @@ describe('hook outcome records', () => {
     const rows = records('post-commit');
     expect(rows.length, 'post-commit left no record on its most common skip path').toBe(1);
     expect(rows[0].outcome).toBe('skipped');
-    expect(rows[0].reason).toBe('no commit line in output');
+    expect(rows[0].reason).toBe(SKIP_REASONS.commitLineMissing);
   });
 
   it('post-commit records a SKIPPED with a reason on every other bail', () => {
@@ -147,9 +150,12 @@ describe('hook outcome records', () => {
     // A skip with no reason is the thing this whole file exists to prevent:
     // it is a record that says "nothing happened" and nothing more.
     for (const r of rows) expect(r.reason, `${JSON.stringify(r)} carries no reason`).toBeTruthy();
-    expect(rows[0].reason).toBe('not a Bash tool call');
+    expect(rows[0].reason).toBe(SKIP_REASONS.notBash);
     expect(rows[1].reason).toBe('tool_name absent in payload');
-    expect(rows[2].reason).toContain('not a git commit');
+    // Checked on the COMMAND before the output: a commit-shaped line in
+    // `cat` output is "not a git commit command", which doctor does not
+    // count as silence (#327 C1).
+    expect(rows[2].reason).toBe(SKIP_REASONS.notGitCommit);
   });
 
   it('post-commit records an ERROR when the payload cannot be parsed at all', () => {
@@ -327,7 +333,7 @@ describe('hook outcome records', () => {
     for (let i = 0; i < 260; i++) {
       fs.appendFileSync(file, serializeHookOutcome({
         hook: 'post-commit', at: new Date().toISOString(), host: 'unknown',
-        outcome: 'skipped', reason: 'no commit line in output',
+        outcome: 'skipped', reason: SKIP_REASONS.commitLineMissing,
       }));
     }
     runHook('pre-compact', { trigger: 'auto' });
@@ -340,7 +346,7 @@ describe('hook outcome records', () => {
   it('a summary window never grows with the file', () => {
     const raw = Array.from({ length: 50 }, (_, i) => JSON.stringify({
       hook: 'post-commit', at: `2026-09-0${(i % 9) + 1}T00:00:00.000Z`, host: 'claude-code',
-      outcome: 'skipped', reason: 'no commit line in output',
+      outcome: 'skipped', reason: SKIP_REASONS.commitLineMissing,
     })).join('\n');
     expect(parseHookOutcomes(raw).hooks['post-commit']).toHaveLength(HOOK_OUTCOMES_PER_HOOK);
   });
@@ -379,7 +385,7 @@ describe('hook outcome records', () => {
   it('a hook that ran enough times and wrote nothing is the concern; one write clears it', () => {
     const skip = (n: number) => Array.from({ length: n }, () => JSON.stringify({
       hook: 'post-commit', at: '2026-09-01T00:00:00.000Z', host: 'claude-code',
-      outcome: 'skipped', reason: 'no commit line in output',
+      outcome: 'skipped', reason: SKIP_REASONS.commitLineMissing,
     })).join('\n');
 
     const silent = captureLivenessVerdict({

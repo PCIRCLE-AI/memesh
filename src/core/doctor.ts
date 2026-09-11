@@ -1395,7 +1395,7 @@ function inspectHookActivity(
  * green throughout.
  *
  * Two independent sources, deliberately:
- *   - `hook-outcomes.json`, written by the hooks themselves, which is the
+ *   - `hook-outcomes.jsonl`, written by the hooks themselves, which is the
  *     only place a SKIP REASON exists;
  *   - the database, for what actually landed, per entity type, this week
  *     versus last.
@@ -1555,9 +1555,9 @@ function inspectCaptureLiveness(
     const reason = h.dominantSkipReason ?? 'no reason recorded';
     return {
       check: createCheck('capture-liveness', TITLE, 'warn',
-        `${h.hook}: ${h.runs} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`,
+        `${h.hook}: ${h.triggeredRuns} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`,
         'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.',
-        { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.runs, reason } }),
+        { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
       report,
     };
   }

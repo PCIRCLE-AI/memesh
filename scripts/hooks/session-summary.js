@@ -25,6 +25,7 @@ import {
   stampHookRunOnly,
   resolveAutoUpdatePolicy,
   resolvePluginRoot,
+  SKIP_REASONS,
   spawnAutoUpdate,
   truncateTitle,
 } from './_shared.js';
@@ -375,7 +376,7 @@ process.stdin.on('end', async () => {
       ).get(`session-${sessionId}-files`, `session-${sessionId}-fixes`, `session-${sessionId}-summary`);
       if (alreadyCaptured) {
         recordHookRun(db, 'session-summary');
-        record('skipped', 'this session was already captured', `session-${sessionId}-summary`);
+        record('skipped', SKIP_REASONS.alreadyCaptured, `session-${sessionId}-summary`);
         // A duplicate capture is still a completed Stop lifecycle. Update
         // consent is session-scoped and must not be skipped merely because
         // the same transcript was observed twice (a common host retry).

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'child_process';
-import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
 
 // The parsed payload, hoisted so the outcome recorder below can read
 // session_id and the host signal from ANY exit path — including the ones
@@ -49,7 +49,28 @@ process.stdin.on('end', () => {
       return exit0();
     }
     if (data.tool_name !== 'Bash') {
-      record('skipped', 'not a Bash tool call');
+      record('skipped', SKIP_REASONS.notBash);
+      return exit0();
+    }
+
+    // The COMMAND decides whether this run is about a commit at all, and it
+    // is checked BEFORE the output for two reasons.
+    //
+    // First, the output looking like a commit is not evidence that a commit
+    // happened. This hook once stopped at the output regex below, so any Bash
+    // output containing a commit-shaped line produced a permanent memory.
+    // Measured: a payload whose command was `cat docs/release-notes.md` wrote
+    // entity `commit-9f3c2a1` for a hash `git cat-file -t` rejects as "Not a
+    // valid object name".
+    //
+    // Second, the two skips mean opposite things to `memesh doctor` (#327):
+    // "not a git commit command" is this hook correctly ignoring `ls`, on
+    // almost every Bash call, and must not count as silence; "a git commit
+    // ran but printed no commit line" is the #321 shape — a commit happened
+    // and nothing was saved — and is exactly the silence worth a sentence.
+    const issuedCommand = typeof data.tool_input?.command === 'string' ? data.tool_input.command : '';
+    if (!/\bgit\b[^|;&]*\bcommit\b/.test(issuedCommand)) {
+      record('skipped', SKIP_REASONS.notGitCommit);
       return exit0();
     }
 
@@ -83,23 +104,9 @@ process.stdin.on('end', () => {
     if (!commitMatch) {
       // The #321 reason, spelled out for doctor: this is what `git commit -q`
       // looks like from here, and it is also what a genuinely broken capture
-      // looks like. The COUNT is what tells them apart.
-      record('skipped', 'no commit line in output');
-      return exit0();
-    }
-
-    // The OUTPUT looking like a commit is not evidence that a commit happened.
-    // This hook stopped at the regex above, so any Bash output containing a
-    // commit-shaped line produced a permanent memory. Measured: a payload whose
-    // command was `cat docs/release-notes.md` wrote entity `commit-9f3c2a1`
-    // for a hash `git cat-file -t` rejects as "Not a valid object name".
-    // Reading a changelog, tailing a build log, or quoting a commit line was
-    // enough — and the fake then surfaced through session-start and
-    // pre-edit-recall as if it had happened.
-    const issuedCommand = typeof data.tool_input?.command === 'string' ? data.tool_input.command : '';
-    if (!/\bgit\b[^|;&]*\bcommit\b/.test(issuedCommand)) {
-      try { process.stderr.write(`[memesh post-commit] output looks like a commit but the command was not a git commit; skipping ${commitMatch[1]}\n`); } catch {}
-      record('skipped', 'output looks like a commit but the command was not a git commit');
+      // looks like (a failed commit prints no line either). The COUNT is
+      // what tells them apart.
+      record('skipped', SKIP_REASONS.commitLineMissing);
       return exit0();
     }
 

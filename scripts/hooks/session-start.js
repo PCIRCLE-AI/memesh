@@ -669,7 +669,7 @@ function captureTargetUnwritable() {
  * The verdict is computed in the HOOK layer because a hook cannot import
  * `src/` — but from the SAME leaf `memesh doctor` uses, so the banner and
  * the report can never disagree about whether capture is alive. The hook
- * sees only `hook-outcomes.json`: doctor additionally reads the database for
+ * sees only `hook-outcomes.jsonl`: doctor additionally reads the database for
  * per-type trends and the `hook_runs` heartbeats, so doctor can reach a FAIL
  * this line never will. That is the right asymmetry — a SessionStart line is
  * a nudge towards `memesh doctor`, not a replacement for it.

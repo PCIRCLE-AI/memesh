@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runDoctor as runDoctorImpl, formatDoctorReport } from '../../src/core/doctor.js';
-import { HOOK_OUTCOMES_FILENAME, type HookOutcomeRecord } from '../../src/core/capture-liveness.js';
+import { HOOK_OUTCOMES_FILENAME, SKIP_REASONS, type HookOutcomeRecord } from '../../src/core/capture-liveness.js';
 import type { UpdateCheck } from '../../src/core/version-check.js';
 import type { InstallChannel } from '../../src/core/install-channel.js';
 
@@ -134,7 +134,7 @@ async function run(dbOpts: Parameters<typeof makeDatabase>[0] = {}, installChann
 describe('doctor: capture-liveness', () => {
   it('PASS — the hooks are writing', async () => {
     memeshDirWith([
-      ...skips('post-commit', 4, 'no commit line in output'),
+      ...skips('post-commit', 4, SKIP_REASONS.commitLineMissing),
       { hook: 'post-commit', at: '2026-09-09T00:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'commit-abc1234' },
       { hook: 'session-summary', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'session-s1-summary' },
     ]);
@@ -147,13 +147,13 @@ describe('doctor: capture-liveness', () => {
   });
 
   it('PASS_WITH_CONCERNS — a hook that ran and never wrote, named with its dominant reason', async () => {
-    // The #321 shape exactly: 48 runs, 0 writes, 'no commit line in output'.
-    memeshDirWith(skips('post-commit', 48, 'no commit line in output'));
+    // The #321 shape exactly: 48 git commits, 0 writes, no commit line printed.
+    memeshDirWith(skips('post-commit', 48, SKIP_REASONS.commitLineMissing));
     const result = await run();
     const check = result.checks.find((c) => c.id === 'capture-liveness')!;
     expect(check.status).toBe('warn');
     expect(check.code).toBe('capture-liveness.silent-hook');
-    expect(check.summary).toContain('no commit line in output');
+    expect(check.summary).toContain(SKIP_REASONS.commitLineMissing);
     // The RUN COUNT is the whole diagnostic: without it "0 writes" is just
     // a quiet week. The window caps at 20 records, so that is what it reports.
     expect(check.params?.runs).toBe(20);
@@ -162,6 +162,49 @@ describe('doctor: capture-liveness', () => {
     expect(result.capture?.hooks[0].writes).toBe(0);
     // The figures ride --json, not only the sentence.
     expect(JSON.stringify(result)).toContain('"capture"');
+  });
+
+  it('PASS — hooks that skip by design on every Bash call or prompt are not silence', async () => {
+    // A default install on an ordinary day: guard-check skips every Bash call
+    // no guard matches, post-commit ignores every Bash call that is not a
+    // commit, and one session ended with a capture. Nothing here is wrong,
+    // and a PASS_WITH_CONCERNS would put a false banner up every day.
+    memeshDirWith([
+      ...skips('guard-check', 20, 'no active guard matched this command'),
+      ...skips('post-commit', 20, SKIP_REASONS.notGitCommit),
+      ...skips('user-prompt-intent', 20, 'the prompt carried no remember intent and no update decision'),
+      ...skips('session-summary', 19, SKIP_REASONS.alreadyCaptured),
+      { hook: 'session-summary', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'session-s1-summary' },
+    ]);
+    const result = await run();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('pass');
+    expect(result.capture?.status).toBe('PASS');
+    expect(result.capture?.hooks.every((h) => !h.silent)).toBe(true);
+  });
+
+  it('a window of "already captured" Stops is not session-summary silence', async () => {
+    // Stop fires every turn; after the one capture per session, every later
+    // Stop is "already captured". A long session pushes the write out of the
+    // 20-record window — that is not a hook that stopped saving.
+    memeshDirWith(skips('session-summary', 20, SKIP_REASONS.alreadyCaptured));
+    const result = await run();
+    expect(result.capture?.status).toBe('PASS');
+  });
+
+  it('post-commit silence counts commits, not Bash calls, and quotes the commit reason', async () => {
+    // The #321 shape inside a busy window: most runs are not commits, and
+    // the five that ARE commits printed no line. The sentence must count the
+    // five and name their reason — not the 15 non-commits.
+    memeshDirWith([
+      ...skips('post-commit', 15, SKIP_REASONS.notGitCommit),
+      ...skips('post-commit', 5, SKIP_REASONS.commitLineMissing),
+    ]);
+    const result = await run();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).toBe('capture-liveness.silent-hook');
+    expect(check.params?.runs).toBe(5);
+    expect(check.params?.reason).toBe(SKIP_REASONS.commitLineMissing);
   });
 
   it('PASS_WITH_CONCERNS — a type that was being written stopped being written', async () => {
@@ -184,7 +227,7 @@ describe('doctor: capture-liveness', () => {
   });
 
   it('FAIL — session-summary has neither a record nor a heartbeat since tracking began', async () => {
-    memeshDirWith(skips('post-commit', 6, 'no commit line in output'));
+    memeshDirWith(skips('post-commit', 6, SKIP_REASONS.commitLineMissing));
     // Wired via the plugin runtime, so captureWired is true — this is the
     // case where a silent session-summary really is a defect, not a config.
     const result = await run({ stampedHooks: ['post-commit'] }, 'plugin-marketplace');
@@ -200,7 +243,7 @@ describe('doctor: capture-liveness', () => {
     // A Codex / Gemini / Cursor install wires no capture hook. Past the
     // grace, session-summary has never run — but there is nothing that
     // should be running, so a FAIL here would be a permanent unfixable red.
-    memeshDirWith(skips('post-commit', 6, 'no commit line in output'));
+    memeshDirWith(skips('post-commit', 6, SKIP_REASONS.commitLineMissing));
     const result = await run({ stampedHooks: [] });
     const check = result.checks.find((c) => c.id === 'capture-liveness')!;
     expect(check.status).not.toBe('fail');
@@ -212,7 +255,7 @@ describe('doctor: capture-liveness', () => {
     // Legacy hooks write entities without a heartbeat or an outcome record.
     // The never-ran FAIL must not fire over a graph that is provably still
     // being captured — the same hedge hook-activity takes.
-    memeshDirWith(skips('post-commit', 6, 'no commit line in output'));
+    memeshDirWith(skips('post-commit', 6, SKIP_REASONS.commitLineMissing));
     const result = await run({ stampedHooks: [], legacyCaptured: 5 }, 'plugin-marketplace');
     const check = result.checks.find((c) => c.id === 'capture-liveness')!;
     expect(check.status).toBe('warn');

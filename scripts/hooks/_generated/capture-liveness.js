@@ -12,7 +12,7 @@ export const HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
 export function serializeHookOutcome(record) {
     return `${JSON.stringify(record)}\n`;
 }
-export function trimHookOutcomeLines(raw, max = HOOK_OUTCOMES_PER_HOOK) {
+export function trimHookOutcomeLines(raw, max = HOOK_OUTCOMES_PER_HOOK, maxBytes = HOOK_OUTCOMES_ROTATE_BYTES) {
     const records = [];
     for (const line of raw.split('\n')) {
         const record = parseHookOutcomeLine(line);
@@ -28,8 +28,38 @@ export function trimHookOutcomeLines(raw, max = HOOK_OUTCOMES_PER_HOOK) {
         if (n <= max)
             keep[i] = true;
     }
-    const kept = records.filter((_, i) => keep[i]).map((r) => r.line);
+    let kept = records.filter((_, i) => keep[i]).map((r) => r.line);
+    let bytes = kept.reduce((n, line) => n + utf8Length(line) + 1, 0);
+    if (bytes > maxBytes) {
+        const fit = [];
+        bytes = 0;
+        for (let i = kept.length - 1; i >= 0; i--) {
+            const size = utf8Length(kept[i]) + 1;
+            if (bytes + size > maxBytes / 2)
+                break;
+            fit.push(kept[i]);
+            bytes += size;
+        }
+        kept = fit.reverse();
+    }
     return kept.length ? `${kept.join('\n')}\n` : '';
+}
+function utf8Length(text) {
+    let n = 0;
+    for (let i = 0; i < text.length; i++) {
+        const c = text.charCodeAt(i);
+        if (c < 0x80)
+            n += 1;
+        else if (c < 0x800)
+            n += 2;
+        else if (c >= 0xd800 && c <= 0xdbff) {
+            n += 4;
+            i++;
+        }
+        else
+            n += 3;
+    }
+    return n;
 }
 export const SILENT_HOOK_MIN_RUNS = 5;
 export const CAPTURE_HOOKS = [
@@ -43,6 +73,17 @@ export const CAPTURE_HOOKS = [
     'session-start',
 ];
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact'];
+export const SKIP_REASONS = {
+    notBash: 'not a Bash tool call',
+    notGitCommit: 'not a git commit command',
+    commitLineMissing: 'a git commit ran but printed no commit line',
+    alreadyCaptured: 'this session was already captured',
+};
+export const NOT_TRIGGERED_SKIP_REASONS = {
+    'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
+    'session-summary': [SKIP_REASONS.alreadyCaptured],
+};
 export const NEVER_RAN_GRACE_HOURS = 72;
 export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
     if (!raw)
@@ -73,7 +114,7 @@ export function parseHookOutcomeLine(line) {
     if (!parsed || typeof parsed !== 'object')
         return null;
     const rec = parsed;
-    if (typeof rec.hook !== 'string' || !rec.hook)
+    if (typeof rec.hook !== 'string' || !CAPTURE_HOOKS.includes(rec.hook))
         return null;
     if (typeof rec.at !== 'string')
         return null;
@@ -85,13 +126,17 @@ export function parseHookOutcomeLine(line) {
         host: rec.host === 'claude-code' || rec.host === 'codex' ? rec.host : 'unknown',
         outcome: rec.outcome,
     };
-    if (typeof rec.reason === 'string')
-        record.reason = rec.reason;
-    if (typeof rec.entity === 'string')
-        record.entity = rec.entity;
-    if (typeof rec.session_id === 'string')
-        record.session_id = rec.session_id;
+    const reason = typeof rec.reason === 'string' ? sanitizeRecordText(rec.reason) : '';
+    if (reason)
+        record.reason = reason;
+    const entity = typeof rec.entity === 'string' ? sanitizeRecordText(rec.entity) : '';
+    if (entity)
+        record.entity = entity;
     return record;
+}
+export const RECORD_TEXT_MAX = 200;
+export function sanitizeRecordText(text) {
+    return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, RECORD_TEXT_MAX);
 }
 export function summarizeHookOutcomes(file) {
     const order = [...CAPTURE_HOOKS];
@@ -109,15 +154,24 @@ function summarizeOne(hook, records) {
     let skips = 0;
     let errors = 0;
     let lastRunAt = null;
+    let firstTriggeredAt = null;
+    let triggeredRuns = 0;
     let lastWriteAt = null;
     let lastEntity = null;
     let lastSkipReason = null;
     const skipCounts = new Map();
     const hosts = new Set();
+    const notTriggered = NOT_TRIGGERED_SKIP_REASONS[hook] ?? [];
     for (const r of records) {
         hosts.add(r.host);
         if (lastRunAt === null || r.at >= lastRunAt)
             lastRunAt = r.at;
+        const triggered = !(r.outcome === 'skipped' && r.reason !== undefined && notTriggered.includes(r.reason));
+        if (triggered) {
+            triggeredRuns++;
+            if (firstTriggeredAt === null || r.at < firstTriggeredAt)
+                firstTriggeredAt = r.at;
+        }
         if (r.outcome === 'wrote') {
             writes++;
             if (lastWriteAt === null || r.at >= lastWriteAt) {
@@ -128,8 +182,10 @@ function summarizeOne(hook, records) {
         else if (r.outcome === 'skipped') {
             skips++;
             lastSkipReason = r.reason ?? null;
-            const key = r.reason ?? 'unspecified';
-            skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
+            if (triggered) {
+                const key = r.reason ?? 'unspecified';
+                skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
+            }
         }
         else {
             errors++;
@@ -147,17 +203,21 @@ function summarizeOne(hook, records) {
     return {
         hook,
         runs,
+        triggeredRuns,
         writes,
         skips,
         errors,
         lastRunAt,
+        firstTriggeredAt,
         lastWriteAt,
         lastEntity,
         lastSkipReason,
         dominantSkipReason,
         dominantSkipCount,
         hosts: [...hosts].sort(),
-        silent: runs >= SILENT_HOOK_MIN_RUNS && writes === 0,
+        silent: SILENT_ELIGIBLE_HOOKS.includes(hook)
+            && triggeredRuns >= SILENT_HOOK_MIN_RUNS
+            && writes === 0,
     };
 }
 export function summarizeTypeTrends(rows) {
@@ -173,7 +233,7 @@ export function captureLivenessVerdict(input) {
     const deadHooks = graceOver
         ? (input.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort()
         : [];
-    const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.runs - a.runs);
+    const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
     const stoppedTypes = input.types.filter((t) => t.stopped);
     let status = 'PASS';
     if (deadHooks.length > 0)
@@ -191,8 +251,8 @@ export function captureLivenessNotice(verdict) {
     }
     const hook = verdict.silentHook;
     if (hook) {
-        const since = (hook.lastRunAt ?? '').slice(0, 10) || 'install';
-        return `memesh: ${hook.hook} ran ${hook.runs} times since ${since} and wrote nothing — \`memesh doctor\` for the reason`;
+        const since = (hook.firstTriggeredAt ?? '').slice(0, 10) || 'install';
+        return `memesh: ${hook.hook} ran ${hook.triggeredRuns} times since ${since} and wrote nothing — \`memesh doctor\` for the reason`;
     }
     const stopped = verdict.stoppedTypes[0];
     if (stopped) {

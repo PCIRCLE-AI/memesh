@@ -32,7 +32,6 @@ export interface HookOutcomeRecord {
   outcome: HookOutcome;
   reason?: string;
   entity?: string;
-  session_id?: string;
 }
 
 export interface HookOutcomeFile {
@@ -76,7 +75,7 @@ export const HOOK_OUTCOMES_PER_HOOK = 20;
  * back on the hot path, which is the read step O_APPEND exists to remove. A
  * `stat` is cheap, so SIZE is the trigger and the trim is exact.
  *
- * 32 KiB is a comfortable multiple of the per-hook window for every hook
+ * 64 KiB is a comfortable multiple of the per-hook window for every hook
  * that records (8 hooks × 20 records), with room for long reason strings.
  * The bound is a ceiling, not a target — a file slightly under it still
  * rotates when the size crosses, and the trim is exact when it does.
@@ -91,10 +90,15 @@ export function serializeHookOutcome(record: HookOutcomeRecord): string {
 /**
  * Keep each hook's last `max` records, in their original order. Used by
  * rotation; pure so the bound is testable without a filesystem. A line that
- * does not parse (a torn last line an interrupted hook left behind) is
- * dropped, not counted toward any hook's window.
+ * does not parse (a torn last line an interrupted hook left behind, or a
+ * record naming a hook memesh does not ship) is dropped, not counted toward
+ * any hook's window.
  */
-export function trimHookOutcomeLines(raw: string, max: number = HOOK_OUTCOMES_PER_HOOK): string {
+export function trimHookOutcomeLines(
+  raw: string,
+  max: number = HOOK_OUTCOMES_PER_HOOK,
+  maxBytes: number = HOOK_OUTCOMES_ROTATE_BYTES,
+): string {
   const records: Array<{ hook: string; line: string }> = [];
   for (const line of raw.split('\n')) {
     const record = parseHookOutcomeLine(line);
@@ -110,8 +114,40 @@ export function trimHookOutcomeLines(raw: string, max: number = HOOK_OUTCOMES_PE
     seen.set(hook, n);
     if (n <= max) keep[i] = true;
   }
-  const kept = records.filter((_, i) => keep[i]).map((r) => r.line);
+  let kept = records.filter((_, i) => keep[i]).map((r) => r.line);
+  // The per-hook trim is exact, but it is not a size bound: 8 hooks × 20
+  // records of long reasons can still sit above the rotation threshold, and
+  // then EVERY append would re-read and rewrite the whole file. When the
+  // trimmed text is still over `maxBytes`, keep only the newest lines that
+  // fit — a smaller window beats a rewrite on every hook run.
+  let bytes = kept.reduce((n, line) => n + utf8Length(line) + 1, 0);
+  if (bytes > maxBytes) {
+    const fit: string[] = [];
+    bytes = 0;
+    for (let i = kept.length - 1; i >= 0; i--) {
+      const size = utf8Length(kept[i]) + 1;
+      // Half the threshold, not all of it: landing just under the bound
+      // would put the next append straight back over it.
+      if (bytes + size > maxBytes / 2) break;
+      fit.push(kept[i]);
+      bytes += size;
+    }
+    kept = fit.reverse();
+  }
   return kept.length ? `${kept.join('\n')}\n` : '';
+}
+
+/** UTF-8 byte length without Buffer — this module has no imports on purpose. */
+function utf8Length(text: string): number {
+  let n = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c < 0x80) n += 1;
+    else if (c < 0x800) n += 2;
+    else if (c >= 0xd800 && c <= 0xdbff) { n += 4; i++; }
+    else n += 3;
+  }
+  return n;
 }
 
 /**
@@ -121,7 +157,10 @@ export function trimHookOutcomeLines(raw: string, max: number = HOOK_OUTCOMES_PE
  */
 export const SILENT_HOOK_MIN_RUNS = 5;
 
-/** Every hook that records an outcome. Doctor reports a row for each. */
+/**
+ * Every hook that records an outcome. Doctor reports a row for each, and a
+ * record naming any other hook is rejected on read (see parseHookOutcomeLine).
+ */
 export const CAPTURE_HOOKS = [
   'post-commit',
   'session-summary',
@@ -147,8 +186,56 @@ export const CAPTURE_HOOKS = [
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
 
 /**
+ * The hooks whose silence can mean anything, and why it is these three.
+ *
+ * "Ran N times and wrote nothing" is only a signal when running implies a
+ * write is due. That holds for post-commit (a commit happened), pre-compact
+ * (a compaction happened) and session-summary (a session ended). It does NOT
+ * hold for guard-check and post-commit's PreToolUse/PostToolUse siblings,
+ * which fire on every Bash call and skip almost every one of them BY DESIGN,
+ * or for user-prompt-intent, which fires on every prompt and writes only
+ * when a prompt carries a remember intent. Counting those made a default
+ * install PASS_WITH_CONCERNS with a daily banner about a hook doing exactly
+ * its job.
+ */
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact'] as const;
+
+/**
+ * Skip reasons shared between the hooks that record them and the verdict
+ * that classifies them. Named constants rather than repeated literals: the
+ * classification below keys on these strings, and a reworded literal in a
+ * hook would quietly move a skip from "not triggered" back to "silent" with
+ * nothing going red.
+ */
+export const SKIP_REASONS = {
+  /** post-commit: the Bash call was not a git commit at all. */
+  notBash: 'not a Bash tool call',
+  notGitCommit: 'not a git commit command',
+  /** post-commit: a git commit DID run and no commit line came back — #321. */
+  commitLineMissing: 'a git commit ran but printed no commit line',
+  /** session-summary: this session's capture already landed on an earlier Stop. */
+  alreadyCaptured: 'this session was already captured',
+} as const;
+
+/**
+ * Skips that mean the hook's trigger did not apply, per hook. They are not
+ * counted as runs toward `silent`: a post-commit run on `ls` says nothing
+ * about whether commits are captured, and session-summary fires on EVERY
+ * Stop (every turn), so after one capture per session the rest of the window
+ * is "already captured" — a write happened, it is just older than the window.
+ *
+ * Deliberately NOT here: post-commit's commit-line-missing skip (the #321
+ * shape — a commit happened and nothing was saved) and session-summary's
+ * low-signal skips, which are real decisions about a real ending session.
+ */
+export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>> = {
+  'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
+  'session-summary': [SKIP_REASONS.alreadyCaptured],
+};
+
+/**
  * Grace period before "no records at all" is allowed to mean anything. On the
- * first run after an upgrade nobody has a `hook-outcomes.json`, so an
+ * first run after an upgrade nobody has a `hook-outcomes.jsonl`, so an
  * ungraced FAIL would fire on every install exactly once, for a reason that
  * is not a defect. Mirrors the `hook_runs_since` grace the heartbeat check
  * already uses.
@@ -195,7 +282,11 @@ export function parseHookOutcomeLine(line: string): HookOutcomeRecord | null {
   }
   if (!parsed || typeof parsed !== 'object') return null;
   const rec = parsed as Record<string, unknown>;
-  if (typeof rec.hook !== 'string' || !rec.hook) return null;
+  // Only hooks memesh ships. MEMESH_DB_PATH may point into a repository or a
+  // shared directory, so this file can be PLANTED; its text reaches the
+  // doctor report, the SessionStart banner and a pasted issue. A record for
+  // a hook that does not exist is foreign by definition.
+  if (typeof rec.hook !== 'string' || !(CAPTURE_HOOKS as readonly string[]).includes(rec.hook)) return null;
   if (typeof rec.at !== 'string') return null;
   if (rec.outcome !== 'wrote' && rec.outcome !== 'skipped' && rec.outcome !== 'error') return null;
   const record: HookOutcomeRecord = {
@@ -204,26 +295,53 @@ export function parseHookOutcomeLine(line: string): HookOutcomeRecord | null {
     host: rec.host === 'claude-code' || rec.host === 'codex' ? rec.host : 'unknown',
     outcome: rec.outcome,
   };
-  if (typeof rec.reason === 'string') record.reason = rec.reason;
-  if (typeof rec.entity === 'string') record.entity = rec.entity;
-  if (typeof rec.session_id === 'string') record.session_id = rec.session_id;
+  const reason = typeof rec.reason === 'string' ? sanitizeRecordText(rec.reason) : '';
+  if (reason) record.reason = reason;
+  const entity = typeof rec.entity === 'string' ? sanitizeRecordText(rec.entity) : '';
+  if (entity) record.entity = entity;
   return record;
+}
+
+/** Longest reason/entity text a record may carry into a rendered sentence. */
+export const RECORD_TEXT_MAX = 200;
+
+/**
+ * Make record text safe to render. The writer already caps and redacts, but
+ * the threat here is a file the writer never touched: control characters and
+ * line breaks are removed so a planted reason cannot forge extra lines in
+ * the banner or the report, and the length is capped so it cannot bury them.
+ */
+export function sanitizeRecordText(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, RECORD_TEXT_MAX);
 }
 
 export interface HookLivenessSummary {
   hook: string;
   runs: number;
+  /**
+   * Runs where the hook's trigger applied — `runs` minus the skips listed in
+   * NOT_TRIGGERED_SKIP_REASONS. This is the count `silent` and every
+   * rendered "ran N times" sentence use, so doctor and the banner quote one
+   * figure for one graph.
+   */
+  triggeredRuns: number;
   writes: number;
   skips: number;
   errors: number;
   lastRunAt: string | null;
+  /** The earliest triggered run inside the window — what "since" means. */
+  firstTriggeredAt: string | null;
   lastWriteAt: string | null;
   lastEntity: string | null;
   lastSkipReason: string | null;
   dominantSkipReason: string | null;
   dominantSkipCount: number;
   hosts: HookHost[];
-  /** Ran enough to be meaningful, and wrote nothing. */
+  /**
+   * A SILENT_ELIGIBLE_HOOKS hook whose trigger applied at least
+   * SILENT_HOOK_MIN_RUNS times in the window, and which wrote nothing.
+   */
   silent: boolean;
 }
 
@@ -244,14 +362,22 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
   let skips = 0;
   let errors = 0;
   let lastRunAt: string | null = null;
+  let firstTriggeredAt: string | null = null;
+  let triggeredRuns = 0;
   let lastWriteAt: string | null = null;
   let lastEntity: string | null = null;
   let lastSkipReason: string | null = null;
   const skipCounts = new Map<string, number>();
   const hosts = new Set<HookHost>();
+  const notTriggered = NOT_TRIGGERED_SKIP_REASONS[hook] ?? [];
   for (const r of records) {
     hosts.add(r.host);
     if (lastRunAt === null || r.at >= lastRunAt) lastRunAt = r.at;
+    const triggered = !(r.outcome === 'skipped' && r.reason !== undefined && notTriggered.includes(r.reason));
+    if (triggered) {
+      triggeredRuns++;
+      if (firstTriggeredAt === null || r.at < firstTriggeredAt) firstTriggeredAt = r.at;
+    }
     if (r.outcome === 'wrote') {
       writes++;
       if (lastWriteAt === null || r.at >= lastWriteAt) {
@@ -261,8 +387,13 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
     } else if (r.outcome === 'skipped') {
       skips++;
       lastSkipReason = r.reason ?? null;
-      const key = r.reason ?? 'unspecified';
-      skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
+      // The dominant reason is the one doctor QUOTES as the cause of a
+      // silence, so it is drawn from triggered skips only — "not a git
+      // commit command" outnumbers everything and explains nothing.
+      if (triggered) {
+        const key = r.reason ?? 'unspecified';
+        skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
+      }
     } else {
       errors++;
     }
@@ -279,17 +410,21 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
   return {
     hook,
     runs,
+    triggeredRuns,
     writes,
     skips,
     errors,
     lastRunAt,
+    firstTriggeredAt,
     lastWriteAt,
     lastEntity,
     lastSkipReason,
     dominantSkipReason,
     dominantSkipCount,
     hosts: [...hosts].sort(),
-    silent: runs >= SILENT_HOOK_MIN_RUNS && writes === 0,
+    silent: (SILENT_ELIGIBLE_HOOKS as readonly string[]).includes(hook)
+      && triggeredRuns >= SILENT_HOOK_MIN_RUNS
+      && writes === 0,
   };
 }
 
@@ -347,9 +482,10 @@ export function captureLivenessVerdict(input: CaptureLivenessInput): CaptureLive
     ).sort()
     : [];
 
-  // A silent hook is reported by the one with the most runs: it is the one
-  // with the most evidence behind the claim, not merely the first alphabetically.
-  const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.runs - a.runs);
+  // A silent hook is reported by the one with the most triggered runs: it is
+  // the one with the most evidence behind the claim, not merely the first
+  // alphabetically.
+  const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
   const stoppedTypes = input.types.filter((t) => t.stopped);
 
   let status: CaptureLivenessStatus = 'PASS';
@@ -374,8 +510,8 @@ export function captureLivenessNotice(verdict: CaptureLivenessVerdict): string |
   }
   const hook = verdict.silentHook;
   if (hook) {
-    const since = (hook.lastRunAt ?? '').slice(0, 10) || 'install';
-    return `memesh: ${hook.hook} ran ${hook.runs} times since ${since} and wrote nothing — \`memesh doctor\` for the reason`;
+    const since = (hook.firstTriggeredAt ?? '').slice(0, 10) || 'install';
+    return `memesh: ${hook.hook} ran ${hook.triggeredRuns} times since ${since} and wrote nothing — \`memesh doctor\` for the reason`;
   }
   const stopped = verdict.stoppedTypes[0];
   if (stopped) {

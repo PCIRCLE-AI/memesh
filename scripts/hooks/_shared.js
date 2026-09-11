@@ -57,6 +57,7 @@ export {
   parseHookOutcomes,
   summarizeHookOutcomes,
   HOOK_OUTCOMES_FILENAME,
+  SKIP_REASONS,
 } from './_generated/capture-liveness.js';
 export {
   resolveUpdateNotice,
@@ -533,9 +534,9 @@ export function stampHookRunOnly(env, hook) {
  *     new one.
  *
  * @param {Record<string,string|undefined>} env
- * @param {{hook: string, outcome: 'wrote'|'skipped'|'error', reason?: string, entity?: string, payload?: object, sessionId?: string}} info
+ * @param {{hook: string, outcome: 'wrote'|'skipped'|'error', reason?: string, entity?: string, payload?: object}} info
  */
-export function recordHookOutcome(env, { hook, outcome, reason, entity, payload, sessionId }) {
+export function recordHookOutcome(env, { hook, outcome, reason, entity, payload }) {
   try {
     // getMemeshDirFromDbPath(), not memeshDir(): the record must sit beside
     // the database it describes. A test (or a user) that points
@@ -558,8 +559,6 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload,
     // JSONL file is a permanent, exportable copy.
     if (reason) record.reason = redactSecrets(String(reason)).slice(0, 200);
     if (entity) record.entity = redactSecrets(String(entity)).slice(0, 200);
-    const sid = sessionId ?? (payload && typeof payload === 'object' ? payload.session_id : undefined);
-    if (typeof sid === 'string' && sid) record.session_id = redactSecrets(sid).slice(0, 128);
     // One O_APPEND write of one line. `mode` applies only when the file is
     // being created, which is the only moment the permission can be set
     // without a second syscall on the hot path.

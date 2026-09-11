@@ -54478,7 +54478,7 @@ function parseHookOutcomeLine(line) {
   if (!parsed || typeof parsed !== "object")
     return null;
   const rec = parsed;
-  if (typeof rec.hook !== "string" || !rec.hook)
+  if (typeof rec.hook !== "string" || !CAPTURE_HOOKS.includes(rec.hook))
     return null;
   if (typeof rec.at !== "string")
     return null;
@@ -54490,13 +54490,16 @@ function parseHookOutcomeLine(line) {
     host: rec.host === "claude-code" || rec.host === "codex" ? rec.host : "unknown",
     outcome: rec.outcome
   };
-  if (typeof rec.reason === "string")
-    record2.reason = rec.reason;
-  if (typeof rec.entity === "string")
-    record2.entity = rec.entity;
-  if (typeof rec.session_id === "string")
-    record2.session_id = rec.session_id;
+  const reason = typeof rec.reason === "string" ? sanitizeRecordText(rec.reason) : "";
+  if (reason)
+    record2.reason = reason;
+  const entity = typeof rec.entity === "string" ? sanitizeRecordText(rec.entity) : "";
+  if (entity)
+    record2.entity = entity;
   return record2;
+}
+function sanitizeRecordText(text) {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim().slice(0, RECORD_TEXT_MAX);
 }
 function summarizeHookOutcomes(file2) {
   const order = [...CAPTURE_HOOKS];
@@ -54514,15 +54517,24 @@ function summarizeOne(hook, records) {
   let skips = 0;
   let errors = 0;
   let lastRunAt = null;
+  let firstTriggeredAt = null;
+  let triggeredRuns = 0;
   let lastWriteAt = null;
   let lastEntity = null;
   let lastSkipReason = null;
   const skipCounts = /* @__PURE__ */ new Map();
   const hosts = /* @__PURE__ */ new Set();
+  const notTriggered = NOT_TRIGGERED_SKIP_REASONS[hook] ?? [];
   for (const r of records) {
     hosts.add(r.host);
     if (lastRunAt === null || r.at >= lastRunAt)
       lastRunAt = r.at;
+    const triggered = !(r.outcome === "skipped" && r.reason !== void 0 && notTriggered.includes(r.reason));
+    if (triggered) {
+      triggeredRuns++;
+      if (firstTriggeredAt === null || r.at < firstTriggeredAt)
+        firstTriggeredAt = r.at;
+    }
     if (r.outcome === "wrote") {
       writes++;
       if (lastWriteAt === null || r.at >= lastWriteAt) {
@@ -54532,8 +54544,10 @@ function summarizeOne(hook, records) {
     } else if (r.outcome === "skipped") {
       skips++;
       lastSkipReason = r.reason ?? null;
-      const key = r.reason ?? "unspecified";
-      skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
+      if (triggered) {
+        const key = r.reason ?? "unspecified";
+        skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
+      }
     } else {
       errors++;
     }
@@ -54550,17 +54564,19 @@ function summarizeOne(hook, records) {
   return {
     hook,
     runs,
+    triggeredRuns,
     writes,
     skips,
     errors,
     lastRunAt,
+    firstTriggeredAt,
     lastWriteAt,
     lastEntity,
     lastSkipReason,
     dominantSkipReason,
     dominantSkipCount,
     hosts: [...hosts].sort(),
-    silent: runs >= SILENT_HOOK_MIN_RUNS && writes === 0
+    silent: SILENT_ELIGIBLE_HOOKS.includes(hook) && triggeredRuns >= SILENT_HOOK_MIN_RUNS && writes === 0
   };
 }
 function summarizeTypeTrends(rows) {
@@ -54570,7 +54586,7 @@ function captureLivenessVerdict(input) {
   const withRecords = new Set(input.hooks.filter((h) => h.runs > 0).map((h) => h.hook));
   const graceOver = input.measuringHours !== null && input.measuringHours !== void 0 && input.measuringHours > NEVER_RAN_GRACE_HOURS;
   const deadHooks = graceOver ? (input.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
-  const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.runs - a.runs);
+  const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
   const stoppedTypes = input.types.filter((t) => t.stopped);
   let status = "PASS";
   if (deadHooks.length > 0)
@@ -54579,7 +54595,7 @@ function captureLivenessVerdict(input) {
     status = "PASS_WITH_CONCERNS";
   return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
 }
-var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, NEVER_RAN_GRACE_HOURS;
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX;
 var init_capture_liveness = __esm({
   "dist/core/capture-liveness.js"() {
     "use strict";
@@ -54598,7 +54614,19 @@ var init_capture_liveness = __esm({
       "session-start"
     ];
     FAIL_ELIGIBLE_HOOKS = ["session-summary"];
+    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact"];
+    SKIP_REASONS = {
+      notBash: "not a Bash tool call",
+      notGitCommit: "not a git commit command",
+      commitLineMissing: "a git commit ran but printed no commit line",
+      alreadyCaptured: "this session was already captured"
+    };
+    NOT_TRIGGERED_SKIP_REASONS = {
+      "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
+      "session-summary": [SKIP_REASONS.alreadyCaptured]
+    };
     NEVER_RAN_GRACE_HOURS = 72;
+    RECORD_TEXT_MAX = 200;
   }
 });
 
@@ -55232,7 +55260,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     const h = verdict.silentHook;
     const reason = h.dominantSkipReason ?? "no reason recorded";
     return {
-      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.runs} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.runs, reason } }),
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
       report
     };
   }

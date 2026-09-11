@@ -8,6 +8,7 @@ import {
   HOOK_OUTCOMES_FILENAME,
   HOOK_OUTCOMES_PER_HOOK,
   SILENT_HOOK_MIN_RUNS,
+  SKIP_REASONS,
   type HookOutcomeRecord,
 } from '../../src/core/capture-liveness.js';
 
@@ -48,7 +49,7 @@ describe('SessionStart capture-liveness line', () => {
     return Array.from({ length: n }, (_, i) => ({
       hook: 'post-commit', at: `2026-09-0${(i % 9) + 1}T00:00:00.000Z`,
       host: 'claude-code' as const, outcome: 'skipped' as const,
-      reason: 'no commit line in output',
+      reason: SKIP_REASONS.commitLineMissing,
     }));
   }
 
@@ -94,6 +95,25 @@ describe('SessionStart capture-liveness line', () => {
     expect(message).toContain('memesh doctor');
     // ONE line. A banner that grows is a banner that gets ignored.
     expect(message.split('\n').filter((l) => l.includes('wrote nothing'))).toHaveLength(1);
+    // "since" is the FIRST run in the window, not the latest one: the
+    // records span 09-01..09-08, and "8 times since 09-08" would be false.
+    expect(message).toContain(`ran ${SILENT_HOOK_MIN_RUNS + 3} times since 2026-09-01`);
+  });
+
+  it('stays quiet on a default install where hooks skip by design', () => {
+    // guard-check skips every Bash call no guard matches and post-commit
+    // ignores every non-commit — the ordinary state, which must not produce
+    // a daily banner.
+    const at = (i: number) => `2026-09-0${(i % 9) + 1}T00:00:00.000Z`;
+    const many = (hook: string, reason: string): HookOutcomeRecord[] =>
+      Array.from({ length: 20 }, (_, i) => ({ hook, at: at(i), host: 'claude-code' as const, outcome: 'skipped' as const, reason }));
+    writeRecords([
+      ...many('guard-check', 'no active guard matched this command'),
+      ...many('post-commit', SKIP_REASONS.notGitCommit),
+      { hook: 'session-summary', at: at(3), host: 'claude-code', outcome: 'wrote', entity: 'session-s1-summary' },
+    ]);
+    graceExpired(installedVersion());
+    expect(systemMessage()).not.toContain('wrote nothing');
   });
 
   it('is throttled to once a day', () => {
