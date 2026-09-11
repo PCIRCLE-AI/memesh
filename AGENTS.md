@@ -76,7 +76,8 @@ host is recallable from all of them. Not installed yet? Follow
   `replace: true`. Observations are rewritten (tags too when you pass them,
   the title when you pass `title` or `note`); what was there moves to
   `metadata.replaced_history` with the time it was replaced, so the wrong
-  line stops showing up in recall but is not lost.
+  line stops showing up in recall but is not lost (recall shows only
+  `replaced_history_count`; `export` has the versions).
 - **Replacing a decision**: `remember` the new one with a relation of type
   `supersedes` pointing at the old — the old entity is archived (recoverable),
   not left active to contradict the new one.

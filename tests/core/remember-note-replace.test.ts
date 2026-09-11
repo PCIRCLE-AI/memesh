@@ -1,6 +1,6 @@
 // #324 pieces A and B: `remember({ note })` and `remember({ replace: true })`.
 import { describe, it, expect } from 'vitest';
-import { remember, recall, REPLACED_HISTORY_MAX } from '../../src/core/operations.js';
+import { remember, recall, REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from '../../src/core/operations.js';
 import { deriveNote } from '../../src/core/note-derive.js';
 import { getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
@@ -158,11 +158,43 @@ describe('remember({ replace: true }) — piece B', () => {
     expect(kg().getEntity('app')!.observations).toEqual(['one', 'two']);
   });
 
-  it('recall returns the replaced history with the memory', () => {
+  it('recall reports how many versions were replaced, not the versions; the entity read has them', () => {
     remember({ name: 'r1', type: 'note', observations: ['alpha wrong'] });
     remember({ name: 'r1', type: 'note', observations: ['alpha right'], replace: true });
     const hit = recall({ query: 'alpha' }).find((e) => e.name === 'r1')!;
-    expect((hit.metadata?.replaced_history as Array<{ observations: string[] }>)[0].observations).toEqual(['alpha wrong']);
+    expect(hit.metadata?.replaced_history).toBeUndefined();
+    expect(hit.metadata?.replaced_history_count).toBe(1);
+    expect((kg().getEntity('r1')!.metadata?.replaced_history as Array<{ observations: string[] }>)[0].observations).toEqual(['alpha wrong']);
+  });
+
+  it('history is bounded in bytes, oldest first, and one oversized version is truncated', () => {
+    const big = 'x'.repeat(9000);
+    remember({ name: 'big', type: 'note', observations: [`${big}0`] });
+    for (let i = 1; i <= 12; i++) {
+      remember({ name: 'big', type: 'note', observations: [`${big}${i}`], replace: true });
+    }
+    const history = kg().getEntity('big')!.metadata?.replaced_history as Array<{ observations: string[] }>;
+    expect(history.length).toBeGreaterThan(0);
+    expect(history.length).toBeLessThan(12);
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThanOrEqual(REPLACED_HISTORY_MAX_BYTES);
+    // Oldest dropped: the newest replaced version (v11) is still there.
+    expect(history.at(-1)!.observations[0]).toBe(`${big}11`);
+
+    const huge = Array.from({ length: 10 }, (_, i) => `${'y'.repeat(9000)}${i}`);
+    remember({ name: 'huge', type: 'note', observations: huge });
+    remember({ name: 'huge', type: 'note', observations: ['small'], replace: true });
+    const only = kg().getEntity('huge')!.metadata?.replaced_history as Array<{ observations: string[]; truncated?: boolean }>;
+    expect(only).toHaveLength(1);
+    expect(only[0].truncated).toBe(true);
+    expect(only[0].observations.length).toBeGreaterThan(0);
+    expect(only[0].observations.length).toBeLessThan(10);
+  });
+
+  it('replace keeps the memory\'s relations', () => {
+    remember({ name: 'target', type: 'note', observations: ['t'] });
+    remember({ name: 'src', type: 'note', observations: ['v1'], relations: [{ to: 'target', type: 'related-to' }] });
+    remember({ name: 'src', type: 'note', observations: ['v2'], replace: true });
+    expect(kg().getEntity('src')!.relations).toEqual([{ from: 'src', to: 'target', type: 'related-to' }]);
   });
 });
 

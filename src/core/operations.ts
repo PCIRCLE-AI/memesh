@@ -86,12 +86,56 @@ export function remember(input: RememberInput): RememberResult {
 
 /** Most previous versions a replaced memory keeps in `metadata.replaced_history`. */
 export const REPLACED_HISTORY_MAX = 20;
+/**
+ * Most bytes (serialized JSON) the history may take. The count alone did not
+ * bound it: a 256 KB note replaced twenty times is megabytes of metadata on
+ * one row. Oldest versions go first; a single version larger than the cap
+ * keeps as many of its observations as fit and is marked `truncated`.
+ */
+export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
+
+const jsonBytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
+
+/** Apply both history bounds. Exported for tests. */
+export function boundReplacedHistory(history: ReplacedVersion[]): ReplacedVersion[] {
+  let out = history.slice(-REPLACED_HISTORY_MAX);
+  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) out = out.slice(1);
+  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
+    const only = out[0];
+    const kept: string[] = [];
+    const base = { ...only, observations: [] as string[], truncated: true };
+    for (const obs of only.observations) {
+      if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES) break;
+      kept.push(obs);
+    }
+    out = [{ ...base, observations: kept }];
+  }
+  return out;
+}
+
+/**
+ * Recall answers carry `replaced_history_count` instead of the history
+ * itself: every hit's metadata is serialized to the caller, and the history
+ * is the one field that can be large. The full history stays readable from
+ * `export` and `GET /v1/entities/:name`.
+ */
+function summarizeReplacedHistory(entities: Entity[]): Entity[] {
+  for (const e of entities) {
+    const history = e.metadata?.replaced_history;
+    if (!Array.isArray(history)) continue;
+    const { replaced_history: _dropped, ...rest } = e.metadata!;
+    e.metadata = { ...rest, replaced_history_count: history.length };
+  }
+  return entities;
+}
 
 export interface ReplacedVersion {
   replaced_at: string;
   title: string | null;
   observations: string[];
   tags: string[];
+  /** Set when the version alone exceeded the byte cap and lost observations. */
+  truncated?: boolean;
 }
 
 type ResolvedRememberInput = RememberInput & { name: string; type: string };
@@ -219,8 +263,8 @@ function rememberInTransaction(
   if (replacedVersion) {
     const version = replacedVersion;
     kg.updateEntityMetadata(args.name, (current) => {
-      const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
-      return { ...current, replaced_history: [...history, version].slice(-REPLACED_HISTORY_MAX) };
+      const history = Array.isArray(current.replaced_history) ? current.replaced_history as ReplacedVersion[] : [];
+      return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
     });
   }
 
@@ -301,12 +345,12 @@ export function recall(args: RecallInput): Entity[] {
 function searchAndScore(args: RecallInput): { entities: Entity[]; relevanceMap: Map<string, number> } {
   const kg = new KnowledgeGraph(getDatabase());
   // cross_project=true means don't filter by project tag — pass no tag to search all projects
-  const entities = kg.search(args.query, {
+  const entities = summarizeReplacedHistory(kg.search(args.query, {
     tag: recallTagFilter(args),
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace,
-  });
+  }));
   return {
     entities,
     relevanceMap: args.query ? buildRelevanceMap(entities) : new Map<string, number>(),
