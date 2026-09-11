@@ -1312,6 +1312,16 @@ never an absolute path.
   archived with `forget` is not revived by a later edit of its file.
 - A name already used by a memory that did not come from a note file, or that
   was ingested from a different directory, is skipped rather than overwritten.
+  Two files in one directory with the same `name`: the one that already owns
+  it (or, on a first run, the first in path order) keeps it; the other is
+  reported.
+- On a file change the file owns the `source:*` tags; any other tag a person
+  added is kept, and the `project:` tag set on first ingestion stays. A
+  memory a manual `remember` appended to is still replaced as a whole on the
+  next file change — the appended lines go to `metadata.replaced_history`.
+- A file skipped for its own content (no frontmatter, no name, empty, too
+  large) is remembered by size and mtime and reported again without being
+  re-read, until it changes.
 - Read-only and bounded: symlinks and paths resolving outside the directory are
   refused, `.git` and `node_modules` are not entered, files over 256 KB are
   skipped, and one run reads at most 500 files (the rest are reported as "more"
