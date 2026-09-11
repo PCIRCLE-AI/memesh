@@ -133,7 +133,9 @@ class MemeshProvider(MemoryProvider):
             return  # never initialized: nothing was queued
         if self._drain_deadline is None:
             self._drain_deadline = time.monotonic() + _DRAIN_TIMEOUT_SECS
-        while q.unfinished_tasks and time.monotonic() < self._drain_deadline:
+        # A local: another thread may reset the attribute mid-wait.
+        deadline = self._drain_deadline
+        while q.unfinished_tasks and time.monotonic() < deadline:
             time.sleep(0.05)
         if not q.unfinished_tasks or self._drain_warned:
             return
@@ -249,9 +251,9 @@ class MemeshProvider(MemoryProvider):
         # ordinary chatter is not memory. Never blocks: sync_turn fires every
         # turn on the host's main thread.
         item = (sid, user_content or "", assistant_content or "")
-        # A new turn after a drain (session end, then the host carries on)
-        # earns a fresh wait at the next exit.
-        self._drain_deadline = None
+        # A turn after a drain may be reported again, but it does not buy a
+        # second wait: session end + shutdown share one budget. Only a real
+        # new session (on_session_switch) resets the deadline.
         self._drain_warned = False
         try:
             self._turn_queue.put_nowait(item)
@@ -387,6 +389,9 @@ class MemeshProvider(MemoryProvider):
         # /reset, /resume, or /branch would keep tagging new memories with
         # the stale pre-switch session_id.
         self._session_id = new_session_id
+        # A new session's exit gets its own drain budget.
+        self._drain_deadline = None
+        self._drain_warned = False
         if reset:
             with self._prefetch_lock:
                 self._prefetch_query = None

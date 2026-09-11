@@ -85,6 +85,46 @@ out["end_plus_shutdown_secs"] = time.monotonic() - start
 out["lost_warnings"] = [msg for lvl, msg in records if lvl == "WARNING" and "before shutdown" in msg]
 stuck.set()
 
+# Round 4: a turn arriving between on_session_end() and shutdown() must not
+# buy a second drain budget, and a sync_turn from another thread while a drain
+# is running must not break it.
+mod._DRAIN_TIMEOUT_SECS = 0.5
+late = mod.MemeshProvider()
+late.initialize("late-session", hermes_home=hermes_home, agent_context="primary")
+late._run_capture = lambda *a, **k: stuck2.wait(10)
+stuck2 = threading.Event()
+late.sync_turn("u0", "a0")
+start = time.monotonic()
+late.on_session_end([])
+late.sync_turn("u1", "late")
+late.shutdown()
+out["late_total_drain_secs"] = time.monotonic() - start
+
+x = mod.MemeshProvider()
+x.initialize("x-session", hermes_home=hermes_home, agent_context="primary")
+x._run_capture = lambda *a, **k: stuck2.wait(10)
+x.sync_turn("u", "a")
+drain_errors = []
+
+
+def _drain():
+    try:
+        x._drain_turns_before_exit()
+    except Exception as exc:  # noqa: BLE001
+        drain_errors.append(f"{type(exc).__name__}: {exc}")
+
+
+th = threading.Thread(target=_drain)
+th.start()
+time.sleep(0.2)
+# A session switch from another thread resets the deadline mid-wait (a new
+# session's exit gets a fresh budget); the running drain must not break.
+x.on_session_switch("x-session-2")
+th.join()
+out["cross_thread_drain_errors"] = drain_errors
+out["deadline_after_switch"] = x._drain_deadline
+stuck2.set()
+
 # shutdown() before initialize() must not raise (the old one never did).
 try:
     mod.MemeshProvider().shutdown()

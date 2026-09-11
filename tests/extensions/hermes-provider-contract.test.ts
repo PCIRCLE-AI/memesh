@@ -116,6 +116,12 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     ]);
   });
 
+  it('a late turn between session end and shutdown does not extend the wait; a cross-thread turn does not break the drain (round 4)', () => {
+    expect(queue.late_total_drain_secs).toBeLessThan(0.9);
+    expect(queue.cross_thread_drain_errors).toEqual([]);
+    expect(queue.deadline_after_switch).toBeNull();
+  });
+
   it('shutdown() before initialize() does not raise (round 3 P2-1)', () => {
     expect(queue.shutdown_before_initialize).toBe('ok');
   });
