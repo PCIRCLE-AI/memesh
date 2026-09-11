@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { randomBytes } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -18,6 +18,9 @@ import { NAMESPACES } from '../../core/types.js';
 import { assembleBriefing } from '../../core/briefing.js';
 import { captureChatSession } from '../../core/session-insight.js';
 import { captureChatTurn } from '../../core/turn-signal.js';
+import {
+  DELEGATION_VERDICTS, DelegationInputError, ENVELOPE_MAX_BYTES, recordDelegation, setDelegationVerdict,
+} from '../../core/delegation.js';
 import { inspectHosts, allWired, type SetupSeams, type HostStatus } from '../../core/setup.js';
 import { installHooks } from '../../core/install-hooks.js';
 import { getTaskState, setTaskState, TaskStateUnreadableError } from '../../core/task-state-store.js';
@@ -2501,6 +2504,100 @@ hermesCmd
         baseTags: HERMES_BASE_TAGS,
       });
       console.log(JSON.stringify(result));
+    });
+  });
+
+// --- delegation ---
+// Orchestrator-side record of a task handed to the DeepSeek worker. Local
+// files only, on purpose: there is no HTTP or MCP door, so nothing the
+// worker's sandbox can reach writes one of these.
+function readLocalFile(flag: string, file: string, maxBytes: number): Buffer {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(file);
+  } catch (err) {
+    console.error(`Error: ${flag} ${file}: ${(err as NodeJS.ErrnoException).code ?? String(err)}`);
+    process.exit(1);
+  }
+  if (!stat.isFile()) {
+    console.error(`Error: ${flag} ${file} is not a regular file.`);
+    process.exit(1);
+  }
+  if (stat.size > maxBytes) {
+    console.error(`Error: ${flag} ${file} is larger than ${maxBytes} bytes.`);
+    process.exit(1);
+  }
+  return fs.readFileSync(file);
+}
+
+function reportDelegationError(err: unknown): never {
+  if (err instanceof DelegationInputError) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
+  throw err;
+}
+
+const delegationCmd = program
+  .command('delegation')
+  .description('Record a task delegated to the DeepSeek worker, and the orchestrator\'s verdict on it');
+
+delegationCmd
+  .command('record')
+  .description('Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage — never the prompt or the output)')
+  .option('--envelope <file>', 'The JSON envelope the worker client printed (required)')
+  .option('--prompt-file <file>', 'The prompt that was sent; only its sha256 is stored (required)')
+  .option('--verdict <verdict>', 'unreviewed (default), accepted, or rejected')
+  .option('--follow-up <text>', 'What you decided to do next, in your own words')
+  .option('--json', 'Output as JSON')
+  .action(async (opts) => {
+    if (!opts.envelope || !opts.promptFile) {
+      console.error('Error: --envelope <file> and --prompt-file <file> are both required.');
+      process.exit(1);
+    }
+    requireOneOf(opts.verdict, DELEGATION_VERDICTS, '--verdict');
+    const envelopeText = readLocalFile('--envelope', opts.envelope, ENVELOPE_MAX_BYTES).toString('utf8');
+    const promptSha256 = createHash('sha256').update(readLocalFile('--prompt-file', opts.promptFile, 64 * 1024 * 1024)).digest('hex');
+    await withDatabase(() => {
+      let result: ReturnType<typeof recordDelegation>;
+      try {
+        result = recordDelegation({
+          envelopeText, promptSha256, verdict: opts.verdict, followUp: opts.followUp, project: getProjectName(),
+        });
+      } catch (err) {
+        reportDelegationError(err);
+      }
+      if (opts.json) {
+        console.log(JSON.stringify(result));
+      } else if (result.stored) {
+        console.log(`Recorded "${result.name}" (${result.summary.model ?? 'unnamed model'}, verdict: ${result.verdict}, trust: ${result.trust})`);
+        if (result.verdict === 'unreviewed') console.log(`   After checking the result: memesh delegation verify ${result.name} --verdict accepted|rejected`);
+      } else {
+        console.log(`Already recorded as "${result.name}" (verdict: ${result.verdict}) — nothing written.`);
+      }
+    });
+  });
+
+delegationCmd
+  .command('verify <name>')
+  .description('Record the orchestrator\'s verdict on a delegation after checking the worker\'s result')
+  .option('--verdict <verdict>', 'accepted or rejected (required)')
+  .option('--note <text>', 'Why, in one line')
+  .option('--json', 'Output as JSON')
+  .action(async (name, opts) => {
+    if (opts.verdict !== 'accepted' && opts.verdict !== 'rejected') {
+      console.error('Error: --verdict must be accepted or rejected.');
+      process.exit(1);
+    }
+    await withDatabase(() => {
+      let result: ReturnType<typeof setDelegationVerdict>;
+      try {
+        result = setDelegationVerdict({ name, verdict: opts.verdict, note: opts.note });
+      } catch (err) {
+        reportDelegationError(err);
+      }
+      if (opts.json) console.log(JSON.stringify(result));
+      else console.log(`"${result.name}": ${result.previousVerdict ?? 'unknown'} → ${result.verdict} (trust: ${result.trust})`);
     });
   });
 

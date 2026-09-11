@@ -1,0 +1,1 @@
+{"ok": false, "model": "deepseek-v4-flash", "finish_reason": "length", "usage": {"prompt_tokens": 900, "completion_tokens": 800, "total_tokens": 1700}, "elapsed_s": 31.2, "reasoning_chars": 0, "content": "partial answer", "error": "incomplete response: finish_reason=length"}

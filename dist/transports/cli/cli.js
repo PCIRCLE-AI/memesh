@@ -7748,7 +7748,7 @@ var init_install_hooks = __esm({
 });
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash4, randomUUID } from "node:crypto";
+import { createHash as createHash5, randomUUID } from "node:crypto";
 import fs13 from "node:fs";
 function getAgentMessageStorageReport(db2, options) {
   const cutoff = normalizeCutoff(options.cutoff);
@@ -7992,7 +7992,7 @@ function toCandidate(row) {
   return {
     message_id: row.message_id,
     payload_bytes: row.payload_bytes,
-    payload_sha256: createHash4("sha256").update(row.payload_json, "utf8").digest("hex")
+    payload_sha256: createHash5("sha256").update(row.payload_json, "utf8").digest("hex")
   };
 }
 function resultForCandidates(dryRun, candidates) {
@@ -8019,7 +8019,7 @@ function insertRetentionFact(db2, candidate, actor, tombstone) {
     payload_sha256: candidate.payload_sha256,
     tombstone_payload_bytes: Buffer.byteLength(tombstone, "utf8")
   });
-  const requestHash = createHash4("sha256").update(detailJson, "utf8").digest("hex");
+  const requestHash = createHash5("sha256").update(detailJson, "utf8").digest("hex");
   db2.prepare(`
     INSERT INTO agent_retention_facts (
       retention_fact_id, message_id, actor, retention_state, idempotency_key, request_hash, detail_json
@@ -8113,7 +8113,7 @@ var init_agent_message_storage = __esm({
 });
 
 // dist/core/agent-messaging.js
-import { createHash as createHash5, randomBytes as randomBytes2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash6, randomBytes as randomBytes2, randomUUID as randomUUID2 } from "node:crypto";
 function sendAgentMessage(db2, input, options = {}) {
   const normalized = normalizeSendInput(input);
   const requestHash = hashCanonical({
@@ -8688,7 +8688,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash5("sha256").update(stableStringify(value)).digest("hex");
+  return createHash6("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)
@@ -51352,7 +51352,7 @@ var require_ip_address = __commonJS({
 import { isIPv6 } from "node:net";
 import { isIPv6 as isIPv62 } from "node:net";
 import { Buffer as Buffer2 } from "node:buffer";
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 import { isIP } from "node:net";
 function ipKeyGenerator(ip, ipv6Subnet = 56) {
   if (isIPv6(ip)) {
@@ -51540,7 +51540,7 @@ var init_dist = __esm({
       return resetSeconds;
     };
     getPartitionKey = (key) => {
-      const hash2 = createHash6("sha256");
+      const hash2 = createHash7("sha256");
       hash2.update(key);
       const partitionKey = hash2.digest("hex").slice(0, 12);
       return Buffer2.from(partitionKey).toString("base64");
@@ -54785,7 +54785,7 @@ import fs17 from "fs";
 import os2 from "os";
 import path15 from "path";
 import net2 from "node:net";
-import { createHash as createHash7 } from "crypto";
+import { createHash as createHash8 } from "crypto";
 import { createRequire as createRequire2 } from "module";
 import { execFileSync as execFileSync7 } from "child_process";
 function countH2Headings(content) {
@@ -55840,7 +55840,7 @@ function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, in
     let actualHash;
     try {
       const buf = readFileSyncImpl(full);
-      actualHash = createHash7("sha256").update(buf).digest("hex");
+      actualHash = createHash8("sha256").update(buf).digest("hex");
     } catch (err) {
       mismatches.push(`${entry.path} (read error: ${err instanceof Error ? err.message : "unknown"})`);
       continue;
@@ -56214,7 +56214,7 @@ var init_doctor = __esm({
 
 // dist/core/transcript-source.js
 import fs18 from "fs";
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 import path16 from "path";
 function readTranscriptSnapshot(transcriptPath, expected) {
   return readTranscriptSnapshotWithin(transcriptPath, expected, MAX_TRANSCRIPT_SOURCE_BYTES).snapshot;
@@ -56254,7 +56254,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash8("sha256").update(bytes).digest("hex");
+    const contentHash = createHash9("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -56460,8 +56460,8 @@ var init_transcript_extractor = __esm({
 });
 
 // dist/core/product-improvements.js
-import { createHash as createHash9 } from "node:crypto";
-function clean(label, value, max) {
+import { createHash as createHash10 } from "node:crypto";
+function clean2(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (!normalized)
     throw new Error(`${label} must not be blank`);
@@ -56496,13 +56496,13 @@ function parsePayload(raw) {
   if (candidate.type !== PRODUCT_IMPROVEMENT_KIND || typeof candidate.name !== "string" || typeof candidate.title !== "string" || !Array.isArray(candidate.observations) || candidate.observations.length === 0 || candidate.observations.some((value) => typeof value !== "string" || !value.trim() || value.length > 1e4) || !Array.isArray(candidate.tags) || candidate.tags.some((value) => typeof value !== "string" || value.length > 255) || !improvement || typeof improvement.problem !== "string" || typeof improvement.proposed_change !== "string" || typeof improvement.verification_scenario !== "string" || !Array.isArray(improvement.success_criteria) || improvement.success_criteria.length === 0 || improvement.success_criteria.some((value) => typeof value !== "string" || !value.trim() || value.length > 1e3) || !Array.isArray(improvement.source_names) || improvement.source_names.length === 0 || improvement.source_names.some((value) => typeof value !== "string" || !value.trim() || value.length > 255) || !["p0", "p1", "p2", "p3"].includes(String(improvement.priority)) || improvement.source_host !== void 0 && typeof improvement.source_host !== "string") {
     throw new Error("product-improvement proposal carries malformed content");
   }
-  clean("proposal name", candidate.name, 255);
-  clean("title", candidate.title, 200);
-  clean("problem", improvement.problem, 5e3);
-  clean("proposed change", improvement.proposed_change, 5e3);
-  clean("verification scenario", improvement.verification_scenario, 5e3);
+  clean2("proposal name", candidate.name, 255);
+  clean2("title", candidate.title, 200);
+  clean2("problem", improvement.problem, 5e3);
+  clean2("proposed change", improvement.proposed_change, 5e3);
+  clean2("verification scenario", improvement.verification_scenario, 5e3);
   if (improvement.source_host !== void 0)
-    clean("source host", improvement.source_host, 64);
+    clean2("source host", improvement.source_host, 64);
   return candidate;
 }
 function readProductImprovementPayload(raw) {
@@ -56529,7 +56529,7 @@ __export(dreamer_exports, {
   listProposals: () => listProposals,
   rejectProposal: () => rejectProposal
 });
-import { createHash as createHash10 } from "node:crypto";
+import { createHash as createHash11 } from "node:crypto";
 function collisionSafeName(db2, proposed, kind, proposalId2) {
   const taken = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(proposed) !== void 0;
   return taken ? `${proposed} (${kind} #${proposalId2})` : proposed;
@@ -56647,7 +56647,7 @@ function executeWorkPackage(db2, input, context = {}) {
   const execute = () => {
     const project = input.action === "prepare" ? input.project : input.ref.project;
     const kind = input.action === "prepare" ? input.kind : input.ref.kind;
-    const hash2 = (value) => createHash10("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash11("sha256").update(JSON.stringify(value)).digest("hex");
     if (input.action !== "prepare") {
       const submitted = input.action === "submit" ? input.result : void 0;
       if (submitted && [submitted.name, ...submitted.observations, ...submitted.tags].some((s) => redactSecrets(s) !== s)) {
@@ -58792,7 +58792,7 @@ var {
 init_db();
 init_operations();
 init_config();
-import { randomBytes as randomBytes5 } from "crypto";
+import { createHash as createHash12, randomBytes as randomBytes5 } from "crypto";
 import fs20 from "fs";
 import path18 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
@@ -59425,7 +59425,6 @@ init_title();
 init_operations();
 var MIN_TOOL_CALLS = 3;
 var HEAVY_SESSION_TOOL_CALLS = 20;
-var AUTO_CAPTURE_TAG2 = "source:auto-capture";
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
     return [];
@@ -59567,7 +59566,7 @@ function buildSessionInsights(activity, ctx) {
   if (activity.toolCallCount < MIN_TOOL_CALLS)
     return [];
   const { filesEdited, errorsEncountered, bashCommands, toolCallCount } = activity;
-  const baseTags = [AUTO_CAPTURE_TAG2, `session:${ctx.sessionId}`, ...ctx.baseTags];
+  const baseTags = [`session:${ctx.sessionId}`, ...ctx.baseTags];
   const titlePrefix = `${ctx.date ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)} ${ctx.titleLabel}`;
   const out = [];
   if (filesEdited.length > 0) {
@@ -59682,6 +59681,153 @@ function captureChatTurn(input) {
     sourceHost: input.sourceHost
   });
   return { outcome: "wrote", name, kind: signal.kind };
+}
+
+// dist/core/delegation.js
+init_db();
+init_operations();
+init_paths();
+import { createHash as createHash4 } from "crypto";
+var DELEGATION_TYPE = "delegation";
+var DELEGATION_SOURCE = "deepseek-worker";
+var DELEGATION_VERDICTS = ["unreviewed", "accepted", "rejected"];
+var ENVELOPE_MAX_BYTES = 4 * 1024 * 1024;
+var SHA256_RE = /^[0-9a-f]{64}$/;
+var USAGE_KEYS = ["prompt_tokens", "completion_tokens", "total_tokens"];
+var DelegationInputError = class extends Error {
+};
+function clean(value, max = 120) {
+  return redactSecrets(value.replace(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "")).slice(0, max);
+}
+function summarizeEnvelope(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new DelegationInputError("the envelope must be a JSON object");
+  }
+  const env = raw;
+  if (typeof env.ok !== "boolean") {
+    throw new DelegationInputError('the envelope has no boolean "ok" \u2014 this is not a worker envelope');
+  }
+  let allowedTools = [];
+  if (env.allowed_tools !== void 0) {
+    if (!Array.isArray(env.allowed_tools) || !env.allowed_tools.every((t) => typeof t === "string")) {
+      throw new DelegationInputError('"allowed_tools" must be an array of strings');
+    }
+    allowedTools = env.allowed_tools.map((t) => clean(t, 64)).slice(0, 50);
+  }
+  const usage = {};
+  if (env.usage && typeof env.usage === "object" && !Array.isArray(env.usage)) {
+    for (const key of USAGE_KEYS) {
+      const v = env.usage[key];
+      if (typeof v === "number" && Number.isFinite(v) && v >= 0)
+        usage[key] = Math.floor(v);
+    }
+  }
+  return {
+    ok: env.ok,
+    mode: typeof env.task_id === "string" ? "harness" : "direct",
+    model: typeof env.model === "string" && env.model ? clean(env.model) : null,
+    finishReason: typeof env.finish_reason === "string" && env.finish_reason ? clean(env.finish_reason, 40) : null,
+    allowedTools,
+    usage
+  };
+}
+function storedProvenance(metadata) {
+  try {
+    const parsed = metadata ? JSON.parse(metadata) : {};
+    return parsed.provenance && typeof parsed.provenance === "object" ? parsed.provenance : {};
+  } catch {
+    return {};
+  }
+}
+function trustFor(verdict) {
+  return verdict === "accepted" ? "verified" : verdict === "rejected" ? "rejected" : "untrusted-until-verified";
+}
+function verdictLine(verdict, at, note2) {
+  const base = verdict === "unreviewed" ? "Verdict: unreviewed \u2014 the worker output is untrusted until the orchestrator verifies it" : `Verdict: ${verdict} by the orchestrator at ${at}`;
+  return note2 ? `${base}. Note: ${clean(note2, 500)}` : base;
+}
+function recordDelegation(input) {
+  if (!SHA256_RE.test(input.promptSha256)) {
+    throw new DelegationInputError("the prompt hash must be 64 lowercase hex characters (sha256)");
+  }
+  if (Buffer.byteLength(input.envelopeText, "utf8") > ENVELOPE_MAX_BYTES) {
+    throw new DelegationInputError(`the envelope is larger than ${ENVELOPE_MAX_BYTES} bytes`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(input.envelopeText);
+  } catch (err) {
+    throw new DelegationInputError(`the envelope is not JSON: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const summary = summarizeEnvelope(parsed);
+  const verdict = input.verdict ?? "unreviewed";
+  const trust = trustFor(verdict);
+  const envelopeSha256 = createHash4("sha256").update(input.envelopeText).digest("hex");
+  const name = `delegation-${input.promptSha256.slice(0, 12)}-${envelopeSha256.slice(0, 8)}`;
+  const existing = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
+  if (existing) {
+    const stored = storedProvenance(existing.metadata);
+    const storedVerdict = DELEGATION_VERDICTS.includes(stored.verdict) ? stored.verdict : "unreviewed";
+    return { stored: false, name, verdict: storedVerdict, trust: trustFor(storedVerdict), summary };
+  }
+  const at = (/* @__PURE__ */ new Date()).toISOString();
+  const usageText = USAGE_KEYS.filter((k) => summary.usage[k] !== void 0).map((k) => `${k}=${summary.usage[k]}`).join(", ");
+  remember({
+    name,
+    type: DELEGATION_TYPE,
+    title: `${at.slice(0, 10)} delegation to ${summary.model ?? "worker"} (${summary.mode})`,
+    observations: [
+      `Delegated to ${summary.model ?? "an unnamed model"} (${summary.mode} mode); prompt sha256 ${input.promptSha256}`,
+      `Allowed tools: ${summary.allowedTools.length ? summary.allowedTools.join(", ") : "none"}`,
+      `Result: ok=${summary.ok}, finish_reason=${summary.finishReason ?? "none"}`,
+      usageText ? `Usage: ${usageText}` : "Usage: not reported in the envelope",
+      verdictLine(verdict, at),
+      ...input.followUp ? [`Follow-up: ${clean(input.followUp, 500)}`] : []
+    ],
+    tags: [`source:${DELEGATION_SOURCE}`, `project:${input.project}`],
+    trustOverride: verdict === "accepted" ? "trusted" : "untrusted",
+    provenanceOverride: {
+      source: DELEGATION_SOURCE,
+      trust,
+      verdict,
+      ...verdict !== "unreviewed" ? { verified_at: at } : {},
+      prompt_sha256: input.promptSha256,
+      envelope_sha256: envelopeSha256,
+      model: summary.model,
+      mode: summary.mode,
+      allowed_tools: summary.allowedTools,
+      usage: summary.usage,
+      finish_reason: summary.finishReason,
+      ok: summary.ok
+    },
+    sourceHost: "cli"
+  });
+  return { stored: true, name, verdict, trust, summary };
+}
+function setDelegationVerdict(input) {
+  const row = getDatabase().prepare("SELECT type, metadata FROM entities WHERE name = ?").get(input.name);
+  if (!row)
+    throw new DelegationInputError(`no memory named "${input.name}"`);
+  const provenance = storedProvenance(row.metadata);
+  if (row.type !== DELEGATION_TYPE || provenance.source !== DELEGATION_SOURCE) {
+    throw new DelegationInputError(`"${input.name}" is not a delegation record`);
+  }
+  const at = (/* @__PURE__ */ new Date()).toISOString();
+  const trust = trustFor(input.verdict);
+  remember({
+    name: input.name,
+    type: DELEGATION_TYPE,
+    observations: [verdictLine(input.verdict, at, input.note)],
+    trustOverride: input.verdict === "accepted" ? "trusted" : "untrusted",
+    provenanceOverride: { ...provenance, trust, verdict: input.verdict, verified_at: at },
+    sourceHost: "cli"
+  });
+  return {
+    name: input.name,
+    previousVerdict: typeof provenance.verdict === "string" ? provenance.verdict : null,
+    verdict: input.verdict,
+    trust
+  };
 }
 
 // dist/core/setup.js
@@ -61459,6 +61605,82 @@ hermesCmd.command("capture-turn").description('Store one Hermes turn ({"user": "
       baseTags: HERMES_BASE_TAGS
     });
     console.log(JSON.stringify(result));
+  });
+});
+function readLocalFile(flag, file2, maxBytes) {
+  let stat;
+  try {
+    stat = fs20.statSync(file2);
+  } catch (err) {
+    console.error(`Error: ${flag} ${file2}: ${err.code ?? String(err)}`);
+    process.exit(1);
+  }
+  if (!stat.isFile()) {
+    console.error(`Error: ${flag} ${file2} is not a regular file.`);
+    process.exit(1);
+  }
+  if (stat.size > maxBytes) {
+    console.error(`Error: ${flag} ${file2} is larger than ${maxBytes} bytes.`);
+    process.exit(1);
+  }
+  return fs20.readFileSync(file2);
+}
+function reportDelegationError(err) {
+  if (err instanceof DelegationInputError) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
+  throw err;
+}
+var delegationCmd = program2.command("delegation").description("Record a task delegated to the DeepSeek worker, and the orchestrator's verdict on it");
+delegationCmd.command("record").description("Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage \u2014 never the prompt or the output)").option("--envelope <file>", "The JSON envelope the worker client printed (required)").option("--prompt-file <file>", "The prompt that was sent; only its sha256 is stored (required)").option("--verdict <verdict>", "unreviewed (default), accepted, or rejected").option("--follow-up <text>", "What you decided to do next, in your own words").option("--json", "Output as JSON").action(async (opts) => {
+  if (!opts.envelope || !opts.promptFile) {
+    console.error("Error: --envelope <file> and --prompt-file <file> are both required.");
+    process.exit(1);
+  }
+  requireOneOf(opts.verdict, DELEGATION_VERDICTS, "--verdict");
+  const envelopeText = readLocalFile("--envelope", opts.envelope, ENVELOPE_MAX_BYTES).toString("utf8");
+  const promptSha256 = createHash12("sha256").update(readLocalFile("--prompt-file", opts.promptFile, 64 * 1024 * 1024)).digest("hex");
+  await withDatabase(() => {
+    let result;
+    try {
+      result = recordDelegation({
+        envelopeText,
+        promptSha256,
+        verdict: opts.verdict,
+        followUp: opts.followUp,
+        project: getProjectName()
+      });
+    } catch (err) {
+      reportDelegationError(err);
+    }
+    if (opts.json) {
+      console.log(JSON.stringify(result));
+    } else if (result.stored) {
+      console.log(`Recorded "${result.name}" (${result.summary.model ?? "unnamed model"}, verdict: ${result.verdict}, trust: ${result.trust})`);
+      if (result.verdict === "unreviewed")
+        console.log(`   After checking the result: memesh delegation verify ${result.name} --verdict accepted|rejected`);
+    } else {
+      console.log(`Already recorded as "${result.name}" (verdict: ${result.verdict}) \u2014 nothing written.`);
+    }
+  });
+});
+delegationCmd.command("verify <name>").description("Record the orchestrator's verdict on a delegation after checking the worker's result").option("--verdict <verdict>", "accepted or rejected (required)").option("--note <text>", "Why, in one line").option("--json", "Output as JSON").action(async (name, opts) => {
+  if (opts.verdict !== "accepted" && opts.verdict !== "rejected") {
+    console.error("Error: --verdict must be accepted or rejected.");
+    process.exit(1);
+  }
+  await withDatabase(() => {
+    let result;
+    try {
+      result = setDelegationVerdict({ name, verdict: opts.verdict, note: opts.note });
+    } catch (err) {
+      reportDelegationError(err);
+    }
+    if (opts.json)
+      console.log(JSON.stringify(result));
+    else
+      console.log(`"${result.name}": ${result.previousVerdict ?? "unknown"} \u2192 ${result.verdict} (trust: ${result.trust})`);
   });
 });
 program2.command("status").description("Show MeMesh status").option("--cached", "Use cached update info only (skip fresh npm lookup)").action(async (opts) => {

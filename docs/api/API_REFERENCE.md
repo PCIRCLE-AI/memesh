@@ -1622,6 +1622,42 @@ Both stamp `metadata.provenance.source_host: "hermes"` and tag `platform:hermes`
 Bad input (not JSON, wrong shape, over 8 MiB, bad `--session`) exits `1` with
 a message on stderr.
 
+### memesh delegation
+
+Record a task handed to a delegate worker (the DeepSeek worker), from the
+orchestrator's side. Guide: [Delegate worker](../platforms/deepseek-worker.md).
+
+```bash
+memesh delegation record --envelope envelope.json --prompt-file prompt.txt [--verdict unreviewed|accepted|rejected] [--follow-up "<text>"] [--json]
+memesh delegation verify <name> --verdict accepted|rejected [--note "<text>"] [--json]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--envelope <file>` | The worker client's JSON envelope (`record`, required). It must be a JSON object with a boolean `ok`; at most 4 MiB. |
+| `--prompt-file <file>` | The prompt that was sent (`record`, required). Only its sha256 is stored. |
+| `--verdict <verdict>` | `record`: `unreviewed` (default), `accepted` or `rejected`. `verify`: `accepted` or `rejected` (required). |
+| `--follow-up <text>` | `record`: what you decided to do next, stored as one line. |
+| `--note <text>` | `verify`: why, stored with the verdict. |
+
+`record` stores one `delegation` entity named
+`delegation-<prompt sha256, 12>-<envelope sha256, 8>`, tagged
+`source:deepseek-worker` and `project:<current project>`. It keeps the model,
+mode (`harness` when the envelope has a `task_id`, otherwise `direct`),
+`allowed_tools`, `usage`, `finish_reason`, `ok`, and the verdict. It never
+keeps the prompt text or the worker's output. `metadata.provenance` carries
+`source: "deepseek-worker"` and `trust`: `untrusted-until-verified` until a
+verdict is given, then `verified` or `rejected`; `metadata.trust` is
+`untrusted` until the verdict is `accepted`. Recording the same envelope
+again writes nothing (`"stored": false`) and reports the stored verdict.
+
+`verify` changes the verdict and `trust` in place, keeps every other
+provenance field, and adds the verdict as a new observation. It refuses a
+name that is not a delegation record.
+
+There is deliberately no HTTP route or MCP tool for this: the only writer is
+the orchestrator's local CLI.
+
 ## Anthropic memory tool (`memory_20250818`)
 
 For applications that call the **Messages API directly** rather than through MCP. Claude gets a memory tool whose storage is MeMesh instead of a folder of text files, so it also gets search, ranking, decay, relations and namespaces without knowing they are there.
