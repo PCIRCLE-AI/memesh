@@ -1,6 +1,5 @@
 export declare const MIN_TOOL_CALLS = 3;
 export declare const HEAVY_SESSION_TOOL_CALLS = 20;
-export declare const AUTO_CAPTURE_TAG = "source:auto-capture";
 export interface SessionActivity {
     filesEdited: string[];
     bashCommands: string[];

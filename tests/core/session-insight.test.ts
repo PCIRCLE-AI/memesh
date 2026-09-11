@@ -52,7 +52,8 @@ describe('buildSessionInsights — the Stop hook rules', () => {
     expect(out.map((e) => e.name)).toEqual(['session-s1-files', 'session-s1-fixes', 'session-s1-summary']);
     const files = out[0];
     expect(files.observations[0]).toBe('Session edited 2 file(s): app.py, test_app.py');
-    expect(files.tags).toEqual(expect.arrayContaining(['source:auto-capture', 'session:s1', 'platform:hermes', 'file:app.py', 'file:app']));
+    expect(files.tags).toEqual(expect.arrayContaining(['session:s1', 'platform:hermes', 'file:app.py', 'file:app']));
+    expect(files.tags).not.toContain('source:auto-capture');
     expect(out[1].tags).toContain('type:bugfix');
     expect(out[2].tags).toContain('type:heavy-session');
     expect(files.title).toBe('2026-09-12 hermes: edited 2 file(s)');

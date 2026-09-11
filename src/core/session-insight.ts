@@ -11,10 +11,12 @@
 //
 // The rules (`buildSessionInsights`) are host-neutral: they take counted
 // activity, not a transcript. Only the parser (`activityFromChatMessages`) is
-// format-specific. The Stop hook still carries its own copy of the rules and
-// of `bashEditedPaths`; it is owned by separate in-flight work (#322) and
-// should import this module from dist/core once that lands, so there is one
-// copy. Until then the constants below are the ones to keep in step.
+// format-specific. Two older copies of the same rules still exist: the Stop
+// hook's own (scripts/hooks/session-summary.js, owned by in-flight #322
+// work) and `RuleBasedExtractor` in ./extractor.ts (no titles, no file tags,
+// no Bash-edit paths; referenced only by its tests). Both should call this
+// module so there is one copy; until then the thresholds below are the ones
+// to keep in step.
 
 import { redactSecrets } from './paths.js';
 import { truncateTitle } from './title.js';
@@ -24,8 +26,6 @@ import { remember } from './operations.js';
 export const MIN_TOOL_CALLS = 3;
 /** Tool calls at or above this make a session "significant" (Rule 3). */
 export const HEAVY_SESSION_TOOL_CALLS = 20;
-/** Same tag the hooks stamp on everything they capture. */
-export const AUTO_CAPTURE_TAG = 'source:auto-capture';
 
 export interface SessionActivity {
   /** Basenames, deduplicated. */
@@ -202,7 +202,14 @@ function fileTagsFor(files: string[]): string[] {
 
 export interface InsightContext {
   sessionId: string;
-  /** Tags every entity carries (session, platform, …). */
+  /**
+   * Tags every entity carries besides `session:<id>`. The Claude Code hooks
+   * add `source:auto-capture` here; the Hermes path deliberately does not,
+   * because `memesh doctor` reads that tag as evidence about the Claude Code
+   * hook loop, and a Hermes-only machine would get a wrong liveness verdict.
+   * Hermes captures are identified by `platform:hermes` and
+   * `metadata.provenance.source_host`.
+   */
   baseTags: string[];
   /** Label after the date in each title — the project, or the host when there is none. */
   titleLabel: string;
@@ -217,7 +224,7 @@ export interface InsightContext {
 export function buildSessionInsights(activity: SessionActivity, ctx: InsightContext): InsightEntity[] {
   if (activity.toolCallCount < MIN_TOOL_CALLS) return [];
   const { filesEdited, errorsEncountered, bashCommands, toolCallCount } = activity;
-  const baseTags = [AUTO_CAPTURE_TAG, `session:${ctx.sessionId}`, ...ctx.baseTags];
+  const baseTags = [`session:${ctx.sessionId}`, ...ctx.baseTags];
   const titlePrefix = `${ctx.date ?? new Date().toISOString().slice(0, 10)} ${ctx.titleLabel}`;
   const out: InsightEntity[] = [];
 

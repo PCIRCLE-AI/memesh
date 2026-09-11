@@ -3,7 +3,6 @@ import { truncateTitle } from './title.js';
 import { remember } from './operations.js';
 export const MIN_TOOL_CALLS = 3;
 export const HEAVY_SESSION_TOOL_CALLS = 20;
-export const AUTO_CAPTURE_TAG = 'source:auto-capture';
 export function bashEditedPaths(cmd) {
     if (typeof cmd !== 'string')
         return [];
@@ -144,7 +143,7 @@ export function buildSessionInsights(activity, ctx) {
     if (activity.toolCallCount < MIN_TOOL_CALLS)
         return [];
     const { filesEdited, errorsEncountered, bashCommands, toolCallCount } = activity;
-    const baseTags = [AUTO_CAPTURE_TAG, `session:${ctx.sessionId}`, ...ctx.baseTags];
+    const baseTags = [`session:${ctx.sessionId}`, ...ctx.baseTags];
     const titlePrefix = `${ctx.date ?? new Date().toISOString().slice(0, 10)} ${ctx.titleLabel}`;
     const out = [];
     if (filesEdited.length > 0) {
