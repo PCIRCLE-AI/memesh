@@ -162,4 +162,32 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(run().status).toBe(0);
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'no note file changed since the last ingestion' });
   }, 60_000);
+
+  it('a first ingestion of a large memory directory finishes inside the declared Stop budget', () => {
+    // The budget is read from hooks/hooks.json, not restated here.
+    const hooks = JSON.parse(fs.readFileSync(path.resolve('hooks/hooks.json'), 'utf8'));
+    const stop = hooks.hooks.Stop[0].hooks.find((h: { command: string }) => h.command.includes('session-summary.js'));
+    const budgetMs = stop.timeout * 1000;
+    expect(budgetMs).toBeGreaterThan(0);
+
+    fs.mkdirSync(memoryDir);
+    for (let i = 0; i < 150; i++) {
+      const body = Array.from({ length: 12 }, (_, p) => `Paragraph ${p} of note ${i}: ${'lorem ipsum '.repeat(20)}`).join('\n\n');
+      fs.writeFileSync(path.join(memoryDir, `n${String(i).padStart(3, '0')}.md`),
+        `---\nname: budget_note_${i}\ndescription: Budget note ${i}\nmetadata:\n  type: fact\n---\n\n${body}\n`);
+    }
+    write(reads(1));
+    const started = Date.now();
+    const r = run();
+    const elapsed = Date.now() - started;
+    expect(r.status).toBe(0);
+    // Half the budget: the rest of the Stop hook (capture, auto-update) and a
+    // slower machine must still fit.
+    expect(elapsed, `Stop hook took ${elapsed} ms against a ${budgetMs} ms budget`).toBeLessThan(budgetMs / 2);
+    const last = outcomes('note-ingest').at(-1)!;
+    expect(last.outcome).toBe('wrote');
+    // 150 files, 100 read per Stop: the rest are reported and wait.
+    expect(last.reason).toMatch(/100 created/);
+    expect(last.reason).toMatch(/50 more not processed/);
+  }, 60_000);
 });
