@@ -43,9 +43,9 @@ const DECISION_CUES: RegExp[] = [
   /(?:^|[.!?;]\s+)switching to\b/gi,
   /^\s*agreed\s*[:,—-]/gim,
   /\bfrom now on\b/gi,
-  // 決定 alone is an ordinary verb (「根據 flag 決定要不要重試」); only its
-  // object form states a choice.
-  /決定(?:用|採用|改|不|要用|走)|改用|就用|選擇了|拍板/g,
+  // 決定 alone is an ordinary verb (「根據 flag 決定要不要重試」、「決定改天」、
+  // 「決定走了」、「決定要用哪個」); only 決定用/採用/不用/不要 states a choice.
+  /決定(?:用|採用|不用|不要)|改用|就用|選擇了|拍板/g,
 ];
 
 const LESSON_CUES: RegExp[] = [
@@ -74,12 +74,16 @@ function sameClause(before: string): string {
 
 /**
  * Remove what the assistant is SHOWING rather than saying: fenced code
- * blocks and quoted text ("…", “…”, 「…」, 『…』). A reply that quotes a
+ * blocks, inline code and quoted text ("…", “…”, 「…」, 『…』). A reply that quotes a
  * reviewer's "we decided to use X" has not decided anything.
  */
 function stripShownText(text: string): string {
   return text
     .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+    // Inline code before quotes: a `"` inside backticks would otherwise pair
+    // with a real quote later and swallow the sentence between them. Known
+    // false negative left as is: an inch mark (12" screen) opens a quote.
+    .replace(/`[^`\n]*`/g, ' ')
     .replace(/"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』/g, ' ');
 }
 

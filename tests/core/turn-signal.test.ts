@@ -58,6 +58,10 @@ describe('classifyTurn', () => {
     ['Which queue?', 'No — we decided to use BullMQ.'],
     ['Wait?', "There is no reason to wait: let's go with pnpm."],
     ['行嗎？', '沒有問題，決定用 SQLite。'],
+    ['要用 Redis 嗎？', '決定不用 Redis，佇列放 SQLite。'],
+    // Round 3 P3-4: a quote character inside inline code must not pair with a
+    // real quote later and swallow the sentence between them.
+    ['How do I quote?', 'Use `"` to quote strings. We decided to use "BullMQ".'],
     // P3
     ['Which framework?', "I'll go with Fastify here — it has the schema validation built in."],
   ])('a decision after another clause still counts: %s / %s', (u, a) => {
@@ -70,10 +74,17 @@ describe('classifyTurn', () => {
     ['What did they say?', 'The reviewer wrote: "we decided to use BullMQ" — that is not confirmed.'],
     ['他說什麼？', '他寫的是「決定用 SQLite」，但還沒確認。'],
     ['這段在做什麼？', '這段程式碼會根據 flag 決定要不要重試。'],
+    // Round 3 P3-5: 決定 followed by 改/走/要用/不 is still an ordinary verb.
+    ['什麼時候？', '我們決定改天再討論。'],
+    ['他人呢？', '他決定走了。'],
+    ['怎麼選？', '系統會決定要用哪個 provider。'],
+    ['選好了嗎？', '我還決定不了。'],
   ])('no false positive on code, quotes or a plain verb: %s', (u, a) => {
     expect(classifyTurn(u, a)).toBeNull();
   });
 
+  // Known false negative, documented rather than fixed: an inch mark
+  // (12" monitor) opens a quote the stripper pairs with the next one.
   it('a recall block injected into the user text does not make every later turn a decision', () => {
     const user = '[MeMesh recall]\n- (conversation) hermes-turn-s-abc: Assistant: We decided to use BullMQ.\n\nWhat time is it?';
     expect(classifyTurn(user, 'About 3pm.')).toBeNull();

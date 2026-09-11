@@ -11,7 +11,7 @@ const DECISION_CUES = [
     /(?:^|[.!?;]\s+)switching to\b/gi,
     /^\s*agreed\s*[:,—-]/gim,
     /\bfrom now on\b/gi,
-    /決定(?:用|採用|改|不|要用|走)|改用|就用|選擇了|拍板/g,
+    /決定(?:用|採用|不用|不要)|改用|就用|選擇了|拍板/g,
 ];
 const LESSON_CUES = [
     /\blessons? learned\b|\blesson\s*:/gi,
@@ -33,6 +33,7 @@ function sameClause(before) {
 function stripShownText(text) {
     return text
         .replace(/```[\s\S]*?(?:```|$)/g, ' ')
+        .replace(/`[^`\n]*`/g, ' ')
         .replace(/"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』/g, ' ');
 }
 function stripRecallBlock(text) {
