@@ -36,7 +36,10 @@ import { dirname, join } from 'path';
 import {
   ensurePrivateDir,
   getMemeshDirFromDbPath,
+  SKIP_REASONS,
+  hookErrorReason,
   importFromPluginRoot,
+  isGitCommitCommand,
   recordHookOutcome,
   resolvePluginRoot,
   writePrivateJson,
@@ -53,20 +56,13 @@ const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
 
 const MEMORY_WRITE_TOOL_RE = /(?:^|__)(?:remember|learn)$/;
 const MEMORY_WRITE_BASH_RE = /\bmemesh\s+(?:remember|learn)\b/;
-// `git commit` as a command: git preceded by start, whitespace, a separator
-// or a path slash (so `sudo git`, `VAR=x git`, `/usr/bin/git` count), any
-// global options between (`-C "<dir with spaces>"`, `-c k=v`, `--git-dir x`),
-// then `commit` followed by the end or a separator — not `commit-tree`, and
-// not `grep "git commit"` (a quote is not an allowed prefix). The same
-// pattern #327's post-commit hook settled on; one shared helper is planned.
-const COMMIT_RE = /(?:^|[\s;&|(`/])git(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace)\s+(?:"[^"]*"|'[^']*'|\S+)|-\S+))*\s+commit(?=$|[\s;&|)`])/;
 const TEST_RE = /\b(?:vitest|jest|pytest|go\s+test|cargo\s+test|npm\s+(?:run\s+)?test|run-tests[\w-]*)\b/;
-// The sentence Claude Code puts in a tool_result when the user turned the
-// call down ("The user doesn't want to proceed with this tool use. The tool
-// use was rejected …"). Matched as that sentence, and only on plan/question
-// results: the bare words "rejected"/"declined" appear in ordinary commit
-// and test output, and in approved plans, and must not cancel those.
-const DECLINED_RE = /The user doesn't want to (?:proceed with this tool use|take this action)|^User rejected tool use/;
+// The sentence Claude Code puts in a tool_result block when the user turned
+// the call down ("The user doesn't want to proceed with this tool use. The
+// tool use was rejected …"). Matched as that sentence, and only on
+// plan/question results: the bare words "rejected"/"declined" appear in
+// ordinary commit and test output, and in approved plans.
+const DECLINED_RE = /The user doesn't want to proceed with this tool use/;
 /** Days a per-session nudge offset file is kept after its last Stop. */
 const NUDGE_STATE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** Most stale offset files one Stop removes — the pruning stays bounded. */
@@ -137,7 +133,7 @@ function writeJsonAtomic(path, value) {
  * created, replaced or marked a memory missing.
  */
 export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
-  if (!memoryDir) return { outcome: 'skipped', reason: 'no Claude Code memory directory for this project', changed: false };
+  if (!memoryDir) return { outcome: 'skipped', reason: SKIP_REASONS.noMemoryDir, changed: false };
   const memeshDir = getMemeshDirFromDbPath();
   const statePath = join(memeshDir, 'note-ingest-state.json');
   const key = createHash('sha256').update(memoryDir).digest('hex').slice(0, 16);
@@ -145,13 +141,13 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   const newest = newestNoteMtime(memoryDir);
   const last = typeof state[key]?.at === 'number' ? state[key].at : 0;
   if (newest <= last && !state[key]?.more) {
-    return { outcome: 'skipped', reason: 'no note file changed since the last ingestion', changed: false };
+    return { outcome: 'skipped', reason: SKIP_REASONS.noNoteChanged, changed: false };
   }
 
   const pluginRoot = resolvePluginRoot(metaUrl);
   const ingestPath = join(pluginRoot, 'dist/core/note-ingest.js');
   if (!existsSync(ingestPath)) {
-    return { outcome: 'skipped', reason: 'dist/core/note-ingest.js is not built; run npm run build', changed: false };
+    return { outcome: 'skipped', reason: SKIP_REASONS.noteIngesterNotBuilt, changed: false };
   }
   const { ingestNoteDirectory, summarizeNoteIngest } = await importFromPluginRoot(pluginRoot, 'dist/core/note-ingest.js');
   const { openDatabase, closeDatabase } = await importFromPluginRoot(pluginRoot, 'dist/db.js');
@@ -168,7 +164,9 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   // newer than the stamp and is picked up next time.
   writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0 } });
   const changed = result.created.length + result.replaced.length + result.markedMissing.length > 0;
-  return { outcome: changed ? 'wrote' : 'skipped', reason: summarizeNoteIngest(result), changed };
+  // A write records the summary (counts only); a skip records a known
+  // reason, the only kind doctor will quote.
+  return { outcome: changed ? 'wrote' : 'skipped', reason: changed ? summarizeNoteIngest(result) : SKIP_REASONS.noteNothingNew, changed };
 }
 
 /**
@@ -232,7 +230,7 @@ export function scanTranscriptWindow(text) {
         else if (name === 'Bash') {
           const cmd = String(input.command ?? '');
           if (MEMORY_WRITE_BASH_RE.test(cmd)) pending.set(block.id, 'memory');
-          else if (COMMIT_RE.test(cmd)) pending.set(block.id, 'commit');
+          else if (isGitCommitCommand(cmd)) pending.set(block.id, 'commit');
           else if (TEST_RE.test(cmd)) pending.set(block.id, 'test');
         }
       } else if (entry.type === 'user' && block?.type === 'tool_result') {
@@ -295,9 +293,9 @@ export function buildNudge(moves) {
  * Returns `{ message, reason }`; `message` is null when silent.
  */
 export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
-  if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) return { message: null, reason: 'no usable session_id in the payload' };
+  if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) return { message: null, reason: SKIP_REASONS.noSessionId };
   if (typeof transcriptPath !== 'string' || !transcriptPath || !existsSync(transcriptPath)) {
-    return { message: null, reason: 'no transcript to read' };
+    return { message: null, reason: SKIP_REASONS.noTranscript };
   }
   const dir = join(getMemeshDirFromDbPath(), 'remember-nudge');
   ensurePrivateDir(dir);
@@ -309,12 +307,12 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
   writeJsonAtomic(statePath, { offset: nextOffset, lastStopAt: now });
 
   const scan = scanTranscriptWindow(text);
-  if (scan.toolCalls < NUDGE_MIN_TOOL_CALLS) return { message: null, reason: `trivial turn (${scan.toolCalls} tool calls since the last Stop)` };
-  if (scan.moves.length === 0) return { message: null, reason: 'no decision-shaped move since the last Stop' };
-  if (scan.wroteMemory) return { message: null, reason: 'a memory was written since the last Stop' };
+  if (scan.toolCalls < NUDGE_MIN_TOOL_CALLS) return { message: null, reason: SKIP_REASONS.trivialTurn };
+  if (scan.moves.length === 0) return { message: null, reason: SKIP_REASONS.noDecisionMove };
+  if (scan.wroteMemory) return { message: null, reason: SKIP_REASONS.memoryWritten };
   const since = typeof state.lastStopAt === 'number' ? state.lastStopAt : scan.firstTimestamp;
   if (memoryDir && typeof since === 'number' && newestNoteMtime(memoryDir) >= since) {
-    return { message: null, reason: 'a note file changed since the last Stop' };
+    return { message: null, reason: SKIP_REASONS.noteFileChanged };
   }
   return { message: buildNudge(scan.moves), reason: scan.moves.join('; ') };
 }
@@ -330,14 +328,14 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
   const memoryDir = claudeMemoryDir(payload?.transcript_path);
   try {
     if (!captureEnabled) {
-      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: 'auto-capture is turned off', payload });
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff, payload });
     } else {
       const r = await runNoteIngestion({ memoryDir, project, metaUrl });
       recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, payload });
     }
   } catch (err) {
     try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: String(err?.message || err), payload });
+    recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: hookErrorReason(err), payload });
   }
 
   try {
@@ -346,7 +344,7 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
     return n.message;
   } catch (err) {
     try { process.stderr.write(`[memesh remember-nudge] ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    recordHookOutcome(env, { hook: 'remember-nudge', outcome: 'error', reason: String(err?.message || err), payload });
+    recordHookOutcome(env, { hook: 'remember-nudge', outcome: 'error', reason: hookErrorReason(err), payload });
     return null;
   }
 }

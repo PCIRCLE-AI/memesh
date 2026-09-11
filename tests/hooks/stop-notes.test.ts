@@ -91,7 +91,7 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     const again = run();
     expect(again.status).toBe(0);
     expect(again.stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/trivial/);
+    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/trivial turn/);
   }, 60_000);
 
   it('counts a commit and a test that went red then green', () => {

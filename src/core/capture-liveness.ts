@@ -215,6 +215,13 @@ export const CAPTURE_HOOKS = [
   'decision-nudge',
   'guard-check',
   'session-start',
+  // #324: the two halves of Stop-side note work, recorded by the Stop hook
+  // (scripts/hooks/_stop-notes.js) under their own names so their skips do
+  // not dilute session-summary's window. Neither is SILENT_ELIGIBLE: most
+  // Stops correctly ingest nothing (no note changed) and nudge nothing (the
+  // turn made no decision), so "ran and did not write" is their normal state.
+  'note-ingest',
+  'remember-nudge',
 ] as const;
 
 /**
@@ -287,6 +294,17 @@ export const SKIP_REASONS = {
   noDatabaseForRecall: 'no database yet — nothing to recall',
   nothingToRecall: 'no guard matched and nothing to recall for this file',
   noPromptIntent: 'the prompt carried no remember intent and no update decision',
+  // note-ingest (#324)
+  noMemoryDir: 'no Claude Code memory directory for this project',
+  noNoteChanged: 'no note file changed since the last ingestion',
+  noteIngesterNotBuilt: 'the note ingester is not built (dist/core/note-ingest.js is missing)',
+  noteNothingNew: 'note files were read and nothing new needed storing',
+  // remember-nudge (#324)
+  noTranscript: 'no transcript to read',
+  trivialTurn: 'trivial turn — too few tool calls since the last Stop',
+  noDecisionMove: 'no decision-shaped move since the last Stop',
+  memoryWritten: 'a memory was written since the last Stop',
+  noteFileChanged: 'a note file changed since the last Stop',
 } as const;
 
 const KNOWN_SKIP_REASONS: ReadonlySet<string> = new Set(Object.values(SKIP_REASONS));
