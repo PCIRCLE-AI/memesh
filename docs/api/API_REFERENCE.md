@@ -1314,7 +1314,11 @@ never an absolute path.
   was ingested from a different directory, is skipped rather than overwritten.
   Two files in one directory with the same `name`: the one that already owns
   it (or, on a first run, the first in path order) keeps it; the other is
-  reported.
+  reported, and takes the name over once the owner file is deleted or stops
+  using it. Names are cleaned like the body, so two names that differ only
+  in a redacted credential collide and are reported as duplicates.
+- A renamed file keeps its memory: the next run re-points `note_path`
+  (one history entry), it is not tagged missing.
 - On a file change the file owns the `source:*` tags; any other tag a person
   added is kept, and the `project:` tag set on first ingestion stays. A
   memory a manual `remember` appended to is still replaced as a whole on the

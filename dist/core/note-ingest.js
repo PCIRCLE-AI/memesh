@@ -144,11 +144,31 @@ export function ingestNoteDirectory(opts) {
         priorSkips = {};
     }
     const nextSkips = {};
+    const ownerUnchanged = (print) => {
+        if (!print.owner)
+            return true;
+        try {
+            const st = fs.lstatSync(path.join(realDir, print.owner.rel));
+            return st.mtimeMs === print.owner.mtime && st.size === print.owner.size;
+        }
+        catch {
+            return false;
+        }
+    };
+    const touchedIds = new Set();
     const seenNames = new Map();
     const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
-    for (const [rel, k] of known)
-        if (presentRels.has(rel))
-            seenNames.set(k.name, rel);
+    for (const [rel, k] of known) {
+        if (!presentRels.has(rel))
+            continue;
+        try {
+            const st = fs.lstatSync(path.join(realDir, rel));
+            if (st.mtimeMs === k.mtime && st.size === k.size)
+                seenNames.set(k.name, rel);
+        }
+        catch {
+        }
+    }
     let read = 0;
     for (const abs of files) {
         const rel = relPath(realDir, abs);
@@ -171,7 +191,7 @@ export function ingestNoteDirectory(opts) {
                 continue;
             }
             const priorSkip = priorSkips[rel];
-            if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size) {
+            if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
                 skip(priorSkip.reason);
                 nextSkips[rel] = priorSkip;
                 continue;
@@ -209,7 +229,14 @@ export function ingestNoteDirectory(opts) {
         }
         const firstWithName = seenNames.get(name);
         if (firstWithName && firstWithName !== rel) {
-            skip(`name "${name}" already used by ${firstWithName} in this directory`);
+            const reason = `name "${name}" already used by ${firstWithName} in this directory`;
+            skip(reason);
+            try {
+                const ownerStat = fs.lstatSync(path.join(realDir, firstWithName));
+                nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason, owner: { rel: firstWithName, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
+            }
+            catch {
+            }
             continue;
         }
         seenNames.set(name, rel);
@@ -257,7 +284,7 @@ export function ingestNoteDirectory(opts) {
         const keptTags = currentTags.filter((t) => !t.startsWith('source:'));
         const hasProject = keptTags.some((t) => t.startsWith('project:'));
         const tags = [NOTE_FILE_TAG, ...keptTags, ...(!hasProject && opts.project ? [`project:${opts.project}`] : [])];
-        remember({
+        const written = remember({
             name,
             type,
             title,
@@ -275,13 +302,19 @@ export function ingestNoteDirectory(opts) {
             },
             sourceHost: 'note-file',
         });
+        touchedIds.add(written.entityId);
         (existing ? result.replaced : result.created).push(name);
     }
-    db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
+    if (Object.keys(nextSkips).length > 0) {
+        db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
+    }
+    else {
+        db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run(skipKey);
+    }
     const present = presentRels;
     const tagMissing = db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)');
     for (const row of noteRows) {
-        if (row.is_missing)
+        if (row.is_missing || touchedIds.has(row.id))
             continue;
         const prov = parseProvenance(row.metadata);
         if (prov.note_dir_id !== dirId || typeof prov.note_path !== 'string')
