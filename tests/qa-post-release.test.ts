@@ -282,4 +282,30 @@ describe('capture receipt on the shipped hooks', () => {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('fails the receipt when a shipped hook exits nonzero and redacts stderr', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-capture-receipt-fail-'));
+    try {
+      const install = {
+        home,
+        packageRoot: path.resolve('.'),
+        env: { ...process.env, HOME: home },
+      };
+       const secret = `ghp_${'Z'.repeat(36)}`;
+       const result = captureReceipt(install, () => ({
+        pid: 123,
+        output: [null, Buffer.from(''), Buffer.from(`hook failed with ${secret}`)],
+        stdout: Buffer.from(''),
+        status: 7,
+        signal: null,
+        stderr: Buffer.from(`hook failed with ${secret}`),
+      }));
+      expect(result).toMatchObject({ id: 'capture', ok: false });
+      expect(result.detail).toContain('status=7');
+      expect(result.detail).toContain('***REDACTED***');
+      expect(result.detail).not.toContain(secret);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

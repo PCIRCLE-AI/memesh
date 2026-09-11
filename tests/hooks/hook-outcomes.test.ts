@@ -15,6 +15,7 @@ import {
   SILENT_HOOK_MIN_RUNS,
   type HookOutcomeRecord,
 } from '../../src/core/capture-liveness.js';
+import { recordHookOutcome } from '../../scripts/hooks/_shared.js';
 
 /**
  * The guard for issue #327: every capture-hook exit path leaves a record.
@@ -222,6 +223,31 @@ describe('hook outcome records', () => {
     expect(rows.length).toBe(1);
     expect(rows[0].outcome).toBe('skipped');
     expect(rows[0].reason).toBe('auto-capture is turned off');
+  });
+
+  it('redacts a secret before the 200-character reason cap', () => {
+    const reason = `${'E'.repeat(165)}ghp_${'Z'.repeat(36)}`;
+    const previous = {
+      MEMESH_DIR: process.env.MEMESH_DIR,
+      MEMESH_DB_PATH: process.env.MEMESH_DB_PATH,
+      HOME: process.env.HOME,
+    };
+    process.env.MEMESH_DIR = memeshDir;
+    process.env.MEMESH_DB_PATH = path.join(memeshDir, 'knowledge-graph.db');
+    process.env.HOME = testDir;
+    try {
+      recordHookOutcome(process.env, { hook: 'post-commit', outcome: 'error', reason });
+      const raw = fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8');
+      const record = JSON.parse(raw.trim()) as { reason?: string };
+      expect(record.reason).toContain('***REDACTED***');
+      expect(record.reason).not.toContain('ghp_');
+      expect(record.reason).not.toContain('Z'.repeat(20));
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   // ── the remaining five hooks ─────────────────────────────────────────────

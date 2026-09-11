@@ -14,10 +14,9 @@
 // "no silent skip" — every exit is reached through at least one recorded
 // outcome, so a path that exits without saying why cannot exist.
 //
-// session-start has no `process.exit` call at all — every return funnels
-// through its single `output()` emit point, which records — so it passes by
-// construction (zero exits). The helper-definition body (`function exit0() {
-// process.exit(0); }`) is not an exit of the hook and is skipped.
+// session-start has no explicit process exit; its returns funnel through its
+// single `output()` emit point. It gets a separate output-funnel check below,
+// so zero exit patterns do not pretend to prove coverage.
 //
 // Exit 1 on the first uncovered exit; 0 when every exit is covered.
 //
@@ -43,13 +42,64 @@ const CAPTURE_HOOKS = [
   'session-start',
 ];
 
-const EXIT_RE = /\b(?:exit0|pass)\(\)|\bprocess\.exit\(\s*0\s*\)/;
-const RECORD_RE = /\brecord\(|\brecordHookOutcome\(/;
+const EXIT_RE = /(?<![\w$.])(?:exit0|pass)\s*\(|(?<![\w$.])process\.exit\s*\(/;
+const RECORD_RE = /(?<![\w$.])(?:record|recordHookOutcome)\s*\(/;
 // Any `function`-keyword definition (the `record` helper, `exit0`, `pass`,
 // …). Its body must be skipped, or the `recordHookOutcome(...)` inside the
 // `record` helper would count as a hook record and every uncovered exit
 // would hide behind it.
 const FUNCTION_DEF_RE = /^(?:export\s+)?(?:async\s+)?function\s+/;
+
+/** Mask strings, comments, and regex literals while preserving newlines. */
+function maskLexicalNoise(source) {
+  let out = '';
+  let state = 'code';
+  let escaped = false;
+  let previousSignificant = '';
+  const mask = (char) => { out += char === '\n' ? '\n' : ' '; };
+  const canStartRegex = () => !previousSignificant || /[=([{,:;!&|?]/.test(previousSignificant);
+
+  for (let i = 0; i < source.length; i++) {
+    const ch = source[i];
+    const next = source[i + 1] ?? '';
+    if (state === 'line-comment') {
+      mask(ch);
+      if (ch === '\n') state = 'code';
+      continue;
+    }
+    if (state === 'block-comment') {
+      mask(ch);
+      if (ch === '*' && next === '/') {
+        mask(next); i++; state = 'code';
+      }
+      continue;
+    }
+    if (state === 'string' || state === 'template' || state === 'regex') {
+      mask(ch);
+      if (escaped) { escaped = false; continue; }
+      if (ch === '\\') { escaped = true; continue; }
+      if ((state === 'string' && (ch === "'" || ch === '"'))
+        || (state === 'template' && ch === '`')
+        || (state === 'regex' && ch === '/')) state = 'code';
+      continue;
+    }
+    if (ch === '/' && next === '/') {
+      mask(ch); mask(next); i++; state = 'line-comment'; continue;
+    }
+    if (ch === '/' && next === '*') {
+      mask(ch); mask(next); i++; state = 'block-comment'; continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') {
+      mask(ch); state = ch === '`' ? 'template' : 'string'; escaped = false; continue;
+    }
+    if (ch === '/' && canStartRegex()) {
+      mask(ch); state = 'regex'; escaped = false; continue;
+    }
+    out += ch;
+    if (!/\s/.test(ch)) previousSignificant = ch;
+  }
+  return out;
+}
 
 /** Net brace delta on a line, so a function body can be skipped correctly. */
 function braceDelta(line) {
@@ -62,7 +112,7 @@ function braceDelta(line) {
  * testable without the filesystem.
  */
 export function findUncoveredExits(source) {
-  const lines = source.split('\n');
+  const lines = maskLexicalNoise(source).split('\n');
   const uncovered = [];
   let lastExitLine = -1;
   let lastRecordLine = -1;
@@ -84,6 +134,10 @@ export function findUncoveredExits(source) {
       continue;
     }
 
+    // user-prompt-intent defines its record helper as an arrow function;
+    // do not let the helper's own recordHookOutcome call credit the hook.
+    if (/^(?:const|let|var)\s+record\s*=.*=>/.test(trimmed)) continue;
+
     if (EXIT_RE.test(line)) {
       if (lastRecordLine <= lastExitLine) {
         uncovered.push(i + 1);
@@ -95,15 +149,38 @@ export function findUncoveredExits(source) {
       lastRecordLine = i;
     }
   }
+  if (fnDepth !== 0) {
+    throw new Error('cannot analyze hook source: function body is unbalanced');
+  }
   return uncovered;
+}
+
+function validateSessionStart(source) {
+  const masked = maskLexicalNoise(source);
+  const outputStart = masked.search(/function\s+output\s*\(/);
+  if (outputStart < 0) return 'session-start has no output() funnel';
+  const outputTail = masked.slice(outputStart, outputStart + 2000);
+  if (!/(?:recordHookOutcome|\brecord)\s*\(/.test(outputTail)) {
+    return 'session-start output() funnel has no outcome record';
+  }
+  return null;
 }
 
 export function main() {
   const violations = [];
   for (const hook of CAPTURE_HOOKS) {
     const file = path.join(REPO, 'scripts', 'hooks', `${hook}.js`);
-    const uncovered = findUncoveredExits(fs.readFileSync(file, 'utf8'));
-    for (const line of uncovered) violations.push(`scripts/hooks/${hook}.js:${line}`);
+    const source = fs.readFileSync(file, 'utf8');
+    try {
+      const uncovered = findUncoveredExits(source);
+      for (const line of uncovered) violations.push(`scripts/hooks/${hook}.js:${line}`);
+      if (hook === 'session-start') {
+        const funnelError = validateSessionStart(source);
+        if (funnelError) violations.push(`scripts/hooks/${hook}.js: ${funnelError}`);
+      }
+    } catch (error) {
+      violations.push(`scripts/hooks/${hook}.js: analysis failed (${error.message})`);
+    }
   }
   if (violations.length > 0) {
     console.error(
@@ -113,7 +190,7 @@ export function main() {
     );
     process.exit(1);
   }
-  console.log(`✓ every capture-hook exit path records an outcome (${CAPTURE_HOOKS.length} hooks)`);
+  console.log(`✓ 7 explicit-exit hooks record outcomes; session-start output funnel verified (8 hooks)`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {

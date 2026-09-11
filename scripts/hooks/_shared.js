@@ -556,7 +556,7 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload,
     // reasons are hard-coded literals and pass through unchanged, but the
     // error ones are redacted before they persist: stderr is transient, this
     // JSONL file is a permanent, exportable copy.
-    if (reason) record.reason = redactSecrets(String(reason).slice(0, 200));
+    if (reason) record.reason = redactSecrets(String(reason)).slice(0, 200);
     if (entity) record.entity = entity;
     const sid = sessionId ?? (payload && typeof payload === 'object' ? payload.session_id : undefined);
     if (typeof sid === 'string' && sid) record.session_id = sid;

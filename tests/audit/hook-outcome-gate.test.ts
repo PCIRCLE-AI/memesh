@@ -71,4 +71,49 @@ describe('capture-hook outcome gate', () => {
     ].join('\n');
     expect(findUncoveredExits(source)).toEqual([]);
   });
+
+  it('does not let braces or exit words inside strings/comments alter analysis', () => {
+    const source = [
+      'function helper() {',
+      '  const text = "} exit0() record(";',
+      '  // { process.exit(0) record(',
+      '}',
+      'record("skipped", "real");',
+      'return exit0();',
+      'function exit0() { process.exit(0); }',
+    ].join('\n');
+    expect(findUncoveredExits(source)).toEqual([]);
+  });
+
+  it('does not let an arrow record helper credit an uncovered exit', () => {
+    const source = [
+      'const record = (outcome) => recordHookOutcome(outcome);',
+      'return exit0();',
+      'function exit0() { process.exit(0); }',
+    ].join('\n');
+    expect(findUncoveredExits(source)).toEqual([2]);
+  });
+
+  it('recognizes exit calls with arguments, spaces, and multiline parentheses', () => {
+    const source = [
+      'record("a");',
+      'exit0 (payload);',
+      'record("b");',
+      'process.exit(code);',
+      'record("c");',
+      'process.exit(',
+      '  0',
+      ');',
+      'function exit0() { process.exit(0); }',
+    ].join('\n');
+    expect(findUncoveredExits(source)).toEqual([]);
+  });
+
+  it('fails closed when a function body is unbalanced', () => {
+    const source = [
+      'function helper() {',
+      '  record("inside");',
+    ].join('\n');
+    expect(() => findUncoveredExits(source)).toThrow(/unbalanced/);
+  });
 });

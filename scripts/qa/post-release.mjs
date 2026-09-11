@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { binTargets, hookCommands } from '../lib/executable-targets.mjs';
 import { npmSync } from '../lib/npm-bin.mjs';
 import { fetchPackument } from '../lib/upgrade-matrix.mjs';
+import { redactSecrets } from '../../src/core/paths.js';
 
 const packageName = '@pcircle/memesh';
 const npmTimeoutMs = 180_000;
@@ -466,7 +467,11 @@ function proveConsumerInstall({ version, root, registry, results }) {
  * that a commit and a session insight actually landed. Complements the
  * artifact-doctor row — the doctor sees the tree, this sees the capture loop.
  */
-export function captureReceipt(install) {
+/**
+ * @param {{home: string, packageRoot: string, env: NodeJS.ProcessEnv}} install
+ * @param {(command: string, args: string[], options: object) => {status: number|null, signal: string|null, stderr: string|Buffer}} [spawnHook]
+ */
+export function captureReceipt(install, spawnHook = spawnSync) {
   const dataDir = path.join(install.home, 'capture-data');
   fs.mkdirSync(dataDir, { recursive: true });
   const hooksDir = path.join(install.packageRoot, 'scripts', 'hooks');
@@ -491,21 +496,35 @@ export function captureReceipt(install) {
   git(['commit', '-q', '-m', 'capture receipt', '--no-verify']);
   const hash = git(['rev-parse', '--short', 'HEAD']).trim();
 
-  const runHook = (name, payload) => spawnSync(process.execPath, [path.join(hooksDir, `${name}.js`)], {
+  const runHook = (name, payload) => spawnHook(process.execPath, [path.join(hooksDir, `${name}.js`)], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
     timeout: processTimeoutMs,
     env,
   });
 
+  const hookFailure = (name, result) => {
+    if (result?.status === 0 && !result?.signal) return null;
+    const status = result?.status ?? 'unknown';
+    const signal = result?.signal ? ` signal=${result.signal}` : '';
+    const stderr = redactSecrets(String(result?.stderr ?? '')).slice(0, 300);
+    return {
+      id: 'capture',
+      ok: false,
+      detail: `the shipped ${name} hook exited status=${status}${signal}${stderr ? `: ${stderr}` : ''}`,
+    };
+  };
+
   // One commit, the verbatim payload shape post-commit reads.
-  runHook('post-commit', {
+  const commitHook = runHook('post-commit', {
     tool_name: 'Bash',
     cwd: repoDir,
     session_id: 'capture-1',
     tool_input: { command: 'git commit -m "capture receipt"' },
     tool_output: `[main ${hash}] capture receipt\n 1 file changed, 1 insertion(+)\n`,
   });
+  const commitFailure = hookFailure('post-commit', commitHook);
+  if (commitFailure) return commitFailure;
 
   // One Stop, with a transcript naming edits so session-summary files them.
   const transcript = path.join(repoDir, 'session.jsonl');
@@ -516,9 +535,11 @@ export function captureReceipt(install) {
     toolUse('Bash', { command: 'npm test' }),
     toolUse('Bash', { command: 'npm run build' }),
   ].join('\n'));
-  runHook('session-summary', {
+  const sessionHook = runHook('session-summary', {
     session_id: 'capture-1', cwd: repoDir, transcript_path: transcript, was_in_agentic_loop: true,
   });
+  const sessionFailure = hookFailure('session-summary', sessionHook);
+  if (sessionFailure) return sessionFailure;
 
   const dbPath = path.join(dataDir, 'knowledge-graph.db');
   if (!fs.existsSync(dbPath)) {
