@@ -60111,7 +60111,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       opts.name = derived.name;
       opts.type ??= NOTE_DEFAULT_TYPE;
       opts.title ??= derived.title;
-      opts.obs = [...derived.observations, ...opts.obs ?? []];
+      opts.obs = opts.obs?.length ? [...derived.observations, ...opts.obs] : derived.observations;
     }
   } else if (text) {
     if (!opts.obs || opts.obs.length === 0)

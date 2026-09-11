@@ -54,6 +54,7 @@ describe('ingestNoteDirectory', () => {
       'MEMORY.md': '- [index](a.md) — no frontmatter here',
     });
     const r = ingestNoteDirectory({ dir, project: 'proj' });
+    expect(r.created).toHaveLength(3);
     expect(r.created.sort()).toEqual(['note_a', 'note_b', 'note_c']);
     expect(r.skipped).toEqual([{ path: 'MEMORY.md', reason: expect.stringMatching(/no frontmatter/) }]);
 

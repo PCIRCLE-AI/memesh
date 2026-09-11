@@ -331,7 +331,7 @@ program
         opts.name = derived.name;
         opts.type ??= NOTE_DEFAULT_TYPE;
         opts.title ??= derived.title;
-        opts.obs = [...derived.observations, ...(opts.obs ?? [])];
+        opts.obs = opts.obs?.length ? [...derived.observations, ...opts.obs] : derived.observations;
       }
     } else if (text) {
       // Positional text ALONGSIDE flags used to be dropped on the floor:

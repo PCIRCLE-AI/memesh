@@ -46,6 +46,7 @@ describe('memesh import --notes', () => {
     expect(second.exitCode, second.stderr).toBe(0);
     const parsed = JSON.parse(second.stdout);
     expect(parsed).toMatchObject({ created: [], replaced: [], unchanged: 2 });
+    expect(parsed.discovered).toBeGreaterThanOrEqual(2);
 
     const recalled = runCli(['recall', 'alpha', '--json', '--cross-project'], home);
     expect(recalled.stdout).toContain('cli_note_a');

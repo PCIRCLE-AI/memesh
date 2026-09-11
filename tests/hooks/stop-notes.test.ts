@@ -64,10 +64,16 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
   const write = (entries: object[]) => fs.writeFileSync(transcript, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
   const append = (entries: object[]) => fs.appendFileSync(transcript, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
 
+  /** The recorded outcomes for one hook name. Pinned non-empty: every Stop
+   *  must leave a record, so an empty list is itself a failure, never a
+   *  vacuous pass for the `.at(-1)` assertions that follow. */
   function outcomes(hook: string): Array<{ outcome: string; reason?: string }> {
     const file = path.join(home, '.memesh', 'hook-outcomes.jsonl');
-    if (!fs.existsSync(file)) return [];
-    return fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.hook === hook);
+    const records = fs.existsSync(file)
+      ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.hook === hook)
+      : [];
+    expect(records.length, `no ${hook} outcome was recorded`).toBeGreaterThan(0);
+    return records;
   }
 
   it('nudges once on a turn with a plan approved and nothing written', () => {
