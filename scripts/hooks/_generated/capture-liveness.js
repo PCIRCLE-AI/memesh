@@ -129,9 +129,60 @@ export function renderableSkipReason(reason) {
     return KNOWN_SKIP_REASONS.has(reason) ? reason : UNRECOGNISED_REASON;
 }
 export function isGitCommitCommand(command) {
-    return GIT_COMMIT_RE.test(command);
+    const start = /(?:^|[\s;&|(`/])git(?=\s)/g;
+    let m;
+    while ((m = start.exec(command)) !== null) {
+        const walk = commitFollowsGit(command, m.index + m[0].length);
+        if (walk.commit)
+            return true;
+        if (walk.end > start.lastIndex)
+            start.lastIndex = walk.end;
+    }
+    return false;
 }
-const GIT_COMMIT_RE = /(?:^|[\s;&|(`/])git(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace)\s+(?:"[^"]*"|'[^']*'|\S+)|-\S+))*\s+commit(?=$|[\s;&|)`])/;
+const VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+const COMMIT_END = /[\s;&|)`]/;
+function commitFollowsGit(s, i) {
+    for (;;) {
+        const afterSpace = skipSpace(s, i);
+        if (afterSpace === i)
+            return { commit: false, end: i };
+        i = afterSpace;
+        if (s.startsWith('commit', i)) {
+            const next = s[i + 6];
+            return { commit: next === undefined || COMMIT_END.test(next), end: i + 6 };
+        }
+        if (s[i] !== '-')
+            return { commit: false, end: i };
+        const optionEnd = tokenEnd(s, i);
+        const option = s.slice(i, optionEnd);
+        i = optionEnd;
+        if (VALUE_OPTIONS.has(option)) {
+            const valueStart = skipSpace(s, i);
+            if (valueStart === i || valueStart >= s.length)
+                return { commit: false, end: valueStart };
+            i = valueEnd(s, valueStart);
+        }
+    }
+}
+function skipSpace(s, i) {
+    while (i < s.length && /\s/.test(s[i]))
+        i++;
+    return i;
+}
+function tokenEnd(s, i) {
+    while (i < s.length && !/\s/.test(s[i]))
+        i++;
+    return i;
+}
+function valueEnd(s, i) {
+    const quote = s[i];
+    if (quote === '"' || quote === "'") {
+        const close = s.indexOf(quote, i + 1);
+        return close === -1 ? s.length : close + 1;
+    }
+    return tokenEnd(s, i);
+}
 export const NOT_TRIGGERED_SKIP_REASONS = {
     'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
     'session-summary': [SKIP_REASONS.alreadyCaptured],

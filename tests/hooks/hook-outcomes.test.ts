@@ -522,6 +522,24 @@ describe('hook outcome records', () => {
     expect(isGitCommitCommand(command as string)).toBe(expected);
   });
 
+  // The command text is whatever the agent ran. The inputs CodeQL reported
+  // as exponential for the earlier single-regex classifier must stay linear
+  // (a hook has a timeout, and a stalled classifier stalls capture).
+  // The second element completes the command into a real commit: after a
+  // trailing value option (`-C `) the next token is its VALUE, so those
+  // cases need one before `commit`.
+  it.each([
+    ['\tgit ' + '-C -! '.repeat(5000), 'commit'],
+    ['\tgit -C ' + '"" -C '.repeat(5000), '"" commit'],
+    ['\tgit --git-dir ' + '"" --git-dir '.repeat(5000), '"" commit'],
+    ['git ' + '-/git '.repeat(5000), 'commit'],
+  ])('classifies an adversarial command in linear time (%#)', (command, completion) => {
+    const started = performance.now();
+    expect(isGitCommitCommand(command)).toBe(false);
+    expect(isGitCommitCommand(`${command}${completion}`)).toBe(true);
+    expect(performance.now() - started).toBeLessThan(250);
+  });
+
   // ── a planted file (S1) ──────────────────────────────────────────────────
 
   it('a record naming a hook memesh does not ship is rejected on read', () => {

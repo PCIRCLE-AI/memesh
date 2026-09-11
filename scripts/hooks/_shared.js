@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -509,8 +509,9 @@ export function stampHookRunOnly(env, hook) {
   }
 }
 
-const APPEND_NOFOLLOW_FLAGS = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT
-  | (typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0);
+const NOFOLLOW = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
+const APPEND_NOFOLLOW_FLAGS = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | NOFOLLOW;
+const READ_NOFOLLOW_FLAGS = fsConstants.O_RDONLY | NOFOLLOW;
 
 /**
  * Record what `hook` DID, on every exit path (issue #327).
@@ -620,15 +621,24 @@ export function hookErrorReason(err) {
 function rotateHookOutcomes(filePath) {
   let tmpPath = null;
   try {
-    // The size check first: it is the hot path on every append, and it
-    // needs no random name.
-    if (statSync(filePath).size <= HOOK_OUTCOMES_ROTATE_BYTES) return;
+    // One descriptor for both the size check and the read, so the file that
+    // was measured is the file that is read (a stat-then-open pair can be
+    // swapped in between). The size check is the hot path on every append
+    // and needs no random name.
+    let raw;
+    const fd = openSync(filePath, READ_NOFOLLOW_FLAGS);
+    try {
+      if (fstatSync(fd).size <= HOOK_OUTCOMES_ROTATE_BYTES) return;
+      raw = readFileSync(fd, 'utf8');
+    } finally {
+      closeSync(fd);
+    }
     // An unpredictable name, created exclusively ('wx' = O_CREAT|O_EXCL,
     // which refuses an existing path — a planted symlink included).
     // `${pid}.tmp` was guessable, and the plain write followed whatever sat
     // at that name.
     tmpPath = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
-    const trimmed = trimHookOutcomeLines(readFileSync(filePath, 'utf8'));
+    const trimmed = trimHookOutcomeLines(raw);
     writeFileSync(tmpPath, trimmed, { encoding: 'utf8', mode: PRIVATE_FILE_MODE, flag: 'wx' });
     renameSync(tmpPath, filePath);
   } catch (err) {

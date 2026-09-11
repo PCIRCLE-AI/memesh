@@ -330,11 +330,67 @@ export function renderableSkipReason(reason: string | undefined): string {
  *     commit-creating commands post-commit should capture.
  */
 export function isGitCommitCommand(command: string): boolean {
-  return GIT_COMMIT_RE.test(command);
+  // A token walk, not one regular expression: the command text is whatever
+  // the agent ran, and a single pattern with overlapping alternatives
+  // ("any -flag" vs "-C <value>", "quoted" vs "\S+") backtracks
+  // exponentially on a crafted string — inside a hook with a timeout. Every
+  // character is visited a bounded number of times here.
+  const start = /(?:^|[\s;&|(`/])git(?=\s)/g;
+  let m: RegExpExecArray | null;
+  while ((m = start.exec(command)) !== null) {
+    const walk = commitFollowsGit(command, m.index + m[0].length);
+    if (walk.commit) return true;
+    // Resume after what this invocation consumed; a `git` inside its
+    // option values is not a new command.
+    if (walk.end > start.lastIndex) start.lastIndex = walk.end;
+  }
+  return false;
 }
 
-const GIT_COMMIT_RE =
-  /(?:^|[\s;&|(`/])git(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace)\s+(?:"[^"]*"|'[^']*'|\S+)|-\S+))*\s+commit(?=$|[\s;&|)`])/;
+const VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
+const COMMIT_END = /[\s;&|)`]/;
+
+/** From just after `git`: skip global options, then is the subcommand `commit`? */
+function commitFollowsGit(s: string, i: number): { commit: boolean; end: number } {
+  for (;;) {
+    const afterSpace = skipSpace(s, i);
+    if (afterSpace === i) return { commit: false, end: i };
+    i = afterSpace;
+    if (s.startsWith('commit', i)) {
+      const next = s[i + 6];
+      return { commit: next === undefined || COMMIT_END.test(next), end: i + 6 };
+    }
+    if (s[i] !== '-') return { commit: false, end: i };
+    const optionEnd = tokenEnd(s, i);
+    const option = s.slice(i, optionEnd);
+    i = optionEnd;
+    if (VALUE_OPTIONS.has(option)) {
+      const valueStart = skipSpace(s, i);
+      if (valueStart === i || valueStart >= s.length) return { commit: false, end: valueStart };
+      i = valueEnd(s, valueStart);
+    }
+  }
+}
+
+function skipSpace(s: string, i: number): number {
+  while (i < s.length && /\s/.test(s[i])) i++;
+  return i;
+}
+
+function tokenEnd(s: string, i: number): number {
+  while (i < s.length && !/\s/.test(s[i])) i++;
+  return i;
+}
+
+/** A quoted value ends at its closing quote; an unquoted one at whitespace. */
+function valueEnd(s: string, i: number): number {
+  const quote = s[i];
+  if (quote === '"' || quote === "'") {
+    const close = s.indexOf(quote, i + 1);
+    return close === -1 ? s.length : close + 1;
+  }
+  return tokenEnd(s, i);
+}
 
 /**
  * Skips that mean the hook's trigger did not apply, per hook. They are not
