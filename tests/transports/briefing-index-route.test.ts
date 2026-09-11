@@ -43,6 +43,7 @@ describe('GET /v1/briefing-index (#323: the Project tab shows what an agent is g
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.data).toMatchObject({ project: 'alpha', shown: 1, more: 0, older: 0 });
+    expect(body.data.ids).toHaveLength(1);
     expect(body.data.lines.join('\n')).toContain('Keep the index capped');
     expect(body.data.lines.join('\n')).not.toContain('chore: bump');
 

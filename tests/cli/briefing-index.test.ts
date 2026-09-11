@@ -55,6 +55,7 @@ describe('memesh briefing --index', () => {
       const parsed = JSON.parse(json.stdout);
       expect(parsed).toMatchObject({ project: PROJECT, shown: 1, more: 0, older: 0 });
       expect(parsed.tokens).toBe(Math.ceil(parsed.bytes / 4));
+      expect(parsed.ids).toHaveLength(1);
 
       const full = runCli(home, 'briefing', '--project', PROJECT, '--json');
       expect(JSON.parse(full.stdout).index.shown).toBe(1);

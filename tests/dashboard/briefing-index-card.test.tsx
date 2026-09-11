@@ -31,6 +31,7 @@ describe('Project tab: the durable-memory index (#323)', () => {
   it('lists the memory lines the agent receives, with their handles, and the cost', () => {
     const { container } = render(<BriefingIndexCard error="" data={index()} />);
     const items = [...container.querySelectorAll('li')].map((li) => li.textContent);
+    expect(items).toHaveLength(2);
     expect(items).toEqual(['[decision] Keep the index capped [mem:7]', '[lesson_learned] Revert the fix and confirm red [mem:3]']);
     expect(container.textContent).toContain(t('project.index.title'));
     expect(container.textContent).toContain(t('project.index.cost', { tokens: 38, bytes: 150 }));
