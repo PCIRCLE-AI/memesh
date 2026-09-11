@@ -1587,6 +1587,41 @@ human-authority actions; an agent using `work_package` can only submit a pending
 proposal or defer. The Dashboard exposes the same list, detail, accept, and
 reject review surface without adding another queue or execution path.
 
+### memesh hermes
+
+The write path of the Hermes Agent memory plugin
+(`extensions/hermes-memesh`, see [Hermes Agent](../platforms/hermes-agent.md)).
+Called by the plugin, not typed by a person. Input is one JSON object on
+stdin — never on the command line, where every local process can read it —
+and the result is one JSON line on stdout.
+
+```bash
+echo '{"messages": [...]}' | memesh hermes capture-session --session <id>
+echo '{"user": "...", "assistant": "..."}' | memesh hermes capture-turn --session <id>
+```
+
+| Option | Description |
+|--------|-------------|
+| `--session <id>` | Hermes session id: 1-128 letters, digits, `.`, `_`, `:` or `-`. Required. |
+
+`capture-session` runs the same rules as the Claude Code Stop hook over an
+OpenAI-format message list (`tool_calls` on assistant messages, `role: "tool"`
+results) and stores up to three `session-insight` entities:
+`session-<id>-files`, `session-<id>-fixes` and `session-<id>-summary`. Fewer
+than three tool calls stores nothing. A tool result counts as an error only
+when its JSON says so (`error`, `success: false`, or a non-zero `exit_code`).
+Shell commands and error text are redacted before they are stored. Running it
+again for the same session adds only observations that are not already there.
+
+`capture-turn` stores one `conversation` entity, tagged `signal:decision` or
+`signal:lesson`, only when the turn states a decision or a lesson. Anything
+else stores nothing and reports `{"outcome":"skipped"}`. The name is a digest
+of the turn text, so a retry does not add a second row.
+
+Both stamp `metadata.provenance.source_host: "hermes"` and tag `platform:hermes`.
+Bad input (not JSON, wrong shape, over 8 MiB, bad `--session`) exits `1` with
+a message on stderr.
+
 ## Anthropic memory tool (`memory_20250818`)
 
 For applications that call the **Messages API directly** rather than through MCP. Claude gets a memory tool whose storage is MeMesh instead of a folder of text files, so it also gets search, ranking, decay, relations and namespaces without knowing they are there.

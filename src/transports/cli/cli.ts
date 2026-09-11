@@ -16,6 +16,8 @@ import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSec
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { assembleBriefing } from '../../core/briefing.js';
+import { captureChatSession } from '../../core/session-insight.js';
+import { captureChatTurn } from '../../core/turn-signal.js';
 import { inspectHosts, allWired, type SetupSeams, type HostStatus } from '../../core/setup.js';
 import { installHooks } from '../../core/install-hooks.js';
 import { getTaskState, setTaskState, TaskStateUnreadableError } from '../../core/task-state-store.js';
@@ -246,6 +248,8 @@ program
 // that ARE about updates or setup speak for themselves and are skipped.
 const UPDATE_NOTICE_SILENT_COMMANDS = new Set([
   'status', 'update', 'doctor', 'config', 'upgrade-plugin', 'serve', 'setup', 'install-hooks', 'uninstall-hooks',
+  // Called by the Hermes plugin, not typed by a person: nobody reads its stderr.
+  'hermes',
 ]);
 /** The top-level command a leaf belongs to: `memesh config set` → `config`, `memesh dream list` → `dream`. */
 function topLevelCommandName(command: Command): string {
@@ -2398,6 +2402,105 @@ program.command('reindex')
     await withDatabase(() => {
       const result = reindexFts();
       console.log(opts.json ? JSON.stringify(result) : `Keyword index rebuilt (${result.entities} entities).`);
+    });
+  });
+
+// --- hermes ---
+// The Hermes Agent plugin's write path (extensions/hermes-memesh). It runs
+// through the CLI rather than `/v1/remember` for one reason: the HTTP route
+// stamps every write `source_host: http`, and these captures must say
+// `hermes`. Input arrives on stdin, never argv — argv is visible to every
+// local process through `ps`, and these payloads are conversation text.
+const HERMES_STDIN_MAX_BYTES = 8 * 1024 * 1024;
+const HERMES_SESSION_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+
+async function readJsonStdin(maxBytes: number): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += buf.length;
+    if (size > maxBytes) throw new Error(`stdin is larger than ${maxBytes} bytes`);
+    chunks.push(buf);
+  }
+  const text = Buffer.concat(chunks).toString('utf8');
+  if (text.trim() === '') throw new Error('stdin is empty — expected a JSON object');
+  return JSON.parse(text) as unknown;
+}
+
+function hermesSessionId(raw: string): string {
+  if (!HERMES_SESSION_ID_RE.test(raw)) {
+    console.error('Error: --session must be 1-128 characters of letters, digits, and . _ : -');
+    process.exit(1);
+  }
+  return raw;
+}
+
+// `.option` + this check rather than `.requiredOption`, so the doc gate that
+// derives registered flags from `.option('--…'` sees `--session`.
+async function hermesInput(session: unknown): Promise<Record<string, unknown>> {
+  if (typeof session !== 'string') {
+    console.error('Error: --session <id> is required');
+    process.exit(1);
+  }
+  try {
+    const body = await readJsonStdin(HERMES_STDIN_MAX_BYTES);
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('stdin must be a JSON object');
+    return body as Record<string, unknown>;
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
+const HERMES_BASE_TAGS = ['platform:hermes'];
+
+const hermesCmd = program
+  .command('hermes')
+  .description('Capture paths used by the Hermes Agent memory plugin (reads JSON on stdin, prints a JSON result)');
+
+hermesCmd
+  .command('capture-session')
+  .description('Turn a Hermes message list ({"messages": [...]}) into the Stop hook\'s session-insight entities')
+  .option('--session <id>', 'Hermes session id (required)', hermesSessionId)
+  .action(async (opts) => {
+    const body = await hermesInput(opts.session);
+    if (!Array.isArray(body.messages)) {
+      console.error('Error: stdin must be {"messages": [...]}');
+      process.exit(1);
+    }
+    await withDatabase(() => {
+      const result = captureChatSession({
+        sessionId: opts.session,
+        messages: body.messages,
+        sourceHost: 'hermes',
+        baseTags: HERMES_BASE_TAGS,
+        titleLabel: 'hermes',
+      });
+      console.log(JSON.stringify(result));
+    });
+  });
+
+hermesCmd
+  .command('capture-turn')
+  .description('Store one Hermes turn ({"user": "...", "assistant": "..."}) only if it states a decision or a lesson')
+  .option('--session <id>', 'Hermes session id (required)', hermesSessionId)
+  .action(async (opts) => {
+    const body = await hermesInput(opts.session);
+    if (typeof body.user !== 'string' || typeof body.assistant !== 'string') {
+      console.error('Error: stdin must be {"user": "<text>", "assistant": "<text>"}');
+      process.exit(1);
+    }
+    await withDatabase(() => {
+      const result = captureChatTurn({
+        sessionId: opts.session,
+        userText: body.user as string,
+        assistantText: body.assistant as string,
+        sourceHost: 'hermes',
+        namePrefix: 'hermes-turn',
+        baseTags: HERMES_BASE_TAGS,
+      });
+      console.log(JSON.stringify(result));
     });
   });
 

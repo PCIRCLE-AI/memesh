@@ -7748,7 +7748,7 @@ var init_install_hooks = __esm({
 });
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash3, randomUUID } from "node:crypto";
+import { createHash as createHash4, randomUUID } from "node:crypto";
 import fs13 from "node:fs";
 function getAgentMessageStorageReport(db2, options) {
   const cutoff = normalizeCutoff(options.cutoff);
@@ -7992,7 +7992,7 @@ function toCandidate(row) {
   return {
     message_id: row.message_id,
     payload_bytes: row.payload_bytes,
-    payload_sha256: createHash3("sha256").update(row.payload_json, "utf8").digest("hex")
+    payload_sha256: createHash4("sha256").update(row.payload_json, "utf8").digest("hex")
   };
 }
 function resultForCandidates(dryRun, candidates) {
@@ -8019,7 +8019,7 @@ function insertRetentionFact(db2, candidate, actor, tombstone) {
     payload_sha256: candidate.payload_sha256,
     tombstone_payload_bytes: Buffer.byteLength(tombstone, "utf8")
   });
-  const requestHash = createHash3("sha256").update(detailJson, "utf8").digest("hex");
+  const requestHash = createHash4("sha256").update(detailJson, "utf8").digest("hex");
   db2.prepare(`
     INSERT INTO agent_retention_facts (
       retention_fact_id, message_id, actor, retention_state, idempotency_key, request_hash, detail_json
@@ -8113,7 +8113,7 @@ var init_agent_message_storage = __esm({
 });
 
 // dist/core/agent-messaging.js
-import { createHash as createHash4, randomBytes as randomBytes2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash5, randomBytes as randomBytes2, randomUUID as randomUUID2 } from "node:crypto";
 function sendAgentMessage(db2, input, options = {}) {
   const normalized = normalizeSendInput(input);
   const requestHash = hashCanonical({
@@ -8688,7 +8688,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash4("sha256").update(stableStringify(value)).digest("hex");
+  return createHash5("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)
@@ -24869,7 +24869,7 @@ function sessionEntities(db2, sessionId) {
   };
 }
 function explainCommits(db2, input) {
-  const basename = basenameOf(input.file);
+  const basename2 = basenameOf(input.file);
   const limit = input.limit ?? 10;
   const project = input.project ?? null;
   const queryAbstentions = [...input.abstentions ?? []];
@@ -24901,8 +24901,8 @@ function explainCommits(db2, input) {
     }
     commits.push({ commit, entity, session, abstentions });
   }
-  const noExt = basename.replace(/\.[^.]+$/, "");
-  const fileTags = noExt && noExt !== basename ? [`file:${basename}`, `file:${noExt}`] : [`file:${basename}`];
+  const noExt = basename2.replace(/\.[^.]+$/, "");
+  const fileTags = noExt && noExt !== basename2 ? [`file:${basename2}`, `file:${noExt}`] : [`file:${basename2}`];
   const tagPlaceholders = fileTags.map(() => "?").join(",");
   const params = [...fileTags];
   let projectClause = "";
@@ -24920,7 +24920,7 @@ function explainCommits(db2, input) {
      LIMIT ?`).all(...params, limit);
   return {
     file: input.file,
-    basename,
+    basename: basename2,
     project,
     commits,
     file_memories: { basis: "file-tag", entities: fileMemories },
@@ -44312,7 +44312,7 @@ var require_view = __commonJS({
     var path19 = __require("node:path");
     var fs21 = __require("node:fs");
     var dirname = path19.dirname;
-    var basename = path19.basename;
+    var basename2 = path19.basename;
     var extname = path19.extname;
     var join = path19.join;
     var resolve2 = path19.resolve;
@@ -44351,7 +44351,7 @@ var require_view = __commonJS({
         var root = roots[i];
         var loc = resolve2(root, name);
         var dir = dirname(loc);
-        var file2 = basename(loc);
+        var file2 = basename2(loc);
         path20 = this.resolve(dir, file2);
       }
       return path20;
@@ -44381,7 +44381,7 @@ var require_view = __commonJS({
       if (stat && stat.isFile()) {
         return path20;
       }
-      path20 = join(dir, basename(file2, ext), "index" + ext);
+      path20 = join(dir, basename2(file2, ext), "index" + ext);
       stat = tryStat(path20);
       if (stat && stat.isFile()) {
         return path20;
@@ -47783,7 +47783,7 @@ var require_content_disposition = __commonJS({
     "use strict";
     module.exports = contentDisposition;
     module.exports.parse = parse3;
-    var basename = __require("path").basename;
+    var basename2 = __require("path").basename;
     var ENCODE_URL_ATTR_CHAR_REGEXP = /[\x00-\x20"'()*,/:;<=>?@[\\\]{}\x7f]/g;
     var HEX_ESCAPE_REGEXP = /%[0-9A-Fa-f]{2}/;
     var HEX_ESCAPE_REPLACE_REGEXP = /%([0-9A-Fa-f]{2})/g;
@@ -47818,9 +47818,9 @@ var require_content_disposition = __commonJS({
       if (typeof fallback === "string" && NON_LATIN1_REGEXP.test(fallback)) {
         throw new TypeError("fallback must be ISO-8859-1 string");
       }
-      var name = basename(filename);
+      var name = basename2(filename);
       var isQuotedString = TEXT_REGEXP.test(name);
-      var fallbackName = typeof fallback !== "string" ? fallback && getlatin1(name) : basename(fallback);
+      var fallbackName = typeof fallback !== "string" ? fallback && getlatin1(name) : basename2(fallback);
       var hasFallback = typeof fallbackName === "string" && fallbackName !== name;
       if (hasFallback || !isQuotedString || HEX_ESCAPE_REGEXP.test(name)) {
         params["filename*"] = name;
@@ -51352,7 +51352,7 @@ var require_ip_address = __commonJS({
 import { isIPv6 } from "node:net";
 import { isIPv6 as isIPv62 } from "node:net";
 import { Buffer as Buffer2 } from "node:buffer";
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 import { isIP } from "node:net";
 function ipKeyGenerator(ip, ipv6Subnet = 56) {
   if (isIPv6(ip)) {
@@ -51540,7 +51540,7 @@ var init_dist = __esm({
       return resetSeconds;
     };
     getPartitionKey = (key) => {
-      const hash2 = createHash5("sha256");
+      const hash2 = createHash6("sha256");
       hash2.update(key);
       const partitionKey = hash2.digest("hex").slice(0, 12);
       return Buffer2.from(partitionKey).toString("base64");
@@ -54785,7 +54785,7 @@ import fs17 from "fs";
 import os2 from "os";
 import path15 from "path";
 import net2 from "node:net";
-import { createHash as createHash6 } from "crypto";
+import { createHash as createHash7 } from "crypto";
 import { createRequire as createRequire2 } from "module";
 import { execFileSync as execFileSync7 } from "child_process";
 function countH2Headings(content) {
@@ -55840,7 +55840,7 @@ function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, in
     let actualHash;
     try {
       const buf = readFileSyncImpl(full);
-      actualHash = createHash6("sha256").update(buf).digest("hex");
+      actualHash = createHash7("sha256").update(buf).digest("hex");
     } catch (err) {
       mismatches.push(`${entry.path} (read error: ${err instanceof Error ? err.message : "unknown"})`);
       continue;
@@ -56214,7 +56214,7 @@ var init_doctor = __esm({
 
 // dist/core/transcript-source.js
 import fs18 from "fs";
-import { createHash as createHash7 } from "node:crypto";
+import { createHash as createHash8 } from "node:crypto";
 import path16 from "path";
 function readTranscriptSnapshot(transcriptPath, expected) {
   return readTranscriptSnapshotWithin(transcriptPath, expected, MAX_TRANSCRIPT_SOURCE_BYTES).snapshot;
@@ -56254,7 +56254,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash7("sha256").update(bytes).digest("hex");
+    const contentHash = createHash8("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -56460,7 +56460,7 @@ var init_transcript_extractor = __esm({
 });
 
 // dist/core/product-improvements.js
-import { createHash as createHash8 } from "node:crypto";
+import { createHash as createHash9 } from "node:crypto";
 function clean(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (!normalized)
@@ -56529,7 +56529,7 @@ __export(dreamer_exports, {
   listProposals: () => listProposals,
   rejectProposal: () => rejectProposal
 });
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash10 } from "node:crypto";
 function collisionSafeName(db2, proposed, kind, proposalId2) {
   const taken = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(proposed) !== void 0;
   return taken ? `${proposed} (${kind} #${proposalId2})` : proposed;
@@ -56647,7 +56647,7 @@ function executeWorkPackage(db2, input, context = {}) {
   const execute = () => {
     const project = input.action === "prepare" ? input.project : input.ref.project;
     const kind = input.action === "prepare" ? input.kind : input.ref.kind;
-    const hash2 = (value) => createHash9("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash10("sha256").update(JSON.stringify(value)).digest("hex");
     if (input.action !== "prepare") {
       const submitted = input.action === "submit" ? input.result : void 0;
       if (submitted && [submitted.name, ...submitted.observations, ...submitted.tags].some((s) => redactSecrets(s) !== s)) {
@@ -59419,6 +59419,271 @@ function assembleBriefing(project, recipient) {
   };
 }
 
+// dist/core/session-insight.js
+init_paths();
+init_title();
+init_operations();
+var MIN_TOOL_CALLS = 3;
+var HEAVY_SESSION_TOOL_CALLS = 20;
+var AUTO_CAPTURE_TAG2 = "source:auto-capture";
+function bashEditedPaths(cmd) {
+  if (typeof cmd !== "string")
+    return [];
+  const found = /* @__PURE__ */ new Set();
+  for (const re of [
+    /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/g,
+    /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/g,
+    /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/g,
+    /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/g,
+    /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/g,
+    /writeFileSync\(\s*['"]([^'"]+)['"]/g
+  ]) {
+    let m;
+    while ((m = re.exec(cmd)) !== null) {
+      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
+        found.add(m[1]);
+    }
+  }
+  return [...found];
+}
+function basename(p) {
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] || p;
+}
+var FILE_WRITE_TOOLS = /* @__PURE__ */ new Set(["write_file", "patch", "edit_file", "Write", "Edit", "MultiEdit"]);
+var SHELL_TOOLS = /* @__PURE__ */ new Set(["terminal", "shell", "bash", "Bash"]);
+var KNOWN_READ_ONLY_TOOLS = /* @__PURE__ */ new Set([
+  "read_file",
+  "search_files",
+  "list_files",
+  "web_search",
+  "web_extract",
+  "Read",
+  "Grep",
+  "Glob",
+  "memesh_recall",
+  "memesh_remember",
+  "memesh_forget",
+  "memory",
+  "todo"
+]);
+function parseArgs(raw) {
+  if (raw && typeof raw === "object" && !Array.isArray(raw))
+    return raw;
+  if (typeof raw !== "string")
+    return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+function contentText(content) {
+  if (typeof content === "string")
+    return content;
+  if (Array.isArray(content)) {
+    return content.map((part) => part && typeof part === "object" && typeof part.text === "string" ? part.text : "").join(" ");
+  }
+  return "";
+}
+function toolResultError(content) {
+  const text = contentText(content);
+  let body;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!body || typeof body !== "object" || Array.isArray(body))
+    return null;
+  const b = body;
+  const failed = typeof b.error === "string" && b.error.trim() !== "" || b.success === false || typeof b.exit_code === "number" && b.exit_code !== 0;
+  if (!failed)
+    return null;
+  const detail = typeof b.error === "string" && b.error.trim() !== "" ? b.error : text;
+  return detail;
+}
+function activityFromChatMessages(messages) {
+  const filesEdited = /* @__PURE__ */ new Set();
+  const bashCommands = [];
+  const errorsEncountered = [];
+  const unrecognized = /* @__PURE__ */ new Set();
+  let toolCallCount = 0;
+  for (const msg of Array.isArray(messages) ? messages : []) {
+    if (!msg || typeof msg !== "object")
+      continue;
+    const m = msg;
+    if (m.role === "assistant" && Array.isArray(m.tool_calls)) {
+      for (const call of m.tool_calls) {
+        const fn = call && typeof call === "object" ? call.function : void 0;
+        const name = fn && typeof fn === "object" ? fn.name : void 0;
+        if (typeof name !== "string" || name === "")
+          continue;
+        toolCallCount++;
+        const args = parseArgs(fn.arguments);
+        if (FILE_WRITE_TOOLS.has(name)) {
+          const fp = args.path ?? args.file_path;
+          if (typeof fp === "string" && fp)
+            filesEdited.add(basename(fp));
+        } else if (SHELL_TOOLS.has(name)) {
+          const cmd = args.command;
+          for (const fp of bashEditedPaths(cmd))
+            filesEdited.add(basename(fp));
+          if (typeof cmd === "string" && cmd.length > 10 && !cmd.startsWith("ls") && !cmd.startsWith("cd")) {
+            bashCommands.push(redactSecrets(cmd).slice(0, 100));
+          }
+        } else if (!KNOWN_READ_ONLY_TOOLS.has(name)) {
+          unrecognized.add(name);
+        }
+      }
+    } else if (m.role === "tool") {
+      const err = toolResultError(m.content);
+      if (err !== null)
+        errorsEncountered.push(redactSecrets(err).slice(0, 200));
+    }
+  }
+  return {
+    filesEdited: [...filesEdited],
+    bashCommands,
+    errorsEncountered,
+    toolCallCount,
+    unrecognizedTools: [...unrecognized]
+  };
+}
+function fileTagsFor(files) {
+  const tags = /* @__PURE__ */ new Set();
+  for (const f of files) {
+    if (!f)
+      continue;
+    tags.add(`file:${f}`);
+    const noExt = f.replace(/\.[^.]+$/, "");
+    if (noExt && noExt !== f)
+      tags.add(`file:${noExt}`);
+  }
+  return [...tags];
+}
+function buildSessionInsights(activity, ctx) {
+  if (activity.toolCallCount < MIN_TOOL_CALLS)
+    return [];
+  const { filesEdited, errorsEncountered, bashCommands, toolCallCount } = activity;
+  const baseTags = [AUTO_CAPTURE_TAG2, `session:${ctx.sessionId}`, ...ctx.baseTags];
+  const titlePrefix = `${ctx.date ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10)} ${ctx.titleLabel}`;
+  const out = [];
+  if (filesEdited.length > 0) {
+    out.push({
+      name: `session-${ctx.sessionId}-files`,
+      type: "session-insight",
+      title: truncateTitle(`${titlePrefix}: edited ${filesEdited.length} file(s)`),
+      observations: [
+        `Session edited ${filesEdited.length} file(s): ${filesEdited.join(", ")}`,
+        `Total tool calls: ${toolCallCount}`
+      ],
+      tags: [...baseTags, ...fileTagsFor(filesEdited)]
+    });
+  }
+  if (errorsEncountered.length > 0 && filesEdited.length > 0) {
+    out.push({
+      name: `session-${ctx.sessionId}-fixes`,
+      type: "session-insight",
+      title: truncateTitle(`${titlePrefix}: fixed ${errorsEncountered.length} error(s)`),
+      observations: [
+        `Fixed ${errorsEncountered.length} error(s) by editing ${filesEdited.join(", ")}`,
+        ...errorsEncountered.slice(0, 3).map((e) => `Error: ${e.slice(0, 100)}`)
+      ],
+      tags: [...baseTags, "type:bugfix", ...fileTagsFor(filesEdited)]
+    });
+  }
+  if (toolCallCount >= HEAVY_SESSION_TOOL_CALLS) {
+    out.push({
+      name: `session-${ctx.sessionId}-summary`,
+      type: "session-insight",
+      title: truncateTitle(`${titlePrefix}: significant session (${toolCallCount} tool calls)`),
+      observations: [
+        `Significant session: ${toolCallCount} tool calls, ${filesEdited.length} files edited`,
+        ...bashCommands.slice(0, 3).map((c) => `Command: ${c}`)
+      ],
+      tags: [...baseTags, "type:heavy-session"]
+    });
+  }
+  return out;
+}
+function captureChatSession(input) {
+  const activity = activityFromChatMessages(input.messages);
+  const counts = {
+    toolCallCount: activity.toolCallCount,
+    filesEdited: activity.filesEdited.length,
+    errorsEncountered: activity.errorsEncountered.length,
+    unrecognizedTools: activity.unrecognizedTools
+  };
+  const entities = buildSessionInsights(activity, {
+    sessionId: input.sessionId,
+    baseTags: input.baseTags,
+    titleLabel: input.titleLabel
+  });
+  if (entities.length === 0) {
+    const reason = activity.toolCallCount < MIN_TOOL_CALLS ? `too little activity to be worth saving (${activity.toolCallCount} tool call(s))` : "no rule matched (no edited file and fewer than 20 tool calls)";
+    return { outcome: "skipped", reason, written: [], ...counts };
+  }
+  for (const e of entities) {
+    remember({ ...e, sourceHost: input.sourceHost });
+  }
+  return { outcome: "wrote", written: entities.map((e) => e.name), ...counts };
+}
+
+// dist/core/turn-signal.js
+init_paths();
+init_operations();
+import { createHash as createHash3 } from "crypto";
+var DECISION_CUES = [
+  /\b(?:we|i)(?:'ve| have|'ll| will)?\s+(?:decided|chosen|chose|settled on|opted)\b/i,
+  /\b(?:decided|decision)\s*(?:is|was|:)\s*/i,
+  /\blet'?s\s+(?:go with|use|switch to|stick with|keep)\b/i,
+  /\b(?:going|go) with\b.{0,60}\binstead\b/i,
+  /\bfrom now on\b/i,
+  /決定|改用|就用|選擇了|拍板/
+];
+var LESSON_CUES = [
+  /\blesson(?:s)? learned\b|\blesson:\s*/i,
+  /\broot cause\b/i,
+  /\bturn(?:s|ed) out\b/i,
+  /\bthe (?:fix|problem|bug|issue) (?:was|is)\b/i,
+  /\b(?:gotcha|pitfall)\b/i,
+  /\bnext time\b/i,
+  /教訓|根因|原來是|踩到|下次要/
+];
+function classifyTurn(userText, assistantText) {
+  const text = `${userText}
+${assistantText}`;
+  for (const [kind, cues] of [["decision", DECISION_CUES], ["lesson", LESSON_CUES]]) {
+    for (const re of cues) {
+      const m = re.exec(text);
+      if (m)
+        return { kind, cue: m[0].trim() };
+    }
+  }
+  return null;
+}
+var TURN_TEXT_CAP = 2e3;
+function captureChatTurn(input) {
+  const signal = classifyTurn(input.userText, input.assistantText);
+  if (!signal)
+    return { outcome: "skipped", reason: "no decision- or lesson-shaped move in this turn" };
+  const digest = createHash3("sha256").update(input.userText).update("\0").update(input.assistantText).digest("hex").slice(0, 12);
+  const name = `${input.namePrefix}-${input.sessionId}-${digest}`;
+  remember({
+    name,
+    type: "conversation",
+    observations: [
+      ["User", input.userText],
+      ["Assistant", input.assistantText]
+    ].filter(([, t]) => t.trim() !== "").map(([who, t]) => `${who}: ${redactSecrets(t).slice(0, TURN_TEXT_CAP)}`),
+    tags: [...input.baseTags, `session:${input.sessionId}`, `signal:${signal.kind}`],
+    sourceHost: input.sourceHost
+  });
+  return { outcome: "wrote", name, kind: signal.kind };
+}
+
 // dist/core/setup.js
 init_install_hooks();
 import fs12 from "fs";
@@ -59654,7 +59919,8 @@ var UPDATE_NOTICE_SILENT_COMMANDS = /* @__PURE__ */ new Set([
   "serve",
   "setup",
   "install-hooks",
-  "uninstall-hooks"
+  "uninstall-hooks",
+  "hermes"
 ]);
 function topLevelCommandName(command) {
   let current = command;
@@ -61117,6 +61383,82 @@ program2.command("reindex").description("Rebuild the full-text keyword index").r
   await withDatabase(() => {
     const result = reindexFts();
     console.log(opts.json ? JSON.stringify(result) : `Keyword index rebuilt (${result.entities} entities).`);
+  });
+});
+var HERMES_STDIN_MAX_BYTES = 8 * 1024 * 1024;
+var HERMES_SESSION_ID_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+async function readJsonStdin(maxBytes) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    size += buf.length;
+    if (size > maxBytes)
+      throw new Error(`stdin is larger than ${maxBytes} bytes`);
+    chunks.push(buf);
+  }
+  const text = Buffer.concat(chunks).toString("utf8");
+  if (text.trim() === "")
+    throw new Error("stdin is empty \u2014 expected a JSON object");
+  return JSON.parse(text);
+}
+function hermesSessionId(raw) {
+  if (!HERMES_SESSION_ID_RE.test(raw)) {
+    console.error("Error: --session must be 1-128 characters of letters, digits, and . _ : -");
+    process.exit(1);
+  }
+  return raw;
+}
+async function hermesInput(session) {
+  if (typeof session !== "string") {
+    console.error("Error: --session <id> is required");
+    process.exit(1);
+  }
+  try {
+    const body = await readJsonStdin(HERMES_STDIN_MAX_BYTES);
+    if (!body || typeof body !== "object" || Array.isArray(body))
+      throw new Error("stdin must be a JSON object");
+    return body;
+  } catch (err) {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+var HERMES_BASE_TAGS = ["platform:hermes"];
+var hermesCmd = program2.command("hermes").description("Capture paths used by the Hermes Agent memory plugin (reads JSON on stdin, prints a JSON result)");
+hermesCmd.command("capture-session").description(`Turn a Hermes message list ({"messages": [...]}) into the Stop hook's session-insight entities`).option("--session <id>", "Hermes session id (required)", hermesSessionId).action(async (opts) => {
+  const body = await hermesInput(opts.session);
+  if (!Array.isArray(body.messages)) {
+    console.error('Error: stdin must be {"messages": [...]}');
+    process.exit(1);
+  }
+  await withDatabase(() => {
+    const result = captureChatSession({
+      sessionId: opts.session,
+      messages: body.messages,
+      sourceHost: "hermes",
+      baseTags: HERMES_BASE_TAGS,
+      titleLabel: "hermes"
+    });
+    console.log(JSON.stringify(result));
+  });
+});
+hermesCmd.command("capture-turn").description('Store one Hermes turn ({"user": "...", "assistant": "..."}) only if it states a decision or a lesson').option("--session <id>", "Hermes session id (required)", hermesSessionId).action(async (opts) => {
+  const body = await hermesInput(opts.session);
+  if (typeof body.user !== "string" || typeof body.assistant !== "string") {
+    console.error('Error: stdin must be {"user": "<text>", "assistant": "<text>"}');
+    process.exit(1);
+  }
+  await withDatabase(() => {
+    const result = captureChatTurn({
+      sessionId: opts.session,
+      userText: body.user,
+      assistantText: body.assistant,
+      sourceHost: "hermes",
+      namePrefix: "hermes-turn",
+      baseTags: HERMES_BASE_TAGS
+    });
+    console.log(JSON.stringify(result));
   });
 });
 program2.command("status").description("Show MeMesh status").option("--cached", "Use cached update info only (skip fresh npm lookup)").action(async (opts) => {

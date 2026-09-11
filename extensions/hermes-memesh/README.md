@@ -38,29 +38,36 @@ require a bearer token when bound to `localhost`.
 
 - `prefetch()` / `queue_prefetch()`: recalls up to 5 relevant entities via
   `POST /v1/recall` before each turn, injected as context.
-- `sync_turn()`: stores each completed turn as a `conversation` entity via
-  `POST /v1/remember`, tagged `platform:hermes`, in a background thread.
+- `sync_turn()`: hands each completed turn to `memesh hermes capture-turn`
+  in a background thread. MeMesh stores it as one `conversation` entity
+  (tagged `platform:hermes`, `signal:decision` or `signal:lesson`) **only**
+  when the turn states a decision or a lesson; ordinary turns store nothing.
   Skipped for non-`primary` agent contexts (cron, subagents, flush) so
   automated jobs don't pollute long-term memory.
 - Tools: `memesh_remember`, `memesh_recall`, `memesh_forget` — exposed for
   explicit LLM-directed memory management on top of the automatic hooks.
-- `on_pre_compress()` / `on_session_end()`: archive the tail of the
-  conversation to MeMesh at a compression or session boundary — this is
-  what keeps context that survives a Telegram-style auto-reset recallable
-  instead of lost. Both run **synchronously** (unlike `sync_turn()`): they
-  fire once per session/compression, immediately before the host calls
-  `shutdown()` and closes the shared HTTP client, so a fire-and-forget
-  background thread here reliably loses that race (`[Errno 9] Bad file
-  descriptor` in testing) — don't "fix" this back to async.
+- `on_pre_compress()` / `on_session_end()`: pass the message list to
+  `memesh hermes capture-session`, the same extractor the Claude Code Stop
+  hook uses. It stores up to three `session-insight` entities —
+  `session-<id>-files` (files edited), `session-<id>-fixes` (errors met while
+  editing) and `session-<id>-summary` (a session with 20+ tool calls) — not a
+  transcript. Both run **synchronously** (unlike `sync_turn()`): they fire
+  once per session/compression, immediately before the host calls
+  `shutdown()`, so a fire-and-forget background thread here reliably loses
+  that race — don't "fix" this back to async.
+- Automatic writes go through the `memesh` CLI (payload on stdin), so they
+  are stamped `metadata.provenance.source_host: "hermes"`. The HTTP API
+  stamps everything it writes `http`. Recall and the explicit tools still use
+  HTTP. The CLI and `memesh serve` must therefore use the same database —
+  the default when both run as the same user on the same machine.
 - `on_session_switch()`: keeps the cached `session_id` current across
   `/reset`, `/resume`, `/branch`, and context-compression session rotation,
   so memories written after a switch aren't mistagged with the pre-switch
   session id.
 
-## Known upstream discrepancy
+## Recall response shape
 
-`POST /v1/recall`'s `data` field is documented in MeMesh's own
-`docs/api/API_REFERENCE.md` as an object (`{"entities": [...]}`), but the
-live HTTP response (confirmed against MeMesh 4.5.1) returns `data` as a bare
-array of entities directly. This plugin handles both shapes defensively.
-Tracked upstream: https://github.com/PCIRCLE-AI/memesh/issues/159
+`POST /v1/recall` returns `data` as `{"entities": [...]}`. MeMesh 4.5.1
+returned a bare array
+([#159](https://github.com/PCIRCLE-AI/memesh/issues/159), fixed); this
+plugin accepts both.
