@@ -6,7 +6,7 @@
 //
 import { createRequire } from 'module';
 import { basename, join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeSync } from 'fs';
 import { pathToFileURL } from 'url';
 import {
   AUTO_CAPTURE_TAG,
@@ -30,6 +30,7 @@ import {
   spawnAutoUpdate,
   truncateTitle,
 } from './_shared.js';
+import { runStopNotes } from './_stop-notes.js';
 
 const require = createRequire(import.meta.url);
 
@@ -216,6 +217,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
 // See post-commit.js for why every exit path leaves a record (#327).
 let payload = null;
+let pendingSystemMessage = null;
 function record(outcome, reason, entity) {
   recordHookOutcome(process.env, { hook: 'session-summary', outcome, reason, entity, payload });
 }
@@ -225,12 +227,6 @@ process.stdin.on('end', async () => {
   try {
     if (!input.trim()) {
       record('skipped', SKIP_REASONS.emptyStdin);
-      return exit0();
-    }
-
-    // Opt-out check (env > config > default-on)
-    if (!isAutoCaptureEnabled(process.env)) {
-      record('skipped', SKIP_REASONS.autoCaptureOff);
       return exit0();
     }
 
@@ -252,6 +248,27 @@ process.stdin.on('end', async () => {
     payload = inputData;
     sessionId = inputData.session_id || 'unknown';
     const transcriptPath = inputData.transcript_path;
+
+    // Opt-out check (env > config > default-on). Read before the note work
+    // below because ingestion WRITES memories and must honour it; the nudge
+    // writes nothing and runs either way (#324). It used to sit above the
+    // JSON parse, which is why the payload is parsed first now.
+    const captureEnabled = isAutoCaptureEnabled(process.env);
+
+    // #324: ingest the project's note directory and decide the
+    // "decided things, stored nothing" nudge. Records its own outcomes under
+    // `note-ingest` / `remember-nudge`, never throws, and only ever yields
+    // one line for exit0() to print.
+    pendingSystemMessage = await runStopNotes(inputData, {
+      captureEnabled,
+      project: inputData.cwd ? getProjectName(inputData.cwd) : undefined,
+      metaUrl: import.meta.url,
+    });
+
+    if (!captureEnabled) {
+      record('skipped', SKIP_REASONS.autoCaptureOff);
+      return exit0();
+    }
 
     // `cwd` decides the project tag, and the project tag decides which
     // sessions `session-start` injects and which memories `pre-edit-recall`
@@ -657,6 +674,17 @@ process.stdin.on('end', async () => {
 });
 
 function exit0() {
+  // The one thing this hook may print (#324): the nudge. `systemMessage` is
+  // the only Stop output Claude Code shows the user (Stop has no
+  // hookSpecificOutput variant — tests/helpers/hook-output-contract.ts).
+  // Codex's acceptance of it on Stop is NOT verified against a live Codex in
+  // this repository; tests/hooks/cross-host-output-contract.test.ts pins the
+  // exact envelope so a rejection report maps to one line. `suppressOutput`,
+  // which Codex did reject, stays gone. writeSync, not console.log: stdout is a
+  // pipe, and an async pipe write can be cut off by process.exit on macOS.
+  if (pendingSystemMessage) {
+    try { writeSync(1, `${JSON.stringify({ systemMessage: pendingSystemMessage })}\n`); } catch { /* host closed stdout; nothing to tell */ }
+  }
   process.exit(0);
 }
 /**
