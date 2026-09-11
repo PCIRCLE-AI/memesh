@@ -70,9 +70,13 @@ describe('exportOpenAITools', () => {
     expect(tool.function.parameters.required).toBeUndefined();
   });
 
-  it('memesh_remember requires name and type', () => {
+  it('memesh_remember requires nothing up front — `note` alone is a complete call (#324)', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_remember') as any;
-    expect(tool.function.parameters.required).toEqual(['name', 'type']);
+    expect(tool.function.parameters.required).toBeUndefined();
+    // …but the runtime still refuses a call that has neither form, naming the key.
+    const bad = RememberSchema.safeParse({ observations: ['x'] });
+    expect(bad.success).toBe(false);
+    expect(JSON.stringify(bad.error?.issues)).toMatch(/name is required/);
   });
 
   it('memesh_recall has no required fields', () => {

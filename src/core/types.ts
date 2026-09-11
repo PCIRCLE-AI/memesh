@@ -159,8 +159,24 @@ export interface SearchOptions {
 // --- Operation Input Types (what transports pass to core) ---
 
 export interface RememberInput {
-  name: string;
-  type: string;
+  /** Required unless `note` is given, in which case it is derived. */
+  name?: string;
+  /** Required unless `note` is given, in which case it defaults to `note`. */
+  type?: string;
+  /**
+   * Free text (#324). The server derives `title` (first line),
+   * `observations` (the remaining paragraphs) and, when `name` is absent,
+   * `name` (slug of the title + a digest of the text, so the same text is
+   * idempotent). Mutually exclusive with `title` and `observations`.
+   */
+  note?: string;
+  /**
+   * Rewrite instead of append (#324): the existing observations (and tags,
+   * when `tags` is given; the title, when `title` or `note` is given) are
+   * replaced, and what was there moves to `metadata.replaced_history` with
+   * the time it was replaced. Without it, a same-name call appends.
+   */
+  replace?: boolean;
   /** Optional human-readable display string. Auto-capture hooks generate
    *  one heuristically; a deliberate `remember` call may supply its own. */
   title?: string;
@@ -231,6 +247,18 @@ export interface RememberResult {
    * which makes the move undoable from the row itself.
    */
   movedFromNamespace?: string;
+  /**
+   * `replace: true` only: true when an existing memory was rewritten (its
+   * previous content is now the newest `metadata.replaced_history` entry),
+   * false when there was nothing to replace and the memory was created.
+   */
+  replaced?: boolean;
+  /**
+   * `note` only: the shape the server derived from the text, echoed so a
+   * caller can correct it in one more call (e.g. `replace: true` with a
+   * better `title`).
+   */
+  derived?: { name: string; type: string; title: string; observations: string[] };
 }
 
 export interface ForgetResult {

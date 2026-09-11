@@ -14,6 +14,7 @@ import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
+import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
 import type {
   RememberInput,
   RememberResult,
@@ -71,19 +72,63 @@ function buildRelevanceMap(entities: Entity[]): Map<string, number> {
  * If entity exists, appends observations and dedupes tags.
  * If any relation has type "supersedes", auto-archives the target entity.
  */
-export function remember(args: RememberInput): RememberResult {
+export function remember(input: RememberInput): RememberResult {
   const db = getDatabase();
   const kg = new KnowledgeGraph(db);
+  const { args, derived } = resolveRememberInput(input);
   // `remember` is one logical write: the source entity (including metadata),
   // every accepted relation, and every superseded target must either all land
   // or all roll back. The narrower KnowledgeGraph transactions protect their
   // own rows, but without this outer boundary a failure while archiving a
   // superseded target left the new source and relation committed.
-  return db.transaction(() => rememberInTransaction(args, db, kg)).immediate();
+  return db.transaction(() => rememberInTransaction(args, derived, db, kg)).immediate();
+}
+
+/** Most previous versions a replaced memory keeps in `metadata.replaced_history`. */
+export const REPLACED_HISTORY_MAX = 20;
+
+export interface ReplacedVersion {
+  replaced_at: string;
+  title: string | null;
+  observations: string[];
+  tags: string[];
+}
+
+type ResolvedRememberInput = RememberInput & { name: string; type: string };
+
+/**
+ * Turn the `note` form into the structured form, or check the structured form
+ * is complete. The transports' RememberSchema rejects the same shapes first,
+ * with a message naming the key; these throws are for direct core callers.
+ */
+function resolveRememberInput(input: RememberInput): { args: ResolvedRememberInput; derived?: DerivedNote } {
+  if (input.note === undefined) {
+    if (!input.name || !input.type) throw new Error('remember needs `name` and `type`, or `note`');
+    return { args: input as ResolvedRememberInput };
+  }
+  if (input.title !== undefined || input.observations !== undefined) {
+    throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
+  }
+  const derived = deriveNote(input.note);
+  if (!derived) throw new Error('`note` is empty after removing control characters');
+  if (input.replace && !input.name) {
+    throw new Error('`replace` with `note` needs an explicit `name` (a derived name changes with the text)');
+  }
+  return {
+    args: {
+      ...input,
+      name: input.name ?? derived.name,
+      type: input.type ?? NOTE_DEFAULT_TYPE,
+      title: derived.title,
+      observations: derived.observations,
+    },
+    derived,
+  };
 }
 
 function rememberInTransaction(
-  args: RememberInput,
+  args: ResolvedRememberInput,
+  derived: DerivedNote | undefined,
   db: ReturnType<typeof getDatabase>,
   kg: KnowledgeGraph,
 ): RememberResult {
@@ -92,8 +137,45 @@ function rememberInTransaction(
   // observation text materialized and thrown away, on the write hot path
   // (also hit per-entity by importMemories/createEntitiesBatch).
   const existing = db
-    .prepare('SELECT id, namespace, type FROM entities WHERE name = ?')
-    .get(args.name) as { id: number; namespace: string | null; type: string } | undefined;
+    .prepare('SELECT id, namespace, type, title FROM entities WHERE name = ?')
+    .get(args.name) as { id: number; namespace: string | null; type: string; title: string | null } | undefined;
+
+  // `replace: true` on a memory that exists: capture what is there, then
+  // clear it through `clearEntityData`, which deletes the contentless-FTS row
+  // with the EXACT text that was indexed before removing the observations —
+  // the only order that leaves no stale tokens behind. `createEntity` below
+  // then writes the new content as if onto an empty entity. Nested inside
+  // this transaction, clearEntityData's own transaction is a SAVEPOINT, so a
+  // failure anywhere below rolls the clear back too.
+  let replacedVersion: ReplacedVersion | undefined;
+  let tags = args.tags;
+  let title = args.title;
+  let observations = args.observations;
+  if (args.replace && existing) {
+    const previousTags = (db.prepare('SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag').all(existing.id) as { tag: string }[])
+      .map((t) => t.tag);
+    replacedVersion = {
+      replaced_at: new Date().toISOString(),
+      title: existing.title,
+      observations: (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(existing.id) as { content: string }[])
+        .map((o) => o.content),
+      tags: previousTags,
+    };
+    kg.clearEntityData(args.name);
+    // Tags omitted means "keep them" — clearEntityData dropped them, so they
+    // go back. Replacing a memory's text must not silently untag it from its
+    // project.
+    if (tags === undefined) tags = previousTags;
+  } else if (derived && existing) {
+    // A note appended to a memory that already exists (the same text again,
+    // or an explicit `name`): its first line must not overwrite the title the
+    // memory already has, and a repeat must add nothing — including for the
+    // lesson family, whose append path deliberately keeps repeats.
+    title = undefined;
+    const stored = new Set((db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(existing.id) as { content: string }[])
+      .map((o) => o.content));
+    observations = observations?.filter((o) => !stored.has(o));
+  }
 
   // Trust signal MUST arrive at createEntity time so the confidence-
   // bump gate (knowledge-graph.ts) can deny it for untrusted callers.
@@ -101,11 +183,11 @@ function rememberInTransaction(
   // updateEntityMetadata AFTER createEntity returned, leaving the gate
   // looking at undefined and defaulting to trusted.
   const entityId = kg.createEntity(args.name, args.type, {
-    observations: args.observations,
-    tags: args.tags,
+    observations,
+    tags,
     namespace: args.namespace,
     trustOverride: args.trustOverride,
-    title: args.title,
+    title,
   });
   // `current`, not the snapshot taken before `createEntity`. The updater used
   // to ignore what it was handed and rebuild from `existing?.metadata`, which
@@ -134,6 +216,13 @@ function rememberInTransaction(
       },
     }
   ));
+  if (replacedVersion) {
+    const version = replacedVersion;
+    kg.updateEntityMetadata(args.name, (current) => {
+      const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
+      return { ...current, replaced_history: [...history, version].slice(-REPLACED_HISTORY_MAX) };
+    });
+  }
 
   // Create relations (target entities must already exist)
   const relationsCreated: Array<{ to: string; type: string }> = [];
@@ -167,13 +256,13 @@ function rememberInTransaction(
     stored: true,
     entityId,
     name: args.name,
-    ...(args.title !== undefined ? { title: args.title } : {}),
+    ...(title !== undefined ? { title } : {}),
     // `createEntity` preserves the stored type on a name collision. Report
     // that persisted value too; echoing args.type made a duplicate remember
     // receipt claim a type that was never written.
     type: existing?.type ?? args.type,
-    observations: args.observations?.length ?? 0,
-    tags: args.tags?.length ?? 0,
+    observations: observations?.length ?? 0,
+    tags: tags?.length ?? 0,
     relations: relationsCreated.length,
     ...(relationsCreated.length > 0 ? { relationsCreated } : {}),
     // Only when it actually moved: same-scope re-remembers say nothing.
@@ -182,6 +271,10 @@ function rememberInTransaction(
       : {}),
     ...(superseded.length > 0 ? { superseded } : {}),
     ...(relationErrors.length > 0 ? { relationErrors } : {}),
+    ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
+    ...(derived
+      ? { derived: { name: args.name, type: existing?.type ?? args.type, title: derived.title, observations: derived.observations } }
+      : {}),
   };
 }
 
