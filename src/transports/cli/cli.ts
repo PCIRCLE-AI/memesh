@@ -2547,7 +2547,7 @@ delegationCmd
   .description('Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage — never the prompt or the output)')
   .option('--envelope <file>', 'The JSON envelope the worker client printed (required)')
   .option('--prompt-file <file>', 'The prompt that was sent; only its sha256 is stored (required)')
-  .option('--allow-tool <name>', 'A tool you granted the worker; repeat for each. Recorded as the authoritative list (the envelope only reports tools in Harness mode)', (value: string, prev: string[] | undefined) => [...(prev ?? []), value])
+  .option('--allow-tool <name>', 'A tool you granted the worker; repeat for each. Recorded as the authoritative list (the envelope only reports tools in Harness mode)', (value: string, prev?: string[]) => (prev ? [...prev, value] : [value]))
   .option('--verdict <verdict>', 'unreviewed (default), accepted, or rejected')
   .option('--follow-up <text>', 'What you decided to do next, in your own words')
   .option('--json', 'Output as JSON')
