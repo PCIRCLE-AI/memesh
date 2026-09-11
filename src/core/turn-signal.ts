@@ -24,36 +24,69 @@ export interface TurnSignal {
   cue: string;
 }
 
+// Cues run on the ASSISTANT text only. The user text carries questions
+// ("have we decided yet?"), apologies ("I chose the wrong file") and — in
+// Hermes — the `[MeMesh recall]` block prefetch() injected, which repeats
+// earlier decisions verbatim: classifying it made every later turn a
+// "decision" (a feedback loop the per-turn digest could not dedupe).
+//
+// Measured against twelve real turns in review (#326 F1); each cue below is
+// there because one of them needed it, and "turns out", "next time" and
+// "the issue is" were removed because they matched ordinary replies.
 const DECISION_CUES: RegExp[] = [
-  /\b(?:we|i)(?:'ve| have|'ll| will)?\s+(?:decided|chosen|chose|settled on|opted)\b/i,
-  /\b(?:decided|decision)\s*(?:is|was|:)\s*/i,
-  /\blet'?s\s+(?:go with|use|switch to|stick with|keep)\b/i,
-  /\b(?:going|go) with\b.{0,60}\binstead\b/i,
-  /\bfrom now on\b/i,
-  /決定|改用|就用|選擇了|拍板/,
+  /\b(?:we|i)(?:'ve| have|'ll| will)?\s+(?:decided|settled on|opted)\b/gi,
+  /\bdecision\s*:/gi,
+  /\blet'?s\s+(?:go with|use|switch to|stick with)\b/gi,
+  /\bwe(?:'re| are|'ll| will)\s+(?:going to\s+)?(?:use|go with|switch to|stick with)\b/gi,
+  /(?:^|[.!?;]\s+)use\s+[^.!?\n]{1,40}?\binstead of\b/gi,
+  /(?:^|[.!?;]\s+)switching to\b/gi,
+  /^\s*agreed\s*[:,—-]/gim,
+  /\bfrom now on\b/gi,
+  /決定|改用|就用|選擇了|拍板/g,
 ];
 
 const LESSON_CUES: RegExp[] = [
-  /\blesson(?:s)? learned\b|\blesson:\s*/i,
-  /\broot cause\b/i,
-  /\bturn(?:s|ed) out\b/i,
-  /\bthe (?:fix|problem|bug|issue) (?:was|is)\b/i,
-  /\b(?:gotcha|pitfall)\b/i,
-  /\bnext time\b/i,
-  /教訓|根因|原來是|踩到|下次要/,
+  /\blessons? learned\b|\blesson\s*:/gi,
+  /\blearned the hard way\b/gi,
+  /\broot cause\b/gi,
+  /\bthe (?:fix|problem|bug) was\b/gi,
+  /\b(?:gotcha|pitfall)\b/gi,
+  /教訓|根因|原來是|踩到|下次要/g,
 ];
 
+// "not yet decided", "haven't settled on", "還沒決定": a cue preceded by one
+// of these within 20 characters is the opposite of a decision.
+const NEGATION = /\b(?:not|no|never|haven'?t|hasn'?t|didn'?t|won'?t)\b|還沒|尚未|沒有/i;
+const NEGATION_WINDOW = 20;
+
+/** Drop a leading `[MeMesh recall]` block (up to the first blank line). */
+function stripRecallBlock(text: string): string {
+  return text.replace(/^\s*\[MeMesh recall\][\s\S]*?(?:\n\s*\n|$)/, '');
+}
+
+function firstUnnegated(re: RegExp, text: string): string | null {
+  re.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const before = text.slice(Math.max(0, m.index - NEGATION_WINDOW), m.index);
+    if (!NEGATION.test(before)) return m[0].trim();
+    if (m[0] === '') re.lastIndex++;
+  }
+  return null;
+}
+
 /**
- * Classify a turn. Returns null for ordinary conversation.
- * Decision cues are checked first: a turn that both decides and explains a
- * root cause is stored once, as the decision.
+ * Classify a turn from its assistant text. Returns null for ordinary
+ * conversation. Decision cues are checked first: a turn that both decides and
+ * explains a root cause is stored once, as the decision. `userText` is
+ * accepted for the caller's convenience and deliberately not classified.
  */
-export function classifyTurn(userText: string, assistantText: string): TurnSignal | null {
-  const text = `${userText}\n${assistantText}`;
+export function classifyTurn(_userText: string, assistantText: string): TurnSignal | null {
+  const text = stripRecallBlock(assistantText);
   for (const [kind, cues] of [['decision', DECISION_CUES], ['lesson', LESSON_CUES]] as const) {
     for (const re of cues) {
-      const m = re.exec(text);
-      if (m) return { kind, cue: m[0].trim() };
+      const cue = firstUnnegated(re, text);
+      if (cue !== null) return { kind, cue };
     }
   }
   return null;

@@ -6,7 +6,7 @@ import { classifyTurn, captureChatTurn } from '../../src/core/turn-signal.js';
 describe('classifyTurn', () => {
   it.each([
     ['Which DB?', "We decided to use SQLite over Postgres for the local store."],
-    ["Let's go with pnpm for this repo.", 'OK.'],
+    ['Which package manager?', "Let's go with pnpm for this repo."],
     ['用哪個？', '決定改用 node:sqlite。'],
   ])('flags a decision: %s / %s', (u, a) => {
     expect(classifyTurn(u, a)?.kind).toBe('decision');
@@ -14,7 +14,7 @@ describe('classifyTurn', () => {
 
   it.each([
     ['Why did it fail?', 'The root cause was a stale plugin cache keyed by version.'],
-    ['', 'It turned out the env var was passed as an argument, not as env.'],
+    ['', 'Lesson learned: the env var was passed as an argument, not as env.'],
     ['為什麼？', '根因是快取沒有更新。'],
   ])('flags a lesson: %s / %s', (u, a) => {
     expect(classifyTurn(u, a)?.kind).toBe('lesson');
@@ -26,6 +26,38 @@ describe('classifyTurn', () => {
     ['List the files', 'Here are the files: a.ts, b.ts'],
   ])('ignores ordinary conversation: %s', (u, a) => {
     expect(classifyTurn(u, a)).toBeNull();
+  });
+
+  // Review F1: twelve real turns measured against the first version, which
+  // matched cue substrings anywhere in user+assistant text, with no negation.
+  it.each([
+    ['What time is it in Tokyo?', 'It turns out Tokyo is 13 hours ahead of New York right now.'],
+    ['Have we decided on the DB yet?', 'Not yet — still comparing options.'],
+    ['I chose the wrong file, sorry', 'No problem, send me the right one.'],
+    ['還沒決定要用哪個', '好，等你確認'],
+    ['Can you fix it?', 'The issue is that I cannot see your screen from here.'],
+    ['Thanks', 'Next time you visit Kyoto, try the tofu.'],
+    ['Which DB?', 'We have not decided yet; still comparing.'],
+    ['Which DB?', '還沒決定，還在比較。'],
+  ])('no false positive: %s / %s', (u, a) => {
+    expect(classifyTurn(u, a)).toBeNull();
+  });
+
+  it.each([
+    ['Which queue?', 'We are going to use BullMQ for the job queue.', 'decision'],
+    ['Which queue?', 'Use BullMQ instead of Redis lists.', 'decision'],
+    ['', 'Switching to pnpm; npm workspaces were too slow.', 'decision'],
+    ['', 'Agreed: SQLite stays the store.', 'decision'],
+    ['', 'Learned the hard way that the env var must come first.', 'lesson'],
+  ])('no false negative: %s / %s', (u, a, kind) => {
+    expect(classifyTurn(u, a)?.kind).toBe(kind);
+  });
+
+  it('a recall block injected into the user text does not make every later turn a decision', () => {
+    const user = '[MeMesh recall]\n- (conversation) hermes-turn-s-abc: Assistant: We decided to use BullMQ.\n\nWhat time is it?';
+    expect(classifyTurn(user, 'About 3pm.')).toBeNull();
+    // Even with the recall block not at the very start, user text is never classified.
+    expect(classifyTurn('We decided to use BullMQ', 'Sounds good.')).toBeNull();
   });
 });
 

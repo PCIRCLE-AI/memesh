@@ -3,7 +3,7 @@ export interface TurnSignal {
     kind: TurnSignalKind;
     cue: string;
 }
-export declare function classifyTurn(userText: string, assistantText: string): TurnSignal | null;
+export declare function classifyTurn(_userText: string, assistantText: string): TurnSignal | null;
 export declare const TURN_TEXT_CAP = 2000;
 export interface ChatTurnCaptureResult {
     outcome: 'wrote' | 'skipped';

@@ -1614,8 +1614,10 @@ Shell commands and error text are redacted before they are stored. Running it
 again for the same session adds only observations that are not already there.
 
 `capture-turn` stores one `conversation` entity, tagged `signal:decision` or
-`signal:lesson`, only when the turn states a decision or a lesson. Anything
-else stores nothing and reports `{"outcome":"skipped"}`. The name is a digest
+`signal:lesson`, only when the assistant's reply states a decision or a
+lesson (the user text is not classified: it can carry questions and the
+injected recall block). A negated cue ("not decided yet") does not count.
+Anything else stores nothing and reports `{"outcome":"skipped"}`. The name is a digest
 of the turn text, so a retry does not add a second row.
 
 Both stamp `metadata.provenance.source_host: "hermes"` and tag `platform:hermes`.
