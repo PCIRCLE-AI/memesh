@@ -140,7 +140,9 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       const meta = (key: string) => (check.prepare(
         'SELECT value FROM memesh_metadata WHERE key = ?'
       ).get(key) as { value: string } | undefined)?.value;
-      expect(meta('recall_accounting_mode')).toContain('citation-v1');
+      // v2 (#323): the injected set includes durable-memory index ids, which
+      // widens the citation_sessions_total denominator — a new era.
+      expect(meta('recall_accounting_mode')).toContain('citation-v2');
       expect(meta('citation_sessions_total')).toBe('1');
       expect(meta('citation_sessions_cited')).toBe('1');
     } finally {

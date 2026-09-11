@@ -585,6 +585,62 @@ describe('Feature: Session Start Hook', () => {
     for (const id of indexOnly) expect(session.entityIds).toContain(id);
   });
 
+  it('#323: the hook index excludes archived, other-project and global memories', () => {
+    const db = createTestDb();
+    db.exec("ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+    db.exec("ALTER TABLE entities ADD COLUMN namespace TEXT DEFAULT 'personal'");
+    const ins = db.prepare('INSERT INTO entities (name, type, status, namespace) VALUES (?, ?, ?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const add = (name: string, status: string, namespace: string, project: string, text: string) => {
+      const id = ins.run(name, 'decision', status, namespace).lastInsertRowid as number;
+      obs.run(id, text);
+      tag.run(id, projTag(project));
+      return id;
+    };
+    const kept = add('kept', 'active', 'personal', 'scopeproj', 'Kept project decision');
+    add('archived', 'archived', 'personal', 'scopeproj', 'Archived project decision');
+    add('global', 'active', 'global', 'scopeproj', 'Global tagged decision');
+    add('foreign', 'active', 'personal', 'foreignproj', 'Other project decision');
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/scopeproj' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const section = injected.split('Index of durable memories for')[1] ?? '';
+    expect(section).toContain(`Kept project decision [mem:${kept}]`);
+    expect(section).not.toContain('Archived project decision');
+    expect(section).not.toContain('Global tagged decision');
+    expect(section).not.toContain('Other project decision');
+    expect(section).toMatch(/\(index cost: 1 line,/);
+  });
+
+  it('#323: a failed index read says so and records an error — never the empty-state line', () => {
+    // An observations table without created_at: every ranked query still
+    // works (none reads that column), only the index's last-activity read
+    // fails — which isolates the index's catch.
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE entities (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, metadata JSON);
+      CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_id INTEGER NOT NULL, content TEXT NOT NULL);
+      CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_id INTEGER NOT NULL, tag TEXT NOT NULL);
+    `);
+    const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('d1', 'decision').lastInsertRowid as number;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'A ranked decision');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, projTag('brokenidx'));
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/brokenidx' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    expect(injected).toContain('A ranked decision');
+    expect(injected).toMatch(/Index of durable memories for "[^"]+": could not be read this session — run `memesh doctor`\./);
+    expect(injected).not.toContain('No durable memories');
+    const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l));
+    const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error');
+    expect(err?.reason).toMatch(/^briefing-index: /);
+  });
+
   it('#323: a project with no durable memories injects the empty-state line, not nothing', () => {
     const db = createTestDb();
     const c = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('commit-only', 'commit').lastInsertRowid as number;

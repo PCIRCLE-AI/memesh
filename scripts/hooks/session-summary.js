@@ -582,7 +582,7 @@ process.stdin.on('end', async () => {
               // vs sessions whose transcript carried any citation marker.
               db.prepare(
                 'INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)'
-              ).run('recall_accounting_mode', 'citation-v1 since 2026-08-16');
+              ).run('recall_accounting_mode', 'citation-v2 since 2026-09-12');
               const bump = db.prepare(
                 `INSERT INTO memesh_metadata (key, value) VALUES (?, '1')
                  ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`
