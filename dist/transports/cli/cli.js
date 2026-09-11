@@ -55192,7 +55192,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   let neverRan;
   let measuringHours;
   let legacyCaptured = 0;
-  let stampedCount = 0;
+  let stampedCount;
   let newestHeartbeatHours = null;
   try {
     db2 = openDatabaseImpl();

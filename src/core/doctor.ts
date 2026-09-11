@@ -1439,7 +1439,7 @@ function inspectCaptureLiveness(
   let neverRan: string[];
   let measuringHours: number | null;
   let legacyCaptured = 0;
-  let stampedCount = 0;
+  let stampedCount: number;
   let newestHeartbeatHours: number | null = null;
   try {
     db = openDatabaseImpl() as unknown as DatabaseLike;
