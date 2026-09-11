@@ -1322,8 +1322,9 @@ stopped type, or heartbeats with no outcome record at all past the grace
 The figures come from `hook-outcomes.jsonl` beside the database (the directory
 of `MEMESH_DB_PATH`, `~/.memesh` by default): every capture hook appends one
 JSON line per run — `hook`, `at`, `host`, `outcome` (`wrote` / `skipped` /
-`error`), and a `reason` or `entity` — on every exit path. Errors record only
-`uncaught <code or name>`, never the exception text. Records naming a hook
+`error`), and a `reason` or `entity` — on every exit path. An error records a
+label — `uncaught <code or name>`, or a fixed literal such as `malformed stdin
+JSON` — never the exception text. Records naming a hook
 MeMesh does not ship are ignored, and reason text is stripped of control
 characters and capped at 200 characters before it is shown.
 
