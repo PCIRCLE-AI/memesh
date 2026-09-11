@@ -7039,6 +7039,79 @@ var init_agent_scope_id = __esm({
   }
 });
 
+// dist/core/repo-state.js
+import { execFileSync as execFileSync4 } from "child_process";
+import fs9 from "fs";
+import path9 from "path";
+function tryGit2(cwd, args) {
+  try {
+    return execFileSync4("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      timeout: GIT_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "pipe"]
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+function declaredVersionOf(repoRoot) {
+  try {
+    const raw = fs9.readFileSync(path9.join(repoRoot, "package.json"), "utf8");
+    const version2 = JSON.parse(raw).version;
+    return typeof version2 === "string" && version2.length > 0 ? version2 : null;
+  } catch {
+    return null;
+  }
+}
+function readRepoState(cwdInput) {
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  const repoRoot = tryGit2(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!repoRoot)
+    return null;
+  const branchRaw = tryGit2(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = branchRaw && branchRaw !== "HEAD" ? branchRaw : null;
+  const statusOut = tryGit2(cwd, ["status", "--porcelain"]);
+  const uncommitted = statusOut ? statusOut.split("\n").filter((l) => l.trim() !== "").length : 0;
+  const lastTag = tryGit2(cwd, ["describe", "--tags", "--abbrev=0"]);
+  let commitsSinceTag = null;
+  if (lastTag) {
+    const count = tryGit2(cwd, ["rev-list", "--count", `${lastTag}..HEAD`]);
+    const parsed = count === null ? Number.NaN : Number.parseInt(count, 10);
+    commitsSinceTag = Number.isFinite(parsed) ? parsed : null;
+  }
+  const declaredVersion = declaredVersionOf(repoRoot);
+  let declaredVersionIsTagged = null;
+  if (declaredVersion) {
+    const hit = tryGit2(cwd, ["tag", "--list", `v${declaredVersion}`]);
+    declaredVersionIsTagged = hit === null ? null : hit.length > 0;
+  }
+  return { branch, uncommitted, lastTag, commitsSinceTag, declaredVersion, declaredVersionIsTagged };
+}
+function repoStateLines(state) {
+  if (!state)
+    return [];
+  const first = [];
+  if (state.branch)
+    first.push(`branch ${state.branch}`);
+  first.push(state.uncommitted === 0 ? "working tree clean" : `${state.uncommitted} uncommitted`);
+  const lines = ["Where the repository actually stands (read just now):", `- ${first.join(" \xB7 ")}`];
+  if (state.lastTag) {
+    const since = state.commitsSinceTag;
+    lines.push(since === null ? `- last tag ${state.lastTag}` : since === 0 ? `- at tag ${state.lastTag}` : `- ${since} commit${since === 1 ? "" : "s"} since ${state.lastTag}`);
+  }
+  if (state.declaredVersion && state.declaredVersionIsTagged === false) {
+    lines.push(`- package.json declares ${state.declaredVersion}, which has no tag yet`);
+  }
+  return lines;
+}
+var GIT_TIMEOUT_MS;
+var init_repo_state = __esm({
+  "dist/core/repo-state.js"() {
+    "use strict";
+    GIT_TIMEOUT_MS = 5e3;
+  }
+});
+
 // dist/core/task-state.js
 function taskStateName(project) {
   return `${TASK_STATE_TYPE}:${project}`;
@@ -7195,6 +7268,60 @@ var init_task_state_store = __esm({
         this.name = "TaskStateUnreadableError";
       }
     };
+  }
+});
+
+// dist/core/agent-message-inbox.js
+function unreadDeliveryCount(db2, project, recipient) {
+  if (!recipient)
+    return 0;
+  try {
+    const row = db2.prepare(`SELECT COUNT(*) AS n
+       FROM agent_message_deliveries d
+       WHERE d.project = ?
+         AND d.recipient = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_message_receipts r
+           WHERE r.project = d.project
+             AND r.recipient = d.recipient
+             AND r.message_id = d.message_id
+             AND r.receipt_kind = 'intake'
+         )`).get(project, recipient);
+    const n = row?.n;
+    return typeof n === "number" && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+function recipientEverSeen(db2, project, recipient) {
+  try {
+    const row = db2.prepare(`SELECT (
+         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
+         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
+         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
+       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
+    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
+  } catch {
+    return void 0;
+  }
+}
+function unreadInboxLines(count, project, recipient, everSeen) {
+  if (!recipient)
+    return [];
+  const displayProject = JSON.stringify(project);
+  const displayRecipient = JSON.stringify(recipient);
+  if (count > 0) {
+    const noun = count === 1 ? "message" : "messages";
+    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id; fetching does not acknowledge.`];
+  }
+  if (everSeen === false) {
+    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
+  }
+  return [];
+}
+var init_agent_message_inbox = __esm({
+  "dist/core/agent-message-inbox.js"() {
+    "use strict";
   }
 });
 
@@ -7405,6 +7532,279 @@ var init_work_topology = __esm({
     };
     TOPOLOGY_CANDIDATE_CAP = 400;
     SNIPPET_FETCH_CHARS = DEFAULT_TOPOLOGY_BUDGET.maxLineChars * 4;
+  }
+});
+
+// dist/core/briefing-index.js
+function isIndexableType(type) {
+  return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
+}
+function byteLength(text) {
+  return new TextEncoder().encode(text).length;
+}
+function sectionBytes(lines) {
+  return lines.reduce((sum, line) => sum + byteLength(line) + 1, 0);
+}
+function parseActivity(value) {
+  if (!value)
+    return Number.NaN;
+  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`;
+  return Date.parse(iso);
+}
+function compareIndexCandidates(a, b) {
+  const at = parseActivity(a.lastActivity);
+  const bt = parseActivity(b.lastActivity);
+  const av = Number.isNaN(at) ? -Infinity : at;
+  const bv = Number.isNaN(bt) ? -Infinity : bt;
+  if (av !== bv)
+    return bv - av;
+  return b.id - a.id;
+}
+function redact(text) {
+  if (!text)
+    return "";
+  return redactUserPaths(redactSecrets(String(text))).replace(/\s+/g, " ").trim();
+}
+function indexLine(candidate) {
+  const title = redact(candidate.title);
+  const snippet = redact(candidate.snippet);
+  const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, "").toLowerCase());
+  const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
+  return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
+}
+function indexHeading(projectName) {
+  return `Index of durable memories for "${projectName}" (newest first):`;
+}
+function indexEmptyLine(projectName) {
+  return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
+}
+function moreLine(n, truncated, projectName) {
+  return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag project:${projectName}`;
+}
+function olderLine(n, truncated) {
+  return `- ${n}${truncated ? "+" : ""} older memor${n === 1 ? "y" : "ies"} (no change in ${INDEX_STALE_DAYS} days) \u2014 recall to see`;
+}
+function footerLine(shown, bytes, tokens) {
+  return `(index cost: ${shown} line${shown === 1 ? "" : "s"}, ${bytes} bytes \u2248 ${tokens} tokens; cap ${INDEX_MAX_LINES} lines / ${INDEX_MAX_BYTES} bytes)`;
+}
+function buildBriefingIndex(candidates, projectName, now, options = {}) {
+  const truncated = options.truncated === true;
+  const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
+  const eligible = candidates.filter((c) => isIndexableType(c.type) && isAutoInjectable(c.metadata)).slice().sort(compareIndexCandidates);
+  const current = [];
+  let older = 0;
+  for (const c of eligible) {
+    const at = parseActivity(c.lastActivity);
+    if (!Number.isNaN(at) && at < cutoff)
+      older++;
+    else
+      current.push(c);
+  }
+  const heading = indexHeading(projectName);
+  if (current.length === 0 && older === 0) {
+    const lines2 = [heading, indexEmptyLine(projectName)];
+    const bytes2 = sectionBytes(lines2);
+    const tokens2 = Math.ceil(bytes2 / 4);
+    return { lines: [...lines2, footerLine(0, bytes2, tokens2)], shown: 0, more: 0, older: 0, truncated, bytes: bytes2, tokens: tokens2, ids: [] };
+  }
+  const reserve = sectionBytes([
+    moreLine(current.length, truncated, projectName),
+    olderLine(older, truncated),
+    footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
+  ]);
+  const budget = INDEX_MAX_BYTES - reserve - sectionBytes([heading]);
+  const rendered = [];
+  const ids = [];
+  let used = 0;
+  for (const c of current) {
+    if (rendered.length >= INDEX_MAX_LINES)
+      break;
+    const line = indexLine(c);
+    const cost = byteLength(line) + 1;
+    if (used + cost > budget)
+      break;
+    rendered.push(line);
+    ids.push(c.id);
+    used += cost;
+  }
+  const more = current.length - rendered.length;
+  const lines = [heading, ...rendered];
+  if (more > 0)
+    lines.push(moreLine(more, truncated, projectName));
+  if (older > 0)
+    lines.push(olderLine(older, truncated));
+  const bytes = sectionBytes(lines);
+  const tokens = Math.ceil(bytes / 4);
+  lines.push(footerLine(rendered.length, bytes, tokens));
+  return { lines, shown: rendered.length, more, older, truncated, bytes, tokens, ids };
+}
+var INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_STALE_DAYS, INDEX_LINE_MAX_CHARS, INDEX_SNIPPET_FETCH_CHARS, INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, DAY_MS;
+var init_briefing_index = __esm({
+  "dist/core/briefing-index.js"() {
+    "use strict";
+    init_paths();
+    init_work_topology();
+    INDEX_MAX_LINES = 40;
+    INDEX_MAX_BYTES = 3072;
+    INDEX_STALE_DAYS = 180;
+    INDEX_LINE_MAX_CHARS = 120;
+    INDEX_SNIPPET_FETCH_CHARS = 4e3;
+    INDEX_CANDIDATE_CAP = 2e3;
+    INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state"];
+    DAY_MS = 24 * 60 * 60 * 1e3;
+  }
+});
+
+// dist/core/briefing.js
+function parseMetadata(raw) {
+  if (!raw)
+    return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function selectPool(rows, cap) {
+  const withMeta = rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    title: row.title,
+    meta: parseMetadata(row.metadata),
+    access_count: row.access_count ?? void 0,
+    last_accessed_at: row.last_accessed_at ?? void 0,
+    confidence: row.confidence ?? void 0,
+    recall_hits: row.recall_hits ?? void 0,
+    recall_misses: row.recall_misses ?? void 0
+  }));
+  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
+}
+function toTopologyEntity(row, snippet) {
+  const signal = row.meta?.signal_score;
+  return {
+    name: row.name,
+    type: row.type || "memory",
+    id: row.id,
+    title: row.title,
+    snippet,
+    signalScore: typeof signal === "number" ? signal : null
+  };
+}
+function readBriefingIndex(db2, projectName, now = Date.now()) {
+  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
+  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
+  const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
+  const rows = db2.prepare(`SELECT e.id, e.type, e.title, e.metadata,
+       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+         WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
+       max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
+         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+     FROM entities e
+     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
+       AND e.status = 'active'${nonGlobal}
+       AND e.type NOT IN (${excluded})
+     ORDER BY last_activity DESC, e.id DESC
+     LIMIT ?`).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+  const candidates = rows.map((row) => ({
+    id: row.id,
+    type: row.type,
+    title: row.title,
+    snippet: row.snippet,
+    lastActivity: row.last_activity,
+    metadata: parseMetadata(row.metadata)
+  }));
+  return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
+}
+function assembleBriefing(project, recipient) {
+  const projectName = project ?? getProjectName();
+  const db2 = getDatabase();
+  const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
+  let taskLines;
+  try {
+    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
+  } catch (err) {
+    if (!(err instanceof TaskStateUnreadableError))
+      throw err;
+    taskLines = [`task state for ${projectName}: ${err.message}`];
+  }
+  const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
+  const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient);
+  const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName), inboxRecipient) : void 0;
+  const stateLines = [
+    ...taskLines,
+    ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)
+  ];
+  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
+  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
+  const projectRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ? AND e.status = 'active'${nonGlobal}
+     ORDER BY e.id DESC
+     LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
+  const projectPool = selectPool(projectRows, PROJECT_LIMIT);
+  const globalRows = hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+       FROM entities e
+       WHERE e.namespace = 'global' AND e.status = 'active'
+       ORDER BY e.id DESC
+       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
+  const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
+  const recentRows = db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+     FROM entities e
+     WHERE e.status = 'active'${nonGlobal}
+     ORDER BY e.id DESC
+     LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP);
+  const recentPool = selectPool(recentRows, RECENT_LIMIT);
+  const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
+  const snippets = /* @__PURE__ */ new Map();
+  if (survivorIds.length > 0) {
+    const placeholders = survivorIds.map(() => "?").join(",");
+    const obsRows = db2.prepare(`SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content
+       FROM observations WHERE entity_id IN (${placeholders})
+       ORDER BY id ASC`).all(...survivorIds);
+    for (const row of obsRows) {
+      if (snippets.has(row.entity_id))
+        continue;
+      const text = String(row.content ?? "").trim();
+      if (text)
+        snippets.set(row.entity_id, text);
+    }
+  }
+  const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
+  const lines = assembleTopologyBlock(stateLines, [
+    { entities: toEntities(projectPool), foreign: false },
+    { entities: toEntities(globalPool), foreign: false, global: true },
+    { entities: toEntities(recentPool), foreign: true }
+  ], projectName);
+  const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
+  const index = readBriefingIndex(db2, projectName);
+  const block = withRepo.length > 0 ? [...withRepo, "", ...index.lines] : index.lines;
+  return {
+    project: projectName,
+    text: buildReferenceContext(block),
+    entityCount: lines.filter((l) => l.startsWith("- [")).length,
+    hasTaskState: stateLines.length > 0,
+    index
+  };
+}
+var PROJECT_LIMIT, RECENT_LIMIT, CANDIDATE_COLUMNS;
+var init_briefing = __esm({
+  "dist/core/briefing.js"() {
+    "use strict";
+    init_db();
+    init_paths();
+    init_repo_state();
+    init_scoring();
+    init_task_state_store();
+    init_agent_message_inbox();
+    init_agent_scope_id();
+    init_task_state();
+    init_briefing_index();
+    init_work_topology();
+    PROJECT_LIMIT = 30;
+    RECENT_LIMIT = 5;
+    CANDIDATE_COLUMNS = "e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses";
   }
 });
 
@@ -57657,6 +58057,7 @@ var init_server = __esm({
     init_stats();
     init_projects();
     init_task_state_store();
+    init_briefing();
     init_schemas3();
     init_agent_messaging2();
     init_version_check();
@@ -57884,6 +58285,18 @@ var init_server = __esm({
         return;
       }
       handleGet(res, () => getTaskState(parsed.data.project));
+    });
+    app.get("/v1/briefing-index", (req, res) => {
+      const parsed = TaskStateQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(400).json({
+          success: false,
+          errorCode: "validation.bad-param",
+          error: "project query parameter is required (the project name as shown by /v1/projects)"
+        });
+        return;
+      }
+      handleGet(res, () => ({ project: parsed.data.project, ...readBriefingIndex(getDatabase(), parsed.data.project) }));
     });
     app.get("/v1/stats", (_req, res) => handleGet(res, () => computeStats(getDatabase())));
     app.get("/v1/analytics", (_req, res) => handleGet(res, () => computeAnalytics(getDatabase())));
@@ -59182,386 +59595,8 @@ init_doctor_fixes();
 init_paths();
 init_agent_scope_id();
 init_types();
-
-// dist/core/briefing.js
-init_db();
-init_paths();
-
-// dist/core/repo-state.js
-import { execFileSync as execFileSync4 } from "child_process";
-import fs9 from "fs";
-import path9 from "path";
-var GIT_TIMEOUT_MS = 5e3;
-function tryGit2(cwd, args) {
-  try {
-    return execFileSync4("git", ["-C", cwd, ...args], {
-      encoding: "utf8",
-      timeout: GIT_TIMEOUT_MS,
-      stdio: ["ignore", "pipe", "pipe"]
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-function declaredVersionOf(repoRoot) {
-  try {
-    const raw = fs9.readFileSync(path9.join(repoRoot, "package.json"), "utf8");
-    const version2 = JSON.parse(raw).version;
-    return typeof version2 === "string" && version2.length > 0 ? version2 : null;
-  } catch {
-    return null;
-  }
-}
-function readRepoState(cwdInput) {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  const repoRoot = tryGit2(cwd, ["rev-parse", "--show-toplevel"]);
-  if (!repoRoot)
-    return null;
-  const branchRaw = tryGit2(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const branch = branchRaw && branchRaw !== "HEAD" ? branchRaw : null;
-  const statusOut = tryGit2(cwd, ["status", "--porcelain"]);
-  const uncommitted = statusOut ? statusOut.split("\n").filter((l) => l.trim() !== "").length : 0;
-  const lastTag = tryGit2(cwd, ["describe", "--tags", "--abbrev=0"]);
-  let commitsSinceTag = null;
-  if (lastTag) {
-    const count = tryGit2(cwd, ["rev-list", "--count", `${lastTag}..HEAD`]);
-    const parsed = count === null ? Number.NaN : Number.parseInt(count, 10);
-    commitsSinceTag = Number.isFinite(parsed) ? parsed : null;
-  }
-  const declaredVersion = declaredVersionOf(repoRoot);
-  let declaredVersionIsTagged = null;
-  if (declaredVersion) {
-    const hit = tryGit2(cwd, ["tag", "--list", `v${declaredVersion}`]);
-    declaredVersionIsTagged = hit === null ? null : hit.length > 0;
-  }
-  return { branch, uncommitted, lastTag, commitsSinceTag, declaredVersion, declaredVersionIsTagged };
-}
-function repoStateLines(state) {
-  if (!state)
-    return [];
-  const first = [];
-  if (state.branch)
-    first.push(`branch ${state.branch}`);
-  first.push(state.uncommitted === 0 ? "working tree clean" : `${state.uncommitted} uncommitted`);
-  const lines = ["Where the repository actually stands (read just now):", `- ${first.join(" \xB7 ")}`];
-  if (state.lastTag) {
-    const since = state.commitsSinceTag;
-    lines.push(since === null ? `- last tag ${state.lastTag}` : since === 0 ? `- at tag ${state.lastTag}` : `- ${since} commit${since === 1 ? "" : "s"} since ${state.lastTag}`);
-  }
-  if (state.declaredVersion && state.declaredVersionIsTagged === false) {
-    lines.push(`- package.json declares ${state.declaredVersion}, which has no tag yet`);
-  }
-  return lines;
-}
-
-// dist/core/briefing.js
-init_scoring();
-init_task_state_store();
-
-// dist/core/agent-message-inbox.js
-function unreadDeliveryCount(db2, project, recipient) {
-  if (!recipient)
-    return 0;
-  try {
-    const row = db2.prepare(`SELECT COUNT(*) AS n
-       FROM agent_message_deliveries d
-       WHERE d.project = ?
-         AND d.recipient = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM agent_message_receipts r
-           WHERE r.project = d.project
-             AND r.recipient = d.recipient
-             AND r.message_id = d.message_id
-             AND r.receipt_kind = 'intake'
-         )`).get(project, recipient);
-    const n = row?.n;
-    return typeof n === "number" && n > 0 ? n : 0;
-  } catch {
-    return 0;
-  }
-}
-function recipientEverSeen(db2, project, recipient) {
-  try {
-    const row = db2.prepare(`SELECT (
-         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
-         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
-         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
-       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
-    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
-  } catch {
-    return void 0;
-  }
-}
-function unreadInboxLines(count, project, recipient, everSeen) {
-  if (!recipient)
-    return [];
-  const displayProject = JSON.stringify(project);
-  const displayRecipient = JSON.stringify(recipient);
-  if (count > 0) {
-    const noun = count === 1 ? "message" : "messages";
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id; fetching does not acknowledge.`];
-  }
-  if (everSeen === false) {
-    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
-  }
-  return [];
-}
-
-// dist/core/briefing.js
-init_agent_scope_id();
-init_task_state();
-
-// dist/core/briefing-index.js
-init_paths();
+init_briefing();
 init_work_topology();
-var INDEX_MAX_LINES = 40;
-var INDEX_MAX_BYTES = 3072;
-var INDEX_STALE_DAYS = 180;
-var INDEX_LINE_MAX_CHARS = 120;
-var INDEX_SNIPPET_FETCH_CHARS = 4e3;
-var INDEX_CANDIDATE_CAP = 2e3;
-var INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state"];
-function isIndexableType(type) {
-  return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
-}
-var DAY_MS = 24 * 60 * 60 * 1e3;
-function byteLength(text) {
-  return new TextEncoder().encode(text).length;
-}
-function sectionBytes(lines) {
-  return lines.reduce((sum, line) => sum + byteLength(line) + 1, 0);
-}
-function parseActivity(value) {
-  if (!value)
-    return Number.NaN;
-  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`;
-  return Date.parse(iso);
-}
-function compareIndexCandidates(a, b) {
-  const at = parseActivity(a.lastActivity);
-  const bt = parseActivity(b.lastActivity);
-  const av = Number.isNaN(at) ? -Infinity : at;
-  const bv = Number.isNaN(bt) ? -Infinity : bt;
-  if (av !== bv)
-    return bv - av;
-  return b.id - a.id;
-}
-function redact(text) {
-  if (!text)
-    return "";
-  return redactUserPaths(redactSecrets(String(text))).replace(/\s+/g, " ").trim();
-}
-function indexLine(candidate) {
-  const title = redact(candidate.title);
-  const snippet = redact(candidate.snippet);
-  const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, "").toLowerCase());
-  const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
-  return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
-}
-function indexHeading(projectName) {
-  return `Index of durable memories for "${projectName}" (newest first):`;
-}
-function indexEmptyLine(projectName) {
-  return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
-}
-function moreLine(n, truncated, projectName) {
-  return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag project:${projectName}`;
-}
-function olderLine(n, truncated) {
-  return `- ${n}${truncated ? "+" : ""} older memor${n === 1 ? "y" : "ies"} (no change in ${INDEX_STALE_DAYS} days) \u2014 recall to see`;
-}
-function footerLine(shown, bytes, tokens) {
-  return `(index cost: ${shown} line${shown === 1 ? "" : "s"}, ${bytes} bytes \u2248 ${tokens} tokens; cap ${INDEX_MAX_LINES} lines / ${INDEX_MAX_BYTES} bytes)`;
-}
-function buildBriefingIndex(candidates, projectName, now, options = {}) {
-  const truncated = options.truncated === true;
-  const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
-  const eligible = candidates.filter((c) => isIndexableType(c.type) && isAutoInjectable(c.metadata)).slice().sort(compareIndexCandidates);
-  const current = [];
-  let older = 0;
-  for (const c of eligible) {
-    const at = parseActivity(c.lastActivity);
-    if (!Number.isNaN(at) && at < cutoff)
-      older++;
-    else
-      current.push(c);
-  }
-  const heading = indexHeading(projectName);
-  if (current.length === 0 && older === 0) {
-    const lines2 = [heading, indexEmptyLine(projectName)];
-    const bytes2 = sectionBytes(lines2);
-    const tokens2 = Math.ceil(bytes2 / 4);
-    return { lines: [...lines2, footerLine(0, bytes2, tokens2)], shown: 0, more: 0, older: 0, truncated, bytes: bytes2, tokens: tokens2, ids: [] };
-  }
-  const reserve = sectionBytes([
-    moreLine(current.length, truncated, projectName),
-    olderLine(older, truncated),
-    footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
-  ]);
-  const budget = INDEX_MAX_BYTES - reserve - sectionBytes([heading]);
-  const rendered = [];
-  const ids = [];
-  let used = 0;
-  for (const c of current) {
-    if (rendered.length >= INDEX_MAX_LINES)
-      break;
-    const line = indexLine(c);
-    const cost = byteLength(line) + 1;
-    if (used + cost > budget)
-      break;
-    rendered.push(line);
-    ids.push(c.id);
-    used += cost;
-  }
-  const more = current.length - rendered.length;
-  const lines = [heading, ...rendered];
-  if (more > 0)
-    lines.push(moreLine(more, truncated, projectName));
-  if (older > 0)
-    lines.push(olderLine(older, truncated));
-  const bytes = sectionBytes(lines);
-  const tokens = Math.ceil(bytes / 4);
-  lines.push(footerLine(rendered.length, bytes, tokens));
-  return { lines, shown: rendered.length, more, older, truncated, bytes, tokens, ids };
-}
-
-// dist/core/briefing.js
-init_work_topology();
-var PROJECT_LIMIT = 30;
-var RECENT_LIMIT = 5;
-var CANDIDATE_COLUMNS = "e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses";
-function parseMetadata(raw) {
-  if (!raw)
-    return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-function selectPool(rows, cap) {
-  const withMeta = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    title: row.title,
-    meta: parseMetadata(row.metadata),
-    access_count: row.access_count ?? void 0,
-    last_accessed_at: row.last_accessed_at ?? void 0,
-    confidence: row.confidence ?? void 0,
-    recall_hits: row.recall_hits ?? void 0,
-    recall_misses: row.recall_misses ?? void 0
-  }));
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
-}
-function toTopologyEntity(row, snippet) {
-  const signal = row.meta?.signal_score;
-  return {
-    name: row.name,
-    type: row.type || "memory",
-    id: row.id,
-    title: row.title,
-    snippet,
-    signalScore: typeof signal === "number" ? signal : null
-  };
-}
-function readBriefingIndex(db2, projectName, now = Date.now()) {
-  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
-  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
-  const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
-  const rows = db2.prepare(`SELECT e.id, e.type, e.title, e.metadata,
-       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
-         WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
-       max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
-         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
-     FROM entities e
-     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
-       AND e.status = 'active'${nonGlobal}
-       AND e.type NOT IN (${excluded})
-     ORDER BY last_activity DESC, e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
-  const candidates = rows.map((row) => ({
-    id: row.id,
-    type: row.type,
-    title: row.title,
-    snippet: row.snippet,
-    lastActivity: row.last_activity,
-    metadata: parseMetadata(row.metadata)
-  }));
-  return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
-}
-function assembleBriefing(project, recipient) {
-  const projectName = project ?? getProjectName();
-  const db2 = getDatabase();
-  const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
-  let taskLines;
-  try {
-    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
-  } catch (err) {
-    if (!(err instanceof TaskStateUnreadableError))
-      throw err;
-    taskLines = [`task state for ${projectName}: ${err.message}`];
-  }
-  const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
-  const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient);
-  const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName), inboxRecipient) : void 0;
-  const stateLines = [
-    ...taskLines,
-    ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)
-  ];
-  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
-  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
-  const projectRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
-     FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ? AND e.status = 'active'${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
-  const projectPool = selectPool(projectRows, PROJECT_LIMIT);
-  const globalRows = hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
-       FROM entities e
-       WHERE e.namespace = 'global' AND e.status = 'active'
-       ORDER BY e.id DESC
-       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
-  const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
-  const recentRows = db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
-     FROM entities e
-     WHERE e.status = 'active'${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP);
-  const recentPool = selectPool(recentRows, RECENT_LIMIT);
-  const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
-  const snippets = /* @__PURE__ */ new Map();
-  if (survivorIds.length > 0) {
-    const placeholders = survivorIds.map(() => "?").join(",");
-    const obsRows = db2.prepare(`SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content
-       FROM observations WHERE entity_id IN (${placeholders})
-       ORDER BY id ASC`).all(...survivorIds);
-    for (const row of obsRows) {
-      if (snippets.has(row.entity_id))
-        continue;
-      const text = String(row.content ?? "").trim();
-      if (text)
-        snippets.set(row.entity_id, text);
-    }
-  }
-  const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
-  const lines = assembleTopologyBlock(stateLines, [
-    { entities: toEntities(projectPool), foreign: false },
-    { entities: toEntities(globalPool), foreign: false, global: true },
-    { entities: toEntities(recentPool), foreign: true }
-  ], projectName);
-  const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
-  const index = readBriefingIndex(db2, projectName);
-  const block = withRepo.length > 0 ? [...withRepo, "", ...index.lines] : index.lines;
-  return {
-    project: projectName,
-    text: buildReferenceContext(block),
-    entityCount: lines.filter((l) => l.startsWith("- [")).length,
-    hasTaskState: stateLines.length > 0,
-    index
-  };
-}
 
 // dist/core/session-insight.js
 init_paths();
@@ -60782,19 +60817,28 @@ agentCmd.command("setup").argument("<host>", "codex-session | codex | claude | g
     ]
   ].join("\n"));
 });
-program2.command("briefing").description("The assembled work topology for a project \u2014 task state, decisions, lessons, knowledge, recent activity").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--json", "Output as JSON").action(async (opts) => {
+program2.command("briefing").description("The assembled work topology for a project \u2014 task state, decisions, lessons, knowledge, recent activity").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--index", "Only the index of durable memories (decisions, lessons, patterns, references), newest first").option("--json", "Output as JSON").action(async (opts) => {
   await withDatabase(() => {
+    if (opts.index) {
+      const project = opts.project ?? getProjectName();
+      const index = readBriefingIndex(getDatabase(), project);
+      if (opts.json) {
+        console.log(JSON.stringify({ project, ...index }));
+        return;
+      }
+      console.log(buildReferenceContext(index.lines));
+      return;
+    }
     const result = assembleBriefing(opts.project, opts.recipient);
     if (opts.json) {
       console.log(JSON.stringify(result));
       return;
     }
-    if (!result.text) {
-      console.log(`No memories for "${result.project}" yet.
-Capture happens automatically as you work; or set the task state:  memesh task --goal "\u2026"`);
-      return;
-    }
     console.log(result.text);
+    if (result.entityCount === 0 && !result.hasTaskState && result.index.shown === 0 && result.index.older === 0) {
+      console.log(`
+Capture happens automatically as you work; or set the task state:  memesh task --goal "\u2026"`);
+    }
   });
 });
 var WHY_ABSTENTION_TEXT = {

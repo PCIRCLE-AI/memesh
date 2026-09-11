@@ -29,6 +29,7 @@ import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
 import { computeProjects } from '../../core/projects.js';
 import { getTaskState } from '../../core/task-state-store.js';
+import { readBriefingIndex } from '../../core/briefing.js';
 import type { CountRow } from '../../core/types.js';
 import {
   RememberSchema as RememberBody, RecallSchema as RecallBody,
@@ -877,6 +878,23 @@ app.get('/v1/task-state', (req, res) => {
     return;
   }
   handleGet(res, () => getTaskState(parsed.data.project));
+});
+// --- Briefing index (Project tab, #323) ---
+// The durable-memory index the briefing and the SessionStart block close
+// with — one line per decision / lesson / pattern / reference, newest first,
+// capped — for the same project name /v1/task-state takes. Rendered by the
+// same leaf, so the dashboard shows exactly what an agent is given.
+app.get('/v1/briefing-index', (req, res) => {
+  const parsed = TaskStateQuerySchema.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({
+      success: false,
+      errorCode: 'validation.bad-param' satisfies ErrorCode,
+      error: 'project query parameter is required (the project name as shown by /v1/projects)',
+    });
+    return;
+  }
+  handleGet(res, () => ({ project: parsed.data.project, ...readBriefingIndex(getDatabase(), parsed.data.project) }));
 });
 app.get('/v1/stats', (_req, res) => handleGet(res, () => computeStats(getDatabase())));
 app.get('/v1/analytics', (_req, res) => handleGet(res, () => computeAnalytics(getDatabase())));
