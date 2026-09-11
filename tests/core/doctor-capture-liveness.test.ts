@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { runDoctor as runDoctorImpl, formatDoctorReport } from '../../src/core/doctor.js';
 import { HOOK_OUTCOMES_FILENAME, type HookOutcomeRecord } from '../../src/core/capture-liveness.js';
 import type { UpdateCheck } from '../../src/core/version-check.js';
+import type { InstallChannel } from '../../src/core/install-channel.js';
 
 /**
  * The three capture-liveness verdicts, pinned by fixtures (#327).
@@ -75,6 +76,7 @@ function makeDatabase(opts: {
   stampedHooks?: string[];
   typeTrends?: Array<{ type: string; last7: number; prev7: number }>;
   trackingSinceHours?: number;
+  legacyCaptured?: number;
 } = {}) {
   const stamped = opts.stampedHooks ?? ['session-summary', 'post-commit'];
   const sqliteTs = (hoursAgo: number) =>
@@ -92,6 +94,10 @@ function makeDatabase(opts: {
       if (sql.includes('hook_runs_since')) {
         return { get: () => ({ value: sqliteTs(opts.trackingSinceHours ?? 720) }) };
       }
+      if (sql.includes('t.tag = ? AND e.created_at > ?')) {
+        // The legacy-hook hedge query in inspectCaptureLiveness.
+        return { get: () => ({ c: opts.legacyCaptured ?? 0 }) };
+      }
       return { get: () => ({ c: 0 }), all: () => [] };
     },
   };
@@ -105,7 +111,7 @@ function packageRoot(): string {
   return root;
 }
 
-async function run(dbOpts: Parameters<typeof makeDatabase>[0] = {}) {
+async function run(dbOpts: Parameters<typeof makeDatabase>[0] = {}, installChannel: InstallChannel = 'npm-global') {
   return runDoctorImpl({
     pluginCacheDiscoveryImpl: () => [],
     packageRoot: packageRoot(),
@@ -114,9 +120,9 @@ async function run(dbOpts: Parameters<typeof makeDatabase>[0] = {}) {
     closeDatabaseImpl: () => undefined,
     getConfigPathImpl: () => path.join(packageRoot(), 'config.json'),
     getUpdateCheckImpl: async () => makeUpdateCheck(),
-    getCurrentInstallChannelImpl: () => 'npm-global',
+    getCurrentInstallChannelImpl: () => installChannel,
     getInstallChannelSupportImpl: () => ({
-      channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
+      channel: installChannel, label: 'npm global', canSelfUpdate: true,
       recommendedCommand: 'memesh update',
       guidance: 'This installation can be updated directly from MeMesh.',
     }) as never,
@@ -179,13 +185,39 @@ describe('doctor: capture-liveness', () => {
 
   it('FAIL — session-summary has neither a record nor a heartbeat since tracking began', async () => {
     memeshDirWith(skips('post-commit', 6, 'no commit line in output'));
-    const result = await run({ stampedHooks: ['post-commit'] });
+    // Wired via the plugin runtime, so captureWired is true — this is the
+    // case where a silent session-summary really is a defect, not a config.
+    const result = await run({ stampedHooks: ['post-commit'] }, 'plugin-marketplace');
     const check = result.checks.find((c) => c.id === 'capture-liveness')!;
     expect(check.status).toBe('fail');
     expect(check.code).toBe('capture-liveness.never-ran');
     expect(check.params?.hook).toBe('session-summary');
     expect(result.capture?.status).toBe('FAIL');
     expect(formatDoctorReport(result, '4.0.3').join('\n')).toContain('Capture liveness');
+  });
+
+  it('never-ran on an MCP-only install is not a failure — no capture hook is wired', async () => {
+    // A Codex / Gemini / Cursor install wires no capture hook. Past the
+    // grace, session-summary has never run — but there is nothing that
+    // should be running, so a FAIL here would be a permanent unfixable red.
+    memeshDirWith(skips('post-commit', 6, 'no commit line in output'));
+    const result = await run({ stampedHooks: [] });
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).not.toBe('fail');
+    expect(check.code).toBe('capture-liveness.not-wired');
+    expect(result.capture?.status).not.toBe('FAIL');
+  });
+
+  it('never-ran with auto-capture entities landing is version skew, not death', async () => {
+    // Legacy hooks write entities without a heartbeat or an outcome record.
+    // The never-ran FAIL must not fire over a graph that is provably still
+    // being captured — the same hedge hook-activity takes.
+    memeshDirWith(skips('post-commit', 6, 'no commit line in output'));
+    const result = await run({ stampedHooks: [], legacyCaptured: 5 }, 'plugin-marketplace');
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('warn');
+    expect(check.code).toBe('capture-liveness.never-ran-legacy');
+    expect(check.summary).toContain('5');
   });
 
   it('the never-ran FAIL waits out the grace — a fresh install is not a defect', async () => {

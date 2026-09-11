@@ -712,7 +712,15 @@ function captureGraceInEffect(dir, installedVersion) {
 
 function captureLivenessBannerLine(installedVersion) {
   try {
-    const dir = memeshHomeDir();
+    // The banner must read the outcome file from the SAME place the hooks
+    // write it. recordHookOutcome writes beside the database
+    // (getMemeshDirFromDbPath = dirname(MEMESH_DB_PATH)); reading via
+    // memeshHomeDir (= MEMESH_DIR) instead split the two whenever a DB path
+    // override pointed elsewhere, and the banner silently read nothing —
+    // the exact "banner and report can never disagree" failure this exists
+    // to prevent. The grace counter and throttle lock move with it so the
+    // three pieces of this mechanism stay beside the same file.
+    const dir = getMemeshDirFromDbPath();
     if (captureGraceInEffect(dir, installedVersion ?? 'unknown')) return null;
     let raw = null;
     try { raw = readFileSync(join(dir, HOOK_OUTCOMES_FILENAME), 'utf8'); } catch { return null; }

@@ -6,7 +6,7 @@ import os from 'os';
 import {
   serializeHookOutcome,
   HOOK_OUTCOMES_FILENAME,
-  HOOK_OUTCOMES_MAX_LINES,
+  HOOK_OUTCOMES_PER_HOOK,
   SILENT_HOOK_MIN_RUNS,
   type HookOutcomeRecord,
 } from '../../src/core/capture-liveness.js';
@@ -65,11 +65,11 @@ describe('SessionStart capture-liveness line', () => {
     }));
   }
 
-  function runHook(): { out: Record<string, unknown>; ms: number } {
+  function runHook(envOverrides: Record<string, string> = {}): { out: Record<string, unknown>; ms: number } {
     const started = Date.now();
     const result = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
       input: JSON.stringify({ session_id: 'ss-1', cwd: testDir }),
-      env: { ...process.env, MEMESH_DIR: memeshDir, MEMESH_DB_PATH: dbPath, HOME: testDir },
+      env: { ...process.env, MEMESH_DIR: memeshDir, MEMESH_DB_PATH: dbPath, HOME: testDir, ...envOverrides },
       encoding: 'utf8',
       timeout: 20000,
     });
@@ -144,7 +144,7 @@ describe('SessionStart capture-liveness line', () => {
     // A full file is the worst case the hook can meet, and this line is not
     // worth a slow session start. The SessionStart hook's declared timeout
     // is 10s; a full history must not come close to it.
-    writeRecords(silentPostCommit(HOOK_OUTCOMES_MAX_LINES));
+    writeRecords(silentPostCommit(HOOK_OUTCOMES_PER_HOOK * 10));
     graceExpired(installedVersion());
     const { out, ms } = runHook();
     expect(String(out.systemMessage ?? '')).toContain('wrote nothing');
@@ -158,5 +158,27 @@ describe('SessionStart capture-liveness line', () => {
     graceExpired(installedVersion());
     expect(fs.existsSync(dbPath), 'this case is only meaningful with no database').toBe(false);
     expect(systemMessage()).toContain('wrote nothing');
+  });
+
+  it('reads the outcome file beside the database, not MEMESH_DIR, when the two differ', () => {
+    // recordHookOutcome writes beside the database (dirname(MEMESH_DB_PATH));
+    // the banner must read from the SAME place or it silently reads nothing
+    // when MEMESH_DB_PATH points away from MEMESH_DIR — the split that the
+    // "banner and report can never disagree" promise exists to close.
+    const dbDir = path.join(testDir, 'elsewhere');
+    fs.mkdirSync(dbDir, { recursive: true });
+    const remoteDb = path.join(dbDir, 'knowledge-graph.db');
+    // The writer's behaviour: outcomes + grace land beside the DB path.
+    fs.writeFileSync(
+      path.join(dbDir, HOOK_OUTCOMES_FILENAME),
+      silentPostCommit(SILENT_HOOK_MIN_RUNS + 3).map(serializeHookOutcome).join(''),
+    );
+    fs.writeFileSync(path.join(dbDir, GRACE_FILE), JSON.stringify({
+      version: installedVersion(),
+      firstSeenAt: new Date(Date.now() - 72 * 3600_000).toISOString(),
+      sessions: 4,
+    }));
+    const message = String(runHook({ MEMESH_DB_PATH: remoteDb }).out.systemMessage ?? '');
+    expect(message).toContain('wrote nothing');
   });
 });

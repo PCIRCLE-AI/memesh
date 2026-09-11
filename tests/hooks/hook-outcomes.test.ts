@@ -11,7 +11,6 @@ import {
   summarizeHookOutcomes,
   trimHookOutcomeLines,
   HOOK_OUTCOMES_FILENAME,
-  HOOK_OUTCOMES_MAX_LINES,
   HOOK_OUTCOMES_PER_HOOK,
   SILENT_HOOK_MIN_RUNS,
   type HookOutcomeRecord,
@@ -232,10 +231,11 @@ describe('hook outcome records', () => {
     expect(rows, 'a hook killed mid-write must cost one record, not the file').toHaveLength(1);
   });
 
-  it('the file is bounded: rotation keeps the last 200 lines', () => {
+  it('the file is bounded: rotation keeps the last 20 PER HOOK', () => {
     const file = path.join(memeshDir, HOOK_OUTCOMES_FILENAME);
     // Drive it past the size trigger through the real hook, so the bound is
-    // proven on the path that actually writes.
+    // proven on the path that actually writes. A storm of post-commit skips
+    // must not push the single pre-compact record out of the window.
     for (let i = 0; i < 260; i++) {
       fs.appendFileSync(file, serializeHookOutcome({
         hook: 'post-commit', at: new Date().toISOString(), host: 'unknown',
@@ -243,9 +243,10 @@ describe('hook outcome records', () => {
       }));
     }
     runHook('pre-compact', { trigger: 'auto' });
-    const lines = fs.readFileSync(file, 'utf8').trim().split('\n');
-    expect(lines.length).toBeLessThanOrEqual(HOOK_OUTCOMES_MAX_LINES + 1);
-    expect(lines.length).toBeGreaterThan(HOOK_OUTCOMES_PER_HOOK);
+    const parsed = parseHookOutcomes(fs.readFileSync(file, 'utf8'));
+    expect(parsed.hooks['post-commit']).toHaveLength(HOOK_OUTCOMES_PER_HOOK);
+    // The quiet hook wrote through the real process and its record survives.
+    expect(parsed.hooks['pre-compact']).toHaveLength(1);
   });
 
   it('a summary window never grows with the file', () => {
@@ -256,10 +257,33 @@ describe('hook outcome records', () => {
     expect(parseHookOutcomes(raw).hooks['post-commit']).toHaveLength(HOOK_OUTCOMES_PER_HOOK);
   });
 
-  it('trimHookOutcomeLines keeps the NEWEST lines, not the oldest', () => {
-    const raw = Array.from({ length: 10 }, (_, i) => `{"n":${i}}`).join('\n') + '\n';
-    const kept = trimHookOutcomeLines(raw, 3).trim().split('\n');
-    expect(kept).toEqual(['{"n":7}', '{"n":8}', '{"n":9}']);
+  it('trimHookOutcomeLines keeps the NEWEST records per hook, not the oldest', () => {
+    const recs = Array.from({ length: 10 }, (_, i) => JSON.stringify({
+      hook: 'post-commit', at: `2026-09-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`, host: 'claude-code', outcome: 'skipped',
+    }));
+    const kept = trimHookOutcomeLines(recs.join('\n') + '\n', 3);
+    expect(parseHookOutcomes(kept).hooks['post-commit'].map((r) => r.at)).toEqual([
+      '2026-09-08T00:00:00.000Z', '2026-09-09T00:00:00.000Z', '2026-09-10T00:00:00.000Z',
+    ]);
+  });
+
+  it('trim keeps the newest PER HOOK, so a loud hook cannot push a quiet one out', () => {
+    // Three session-summary writes, then a storm of post-commit skips. A
+    // whole-file trim keeps only the tail — every session-summary record,
+    // and with it the one hook that is FAIL-eligible — drowns. The detector
+    // that must see session-summary going quiet would see nothing at all.
+    const mk = (hook: string, n: number, outcome: string) =>
+      Array.from({ length: n }, (_, i) => JSON.stringify({
+        hook, at: `2026-09-0${(i % 9) + 1}T00:00:00.000Z`, host: 'claude-code', outcome,
+      }));
+    const raw = [
+      ...mk('session-summary', 3, 'wrote'),
+      ...mk('post-commit', 300, 'skipped'),
+    ].join('\n') + '\n';
+    const kept = trimHookOutcomeLines(raw);
+    const hooks = parseHookOutcomes(kept).hooks;
+    expect(hooks['post-commit']).toHaveLength(HOOK_OUTCOMES_PER_HOOK);
+    expect(hooks['session-summary'], 'a quiet hook must survive a loud neighbour').toHaveLength(3);
   });
 
   // ── the verdict the records feed ─────────────────────────────────────────

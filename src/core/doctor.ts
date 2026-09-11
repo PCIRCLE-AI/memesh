@@ -1409,6 +1409,7 @@ function inspectCaptureLiveness(
   closeDatabaseImpl: typeof closeDatabase,
   readFileSyncImpl: typeof fs.readFileSync = fs.readFileSync,
   memeshDirImpl: () => string = getMemeshDirFromDbPath,
+  captureWired: boolean = true,
 ): { check: DoctorCheck; report?: CaptureLivenessReport } {
   const TITLE = 'Capture liveness';
 
@@ -1437,6 +1438,7 @@ function inspectCaptureLiveness(
   let types: TypeTrend[];
   let neverRan: string[];
   let measuringHours: number | null;
+  let legacyCaptured = 0;
   try {
     db = openDatabaseImpl() as unknown as DatabaseLike;
 
@@ -1477,6 +1479,20 @@ function inspectCaptureLiveness(
       "SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'",
     ).get() as { value: string } | undefined)?.value;
     measuringHours = since !== undefined ? hoursSince(since) : null;
+
+    // Legacy hooks that predate the outcome record write auto-capture
+    // entities without either a heartbeat or an outcome record. If any have
+    // landed since tracking began, "the session-summary hook never ran" is
+    // version skew, not death — the same hedge hook-activity's
+    // never-ran-legacy takes, so the two rows cannot contradict each other
+    // about the same graph.
+    if (since !== undefined) {
+      legacyCaptured = (db.prepare(
+        `SELECT COUNT(DISTINCT e.id) as c FROM entities e
+         JOIN tags t ON t.entity_id = e.id
+        WHERE t.tag = ? AND e.created_at > ?`,
+      ).get(AUTO_CAPTURE_TAG, since) as { c: number } | undefined)?.c ?? 0;
+    }
   } catch (err) {
     // A query failure is not a healthy graph and must not read as one.
     const detail = err instanceof Error ? err.message : String(err);
@@ -1500,6 +1516,31 @@ function inspectCaptureLiveness(
 
   if (verdict.status === 'FAIL') {
     const hook = verdict.deadHooks[0];
+    // Two ways a "never ran" FAIL is not a defect. First: no capture hook
+    // is confirmed wired at all (MCP-only hosts, recall-only wirings), so
+    // there is nothing that SHOULD have run — a permanent unfixable red on
+    // a supported install type. Second: legacy hooks that predate the
+    // outcome record keep capturing without one, so this is version skew,
+    // not death. Both mirror hook-activity's not-wired / never-ran-legacy
+    // hedges so the two rows never contradict each other about one graph.
+    if (!captureWired) {
+      return {
+        check: createCheck('capture-liveness', TITLE, 'warn',
+          `The ${hook} hook has never run — but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`,
+          'If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini / Cursor), this is expected and safe to ignore.',
+          { code: 'capture-liveness.not-wired', params: { hook } }),
+        report: { ...report, status: 'PASS_WITH_CONCERNS' },
+      };
+    }
+    if (legacyCaptured > 0) {
+      return {
+        check: createCheck('capture-liveness', TITLE, 'warn',
+          `The ${hook} hook has left no record and no heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? 'y' : 'ies'} landed since tracking began — hooks from a version before outcome tracking are probably still running.`,
+          'Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.',
+          { code: 'capture-liveness.never-ran-legacy', params: { hook, captured: legacyCaptured } }),
+        report: { ...report, status: 'PASS_WITH_CONCERNS' },
+      };
+    }
     return {
       check: createCheck('capture-liveness', TITLE, 'fail',
         `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began — it has never run, so nothing it would capture is being saved.`,
@@ -3262,7 +3303,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // Next to hook-activity on purpose: "did it run" and "did it write" are
   // read together, and separating them is what let a green heartbeat cover
   // an empty graph for two days (#327).
-  const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl);
+  const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired);
   checks.push(captureLiveness.check);
   // The figures behind the capture-liveness row, surfaced on the result so
   // `--json` carries the evidence and not only the verdict.

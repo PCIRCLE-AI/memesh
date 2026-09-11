@@ -16,7 +16,6 @@ export interface HookOutcomeFile {
 export declare const HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
 export declare const HOOK_OUTCOMES_VERSION = 1;
 export declare const HOOK_OUTCOMES_PER_HOOK = 20;
-export declare const HOOK_OUTCOMES_MAX_LINES = 200;
 export declare const HOOK_OUTCOMES_ROTATE_BYTES: number;
 export declare function serializeHookOutcome(record: HookOutcomeRecord): string;
 export declare function trimHookOutcomeLines(raw: string, max?: number): string;

@@ -55149,7 +55149,7 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     }
   }
 }
-function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs17.readFileSync, memeshDirImpl = getMemeshDirFromDbPath) {
+function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs17.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
   const TITLE = "Capture liveness";
   if (autoCaptureOffSource() !== null) {
     return {
@@ -55167,6 +55167,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   let types;
   let neverRan;
   let measuringHours;
+  let legacyCaptured = 0;
   try {
     db2 = openDatabaseImpl();
     const rows = db2.prepare(`SELECT e.type AS type,
@@ -55188,6 +55189,11 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     neverRan = FAIL_ELIGIBLE_HOOKS.filter((h) => !stamped.has(h));
     const since = db2.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
     measuringHours = since !== void 0 ? hoursSince(since) : null;
+    if (since !== void 0) {
+      legacyCaptured = db2.prepare(`SELECT COUNT(DISTINCT e.id) as c FROM entities e
+         JOIN tags t ON t.entity_id = e.id
+        WHERE t.tag = ? AND e.created_at > ?`).get(AUTO_CAPTURE_TAG, since)?.c ?? 0;
+    }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return {
@@ -55209,6 +55215,18 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   };
   if (verdict.status === "FAIL") {
     const hook = verdict.deadHooks[0];
+    if (!captureWired) {
+      return {
+        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has never run \u2014 but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`, "If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini / Cursor), this is expected and safe to ignore.", { code: "capture-liveness.not-wired", params: { hook } }),
+        report: { ...report, status: "PASS_WITH_CONCERNS" }
+      };
+    }
+    if (legacyCaptured > 0) {
+      return {
+        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has left no record and no heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? "y" : "ies"} landed since tracking began \u2014 hooks from a version before outcome tracking are probably still running.`, "Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.", { code: "capture-liveness.never-ran-legacy", params: { hook, captured: legacyCaptured } }),
+        report: { ...report, status: "PASS_WITH_CONCERNS" }
+      };
+    }
     return {
       check: createCheck("capture-liveness", TITLE, "fail", `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began \u2014 it has never run, so nothing it would capture is being saved.`, "Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.", { code: "capture-liveness.never-ran", params: { hook, hours: Math.round(measuringHours ?? 0) } }),
       report
@@ -56019,7 +56037,7 @@ async function runDoctor(options) {
     checks.push(codexSessionSetup);
   const captureWired = wiring.status === "pass" && (wiring.params === void 0 || wiring.params.captureWired === 1);
   checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
-  const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl);
+  const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired);
   checks.push(captureLiveness.check);
   const captureReport = captureLiveness.report;
   checks.push(inspectDashboardArtifact(packageRoot3, existsSyncImpl));

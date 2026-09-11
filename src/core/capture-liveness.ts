@@ -59,28 +59,27 @@ export const HOOK_OUTCOMES_FILENAME = 'hook-outcomes.jsonl';
 export const HOOK_OUTCOMES_VERSION = 1;
 
 /**
- * Records kept per hook when summarising. Bounded because this file is read
- * on every SessionStart, and nothing here needs more than a recent window.
+ * Records kept per hook: this is BOTH the summarising window and the
+ * rotation bound. Bounded because the file is read on every SessionStart.
+ *
+ * As a rotation bound it must be per-hook, not per-file: a whole-file bound
+ * would let the loud hooks — post-commit and guard-check fire twice on every
+ * Bash call — push the quiet ones out of the window entirely, and the hook
+ * that goes silent in the tail is exactly the one a liveness detector exists
+ * to keep watching (session-summary is the FAIL-eligible hook and the
+ * lowest-frequency one).
  */
 export const HOOK_OUTCOMES_PER_HOOK = 20;
 
 /**
- * Lines kept in the file. Rotation rewrites the file with the last 200 lines
- * when it grows past that — atomically, so a reader sees the old complete
- * file or the new one. 200 is ~10 hooks x the 20-record window each
- * summary uses, so rotation can never drop a record a summary would show.
- */
-export const HOOK_OUTCOMES_MAX_LINES = 200;
-
-/**
- * Rotate lazily: checking the line count on every append would mean reading
- * the file back on the hot path, which is the read step O_APPEND exists to
- * remove. A `stat` is cheap, so SIZE is the trigger and the trim is exact.
+ * Rotate lazily: counting lines on every append would mean reading the file
+ * back on the hot path, which is the read step O_APPEND exists to remove. A
+ * `stat` is cheap, so SIZE is the trigger and the trim is exact.
  *
- * 32 KiB is roughly HOOK_OUTCOMES_MAX_LINES typical records. Records with
- * long reason strings are bigger, so the file can hold fewer lines than the
- * maximum before it rotates — never more than the trim allows, which is the
- * direction that matters: the bound is a ceiling, not a target.
+ * 32 KiB is a comfortable multiple of the per-hook window for every hook
+ * that records (8 hooks × 20 records), with room for long reason strings.
+ * The bound is a ceiling, not a target — a file slightly under it still
+ * rotates when the size crosses, and the trim is exact when it does.
  */
 export const HOOK_OUTCOMES_ROTATE_BYTES = 32 * 1024;
 
@@ -90,12 +89,28 @@ export function serializeHookOutcome(record: HookOutcomeRecord): string {
 }
 
 /**
- * Keep the last `max` complete lines. Used by rotation; pure so the bound is
- * testable without a filesystem.
+ * Keep each hook's last `max` records, in their original order. Used by
+ * rotation; pure so the bound is testable without a filesystem. A line that
+ * does not parse (a torn last line an interrupted hook left behind) is
+ * dropped, not counted toward any hook's window.
  */
-export function trimHookOutcomeLines(raw: string, max: number = HOOK_OUTCOMES_MAX_LINES): string {
-  const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-  const kept = lines.length > max ? lines.slice(lines.length - max) : lines;
+export function trimHookOutcomeLines(raw: string, max: number = HOOK_OUTCOMES_PER_HOOK): string {
+  const records: Array<{ hook: string; line: string }> = [];
+  for (const line of raw.split('\n')) {
+    const record = parseHookOutcomeLine(line);
+    if (record) records.push({ hook: record.hook, line });
+  }
+  // Walk backwards so the newest `max` records of each hook are kept, then
+  // re-emit in original order — rotation must preserve tail ordering.
+  const keep = new Array<boolean>(records.length).fill(false);
+  const seen = new Map<string, number>();
+  for (let i = records.length - 1; i >= 0; i--) {
+    const hook = records[i].hook;
+    const n = (seen.get(hook) ?? 0) + 1;
+    seen.set(hook, n);
+    if (n <= max) keep[i] = true;
+  }
+  const kept = records.filter((_, i) => keep[i]).map((r) => r.line);
   return kept.length ? `${kept.join('\n')}\n` : '';
 }
 

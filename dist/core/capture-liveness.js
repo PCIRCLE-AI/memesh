@@ -1,14 +1,27 @@
 export const HOOK_OUTCOMES_FILENAME = 'hook-outcomes.jsonl';
 export const HOOK_OUTCOMES_VERSION = 1;
 export const HOOK_OUTCOMES_PER_HOOK = 20;
-export const HOOK_OUTCOMES_MAX_LINES = 200;
 export const HOOK_OUTCOMES_ROTATE_BYTES = 32 * 1024;
 export function serializeHookOutcome(record) {
     return `${JSON.stringify(record)}\n`;
 }
-export function trimHookOutcomeLines(raw, max = HOOK_OUTCOMES_MAX_LINES) {
-    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-    const kept = lines.length > max ? lines.slice(lines.length - max) : lines;
+export function trimHookOutcomeLines(raw, max = HOOK_OUTCOMES_PER_HOOK) {
+    const records = [];
+    for (const line of raw.split('\n')) {
+        const record = parseHookOutcomeLine(line);
+        if (record)
+            records.push({ hook: record.hook, line });
+    }
+    const keep = new Array(records.length).fill(false);
+    const seen = new Map();
+    for (let i = records.length - 1; i >= 0; i--) {
+        const hook = records[i].hook;
+        const n = (seen.get(hook) ?? 0) + 1;
+        seen.set(hook, n);
+        if (n <= max)
+            keep[i] = true;
+    }
+    const kept = records.filter((_, i) => keep[i]).map((r) => r.line);
     return kept.length ? `${kept.join('\n')}\n` : '';
 }
 export const SILENT_HOOK_MIN_RUNS = 5;

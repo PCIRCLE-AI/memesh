@@ -46,7 +46,6 @@ import {
   serializeHookOutcome,
   trimHookOutcomeLines,
   HOOK_OUTCOMES_FILENAME,
-  HOOK_OUTCOMES_MAX_LINES,
   HOOK_OUTCOMES_ROTATE_BYTES,
 } from './_generated/capture-liveness.js';
 export {
@@ -68,7 +67,6 @@ export {
   GRACE_SESSIONS,
   HEARTBEAT_HOOKS,
   HOOK_OUTCOMES_FILENAME,
-  HOOK_OUTCOMES_MAX_LINES,
   HOOK_OUTCOMES_PER_HOOK,
   SILENT_HOOK_MIN_RUNS,
 } from './_generated/capture-liveness.js';
@@ -596,7 +594,7 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload,
 function rotateHookOutcomes(filePath) {
   try {
     if (statSync(filePath).size <= HOOK_OUTCOMES_ROTATE_BYTES) return;
-    const trimmed = trimHookOutcomeLines(readFileSync(filePath, 'utf8'), HOOK_OUTCOMES_MAX_LINES);
+    const trimmed = trimHookOutcomeLines(readFileSync(filePath, 'utf8'));
     const tmpPath = `${filePath}.${process.pid}.tmp`;
     writePrivateFile(tmpPath, trimmed);
     renameSync(tmpPath, filePath);
