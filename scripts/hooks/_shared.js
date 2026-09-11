@@ -1,5 +1,5 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
-import { createHash } from 'crypto';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { createHash, randomBytes } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { dirname, join } from 'path';
@@ -508,6 +508,9 @@ export function stampHookRunOnly(env, hook) {
   }
 }
 
+const APPEND_NOFOLLOW_FLAGS = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT
+  | (typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0);
+
 /**
  * Record what `hook` DID, on every exit path (issue #327).
  *
@@ -529,7 +532,7 @@ export function stampHookRunOnly(env, hook) {
  *     other two records are gone — the concurrency that proves a session is
  *     busy would be the concurrency that erases the proof. An append has no
  *     read step to lose, and the OS orders the writes.
- *   - Rotation (keep the last 200 lines) is the only rewrite, and it goes
+ *   - Rotation (keep each hook's last 20 records) is the only rewrite, and it goes
  *     through temp + rename so a reader sees the old complete file or the
  *     new one.
  *
@@ -561,8 +564,17 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     if (entity) record.entity = redactSecrets(String(entity)).slice(0, 200);
     // One O_APPEND write of one line. `mode` applies only when the file is
     // being created, which is the only moment the permission can be set
-    // without a second syscall on the hot path.
-    appendFileSync(filePath, serializeHookOutcome(record), { encoding: 'utf8', mode: 0o600 });
+    // without a second syscall on the hot path. O_NOFOLLOW: the directory
+    // can be a shared or repository path (MEMESH_DB_PATH), and a planted
+    // symlink named hook-outcomes.jsonl would otherwise turn every hook run
+    // into an append to a file of the planter's choosing. Windows has no
+    // O_NOFOLLOW (the constant is undefined there), so it contributes 0.
+    const fd = openSync(filePath, APPEND_NOFOLLOW_FLAGS, 0o600);
+    try {
+      writeSync(fd, serializeHookOutcome(record));
+    } finally {
+      closeSync(fd);
+    }
     try { chmodSync(filePath, 0o600); } catch { /* best-effort hardening */ }
     rotateHookOutcomes(filePath);
   } catch (err) {
@@ -605,11 +617,14 @@ export function hookErrorReason(err) {
  * budget is far larger than the window any summary reads.
  */
 function rotateHookOutcomes(filePath) {
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  // An unpredictable name, created exclusively ('wx' = O_CREAT|O_EXCL, which
+  // refuses an existing path — a planted symlink included). `${pid}.tmp` was
+  // guessable, and the plain write followed whatever sat at that name.
+  const tmpPath = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
   try {
     if (statSync(filePath).size <= HOOK_OUTCOMES_ROTATE_BYTES) return;
     const trimmed = trimHookOutcomeLines(readFileSync(filePath, 'utf8'));
-    writePrivateFile(tmpPath, trimmed);
+    writeFileSync(tmpPath, trimmed, { encoding: 'utf8', mode: PRIVATE_FILE_MODE, flag: 'wx' });
     renameSync(tmpPath, filePath);
   } catch (err) {
     try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }

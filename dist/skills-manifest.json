@@ -103,8 +103,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "1c0ca207395f9a65515897b698636c755e12e40ace40a2c47a0844f42a8e6916",
-      "bytes": 56915
+      "sha256": "4b32d0dfb14bd061a3746e6d953d45b984a61b8faa5c0169b734cb6d0c556a18",
+      "bytes": 57828
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
