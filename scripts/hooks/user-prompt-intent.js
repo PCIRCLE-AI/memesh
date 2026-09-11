@@ -23,6 +23,7 @@ import {
   findAutoUpdateConsent,
   importFromPluginRoot,
   isAutoCaptureEnabled,
+  hookErrorReason,
   recordHookOutcome,
   markUpdatePromptAnswered,
   memeshDir,
@@ -278,7 +279,7 @@ if (isMainModule) {
       process.exit(0);
     } catch (err) {
       logError('user-prompt-intent', err?.message || err);
-      record('error', String(err?.message || err));
+      record('error', hookErrorReason(err));
       process.exit(0);
     }
   });

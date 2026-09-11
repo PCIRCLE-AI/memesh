@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'child_process';
-import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
 
 // The parsed payload, hoisted so the outcome recorder below can read
 // session_id and the host signal from ANY exit path — including the ones
@@ -248,7 +248,7 @@ process.stdin.on('end', () => {
   } catch (err) {
     // Never crash Claude Code — but leave a trace for debugging
     try { process.stderr.write(`[memesh post-commit] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err));
+    record('error', hookErrorReason(err));
   }
   // Emit NOTHING on success — not `{"suppressOutput": true}`.
   //

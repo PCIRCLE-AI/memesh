@@ -28,6 +28,7 @@ import {
   matchingGuards,
   guardWarningLines,
   recordGuardFires,
+  hookErrorReason,
   recordHookOutcome,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -93,7 +94,7 @@ process.stdin.on('end', () => {
     // Never crash Claude Code, but trace — a silent break here means
     // every accepted guard stops firing and nothing reports it.
     try { process.stderr.write(`[memesh guard-check] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err));
+    record('error', hookErrorReason(err));
     pass();
   }
 });

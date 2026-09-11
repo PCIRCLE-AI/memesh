@@ -2,7 +2,7 @@
 
 import { basename } from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
 
 // There is no in-process timeout guard, and its absence is deliberate.
 //
@@ -193,7 +193,7 @@ process.stdin.on('end', () => {
   } catch (err) {
     // Hooks must never crash Claude Code — exit cleanly
     try { process.stderr.write(`[memesh pre-compact] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err));
+    record('error', hookErrorReason(err));
   }
   exit0();
 });

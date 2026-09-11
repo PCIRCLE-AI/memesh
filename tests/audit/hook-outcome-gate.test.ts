@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { findUncoveredExits } from '../../scripts/audit/hook-outcome-gate.mjs';
+import fs from 'fs';
+import path from 'path';
+import { findUncoveredExits, validateSessionStart } from '../../scripts/audit/hook-outcome-gate.mjs';
 
 /**
  * The gate behind #328 item-1: an exit with no outcome record before it is
@@ -125,5 +127,50 @@ describe('capture-hook outcome gate', () => {
       '}',
     ].join('\n');
     expect(findUncoveredExits(source)).toEqual([2]);
+  });
+});
+
+/**
+ * session-start's funnel check (#327 C4). Its catch used to print its own
+ * `console.log(JSON.stringify({ systemMessage }))`, bypassing output() — and
+ * the gate, which only looked for a record somewhere near output(), passed.
+ */
+describe('session-start output() funnel gate', () => {
+  const real = fs.readFileSync(path.resolve('scripts/hooks/session-start.js'), 'utf8');
+
+  it('passes the real session-start', () => {
+    expect(validateSessionStart(real)).toBeNull();
+  });
+
+  it('M3: a stdout write outside output() is flagged', () => {
+    // The exact shape that shipped: an emit in the catch, beside the funnel.
+    const anchor = '  } finally {\n    // ── Auto-update + cache refresh';
+    expect(real.includes(anchor), 'fixture anchor moved — update the mutation').toBe(true);
+    const mutant = real.replace(
+      anchor,
+      '    console.log(JSON.stringify({ systemMessage: "bypass" }));\n' + anchor,
+    );
+    expect(validateSessionStart(mutant)).toMatch(/writes to stdout outside output\(\)/);
+  });
+
+  it('a process.stdout.write outside output() is flagged too', () => {
+    const src = [
+      'function output(text) {',
+      '  console.log(JSON.stringify({ systemMessage: text }));',
+      '  recordHookOutcome(process.env, { hook: "session-start", outcome: "wrote" });',
+      '}',
+      'process.stdout.write("{}");',
+    ].join('\n');
+    expect(validateSessionStart(src)).toMatch(/line 5/);
+  });
+
+  it('a record in a LATER function does not vouch for an output() that records nothing', () => {
+    const src = [
+      'function output(text) {',
+      '  console.log(JSON.stringify({ systemMessage: text }));',
+      '}',
+      'function other() { recordHookOutcome(process.env, {}); }',
+    ].join('\n');
+    expect(validateSessionStart(src)).toMatch(/no outcome record/);
   });
 });

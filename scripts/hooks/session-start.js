@@ -31,6 +31,7 @@ import {
   ensurePrivateDir as ensurePrivateDirShared,
   memeshDir as memeshHomeDir,
   parseHookOutcomes,
+  hookErrorReason,
   recordHookOutcome,
   summarizeHookOutcomes,
   HOOK_OUTCOMES_FILENAME,
@@ -1494,12 +1495,14 @@ process.stdin.on('end', async () => {
       // Hooks must never crash Claude Code — but report honestly.
       // Inner catch so the outer finally can still run the post-
       // banner update tasks even when the recall flow blew up.
-      recordHookOutcome(process.env, {
-        hook: 'session-start',
-        outcome: 'error',
-        reason: String(err?.message || 'unknown error'),
-      });
-      console.log(JSON.stringify({ systemMessage: withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`) }));
+      // Through output(), like every other emit: the gate proves "every
+      // stdout write lies inside output()", and output() records exactly one
+      // outcome — here an error, not the default `wrote`.
+      output(
+        withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`),
+        null,
+        { outcome: 'error', reason: hookErrorReason(err) },
+      );
     }
   } finally {
     // ── Auto-update + cache refresh ──────────────────────────────
@@ -1537,11 +1540,13 @@ process.stdin.on('end', async () => {
  */
 const workPackageGuidance = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
 
-function output(text, memoryContext = workPackageGuidance) {
+function output(text, memoryContext = workPackageGuidance, recorded = null) {
   // session-start's "wrote" is the context it injected — the only durable
   // effect it has. Recorded here rather than at each of the handler's many
   // returns because output() is the single emit point they all funnel
   // through, so no path can add itself later and stay invisible (#327).
+  // `recorded` overrides the outcome for the one path that is not a write
+  // (the recall flow threw): still one emit, still exactly one record.
   const payload = { systemMessage: text };
   if (memoryContext) {
     payload.hookSpecificOutput = {
@@ -1550,9 +1555,11 @@ function output(text, memoryContext = workPackageGuidance) {
     };
   }
   console.log(JSON.stringify(payload));
-  recordHookOutcome(process.env, {
-    hook: 'session-start',
-    outcome: 'wrote',
-    entity: memoryContext ? 'session-start-context' : 'session-start-banner',
-  });
+  recordHookOutcome(process.env, recorded
+    ? { hook: 'session-start', outcome: recorded.outcome, reason: recorded.reason }
+    : {
+      hook: 'session-start',
+      outcome: 'wrote',
+      entity: memoryContext ? 'session-start-context' : 'session-start-banner',
+    });
 }

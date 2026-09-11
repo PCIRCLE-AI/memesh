@@ -576,6 +576,26 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
 }
 
 /**
+ * The `reason` an outer catch may persist for an exception: its `code` or
+ * class name, never its message.
+ *
+ * A message is not a label, it is a copy of whatever the failure echoed: a
+ * V8 JSON parse error quotes the payload it choked on, an execFileSync error
+ * carries git's stderr and absolute paths. stderr is transient; the outcome
+ * file is permanent, exportable, and rendered into doctor and a pasted issue.
+ * So the file gets `uncaught SyntaxError` / `uncaught ENOENT`, and the full
+ * text goes to stderr where the hook already writes it.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function hookErrorReason(err) {
+  const label = (value) => (typeof value === 'string' && /^[A-Za-z][\w-]{0,39}$/.test(value) ? value : null);
+  const e = err && typeof err === 'object' ? err : null;
+  return `uncaught ${label(e?.code) ?? label(e?.name) ?? 'error'}`;
+}
+
+/**
  * Keep the history bounded, without paying a read on every append.
  *
  * A line count would mean reading the file back on the hot path — the read

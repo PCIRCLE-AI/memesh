@@ -31,7 +31,7 @@
 
 import { openSync, closeSync, writeSync, constants as fsConstants } from 'fs';
 import { join } from 'path';
-import { ensurePrivateDir, getMemeshDirFromDbPath, recordHookOutcome } from './_shared.js';
+import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, recordHookOutcome } from './_shared.js';
 
 // The only two tools this hook is wired to in hooks/hooks.json — kept as an
 // explicit allowlist (not "any PostToolUse call") so a future matcher typo
@@ -118,7 +118,7 @@ process.stdin.on('end', () => {
     // Never crash Claude Code, but trace — a silent break here means the
     // nudge stops firing and nothing reports it, same as guard-check.js.
     try { process.stderr.write(`[memesh decision-nudge] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err));
+    record('error', hookErrorReason(err));
     pass();
   }
 });

@@ -26,6 +26,7 @@ import {
   matchingGuards,
   guardWarningLines,
   recordGuardFires,
+  hookErrorReason,
   recordHookOutcome,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -283,7 +284,7 @@ process.stdin.on('end', () => {
     // would silently break continuous recall on every Edit/Write
     // tool call indefinitely.
     try { process.stderr.write(`[memesh pre-edit-recall] ${err?.message || err}\n`); } catch {}
-    record('error', String(err?.message || err));
+    record('error', hookErrorReason(err));
     pass();
   }
 });

@@ -171,6 +171,31 @@ describe('hook outcome records', () => {
     expect(rows[0].outcome).toBe('error');
   });
 
+  it.each([
+    'post-commit', 'pre-compact', 'guard-check', 'pre-edit-recall',
+    'decision-nudge', 'session-summary', 'user-prompt-intent',
+  ])('%s persists an error LABEL, never the exception message (#327 S2)', (hook) => {
+    // V8's JSON errors quote the text they choked on, so a message-as-reason
+    // copies the payload — here a planted marker — into a permanent,
+    // exportable file. The file must carry only `uncaught <code|name>`.
+    const marker = 'sk-live-MARKER0123456789';
+    execFileSync('node', [path.resolve(`scripts/hooks/${hook}.js`)], {
+      input: `{"x": "${marker}`,
+      env: { ...process.env, MEMESH_DIR: memeshDir, HOME: testDir },
+      encoding: 'utf8',
+      timeout: 20000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const raw = fs.existsSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME))
+      ? fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8') : '';
+    expect(raw, 'the payload leaked into the outcome file').not.toContain('MARKER');
+    const errors = records(hook).filter((r) => r.outcome === 'error');
+    expect(errors.length, 'a malformed payload left no error record').toBeGreaterThan(0);
+    // session-summary and user-prompt-intent catch the parse themselves and
+    // record a fixed literal; the rest reach the outer catch.
+    for (const r of errors) expect(r.reason).toMatch(/^(?:uncaught [A-Za-z][\w-]*|malformed stdin JSON)$/);
+  });
+
   // ── session-summary ──────────────────────────────────────────────────────
 
   it('session-summary records a SKIPPED for each of its named bails', () => {
@@ -298,6 +323,27 @@ describe('hook outcome records', () => {
     const rows = records('session-start');
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows[0].outcome).toBe('wrote');
+  });
+
+  it('session-start records exactly one ERROR, and still emits one JSON document, when recall throws', () => {
+    // A database file that is not a database: the recall flow throws, and
+    // the catch must go through output() — one stdout document, one record,
+    // and that record an error with a label, not a `wrote` and not the
+    // exception text (#327 C4 + S2).
+    const dbPath = path.join(memeshDir, 'knowledge-graph.db');
+    fs.writeFileSync(dbPath, Buffer.alloc(4096, 0x5a));
+    const stdout = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ session_id: 'ss-err', cwd: repoDir }),
+      env: { ...process.env, MEMESH_DIR: memeshDir, MEMESH_DB_PATH: dbPath, HOME: testDir },
+      encoding: 'utf8',
+      timeout: 20000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    const out = JSON.parse(stdout.trim());
+    expect(String(out.systemMessage)).toContain('memories not loaded');
+    const rows = records('session-start');
+    expect(rows.map((r) => r.outcome)).toEqual(['error']);
+    expect(rows[0].reason).toMatch(/^uncaught [A-Za-z][\w-]*$/);
   });
 
   // ── the file itself ──────────────────────────────────────────────────────

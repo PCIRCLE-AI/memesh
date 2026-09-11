@@ -16,7 +16,9 @@
 //
 // session-start has no explicit process exit; its returns funnel through its
 // single `output()` emit point. It gets a separate output-funnel check below,
-// so zero exit patterns do not pretend to prove coverage.
+// so zero exit patterns do not pretend to prove coverage: output() must
+// record an outcome, AND every stdout write in the file must lie inside
+// output() — an emit that bypasses the funnel bypasses its record too.
 //
 // Exit 1 on the first uncovered exit; 0 when every exit is covered.
 //
@@ -165,13 +167,37 @@ export function findUncoveredExits(source) {
   return uncovered;
 }
 
-function validateSessionStart(source) {
+const STDOUT_WRITE_RE = /(?<![\w$])(?:console\.log|process\.stdout\.write)\s*\(/g;
+
+/**
+ * The output() funnel check for session-start. Returns an error string, or
+ * null when output() records an outcome and is the ONLY place that writes
+ * to stdout. Pure (source in, verdict out) so a mutation can be fed to it.
+ */
+export function validateSessionStart(source) {
   const masked = maskLexicalNoise(source);
   const outputStart = masked.search(/function\s+output\s*\(/);
   if (outputStart < 0) return 'session-start has no output() funnel';
-  const outputTail = masked.slice(outputStart, outputStart + 2000);
-  if (!/(?:recordHookOutcome|\brecord)\s*\(/.test(outputTail)) {
+  // The funnel's exact body, by brace matching — not a fixed-size window,
+  // which let a record in the NEXT function vouch for this one.
+  const open = masked.indexOf('{', outputStart);
+  if (open < 0) return 'session-start output() funnel has no body';
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < masked.length; i++) {
+    if (masked[i] === '{') depth++;
+    else if (masked[i] === '}' && --depth === 0) { close = i; break; }
+  }
+  if (close < 0) return 'session-start output() funnel body is unbalanced';
+  const body = masked.slice(open, close + 1);
+  if (!/(?:recordHookOutcome|\brecord)\s*\(/.test(body)) {
     return 'session-start output() funnel has no outcome record';
+  }
+  for (const m of masked.matchAll(STDOUT_WRITE_RE)) {
+    if (m.index < open || m.index > close) {
+      const line = masked.slice(0, m.index).split('\n').length;
+      return `line ${line} writes to stdout outside output(), bypassing its outcome record`;
+    }
   }
   return null;
 }
@@ -200,7 +226,8 @@ export function main() {
     );
     process.exit(1);
   }
-  console.log(`✓ 7 explicit-exit hooks record outcomes; session-start output() contains an outcome record (8 hooks)`);
+  const explicit = CAPTURE_HOOKS.filter((h) => h !== 'session-start').length;
+  console.log(`✓ ${explicit} explicit-exit hooks record outcomes; session-start writes stdout only through output(), which records an outcome (${CAPTURE_HOOKS.length} hooks)`);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
