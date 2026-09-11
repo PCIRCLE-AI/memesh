@@ -106,6 +106,7 @@ export function ingestNoteDirectory(opts) {
         throw new Error(`not a directory: ${opts.dir}`);
     const dirId = createHash('sha256').update(realDir).digest('hex').slice(0, 16);
     const { files, symlinks } = discover(realDir);
+    const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
     const result = {
         dirId,
         discovered: files.length,
@@ -129,7 +130,7 @@ export function ingestNoteDirectory(opts) {
     for (const row of noteRows) {
         const prov = parseProvenance(row.metadata);
         if (prov.note_dir_id === dirId && typeof prov.note_path === 'string') {
-            known.set(prov.note_path, { name: row.name, mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
+            known.set(prov.note_path, { id: row.id, name: row.name, mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
         }
     }
     const skipKey = `note_ingest_skips:${dirId}`;
@@ -144,31 +145,22 @@ export function ingestNoteDirectory(opts) {
         priorSkips = {};
     }
     const nextSkips = {};
+    const statOf = (rel) => {
+        try {
+            return fs.lstatSync(path.join(realDir, rel));
+        }
+        catch {
+            return null;
+        }
+    };
     const ownerUnchanged = (print) => {
         if (!print.owner)
             return true;
-        try {
-            const st = fs.lstatSync(path.join(realDir, print.owner.rel));
-            return st.mtimeMs === print.owner.mtime && st.size === print.owner.size;
-        }
-        catch {
-            return false;
-        }
+        const st = statOf(print.owner.rel);
+        return !!st && st.mtimeMs === print.owner.mtime && st.size === print.owner.size;
     };
-    const touchedIds = new Set();
-    const seenNames = new Map();
-    const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
-    for (const [rel, k] of known) {
-        if (!presentRels.has(rel))
-            continue;
-        try {
-            const st = fs.lstatSync(path.join(realDir, rel));
-            if (st.mtimeMs === k.mtime && st.size === k.size)
-                seenNames.set(k.name, rel);
-        }
-        catch {
-        }
-    }
+    const claims = [];
+    const readRels = new Set();
     let read = 0;
     for (const abs of files) {
         const rel = relPath(realDir, abs);
@@ -187,7 +179,7 @@ export function ingestNoteDirectory(opts) {
             }
             const prior = known.get(rel);
             if (prior && !prior.missing && prior.mtime === stat.mtimeMs && prior.size === stat.size) {
-                result.unchanged++;
+                claims.push({ rel, name: prior.name, stat, unchanged: true });
                 continue;
             }
             const priorSkip = priorSkips[rel];
@@ -201,6 +193,7 @@ export function ingestNoteDirectory(opts) {
                 continue;
             }
             read++;
+            readRels.add(rel);
             if (stat.size > maxBytes) {
                 contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`);
                 continue;
@@ -227,19 +220,6 @@ export function ingestNoteDirectory(opts) {
             contentSkip('frontmatter has no name');
             continue;
         }
-        const firstWithName = seenNames.get(name);
-        if (firstWithName && firstWithName !== rel) {
-            const reason = `name "${name}" already used by ${firstWithName} in this directory`;
-            skip(reason);
-            try {
-                const ownerStat = fs.lstatSync(path.join(realDir, firstWithName));
-                nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason, owner: { rel: firstWithName, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
-            }
-            catch {
-            }
-            continue;
-        }
-        seenNames.set(name, rel);
         const metaBlock = parsed.data.metadata;
         const rawType = (typeof metaBlock === 'object' ? metaBlock.type : undefined) ?? stringField(parsed.data, 'type');
         const type = (rawType ? sanitizeNoteText(rawType).slice(0, 100) : '') || NOTE_DEFAULT_TYPE;
@@ -253,30 +233,82 @@ export function ingestNoteDirectory(opts) {
             continue;
         }
         observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
-        const title = truncateTitle(cleanDescription || observations[0]);
-        const contentHash = createHash('sha256').update(raw).digest('hex');
+        claims.push({
+            rel,
+            name,
+            stat,
+            unchanged: false,
+            contentHash: createHash('sha256').update(raw).digest('hex'),
+            type,
+            title: truncateTitle(cleanDescription || observations[0]),
+            observations,
+        });
+    }
+    const byName = new Map();
+    for (const c of claims) {
+        const list = byName.get(c.name);
+        if (list)
+            list.push(c);
+        else
+            byName.set(c.name, [c]);
+    }
+    const touchedIds = new Set();
+    for (const [name, claimants] of byName) {
         const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
+        const prov = existing ? parseProvenance(existing.metadata) : {};
+        const skipAll = (reason) => { for (const c of claimants)
+            result.skipped.push({ path: c.rel, reason }); };
         if (existing) {
-            const prov = parseProvenance(existing.metadata);
             if (!existing.is_note) {
-                skip(`name "${name}" belongs to a memory that did not come from a note file`);
+                skipAll(`name "${name}" belongs to a memory that did not come from a note file`);
                 continue;
             }
             if (prov.note_dir_id !== dirId) {
-                skip(`name "${name}" was already ingested from another note directory`);
+                skipAll(`name "${name}" was already ingested from another note directory`);
                 continue;
             }
             if (existing.status === 'archived') {
-                skip(`memory "${name}" was archived with forget; not re-ingested`);
+                skipAll(`memory "${name}" was archived with forget; not re-ingested`);
                 continue;
             }
-            if (prov.content_hash === contentHash && prov.note_path === rel && !existing.is_missing) {
-                const meta = JSON.parse(existing.metadata ?? '{}');
-                meta.provenance = { ...prov, note_mtime_ms: stat.mtimeMs, note_size: stat.size };
-                db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), existing.id);
-                result.unchanged++;
+        }
+        const recordedRel = existing && typeof prov.note_path === 'string' ? prov.note_path : undefined;
+        if (recordedRel && presentRels.has(recordedRel) && !readRels.has(recordedRel) && !claimants.some((c) => c.rel === recordedRel)) {
+            const pending = claimants.filter((c) => !c.unchanged);
+            if (pending.length === claimants.length) {
+                const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
+                const ownerStat = statOf(recordedRel);
+                for (const c of pending) {
+                    result.skipped.push({ path: c.rel, reason });
+                    if (ownerStat)
+                        nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, owner: { rel: recordedRel, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
+                }
                 continue;
             }
+        }
+        const owner = claimants.find((c) => c.rel === recordedRel)
+            ?? (typeof prov.content_hash === 'string' ? claimants.find((c) => c.contentHash === prov.content_hash) : undefined)
+            ?? claimants[0];
+        for (const c of claimants) {
+            if (c === owner)
+                continue;
+            const reason = `name "${name}" already used by ${owner.rel} in this directory`;
+            result.skipped.push({ path: c.rel, reason });
+            nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, owner: { rel: owner.rel, mtime: owner.stat.mtimeMs, size: owner.stat.size } };
+        }
+        if (owner.unchanged) {
+            result.unchanged++;
+            if (existing)
+                touchedIds.add(existing.id);
+            continue;
+        }
+        if (existing && prov.content_hash === owner.contentHash && prov.note_path === owner.rel && !existing.is_missing) {
+            const meta = JSON.parse(existing.metadata ?? '{}');
+            meta.provenance = { ...prov, note_mtime_ms: owner.stat.mtimeMs, note_size: owner.stat.size };
+            db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), existing.id);
+            touchedIds.add(existing.id);
+            result.unchanged++;
+            continue;
         }
         const currentTags = existing
             ? db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(existing.id).map((t) => t.tag)
@@ -286,19 +318,19 @@ export function ingestNoteDirectory(opts) {
         const tags = [NOTE_FILE_TAG, ...keptTags, ...(!hasProject && opts.project ? [`project:${opts.project}`] : [])];
         const written = remember({
             name,
-            type,
-            title,
-            observations,
+            type: owner.type,
+            title: owner.title,
+            observations: owner.observations,
             tags,
             replace: true,
             trustOverride: 'untrusted',
             provenanceOverride: {
                 source: 'note-file',
-                note_path: rel,
-                content_hash: contentHash,
+                note_path: owner.rel,
+                content_hash: owner.contentHash,
                 note_dir_id: dirId,
-                note_mtime_ms: stat.mtimeMs,
-                note_size: stat.size,
+                note_mtime_ms: owner.stat.mtimeMs,
+                note_size: owner.stat.size,
             },
             sourceHost: 'note-file',
         });
@@ -311,7 +343,7 @@ export function ingestNoteDirectory(opts) {
     else {
         db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run(skipKey);
     }
-    const present = presentRels;
+    const claimedNameAt = new Map(claims.map((c) => [c.rel, c.name]));
     const tagMissing = db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)');
     for (const row of noteRows) {
         if (row.is_missing || touchedIds.has(row.id))
@@ -319,7 +351,9 @@ export function ingestNoteDirectory(opts) {
         const prov = parseProvenance(row.metadata);
         if (prov.note_dir_id !== dirId || typeof prov.note_path !== 'string')
             continue;
-        if (present.has(prov.note_path))
+        const gone = !presentRels.has(prov.note_path);
+        const renamedAway = readRels.has(prov.note_path) && claimedNameAt.has(prov.note_path) && claimedNameAt.get(prov.note_path) !== row.name;
+        if (!gone && !renamedAway)
             continue;
         tagMissing.run(row.id, NOTE_FILE_MISSING_TAG);
         result.markedMissing.push(row.name);

@@ -1312,13 +1312,18 @@ never an absolute path.
   archived with `forget` is not revived by a later edit of its file.
 - A name already used by a memory that did not come from a note file, or that
   was ingested from a different directory, is skipped rather than overwritten.
-  Two files in one directory with the same `name`: the one that already owns
-  it (or, on a first run, the first in path order) keeps it; the other is
-  reported, and takes the name over once the owner file is deleted or stops
-  using it. Names are cleaned like the body, so two names that differ only
-  in a redacted credential collide and are reported as duplicates.
-- A renamed file keeps its memory: the next run re-points `note_path`
-  (one history entry), it is not tagged missing.
+  Within one directory, a name belongs to exactly one file, decided in this
+  order: the file the memory records (`provenance.note_path`) when it is
+  still there and still declares that name; otherwise a file whose bytes
+  match the recorded `content_hash` (the recorded file was renamed);
+  otherwise the first claimant in path order. Every other claimant is
+  reported and left alone, and takes the name over only once the owner
+  releases it. Names are cleaned like the body, so two names that differ
+  only in a redacted credential collide and are reported as duplicates.
+- A renamed file keeps its memory: the next run re-points `note_path` (one
+  history entry) and does not tag it missing. A file that changes the `name`
+  in its frontmatter leaves the old memory behind, tagged
+  `source:note-file:missing` like a vanished one, and creates the new one.
 - On a file change the file owns the `source:*` tags; any other tag a person
   added is kept, and the `project:` tag set on first ingestion stays. A
   memory a manual `remember` appended to is still replaced as a whole on the

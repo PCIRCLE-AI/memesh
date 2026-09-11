@@ -161,9 +161,38 @@ function parseProvenance(raw: string | null): Record<string, unknown> {
   }
 }
 
+/** A file read (or recognised unchanged) this run, claiming a name. */
+interface Claim {
+  rel: string;
+  name: string;
+  stat: fs.Stats;
+  /** Recognised from its stat fingerprint; not read, nothing to write. */
+  unchanged: boolean;
+  contentHash?: string;
+  type?: string;
+  title?: string;
+  observations?: string[];
+}
+
+type SkipPrint = { mtime: number; size: number; reason: string; owner?: { rel: string; mtime: number; size: number } };
+
 /**
  * Ingest every note file under `dir`. Throws when `dir` is not a readable
  * directory; everything file-level is reported in the result instead.
+ *
+ * Two phases. Phase 1 reads and parses every file this run processes (within
+ * the caps). Phase 2 decides, per name, which file owns it — ONE rule, in
+ * this order:
+ *   1. the file the existing memory records (`provenance.note_path`), if it
+ *      is present and still declares the name;
+ *   2. else a file whose bytes hash to the recorded `content_hash` (the
+ *      recorded file was renamed);
+ *   3. else the first claimant in path order.
+ * Every other claimant is reported and fingerprinted. A memory whose recorded
+ * file is present but now declares a different name is tagged
+ * `source:note-file:missing`, exactly like a vanished file. Deciding
+ * ownership while reading (path order) is what let an edited or renamed
+ * owner lose its name — and its new content — to a duplicate sorting first.
  */
 export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   const maxFiles = opts.maxFiles ?? NOTE_DIR_MAX_FILES;
@@ -173,6 +202,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   const dirId = createHash('sha256').update(realDir).digest('hex').slice(0, 16);
 
   const { files, symlinks } = discover(realDir);
+  const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
   const result: NoteIngestResult = {
     dirId,
     discovered: files.length,
@@ -192,34 +222,30 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
        FROM entities e WHERE e.name = ?`,
   );
 
-  // What this directory already contributed, keyed by relative path: the
+  // What this directory already contributed, keyed by relative path. The
   // stat fingerprint lets an unchanged file be recognised WITHOUT reading it,
-  // so a re-run costs one lstat per file and — because such files do not
-  // count toward the per-run cap — a directory larger than the cap makes
-  // progress on every run instead of re-reading the same first files.
+  // so a re-run costs one lstat per file, and such files do not count toward
+  // the per-run cap.
   const noteRows = db.prepare(
     `SELECT e.id, e.name, e.metadata,
             EXISTS(SELECT 1 FROM tags m WHERE m.entity_id = e.id AND m.tag = ?) AS is_missing
        FROM entities e
        JOIN tags t ON t.entity_id = e.id AND t.tag = ?`,
   ).all(NOTE_FILE_MISSING_TAG, NOTE_FILE_TAG) as Array<{ id: number; name: string; metadata: string | null; is_missing: number }>;
-  const known = new Map<string, { name: string; mtime: unknown; size: unknown; missing: boolean }>();
+  const known = new Map<string, { id: number; name: string; mtime: unknown; size: unknown; missing: boolean }>();
   for (const row of noteRows) {
     const prov = parseProvenance(row.metadata);
     if (prov.note_dir_id === dirId && typeof prov.note_path === 'string') {
-      known.set(prov.note_path, { name: row.name, mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
+      known.set(prov.note_path, { id: row.id, name: row.name, mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
     }
   }
 
-  // Files skipped for something IN the file (no frontmatter, no name, empty,
-  // too large) are remembered by the same stat fingerprint, in
-  // memesh_metadata so the CLI and the Stop hook share it. Without this they
-  // were re-read on every run and used up the per-run cap: a directory whose
-  // first files were all unusable never reached its real notes, and the
-  // hook's "more to do" flag never cleared.
+  // Skip fingerprints (memesh_metadata, shared by the CLI and the Stop hook):
+  // a file skipped for its own content, or as a losing claimant, is reported
+  // again without being re-read until it — or, for a loser, the owner —
+  // changes. Otherwise unusable files would use the per-run cap every run.
   const skipKey = `note_ingest_skips:${dirId}`;
   const skipRow = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(skipKey) as { value: string } | undefined;
-  type SkipPrint = { mtime: number; size: number; reason: string; owner?: { rel: string; mtime: number; size: number } };
   let priorSkips: Record<string, SkipPrint> = {};
   try {
     const parsedSkips = skipRow ? JSON.parse(skipRow.value) as unknown : {};
@@ -229,51 +255,25 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     // rewritten below.
     priorSkips = {};
   }
-  const nextSkips: typeof priorSkips = {};
-  // A duplicate-name skip holds only while the file that owns the name is
-  // still there and unchanged; otherwise the duplicate is read again, so it
-  // can claim the name (owner deleted) or be re-judged (owner renamed its
-  // `name`).
+  const nextSkips: Record<string, SkipPrint> = {};
+  const statOf = (rel: string): fs.Stats | null => {
+    try { return fs.lstatSync(path.join(realDir, rel)); } catch { return null; }
+  };
   const ownerUnchanged = (print: SkipPrint): boolean => {
     if (!print.owner) return true;
-    try {
-      const st = fs.lstatSync(path.join(realDir, print.owner.rel));
-      return st.mtimeMs === print.owner.mtime && st.size === print.owner.size;
-    } catch {
-      return false; // owner gone: re-read the duplicate
-    }
+    const st = statOf(print.owner.rel);
+    return !!st && st.mtimeMs === print.owner.mtime && st.size === print.owner.size;
   };
-  // Memories written this run. The missing sweep below works from the
-  // snapshot taken before the loop, in which a RENAMED file still has its old
-  // path — it must not tag the memory the loop just re-pointed.
-  const touchedIds = new Set<number>();
-  // name → the file that owns it. Seeded with every file this directory
-  // already contributed, so a second file claiming the name is refused even
-  // when the owner is unchanged (and therefore never read this run), and
-  // whichever of the two sorts first.
-  const seenNames = new Map<string, string>();
-  const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
-  // Only an UNCHANGED owner seeds its stored name: a changed one is read
-  // below and claims whatever name it now carries, so a file that renamed
-  // its `name` does not keep blocking the old one.
-  for (const [rel, k] of known) {
-    if (!presentRels.has(rel)) continue;
-    try {
-      const st = fs.lstatSync(path.join(realDir, rel));
-      if (st.mtimeMs === k.mtime && st.size === k.size) seenNames.set(k.name, rel);
-    } catch {
-      // Vanished since discovery: nothing to seed.
-    }
-  }
 
+  // ---- Phase 1: read ------------------------------------------------------
+  const claims: Claim[] = [];
+  const readRels = new Set<string>();
   let read = 0;
   for (const abs of files) {
     const rel = relPath(realDir, abs);
     const skip = (reason: string) => { result.skipped.push({ path: rel, reason }); };
     let raw: Buffer;
     let stat: fs.Stats;
-    // A skip decided by the file's own content: fingerprinted, so the next
-    // run reports it without reading it again.
     const contentSkip = (reason: string) => {
       skip(reason);
       nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
@@ -283,7 +283,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       if (stat.isSymbolicLink()) { skip('symlink refused'); continue; }
       const prior = known.get(rel);
       if (prior && !prior.missing && prior.mtime === stat.mtimeMs && prior.size === stat.size) {
-        result.unchanged++;
+        claims.push({ rel, name: prior.name, stat, unchanged: true });
         continue;
       }
       const priorSkip = priorSkips[rel];
@@ -294,6 +294,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       }
       if (read >= maxFiles) { result.more++; continue; }
       read++;
+      readRels.add(rel);
       if (stat.size > maxBytes) { contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`); continue; }
       const real = fs.realpathSync(abs);
       if (!real.startsWith(realDir + path.sep)) { skip('resolves outside the directory'); continue; }
@@ -309,22 +310,6 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     const rawName = stringField(parsed.data, 'name');
     const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
     if (!name) { contentSkip('frontmatter has no name'); continue; }
-    // Two files claiming one name would take turns replacing the same memory
-    // on every run. The first in path order keeps it; the other is reported.
-    const firstWithName = seenNames.get(name);
-    if (firstWithName && firstWithName !== rel) {
-      const reason = `name "${name}" already used by ${firstWithName} in this directory`;
-      skip(reason);
-      try {
-        const ownerStat = fs.lstatSync(path.join(realDir, firstWithName));
-        nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason, owner: { rel: firstWithName, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
-      } catch {
-        // Owner unreadable: leave this duplicate unfingerprinted; it is read
-        // again next run and re-judged.
-      }
-      continue;
-    }
-    seenNames.set(name, rel);
 
     const metaBlock = parsed.data.metadata;
     const rawType = (typeof metaBlock === 'object' ? metaBlock.type : undefined) ?? stringField(parsed.data, 'type');
@@ -335,38 +320,92 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     if (observations.length === 0 && cleanDescription) observations = [cleanDescription];
     if (observations.length === 0) { contentSkip('empty note — no description and no body'); continue; }
     observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
-    const title = truncateTitle(cleanDescription || observations[0]);
+    claims.push({
+      rel,
+      name,
+      stat,
+      unchanged: false,
+      contentHash: createHash('sha256').update(raw).digest('hex'),
+      type,
+      title: truncateTitle(cleanDescription || observations[0]),
+      observations,
+    });
+  }
 
-    const contentHash = createHash('sha256').update(raw).digest('hex');
+  // ---- Phase 2: resolve names, then write ---------------------------------
+  const byName = new Map<string, Claim[]>();
+  for (const c of claims) {
+    const list = byName.get(c.name);
+    if (list) list.push(c);
+    else byName.set(c.name, [c]);
+  }
+  const touchedIds = new Set<number>();
+
+  for (const [name, claimants] of byName) {
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name) as ExistingRow | undefined;
+    const prov = existing ? parseProvenance(existing.metadata) : {};
+    const skipAll = (reason: string) => { for (const c of claimants) result.skipped.push({ path: c.rel, reason }); };
     if (existing) {
-      const prov = parseProvenance(existing.metadata);
       // Never overwrite a memory that did not come from a note file, nor one
-      // ingested from a different directory — two projects' memory
-      // directories may well both contain a `feedback_testing.md`, and
-      // letting them take turns replacing one entity would churn history
-      // on every run.
-      if (!existing.is_note) { skip(`name "${name}" belongs to a memory that did not come from a note file`); continue; }
-      if (prov.note_dir_id !== dirId) { skip(`name "${name}" was already ingested from another note directory`); continue; }
-      // A memory the user archived with `forget` stays archived: editing the
-      // file must not quietly undo an explicit forget.
-      if (existing.status === 'archived') { skip(`memory "${name}" was archived with forget; not re-ingested`); continue; }
-      if (prov.content_hash === contentHash && prov.note_path === rel && !existing.is_missing) {
-        // Same bytes, new mtime (a `touch`, a checkout): refresh the stat
-        // fingerprint so the next run can skip the read again. Provenance
-        // only — nothing searchable changes, so no FTS work.
-        const meta = JSON.parse(existing.metadata ?? '{}') as Record<string, unknown>;
-        meta.provenance = { ...prov, note_mtime_ms: stat.mtimeMs, note_size: stat.size };
-        db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), existing.id);
-        result.unchanged++;
+      // ingested from a different directory (two projects' memory
+      // directories may both hold a `feedback_testing.md`).
+      if (!existing.is_note) { skipAll(`name "${name}" belongs to a memory that did not come from a note file`); continue; }
+      if (prov.note_dir_id !== dirId) { skipAll(`name "${name}" was already ingested from another note directory`); continue; }
+      // A memory archived with `forget` stays archived: editing the file
+      // must not quietly undo an explicit forget.
+      if (existing.status === 'archived') { skipAll(`memory "${name}" was archived with forget; not re-ingested`); continue; }
+    }
+
+    const recordedRel = existing && typeof prov.note_path === 'string' ? prov.note_path : undefined;
+    // The recorded file is present but was not read this run (past the cap):
+    // its current name is unknown, so nobody else may take the name yet.
+    if (recordedRel && presentRels.has(recordedRel) && !readRels.has(recordedRel) && !claimants.some((c) => c.rel === recordedRel)) {
+      const pending = claimants.filter((c) => !c.unchanged);
+      if (pending.length === claimants.length) {
+        const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
+        const ownerStat = statOf(recordedRel);
+        for (const c of pending) {
+          result.skipped.push({ path: c.rel, reason });
+          // Fingerprinted against the recorded file, or the claimant would be
+          // re-read on every run and keep the cap away from the very file
+          // that owns the name.
+          if (ownerStat) nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, owner: { rel: recordedRel, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
+        }
         continue;
       }
     }
+    const owner =
+      claimants.find((c) => c.rel === recordedRel)
+      ?? (typeof prov.content_hash === 'string' ? claimants.find((c) => c.contentHash === prov.content_hash) : undefined)
+      ?? claimants[0];
 
-    // Tags: the file owns `source:*`; everything else a person added to the
-    // memory survives a file change. The project tag is set on first
-    // ingestion and then kept — the CLI and the hook may run from different
-    // directories, and the memory must not flip between projects with them.
+    for (const c of claimants) {
+      if (c === owner) continue;
+      const reason = `name "${name}" already used by ${owner.rel} in this directory`;
+      result.skipped.push({ path: c.rel, reason });
+      nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, owner: { rel: owner.rel, mtime: owner.stat.mtimeMs, size: owner.stat.size } };
+    }
+
+    if (owner.unchanged) {
+      result.unchanged++;
+      if (existing) touchedIds.add(existing.id);
+      continue;
+    }
+    if (existing && prov.content_hash === owner.contentHash && prov.note_path === owner.rel && !existing.is_missing) {
+      // Same bytes, new mtime (a `touch`, a checkout): refresh the stat
+      // fingerprint so the next run can skip the read. Provenance only —
+      // nothing searchable changes, so no FTS work.
+      const meta = JSON.parse(existing.metadata ?? '{}') as Record<string, unknown>;
+      meta.provenance = { ...prov, note_mtime_ms: owner.stat.mtimeMs, note_size: owner.stat.size };
+      db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), existing.id);
+      touchedIds.add(existing.id);
+      result.unchanged++;
+      continue;
+    }
+
+    // Tags: the file owns `source:*`; everything else a person added
+    // survives a file change. The project tag is set on first ingestion and
+    // then kept — the CLI and the hook may run from different directories.
     const currentTags = existing
       ? (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(existing.id) as { tag: string }[]).map((t) => t.tag)
       : [];
@@ -376,9 +415,9 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
 
     const written = remember({
       name,
-      type,
-      title,
-      observations,
+      type: owner.type!,
+      title: owner.title,
+      observations: owner.observations,
       tags,
       replace: true,
       // Same stance as the JSON importer: text from a file is not a trusted
@@ -386,11 +425,11 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       trustOverride: 'untrusted',
       provenanceOverride: {
         source: 'note-file',
-        note_path: rel,
-        content_hash: contentHash,
+        note_path: owner.rel,
+        content_hash: owner.contentHash,
         note_dir_id: dirId,
-        note_mtime_ms: stat.mtimeMs,
-        note_size: stat.size,
+        note_mtime_ms: owner.stat.mtimeMs,
+        note_size: owner.stat.size,
       },
       sourceHost: 'note-file',
     });
@@ -404,10 +443,13 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run(skipKey);
   }
 
-  // Missing sweep. The "present" set is EVERY discovered file, not only the
-  // processed ones: a file past the per-run cap, or skipped for its size, is
-  // still on disk, and tagging its memory missing would be a false report.
-  const present = presentRels;
+  // ---- Missing sweep -------------------------------------------------------
+  // A memory is tagged missing when its recorded file is gone, or is present,
+  // was read this run and now declares a different name. Files past the cap
+  // or fingerprint-skipped are still on disk and prove nothing. Memories
+  // written or confirmed this run are excluded: the snapshot above predates
+  // them (a renamed file's memory still shows the old path there).
+  const claimedNameAt = new Map(claims.map((c) => [c.rel, c.name]));
   // Tags are not part of the FTS document (name, title, observations are), so
   // adding one needs no index rebuild.
   const tagMissing = db.prepare('INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)');
@@ -415,7 +457,9 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     if (row.is_missing || touchedIds.has(row.id)) continue;
     const prov = parseProvenance(row.metadata);
     if (prov.note_dir_id !== dirId || typeof prov.note_path !== 'string') continue;
-    if (present.has(prov.note_path)) continue;
+    const gone = !presentRels.has(prov.note_path);
+    const renamedAway = readRels.has(prov.note_path) && claimedNameAt.has(prov.note_path) && claimedNameAt.get(prov.note_path) !== row.name;
+    if (!gone && !renamedAway) continue;
     tagMissing.run(row.id, NOTE_FILE_MISSING_TAG);
     result.markedMissing.push(row.name);
   }

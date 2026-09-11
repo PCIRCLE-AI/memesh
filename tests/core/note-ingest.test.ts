@@ -337,4 +337,139 @@ describe('ingestNoteDirectory', () => {
     ingestNoteDirectory({ dir });
     expect(count()).toBe(0);
   });
+
+  describe('name ownership — one rule (round-3 probes S1–S6)', () => {
+    let bump = 0;
+    // Write and move the mtime forward, so a same-size edit is never mistaken
+    // for an unchanged file within one clock tick.
+    const put = (dir: string, rel: string, content: string) => {
+      fs.writeFileSync(path.join(dir, rel), content);
+      const t = new Date(Date.now() + (bump += 1000));
+      fs.utimesSync(path.join(dir, rel), t, t);
+    };
+    const mk = (sub: string, files: Record<string, string>) => {
+      const dir = path.join(fixture.tmpDir, sub);
+      fs.mkdirSync(dir, { recursive: true });
+      for (const [rel, content] of Object.entries(files)) put(dir, rel, content);
+      return dir;
+    };
+    const state = (name: string) => {
+      const e = kg().getEntity(name);
+      if (!e) return null;
+      return {
+        obs: e.observations,
+        path: (e.metadata?.provenance as Record<string, unknown>).note_path,
+        missing: e.tags.includes(NOTE_FILE_MISSING_TAG),
+      };
+    };
+    const quiet = (dir: string) => {
+      const r = ingestNoteDirectory({ dir });
+      expect(r.created).toHaveLength(0);
+      expect(r.replaced).toHaveLength(0);
+      expect(r.markedMissing).toHaveLength(0);
+      return r;
+    };
+
+    it('S1: an owner that renames its name hands the old name to the duplicate, then settles', () => {
+      const dir = mk('s1', { 'a.md': note('same', 'A', 'fact', 'from a'), 'b.md': note('same', 'B', 'fact', 'from b') });
+      ingestNoteDirectory({ dir });
+      put(dir, 'a.md', note('other', 'A2', 'fact', 'from a2'));
+      ingestNoteDirectory({ dir });
+      quiet(dir);
+      quiet(dir);
+      expect(state('same')).toEqual({ obs: ['from b'], path: 'b.md', missing: false });
+      expect(state('other')).toEqual({ obs: ['from a2'], path: 'a.md', missing: false });
+    });
+
+    it('S2: an owner that sorts LAST keeps its name when edited; its new content lands', () => {
+      const dir = mk('s2', { 'z.md': note('same2', 'Z', 'fact', 'from z') });
+      ingestNoteDirectory({ dir });
+      put(dir, 'b.md', note('same2', 'B', 'fact', 'from b'));
+      ingestNoteDirectory({ dir });
+      put(dir, 'z.md', note('same2', 'Z', 'fact', 'from z EDITED'));
+      const r = ingestNoteDirectory({ dir });
+      expect(r.replaced).toEqual(['same2']);
+      expect(r.skipped).toContainEqual({ path: 'b.md', reason: 'name "same2" already used by z.md in this directory' });
+      quiet(dir);
+      expect(state('same2')).toEqual({ obs: ['from z EDITED'], path: 'z.md', missing: false });
+    });
+
+    it('S3: an owner renamed on disk while a duplicate exists keeps the name (content hash)', () => {
+      const dir = mk('s3', { 'a.md': note('same3', 'A', 'fact', 'from a'), 'b.md': note('same3', 'B', 'fact', 'from b') });
+      ingestNoteDirectory({ dir });
+      ingestNoteDirectory({ dir });
+      fs.renameSync(path.join(dir, 'a.md'), path.join(dir, 'c.md'));
+      const r = ingestNoteDirectory({ dir });
+      expect(r.replaced).toEqual(['same3']);
+      expect(r.markedMissing).toHaveLength(0);
+      quiet(dir);
+      expect(state('same3')).toEqual({ obs: ['from a'], path: 'c.md', missing: false });
+    });
+
+    it('S3b: the same with the renamed owner sorting last', () => {
+      const dir = mk('s3b', { 'a.md': note('same3b', 'A', 'fact', 'from a'), 'm.md': note('same3b', 'M', 'fact', 'from m') });
+      ingestNoteDirectory({ dir });
+      fs.renameSync(path.join(dir, 'a.md'), path.join(dir, 'z.md'));
+      ingestNoteDirectory({ dir });
+      quiet(dir);
+      expect(state('same3b')).toEqual({ obs: ['from a'], path: 'z.md', missing: false });
+    });
+
+    it('S4: a file that renames its name away and back does not ping-pong; the name stays with its new owner', () => {
+      const dir = mk('s4', { 'a.md': note('same4', 'A', 'fact', 'from a'), 'b.md': note('same4', 'B', 'fact', 'from b') });
+      ingestNoteDirectory({ dir });
+      put(dir, 'a.md', note('other4', 'A2', 'fact', 'a2'));
+      ingestNoteDirectory({ dir });
+      put(dir, 'a.md', note('same4', 'A3', 'fact', 'a3'));
+      const r = ingestNoteDirectory({ dir });
+      expect(r.skipped).toContainEqual({ path: 'a.md', reason: 'name "same4" already used by b.md in this directory' });
+      expect(r.markedMissing).toEqual(['other4']);
+      quiet(dir);
+      quiet(dir);
+      expect(state('same4')).toEqual({ obs: ['from b'], path: 'b.md', missing: false });
+      expect(state('other4')!.missing).toBe(true);
+    });
+
+    it('S5: a file that changes its own name leaves the old memory tagged missing', () => {
+      const dir = mk('s5', { 'a.md': note('old5', 'Old', 'fact', 'v1') });
+      ingestNoteDirectory({ dir });
+      put(dir, 'a.md', note('new5', 'New', 'fact', 'v2'));
+      const r = ingestNoteDirectory({ dir });
+      expect(r.created).toEqual(['new5']);
+      expect(r.markedMissing).toEqual(['old5']);
+      quiet(dir);
+      expect(state('old5')).toEqual({ obs: ['v1'], path: 'a.md', missing: true });
+      expect(state('new5')).toEqual({ obs: ['v2'], path: 'a.md', missing: false });
+    });
+
+    it('an edited owner past the per-run cap is not displaced by a duplicate read first', () => {
+      const dir = mk('cap', { 'z.md': note('capname', 'Z', 'fact', 'from z') });
+      ingestNoteDirectory({ dir });
+      put(dir, 'a.md', note('capname', 'A', 'fact', 'from a'));
+      put(dir, 'z.md', note('capname', 'Z', 'fact', 'from z edited'));
+      const r = ingestNoteDirectory({ dir, maxFiles: 1 });
+      expect(r.more).toBe(1);
+      expect(r.replaced).toHaveLength(0);
+      expect(r.skipped).toContainEqual({ path: 'a.md', reason: 'name "capname" belongs to z.md, which was not read this run' });
+      ingestNoteDirectory({ dir, maxFiles: 1 });
+      expect(state('capname')).toEqual({ obs: ['from z edited'], path: 'z.md', missing: false });
+    });
+
+    it('S6: the skip row follows the losers — gone when the dup takes over, back and gone again with the returning file', () => {
+      const dir = mk('s6', { 'a.md': note('same6', 'A', 'fact', 'a'), 'b.md': note('same6', 'B', 'fact', 'b') });
+      const key = `note_ingest_skips:${ingestNoteDirectory({ dir }).dirId}`;
+      const row = () => getDatabase().prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key) as { value: string } | undefined;
+      expect(Object.keys(JSON.parse(row()!.value))).toEqual(['b.md']);
+      fs.rmSync(path.join(dir, 'a.md'));
+      expect(ingestNoteDirectory({ dir }).replaced).toEqual(['same6']);
+      expect(row()).toBeUndefined();
+      put(dir, 'a.md', note('same6', 'A', 'fact', 'a back'));
+      ingestNoteDirectory({ dir });
+      expect(Object.keys(JSON.parse(row()!.value))).toEqual(['a.md']);
+      fs.rmSync(path.join(dir, 'a.md'));
+      ingestNoteDirectory({ dir });
+      expect(row()).toBeUndefined();
+      expect(state('same6')).toEqual({ obs: ['b'], path: 'b.md', missing: false });
+    });
+  });
 });
