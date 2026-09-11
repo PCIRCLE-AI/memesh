@@ -585,6 +585,11 @@
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "`input.neverRanHooks ?? []` in captureLivenessVerdict: when the caller supplies no heartbeat-never-ran list there is no dead hook, so deadHooks is emptily computed — and the FAIL branch only fires when a FAIL-eligible hook is actually absent past the grace, never from the missing default itself.",
       "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement)"
+    },
+    "C1 tests/audit/hook-outcome-gate.test.ts": {
+      "class": "SAFE",
+      "reason": "the toEqual([]) assertions are 'the gate correctly stays quiet' — each is paired in the same file with toEqual([4])/toEqual([3]) assertions that the gate flags an uncovered exit, so the emptiness is the no-false-positive contract under test, not vacuity.",
+      "triaged": "2026-09-11 #327 audit detector"
     }
   }
 }
