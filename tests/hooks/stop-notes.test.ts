@@ -53,11 +53,11 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
 
   const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
   let n = 0;
-  function toolCall(name: string, input: object, result: { error?: boolean } = {}) {
+  function toolCall(name: string, input: object, result: { error?: boolean; content?: string } = {}) {
     const id = `tu_${++n}`;
     return [
       { type: 'assistant', timestamp: at(60_000), message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }] } },
-      { type: 'user', timestamp: at(59_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: result.error === true, content: 'ok' }] } },
+      { type: 'user', timestamp: at(59_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: result.error === true, content: result.content ?? 'ok' }] } },
     ];
   }
   const reads = (count: number) => Array.from({ length: count }, (_, i) => toolCall('Read', { file_path: `/repo/f${i}.ts` })).flat();
@@ -189,5 +189,37 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     // 150 files, 100 read per Stop: the rest are reported and wait.
     expect(last.reason).toMatch(/100 created/);
     expect(last.reason).toMatch(/50 more not processed/);
+  }, 60_000);
+
+  it('F8: a rejected plan is not an approved one — with or without is_error', () => {
+    const declined = "The user doesn't want to proceed with this tool use. The tool use was rejected.";
+    write([...reads(4), ...toolCall('ExitPlanMode', {}, { error: true, content: declined })]);
+    expect(run().stdout.trim()).toBe('');
+    append([...reads(4), ...toolCall('ExitPlanMode', {}, { content: declined })]);
+    expect(run().stdout.trim()).toBe('');
+    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/no decision-shaped move/);
+  }, 60_000);
+
+  it('a commit is `git commit` in command position, not a search for the words', () => {
+    write([...reads(4), ...toolCall('Bash', { command: 'grep -rn "git commit" docs' }), ...toolCall('Bash', { command: 'git commit-tree abc' })]);
+    expect(run().stdout.trim()).toBe('');
+    append([...reads(4), ...toolCall('Bash', { command: 'cd repo && git -C . commit -m "x"' })]);
+    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
+  }, 60_000);
+
+  it('F7: offset files of sessions idle for 30 days are pruned; recent ones kept', () => {
+    const dir = path.join(home, '.memesh', 'remember-nudge');
+    fs.mkdirSync(dir, { recursive: true });
+    const old = path.join(dir, 'old-session.json');
+    const recent = path.join(dir, 'recent-session.json');
+    fs.writeFileSync(old, '{"offset":0}');
+    fs.writeFileSync(recent, '{"offset":0}');
+    const longAgo = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(old, longAgo, longAgo);
+    write(reads(1));
+    expect(run().status).toBe(0);
+    expect(fs.existsSync(old)).toBe(false);
+    expect(fs.existsSync(recent)).toBe(true);
+    expect(fs.existsSync(path.join(dir, `${sessionId}.json`))).toBe(true);
   }, 60_000);
 });

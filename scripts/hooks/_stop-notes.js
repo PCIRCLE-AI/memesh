@@ -29,6 +29,7 @@ import {
   readSync,
   readdirSync,
   renameSync,
+  unlinkSync,
 } from 'fs';
 import { createHash } from 'crypto';
 import { dirname, join } from 'path';
@@ -52,8 +53,19 @@ const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
 
 const MEMORY_WRITE_TOOL_RE = /(?:^|__)(?:remember|learn)$/;
 const MEMORY_WRITE_BASH_RE = /\bmemesh\s+(?:remember|learn)\b/;
-const COMMIT_RE = /\bgit\s+(?:-C\s+\S+\s+)?commit\b/;
+// `git commit` in COMMAND position — at the start or after a shell separator,
+// with any global options (-C <dir>, -c <k=v>, --flag[=v]) in between — and
+// followed by a space or the end. Not `grep "git commit"`, not `git
+// commit-tree`, not `echo git commit`.
+const COMMIT_RE = /(?:^|[;&|(\n]\s*)git(?:\s+(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?))*\s+commit(?=\s|$)/;
 const TEST_RE = /\b(?:vitest|jest|pytest|go\s+test|cargo\s+test|npm\s+(?:run\s+)?test|run-tests[\w-]*)\b/;
+// What Claude Code puts in a tool_result when the user turned the call down
+// (e.g. rejected a plan). Usually also is_error, but not relied upon.
+const DECLINED_RE = /\brejected\b|doesn't want to proceed|does not want to proceed|\bdeclined\b/i;
+/** Days a per-session nudge offset file is kept after its last Stop. */
+const NUDGE_STATE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+/** Most stale offset files one Stop removes — the pruning stays bounded. */
+const NUDGE_PRUNE_PER_RUN = 50;
 const NOTE_PATH_RE = /(?:^|[\\/])(?:memory|\.remember)[\\/][^\\/]+\.md$/;
 
 /**
@@ -222,7 +234,8 @@ export function scanTranscriptWindow(text) {
         const kind = pending.get(block.tool_use_id);
         if (!kind) continue;
         pending.delete(block.tool_use_id);
-        const failed = block.is_error === true;
+        const resultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
+        const failed = block.is_error === true || DECLINED_RE.test(resultText);
         if (kind === 'test') {
           if (failed) testWentRed = true;
           else if (testWentRed && !testWentGreen) { testWentGreen = true; moves.push('a test went red then green'); }
@@ -237,6 +250,32 @@ export function scanTranscriptWindow(text) {
     }
   }
   return { toolCalls, moves, wroteMemory, firstTimestamp };
+}
+
+/**
+ * Remove offset files of sessions that have not stopped for 30 days. One
+ * file per session would otherwise accumulate forever. At most
+ * NUDGE_PRUNE_PER_RUN removals per Stop, so a long backlog is worked off
+ * over several Stops rather than in one.
+ */
+export function pruneNudgeState(dir, now) {
+  let removed = 0;
+  for (const name of readdirSync(dir)) {
+    if (removed >= NUDGE_PRUNE_PER_RUN) break;
+    if (!name.endsWith('.json')) continue;
+    const file = join(dir, name);
+    try {
+      if (now - lstatSync(file).mtimeMs > NUDGE_STATE_MAX_AGE_MS) {
+        unlinkSync(file);
+        removed++;
+      }
+    } catch (err) {
+      // Another Stop removed it first, or it is unreadable: either way this
+      // run leaves it; the next one retries.
+      try { process.stderr.write(`[memesh remember-nudge] could not prune ${file}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+    }
+  }
+  return removed;
 }
 
 export function buildNudge(moves) {
@@ -256,6 +295,7 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
   }
   const dir = join(getMemeshDirFromDbPath(), 'remember-nudge');
   ensurePrivateDir(dir);
+  pruneNudgeState(dir, Date.now());
   const statePath = join(dir, `${sessionId}.json`);
   const state = readJson(statePath) ?? {};
   const { text, nextOffset } = readTranscriptWindow(transcriptPath, state.offset);
