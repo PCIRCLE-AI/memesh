@@ -296,6 +296,30 @@ export async function fetchTaskState(project: string): Promise<TaskStateData> {
   return data;
 }
 
+/** The durable-memory index for one project (#323) — the same section the
+ *  briefing and the SessionStart block close with, rendered server-side. */
+export interface BriefingIndexData {
+  project: string;
+  staleDays: number;
+  lines: string[];
+  shown: number;
+  more: number;
+  older: number;
+  truncated: boolean;
+  bytes: number;
+  tokens: number;
+  ids: number[];
+}
+
+export async function fetchBriefingIndex(project: string): Promise<BriefingIndexData> {
+  const data = await api<BriefingIndexData>('GET', `/v1/briefing-index?project=${encodeURIComponent(project)}`);
+  if (!data || typeof data !== 'object' || !Array.isArray((data as BriefingIndexData).lines) || typeof (data as BriefingIndexData).shown !== 'number') {
+    console.warn('[memesh dashboard] /v1/briefing-index answered with a shape this bundle cannot read:', data);
+    throw new Error('unreadable briefing-index payload');
+  }
+  return data;
+}
+
 export async function fetchProjects(): Promise<ProjectInfo[]> {
   const data = await api<ProjectInfo[]>('GET', '/v1/projects');
   // Throw, do not return []. ProjectTab now tells a failed fetch apart from

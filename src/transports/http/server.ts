@@ -30,6 +30,7 @@ import { computeStats } from '../../core/stats.js';
 import { computeProjects } from '../../core/projects.js';
 import { getTaskState } from '../../core/task-state-store.js';
 import { readBriefingIndex } from '../../core/briefing.js';
+import { INDEX_STALE_DAYS } from '../../core/briefing-index.js';
 import type { CountRow } from '../../core/types.js';
 import {
   RememberSchema as RememberBody, RecallSchema as RecallBody,
@@ -894,7 +895,13 @@ app.get('/v1/briefing-index', (req, res) => {
     });
     return;
   }
-  handleGet(res, () => ({ project: parsed.data.project, ...readBriefingIndex(getDatabase(), parsed.data.project) }));
+  handleGet(res, () => ({
+    project: parsed.data.project,
+    // The staleness window travels with the data so the dashboard's copy
+    // cannot restate a frozen number and drift from it.
+    staleDays: INDEX_STALE_DAYS,
+    ...readBriefingIndex(getDatabase(), parsed.data.project),
+  }));
 });
 app.get('/v1/stats', (_req, res) => handleGet(res, () => computeStats(getDatabase())));
 app.get('/v1/analytics', (_req, res) => handleGet(res, () => computeAnalytics(getDatabase())));

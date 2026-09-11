@@ -1,6 +1,6 @@
 import { Fragment } from 'preact';
 import { useState, useEffect, useMemo, useRef } from 'preact/hooks';
-import { api, fetchProjects, fetchTaskState, type Entity, type HealthData, type ProjectInfo, type TaskStateData } from '../lib/api';
+import { api, fetchBriefingIndex, fetchProjects, fetchTaskState, type BriefingIndexData, type Entity, type HealthData, type ProjectInfo, type TaskStateData } from '../lib/api';
 import { ProjectRoadmap } from './ProjectRoadmap';
 import { EmptyLibraryState } from './EmptyLibraryState';
 import { Chip } from './Chip';
@@ -107,10 +107,45 @@ export function TaskStateCard({ data, error }: { data: TaskStateData | null; err
   );
 }
 
+/**
+ * What is known here (#323) — the durable-memory index an agent receives at
+ * session start, shown as the agent gets it: one line per decision, lesson,
+ * pattern or reference, newest first, under the same frozen cap. The memory
+ * lines come from the server's renderer verbatim; only the framing around
+ * them (heading, overflow, staleness, cost) is translated here.
+ */
+const MEM_LINE = /\s\[mem:(\d{1,10})\]$/;
+
+export function BriefingIndexCard({ data, error }: { data: BriefingIndexData | null; error: string }) {
+  if (error) return <div class="card" style={{ marginTop: 12 }}><div class="error-box" role="alert">{error}</div></div>;
+  if (!data) return <div class="card" style={{ marginTop: 12 }}><div class="loading" role="status" /></div>;
+  const items = data.lines.filter((l) => MEM_LINE.test(l));
+  const plus = data.truncated ? '+' : '';
+  return (
+    <section class="card" style={{ marginTop: 12 }} aria-labelledby="briefing-index-title">
+      <h3 id="briefing-index-title" style={{ margin: '0 0 8px', fontSize: 15 }}>{t('project.index.title')}</h3>
+      {items.length === 0 && data.older === 0
+        ? <p style={{ margin: 0, color: 'var(--text-2)' }}>{t('project.index.empty')}</p>
+        : (
+          <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4 }}>
+            {items.map((line) => (
+              <li key={line} style={{ color: 'var(--text-1)', overflowWrap: 'anywhere' }}>{line.replace(/^- /, '')}</li>
+            ))}
+          </ul>
+        )}
+      {data.more > 0 && <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{t('project.index.more', { n: `${data.more}${plus}`, project: data.project })}</p>}
+      {data.older > 0 && <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{t('project.index.older', { n: `${data.older}${plus}`, days: data.staleDays })}</p>}
+      <p style={{ margin: '10px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{t('project.index.cost', { tokens: data.tokens, bytes: data.bytes })}</p>
+    </section>
+  );
+}
+
 export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData | null; dataRevision?: number }) {
   const [entities, setEntities] = useState<Entity[]>([]);
   const [taskState, setTaskState] = useState<TaskStateData | null>(null);
   const [taskStateError, setTaskStateError] = useState('');
+  const [briefingIndex, setBriefingIndex] = useState<BriefingIndexData | null>(null);
+  const [briefingIndexError, setBriefingIndexError] = useState('');
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [selected, setSelected] = useState<string | null>(urlProject);
   const [loading, setLoading] = useState(true);
@@ -185,6 +220,20 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
     return () => { cancelled = true; };
   }, [selected, dataRevision]);
 
+  // The index is fetched per selected project, settled like the task state:
+  // a failed fetch is a failure, never "no durable memories".
+  useEffect(() => {
+    if (!selected) { setBriefingIndex(null); setBriefingIndexError(''); return; }
+    let cancelled = false;
+    setBriefingIndex(null);
+    setBriefingIndexError('');
+    fetchBriefingIndex(selected).then(
+      (data) => { if (!cancelled) setBriefingIndex(data); },
+      (e: unknown) => { if (!cancelled) setBriefingIndexError(failureMessage(classifyLoadError(e))); },
+    );
+    return () => { cancelled = true; };
+  }, [selected, dataRevision]);
+
   if (loading && entities.length === 0) return <div class="empty"><div class="loading" /></div>;
   if (error && entities.length === 0) return <div class="error-box" role="alert">{error}</div>;
 
@@ -229,6 +278,7 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
         ? (
           <>
             <TaskStateCard data={taskState} error={taskStateError} />
+            <BriefingIndexCard data={briefingIndex} error={briefingIndexError} />
             <div class="card" style={{ marginTop: 12 }}><ProjectRoadmap projectName={selected} entities={projectEntities} /></div>
           </>
         )

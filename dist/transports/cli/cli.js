@@ -58058,6 +58058,7 @@ var init_server = __esm({
     init_projects();
     init_task_state_store();
     init_briefing();
+    init_briefing_index();
     init_schemas3();
     init_agent_messaging2();
     init_version_check();
@@ -58296,7 +58297,11 @@ var init_server = __esm({
         });
         return;
       }
-      handleGet(res, () => ({ project: parsed.data.project, ...readBriefingIndex(getDatabase(), parsed.data.project) }));
+      handleGet(res, () => ({
+        project: parsed.data.project,
+        staleDays: INDEX_STALE_DAYS,
+        ...readBriefingIndex(getDatabase(), parsed.data.project)
+      }));
     });
     app.get("/v1/stats", (_req, res) => handleGet(res, () => computeStats(getDatabase())));
     app.get("/v1/analytics", (_req, res) => handleGet(res, () => computeAnalytics(getDatabase())));

@@ -14,6 +14,7 @@ import { computeStats } from '../../core/stats.js';
 import { computeProjects } from '../../core/projects.js';
 import { getTaskState } from '../../core/task-state-store.js';
 import { readBriefingIndex } from '../../core/briefing.js';
+import { INDEX_STALE_DAYS } from '../../core/briefing-index.js';
 import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, LearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, } from '../schemas.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
@@ -492,7 +493,11 @@ app.get('/v1/briefing-index', (req, res) => {
         });
         return;
     }
-    handleGet(res, () => ({ project: parsed.data.project, ...readBriefingIndex(getDatabase(), parsed.data.project) }));
+    handleGet(res, () => ({
+        project: parsed.data.project,
+        staleDays: INDEX_STALE_DAYS,
+        ...readBriefingIndex(getDatabase(), parsed.data.project),
+    }));
 });
 app.get('/v1/stats', (_req, res) => handleGet(res, () => computeStats(getDatabase())));
 app.get('/v1/analytics', (_req, res) => handleGet(res, () => computeAnalytics(getDatabase())));
