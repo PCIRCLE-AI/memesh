@@ -12,7 +12,7 @@ export interface EnvelopeSummary {
     mode: 'direct' | 'harness';
     model: string | null;
     finishReason: string | null;
-    allowedTools: string[];
+    allowedTools: string[] | null;
     usage: Partial<Record<typeof USAGE_KEYS[number], number>>;
 }
 export declare function summarizeEnvelope(raw: unknown): EnvelopeSummary;
@@ -21,6 +21,7 @@ export interface RecordDelegationInput {
     promptSha256: string;
     verdict?: DelegationVerdict;
     followUp?: string;
+    grantedTools?: string[];
     project: string;
 }
 export interface RecordDelegationResult {

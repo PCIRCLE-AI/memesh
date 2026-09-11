@@ -26,10 +26,14 @@ describe('memesh delegation', () => {
   it('records an envelope, then flips it to verified', () => {
     const prompt = path.join(home, 'prompt.txt');
     fs.writeFileSync(prompt, 'Summarise the auth module');
-    const rec = run(['delegation', 'record', '--envelope', ENVELOPE, '--prompt-file', prompt, '--json']);
+    const rec = run(['delegation', 'record', '--envelope', ENVELOPE, '--prompt-file', prompt,
+      '--allow-tool', 'read_file', '--allow-tool', 'write_file', '--json']);
     expect(rec.code, rec.stderr).toBe(0);
     const recorded = JSON.parse(rec.stdout);
     expect(recorded).toMatchObject({ stored: true, verdict: 'unreviewed', trust: 'untrusted-until-verified' });
+    const shown = run(['recall', recorded.name, '--json']);
+    expect(shown.code, shown.stderr).toBe(0);
+    expect(shown.stdout).toContain('read_file, write_file (granted by the orchestrator)');
 
     const ver = run(['delegation', 'verify', recorded.name, '--verdict', 'accepted', '--json']);
     expect(ver.code, ver.stderr).toBe(0);
@@ -58,8 +62,15 @@ describe('the worker sandbox has no write path', () => {
   // the local CLI. If an HTTP route or an MCP tool for them appears, this
   // fails and the change has to argue its case.
   it('no HTTP route and no MCP tool mentions delegation', () => {
-    const server = fs.readFileSync(path.join(repoRoot, 'src', 'transports', 'http', 'server.ts'), 'utf8');
-    const routes = [...server.matchAll(/^app\.(?:get|post|put|delete|patch)\((['"`])([^'"`]+)\1/gm)].map((m) => m[2]);
+    // Every file in the HTTP transport, not only server.ts: a route could be
+    // registered from a router module (review F7).
+    const httpDir = path.join(repoRoot, 'src', 'transports', 'http');
+    const files = fs.readdirSync(httpDir, { recursive: true, encoding: 'utf8' }).filter((f) => /\.(?:ts|js|mjs)$/.test(f));
+    expect(files).toContain('server.ts');
+    const routes = files.flatMap((f) => {
+      const src = fs.readFileSync(path.join(httpDir, f), 'utf8');
+      return [...src.matchAll(/['"`](\/v1\/[^'"`\s]*)['"`]/g)].map((m) => m[1]);
+    });
     expect(routes.length).toBeGreaterThan(20);
     expect(routes.filter((r) => /delegat/i.test(r))).toEqual([]);
 

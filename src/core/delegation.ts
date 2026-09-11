@@ -46,7 +46,8 @@ export interface EnvelopeSummary {
   mode: 'direct' | 'harness';
   model: string | null;
   finishReason: string | null;
-  allowedTools: string[];
+  /** null when the envelope does not report them — not the same as none. */
+  allowedTools: string[] | null;
   usage: Partial<Record<typeof USAGE_KEYS[number], number>>;
 }
 
@@ -69,7 +70,7 @@ export function summarizeEnvelope(raw: unknown): EnvelopeSummary {
   if (typeof env.ok !== 'boolean') {
     throw new DelegationInputError('the envelope has no boolean "ok" — this is not a worker envelope');
   }
-  let allowedTools: string[] = [];
+  let allowedTools: string[] | null = null;
   if (env.allowed_tools !== undefined) {
     if (!Array.isArray(env.allowed_tools) || !env.allowed_tools.every((t) => typeof t === 'string')) {
       throw new DelegationInputError('"allowed_tools" must be an array of strings');
@@ -125,6 +126,12 @@ export interface RecordDelegationInput {
   verdict?: DelegationVerdict;
   /** What the orchestrator decided to do next, in its own words. */
   followUp?: string;
+  /**
+   * The tools the orchestrator granted, in its own words. The worker's
+   * envelope is untrusted and only the Harness client reports the list, so
+   * the orchestrator's statement wins; a disagreement is recorded.
+   */
+  grantedTools?: string[];
   /** Project tag; the CLI passes the orchestrator's current project. */
   project: string;
 }
@@ -169,6 +176,15 @@ export function recordDelegation(input: RecordDelegationInput): RecordDelegation
     return { stored: false, name, verdict: storedVerdict, trust: trustFor(storedVerdict), summary };
   }
 
+  const granted = input.grantedTools?.map((t) => clean(t, 64)).slice(0, 50);
+  const allowedTools = granted ?? summary.allowedTools;
+  const allowedSource = granted ? 'orchestrator' : summary.allowedTools ? 'envelope' : null;
+  const toolsLine = allowedTools === null
+    ? 'Allowed tools: not reported in the envelope'
+    : `Allowed tools: ${allowedTools.length ? allowedTools.join(', ') : 'none'}${granted ? ' (granted by the orchestrator)' : ''}`;
+  const envelopeDisagrees = granted && summary.allowedTools
+    && [...granted].sort().join('\0') !== [...summary.allowedTools].sort().join('\0');
+
   const at = new Date().toISOString();
   const usageText = USAGE_KEYS.filter((k) => summary.usage[k] !== undefined)
     .map((k) => `${k}=${summary.usage[k]}`).join(', ');
@@ -178,7 +194,9 @@ export function recordDelegation(input: RecordDelegationInput): RecordDelegation
     title: `${at.slice(0, 10)} delegation to ${summary.model ?? 'worker'} (${summary.mode})`,
     observations: [
       `Delegated to ${summary.model ?? 'an unnamed model'} (${summary.mode} mode); prompt sha256 ${input.promptSha256}`,
-      `Allowed tools: ${summary.allowedTools.length ? summary.allowedTools.join(', ') : 'none'}`,
+      toolsLine,
+      ...(envelopeDisagrees
+        ? [`Allowed tools mismatch: the envelope reports ${summary.allowedTools!.join(', ') || 'none'}`] : []),
       `Result: ok=${summary.ok}, finish_reason=${summary.finishReason ?? 'none'}`,
       usageText ? `Usage: ${usageText}` : 'Usage: not reported in the envelope',
       verdictLine(verdict, at),
@@ -195,7 +213,9 @@ export function recordDelegation(input: RecordDelegationInput): RecordDelegation
       envelope_sha256: envelopeSha256,
       model: summary.model,
       mode: summary.mode,
-      allowed_tools: summary.allowedTools,
+      allowed_tools: allowedTools,
+      allowed_tools_source: allowedSource,
+      ...(granted && summary.allowedTools ? { envelope_allowed_tools: summary.allowedTools } : {}),
       usage: summary.usage,
       finish_reason: summary.finishReason,
       ok: summary.ok,

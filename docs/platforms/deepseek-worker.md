@@ -24,7 +24,8 @@ After the worker client returns, save its envelope and the prompt you sent,
 then:
 
 ```bash
-memesh delegation record --envelope envelope.json --prompt-file prompt.txt
+memesh delegation record --envelope envelope.json --prompt-file prompt.txt \
+  --allow-tool read_file --allow-tool write_file
 ```
 
 This stores one `delegation` memory:
@@ -32,7 +33,8 @@ This stores one `delegation` memory:
 | Stored | From |
 |---|---|
 | Prompt **sha256** (never the prompt text) | `--prompt-file` |
-| Model, mode (`direct` or `harness`), `allowed_tools` | the envelope |
+| Model, mode (`direct` or `harness`) | the envelope |
+| Allowed tools | `--allow-tool` (repeat per tool); otherwise the envelope's `allowed_tools` (Harness only); otherwise recorded as "not reported" |
 | `usage` (prompt, completion and total tokens), `finish_reason`, `ok` | the envelope |
 | Verdict, starting at `unreviewed` | `--verdict`, later `verify` |
 | `metadata.provenance.source: "deepseek-worker"`, `trust: "untrusted-until-verified"` | set by MeMesh |

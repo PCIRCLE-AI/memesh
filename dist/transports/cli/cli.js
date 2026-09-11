@@ -59725,7 +59725,7 @@ function summarizeEnvelope(raw) {
   if (typeof env.ok !== "boolean") {
     throw new DelegationInputError('the envelope has no boolean "ok" \u2014 this is not a worker envelope');
   }
-  let allowedTools = [];
+  let allowedTools = null;
   if (env.allowed_tools !== void 0) {
     if (!Array.isArray(env.allowed_tools) || !env.allowed_tools.every((t) => typeof t === "string")) {
       throw new DelegationInputError('"allowed_tools" must be an array of strings');
@@ -59788,6 +59788,11 @@ function recordDelegation(input) {
     const storedVerdict = DELEGATION_VERDICTS.includes(stored.verdict) ? stored.verdict : "unreviewed";
     return { stored: false, name, verdict: storedVerdict, trust: trustFor(storedVerdict), summary };
   }
+  const granted = input.grantedTools?.map((t) => clean(t, 64)).slice(0, 50);
+  const allowedTools = granted ?? summary.allowedTools;
+  const allowedSource = granted ? "orchestrator" : summary.allowedTools ? "envelope" : null;
+  const toolsLine = allowedTools === null ? "Allowed tools: not reported in the envelope" : `Allowed tools: ${allowedTools.length ? allowedTools.join(", ") : "none"}${granted ? " (granted by the orchestrator)" : ""}`;
+  const envelopeDisagrees = granted && summary.allowedTools && [...granted].sort().join("\0") !== [...summary.allowedTools].sort().join("\0");
   const at = (/* @__PURE__ */ new Date()).toISOString();
   const usageText = USAGE_KEYS.filter((k) => summary.usage[k] !== void 0).map((k) => `${k}=${summary.usage[k]}`).join(", ");
   remember({
@@ -59796,7 +59801,8 @@ function recordDelegation(input) {
     title: `${at.slice(0, 10)} delegation to ${summary.model ?? "worker"} (${summary.mode})`,
     observations: [
       `Delegated to ${summary.model ?? "an unnamed model"} (${summary.mode} mode); prompt sha256 ${input.promptSha256}`,
-      `Allowed tools: ${summary.allowedTools.length ? summary.allowedTools.join(", ") : "none"}`,
+      toolsLine,
+      ...envelopeDisagrees ? [`Allowed tools mismatch: the envelope reports ${summary.allowedTools.join(", ") || "none"}`] : [],
       `Result: ok=${summary.ok}, finish_reason=${summary.finishReason ?? "none"}`,
       usageText ? `Usage: ${usageText}` : "Usage: not reported in the envelope",
       verdictLine(verdict, at),
@@ -59813,7 +59819,9 @@ function recordDelegation(input) {
       envelope_sha256: envelopeSha256,
       model: summary.model,
       mode: summary.mode,
-      allowed_tools: summary.allowedTools,
+      allowed_tools: allowedTools,
+      allowed_tools_source: allowedSource,
+      ...granted && summary.allowedTools ? { envelope_allowed_tools: summary.allowedTools } : {},
       usage: summary.usage,
       finish_reason: summary.finishReason,
       ok: summary.ok
@@ -61651,7 +61659,7 @@ function reportDelegationError(err) {
   throw err;
 }
 var delegationCmd = program2.command("delegation").description("Record a task delegated to the DeepSeek worker, and the orchestrator's verdict on it");
-delegationCmd.command("record").description("Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage \u2014 never the prompt or the output)").option("--envelope <file>", "The JSON envelope the worker client printed (required)").option("--prompt-file <file>", "The prompt that was sent; only its sha256 is stored (required)").option("--verdict <verdict>", "unreviewed (default), accepted, or rejected").option("--follow-up <text>", "What you decided to do next, in your own words").option("--json", "Output as JSON").action(async (opts) => {
+delegationCmd.command("record").description("Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage \u2014 never the prompt or the output)").option("--envelope <file>", "The JSON envelope the worker client printed (required)").option("--prompt-file <file>", "The prompt that was sent; only its sha256 is stored (required)").option("--allow-tool <name>", "A tool you granted the worker; repeat for each. Recorded as the authoritative list (the envelope only reports tools in Harness mode)", (value, prev) => [...prev ?? [], value]).option("--verdict <verdict>", "unreviewed (default), accepted, or rejected").option("--follow-up <text>", "What you decided to do next, in your own words").option("--json", "Output as JSON").action(async (opts) => {
   if (!opts.envelope || !opts.promptFile) {
     console.error("Error: --envelope <file> and --prompt-file <file> are both required.");
     process.exit(1);
@@ -61667,7 +61675,8 @@ delegationCmd.command("record").description("Turn a worker JSON envelope into on
         promptSha256,
         verdict: opts.verdict,
         followUp: opts.followUp,
-        project: getProjectName()
+        project: getProjectName(),
+        grantedTools: opts.allowTool
       });
     } catch (err) {
       reportDelegationError(err);

@@ -1630,7 +1630,7 @@ Record a task handed to a delegate worker (the DeepSeek worker), from the
 orchestrator's side. Guide: [Delegate worker](../platforms/deepseek-worker.md).
 
 ```bash
-memesh delegation record --envelope envelope.json --prompt-file prompt.txt [--verdict unreviewed|accepted|rejected] [--follow-up "<text>"] [--json]
+memesh delegation record --envelope envelope.json --prompt-file prompt.txt [--allow-tool <name> ...] [--verdict unreviewed|accepted|rejected] [--follow-up "<text>"] [--json]
 memesh delegation verify <name> --verdict accepted|rejected [--note "<text>"] [--json]
 ```
 
@@ -1638,6 +1638,7 @@ memesh delegation verify <name> --verdict accepted|rejected [--note "<text>"] [-
 |--------|-------------|
 | `--envelope <file>` | The worker client's JSON envelope (`record`, required). It must be a JSON object with a boolean `ok`; at most 4 MiB. |
 | `--prompt-file <file>` | The prompt that was sent (`record`, required). Only its sha256 is stored. |
+| `--allow-tool <name>` | `record`: a tool you granted the worker; repeat for each. This list is recorded as authoritative; if the envelope reports a different one, the mismatch is stored too. |
 | `--verdict <verdict>` | `record`: `unreviewed` (default), `accepted` or `rejected`. `verify`: `accepted` or `rejected` (required). |
 | `--follow-up <text>` | `record`: what you decided to do next, stored as one line. |
 | `--note <text>` | `verify`: why, stored with the verdict. |
@@ -1646,7 +1647,7 @@ memesh delegation verify <name> --verdict accepted|rejected [--note "<text>"] [-
 `delegation-<prompt sha256, 12>-<envelope sha256, 8>`, tagged
 `source:deepseek-worker` and `project:<current project>`. It keeps the model,
 mode (`harness` when the envelope has a `task_id`, otherwise `direct`),
-`allowed_tools`, `usage`, `finish_reason`, `ok`, and the verdict. It never
+the allowed tools (from `--allow-tool`, else the envelope's `allowed_tools`, else "not reported" — never a guessed "none"), `usage`, `finish_reason`, `ok`, and the verdict. It never
 keeps the prompt text or the worker's output. `metadata.provenance` carries
 `source: "deepseek-worker"` and `trust`: `untrusted-until-verified` until a
 verdict is given, then `verified` or `rejected`; `metadata.trust` is

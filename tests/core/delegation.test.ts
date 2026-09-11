@@ -43,7 +43,8 @@ describe('summarizeEnvelope', () => {
     const s = summarizeEnvelope(JSON.parse(directText));
     expect(s.mode).toBe('direct');
     expect(s.ok).toBe(false);
-    expect(s.allowedTools).toEqual([]);
+    // Absent is not "none": the envelope simply did not say (review F2).
+    expect(s.allowedTools).toBeNull();
   });
 
   it('refuses what is not a worker envelope', () => {
@@ -127,6 +128,32 @@ describe('recordDelegation / setDelegationVerdict', () => {
     getDatabase().prepare("INSERT INTO entities (name, type) VALUES ('plain-note', 'note')").run();
     expect(() => setDelegationVerdict({ name: 'plain-note', verdict: 'accepted' })).toThrow(/not a delegation record/);
     expect(() => setDelegationVerdict({ name: 'missing', verdict: 'accepted' })).toThrow(/no memory named/);
+  });
+
+  it('an envelope without allowed_tools records "not reported", not "none" (F2)', () => {
+    const r = recordDelegation({ envelopeText: directText, promptSha256: promptSha, project: 'demo' });
+    const e = stored(r.name)!;
+    expect(e.observations).toContain('Allowed tools: not reported in the envelope');
+    expect(e.observations.some((o: string) => o === 'Allowed tools: none')).toBe(false);
+    expect(e.metadata.provenance.allowed_tools).toBeNull();
+    expect(e.metadata.provenance.allowed_tools_source).toBeNull();
+  });
+
+  it('the orchestrator can state the tools it granted; a mismatch with the envelope is recorded (F2)', () => {
+    const granted = recordDelegation({
+      envelopeText: directText, promptSha256: promptSha, project: 'demo', grantedTools: ['read_file'],
+    });
+    const g = stored(granted.name)!;
+    expect(g.observations).toContain('Allowed tools: read_file (granted by the orchestrator)');
+    expect(g.metadata.provenance).toMatchObject({ allowed_tools: ['read_file'], allowed_tools_source: 'orchestrator' });
+
+    const other = createHash('sha256').update('another prompt').digest('hex');
+    const mismatch = recordDelegation({
+      envelopeText: harnessText, promptSha256: other, project: 'demo', grantedTools: ['read_file'],
+    });
+    const m = stored(mismatch.name)!;
+    expect(m.observations).toContain('Allowed tools mismatch: the envelope reports read_file, write_file');
+    expect(m.metadata.provenance.envelope_allowed_tools).toEqual(['read_file', 'write_file']);
   });
 
   it('refuses a malformed prompt hash and a non-JSON envelope', () => {
