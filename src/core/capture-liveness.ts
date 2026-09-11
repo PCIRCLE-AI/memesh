@@ -263,6 +263,25 @@ export const SKIP_REASONS = {
 } as const;
 
 /**
+ * Does this Bash command run `git commit`? post-commit's trigger test.
+ *
+ * `commit` must be git's SUBCOMMAND: after `git`, only global options may
+ * come first (`-C <dir>`, `-c <key=value>`, `--git-dir <dir>`,
+ * `--work-tree <dir>`, `--namespace <ns>`, or any `-x` / `--flag[=v]`),
+ * and `commit` must end at whitespace, a shell separator or the end — so
+ * `git log --grep commit`, `git show HEAD -- src/commit.ts` and
+ * `git commit-tree` are not commits. Matching `commit` ANYWHERE after `git`
+ * classified all of those as "a git commit ran but printed no commit line",
+ * which is the one skip reason that counts toward silence.
+ */
+export function isGitCommitCommand(command: string): boolean {
+  return GIT_COMMIT_RE.test(command);
+}
+
+const GIT_COMMIT_RE =
+  /(?:^|[\s;&|(`])git(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace)\s+\S+|-\S+))*\s+commit(?=$|[\s;&|)`])/;
+
+/**
  * Skips that mean the hook's trigger did not apply, per hook. They are not
  * counted as runs toward `silent`: a post-commit run on `ls` says nothing
  * about whether commits are captured, and session-summary fires on EVERY

@@ -90,6 +90,10 @@ export const SKIP_REASONS = {
     commitLineMissing: 'a git commit ran but printed no commit line',
     alreadyCaptured: 'this session was already captured',
 };
+export function isGitCommitCommand(command) {
+    return GIT_COMMIT_RE.test(command);
+}
+const GIT_COMMIT_RE = /(?:^|[\s;&|(`])git(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace)\s+\S+|-\S+))*\s+commit(?=$|[\s;&|)`])/;
 export const NOT_TRIGGERED_SKIP_REASONS = {
     'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
     'session-summary': [SKIP_REASONS.alreadyCaptured],

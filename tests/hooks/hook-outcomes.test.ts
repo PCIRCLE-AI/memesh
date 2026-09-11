@@ -14,6 +14,7 @@ import {
   HOOK_OUTCOMES_PER_HOOK,
   SILENT_HOOK_MIN_RUNS,
   SKIP_REASONS,
+  isGitCommitCommand,
   HOOK_OUTCOMES_ROTATE_BYTES,
   HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK,
   RECORD_TEXT_MAX,
@@ -491,6 +492,28 @@ describe('hook outcome records', () => {
     const kept = trimHookOutcomeLines([small(1), small(2), huge].join('\n') + '\n', 20, 1000);
     expect(kept).not.toContain('qqqq');
     expect(kept.trim().split('\n')).toEqual([small(1), small(2)]);
+  });
+
+  it.each([
+    ['git commit -m a', true],
+    ['git -C /x commit -m a', true],
+    ['git -c user.name=x commit -m a', true],
+    ['git --no-pager commit -q -m a', true],
+    ['git --git-dir /x/.git commit -m a', true],
+    ['git commit --amend --no-edit', true],
+    ['git commit', true],
+    ['cd /x && git add -u && git commit -m "a"', true],
+    ['git add -u ; git commit -q -m a', true],
+    ['(git commit -m a)', true],
+    ['git log --grep commit', false],
+    ['git show HEAD -- src/commit.ts', false],
+    ['git rev-parse --verify commit', false],
+    ['git commit-tree HEAD^{tree}', false],
+    ['git merge feature', false],
+    ['legit commit', false],
+    ['npm run release:finish', false],
+  ])('post-commit classifies %j as a commit: %s', (command, expected) => {
+    expect(isGitCommitCommand(command as string)).toBe(expected);
   });
 
   // ── a planted file (S1) ──────────────────────────────────────────────────

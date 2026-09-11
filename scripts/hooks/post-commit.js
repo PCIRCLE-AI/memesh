@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'child_process';
-import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
 
 // The parsed payload, hoisted so the outcome recorder below can read
 // session_id and the host signal from ANY exit path — including the ones
@@ -69,7 +69,7 @@ process.stdin.on('end', () => {
     // ran but printed no commit line" is the #321 shape — a commit happened
     // and nothing was saved — and is exactly the silence worth a sentence.
     const issuedCommand = typeof data.tool_input?.command === 'string' ? data.tool_input.command : '';
-    if (!/\bgit\b[^|;&]*\bcommit\b/.test(issuedCommand)) {
+    if (!isGitCommitCommand(issuedCommand)) {
       record('skipped', SKIP_REASONS.notGitCommit);
       return exit0();
     }

@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "41fb0790917997d02ae8f995f29adbe8bdd56fa611f5e5b13d6a4cede03deac7",
-      "bytes": 11928
+      "sha256": "6aecf8c8b6eff051f0083d254e3ec742e17b204de6a2e75c602a63c47a9459e4",
+      "bytes": 12152
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -103,8 +103,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "4b32d0dfb14bd061a3746e6d953d45b984a61b8faa5c0169b734cb6d0c556a18",
-      "bytes": 57828
+      "sha256": "afd8242d4f6a74b7b60bd7993a8e29406784f0a7edd19c755fd6595b228ba27e",
+      "bytes": 57850
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
@@ -123,8 +123,8 @@
     },
     {
       "path": "scripts/hooks/post-commit.js",
-      "sha256": "d3aeaa6515319117ad7a85b63eceb8b9a4b4eaef9c42f0b2a787da4b482cad6e",
-      "bytes": 13307
+      "sha256": "20ca88859885f9522e9325b0cfacc7742f0155824bc9838b8a6651c858ad3d8b",
+      "bytes": 13314
     },
     {
       "path": "scripts/hooks/pre-compact.js",

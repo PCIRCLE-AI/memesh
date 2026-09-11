@@ -58,6 +58,7 @@ export {
   summarizeHookOutcomes,
   HOOK_OUTCOMES_FILENAME,
   SKIP_REASONS,
+  isGitCommitCommand,
 } from './_generated/capture-liveness.js';
 export {
   resolveUpdateNotice,

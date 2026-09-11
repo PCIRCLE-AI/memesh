@@ -28,6 +28,7 @@ export declare const SKIP_REASONS: {
     readonly commitLineMissing: "a git commit ran but printed no commit line";
     readonly alreadyCaptured: "this session was already captured";
 };
+export declare function isGitCommitCommand(command: string): boolean;
 export declare const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>>;
 export declare const NEVER_RAN_GRACE_HOURS = 72;
 export declare function parseHookOutcomes(raw: string | null | undefined, limit?: number): HookOutcomeFile;
