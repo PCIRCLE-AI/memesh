@@ -19,7 +19,7 @@ import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
-import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, HEARTBEAT_HOOKS, HOOK_OUTCOMES_FILENAME, SILENT_HOOK_MIN_RUNS, } from './capture-liveness.js';
+import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, SILENT_HOOK_MIN_RUNS, } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
@@ -517,7 +517,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
             check: createCheck('capture-liveness', TITLE, 'pass', 'Automatic capture is turned off, so there is nothing to keep alive. Re-enable it to resume capturing.'),
         };
     }
-    let raw = null;
+    let raw;
     try {
         raw = readFileSyncImpl(path.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), 'utf8');
     }
@@ -526,9 +526,9 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     }
     const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
     let db = null;
-    let types = [];
-    let neverRan = [];
-    let measuringHours = null;
+    let types;
+    let neverRan;
+    let measuringHours;
     try {
         db = openDatabaseImpl();
         const rows = db.prepare(`SELECT e.type AS type,
@@ -549,7 +549,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
         const stamped = new Set(tablePresent
             ? db.prepare('SELECT hook FROM hook_runs').all().map((r) => r.hook)
             : []);
-        neverRan = HEARTBEAT_HOOKS.filter((h) => !stamped.has(h));
+        neverRan = FAIL_ELIGIBLE_HOOKS.filter((h) => !stamped.has(h));
         const since = db.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
         measuringHours = since !== undefined ? hoursSince(since) : null;
     }
@@ -1320,7 +1320,6 @@ export async function runDoctor(options) {
         ? () => undefined
         : closeDatabaseImpl;
     const checks = [];
-    let captureReport;
     const install = getCurrentInstallChannelImpl({ packageRoot });
     const installSupport = getInstallChannelSupportImpl(install, packageRoot);
     checks.push(createCheck('install-channel', 'Install method', install === 'unknown' ? 'warn' : 'pass', `Install method detected: ${installSupport.label}.`, install === 'unknown'
@@ -1527,7 +1526,7 @@ export async function runDoctor(options) {
     checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
     const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl);
     checks.push(captureLiveness.check);
-    captureReport = captureLiveness.report;
+    const captureReport = captureLiveness.report;
     checks.push(inspectDashboardArtifact(packageRoot, existsSyncImpl));
     checks.push(inspectNodeRuntime(packageRoot, existsSyncImpl, readFileSyncImpl));
     checks.push(inspectNativeBinding(packageRoot, existsSyncImpl, nativeBindingProbeImpl));

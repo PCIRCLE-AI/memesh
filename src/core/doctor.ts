@@ -1422,7 +1422,7 @@ function inspectCaptureLiveness(
     };
   }
 
-  let raw: string | null = null;
+  let raw: string | null;
   try {
     raw = readFileSyncImpl(path.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), 'utf8') as string;
   } catch {
@@ -1434,9 +1434,9 @@ function inspectCaptureLiveness(
   const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
 
   let db: DatabaseLike | null = null;
-  let types: TypeTrend[] = [];
-  let neverRan: string[] = [];
-  let measuringHours: number | null = null;
+  let types: TypeTrend[];
+  let neverRan: string[];
+  let measuringHours: number | null;
   try {
     db = openDatabaseImpl() as unknown as DatabaseLike;
 
@@ -2874,9 +2874,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     : closeDatabaseImpl;
 
   const checks: DoctorCheck[] = [];
-  // The figures behind the capture-liveness row, surfaced on the result so
-  // `--json` carries the evidence and not only the verdict.
-  let captureReport: CaptureLivenessReport | undefined;
 
   const install = getCurrentInstallChannelImpl({ packageRoot });
   const installSupport = getInstallChannelSupportImpl(install, packageRoot);
@@ -3267,7 +3264,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // an empty graph for two days (#327).
   const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl);
   checks.push(captureLiveness.check);
-  captureReport = captureLiveness.report;
+  // The figures behind the capture-liveness row, surfaced on the result so
+  // `--json` carries the evidence and not only the verdict.
+  const captureReport = captureLiveness.report;
   checks.push(inspectDashboardArtifact(packageRoot, existsSyncImpl));
   // Before the native-binding row, because when that one is red this one is
   // the context that explains it.

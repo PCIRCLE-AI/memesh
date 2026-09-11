@@ -31,6 +31,7 @@ export const CAPTURE_HOOKS = [
     'session-start',
 ];
 export const HEARTBEAT_HOOKS = ['post-commit', 'session-summary', 'pre-compact'];
+export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
 export const NEVER_RAN_GRACE_HOURS = 72;
 export function emptyOutcomeFile() {
     return { version: HOOK_OUTCOMES_VERSION, hooks: {} };
@@ -162,7 +163,7 @@ export function captureLivenessVerdict(input) {
         input.measuringHours !== undefined &&
         input.measuringHours > NEVER_RAN_GRACE_HOURS;
     const deadHooks = graceOver
-        ? (input.neverRanHooks ?? []).filter((h) => HEARTBEAT_HOOKS.includes(h) && !withRecords.has(h)).sort()
+        ? (input.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort()
         : [];
     const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.runs - a.runs);
     const stoppedTypes = input.types.filter((t) => t.stopped);

@@ -54572,7 +54572,7 @@ function summarizeTypeTrends(rows) {
 function captureLivenessVerdict(input) {
   const withRecords = new Set(input.hooks.filter((h) => h.runs > 0).map((h) => h.hook));
   const graceOver = input.measuringHours !== null && input.measuringHours !== void 0 && input.measuringHours > NEVER_RAN_GRACE_HOURS;
-  const deadHooks = graceOver ? (input.neverRanHooks ?? []).filter((h) => HEARTBEAT_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
+  const deadHooks = graceOver ? (input.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
   const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.runs - a.runs);
   const stoppedTypes = input.types.filter((t) => t.stopped);
   let status = "PASS";
@@ -54582,7 +54582,7 @@ function captureLivenessVerdict(input) {
     status = "PASS_WITH_CONCERNS";
   return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
 }
-var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_VERSION, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, HEARTBEAT_HOOKS, NEVER_RAN_GRACE_HOURS;
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_VERSION, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, NEVER_RAN_GRACE_HOURS;
 var init_capture_liveness = __esm({
   "dist/core/capture-liveness.js"() {
     "use strict";
@@ -54601,7 +54601,7 @@ var init_capture_liveness = __esm({
       "guard-check",
       "session-start"
     ];
-    HEARTBEAT_HOOKS = ["post-commit", "session-summary", "pre-compact"];
+    FAIL_ELIGIBLE_HOOKS = ["session-summary"];
     NEVER_RAN_GRACE_HOURS = 72;
   }
 });
@@ -55156,7 +55156,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
       check: createCheck("capture-liveness", TITLE, "pass", "Automatic capture is turned off, so there is nothing to keep alive. Re-enable it to resume capturing.")
     };
   }
-  let raw = null;
+  let raw;
   try {
     raw = readFileSyncImpl(path15.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), "utf8");
   } catch {
@@ -55164,9 +55164,9 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   }
   const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
   let db2 = null;
-  let types = [];
-  let neverRan = [];
-  let measuringHours = null;
+  let types;
+  let neverRan;
+  let measuringHours;
   try {
     db2 = openDatabaseImpl();
     const rows = db2.prepare(`SELECT e.type AS type,
@@ -55185,7 +55185,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     })));
     const tablePresent = !!db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
     const stamped = new Set(tablePresent ? db2.prepare("SELECT hook FROM hook_runs").all().map((r) => r.hook) : []);
-    neverRan = HEARTBEAT_HOOKS.filter((h) => !stamped.has(h));
+    neverRan = FAIL_ELIGIBLE_HOOKS.filter((h) => !stamped.has(h));
     const since = db2.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
     measuringHours = since !== void 0 ? hoursSince(since) : null;
   } catch (err) {
@@ -55860,7 +55860,6 @@ async function runDoctor(options) {
   const wasDbOpenBeforeUs = isDatabaseOpenImpl();
   const safeCloseDatabaseImpl = wasDbOpenBeforeUs ? () => void 0 : closeDatabaseImpl;
   const checks = [];
-  let captureReport;
   const install = getCurrentInstallChannelImpl({ packageRoot: packageRoot3 });
   const installSupport = getInstallChannelSupportImpl(install, packageRoot3);
   checks.push(createCheck("install-channel", "Install method", install === "unknown" ? "warn" : "pass", `Install method detected: ${installSupport.label}.`, install === "unknown" ? "If this is a source checkout, run MeMesh from the repo root. If this is a packaged install, reinstall with `npm install -g @pcircle/memesh`." : void 0, install === "unknown" ? { code: "install-channel.unknown" } : void 0));
@@ -56022,7 +56021,7 @@ async function runDoctor(options) {
   checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
   const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl);
   checks.push(captureLiveness.check);
-  captureReport = captureLiveness.report;
+  const captureReport = captureLiveness.report;
   checks.push(inspectDashboardArtifact(packageRoot3, existsSyncImpl));
   checks.push(inspectNodeRuntime(packageRoot3, existsSyncImpl, readFileSyncImpl));
   checks.push(inspectNativeBinding(packageRoot3, existsSyncImpl, nativeBindingProbeImpl));
