@@ -59649,7 +59649,7 @@ var DECISION_CUES = [
   /(?:^|[.!?;]\s+)switching to\b/gi,
   /^\s*agreed\s*[:,—-]/gim,
   /\bfrom now on\b/gi,
-  /決定(?:用|採用|不用|不要)|改用|就用|選擇了|拍板/g
+  /決定(?:用|採用|不用|不要|改成|換成)|改用|就用|拍板/g
 ];
 var LESSON_CUES = [
   /\blessons? learned\b|\blesson\s*:/gi,
@@ -59669,7 +59669,7 @@ function sameClause(before) {
   return before.slice(cut);
 }
 function stripShownText(text) {
-  return text.replace(/```[\s\S]*?(?:```|$)/g, " ").replace(/`[^`\n]*`/g, " ").replace(/"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』/g, " ");
+  return text.replace(/```[\s\S]*?(?:```|$)/g, " ").replace(/`[^`\s](?:[^`\n]{0,78}[^`\s])?`/g, " ").replace(/"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』/g, " ");
 }
 function stripRecallBlock(text) {
   return text.replace(/^\s*\[MeMesh recall\][\s\S]*?(?:\n\s*\n|$)/, "");
@@ -59679,7 +59679,10 @@ function firstUnnegated(re, text) {
   let m;
   while ((m = re.exec(text)) !== null) {
     const before = sameClause(text.slice(Math.max(0, m.index - NEGATION_WINDOW), m.index));
-    if (!NEGATION.test(before))
+    const rest = text.slice(m.index + m[0].length);
+    const end = /[.!?。！？\n]/.exec(rest);
+    const isQuestion = end !== null && (end[0] === "?" || end[0] === "\uFF1F");
+    if (!NEGATION.test(before) && !isQuestion)
       return m[0].trim();
     if (m[0] === "")
       re.lastIndex++;

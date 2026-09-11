@@ -44,8 +44,9 @@ const DECISION_CUES: RegExp[] = [
   /^\s*agreed\s*[:,—-]/gim,
   /\bfrom now on\b/gi,
   // 決定 alone is an ordinary verb (「根據 flag 決定要不要重試」、「決定改天」、
-  // 「決定走了」、「決定要用哪個」); only 決定用/採用/不用/不要 states a choice.
-  /決定(?:用|採用|不用|不要)|改用|就用|選擇了|拍板/g,
+  // 「決定走了」、「決定要用哪個」); only 決定用/採用/不用/不要/改成/換成
+  // states a choice. 選擇了 was dropped: 「使用者選擇了檔案」 is not a decision.
+  /決定(?:用|採用|不用|不要|改成|換成)|改用|就用|拍板/g,
 ];
 
 const LESSON_CUES: RegExp[] = [
@@ -81,9 +82,12 @@ function stripShownText(text: string): string {
   return text
     .replace(/```[\s\S]*?(?:```|$)/g, ' ')
     // Inline code before quotes: a `"` inside backticks would otherwise pair
-    // with a real quote later and swallow the sentence between them. Known
-    // false negative left as is: an inch mark (12" screen) opens a quote.
-    .replace(/`[^`\n]*`/g, ' ')
+    // with a real quote later and swallow the sentence between them. A code
+    // span neither starts nor ends with a space and is at most 80 chars, so a
+    // stray backtick ("Press ` to open …") does not pair with the next real
+    // one. Known false negatives left as is: an inch mark (12" screen) opens
+    // a quote; a stray backtick directly before a word can still pair.
+    .replace(/`[^`\s](?:[^`\n]{0,78}[^`\s])?`/g, ' ')
     .replace(/"[^"\n]*"|“[^”\n]*”|「[^」\n]*」|『[^』\n]*』/g, ' ');
 }
 
@@ -97,7 +101,11 @@ function firstUnnegated(re: RegExp, text: string): string | null {
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
     const before = sameClause(text.slice(Math.max(0, m.index - NEGATION_WINDOW), m.index));
-    if (!NEGATION.test(before)) return m[0].trim();
+    // A cue inside a question ("Have we decided?") asks, it does not decide.
+    const rest = text.slice(m.index + m[0].length);
+    const end = /[.!?。！？\n]/.exec(rest);
+    const isQuestion = end !== null && (end[0] === '?' || end[0] === '？');
+    if (!NEGATION.test(before) && !isQuestion) return m[0].trim();
     if (m[0] === '') re.lastIndex++;
   }
   return null;

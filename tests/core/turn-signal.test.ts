@@ -62,6 +62,10 @@ describe('classifyTurn', () => {
     // Round 3 P3-4: a quote character inside inline code must not pair with a
     // real quote later and swallow the sentence between them.
     ['How do I quote?', 'Use `"` to quote strings. We decided to use "BullMQ".'],
+    // Round 4: a stray backtick must not swallow the sentence up to real inline code.
+    ['Console?', 'Press ` to open the console; we decided to use `tmux` for panes.'],
+    ['換什麼？', '我們決定改成 pnpm。'],
+    ['換什麼？', '決定換成 SQLite。'],
     // P3
     ['Which framework?', "I'll go with Fastify here — it has the schema validation built in."],
   ])('a decision after another clause still counts: %s / %s', (u, a) => {
@@ -79,6 +83,10 @@ describe('classifyTurn', () => {
     ['他人呢？', '他決定走了。'],
     ['怎麼選？', '系統會決定要用哪個 provider。'],
     ['選好了嗎？', '我還決定不了。'],
+    // Round 4 (optional items): a question is not a decision; 選擇了 is a plain verb.
+    ['DB?', 'Have we decided? Not yet.'],
+    ['DB?', 'Did we decide on the DB, or should I wait?'],
+    ['上傳了嗎？', '使用者選擇了檔案，正在上傳。'],
   ])('no false positive on code, quotes or a plain verb: %s', (u, a) => {
     expect(classifyTurn(u, a)).toBeNull();
   });
