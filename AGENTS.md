@@ -10,8 +10,10 @@ host is recallable from all of them. Not installed yet? Follow
 1. **Session start — load, don't re-explore.** Call the `briefing` tool once
    (CLI: `memesh briefing`). It returns the assembled work topology for the
    current project: goal / next / blocked / done, decisions, lessons,
-   knowledge, recent activity. Read that instead of re-reading the repo to
-   reconstruct context.
+   knowledge, recent activity, and — closing the block — a capped index of
+   every durable memory for the project, one line each with its `[mem:id]`
+   handle (`memesh briefing --index` prints just that). Read that instead of
+   re-reading the repo to reconstruct context.
 2. **When the user states a goal, a next step, or a blocker — record it.**
    Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`). It
    is injected at the start of the next session and acted on as fact.
