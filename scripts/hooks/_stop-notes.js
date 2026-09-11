@@ -53,15 +53,20 @@ const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
 
 const MEMORY_WRITE_TOOL_RE = /(?:^|__)(?:remember|learn)$/;
 const MEMORY_WRITE_BASH_RE = /\bmemesh\s+(?:remember|learn)\b/;
-// `git commit` in COMMAND position — at the start or after a shell separator,
-// with any global options (-C <dir>, -c <k=v>, --flag[=v]) in between — and
-// followed by a space or the end. Not `grep "git commit"`, not `git
-// commit-tree`, not `echo git commit`.
-const COMMIT_RE = /(?:^|[;&|(\n]\s*)git(?:\s+(?:-[Cc]\s+\S+|--[\w-]+(?:=\S+)?))*\s+commit(?=\s|$)/;
+// `git commit` as a command: git preceded by start, whitespace, a separator
+// or a path slash (so `sudo git`, `VAR=x git`, `/usr/bin/git` count), any
+// global options between (`-C "<dir with spaces>"`, `-c k=v`, `--git-dir x`),
+// then `commit` followed by the end or a separator — not `commit-tree`, and
+// not `grep "git commit"` (a quote is not an allowed prefix). The same
+// pattern #327's post-commit hook settled on; one shared helper is planned.
+const COMMIT_RE = /(?:^|[\s;&|(`\/])git(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace)\s+(?:"[^"]*"|'[^']*'|\S+)|-\S+))*\s+commit(?=$|[\s;&|)`])/;
 const TEST_RE = /\b(?:vitest|jest|pytest|go\s+test|cargo\s+test|npm\s+(?:run\s+)?test|run-tests[\w-]*)\b/;
-// What Claude Code puts in a tool_result when the user turned the call down
-// (e.g. rejected a plan). Usually also is_error, but not relied upon.
-const DECLINED_RE = /\brejected\b|doesn't want to proceed|does not want to proceed|\bdeclined\b/i;
+// The sentence Claude Code puts in a tool_result when the user turned the
+// call down ("The user doesn't want to proceed with this tool use. The tool
+// use was rejected …"). Matched as that sentence, and only on plan/question
+// results: the bare words "rejected"/"declined" appear in ordinary commit
+// and test output, and in approved plans, and must not cancel those.
+const DECLINED_RE = /The user doesn't want to (?:proceed with this tool use|take this action)|^User rejected tool use/;
 /** Days a per-session nudge offset file is kept after its last Stop. */
 const NUDGE_STATE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** Most stale offset files one Stop removes — the pruning stays bounded. */
@@ -235,7 +240,8 @@ export function scanTranscriptWindow(text) {
         if (!kind) continue;
         pending.delete(block.tool_use_id);
         const resultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
-        const failed = block.is_error === true || DECLINED_RE.test(resultText);
+        const declined = (kind === 'plan' || kind === 'question') && DECLINED_RE.test(resultText);
+        const failed = block.is_error === true || declined;
         if (kind === 'test') {
           if (failed) testWentRed = true;
           else if (testWentRed && !testWentGreen) { testWentGreen = true; moves.push('a test went red then green'); }

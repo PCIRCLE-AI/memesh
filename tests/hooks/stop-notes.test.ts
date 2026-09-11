@@ -222,4 +222,29 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(fs.existsSync(recent)).toBe(true);
     expect(fs.existsSync(path.join(dir, `${sessionId}.json`))).toBe(true);
   }, 60_000);
+
+  it('P2-b: "rejected"/"declined" in ordinary output does not cancel a real move', () => {
+    write([
+      ...reads(4),
+      ...toolCall('Bash', { command: 'git commit -m "fix: handle rejected payments"' }, { content: '[main abc1234] fix: handle rejected payments' }),
+    ]);
+    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
+    append([
+      ...reads(3),
+      ...toolCall('Bash', { command: 'npx vitest run' }, { error: true, content: 'AssertionError: expected promise to be rejected' }),
+      ...toolCall('Bash', { command: 'npx vitest run' }, { content: 'Tests 3 passed; expected promise to be rejected ✓' }),
+    ]);
+    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a test went red then green/);
+    append([...reads(4), ...toolCall('ExitPlanMode', { plan: 'x' }, { content: 'User has approved your plan. Handle declined cards first.' })]);
+    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a plan was approved/);
+  }, 60_000);
+
+  it('P3-b: commit detection covers quoted -C paths, env prefixes and sudo', () => {
+    write([...reads(4), ...toolCall('Bash', { command: 'git -C "/a b/c" commit -m x' })]);
+    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
+    append([...reads(4), ...toolCall('Bash', { command: 'GIT_EDITOR=true git commit --amend' })]);
+    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
+    append([...reads(4), ...toolCall('Bash', { command: 'sudo git commit -m y' })]);
+    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
+  }, 60_000);
 });
