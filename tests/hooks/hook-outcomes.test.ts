@@ -15,6 +15,7 @@ import {
   SILENT_HOOK_MIN_RUNS,
   SKIP_REASONS,
   HOOK_OUTCOMES_ROTATE_BYTES,
+  HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK,
   RECORD_TEXT_MAX,
   type HookOutcomeRecord,
 } from '../../src/core/capture-liveness.js';
@@ -357,7 +358,9 @@ describe('hook outcome records', () => {
     // fans 40 real hook processes out at once and asserts every line lands.
     const inputs: Array<[string, object]> = [];
     for (let i = 0; i < 20; i++) inputs.push(['pre-compact', { trigger: 'auto' }]);
-    for (let i = 0; i < 20; i++) inputs.push(['post-commit', { tool_name: 'Read', tool_input: {} }]);
+    // A TRIGGERED skip (tool_name absent): a not-triggered one would be
+    // windowed down to HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK by the reader.
+    for (let i = 0; i < 20; i++) inputs.push(['post-commit', { tool_input: {} }]);
     await Promise.all(inputs.map(([hook, payload]) => runHookAsync(hook, payload)));
     const raw = fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8');
     expect(raw.trim().split('\n')).toHaveLength(40);
@@ -450,6 +453,36 @@ describe('hook outcome records', () => {
     // Newest first to survive, in original order.
     const keptLines = kept.trim().split('\n');
     expect(keptLines[keptLines.length - 1]).toBe(lines[lines.length - 1]);
+  });
+
+  it('not-triggered skips cannot push triggered evidence out of the window (the #321 replay)', () => {
+    // Ten commits that printed no commit line, each followed by six Bash
+    // calls that were not commits. A single 20-record queue held only two
+    // triggered runs and read PASS; the bucketed window keeps all ten.
+    const rec = (reason: string, i: number) => JSON.stringify({
+      hook: 'post-commit', at: `2026-09-${String(1 + (i % 9)).padStart(2, '0')}T${String(i % 24).padStart(2, '0')}:00:00.000Z`,
+      host: 'claude-code', outcome: 'skipped', reason,
+    });
+    const lines: string[] = [];
+    let i = 0;
+    for (let c = 0; c < 10; c++) {
+      lines.push(rec(SKIP_REASONS.commitLineMissing, i++));
+      for (let b = 0; b < 6; b++) lines.push(rec(SKIP_REASONS.notGitCommit, i++));
+    }
+    const raw = lines.join('\n');
+    const verdictOf = (text: string) => captureLivenessVerdict({
+      hooks: summarizeHookOutcomes(parseHookOutcomes(text)), types: [], neverRanHooks: [], measuringHours: 500,
+    });
+    const v = verdictOf(raw);
+    expect(v.status).toBe('PASS_WITH_CONCERNS');
+    expect(v.silentHook?.triggeredRuns).toBe(10);
+    expect(captureLivenessNotice(v)).toContain('post-commit ran 10 times');
+    // Rotation keeps the same window the reader does: trimming the file
+    // first must not change the verdict.
+    expect(verdictOf(trimHookOutcomeLines(raw + '\n')).status).toBe('PASS_WITH_CONCERNS');
+    const trimmed = parseHookOutcomes(trimHookOutcomeLines(raw + '\n')).hooks['post-commit'];
+    expect(trimmed.filter((r) => r.reason === SKIP_REASONS.commitLineMissing)).toHaveLength(10);
+    expect(trimmed.filter((r) => r.reason === SKIP_REASONS.notGitCommit)).toHaveLength(HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
   });
 
   // ── a planted file (S1) ──────────────────────────────────────────────────

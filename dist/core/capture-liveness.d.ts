@@ -13,6 +13,8 @@ export interface HookOutcomeFile {
 }
 export declare const HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
 export declare const HOOK_OUTCOMES_PER_HOOK = 20;
+export declare const HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK = 5;
+export declare function isTriggeredRecord(record: Pick<HookOutcomeRecord, 'hook' | 'outcome' | 'reason'>): boolean;
 export declare const HOOK_OUTCOMES_ROTATE_BYTES: number;
 export declare function serializeHookOutcome(record: HookOutcomeRecord): string;
 export declare function trimHookOutcomeLines(raw: string, max?: number, maxBytes?: number): string;

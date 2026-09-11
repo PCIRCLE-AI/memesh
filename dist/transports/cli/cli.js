@@ -54450,19 +54450,43 @@ var init_capture_flag = __esm({
 });
 
 // dist/core/capture-liveness.js
+function windowKeep(entries, maxTriggered, maxNotTriggered) {
+  const keep = new Array(entries.length).fill(false);
+  const seen = /* @__PURE__ */ new Map();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const { hook, triggered } = entries[i];
+    const counts = seen.get(hook) ?? { t: 0, n: 0 };
+    seen.set(hook, counts);
+    if (triggered) {
+      if (++counts.t <= maxTriggered)
+        keep[i] = true;
+    } else if (++counts.n <= maxNotTriggered) {
+      keep[i] = true;
+    }
+  }
+  return keep;
+}
+function isTriggeredRecord(record2) {
+  if (record2.outcome !== "skipped" || record2.reason === void 0)
+    return true;
+  return !(NOT_TRIGGERED_SKIP_REASONS[record2.hook] ?? []).includes(record2.reason);
+}
 function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
   if (!raw)
     return { hooks: {} };
-  const hooks = {};
+  const records = [];
   for (const line of raw.split("\n")) {
     const record2 = parseHookOutcomeLine(line);
-    if (!record2)
-      continue;
-    const bucket = hooks[record2.hook] ?? (hooks[record2.hook] = []);
-    bucket.push(record2);
-    if (bucket.length > limit)
-      bucket.shift();
+    if (record2)
+      records.push(record2);
   }
+  const keep = windowKeep(records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })), limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
+  const hooks = {};
+  records.forEach((record2, i) => {
+    if (!keep[i])
+      return;
+    (hooks[record2.hook] ?? (hooks[record2.hook] = [])).push(record2);
+  });
   return { hooks };
 }
 function parseHookOutcomeLine(line) {
@@ -54524,12 +54548,11 @@ function summarizeOne(hook, records) {
   let lastSkipReason = null;
   const skipCounts = /* @__PURE__ */ new Map();
   const hosts = /* @__PURE__ */ new Set();
-  const notTriggered = NOT_TRIGGERED_SKIP_REASONS[hook] ?? [];
   for (const r of records) {
     hosts.add(r.host);
     if (lastRunAt === null || r.at >= lastRunAt)
       lastRunAt = r.at;
-    const triggered = !(r.outcome === "skipped" && r.reason !== void 0 && notTriggered.includes(r.reason));
+    const triggered = isTriggeredRecord(r);
     if (triggered) {
       triggeredRuns++;
       if (firstTriggeredAt === null || r.at < firstTriggeredAt)
@@ -54595,12 +54618,13 @@ function captureLivenessVerdict(input) {
     status = "PASS_WITH_CONCERNS";
   return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
 }
-var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX;
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX;
 var init_capture_liveness = __esm({
   "dist/core/capture-liveness.js"() {
     "use strict";
     HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
     HOOK_OUTCOMES_PER_HOOK = 20;
+    HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK = 5;
     HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
     SILENT_HOOK_MIN_RUNS = 5;
     CAPTURE_HOOKS = [

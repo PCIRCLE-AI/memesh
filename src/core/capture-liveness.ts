@@ -71,12 +71,58 @@ export const HOOK_OUTCOMES_FILENAME = 'hook-outcomes.jsonl';
 export const HOOK_OUTCOMES_PER_HOOK = 20;
 
 /**
+ * Not-triggered records kept per hook, ON TOP of the HOOK_OUTCOMES_PER_HOOK
+ * triggered ones — the window is bucketed, not one queue.
+ *
+ * One queue lost the evidence it exists to keep: post-commit records a
+ * "not a git commit command" skip on EVERY Bash call, so with four or more
+ * Bash calls between commits a 20-record window never held the 5 triggered
+ * runs `silent` needs, and ten commits that saved nothing read as PASS.
+ * Bucketed, not-triggered records can never push triggered ones out; a few
+ * are kept only so `--json` still shows the hook is running.
+ */
+export const HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK = 5;
+
+/**
+ * Which records the per-hook window keeps: walking from the newest, the last
+ * `maxTriggered` triggered and `maxNotTriggered` not-triggered records of
+ * each hook. ONE definition, used by the reader and by rotation, so the file
+ * never drops a record the reader would have counted.
+ */
+function windowKeep(
+  entries: ReadonlyArray<{ hook: string; triggered: boolean }>,
+  maxTriggered: number,
+  maxNotTriggered: number,
+): boolean[] {
+  const keep = new Array<boolean>(entries.length).fill(false);
+  const seen = new Map<string, { t: number; n: number }>();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const { hook, triggered } = entries[i];
+    const counts = seen.get(hook) ?? { t: 0, n: 0 };
+    seen.set(hook, counts);
+    if (triggered) {
+      if (++counts.t <= maxTriggered) keep[i] = true;
+    } else if (++counts.n <= maxNotTriggered) {
+      keep[i] = true;
+    }
+  }
+  return keep;
+}
+
+/** True unless the record is a skip whose reason says the trigger did not apply. */
+export function isTriggeredRecord(record: Pick<HookOutcomeRecord, 'hook' | 'outcome' | 'reason'>): boolean {
+  if (record.outcome !== 'skipped' || record.reason === undefined) return true;
+  return !(NOT_TRIGGERED_SKIP_REASONS[record.hook] ?? []).includes(record.reason);
+}
+
+/**
  * Rotate lazily: counting lines on every append would mean reading the file
  * back on the hot path, which is the read step O_APPEND exists to remove. A
  * `stat` is cheap, so SIZE is the trigger and the trim is exact.
  *
  * 64 KiB is a comfortable multiple of the per-hook window for every hook
- * that records (8 hooks × 20 records), with room for long reason strings.
+ * that records (8 hooks × (20 triggered + 5 not-triggered) records), with
+ * room for long reason strings.
  * The bound is a ceiling, not a target — a file slightly under it still
  * rotates when the size crosses, and the trim is exact when it does.
  */
@@ -88,7 +134,9 @@ export function serializeHookOutcome(record: HookOutcomeRecord): string {
 }
 
 /**
- * Keep each hook's last `max` records, in their original order. Used by
+ * Keep each hook's window (the last `max` triggered records plus the last
+ * HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK not-triggered ones), in their
+ * original order. Used by
  * rotation; pure so the bound is testable without a filesystem. A line that
  * does not parse (a torn last line an interrupted hook left behind, or a
  * record naming a hook memesh does not ship) is dropped, not counted toward
@@ -99,21 +147,14 @@ export function trimHookOutcomeLines(
   max: number = HOOK_OUTCOMES_PER_HOOK,
   maxBytes: number = HOOK_OUTCOMES_ROTATE_BYTES,
 ): string {
-  const records: Array<{ hook: string; line: string }> = [];
+  const records: Array<{ hook: string; triggered: boolean; line: string }> = [];
   for (const line of raw.split('\n')) {
     const record = parseHookOutcomeLine(line);
-    if (record) records.push({ hook: record.hook, line });
+    if (record) records.push({ hook: record.hook, triggered: isTriggeredRecord(record), line });
   }
-  // Walk backwards so the newest `max` records of each hook are kept, then
-  // re-emit in original order — rotation must preserve tail ordering.
-  const keep = new Array<boolean>(records.length).fill(false);
-  const seen = new Map<string, number>();
-  for (let i = records.length - 1; i >= 0; i--) {
-    const hook = records[i].hook;
-    const n = (seen.get(hook) ?? 0) + 1;
-    seen.set(hook, n);
-    if (n <= max) keep[i] = true;
-  }
+  // The same window the reader keeps, re-emitted in original order —
+  // rotation must preserve tail ordering.
+  const keep = windowKeep(records, max, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
   let kept = records.filter((_, i) => keep[i]).map((r) => r.line);
   // The per-hook trim is exact, but it is not a size bound: 8 hooks × 20
   // records of long reasons can still sit above the rotation threshold, and
@@ -227,6 +268,12 @@ export const SKIP_REASONS = {
  * Deliberately NOT here: post-commit's commit-line-missing skip (the #321
  * shape — a commit happened and nothing was saved) and session-summary's
  * low-signal skips, which are real decisions about a real ending session.
+ *
+ * Known consequence, accepted: "too little activity in the session to be
+ * worth saving" is recorded per Stop, i.e. per TURN, so a pure question-and-
+ * answer day (five turns, no tool calls) can reach the silent threshold and
+ * produce a banner. Classifying it as not-triggered would also hide a Stop
+ * hook whose activity count broke, which is the worse error.
  */
 export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>> = {
   'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
@@ -251,22 +298,31 @@ export const NEVER_RAN_GRACE_HOURS = 72;
  * a lost history is a blind spot, and the blind spot is what this file
  * exists to close.
  *
- * Only the last HOOK_OUTCOMES_PER_HOOK records per hook are kept, so a
- * caller's window does not grow with the file.
+ * Each hook keeps its last `limit` TRIGGERED records plus its last
+ * HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK not-triggered ones (see windowKeep),
+ * so a caller's window does not grow with the file and a flood of
+ * not-triggered skips cannot push the evidence out of it.
  */
 export function parseHookOutcomes(
   raw: string | null | undefined,
   limit: number = HOOK_OUTCOMES_PER_HOOK,
 ): HookOutcomeFile {
   if (!raw) return { hooks: {} };
-  const hooks: Record<string, HookOutcomeRecord[]> = {};
+  const records: HookOutcomeRecord[] = [];
   for (const line of raw.split('\n')) {
     const record = parseHookOutcomeLine(line);
-    if (!record) continue;
-    const bucket = hooks[record.hook] ?? (hooks[record.hook] = []);
-    bucket.push(record);
-    if (bucket.length > limit) bucket.shift();
+    if (record) records.push(record);
   }
+  const keep = windowKeep(
+    records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })),
+    limit,
+    HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK,
+  );
+  const hooks: Record<string, HookOutcomeRecord[]> = {};
+  records.forEach((record, i) => {
+    if (!keep[i]) return;
+    (hooks[record.hook] ?? (hooks[record.hook] = [])).push(record);
+  });
   return { hooks };
 }
 
@@ -369,11 +425,10 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
   let lastSkipReason: string | null = null;
   const skipCounts = new Map<string, number>();
   const hosts = new Set<HookHost>();
-  const notTriggered = NOT_TRIGGERED_SKIP_REASONS[hook] ?? [];
   for (const r of records) {
     hosts.add(r.host);
     if (lastRunAt === null || r.at >= lastRunAt) lastRunAt = r.at;
-    const triggered = !(r.outcome === 'skipped' && r.reason !== undefined && notTriggered.includes(r.reason));
+    const triggered = isTriggeredRecord(r);
     if (triggered) {
       triggeredRuns++;
       if (firstTriggeredAt === null || r.at < firstTriggeredAt) firstTriggeredAt = r.at;

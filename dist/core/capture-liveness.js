@@ -1,5 +1,28 @@
 export const HOOK_OUTCOMES_FILENAME = 'hook-outcomes.jsonl';
 export const HOOK_OUTCOMES_PER_HOOK = 20;
+export const HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK = 5;
+function windowKeep(entries, maxTriggered, maxNotTriggered) {
+    const keep = new Array(entries.length).fill(false);
+    const seen = new Map();
+    for (let i = entries.length - 1; i >= 0; i--) {
+        const { hook, triggered } = entries[i];
+        const counts = seen.get(hook) ?? { t: 0, n: 0 };
+        seen.set(hook, counts);
+        if (triggered) {
+            if (++counts.t <= maxTriggered)
+                keep[i] = true;
+        }
+        else if (++counts.n <= maxNotTriggered) {
+            keep[i] = true;
+        }
+    }
+    return keep;
+}
+export function isTriggeredRecord(record) {
+    if (record.outcome !== 'skipped' || record.reason === undefined)
+        return true;
+    return !(NOT_TRIGGERED_SKIP_REASONS[record.hook] ?? []).includes(record.reason);
+}
 export const HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
 export function serializeHookOutcome(record) {
     return `${JSON.stringify(record)}\n`;
@@ -9,17 +32,9 @@ export function trimHookOutcomeLines(raw, max = HOOK_OUTCOMES_PER_HOOK, maxBytes
     for (const line of raw.split('\n')) {
         const record = parseHookOutcomeLine(line);
         if (record)
-            records.push({ hook: record.hook, line });
+            records.push({ hook: record.hook, triggered: isTriggeredRecord(record), line });
     }
-    const keep = new Array(records.length).fill(false);
-    const seen = new Map();
-    for (let i = records.length - 1; i >= 0; i--) {
-        const hook = records[i].hook;
-        const n = (seen.get(hook) ?? 0) + 1;
-        seen.set(hook, n);
-        if (n <= max)
-            keep[i] = true;
-    }
+    const keep = windowKeep(records, max, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
     let kept = records.filter((_, i) => keep[i]).map((r) => r.line);
     let bytes = kept.reduce((n, line) => n + utf8Length(line) + 1, 0);
     if (bytes > maxBytes) {
@@ -80,16 +95,19 @@ export const NEVER_RAN_GRACE_HOURS = 72;
 export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
     if (!raw)
         return { hooks: {} };
-    const hooks = {};
+    const records = [];
     for (const line of raw.split('\n')) {
         const record = parseHookOutcomeLine(line);
-        if (!record)
-            continue;
-        const bucket = hooks[record.hook] ?? (hooks[record.hook] = []);
-        bucket.push(record);
-        if (bucket.length > limit)
-            bucket.shift();
+        if (record)
+            records.push(record);
     }
+    const keep = windowKeep(records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })), limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
+    const hooks = {};
+    records.forEach((record, i) => {
+        if (!keep[i])
+            return;
+        (hooks[record.hook] ?? (hooks[record.hook] = [])).push(record);
+    });
     return { hooks };
 }
 export function parseHookOutcomeLine(line) {
@@ -153,12 +171,11 @@ function summarizeOne(hook, records) {
     let lastSkipReason = null;
     const skipCounts = new Map();
     const hosts = new Set();
-    const notTriggered = NOT_TRIGGERED_SKIP_REASONS[hook] ?? [];
     for (const r of records) {
         hosts.add(r.host);
         if (lastRunAt === null || r.at >= lastRunAt)
             lastRunAt = r.at;
-        const triggered = !(r.outcome === 'skipped' && r.reason !== undefined && notTriggered.includes(r.reason));
+        const triggered = isTriggeredRecord(r);
         if (triggered) {
             triggeredRuns++;
             if (firstTriggeredAt === null || r.at < firstTriggeredAt)
