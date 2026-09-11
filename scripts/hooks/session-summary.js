@@ -20,10 +20,13 @@ import {
   openHookDb,
   readUpdateCheckCache,
   redactSecrets,
+  hookErrorReason,
+  recordHookOutcome,
   recordHookRun,
   stampHookRunOnly,
   resolveAutoUpdatePolicy,
   resolvePluginRoot,
+  SKIP_REASONS,
   spawnAutoUpdate,
   truncateTitle,
 } from './_shared.js';
@@ -211,13 +214,25 @@ function parseTranscript(transcriptPath) {
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
+// See post-commit.js for why every exit path leaves a record (#327).
+let payload = null;
+function record(outcome, reason, entity) {
+  recordHookOutcome(process.env, { hook: 'session-summary', outcome, reason, entity, payload });
+}
+
 process.stdin.on('end', async () => {
   let sessionId = 'unknown';
   try {
-    if (!input.trim()) return exit0();
+    if (!input.trim()) {
+      record('skipped', SKIP_REASONS.emptyStdin);
+      return exit0();
+    }
 
     // Opt-out check (env > config > default-on)
-    if (!isAutoCaptureEnabled(process.env)) return exit0();
+    if (!isAutoCaptureEnabled(process.env)) {
+      record('skipped', SKIP_REASONS.autoCaptureOff);
+      return exit0();
+    }
 
     let inputData;
     try {
@@ -230,9 +245,11 @@ process.stdin.on('end', async () => {
         const preview = (input || '').slice(0, 80).replace(/\n/g, ' ');
         process.stderr.write(`[memesh session-summary] malformed stdin JSON (len=${input.length}): ${parseErr?.message || parseErr}; preview="${preview}"\n`);
       } catch {}
+      record('error', 'malformed stdin JSON');
       return exit0();
     }
 
+    payload = inputData;
     sessionId = inputData.session_id || 'unknown';
     const transcriptPath = inputData.transcript_path;
 
@@ -249,6 +266,7 @@ process.stdin.on('end', async () => {
     // capture than to file it under the wrong project. Same rule here.
     if (!inputData.cwd) {
       try { process.stderr.write(`[memesh session-summary] cwd absent in payload (keys: ${Object.keys(inputData).join(',')}); cannot resolve project, skipping capture\n`); } catch {}
+      record('skipped', SKIP_REASONS.cwdAbsent);
       return exit0();
     }
     const cwd = inputData.cwd;
@@ -279,7 +297,11 @@ process.stdin.on('end', async () => {
     // (empty stdin, malformed JSON, missing cwd) are schema-flip shapes: if
     // Claude Code's payload changed under us, capture is effectively dead,
     // and a heartbeat would mask exactly that.
-    if (!wasAgenticLoop) { stampHookRunOnly(process.env, 'session-summary'); return exit0(); }
+    if (!wasAgenticLoop) {
+      stampHookRunOnly(process.env, 'session-summary');
+      record('skipped', SKIP_REASONS.notAgenticLoop);
+      return exit0();
+    }
     // Trace why we're skipping. Two failure modes:
     //   (a) transcript_path absent — schema flip, Claude Code stopped
     //       sending the field. Same bug shape as `was_in_agentic_loop`
@@ -291,6 +313,7 @@ process.stdin.on('end', async () => {
     // breadcrumb so a schema flip doesn't ship undetected again.
     if (!transcriptPath) {
       try { process.stderr.write(`[memesh session-summary] transcript_path absent in payload (keys: ${Object.keys(inputData).join(',')}); skipping capture\n`); } catch {}
+      record('skipped', SKIP_REASONS.transcriptPathAbsent);
       return exit0();
     }
     if (!existsSync(transcriptPath)) {
@@ -299,6 +322,7 @@ process.stdin.on('end', async () => {
       // race) — the hook itself ran fine, so this stamps. A payload that
       // never carried the field at all (schema flip) bails above, unstamped.
       stampHookRunOnly(process.env, 'session-summary');
+      record('skipped', SKIP_REASONS.transcriptGone);
       return exit0();
     }
 
@@ -310,11 +334,18 @@ process.stdin.on('end', async () => {
     // LOST (permissions, I/O), and a heartbeat here would keep doctor green
     // through exactly the repeated failure it exists to expose. No stamp —
     // parseTranscript already traced the fault to stderr.
-    if (readFailed) return exit0();
+    if (readFailed) {
+      record('error', 'the transcript could not be read');
+      return exit0();
+    }
 
     // Skip sessions with too little activity — the single most common
     // healthy exit, so it MUST stamp (see stampHookRunOnly).
-    if (toolCallCount < 3) { stampHookRunOnly(process.env, 'session-summary'); return exit0(); }
+    if (toolCallCount < 3) {
+      stampHookRunOnly(process.env, 'session-summary');
+      record('skipped', SKIP_REASONS.tooLittleActivity);
+      return exit0();
+    }
 
     const projectName = getProjectName(cwd);
 
@@ -346,6 +377,7 @@ process.stdin.on('end', async () => {
       ).get(`session-${sessionId}-files`, `session-${sessionId}-fixes`, `session-${sessionId}-summary`);
       if (alreadyCaptured) {
         recordHookRun(db, 'session-summary');
+        record('skipped', SKIP_REASONS.alreadyCaptured, `session-${sessionId}-summary`);
         // A duplicate capture is still a completed Stop lifecycle. Update
         // consent is session-scoped and must not be skipped merely because
         // the same transcript was observed twice (a common host retry).
@@ -584,7 +616,12 @@ process.stdin.on('end', async () => {
       // write did not land must not read as alive. (The recall-effectiveness
       // block catches its own errors — session memories were already stored
       // by then, so the run still counts.)
-      if (!writeFailed) recordHookRun(db, 'session-summary');
+      if (!writeFailed) {
+        recordHookRun(db, 'session-summary');
+        record('wrote', undefined, `session-${sessionId}-summary`);
+      } else {
+        record('error', 'captureEntity did not land the write', `session-${sessionId}-summary`);
+      }
     } finally {
       db.close();
     }
@@ -596,6 +633,7 @@ process.stdin.on('end', async () => {
     // failures from this hook; with that branch gone, real capture errors stay
     // visible without crashing the host session.
     try { process.stderr.write(`[memesh session-summary] ${err?.message || err}\n`); } catch {}
+    record('error', hookErrorReason(err));
   }
 
   // Update only after all session work so installed files cannot change while

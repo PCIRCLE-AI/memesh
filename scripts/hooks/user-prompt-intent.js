@@ -23,6 +23,9 @@ import {
   findAutoUpdateConsent,
   importFromPluginRoot,
   isAutoCaptureEnabled,
+  hookErrorReason,
+  SKIP_REASONS,
+  recordHookOutcome,
   markUpdatePromptAnswered,
   memeshDir,
   parseAutoUpdateConsent,
@@ -216,6 +219,13 @@ function logError(scope, msg) {
 // every platform, so the comparison is portable.
 const isMainModule = import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
+  // See post-commit.js for why every exit path leaves a record (#327). This
+  // hook's "wrote" is the additionalContext it injected — the only durable
+  // effect it has.
+  let payload = null;
+  const record = (outcome, reason, entity) =>
+    recordHookOutcome(process.env, { hook: 'user-prompt-intent', outcome, reason, entity, payload });
+
   let input = '';
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', (chunk) => { input += chunk; });
@@ -231,6 +241,7 @@ if (isMainModule) {
           data = JSON.parse(trimmed);
         } catch (parseErr) {
           logError('user-prompt-intent', `malformed stdin JSON (len=${input.length}): ${parseErr.message}`);
+          record('error', 'malformed stdin JSON');
           return process.exit(0);
         }
       }
@@ -239,13 +250,20 @@ if (isMainModule) {
       // Claude Code's transcript format changed once before (2026-05-07), so
       // we accept either name to survive a similar rename. If both are absent
       // or non-string, detectRememberIntent's type guard returns false safely.
+      payload = data;
       const prompt = data.prompt ?? data.user_prompt ?? '';
       const updateDecision = await recordUpdateConsent(data.session_id, prompt);
       const rememberIntent = detectRememberIntent(prompt);
-      if (!rememberIntent && !updateDecision) return process.exit(0);
+      if (!rememberIntent && !updateDecision) {
+        record('skipped', SKIP_REASONS.noPromptIntent);
+        return process.exit(0);
+      }
       // Update consent is a user-authorized control decision, not memory
       // capture; it must still be recorded when auto-capture is disabled.
-      if (!isAutoCaptureEnabled(process.env) && !updateDecision) return process.exit(0);
+      if (!isAutoCaptureEnabled(process.env) && !updateDecision) {
+        record('skipped', SKIP_REASONS.autoCaptureOff);
+        return process.exit(0);
+      }
 
       const contexts = [];
       if (updateDecision === 'approved') {
@@ -258,9 +276,11 @@ if (isMainModule) {
       if (rememberIntent) contexts.push(buildHint());
       const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: contexts.join('\n\n') } };
       process.stdout.write(JSON.stringify(out));
+      record('wrote', undefined, `hint:${updateDecision ?? 'remember-intent'}`);
       process.exit(0);
     } catch (err) {
       logError('user-prompt-intent', err?.message || err);
+      record('error', hookErrorReason(err));
       process.exit(0);
     }
   });

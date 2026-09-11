@@ -45,6 +45,31 @@ All notable changes to MeMesh are documented here.
   stale-answer case, source SHA, artifact and corpus digests, host/model
   identity or usage provenance, and refuses official runs before the
   statistics are frozen. Evidence tooling only; nothing ships in the package.
+- **Capture liveness: MeMesh can now tell a quiet hook from a broken one
+  (#327).** Every capture hook leaves an outcome record on every exit path —
+  `wrote`, `skipped` with a reason, or `error` with a label (never the
+  exception text) — appended to `hook-outcomes.jsonl` beside the database.
+  `memesh doctor` gains a **Capture liveness** row, and `memesh doctor --json`
+  / `GET /v1/doctor` carry per-hook figures and per-type week-over-week write
+  counts under a new `capture` field. Only hooks whose trigger means a write
+  is due (post-commit on a real `git commit`, session-summary, pre-compact)
+  can be reported as silent, and only session-summary can FAIL; skips where
+  the trigger did not apply are kept in a separate window so they cannot push
+  the evidence out. SessionStart adds one line when capture has gone quiet
+  (`memesh: post-commit ran 5 times since … and wrote nothing`), at most once
+  a day, not during the first 3 sessions or 24 hours after an install or
+  upgrade, and gone once the hook writes again.
+- **Two release gates for capture (#327).** `npm run audit:hook-outcomes`
+  (part of `verify:release`) fails when a capture hook can exit without
+  recording an outcome, uses a skip reason outside the shared list, or when
+  session-start writes to stdout outside its single output funnel.
+  `npm run qa:post-release` gains a `capture` receipt: the shipped hooks, run
+  against a throwaway graph, must capture one commit and one session insight.
+- **The outcome file cannot be used to inject text (#327).** It refuses
+  symlinks when appending, rotates through a randomly named temp file, and
+  ignores records for hooks MeMesh does not ship. Doctor and the banner quote
+  only skip reasons the shipped hooks record (anything else shows as
+  "unrecognised reason"), with control characters stripped and length capped.
 
 ### Changed
 

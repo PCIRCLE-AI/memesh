@@ -1,5 +1,5 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, mkdirSync, openSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'fs';
-import { createHash } from 'crypto';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { createHash, randomBytes } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { dirname, join } from 'path';
@@ -39,6 +39,27 @@ export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, DE
 export { readRepoState, repoStateLines } from './_generated/repo-state.js';
 export { matchingGuards, guardFromMetadata } from './_generated/guards.js';
 export { writeCitationRule, citationRulePath, CITATION_RULE_BODY } from './_generated/citation-rule.js';
+// Imported locally (recordHookOutcome below uses them) AND re-exported, so
+// every hook reaches the same definition through one module.
+import {
+  detectHookHost,
+  serializeHookOutcome,
+  trimHookOutcomeLines,
+  HOOK_OUTCOMES_FILENAME,
+  HOOK_OUTCOMES_ROTATE_BYTES,
+} from './_generated/capture-liveness.js';
+export {
+  advanceGraceState,
+  captureLivenessNotice,
+  captureLivenessVerdict,
+  graceInEffect,
+  parseGraceState,
+  parseHookOutcomes,
+  summarizeHookOutcomes,
+  HOOK_OUTCOMES_FILENAME,
+  SKIP_REASONS,
+  isGitCommitCommand,
+} from './_generated/capture-liveness.js';
 export {
   resolveUpdateNotice,
   shouldRefreshUpdateCache,
@@ -484,6 +505,146 @@ export function stampHookRunOnly(env, hook) {
       process.stderr.write(
         `MeMesh: could not stamp the ${hook} heartbeat on a no-capture exit (${err?.message ?? err}).\n`,
       );
+    } catch { /* stderr gone */ }
+  }
+}
+
+const NOFOLLOW = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
+const APPEND_NOFOLLOW_FLAGS = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | NOFOLLOW;
+const READ_NOFOLLOW_FLAGS = fsConstants.O_RDONLY | NOFOLLOW;
+
+/**
+ * Record what `hook` DID, on every exit path (issue #327).
+ *
+ * `recordHookRun` answers "did the hook execute"; this answers "and did it
+ * write anything, and if not, why not". The gap between those two questions
+ * is where two days of an empty graph hid: post-commit was executing on every
+ * Bash call and skipping every one of them, because the commits were made
+ * with `-q` and printed no line to match. From the outside that is
+ * indistinguishable from a hook broken by an upgrade.
+ *
+ * Contract, in the same spirit as `stampHookRunOnly`:
+ *   - NEVER throws. Diagnostics must not take capture down with them.
+ *   - NEVER writes to stdout. The hook output contract is a single JSON
+ *     document or nothing at all; one stray line breaks both hosts.
+ *   - APPENDS one line (O_APPEND), never read-modify-write. SessionStart,
+ *     UserPromptSubmit and a PreToolUse hook fire inside the same second on
+ *     a busy turn: three processes reading the same JSON document and
+ *     writing back what each of them read means the last one wins and the
+ *     other two records are gone — the concurrency that proves a session is
+ *     busy would be the concurrency that erases the proof. An append has no
+ *     read step to lose, and the OS orders the writes.
+ *   - Rotation (keep each hook's last 20 records) is the only rewrite, and it goes
+ *     through temp + rename so a reader sees the old complete file or the
+ *     new one.
+ *
+ * @param {Record<string,string|undefined>} env
+ * @param {{hook: string, outcome: 'wrote'|'skipped'|'error', reason?: string, entity?: string, payload?: object}} info
+ */
+export function recordHookOutcome(env, { hook, outcome, reason, entity, payload }) {
+  try {
+    // getMemeshDirFromDbPath(), not memeshDir(): the record must sit beside
+    // the database it describes. A test (or a user) that points
+    // MEMESH_DB_PATH somewhere else would otherwise split the evidence — a
+    // graph in one directory, the liveness history of the hooks that filled
+    // it in another.
+    const dir = getMemeshDirFromDbPath();
+    ensurePrivateDir(dir);
+    const filePath = join(dir, HOOK_OUTCOMES_FILENAME);
+    const record = {
+      hook,
+      at: new Date().toISOString(),
+      host: detectHookHost(payload ?? null, env),
+      outcome,
+    };
+    // A hook's `reason` is, on the error path, the exception message — which
+    // may echo a credential a failed request or git command surfaced. Skip
+    // reasons are hard-coded literals and pass through unchanged, but the
+    // error ones are redacted before they persist: stderr is transient, this
+    // JSONL file is a permanent, exportable copy.
+    if (reason) record.reason = redactSecrets(String(reason)).slice(0, 200);
+    if (entity) record.entity = redactSecrets(String(entity)).slice(0, 200);
+    // One O_APPEND write of one line. `mode` applies only when the file is
+    // being created, which is the only moment the permission can be set
+    // without a second syscall on the hot path. O_NOFOLLOW: the directory
+    // can be a shared or repository path (MEMESH_DB_PATH), and a planted
+    // symlink named hook-outcomes.jsonl would otherwise turn every hook run
+    // into an append to a file of the planter's choosing. Windows has no
+    // O_NOFOLLOW (the constant is undefined there), so it contributes 0.
+    const fd = openSync(filePath, APPEND_NOFOLLOW_FLAGS, 0o600);
+    try {
+      writeSync(fd, serializeHookOutcome(record));
+    } finally {
+      closeSync(fd);
+    }
+    try { chmodSync(filePath, 0o600); } catch { /* best-effort hardening */ }
+    rotateHookOutcomes(filePath);
+  } catch (err) {
+    try {
+      process.stderr.write(
+        `MeMesh: could not record the ${hook} hook outcome (${err?.message ?? err}). ` +
+          `Capture itself is unaffected, but 'memesh doctor' will under-report capture liveness.\n`,
+      );
+    } catch { /* stderr gone */ }
+  }
+}
+
+/**
+ * The `reason` an outer catch may persist for an exception: its `code` or
+ * class name, never its message.
+ *
+ * A message is not a label, it is a copy of whatever the failure echoed: a
+ * V8 JSON parse error quotes the payload it choked on, an execFileSync error
+ * carries git's stderr and absolute paths. stderr is transient; the outcome
+ * file is permanent, exportable, and rendered into doctor and a pasted issue.
+ * So the file gets `uncaught SyntaxError` / `uncaught ENOENT`, and the full
+ * text goes to stderr where the hook already writes it.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+export function hookErrorReason(err) {
+  const label = (value) => (typeof value === 'string' && /^[A-Za-z][\w-]{0,39}$/.test(value) ? value : null);
+  const e = err && typeof err === 'object' ? err : null;
+  return `uncaught ${label(e?.code) ?? label(e?.name) ?? 'error'}`;
+}
+
+/**
+ * Keep the history bounded, without paying a read on every append.
+ *
+ * A line count would mean reading the file back on the hot path — the read
+ * step O_APPEND exists to remove. A `stat` is cheap, so size is the trigger
+ * and the trim is exact. The rewrite goes through temp + rename: a
+ * concurrent appender may lose ONE line to the swap, which is why the byte
+ * budget is far larger than the window any summary reads.
+ */
+function rotateHookOutcomes(filePath) {
+  let tmpPath = null;
+  try {
+    // One descriptor for both the size check and the read, so the file that
+    // was measured is the file that is read (a stat-then-open pair can be
+    // swapped in between). The size check is the hot path on every append
+    // and needs no random name.
+    let raw;
+    const fd = openSync(filePath, READ_NOFOLLOW_FLAGS);
+    try {
+      if (fstatSync(fd).size <= HOOK_OUTCOMES_ROTATE_BYTES) return;
+      raw = readFileSync(fd, 'utf8');
+    } finally {
+      closeSync(fd);
+    }
+    // An unpredictable name, created exclusively ('wx' = O_CREAT|O_EXCL,
+    // which refuses an existing path — a planted symlink included).
+    // `${pid}.tmp` was guessable, and the plain write followed whatever sat
+    // at that name.
+    tmpPath = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
+    const trimmed = trimHookOutcomeLines(raw);
+    writeFileSync(tmpPath, trimmed, { encoding: 'utf8', mode: PRIVATE_FILE_MODE, flag: 'wx' });
+    renameSync(tmpPath, filePath);
+  } catch (err) {
+    try { if (tmpPath && existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+    try {
+      process.stderr.write(`[memesh hook-outcomes] rotation failed for ${filePath}: ${err?.message ?? err}\n`);
     } catch { /* stderr gone */ }
   }
 }

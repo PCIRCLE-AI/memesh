@@ -27,10 +27,12 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
 import { binTargets, hookCommands } from '../lib/executable-targets.mjs';
 import { npmSync } from '../lib/npm-bin.mjs';
 import { fetchPackument } from '../lib/upgrade-matrix.mjs';
+import { redactSecrets } from '../../dist/core/paths.js';
 
 const packageName = '@pcircle/memesh';
 const npmTimeoutMs = 180_000;
@@ -383,7 +385,7 @@ async function main() {
   const verdict = formatVerdict(results);
   console.log('\npost-release verdict');
   for (const line of verdict.lines) console.log(line);
-  const skipped = ['registry', 'consumer', 'artifact-doctor', 'machine-surfaces']
+  const skipped = ['registry', 'consumer', 'artifact-doctor', 'machine-surfaces', 'capture']
     .filter((id) => !results.some((result) => result.id === id));
   if (skipped.length > 0) {
     console.log(`  NOT RUN — nothing was installed to check them: ${skipped.join(', ')}`);
@@ -453,6 +455,117 @@ function proveConsumerInstall({ version, root, registry, results }) {
       ok: false,
       detail: `the released doctor did not produce readable JSON (exit=${doctorRun.status}): ${String(doctorRun.stderr).slice(0, 300)}`,
     });
+
+  // The capture receipt (#327 acceptance 4): the shipped hooks, run against
+  // a throwaway graph, must capture one commit and one session insight.
+  results.push(captureReceipt(install));
+}
+
+/**
+ * The release receipt that capture is alive on the SHIPPED code: run the
+ * published hooks against a throwaway git repo and data dir, then read back
+ * that a commit and a session insight actually landed. Complements the
+ * artifact-doctor row — the doctor sees the tree, this sees the capture loop.
+ */
+/**
+ * @param {{home: string, packageRoot: string, env: NodeJS.ProcessEnv}} install
+ * @param {(command: string, args: string[], options: object) => {status: number|null, signal: string|null, stderr: string|Buffer}} [spawnHook]
+ */
+export function captureReceipt(install, spawnHook = spawnSync) {
+  const dataDir = path.join(install.home, 'capture-data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const hooksDir = path.join(install.packageRoot, 'scripts', 'hooks');
+  // NOT isolatedDataEnv — that sets MEMESH_AUTO_CAPTURE=false, which would
+  // make both hooks skip on their opt-out path and prove nothing.
+  const env = {
+    ...install.env,
+    MEMESH_DIR: dataDir,
+    MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'),
+    MEMESH_AUTO_CAPTURE: 'true',
+  };
+
+  const repoDir = path.join(install.home, 'capture-repo');
+  fs.mkdirSync(repoDir, { recursive: true });
+  const gitEnv = {
+    ...env,
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_CONFIG_SYSTEM: '/dev/null',
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_TEMPLATE_DIR: '',
+  };
+  const git = (args) => run('git', ['-C', repoDir, ...args], { env: gitEnv });
+  git(['init', '-q', '-b', 'main']);
+  git(['config', 'user.email', 'capture@example.com']);
+  git(['config', 'user.name', 'Capture']);
+  git(['config', 'commit.gpgsign', 'false']);
+  fs.writeFileSync(path.join(repoDir, 'f.txt'), 'content\n');
+  git(['add', '-A']);
+  git(['commit', '-q', '-m', 'capture receipt', '--no-verify']);
+  const hash = git(['rev-parse', '--short', 'HEAD']).trim();
+
+  const runHook = (name, payload) => spawnHook(process.execPath, [path.join(hooksDir, `${name}.js`)], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    timeout: processTimeoutMs,
+    env,
+  });
+
+  const hookFailure = (name, result) => {
+    if (result?.status === 0 && !result?.signal) return null;
+    const status = result?.status ?? 'unknown';
+    const signal = result?.signal ? ` signal=${result.signal}` : '';
+    const stderr = redactSecrets(String(result?.stderr ?? '')).slice(0, 300);
+    return {
+      id: 'capture',
+      ok: false,
+      detail: `the shipped ${name} hook exited status=${status}${signal}${stderr ? `: ${stderr}` : ''}`,
+    };
+  };
+
+  // One commit, the verbatim payload shape post-commit reads.
+  const commitHook = runHook('post-commit', {
+    tool_name: 'Bash',
+    cwd: repoDir,
+    session_id: 'capture-1',
+    tool_input: { command: 'git commit -m "capture receipt"' },
+    tool_output: `[main ${hash}] capture receipt\n 1 file changed, 1 insertion(+)\n`,
+  });
+  const commitFailure = hookFailure('post-commit', commitHook);
+  if (commitFailure) return commitFailure;
+
+  // One Stop, with a transcript naming edits so session-summary files them.
+  const transcript = path.join(repoDir, 'session.jsonl');
+  const toolUse = (name, input) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
+  fs.writeFileSync(transcript, [
+    toolUse('Edit', { file_path: path.join(repoDir, 'a.ts') }),
+    toolUse('Edit', { file_path: path.join(repoDir, 'b.ts') }),
+    toolUse('Bash', { command: 'npm test' }),
+    toolUse('Bash', { command: 'npm run build' }),
+  ].join('\n'));
+  const sessionHook = runHook('session-summary', {
+    session_id: 'capture-1', cwd: repoDir, transcript_path: transcript, was_in_agentic_loop: true,
+  });
+  const sessionFailure = hookFailure('session-summary', sessionHook);
+  if (sessionFailure) return sessionFailure;
+
+  const dbPath = path.join(dataDir, 'knowledge-graph.db');
+  if (!fs.existsSync(dbPath)) {
+    return { id: 'capture', ok: false, detail: `the capture hooks wrote nothing — no knowledge graph at ${dbPath}` };
+  }
+  let commitName;
+  let sessionName;
+  try {
+    const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
+    commitName = db.prepare('SELECT name FROM entities WHERE name = ?').get(`commit-${hash}`);
+    sessionName = db.prepare("SELECT name FROM entities WHERE name LIKE 'session-capture-1-%' LIMIT 1").get();
+    db.close();
+  } catch (error) {
+    return { id: 'capture', ok: false, detail: `could not read the capture graph: ${error instanceof Error ? error.message : String(error)}` };
+  }
+  if (!commitName) return { id: 'capture', ok: false, detail: `post-commit did not capture commit-${hash}` };
+  if (!sessionName) return { id: 'capture', ok: false, detail: 'session-summary did not capture a session-capture-1 insight' };
+  return { id: 'capture', ok: true, detail: `commit-${hash} and ${sessionName.name} captured on the shipped code` };
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) await main();

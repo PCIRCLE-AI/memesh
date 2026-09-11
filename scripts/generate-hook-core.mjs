@@ -52,6 +52,11 @@ const SOURCES = [
   { from: 'dist/core/repo-state.js', to: 'repo-state.js', src: 'src/core/repo-state.ts' },
   { from: 'dist/core/guards.js', to: 'guards.js', src: 'src/core/guards.ts' },
   { from: 'dist/core/time-utils.js', to: 'time-utils.js', src: 'src/core/time-utils.ts' },
+  // The capture-liveness verdict (issue #327): SessionStart must reach the
+  // same "capture has gone quiet" verdict `memesh doctor` reaches, and a hook
+  // cannot import src/. One definition, mirrored, or the banner and the
+  // report would disagree about whether the memory layer is alive.
+  { from: 'dist/core/capture-liveness.js', to: 'capture-liveness.js', src: 'src/core/capture-liveness.ts' },
   // The one update-status resolver (issue #308): SessionStart, UserPromptSubmit,
   // the Stop-hook updater and `memesh status` must agree on what "an update
   // is available", "snoozed", "just upgraded" and "check failed" mean.

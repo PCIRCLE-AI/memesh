@@ -142,7 +142,9 @@ lifecycle; the narrower account-free harness mode cannot satisfy that gate. See
 
 `npm run qa:post-release` is the half a fresh-clone gate cannot do: it asks the
 registry whether the version is really published and really `latest`, installs
-it from the registry into a throwaway prefix and runs it, and then asks whether
+it from the registry into a throwaway prefix and runs it, runs the shipped
+capture hooks against a throwaway graph (the `capture` receipt: post-commit must
+store one commit and session-summary one session insight), and then asks whether
 this machine is on that version. It changes nothing — every remediation it
 finds is printed for you to run. Registry propagation lags a green publish by
 minutes, so a first `registry` FAIL right after the workflow goes green is

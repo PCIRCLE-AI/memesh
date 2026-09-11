@@ -254,6 +254,10 @@ function makeDatabase(
     /** Auto-capture memories written since heartbeat tracking began — the
      *  legacy-hooks branch. Same default, same reason. */
     capturedSinceTracking?: number;
+    /** Rows for the capture-liveness per-type trend query (#327). Default
+     *  is none, which reads as "no auto-capture in the last fortnight" and
+     *  moves no verdict — what every test predating that row assumes. */
+    typeTrends?: Array<{ type: string; last7: number; prev7: number }>;
   } = {},
 ) {
   const sqliteTs = (hoursAgo: number) =>
@@ -305,6 +309,12 @@ function makeDatabase(
         return { get: () => (opts.citationCounters?.cited === undefined
           ? undefined
           : { value: String(opts.citationCounters.cited) }) };
+      }
+      // capture-liveness's per-type trend. Distinctive because it is the
+      // only statement here that GROUPs — and the only one whose result is
+      // read through `.all()` rather than `.get()`.
+      if (sql.includes('GROUP BY e.type')) {
+        return { all: () => opts.typeTrends ?? [] };
       }
       if (sql.includes('source_host')) {
         return { get: () => ({ c: opts.recentClaudeCodeWrites ?? 1 }) };

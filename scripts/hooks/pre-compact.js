@@ -2,7 +2,7 @@
 
 import { basename } from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, SKIP_REASONS, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
 
 // There is no in-process timeout guard, and its absence is deliberate.
 //
@@ -19,6 +19,12 @@ import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, 
 // process. `openHookDb` additionally caps the SQLite lock wait at 2s so
 // contention ends in a skipped capture rather than in that kill.
 
+// See post-commit.js for why every exit path leaves a record (#327).
+let payload = null;
+function record(outcome, reason, entity) {
+  recordHookOutcome(process.env, { hook: 'pre-compact', outcome, reason, entity, payload });
+}
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
@@ -26,10 +32,12 @@ process.stdin.on('end', () => {
   try {
     // Opt-out check (env > config > default-on)
     if (!isAutoCaptureEnabled(process.env)) {
+      record('skipped', SKIP_REASONS.autoCaptureOff);
       return exit0();
     }
 
     const data = JSON.parse(input);
+    payload = data;
     const sessionId = data.session_id || 'unknown';
     const transcriptPath = data.transcript_path || '';
     // A payload with NEITHER a session id NOR a transcript is not a
@@ -39,6 +47,7 @@ process.stdin.on('end', () => {
     // context as a recent memory. A real session_id without a transcript
     // still records (that contract is pinned by the basic-scenario test).
     if (!data.session_id && !transcriptPath) {
+      record('skipped', SKIP_REASONS.noSessionOrTranscript);
       process.exit(0);
     }
     const cwd = data.cwd || process.cwd();
@@ -137,7 +146,12 @@ process.stdin.on('end', () => {
       // and so does a null return — captureEntity's null means the write did
       // not land, and this very hook tells the user "could not save" below;
       // stamping would say "alive" to doctor about the same failed run.
-      if (written) recordHookRun(db, 'pre-compact');
+      if (written) {
+        recordHookRun(db, 'pre-compact');
+        record('wrote', undefined, entityName);
+      } else {
+        record('error', 'captureEntity did not land the write', entityName);
+      }
     } finally {
       db.close();
     }
@@ -179,6 +193,7 @@ process.stdin.on('end', () => {
   } catch (err) {
     // Hooks must never crash Claude Code — exit cleanly
     try { process.stderr.write(`[memesh pre-compact] ${err?.message || err}\n`); } catch {}
+    record('error', hookErrorReason(err));
   }
   exit0();
 });

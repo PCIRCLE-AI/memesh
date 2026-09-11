@@ -423,6 +423,49 @@ Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecy
 - **Matcher**: `*` (all sessions)
 - **Behavior**: Detects explicit "remember/save/memorize" intent in the user's prompt via conservative regex. Supported languages: English ("remember this", "save to memesh"), Spanish ("recordar esto", "guardar en memesh"), French ("rappeler ceci", "sauvegarder dans memesh"), Portuguese ("lembrar isto", "salvar em memesh"), Traditional Chinese ("記下來", "存到 memesh"). On match, emits `additionalContext` JSON reminding the agent to call `mcp__memesh__remember` for cross-project recall. Polite-reminder design (not autonomous extraction): the user's intent is clear, but *what* to remember depends on conversation context the calling agent already has. Defensive: never blocks the prompt; malformed stdin and other errors surface to stderr without affecting submission. Opt-out via `MEMESH_AUTO_CAPTURE=false`
 
+### Hook outcome records (capture liveness)
+
+A heartbeat (`hook_runs`) proves a hook ran; it cannot tell a hook that decided
+there was nothing to save from a hook whose capture path is broken. So the eight
+capture hooks (`post-commit`, `session-summary`, `pre-compact`,
+`pre-edit-recall`, `user-prompt-intent`, `decision-nudge`, `guard-check`,
+`session-start`) also append one outcome record per run to
+`hook-outcomes.jsonl` beside the database, through `recordHookOutcome` in
+`scripts/hooks/_shared.js`:
+
+- **Every exit path records** `wrote`, `skipped` + reason, or `error`. Skip
+  reasons are `SKIP_REASONS` constants (the gate below rejects a literal), and
+  doctor quotes only those; anything else shows as `unrecognised reason`. An outer
+  catch records only `uncaught <code or name>`; the exception text goes to
+  stderr, never to the file.
+- **Append-only JSONL**, one `O_APPEND` write per record, opened with
+  `O_NOFOLLOW` where the platform has it — hooks that fire in the same second
+  cannot overwrite each other, and a planted symlink is not followed.
+- **Rotation** starts when the file passes 64 KiB: each hook keeps its last 20
+  triggered records plus its last 5 not-triggered ones (so a loud hook cannot
+  push a quiet one out, and post-commit's skip on every non-commit Bash call
+  cannot push out the commits), and if that is still too large only the
+  newest lines that fit in half the budget are kept. The reader applies the
+  same window. The
+  rewrite goes through a randomly named temp file and a rename.
+
+The verdict lives in `src/core/capture-liveness.ts`, a leaf module that
+`scripts/generate-hook-core.mjs` copies next to the hooks, so `memesh doctor`
+and the SessionStart banner reach the same verdict from the same code. Doctor
+adds the database side (auto-capture entities per type, week over week, and the
+`hook_runs` heartbeats); the banner reads only the JSONL. Only post-commit,
+session-summary and pre-compact can be "silent", because only their triggers
+imply a write is due; only session-summary can FAIL, because only its trigger
+(a session ending) is guaranteed. The `--json` shape is in
+[API_REFERENCE.md](api/API_REFERENCE.md#memesh-doctor--capture-liveness).
+
+Two gates keep this honest. `npm run audit:hook-outcomes`
+(`scripts/audit/hook-outcome-gate.mjs`, part of `verify:release`) fails when any
+exit in a capture hook has no outcome record before it, or when session-start
+writes to stdout anywhere but its single `output()` funnel. `npm run
+qa:post-release` runs the shipped hooks against a throwaway graph after a
+release and requires one captured commit and one captured session insight.
+
 ---
 
 ## Knowledge Evolution

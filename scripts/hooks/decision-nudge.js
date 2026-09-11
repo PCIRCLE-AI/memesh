@@ -31,7 +31,7 @@
 
 import { openSync, closeSync, writeSync, constants as fsConstants } from 'fs';
 import { join } from 'path';
-import { ensurePrivateDir, getMemeshDirFromDbPath } from './_shared.js';
+import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, SKIP_REASONS, recordHookOutcome } from './_shared.js';
 
 // The only two tools this hook is wired to in hooks/hooks.json — kept as an
 // explicit allowlist (not "any PostToolUse call") so a future matcher typo
@@ -52,6 +52,15 @@ const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 // JSON.parse ever runs.
 const MAX_STDIN_BYTES = 1_048_576;
 
+// See post-commit.js for why every exit path leaves a record (#327). This
+// hook opens no database (see the contract above), and recordHookOutcome
+// touches only a small JSON file, so that constraint still holds. Its
+// "wrote" is the nudge it emitted — the only effect it has.
+let payload = null;
+function record(outcome, reason, entity) {
+  recordHookOutcome(process.env, { hook: 'decision-nudge', outcome, reason, entity, payload });
+}
+
 let input = '';
 let overflowed = false;
 process.stdin.setEncoding('utf8');
@@ -62,9 +71,13 @@ process.stdin.on('data', (chunk) => {
 });
 process.stdin.on('end', () => {
   try {
-    if (overflowed) return pass();
+    if (overflowed) {
+      record('skipped', SKIP_REASONS.payloadTooLarge);
+      return pass();
+    }
 
     const data = JSON.parse(input);
+    payload = data;
 
     // Schema-flip signal, same convention as post-commit.js / pre-edit-recall.js:
     // tool_name absent means Claude Code changed the payload shape, not that
@@ -72,16 +85,26 @@ process.stdin.on('end', () => {
     // this hook going silently inert.
     if (data?.tool_name === undefined) {
       try { process.stderr.write(`[memesh decision-nudge] tool_name absent (keys: ${Object.keys(data ?? {}).join(',')}); skipping\n`); } catch {}
+      record('skipped', SKIP_REASONS.toolNameAbsent);
       return pass();
     }
 
     const toolName = data.tool_name;
-    if (typeof toolName !== 'string' || !TARGET_TOOLS.has(toolName)) return pass();
+    if (typeof toolName !== 'string' || !TARGET_TOOLS.has(toolName)) {
+      record('skipped', SKIP_REASONS.notDecisionTool);
+      return pass();
+    }
 
     const sessionId = data.session_id;
-    if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) return pass();
+    if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
+      record('skipped', SKIP_REASONS.noSessionId);
+      return pass();
+    }
 
-    if (!claimNudge(sessionId, toolName)) return pass(); // already nudged this tool this session
+    if (!claimNudge(sessionId, toolName)) {
+      record('skipped', SKIP_REASONS.alreadyNudged);
+      return pass(); // already nudged this tool this session
+    }
 
     console.log(JSON.stringify({
       hookSpecificOutput: {
@@ -89,11 +112,13 @@ process.stdin.on('end', () => {
         additionalContext: buildNudge(toolName),
       },
     }));
+    record('wrote', undefined, `nudge:${toolName}`);
     process.exit(0);
   } catch (err) {
     // Never crash Claude Code, but trace — a silent break here means the
     // nudge stops firing and nothing reports it, same as guard-check.js.
     try { process.stderr.write(`[memesh decision-nudge] ${err?.message || err}\n`); } catch {}
+    record('error', hookErrorReason(err));
     pass();
   }
 });

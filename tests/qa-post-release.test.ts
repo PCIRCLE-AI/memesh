@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   REQUIRED_DOCTOR_CHECKS,
+  captureReceipt,
   evaluateDoctor,
   evaluateRegistry,
   evaluateSurfaces,
@@ -259,6 +260,52 @@ describe('every memesh a shell would resolve', () => {
       }
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('capture receipt on the shipped hooks', () => {
+  it('captures a commit and a session insight against a throwaway graph', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-capture-receipt-'));
+    try {
+      const install = {
+        home,
+        packageRoot: path.resolve('.'),
+        env: { ...process.env, HOME: home },
+      };
+      const result = captureReceipt(install);
+      expect(result.id).toBe('capture');
+      expect(result.ok, result.detail).toBe(true);
+      expect(result.detail).toContain('commit-');
+      expect(result.detail).toContain('session-capture-1');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the receipt when a shipped hook exits nonzero and redacts stderr', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-capture-receipt-fail-'));
+    try {
+      const install = {
+        home,
+        packageRoot: path.resolve('.'),
+        env: { ...process.env, HOME: home },
+      };
+       const secret = `ghp_${'Z'.repeat(36)}`;
+       const result = captureReceipt(install, () => ({
+        pid: 123,
+        output: [null, Buffer.from(''), Buffer.from(`hook failed with ${secret}`)],
+        stdout: Buffer.from(''),
+        status: 7,
+        signal: null,
+        stderr: Buffer.from(`hook failed with ${secret}`),
+      }));
+      expect(result).toMatchObject({ id: 'capture', ok: false });
+      expect(result.detail).toContain('status=7');
+      expect(result.detail).toContain('***REDACTED***');
+      expect(result.detail).not.toContain(secret);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });

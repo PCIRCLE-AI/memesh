@@ -54449,6 +54449,241 @@ var init_capture_flag = __esm({
   }
 });
 
+// dist/core/capture-liveness.js
+function windowKeep(entries, maxTriggered, maxNotTriggered) {
+  const keep = new Array(entries.length).fill(false);
+  const seen = /* @__PURE__ */ new Map();
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const { hook, triggered } = entries[i];
+    const counts = seen.get(hook) ?? { t: 0, n: 0 };
+    seen.set(hook, counts);
+    if (triggered) {
+      if (++counts.t <= maxTriggered)
+        keep[i] = true;
+    } else if (++counts.n <= maxNotTriggered) {
+      keep[i] = true;
+    }
+  }
+  return keep;
+}
+function isTriggeredRecord(record2) {
+  if (record2.outcome !== "skipped" || record2.reason === void 0)
+    return true;
+  return !(NOT_TRIGGERED_SKIP_REASONS[record2.hook] ?? []).includes(record2.reason);
+}
+function renderableSkipReason(reason) {
+  if (reason === void 0)
+    return "unspecified";
+  return KNOWN_SKIP_REASONS.has(reason) ? reason : UNRECOGNISED_REASON;
+}
+function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
+  if (!raw)
+    return { hooks: {} };
+  const records = [];
+  for (const line of raw.split("\n")) {
+    const record2 = parseHookOutcomeLine(line);
+    if (record2)
+      records.push(record2);
+  }
+  const keep = windowKeep(records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })), limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
+  const hooks = {};
+  records.forEach((record2, i) => {
+    if (!keep[i])
+      return;
+    (hooks[record2.hook] ?? (hooks[record2.hook] = [])).push(record2);
+  });
+  return { hooks };
+}
+function parseHookOutcomeLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed)
+    return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object")
+    return null;
+  const rec = parsed;
+  if (typeof rec.hook !== "string" || !CAPTURE_HOOKS.includes(rec.hook))
+    return null;
+  if (typeof rec.at !== "string")
+    return null;
+  if (rec.outcome !== "wrote" && rec.outcome !== "skipped" && rec.outcome !== "error")
+    return null;
+  const record2 = {
+    hook: rec.hook,
+    at: rec.at,
+    host: rec.host === "claude-code" || rec.host === "codex" ? rec.host : "unknown",
+    outcome: rec.outcome
+  };
+  const reason = typeof rec.reason === "string" ? sanitizeRecordText(rec.reason) : "";
+  if (reason)
+    record2.reason = reason;
+  const entity = typeof rec.entity === "string" ? sanitizeRecordText(rec.entity) : "";
+  if (entity)
+    record2.entity = entity;
+  return record2;
+}
+function sanitizeRecordText(text) {
+  return text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").replace(/\s+/g, " ").trim().slice(0, RECORD_TEXT_MAX);
+}
+function summarizeHookOutcomes(file2) {
+  const order = [...CAPTURE_HOOKS];
+  const names = Object.keys(file2.hooks).sort((a, b) => {
+    const ai = order.indexOf(a);
+    const bi = order.indexOf(b);
+    if (ai !== bi)
+      return (ai === -1 ? order.length : ai) - (bi === -1 ? order.length : bi);
+    return a.localeCompare(b);
+  });
+  return names.map((hook) => summarizeOne(hook, file2.hooks[hook] ?? []));
+}
+function summarizeOne(hook, records) {
+  let writes = 0;
+  let skips = 0;
+  let errors = 0;
+  let lastRunAt = null;
+  let firstTriggeredAt = null;
+  let triggeredRuns = 0;
+  let lastWriteAt = null;
+  let lastEntity = null;
+  let lastSkipReason = null;
+  const skipCounts = /* @__PURE__ */ new Map();
+  const hosts = /* @__PURE__ */ new Set();
+  for (const r of records) {
+    hosts.add(r.host);
+    if (lastRunAt === null || r.at >= lastRunAt)
+      lastRunAt = r.at;
+    const triggered = isTriggeredRecord(r);
+    if (triggered) {
+      triggeredRuns++;
+      if (firstTriggeredAt === null || r.at < firstTriggeredAt)
+        firstTriggeredAt = r.at;
+    }
+    if (r.outcome === "wrote") {
+      writes++;
+      if (lastWriteAt === null || r.at >= lastWriteAt) {
+        lastWriteAt = r.at;
+        lastEntity = r.entity ?? null;
+      }
+    } else if (r.outcome === "skipped") {
+      skips++;
+      lastSkipReason = r.reason === void 0 ? null : renderableSkipReason(r.reason);
+      if (triggered) {
+        const key = renderableSkipReason(r.reason);
+        skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
+      }
+    } else {
+      errors++;
+    }
+  }
+  let dominantSkipReason = null;
+  let dominantSkipCount = 0;
+  for (const [reason, count] of skipCounts) {
+    if (count > dominantSkipCount) {
+      dominantSkipCount = count;
+      dominantSkipReason = reason;
+    }
+  }
+  const runs = records.length;
+  return {
+    hook,
+    runs,
+    triggeredRuns,
+    writes,
+    skips,
+    errors,
+    lastRunAt,
+    firstTriggeredAt,
+    lastWriteAt,
+    lastEntity,
+    lastSkipReason,
+    dominantSkipReason,
+    dominantSkipCount,
+    hosts: [...hosts].sort(),
+    silent: SILENT_ELIGIBLE_HOOKS.includes(hook) && triggeredRuns >= SILENT_HOOK_MIN_RUNS && writes === 0
+  };
+}
+function summarizeTypeTrends(rows) {
+  return rows.map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 })).sort((a, b) => a.type.localeCompare(b.type));
+}
+function captureLivenessVerdict(input) {
+  const withRecords = new Set(input.hooks.filter((h) => h.runs > 0).map((h) => h.hook));
+  const graceOver = input.measuringHours !== null && input.measuringHours !== void 0 && input.measuringHours > NEVER_RAN_GRACE_HOURS;
+  const deadHooks = graceOver ? (input.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
+  const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
+  const stoppedTypes = input.types.filter((t) => t.stopped);
+  let status = "PASS";
+  if (deadHooks.length > 0)
+    status = "FAIL";
+  else if (silent.length > 0 || stoppedTypes.length > 0)
+    status = "PASS_WITH_CONCERNS";
+  return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
+}
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX;
+var init_capture_liveness = __esm({
+  "dist/core/capture-liveness.js"() {
+    "use strict";
+    HOOK_OUTCOMES_FILENAME = "hook-outcomes.jsonl";
+    HOOK_OUTCOMES_PER_HOOK = 20;
+    HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK = 5;
+    HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
+    SILENT_HOOK_MIN_RUNS = 5;
+    CAPTURE_HOOKS = [
+      "post-commit",
+      "session-summary",
+      "pre-compact",
+      "pre-edit-recall",
+      "user-prompt-intent",
+      "decision-nudge",
+      "guard-check",
+      "session-start"
+    ];
+    FAIL_ELIGIBLE_HOOKS = ["session-summary"];
+    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact"];
+    SKIP_REASONS = {
+      notBash: "not a Bash tool call",
+      notGitCommit: "not a git commit command",
+      commitLineMissing: "a git commit ran but printed no commit line",
+      alreadyCaptured: "this session was already captured",
+      payloadTooLarge: "payload exceeded the stdin byte cap",
+      toolNameAbsent: "tool_name absent in payload",
+      notDecisionTool: "not a decision-shaped tool call",
+      noSessionId: "no usable session_id in the payload",
+      alreadyNudged: "already nudged for this tool in this session",
+      noBashCommand: "no Bash command in the payload",
+      noDatabaseForGuards: "no database yet \u2014 nothing to guard against",
+      noGuardMatched: "no active guard matched this command",
+      autoCaptureOff: "auto-capture is turned off",
+      commitCwdAbsent: "data.cwd absent \u2014 cannot resolve project or repo",
+      hashNotACommit: "the hash is not a commit in this repository",
+      noSessionOrTranscript: "neither session_id nor transcript_path in the payload",
+      emptyStdin: "empty stdin",
+      cwdAbsent: "cwd absent in payload \u2014 cannot resolve project",
+      notAgenticLoop: "not an agentic loop",
+      transcriptPathAbsent: "transcript_path absent",
+      transcriptGone: "the transcript file named by the payload is gone",
+      tooLittleActivity: "too little activity in the session to be worth saving",
+      toolInputAbsent: "tool_input absent in payload",
+      noFilePath: "no file_path in the tool input",
+      noDatabaseForRecall: "no database yet \u2014 nothing to recall",
+      nothingToRecall: "no guard matched and nothing to recall for this file",
+      noPromptIntent: "the prompt carried no remember intent and no update decision"
+    };
+    KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
+    UNRECOGNISED_REASON = "unrecognised reason";
+    NOT_TRIGGERED_SKIP_REASONS = {
+      "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
+      "session-summary": [SKIP_REASONS.alreadyCaptured]
+    };
+    NEVER_RAN_GRACE_HOURS = 72;
+    RECORD_TEXT_MAX = 200;
+  }
+});
+
 // dist/core/guards.js
 function validateGuardSpec(spec) {
   const errors = [];
@@ -54991,6 +55226,127 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     } catch {
     }
   }
+}
+function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs17.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
+  const TITLE = "Capture liveness";
+  if (autoCaptureOffSource() !== null) {
+    return {
+      check: createCheck("capture-liveness", TITLE, "pass", "Automatic capture is turned off, so there is nothing to keep alive. Re-enable it to resume capturing.")
+    };
+  }
+  let raw;
+  try {
+    raw = readFileSyncImpl(path15.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), "utf8");
+  } catch {
+    raw = null;
+  }
+  const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
+  let db2 = null;
+  let types;
+  let neverRan;
+  let measuringHours;
+  let legacyCaptured = 0;
+  let stampedCount;
+  let newestHeartbeatHours = null;
+  try {
+    db2 = openDatabaseImpl();
+    const rows = db2.prepare(`SELECT e.type AS type,
+              SUM(CASE WHEN e.created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) AS last7,
+              SUM(CASE WHEN e.created_at <= datetime('now', '-7 days')
+                        AND e.created_at > datetime('now', '-14 days') THEN 1 ELSE 0 END) AS prev7
+         FROM entities e
+         JOIN tags t ON t.entity_id = e.id
+        WHERE t.tag = ?
+          AND e.created_at > datetime('now', '-14 days')
+        GROUP BY e.type`).all(AUTO_CAPTURE_TAG);
+    types = summarizeTypeTrends(rows.map((r) => ({
+      type: String(r.type),
+      last7: Number(r.last7) || 0,
+      prev7: Number(r.prev7) || 0
+    })));
+    const tablePresent = !!db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
+    const heartbeats = tablePresent ? db2.prepare("SELECT hook, last_run_at FROM hook_runs").all() : [];
+    const stamped = new Set(heartbeats.map((r) => r.hook));
+    stampedCount = stamped.size;
+    for (const r of heartbeats) {
+      const h = hoursSince(String(r.last_run_at));
+      if (h !== null && (newestHeartbeatHours === null || h < newestHeartbeatHours))
+        newestHeartbeatHours = h;
+    }
+    neverRan = FAIL_ELIGIBLE_HOOKS.filter((h) => !stamped.has(h));
+    const since = db2.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
+    measuringHours = since !== void 0 ? hoursSince(since) : null;
+    if (since !== void 0) {
+      legacyCaptured = db2.prepare(`SELECT COUNT(DISTINCT e.id) as c FROM entities e
+         JOIN tags t ON t.entity_id = e.id
+        WHERE t.tag = ? AND e.created_at > ?`).get(AUTO_CAPTURE_TAG, since)?.c ?? 0;
+    }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    return {
+      check: createCheck("capture-liveness", TITLE, "fail", `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, "The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.", { code: "capture-liveness.query-failed", params: { detail } })
+    };
+  } finally {
+    try {
+      if (db2)
+        closeDatabaseImpl();
+    } catch {
+    }
+  }
+  const verdict = captureLivenessVerdict({ hooks, types, neverRanHooks: neverRan, measuringHours });
+  const report = {
+    status: verdict.status,
+    hooks,
+    types,
+    neverRan: verdict.deadHooks
+  };
+  if (verdict.status === "FAIL") {
+    const hook = verdict.deadHooks[0];
+    if (!captureWired) {
+      return {
+        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has never run \u2014 but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`, "If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini / Cursor), this is expected and safe to ignore.", { code: "capture-liveness.not-wired", params: { hook } }),
+        report: { ...report, status: "PASS_WITH_CONCERNS" }
+      };
+    }
+    if (legacyCaptured > 0 && hooks.length === 0) {
+      return {
+        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has left no record and no heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? "y" : "ies"} landed since tracking began \u2014 hooks from a version before outcome tracking are probably still running.`, "Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.", { code: "capture-liveness.never-ran-legacy", params: { hook, captured: legacyCaptured } }),
+        report: { ...report, status: "PASS_WITH_CONCERNS" }
+      };
+    }
+    return {
+      check: createCheck("capture-liveness", TITLE, "fail", `The ${hook} hook has left no record and no heartbeat in the ${Math.round(measuringHours ?? 0)} hours since tracking began \u2014 it has never run, so nothing it would capture is being saved.`, "Run `memesh install-hooks` and restart your agent, then end one work session and re-run `memesh doctor`.", { code: "capture-liveness.never-ran", params: { hook, hours: Math.round(measuringHours ?? 0) } }),
+      report
+    };
+  }
+  if (verdict.silentHook) {
+    const h = verdict.silentHook;
+    const reason = h.dominantSkipReason ?? "no reason recorded";
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
+      report
+    };
+  }
+  if (hooks.length === 0 && captureWired && stampedCount > 0 && measuringHours !== null && measuringHours > NEVER_RAN_GRACE_HOURS) {
+    const lastHeartbeat = newestHeartbeatHours === null ? null : Math.round(newestHeartbeatHours);
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `Hooks have run on this machine (last heartbeat ${lastHeartbeat ?? "?"} hours ago), but not one has left an outcome record. Either the running hooks predate outcome tracking, or they fail as they load and record nothing.`, "Update the memesh hooks (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), restart your agent, start one session, and re-run `memesh doctor`. If you just updated, start a session first \u2014 the records begin on the next hook run.", { code: "capture-liveness.no-records", params: { hours: lastHeartbeat ?? "?" } }),
+      report: { ...report, status: "PASS_WITH_CONCERNS" }
+    };
+  }
+  if (verdict.stoppedTypes.length > 0) {
+    const t = verdict.stoppedTypes[0];
+    return {
+      check: createCheck("capture-liveness", TITLE, "warn", `Nothing of type '${t.type}' was captured in the last 7 days, against ${t.prev7} in the 7 days before. Something that was being remembered has stopped being remembered.`, "Run `memesh doctor --json` for the per-hook figures, and check whether the way you work changed \u2014 if it did not, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.type-stopped", params: { type: t.type, prev: t.prev7 } }),
+      report
+    };
+  }
+  const writing = hooks.filter((h) => h.writes > 0);
+  const summary = writing.length > 0 ? `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(", ")}).` : hooks.length > 0 ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.` : "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
+  return {
+    check: createCheck("capture-liveness", TITLE, "pass", summary),
+    report
+  };
 }
 function autoCaptureOffSource() {
   let configAutoCapture;
@@ -55775,6 +56131,9 @@ async function runDoctor(options) {
     checks.push(codexSessionSetup);
   const captureWired = wiring.status === "pass" && (wiring.params === void 0 || wiring.params.captureWired === 1);
   checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
+  const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired);
+  checks.push(captureLiveness.check);
+  const captureReport = captureLiveness.report;
   checks.push(inspectDashboardArtifact(packageRoot3, existsSyncImpl));
   checks.push(inspectNodeRuntime(packageRoot3, existsSyncImpl, readFileSyncImpl));
   checks.push(inspectNativeBinding(packageRoot3, existsSyncImpl, nativeBindingProbeImpl));
@@ -55794,7 +56153,8 @@ async function runDoctor(options) {
   }
   return {
     status: summarizeOverallStatus(checks),
-    checks
+    checks,
+    ...captureReport ? { capture: captureReport } : {}
   };
 }
 function iconForStatus(status) {
@@ -55837,6 +56197,7 @@ var init_doctor = __esm({
     init_types();
     init_time_utils();
     init_capture_flag();
+    init_capture_liveness();
     init_guards();
     init_agent_message_storage();
     init_config2();
