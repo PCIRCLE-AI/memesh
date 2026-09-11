@@ -15,6 +15,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   REQUIRED_DOCTOR_CHECKS,
+  captureReceipt,
   evaluateDoctor,
   evaluateRegistry,
   evaluateSurfaces,
@@ -259,6 +260,26 @@ describe('every memesh a shell would resolve', () => {
       }
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('capture receipt on the shipped hooks', () => {
+  it('captures a commit and a session insight against a throwaway graph', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-capture-receipt-'));
+    try {
+      const install = {
+        home,
+        packageRoot: path.resolve('.'),
+        env: { ...process.env, HOME: home },
+      };
+      const result = captureReceipt(install);
+      expect(result.id).toBe('capture');
+      expect(result.ok, result.detail).toBe(true);
+      expect(result.detail).toContain('commit-');
+      expect(result.detail).toContain('session-capture-1');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });
