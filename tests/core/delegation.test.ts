@@ -75,6 +75,7 @@ describe('recordDelegation / setDelegationVerdict', () => {
       finish_reason: 'completed',
       source_host: 'cli',
     });
+    expect(e.observations).toHaveLength(5);
     expect(e.observations).toEqual(expect.arrayContaining([
       'Allowed tools: read_file, write_file',
       'Usage: prompt_tokens=1834, completion_tokens=412, total_tokens=2246',

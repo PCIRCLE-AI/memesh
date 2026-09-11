@@ -49,6 +49,7 @@ describe('memesh hermes: input is refused in its own terms', () => {
   it('prints one JSON result on success', () => {
     const r = run(['hermes', 'capture-turn', '--session', 's1'], '{"user":"hi","assistant":"hello"}');
     expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout.trim().split('\n')).toHaveLength(1);
     expect(JSON.parse(r.stdout)).toEqual({ outcome: 'skipped', reason: expect.any(String) });
   });
 });

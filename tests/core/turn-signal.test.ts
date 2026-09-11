@@ -52,6 +52,7 @@ describe('captureChatTurn', () => {
     const tags = (getDatabase().prepare(
       'SELECT tag FROM tags WHERE entity_id = (SELECT id FROM entities WHERE name = ?)',
     ).all(r.name!) as Array<{ tag: string }>).map((t) => t.tag);
+    expect(tags.length).toBeGreaterThanOrEqual(3);
     expect(tags).toEqual(expect.arrayContaining(['platform:hermes', 'session:s9', 'signal:decision']));
   });
 });
