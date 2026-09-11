@@ -46,11 +46,14 @@ export function trimHookOutcomeLines(raw, max = HOOK_OUTCOMES_PER_HOOK, maxBytes
     let kept = records.filter((_, i) => keep[i]).map((r) => r.line);
     let bytes = kept.reduce((n, line) => n + utf8Length(line) + 1, 0);
     if (bytes > maxBytes) {
+        const budget = maxBytes / 2;
         const fit = [];
         bytes = 0;
         for (let i = kept.length - 1; i >= 0; i--) {
             const size = utf8Length(kept[i]) + 1;
-            if (bytes + size > maxBytes / 2)
+            if (size > budget)
+                continue;
+            if (bytes + size > budget)
                 break;
             fit.push(kept[i]);
             bytes += size;

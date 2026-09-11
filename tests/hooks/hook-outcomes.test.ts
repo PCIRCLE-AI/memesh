@@ -485,6 +485,14 @@ describe('hook outcome records', () => {
     expect(trimmed.filter((r) => r.reason === SKIP_REASONS.notGitCommit)).toHaveLength(HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
   });
 
+  it('one over-long line does not wipe the history on rotation', () => {
+    const small = (i: number) => JSON.stringify({ hook: 'post-commit', at: `2026-09-01T00:00:0${i}.000Z`, host: 'claude-code', outcome: 'wrote', entity: `commit-${i}` });
+    const huge = JSON.stringify({ hook: 'post-commit', at: '2026-09-02T00:00:00.000Z', host: 'claude-code', outcome: 'skipped', reason: 'q'.repeat(4000) });
+    const kept = trimHookOutcomeLines([small(1), small(2), huge].join('\n') + '\n', 20, 1000);
+    expect(kept).not.toContain('qqqq');
+    expect(kept.trim().split('\n')).toEqual([small(1), small(2)]);
+  });
+
   // ── a planted file (S1) ──────────────────────────────────────────────────
 
   it('a record naming a hook memesh does not ship is rejected on read', () => {

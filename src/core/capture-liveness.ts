@@ -163,13 +163,17 @@ export function trimHookOutcomeLines(
   // fit — a smaller window beats a rewrite on every hook run.
   let bytes = kept.reduce((n, line) => n + utf8Length(line) + 1, 0);
   if (bytes > maxBytes) {
+    // Half the threshold, not all of it: landing just under the bound would
+    // put the next append straight back over it. A single line longer than
+    // that budget is dropped FIRST — otherwise it would stop the walk below
+    // at the newest line and wipe the whole history for one bad record.
+    const budget = maxBytes / 2;
     const fit: string[] = [];
     bytes = 0;
     for (let i = kept.length - 1; i >= 0; i--) {
       const size = utf8Length(kept[i]) + 1;
-      // Half the threshold, not all of it: landing just under the bound
-      // would put the next append straight back over it.
-      if (bytes + size > maxBytes / 2) break;
+      if (size > budget) continue;
+      if (bytes + size > budget) break;
       fit.push(kept[i]);
       bytes += size;
     }
