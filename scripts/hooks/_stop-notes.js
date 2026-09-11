@@ -59,7 +59,7 @@ const MEMORY_WRITE_BASH_RE = /\bmemesh\s+(?:remember|learn)\b/;
 // then `commit` followed by the end or a separator — not `commit-tree`, and
 // not `grep "git commit"` (a quote is not an allowed prefix). The same
 // pattern #327's post-commit hook settled on; one shared helper is planned.
-const COMMIT_RE = /(?:^|[\s;&|(`\/])git(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace)\s+(?:"[^"]*"|'[^']*'|\S+)|-\S+))*\s+commit(?=$|[\s;&|)`])/;
+const COMMIT_RE = /(?:^|[\s;&|(`/])git(?:\s+(?:-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+)|--(?:git-dir|work-tree|namespace)\s+(?:"[^"]*"|'[^']*'|\S+)|-\S+))*\s+commit(?=$|[\s;&|)`])/;
 const TEST_RE = /\b(?:vitest|jest|pytest|go\s+test|cargo\s+test|npm\s+(?:run\s+)?test|run-tests[\w-]*)\b/;
 // The sentence Claude Code puts in a tool_result when the user turned the
 // call down ("The user doesn't want to proceed with this tool use. The tool

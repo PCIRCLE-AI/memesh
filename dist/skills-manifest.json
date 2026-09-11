@@ -108,8 +108,8 @@
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
-      "sha256": "27fc1ca9185297803116e703b2893c82545980b9225d79be99e2fb36aa640a9b",
-      "bytes": 16406
+      "sha256": "619a3074652e1823311a2e3ca27db850c0883c95ba28fcf2bd895b9679d842ae",
+      "bytes": 16405
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
