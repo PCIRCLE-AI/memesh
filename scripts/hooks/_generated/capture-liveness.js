@@ -97,7 +97,37 @@ export const SKIP_REASONS = {
     notGitCommit: 'not a git commit command',
     commitLineMissing: 'a git commit ran but printed no commit line',
     alreadyCaptured: 'this session was already captured',
+    payloadTooLarge: 'payload exceeded the stdin byte cap',
+    toolNameAbsent: 'tool_name absent in payload',
+    notDecisionTool: 'not a decision-shaped tool call',
+    noSessionId: 'no usable session_id in the payload',
+    alreadyNudged: 'already nudged for this tool in this session',
+    noBashCommand: 'no Bash command in the payload',
+    noDatabaseForGuards: 'no database yet — nothing to guard against',
+    noGuardMatched: 'no active guard matched this command',
+    autoCaptureOff: 'auto-capture is turned off',
+    commitCwdAbsent: 'data.cwd absent — cannot resolve project or repo',
+    hashNotACommit: 'the hash is not a commit in this repository',
+    noSessionOrTranscript: 'neither session_id nor transcript_path in the payload',
+    emptyStdin: 'empty stdin',
+    cwdAbsent: 'cwd absent in payload — cannot resolve project',
+    notAgenticLoop: 'not an agentic loop',
+    transcriptPathAbsent: 'transcript_path absent',
+    transcriptGone: 'the transcript file named by the payload is gone',
+    tooLittleActivity: 'too little activity in the session to be worth saving',
+    toolInputAbsent: 'tool_input absent in payload',
+    noFilePath: 'no file_path in the tool input',
+    noDatabaseForRecall: 'no database yet — nothing to recall',
+    nothingToRecall: 'no guard matched and nothing to recall for this file',
+    noPromptIntent: 'the prompt carried no remember intent and no update decision',
 };
+const KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
+export const UNRECOGNISED_REASON = 'unrecognised reason';
+export function renderableSkipReason(reason) {
+    if (reason === undefined)
+        return 'unspecified';
+    return KNOWN_SKIP_REASONS.has(reason) ? reason : UNRECOGNISED_REASON;
+}
 export function isGitCommitCommand(command) {
     return GIT_COMMIT_RE.test(command);
 }
@@ -205,9 +235,9 @@ function summarizeOne(hook, records) {
         }
         else if (r.outcome === 'skipped') {
             skips++;
-            lastSkipReason = r.reason ?? null;
+            lastSkipReason = r.reason === undefined ? null : renderableSkipReason(r.reason);
             if (triggered) {
-                const key = r.reason ?? 'unspecified';
+                const key = renderableSkipReason(r.reason);
                 skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
             }
         }

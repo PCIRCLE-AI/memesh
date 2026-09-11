@@ -167,6 +167,25 @@ export function findUncoveredExits(source) {
   return uncovered;
 }
 
+const LITERAL_SKIP_RE = /(?<![\w$.])record\s*\(\s*['"]skipped['"]\s*,\s*['"`]/;
+
+/**
+ * Line numbers (1-based) where a hook records a skip with a LITERAL reason
+ * instead of a SKIP_REASONS constant. Doctor quotes only reasons listed in
+ * SKIP_REASONS (anything else renders as "unrecognised reason", so a planted
+ * record cannot put text in the report); a literal here would ship a reason
+ * doctor refuses to show. Comment lines are ignored.
+ */
+export function findLiteralSkipReasons(source) {
+  const out = [];
+  source.split('\n').forEach((line, i) => {
+    const t = line.trim();
+    if (t.startsWith('//') || t.startsWith('*') || t.startsWith('/*')) return;
+    if (LITERAL_SKIP_RE.test(line)) out.push(i + 1);
+  });
+  return out;
+}
+
 const STDOUT_WRITE_RE = /(?<![\w$])(?:console\.log|process\.stdout\.write)\s*\(/g;
 
 /**
@@ -210,6 +229,9 @@ export function main() {
     try {
       const uncovered = findUncoveredExits(source);
       for (const line of uncovered) violations.push(`scripts/hooks/${hook}.js:${line}`);
+      for (const line of findLiteralSkipReasons(source)) {
+        violations.push(`scripts/hooks/${hook}.js:${line}: skip reason is a literal — add it to SKIP_REASONS in src/core/capture-liveness.ts and record the constant`);
+      }
       if (hook === 'session-start') {
         const funnelError = validateSessionStart(source);
         if (funnelError) violations.push(`scripts/hooks/${hook}.js: ${funnelError}`);
@@ -222,7 +244,7 @@ export function main() {
     console.error(
       `✗ capture hooks exit without an outcome record — the "silent skip" this gate exists to forbid:\n  ` +
         `${violations.join('\n  ')}\n` +
-        `  Every early exit must be preceded by a record(...) call.`,
+        `  Every early exit must be preceded by a record(...) call, with a SKIP_REASONS constant for a skip.`,
     );
     process.exit(1);
   }

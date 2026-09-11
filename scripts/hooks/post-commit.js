@@ -31,7 +31,7 @@ process.stdin.on('end', () => {
     // kept writing commit entities AND stamping the heartbeat, which made
     // doctor's "capture is off, hook silence is expected" message false.
     if (!isAutoCaptureEnabled(process.env)) {
-      record('skipped', 'auto-capture is turned off');
+      record('skipped', SKIP_REASONS.autoCaptureOff);
       return exit0();
     }
 
@@ -45,7 +45,7 @@ process.stdin.on('end', () => {
     // `was_in_agentic_loop`).
     if (data.tool_name === undefined) {
       try { process.stderr.write(`[memesh post-commit] tool_name absent in payload (keys: ${Object.keys(data).join(',')}); skipping\n`); } catch {}
-      record('skipped', 'tool_name absent in payload');
+      record('skipped', SKIP_REASONS.toolNameAbsent);
       return exit0();
     }
     if (data.tool_name !== 'Bash') {
@@ -124,7 +124,7 @@ process.stdin.on('end', () => {
     // instead — better to miss one commit than to tag it wrong.
     if (!data.cwd) {
       try { process.stderr.write(`[memesh post-commit] data.cwd absent — cannot resolve project / repo; skipping commit ${commitHash}\n`); } catch {}
-      record('skipped', 'data.cwd absent — cannot resolve project or repo');
+      record('skipped', SKIP_REASONS.commitCwdAbsent);
       return exit0();
     }
     // And the commit has to actually be in THIS repository.
@@ -141,7 +141,7 @@ process.stdin.on('end', () => {
       });
     } catch {
       try { process.stderr.write(`[memesh post-commit] ${commitHash} is not a commit in ${data.cwd}; nothing written\n`); } catch {}
-      record('skipped', 'the hash is not a commit in this repository');
+      record('skipped', SKIP_REASONS.hashNotACommit);
       return exit0();
     }
 

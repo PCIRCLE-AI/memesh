@@ -31,7 +31,7 @@
 
 import { openSync, closeSync, writeSync, constants as fsConstants } from 'fs';
 import { join } from 'path';
-import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, recordHookOutcome } from './_shared.js';
+import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, SKIP_REASONS, recordHookOutcome } from './_shared.js';
 
 // The only two tools this hook is wired to in hooks/hooks.json — kept as an
 // explicit allowlist (not "any PostToolUse call") so a future matcher typo
@@ -72,7 +72,7 @@ process.stdin.on('data', (chunk) => {
 process.stdin.on('end', () => {
   try {
     if (overflowed) {
-      record('skipped', 'payload exceeded the stdin byte cap');
+      record('skipped', SKIP_REASONS.payloadTooLarge);
       return pass();
     }
 
@@ -85,24 +85,24 @@ process.stdin.on('end', () => {
     // this hook going silently inert.
     if (data?.tool_name === undefined) {
       try { process.stderr.write(`[memesh decision-nudge] tool_name absent (keys: ${Object.keys(data ?? {}).join(',')}); skipping\n`); } catch {}
-      record('skipped', 'tool_name absent in payload');
+      record('skipped', SKIP_REASONS.toolNameAbsent);
       return pass();
     }
 
     const toolName = data.tool_name;
     if (typeof toolName !== 'string' || !TARGET_TOOLS.has(toolName)) {
-      record('skipped', 'not a decision-shaped tool call');
+      record('skipped', SKIP_REASONS.notDecisionTool);
       return pass();
     }
 
     const sessionId = data.session_id;
     if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) {
-      record('skipped', 'no usable session_id in the payload');
+      record('skipped', SKIP_REASONS.noSessionId);
       return pass();
     }
 
     if (!claimNudge(sessionId, toolName)) {
-      record('skipped', 'already nudged for this tool in this session');
+      record('skipped', SKIP_REASONS.alreadyNudged);
       return pass(); // already nudged this tool this session
     }
 

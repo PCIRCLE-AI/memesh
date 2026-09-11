@@ -433,15 +433,20 @@ capture hooks (`post-commit`, `session-summary`, `pre-compact`,
 `hook-outcomes.jsonl` beside the database, through `recordHookOutcome` in
 `scripts/hooks/_shared.js`:
 
-- **Every exit path records** `wrote`, `skipped` + reason, or `error`. An outer
+- **Every exit path records** `wrote`, `skipped` + reason, or `error`. Skip
+  reasons are `SKIP_REASONS` constants (the gate below rejects a literal), and
+  doctor quotes only those; anything else shows as `unrecognised reason`. An outer
   catch records only `uncaught <code or name>`; the exception text goes to
   stderr, never to the file.
 - **Append-only JSONL**, one `O_APPEND` write per record, opened with
   `O_NOFOLLOW` where the platform has it — hooks that fire in the same second
   cannot overwrite each other, and a planted symlink is not followed.
 - **Rotation** starts when the file passes 64 KiB: each hook keeps its last 20
-  records (so a loud hook cannot push a quiet one out), and if that is still
-  too large only the newest lines that fit in half the budget are kept. The
+  triggered records plus its last 5 not-triggered ones (so a loud hook cannot
+  push a quiet one out, and post-commit's skip on every non-commit Bash call
+  cannot push out the commits), and if that is still too large only the
+  newest lines that fit in half the budget are kept. The reader applies the
+  same window. The
   rewrite goes through a randomly named temp file and a rename.
 
 The verdict lives in `src/core/capture-liveness.ts`, a leaf module that

@@ -224,13 +224,13 @@ process.stdin.on('end', async () => {
   let sessionId = 'unknown';
   try {
     if (!input.trim()) {
-      record('skipped', 'empty stdin');
+      record('skipped', SKIP_REASONS.emptyStdin);
       return exit0();
     }
 
     // Opt-out check (env > config > default-on)
     if (!isAutoCaptureEnabled(process.env)) {
-      record('skipped', 'auto-capture is turned off');
+      record('skipped', SKIP_REASONS.autoCaptureOff);
       return exit0();
     }
 
@@ -266,7 +266,7 @@ process.stdin.on('end', async () => {
     // capture than to file it under the wrong project. Same rule here.
     if (!inputData.cwd) {
       try { process.stderr.write(`[memesh session-summary] cwd absent in payload (keys: ${Object.keys(inputData).join(',')}); cannot resolve project, skipping capture\n`); } catch {}
-      record('skipped', 'cwd absent in payload — cannot resolve project');
+      record('skipped', SKIP_REASONS.cwdAbsent);
       return exit0();
     }
     const cwd = inputData.cwd;
@@ -299,7 +299,7 @@ process.stdin.on('end', async () => {
     // and a heartbeat would mask exactly that.
     if (!wasAgenticLoop) {
       stampHookRunOnly(process.env, 'session-summary');
-      record('skipped', 'not an agentic loop');
+      record('skipped', SKIP_REASONS.notAgenticLoop);
       return exit0();
     }
     // Trace why we're skipping. Two failure modes:
@@ -313,7 +313,7 @@ process.stdin.on('end', async () => {
     // breadcrumb so a schema flip doesn't ship undetected again.
     if (!transcriptPath) {
       try { process.stderr.write(`[memesh session-summary] transcript_path absent in payload (keys: ${Object.keys(inputData).join(',')}); skipping capture\n`); } catch {}
-      record('skipped', 'transcript_path absent');
+      record('skipped', SKIP_REASONS.transcriptPathAbsent);
       return exit0();
     }
     if (!existsSync(transcriptPath)) {
@@ -322,7 +322,7 @@ process.stdin.on('end', async () => {
       // race) — the hook itself ran fine, so this stamps. A payload that
       // never carried the field at all (schema flip) bails above, unstamped.
       stampHookRunOnly(process.env, 'session-summary');
-      record('skipped', 'the transcript file named by the payload is gone');
+      record('skipped', SKIP_REASONS.transcriptGone);
       return exit0();
     }
 
@@ -343,7 +343,7 @@ process.stdin.on('end', async () => {
     // healthy exit, so it MUST stamp (see stampHookRunOnly).
     if (toolCallCount < 3) {
       stampHookRunOnly(process.env, 'session-summary');
-      record('skipped', 'too little activity in the session to be worth saving');
+      record('skipped', SKIP_REASONS.tooLittleActivity);
       return exit0();
     }
 

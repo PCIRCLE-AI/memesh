@@ -1303,8 +1303,9 @@ memory layer saved anything lately, and if not, why not". `memesh doctor --json`
 }
 ```
 
-- `hooks` — one summary per hook, over its last 20 outcome records. `runs`
-  counts every record; `triggeredRuns` leaves out skips where the hook's
+- `hooks` — one summary per hook, over its last 20 triggered outcome records
+  plus its last 5 not-triggered ones (so a flood of irrelevant runs cannot push
+  the evidence out). `runs` counts every record in that window; `triggeredRuns` leaves out skips where the hook's
   trigger did not apply (post-commit on a Bash call that is not a git commit,
   session-summary on a Stop after the session was already captured).
   `silent` is true only for post-commit, session-summary and pre-compact, when
@@ -1326,7 +1327,9 @@ JSON line per run — `hook`, `at`, `host`, `outcome` (`wrote` / `skipped` /
 label — `uncaught <code or name>`, or a fixed literal such as `malformed stdin
 JSON` — never the exception text. Records naming a hook
 MeMesh does not ship are ignored, and reason text is stripped of control
-characters and capped at 200 characters before it is shown.
+characters and capped at 200 characters. Doctor quotes a skip reason only when
+it is one the shipped hooks record; any other reason is shown as
+`unrecognised reason`.
 
 When capture has gone quiet, SessionStart adds one line to its banner
 (`memesh: post-commit ran 5 times since 2026-09-04 and wrote nothing —

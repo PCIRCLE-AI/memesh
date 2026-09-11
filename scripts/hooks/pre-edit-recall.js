@@ -27,6 +27,7 @@ import {
   guardWarningLines,
   recordGuardFires,
   hookErrorReason,
+  SKIP_REASONS,
   recordHookOutcome,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -53,7 +54,7 @@ process.stdin.on('end', () => {
       // Schema-flip signal — Claude Code has renamed `tool_input` for
       // transcript blocks before. Trace so the rename surfaces day-1.
       try { process.stderr.write(`[memesh pre-edit-recall] tool_input absent (keys: ${Object.keys(data).join(',')}); skipping\n`); } catch {}
-      record('skipped', 'tool_input absent in payload');
+      record('skipped', SKIP_REASONS.toolInputAbsent);
       return pass();
     }
     const toolInput = data.tool_input;
@@ -61,7 +62,7 @@ process.stdin.on('end', () => {
 
     // Only process if we have a file path
     if (!filePath || typeof filePath !== 'string') {
-      record('skipped', 'no file_path in the tool input');
+      record('skipped', SKIP_REASONS.noFilePath);
       return pass();
     }
 
@@ -81,7 +82,7 @@ process.stdin.on('end', () => {
     const throttled = seenFiles.includes(fileKey);
 
     if (!existsSync(dbPath)) {
-      record('skipped', 'no database yet — nothing to recall');
+      record('skipped', SKIP_REASONS.noDatabaseForRecall);
       return pass();
     }
 
@@ -251,7 +252,7 @@ process.stdin.on('end', () => {
     }
 
     if (guardMatches.length === 0 && recallLines.length === 0) {
-      record('skipped', 'no guard matched and nothing to recall for this file');
+      record('skipped', SKIP_REASONS.nothingToRecall);
       return pass();
     }
 

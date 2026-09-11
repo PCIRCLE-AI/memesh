@@ -24,6 +24,7 @@ import {
   importFromPluginRoot,
   isAutoCaptureEnabled,
   hookErrorReason,
+  SKIP_REASONS,
   recordHookOutcome,
   markUpdatePromptAnswered,
   memeshDir,
@@ -254,13 +255,13 @@ if (isMainModule) {
       const updateDecision = await recordUpdateConsent(data.session_id, prompt);
       const rememberIntent = detectRememberIntent(prompt);
       if (!rememberIntent && !updateDecision) {
-        record('skipped', 'the prompt carried no remember intent and no update decision');
+        record('skipped', SKIP_REASONS.noPromptIntent);
         return process.exit(0);
       }
       // Update consent is a user-authorized control decision, not memory
       // capture; it must still be recorded when auto-capture is disabled.
       if (!isAutoCaptureEnabled(process.env) && !updateDecision) {
-        record('skipped', 'auto-capture is turned off');
+        record('skipped', SKIP_REASONS.autoCaptureOff);
         return process.exit(0);
       }
 

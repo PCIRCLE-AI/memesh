@@ -29,6 +29,7 @@ import {
   guardWarningLines,
   recordGuardFires,
   hookErrorReason,
+  SKIP_REASONS,
   recordHookOutcome,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -53,11 +54,11 @@ process.stdin.on('end', () => {
     payload = data;
     const command = data?.tool_input?.command;
     if (!command || typeof command !== 'string') {
-      record('skipped', 'no Bash command in the payload');
+      record('skipped', SKIP_REASONS.noBashCommand);
       return pass();
     }
     if (!existsSync(dbPath)) {
-      record('skipped', 'no database yet — nothing to guard against');
+      record('skipped', SKIP_REASONS.noDatabaseForGuards);
       return pass();
     }
 
@@ -76,7 +77,7 @@ process.stdin.on('end', () => {
       db.close();
     }
     if (!matches || matches.length === 0) {
-      record('skipped', 'no active guard matched this command');
+      record('skipped', SKIP_REASONS.noGuardMatched);
       return pass();
     }
 

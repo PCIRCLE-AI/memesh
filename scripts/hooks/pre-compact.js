@@ -2,7 +2,7 @@
 
 import { basename } from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, SKIP_REASONS, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
 
 // There is no in-process timeout guard, and its absence is deliberate.
 //
@@ -32,7 +32,7 @@ process.stdin.on('end', () => {
   try {
     // Opt-out check (env > config > default-on)
     if (!isAutoCaptureEnabled(process.env)) {
-      record('skipped', 'auto-capture is turned off');
+      record('skipped', SKIP_REASONS.autoCaptureOff);
       return exit0();
     }
 
@@ -47,7 +47,7 @@ process.stdin.on('end', () => {
     // context as a recent memory. A real session_id without a transcript
     // still records (that contract is pinned by the basic-scenario test).
     if (!data.session_id && !transcriptPath) {
-      record('skipped', 'neither session_id nor transcript_path in the payload');
+      record('skipped', SKIP_REASONS.noSessionOrTranscript);
       process.exit(0);
     }
     const cwd = data.cwd || process.cwd();

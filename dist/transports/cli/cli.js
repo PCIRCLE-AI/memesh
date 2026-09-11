@@ -54471,6 +54471,11 @@ function isTriggeredRecord(record2) {
     return true;
   return !(NOT_TRIGGERED_SKIP_REASONS[record2.hook] ?? []).includes(record2.reason);
 }
+function renderableSkipReason(reason) {
+  if (reason === void 0)
+    return "unspecified";
+  return KNOWN_SKIP_REASONS.has(reason) ? reason : UNRECOGNISED_REASON;
+}
 function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
   if (!raw)
     return { hooks: {} };
@@ -54566,9 +54571,9 @@ function summarizeOne(hook, records) {
       }
     } else if (r.outcome === "skipped") {
       skips++;
-      lastSkipReason = r.reason ?? null;
+      lastSkipReason = r.reason === void 0 ? null : renderableSkipReason(r.reason);
       if (triggered) {
-        const key = r.reason ?? "unspecified";
+        const key = renderableSkipReason(r.reason);
         skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
       }
     } else {
@@ -54618,7 +54623,7 @@ function captureLivenessVerdict(input) {
     status = "PASS_WITH_CONCERNS";
   return { status, silentHook: silent[0] ?? null, stoppedTypes, deadHooks };
 }
-var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX;
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX;
 var init_capture_liveness = __esm({
   "dist/core/capture-liveness.js"() {
     "use strict";
@@ -54643,8 +54648,33 @@ var init_capture_liveness = __esm({
       notBash: "not a Bash tool call",
       notGitCommit: "not a git commit command",
       commitLineMissing: "a git commit ran but printed no commit line",
-      alreadyCaptured: "this session was already captured"
+      alreadyCaptured: "this session was already captured",
+      payloadTooLarge: "payload exceeded the stdin byte cap",
+      toolNameAbsent: "tool_name absent in payload",
+      notDecisionTool: "not a decision-shaped tool call",
+      noSessionId: "no usable session_id in the payload",
+      alreadyNudged: "already nudged for this tool in this session",
+      noBashCommand: "no Bash command in the payload",
+      noDatabaseForGuards: "no database yet \u2014 nothing to guard against",
+      noGuardMatched: "no active guard matched this command",
+      autoCaptureOff: "auto-capture is turned off",
+      commitCwdAbsent: "data.cwd absent \u2014 cannot resolve project or repo",
+      hashNotACommit: "the hash is not a commit in this repository",
+      noSessionOrTranscript: "neither session_id nor transcript_path in the payload",
+      emptyStdin: "empty stdin",
+      cwdAbsent: "cwd absent in payload \u2014 cannot resolve project",
+      notAgenticLoop: "not an agentic loop",
+      transcriptPathAbsent: "transcript_path absent",
+      transcriptGone: "the transcript file named by the payload is gone",
+      tooLittleActivity: "too little activity in the session to be worth saving",
+      toolInputAbsent: "tool_input absent in payload",
+      noFilePath: "no file_path in the tool input",
+      noDatabaseForRecall: "no database yet \u2014 nothing to recall",
+      nothingToRecall: "no guard matched and nothing to recall for this file",
+      noPromptIntent: "the prompt carried no remember intent and no update decision"
     };
+    KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
+    UNRECOGNISED_REASON = "unrecognised reason";
     NOT_TRIGGERED_SKIP_REASONS = {
       "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
       "session-summary": [SKIP_REASONS.alreadyCaptured]

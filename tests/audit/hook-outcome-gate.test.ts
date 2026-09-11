@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { findUncoveredExits, validateSessionStart } from '../../scripts/audit/hook-outcome-gate.mjs';
+import { findLiteralSkipReasons, findUncoveredExits, validateSessionStart } from '../../scripts/audit/hook-outcome-gate.mjs';
 
 /**
  * The gate behind #328 item-1: an exit with no outcome record before it is
@@ -172,5 +172,17 @@ describe('session-start output() funnel gate', () => {
       'function other() { recordHookOutcome(process.env, {}); }',
     ].join('\n');
     expect(validateSessionStart(src)).toMatch(/no outcome record/);
+  });
+});
+
+describe('skip reasons come from SKIP_REASONS (#327 P3-c)', () => {
+  it('flags a literal skip reason and accepts the constant', () => {
+    const src = [
+      "record('skipped', 'a brand new reason');",
+      'record("skipped", SKIP_REASONS.notBash);',
+      "// record('skipped', 'in a comment')",
+      "record('wrote', undefined, 'entity');",
+    ].join('\n');
+    expect(findLiteralSkipReasons(src)).toEqual([1]);
   });
 });

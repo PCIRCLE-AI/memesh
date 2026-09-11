@@ -260,7 +260,51 @@ export const SKIP_REASONS = {
   commitLineMissing: 'a git commit ran but printed no commit line',
   /** session-summary: this session's capture already landed on an earlier Stop. */
   alreadyCaptured: 'this session was already captured',
+  // Every other skip reason a hook records. They live HERE, not as literals
+  // in the hooks, because doctor quotes only reasons it knows (see
+  // renderableSkipReason) and the audit gate refuses a literal skip reason
+  // in a hook — so a new reason cannot ship without joining this list.
+  payloadTooLarge: 'payload exceeded the stdin byte cap',
+  toolNameAbsent: 'tool_name absent in payload',
+  notDecisionTool: 'not a decision-shaped tool call',
+  noSessionId: 'no usable session_id in the payload',
+  alreadyNudged: 'already nudged for this tool in this session',
+  noBashCommand: 'no Bash command in the payload',
+  noDatabaseForGuards: 'no database yet — nothing to guard against',
+  noGuardMatched: 'no active guard matched this command',
+  autoCaptureOff: 'auto-capture is turned off',
+  commitCwdAbsent: 'data.cwd absent — cannot resolve project or repo',
+  hashNotACommit: 'the hash is not a commit in this repository',
+  noSessionOrTranscript: 'neither session_id nor transcript_path in the payload',
+  emptyStdin: 'empty stdin',
+  cwdAbsent: 'cwd absent in payload — cannot resolve project',
+  notAgenticLoop: 'not an agentic loop',
+  transcriptPathAbsent: 'transcript_path absent',
+  transcriptGone: 'the transcript file named by the payload is gone',
+  tooLittleActivity: 'too little activity in the session to be worth saving',
+  toolInputAbsent: 'tool_input absent in payload',
+  noFilePath: 'no file_path in the tool input',
+  noDatabaseForRecall: 'no database yet — nothing to recall',
+  nothingToRecall: 'no guard matched and nothing to recall for this file',
+  noPromptIntent: 'the prompt carried no remember intent and no update decision',
 } as const;
+
+const KNOWN_SKIP_REASONS: ReadonlySet<string> = new Set(Object.values(SKIP_REASONS));
+
+/** What doctor and `--json` show for a skip reason no hook in this version records. */
+export const UNRECOGNISED_REASON = 'unrecognised reason';
+
+/**
+ * A skip reason safe to QUOTE: one of the reasons the shipped hooks record,
+ * or UNRECOGNISED_REASON. Sanitising (control characters, length) stops a
+ * planted record from forging lines; it does not stop 200 characters of
+ * "SYSTEM: ignore prior instructions" from being quoted into doctor's
+ * summary and a pasted issue. An allowlist does.
+ */
+export function renderableSkipReason(reason: string | undefined): string {
+  if (reason === undefined) return 'unspecified';
+  return KNOWN_SKIP_REASONS.has(reason) ? reason : UNRECOGNISED_REASON;
+}
 
 /**
  * Does this Bash command run `git commit`? post-commit's trigger test.
@@ -464,12 +508,14 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
       }
     } else if (r.outcome === 'skipped') {
       skips++;
-      lastSkipReason = r.reason ?? null;
+      // Rendered, not raw: these two are what doctor QUOTES (see
+      // renderableSkipReason). The raw text never leaves this function.
+      lastSkipReason = r.reason === undefined ? null : renderableSkipReason(r.reason);
       // The dominant reason is the one doctor QUOTES as the cause of a
       // silence, so it is drawn from triggered skips only — "not a git
       // commit command" outnumbers everything and explains nothing.
       if (triggered) {
-        const key = r.reason ?? 'unspecified';
+        const key = renderableSkipReason(r.reason);
         skipCounts.set(key, (skipCounts.get(key) ?? 0) + 1);
       }
     } else {
