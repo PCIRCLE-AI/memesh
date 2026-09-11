@@ -576,15 +576,15 @@
       "reason": "The detector's `.toBe(0)` is `hooks[0].writes).toBe(0)` — asserting zero WRITES from a fixture that deliberately loaded 48 skip records, the exact #321 silent-hook semantics under test. The same test pins the non-empty halves in shapes the detector cannot see: `runs).toBe(20)`, `status).toBe('warn')`, `code).toBe('capture-liveness.silent-hook')`.",
       "triaged": "2026-09-11 #327 capture-liveness"
     },
-    "C5 src/core/capture-liveness.ts:235": {
+    "C5 src/core/capture-liveness.ts:239": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "`file.hooks[hook] ?? []` in summarizeHookOutcomes: a hook with no recorded outcomes correctly summarises to an empty window (0 runs, 0 writes), the honest reading — absence of records is reported as no runs, not masked as success.",
-      "triaged": "2026-09-11 #327 capture-liveness"
+      "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement)"
     },
-    "C5 src/core/capture-liveness.ts:341": {
+    "C5 src/core/capture-liveness.ts:345": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "`input.neverRanHooks ?? []` in captureLivenessVerdict: when the caller supplies no heartbeat-never-ran list there is no dead hook, so deadHooks is emptily computed — and the FAIL branch only fires when a FAIL-eligible hook is actually absent past the grace, never from the missing default itself.",
-      "triaged": "2026-09-11 #327 capture-liveness"
+      "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement)"
     }
   }
 }
