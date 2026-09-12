@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import json
 import logging
+import queue
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -28,10 +30,21 @@ from agent.memory_provider import MemoryProvider
 logger = logging.getLogger(__name__)
 
 _PREFETCH_WAIT_SECS = 3
-_SYNC_JOIN_TIMEOUT_SECS = 5.0
+# Turns waiting for capture. A full queue drops the turn (logged) rather than
+# ever making sync_turn wait: sync_turn runs on Hermes's main thread.
+_TURN_QUEUE_MAX = 8
 _DEFAULT_BASE_URL = "http://localhost:3737"
 _RECALL_LIMIT = 5
-_OBS_CHAR_CAP = 2000
+# Session capture runs synchronously at a session/compression boundary (see
+# Pitfall 5 in docs/platforms/hermes-agent.md); the bound keeps a wedged
+# `memesh` process from holding up Hermes's shutdown.
+# Worst case the host waits at session end: the turn drain (_DRAIN_TIMEOUT_SECS,
+# shared by on_session_end and shutdown) plus the session capture — 5 + 15 =
+# 20 s, the same bound the session-end archive had before turns were queued.
+_CAPTURE_TIMEOUT_SECS = 15.0
+_TURN_TIMEOUT_SECS = 30.0
+# How long session end + shutdown together wait for queued turns (one deadline).
+_DRAIN_TIMEOUT_SECS = 5.0
 
 
 def _load_config(hermes_home: str) -> dict:
@@ -44,6 +57,23 @@ def _load_config(hermes_home: str) -> dict:
     return {}
 
 
+def _resolve_memesh_bin() -> Optional[str]:
+    # shutil.which() depends on PATH, which systemd user services set
+    # explicitly and narrowly — check well-known npm-global locations too
+    # so activation (and capture) doesn't silently fail if PATH wasn't
+    # updated. See Pitfall 2.
+    found = shutil.which("memesh")
+    if found:
+        return found
+    for candidate in (
+        Path.home() / ".npm-global" / "bin" / "memesh",
+        Path("/usr/local/bin/memesh"),
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
 class MemeshProvider(MemoryProvider):
     """Persistent knowledge-graph memory backed by a local MeMesh server."""
 
@@ -54,19 +84,8 @@ class MemeshProvider(MemoryProvider):
     # -- lifecycle ------------------------------------------------------
 
     def is_available(self) -> bool:
-        # No network calls — just check the CLI/HTTP binary is installed.
-        # shutil.which() depends on PATH, which systemd user services set
-        # explicitly and narrowly — check well-known npm-global locations too
-        # so activation doesn't silently fail if PATH wasn't updated.
-        if shutil.which("memesh") is not None or shutil.which("memesh-http") is not None:
-            return True
-        for candidate in (
-            Path.home() / ".npm-global" / "bin" / "memesh",
-            Path("/usr/local/bin/memesh"),
-        ):
-            if candidate.exists():
-                return True
-        return False
+        # No network calls — just check the CLI binary is installed.
+        return _resolve_memesh_bin() is not None
 
     def initialize(self, session_id: str, **kwargs) -> None:
         hermes_home = kwargs.get("hermes_home", "")
@@ -82,7 +101,12 @@ class MemeshProvider(MemoryProvider):
         self._prefetch_thread: Optional[threading.Thread] = None
         self._prefetch_query: Optional[str] = None
         self._prefetch_result: Optional[str] = None
-        self._sync_thread: Optional[threading.Thread] = None
+        # One worker drains turns in order, so captures never pile up as
+        # concurrent `memesh` processes contending for the SQLite write lock.
+        self._turn_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_TURN_QUEUE_MAX)
+        self._turn_worker: Optional[threading.Thread] = None
+        self._drain_deadline: Optional[float] = None
+        self._drain_warned = False
 
     def system_prompt_block(self) -> str:
         # Deliberately minimal. Recall/storage already happen automatically
@@ -98,7 +122,36 @@ class MemeshProvider(MemoryProvider):
             "as a cue to reorganize or rewrite existing memory files."
         )
 
+    def _drain_turns_before_exit(self) -> None:
+        # The worker is a daemon thread: whatever is still queued when Hermes
+        # exits is lost. Wait for it — bounded, with ONE deadline shared by
+        # on_session_end() and the shutdown() that follows it, so a stuck
+        # capture cannot hold the host twice — and say what did not make it:
+        # a lost capture must not look like one that never happened.
+        q = getattr(self, "_turn_queue", None)
+        if q is None:
+            return  # never initialized: nothing was queued
+        if self._drain_deadline is None:
+            self._drain_deadline = time.monotonic() + _DRAIN_TIMEOUT_SECS
+        # A local: another thread may reset the attribute mid-wait.
+        deadline = self._drain_deadline
+        while q.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if not q.unfinished_tasks or self._drain_warned:
+            return
+        self._drain_warned = True
+        queued = q.qsize()
+        running = q.unfinished_tasks - queued
+        # An in-flight turn is a separate `memesh` process that keeps running
+        # after Hermes exits and usually finishes; the queued ones never start.
+        logger.warning(
+            "MeMesh: %d queued turn(s) not captured before shutdown; %d capture(s) still running and may finish",
+            queued,
+            running,
+        )
+
     def shutdown(self) -> None:
+        self._drain_turns_before_exit()
         try:
             self._client.close()
         except Exception:
@@ -189,105 +242,138 @@ class MemeshProvider(MemoryProvider):
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         if self._agent_context != "primary":
+            logger.debug("MeMesh turn capture skipped: not the primary agent (%s)", self._agent_context)
             return
+        sid = session_id or self._session_id
 
-        def _sync() -> None:
+        # Every turn is handed to memesh, but memesh stores it only when the
+        # reply states a decision or a lesson (src/core/turn-signal.ts) —
+        # ordinary chatter is not memory. Never blocks: sync_turn fires every
+        # turn on the host's main thread.
+        item = (sid, user_content or "", assistant_content or "")
+        # A turn after a drain may be reported again, but it does not buy a
+        # second wait: session end + shutdown share one budget. Only a real
+        # new session (on_session_switch) resets the deadline.
+        self._drain_warned = False
+        try:
+            self._turn_queue.put_nowait(item)
+        except queue.Full:
+            logger.warning("MeMesh capture skipped: queue full (%s turns waiting)", _TURN_QUEUE_MAX)
+            return
+        if self._turn_worker is None or not self._turn_worker.is_alive():
+            self._turn_worker = threading.Thread(target=self._drain_turns, daemon=True)
+            self._turn_worker.start()
+
+    def _drain_turns(self) -> None:
+        while True:
+            # Blocking get, no idle exit: an exiting worker could race a put
+            # that saw it still alive and strand that turn.
+            sid, user_text, assistant_text = self._turn_queue.get()
             try:
-                sid = session_id or self._session_id
-                name = f"hermes-turn-{sid}-{int(time.time())}"
-                self._client.post(
-                    "/v1/remember",
-                    json={
-                        "name": name,
-                        "type": "conversation",
-                        "observations": [
-                            f"User: {user_content[:_OBS_CHAR_CAP]}",
-                            f"Assistant: {assistant_content[:_OBS_CHAR_CAP]}",
-                        ],
-                        "tags": ["platform:hermes", f"session:{sid}"],
-                    },
+                self._run_capture(
+                    ["hermes", "capture-turn", "--session", sid],
+                    {"user": user_text, "assistant": assistant_text},
+                    _TURN_TIMEOUT_SECS,
                 )
             except Exception as exc:
-                logger.warning("MeMesh sync_turn failed: %s", exc)
+                logger.warning("MeMesh turn capture failed: %s", exc)
+            finally:
+                self._turn_queue.task_done()
 
-        if self._sync_thread and self._sync_thread.is_alive():
-            self._sync_thread.join(timeout=_SYNC_JOIN_TIMEOUT_SECS)
-        self._sync_thread = threading.Thread(target=_sync, daemon=True)
-        self._sync_thread.start()
-
-    # -- compression / session-end archival ----------------------------------
+    # -- compression / session-end capture ------------------------------------
     #
-    # sync_turn() already captures each turn as it happens, but two real gaps
-    # remain without these hooks: (1) context compression can discard detail
-    # sync_turn's terse per-turn summary missed (long tool-heavy turns), and
-    # (2) nothing ties a session's turns together into one recallable unit
-    # before /reset or gateway session expiry drops it. Both write to a
-    # STABLE per-session entity name so repeated calls upsert/append instead
-    # of spawning a new entity each time (see the mem-provider docs: reusing
-    # `name` appends observations rather than duplicating).
+    # At a session or compression boundary the message list goes through the
+    # SAME extractor the Claude Code Stop hook uses (src/core/session-insight.ts):
+    # edited files, errors fixed, a heavy session's commands — stored as
+    # `session-<id>-files/-fixes/-summary`, not as a transcript dump. A
+    # later boundary in the same session appends to those entities; memesh
+    # refuses identical observations, so overlap between the pre-compression
+    # list and the session-end list is not duplicated.
 
-    def _archive_messages(self, entity_name: str, entity_type: str, messages: Optional[List[Dict[str, Any]]], session_id: str, extra_tag: str) -> None:
-        # Deliberately SYNCHRONOUS, unlike sync_turn(). Both callers
-        # (on_pre_compress, on_session_end) fire once per session/compression
-        # boundary, not once per turn, so blocking briefly here doesn't add
-        # per-turn latency. It must NOT be a fire-and-forget background
-        # thread: on_session_end runs immediately before shutdown() closes
-        # self._client, and a detached thread racing that close reliably hit
-        # "[Errno 9] Bad file descriptor" in testing — the archive silently
-        # never landed. Running synchronously guarantees the write completes
-        # (or is honestly logged as failed) before the caller moves on.
-        if self._agent_context != "primary" or not messages:
-            return
+    def _run_capture(self, args: List[str], payload: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
+        # Writes go through the `memesh` CLI, not `POST /v1/remember`: the
+        # HTTP route stamps every write `source_host: http`, and these must be
+        # attributed to `hermes`. The payload travels on stdin, never argv
+        # (argv is visible to every local process via `ps`). Every outcome is
+        # logged — a capture that silently did nothing looks exactly like one
+        # that was never attempted.
+        binary = _resolve_memesh_bin()
+        if binary is None:
+            logger.warning("MeMesh capture skipped: `memesh` CLI not found on PATH")
+            return None
         try:
-            lines: List[str] = []
-            for m in messages[-40:]:
-                role = m.get("role", "?")
-                content = m.get("content", "")
-                if isinstance(content, list):
-                    content = " ".join(
-                        part.get("text", "") for part in content if isinstance(part, dict)
-                    )
-                if not content:
-                    continue
-                lines.append(f"{role}: {str(content)[:_OBS_CHAR_CAP]}")
-            if not lines:
-                return
-            self._client.post(
-                "/v1/remember",
-                json={
-                    "name": entity_name,
-                    "type": entity_type,
-                    "observations": lines,
-                    "tags": ["platform:hermes", extra_tag, f"session:{session_id}"],
-                },
+            proc = subprocess.run(
+                [binary, *args],
+                input=json.dumps(payload),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
             )
+        except subprocess.TimeoutExpired:
+            logger.warning("MeMesh capture timed out after %ss: %s", timeout, " ".join(args[:2]))
+            return None
         except Exception as exc:
-            logger.warning("MeMesh %s archive failed: %s", entity_type, exc)
+            logger.warning("MeMesh capture failed to start: %s", exc)
+            return None
+        if proc.returncode != 0:
+            logger.warning(
+                "MeMesh capture failed (exit %s): %s",
+                proc.returncode,
+                (proc.stderr or "").strip()[:500],
+            )
+            return None
+        try:
+            result = json.loads(proc.stdout.strip().splitlines()[-1])
+        except Exception:
+            logger.warning("MeMesh capture returned unreadable output: %s", proc.stdout[:200])
+            return None
+        if not isinstance(result, dict):
+            logger.warning("MeMesh capture output is not a JSON object: %s", proc.stdout[:200])
+            return None
+        if result.get("toolResultsNonJson"):
+            logger.info(
+                "MeMesh capture: %s tool result(s) were not JSON, so errors in them were not counted",
+                result["toolResultsNonJson"],
+            )
+        if result.get("unrecognizedTools"):
+            logger.info("MeMesh capture: unrecognized tool names %s", result["unrecognizedTools"])
+        logger.info(
+            "MeMesh capture %s: %s",
+            result.get("outcome"),
+            result.get("reason") or result.get("written") or result.get("name"),
+        )
+        return result
+
+    def _capture_session(self, messages: Optional[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+        # Deliberately SYNCHRONOUS, unlike sync_turn(). on_session_end runs
+        # immediately before shutdown(); a detached thread racing that
+        # reliably lost the write (Pitfall 5). These fire once per boundary,
+        # so blocking briefly adds no per-turn latency.
+        if self._agent_context != "primary":
+            logger.debug("MeMesh session capture skipped: not the primary agent (%s)", self._agent_context)
+            return None
+        if not messages:
+            logger.info("MeMesh session capture skipped: no messages")
+            return None
+        return self._run_capture(
+            ["hermes", "capture-session", "--session", self._session_id],
+            {"messages": messages},
+            _CAPTURE_TIMEOUT_SECS,
+        )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        self._archive_messages(
-            f"hermes-compress-{self._session_id}",
-            "conversation-checkpoint",
-            messages,
-            self._session_id,
-            "compression",
-        )
-        # Compression can trust MeMesh to hold the raw tail — tell the
-        # compressor it doesn't need to over-preserve detail already archived.
+        self._capture_session(messages)
         return (
-            "Older context beyond this point is being archived to MeMesh "
-            "(recall via memesh_recall if needed later) — the summary here "
-            "can stay concise rather than exhaustive."
+            "What this session did so far (files edited, errors fixed) is "
+            "recorded in MeMesh — recall via memesh_recall if needed later — "
+            "so the summary here can stay concise rather than exhaustive."
         )
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        self._archive_messages(
-            f"hermes-session-{self._session_id}",
-            "conversation-archive",
-            messages,
-            self._session_id,
-            "session-end",
-        )
+        # shutdown() follows ~1 ms later (Pitfall 5); drain queued turns
+        # first so the session's last decisions are not the ones lost.
+        self._drain_turns_before_exit()
+        self._capture_session(messages)
 
     def on_session_switch(
         self,
@@ -303,6 +389,9 @@ class MemeshProvider(MemoryProvider):
         # /reset, /resume, or /branch would keep tagging new memories with
         # the stale pre-switch session_id.
         self._session_id = new_session_id
+        # A new session's exit gets its own drain budget.
+        self._drain_deadline = None
+        self._drain_warned = False
         if reset:
             with self._prefetch_lock:
                 self._prefetch_query = None

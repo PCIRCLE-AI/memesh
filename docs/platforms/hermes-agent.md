@@ -15,9 +15,10 @@ material for a proper `hermes` entry in the platform table, not a stub.
 
 ## Why this is a good fit
 
-- Hermes's `MemoryProvider.prefetch()` / `sync_turn()` hooks map directly
-  onto MeMesh's `POST /v1/recall` / `POST /v1/remember` — no adapter logic
-  needed beyond plain HTTP calls.
+- Hermes's `MemoryProvider.prefetch()` hook maps directly onto MeMesh's
+  `POST /v1/recall`, and `sync_turn()` / the session-boundary hooks map onto
+  `memesh hermes capture-turn` / `capture-session` — the same capture rules
+  the Claude Code hooks use, with no adapter logic in the plugin.
 - Hermes's provider discovery (`plugins.memory.discover_memory_providers()`)
   scans the filesystem at runtime and reads each `plugin.yaml`'s `name` +
   `description` + `is_available()` — a new provider directory is enough;
@@ -50,9 +51,34 @@ contract):
 | `is_available()` | none (no network) | Check `shutil.which("memesh")` **and** a hardcoded `~/.npm-global/bin/memesh` fallback — see Pitfall 2. |
 | `initialize()` | none | Open one `httpx.Client(base_url=..., timeout=5.0)`, reused for the provider's lifetime. |
 | `prefetch(query)` | `POST /v1/recall` | Background-thread pattern: `queue_prefetch()` starts a thread after the previous turn; `prefetch()` consumes the cached result or blocks up to ~3s before giving up and returning `""`. Copy this pattern from `plugins/memory/mem0/__init__.py` — don't reinvent it. |
-| `sync_turn(user, assistant)` | `POST /v1/remember` | **Must** run in a daemon thread — see Threading Contract in the dev guide. Gate on `agent_context == "primary"` (see Pitfall 3). |
+| `sync_turn(user, assistant)` | `memesh hermes capture-turn` (stdin) | **Must** run in a daemon thread — see Threading Contract in the dev guide. Gate on `agent_context == "primary"` (see Pitfall 3). MeMesh stores the turn only when it states a decision or a lesson; ordinary turns store nothing. |
+| `on_pre_compress(messages)` / `on_session_end(messages)` | `memesh hermes capture-session` (stdin) | **Synchronous** — see Pitfall 5. `on_session_end` first waits for queued turns (one 5 s deadline shared with the `shutdown()` that follows; turns left over are logged, queued and still-running apart), then runs the capture with a 15 s timeout, so the host waits at most 20 s. Runs the Claude Code Stop hook's extractor and stores `session-<id>-files` / `-fixes` / `-summary`, not the message list. |
 | `get_tool_schemas()` / `handle_tool_call()` | `/v1/remember`, `/v1/recall`, `/v1/forget` | Expose as `memesh_remember` / `memesh_recall` / `memesh_forget` for explicit LLM-directed lookups on top of automatic recall. |
 | `get_config_schema()` / `save_config()` | — | For a local loopback deployment, one optional field (`base_url`, default `http://localhost:3737`) is enough. No secrets needed. |
+
+Automatic writes go through the `memesh` CLI rather than `POST /v1/remember`
+because the HTTP route stamps everything it writes
+`metadata.provenance.source_host: "http"`; the CLI path stamps `"hermes"`, so
+the dashboard can tell Hermes memories from Claude Code or Codex ones. The
+payload travels on stdin, never argv. Consequence: the CLI and `memesh serve`
+must open the same database — true by default when both run as the same user
+on the same machine, not true if `base_url` points at another host. Every
+capture logs its outcome (`wrote`, `skipped` + reason, or the failure) to the
+Hermes log, including tool names the extractor did not recognise and tool
+results it could not read as JSON (errors inside those are not counted).
+
+Two consequences to plan for:
+
+- **Same database, same environment.** If `memesh serve` runs as a systemd
+  service with `MEMESH_DB_PATH` or `MEMESH_DIR` set in its unit file, the
+  Hermes process must carry the same values — otherwise the CLI writes to
+  one database while recall reads another, and captures look lost. Same
+  shape as Pitfall 2 (a service's `Environment=` is not your shell's).
+- **No `project:` tag.** Hermes writes carry `platform:hermes` and
+  `session:<id>`, but no project, because a gateway's working directory says
+  nothing reliable about which project a conversation is about. They
+  therefore do not appear in project-scoped views such as the session-start
+  briefing; recall them by query or by `platform:hermes`.
 
 Activate with `hermes memory setup memesh` (non-interactive: the second
 positional arg skips the picker) — this writes `memory.provider: memesh` to
