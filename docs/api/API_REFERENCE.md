@@ -1275,12 +1275,30 @@ separate private, human-governed product-proposal workflow.
 
 ### memesh remember — quick text and `--replace`
 
-`memesh remember "<text>"` is the note form: title, observations and name are
-derived from the text exactly as for `remember({ note })` above, and the output
-echoes the derived title. `--type` and `--tags` apply; `--obs` or `--title`
-alongside the text keep the text as an observation and add theirs. `--replace`
-(requires `--name`) rewrites the named memory and keeps its previous version in
-`metadata.replaced_history`.
+`memesh remember "<text>"` alone (no `--obs`, `--title` or `--name`) is the
+note form: title, observations and name are derived from the text and
+validated exactly as for `remember({ note })` above (the same 20,000-character
+and 100-observation caps), and the output echoes the derived title. `--type`
+and `--tags` apply.
+
+`--obs` or `--title` alongside the text take a second path that keeps the
+text as an observation and adds theirs, rather than replacing it —
+positional text is never dropped, an explicit `--title` wins over the
+derived one, and `--obs` values are appended after the text's own paragraphs.
+This path does **not** run the note form's length/count validation: a text
+that bare quick-capture rejects for deriving too many observations is
+accepted once any of `--obs`/`--title`/`--name` is also given. Measured with
+one 103-line text (one line becomes the title, 102 remain): alone it is
+rejected — "note splits into 102 paragraphs; at most 100 are stored per
+memory" — and combined with `--obs "extra one"` it is stored with 103
+observations.
+
+`--replace` (requires `--name`) rewrites the named memory and keeps its
+previous version in `metadata.replaced_history`, as described under
+**Replace** above; correcting a memory this way also needs `--type` — the
+schema requires it whenever `note` is not given, replace included — and
+since a given type that differs from what is stored now rewrites it,
+`--replace` doubles as how you reclassify a memory.
 
 ```bash
 memesh remember "Use PKCE for the public client"            # derived name, type note
