@@ -344,7 +344,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "briefing";
-    readonly description: "The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, and recent activity — the same block Claude Code receives at session start. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.";
+    readonly description: "The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, recent activity, and a capped index of the project’s durable memories (one line each, newest first, with [mem:id] handles; structured counts and token cost in `index`) — the same block Claude Code receives at session start. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {

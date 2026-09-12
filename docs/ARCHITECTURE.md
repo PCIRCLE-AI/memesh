@@ -73,7 +73,7 @@ MeMesh separates concerns into two layers:
 
 **Transports** (`src/transports/`) — thin adapters that expose core operations:
 - `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, and `dream` have subcommands)
-- `http/server.ts` — Express server (`memesh serve`, default port 3737): 30 `/v1` endpoints including two retired 410 routes, plus `/dashboard` and `/favicon.ico`; bearer-auth gate when bound non-loopback
+- `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including two retired 410 routes, plus `/dashboard` and `/favicon.ico`; bearer-auth gate when bound non-loopback
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that records cooperative transport provenance (not authenticated human/model identity) and never turns a read into a receipt
 - `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
 
