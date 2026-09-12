@@ -35,7 +35,12 @@ describe('parseFrontmatter', () => {
   it('reads top-level keys, quoted values and one nested map', () => {
     const fm = parseFrontmatter(note('feedback_x', 'KT wants: "no squash"', 'feedback', 'body'))!;
     expect(fm.data.name).toBe('feedback_x');
-    expect(fm.data.description).toBe('KT wants: "no squash"'.replace(/"/g, '"'));
+    // The helper wraps the value in double quotes, so the line the parser sees
+    // is `description: "KT wants: "no squash""` — the inner pair has to survive
+    // and the outer pair has to go. Written as a literal: this used to call
+    // .replace(/"/g, '"'), which replaces a quote with itself and made the
+    // assertion look like it was testing unescaping while testing nothing.
+    expect(fm.data.description).toBe('KT wants: "no squash"');
     expect(fm.data.metadata).toEqual({ node_type: 'memory', type: 'feedback' });
     expect(fm.body.trim()).toBe('body');
   });

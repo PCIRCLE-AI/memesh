@@ -288,12 +288,20 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     // mentioned again.
     write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
 
-    const childEnv: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home };
+    const childEnv: Record<string, string | undefined> = {
+      ...process.env, HOME: home, USERPROFILE: home,
+      // The hook path reaches `sh` as an environment value, read back as
+      // "$STOP_HOOK". Interpolating it into the command string instead —
+      // even through JSON.stringify, which is not shell quoting — puts a
+      // path this process does not control into a shell word, and breaks
+      // outright on a checkout whose directory name carries a metacharacter.
+      STOP_HOOK: HOOK,
+    };
     delete childEnv.MEMESH_DB_PATH;
     delete childEnv.MEMESH_DIR;
     // `true` exits before the hook reaches its write, so writeSync(1) gets
     // EPIPE — a host that stopped listening, reproduced exactly.
-    const r = spawnSync('sh', ['-c', `node ${JSON.stringify(HOOK)} | true`], {
+    const r = spawnSync('sh', ['-c', 'node "$STOP_HOOK" | true'], {
       input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop' }),
       env: childEnv,
       encoding: 'utf8',
