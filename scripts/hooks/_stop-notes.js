@@ -142,11 +142,12 @@ function writeJsonAtomic(path, value) {
  * run. The mtime throttle makes the common Stop (nothing changed) cost one
  * directory walk and no database handle at all.
  *
- * Returns `{ outcome, reason }`. The outcome is `wrote` when the run changed
- * a memory: created, replaced, moved (its file was renamed), restored (its
- * file came back) or marked missing. A fingerprint refresh — same bytes, new
- * mtime after a `touch` or a checkout — is bookkeeping about the file, not a
- * change to anything the user stored, and reads as a skip.
+ * Returns `{ outcome, reason, entity }`. The outcome is `wrote` when the run
+ * changed a memory: created, replaced, moved (its file was renamed), restored
+ * (its file came back) or marked missing. A fingerprint refresh — same bytes,
+ * new mtime after a `touch` or a checkout — is bookkeeping about the file, not
+ * a change to anything the user stored, and reads as a skip. `entity` names one
+ * memory the run touched, and is set exactly when the outcome is `wrote`.
  */
 export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   if (!memoryDir) return { outcome: 'skipped', reason: SKIP_REASONS.noMemoryDir };
@@ -186,11 +187,22 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   // these records for. A fingerprint refresh (same bytes, new mtime) is
   // deliberately NOT counted: it updates provenance so the next run can skip
   // the read, and changes nothing a reader of the memory would notice.
+  // Named in the same precedence as `changed` below, so the entity doctor
+  // shows as `lastEntity` is one this run actually touched. Without it a
+  // `wrote` record carried no entity at all, and doctor reported a hook with
+  // `lastWriteAt` set and `lastEntity` null — a write with nothing written,
+  // which reads as a bug in doctor rather than as the missing field it is.
+  const touched = result.created[0] ?? result.replaced[0] ?? result.repathed[0]
+    ?? result.restored[0] ?? result.markedMissing[0];
   const changed = result.created.length + result.replaced.length + result.repathed.length
     + result.restored.length + result.markedMissing.length > 0;
   // A write records the summary (counts only); a skip records a known
   // reason, the only kind doctor will quote.
-  return { outcome: changed ? 'wrote' : 'skipped', reason: changed ? summarizeNoteIngest(result) : SKIP_REASONS.noteNothingNew };
+  return {
+    outcome: changed ? 'wrote' : 'skipped',
+    reason: changed ? summarizeNoteIngest(result) : SKIP_REASONS.noteNothingNew,
+    entity: changed ? touched : undefined,
+  };
 }
 
 /**
@@ -385,7 +397,7 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.cwdAbsent, payload });
     } else {
       const r = await runNoteIngestion({ memoryDir, project, metaUrl });
-      recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, payload });
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, entity: r.entity, payload });
     }
   } catch (err) {
     try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }

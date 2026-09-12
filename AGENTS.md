@@ -72,12 +72,15 @@ host is recallable from all of them. Not installed yet? Follow
 - **Reuse a stable `name` to append.** Calling `remember` with an existing
   name appends observations and dedupes tags. A fresh name for every update
   creates duplicates that recall must wade through.
-- **Correct a memory in one call**: `remember` it again with its `name` and
-  `replace: true`. Observations are rewritten (tags too when you pass them,
-  the title when you pass `title` or `note`); what was there moves to
-  `metadata.replaced_history` with the time it was replaced, so the wrong
-  line stops showing up in recall but is not lost (recall shows only
-  `replaced_history_count`; `export` has the versions).
+- **Correct a memory in one call**: `remember` it again with its `name`,
+  its `type` (the schema requires `type` on every call that has no `note` —
+  even a `replace`) and `replace: true`. Pass the type the entity should
+  have: a `type` that differs from what is stored rewrites it, so this is
+  also how you reclassify a memory. Observations are rewritten (tags too
+  when you pass them, the title when you pass `title` or `note`); what was
+  there moves to `metadata.replaced_history` with the time it was replaced,
+  so the wrong line stops showing up in recall but is not lost (recall shows
+  only `replaced_history_count`; `export` has the versions).
 - **Replacing a decision**: `remember` the new one with a relation of type
   `supersedes` pointing at the old — the old entity is archived (recoverable),
   not left active to contradict the new one.

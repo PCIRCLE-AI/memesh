@@ -67,7 +67,7 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
   /** The recorded outcomes for one hook name. Pinned non-empty: every Stop
    *  must leave a record, so an empty list is itself a failure, never a
    *  vacuous pass for the `.at(-1)` assertions that follow. */
-  function outcomes(hook: string): Array<{ outcome: string; reason?: string }> {
+  function outcomes(hook: string): Array<{ outcome: string; reason?: string; entity?: string }> {
     const file = path.join(home, '.memesh', 'hook-outcomes.jsonl');
     const records = fs.existsSync(file)
       ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.hook === hook)
@@ -150,6 +150,10 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(run().status).toBe(0);
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
     expect(outcomes('note-ingest').at(-1)?.reason).toMatch(/1 created/);
+    // X2: a `wrote` record must name something it wrote. Without this the
+    // record carried no entity and doctor reported the hook with
+    // `lastWriteAt` set and `lastEntity` null — a write with nothing written.
+    expect(outcomes('note-ingest').at(-1)?.entity).toBe('hook_note_a');
 
     const db = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
     const row = db.prepare(

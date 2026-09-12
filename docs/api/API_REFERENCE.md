@@ -110,7 +110,7 @@ the graph does not have.
 }
 ```
 
-With `note`, the response also carries `derived: { name, type, title, observations }` — the shape the server derived, so a wrong title can be corrected with one more call (`name` + `replace: true` + `title`). With `replace: true` it carries `replaced: true` when an existing memory was rewritten, `false` when there was nothing to replace.
+With `note`, the response also carries `derived: { name, type, title, observations }` — the shape the server derived, so a wrong title can be corrected with one more call (`name` + `type` + `replace: true` + `title`; `type` is required by the schema on every call that omits `note`, replace included). Pass the type the entity should have: `replace` now rewrites the stored type when it differs from what you pass, so a memory can be reclassified the same way it is corrected. With `replace: true` the response also carries `replaced: true` when an existing memory was rewritten, `false` when there was nothing to replace.
 
 Three more fields are conditional. `relationsCreated` lists the relations actually created — report from it rather than subtracting errors from what you asked for. `relationErrors` is included when a relation target does not exist; the entity is still stored. `movedFromNamespace` appears only when the call MOVED a memory that already existed, naming the scope it came from, and pairs with `metadata.previous_namespace` so the move can be reversed.
 
