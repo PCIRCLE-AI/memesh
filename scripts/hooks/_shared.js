@@ -487,8 +487,10 @@ function migrateHookDbToCurrent(db, opts) {
  * BEFORE opening the database — and a correct nothing-to-do decision is a
  * successful run that must stamp, or a user whose sessions are consistently
  * short reads as "capture has stopped" in doctor within a day: the exact
- * crying-wolf this table exists to end. Stop fires once per session, so one
- * extra open+close here is noise.
+ * crying-wolf this table exists to end. Stop fires at the end of EVERY turn
+ * (#322), so this extra open+close happens once per bailed turn, not once
+ * per session — still cheap enough next to the transcript read the bail
+ * already did to skip.
  *
  * Never throws: the heartbeat is diagnostics, and the bail it decorates was
  * already a successful exit.
@@ -741,14 +743,20 @@ export { truncateTitle } from './_generated/title.js';
  * hooks stay a cheap always-on capture path and core owns later enrichment.
  *
  * @param {import('./_generated/sqlite.js').MemeshDatabase} db - an open hook DB handle
- * @param {{name: string, type: string, observations?: string[], tags?: string[], title?: string | null, metadata?: Record<string, unknown>}} entity
+ * @param {{name: string, type: string, observations?: string[], tags?: string[], title?: string | null, metadata?: Record<string, unknown>, replace?: boolean}} entity
  *   `metadata` is extra INSERT-only metadata (e.g. post-commit's session_id +
  *   files). It cannot override the provenance/title_source stamps below, and
  *   an OR IGNORE re-capture of an existing entity leaves it untouched — same
- *   first-writer-wins rule provenance already follows.
- * @returns {{ id: number, isNew: boolean } | null} null if the row could not be resolved
+ *   first-writer-wins rule provenance already follows. `replace` (#322)
+ *   restates the entity's observations and tags instead of adding to them —
+ *   for a caller whose entity is a per-turn SNAPSHOT, not an accumulating log.
+ *   Unlike `remember({ replace: true })` in core, this is a HARD delete: no
+ *   `replaced_history` is kept (see the comment at the DELETE below for why).
+ * @returns {{ id: number, isNew: boolean, archived?: true } | null} null if the row
+ *   could not be resolved; `archived: true` if `replace` was requested on an
+ *   entity `forget` archived — nothing was written, by design
  */
-export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata }) {
+export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false }) {
   // One transaction, because this function performs six writes that only
   // mean anything together: the entity row, its observations, its tags, and
   // the contentless-FTS delete + insert that make them findable.
@@ -767,10 +775,10 @@ export function captureEntity(db, { name, type, observations = [], tags = [], ti
   // could not be resolved. `observationsWritten` may be lower than
   // `observations.length`: an observation whose exact content is already on
   // the entity is not stored again (see the dedupe in captureEntityInner).
-  return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata }))();
+  return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace }))();
 }
 
-function captureEntityInner(db, { name, type, observations, tags, title, metadata }) {
+function captureEntityInner(db, { name, type, observations, tags, title, metadata, replace }) {
   // source_host provenance: these hooks only ever run under Claude Code (they
   // are wired into ~/.claude/settings.json), so a hook-captured entity is by
   // definition a claude-code capture. Stamped only on the INSERT — an OR
@@ -787,9 +795,37 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
     .prepare('INSERT OR IGNORE INTO entities (name, type, metadata, title) VALUES (?, ?, ?, ?)')
     .run(name, type, JSON.stringify(insertMetadata), title ?? null);
   const isNew = insertResult.changes > 0;
-  const row = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name);
+  const row = db.prepare('SELECT id, title, status FROM entities WHERE name = ?').get(name);
   if (!row) return null;
   const id = row.id;
+
+  // `replace` never touches an archived entity. src/core/operations.ts's
+  // `remember({ replace: true })` REFUSES this case with a thrown error —
+  // right for a rare, interactive call the user reads the response of, but
+  // a hook must never throw (it would abort the OTHER two entities' writes
+  // this Stop, and crash risk is exactly what this file exists to avoid).
+  // So the hook path degrades to a silent no-op instead: the archived row,
+  // its observations and its FTS absence are all left exactly as `forget`
+  // left them.
+  //
+  // Without this, a whole-entity `forget` (archiveEntity: status flipped to
+  // 'archived', its row removed from entities_fts) would come undone on the
+  // next Stop — `replace` would overwrite the preserved observations with a
+  // fresh derivation from the transcript and reinsert the entity into
+  // entities_fts, un-hiding it from FTS keyword search even though its
+  // status stays 'archived' (recall's default query filters status='active',
+  // which caps but does not close that exposure). `removeFromFts` guards its
+  // own delete on a rowid COUNT, so calling it on an already-removed row is
+  // a safe no-op either way — this check is about not losing the user's
+  // forgotten content, not about a contentless-FTS5 delete failure.
+  //
+  // Out of scope here: an OBSERVATION-level `forget` leaves the entity's
+  // status 'active', so this check does not see it and cannot protect it —
+  // `replace` still re-derives and restores whatever the transcript says,
+  // undoing that kind of forget too. Unaddressed, not fixed by this check.
+  if (replace && !isNew && row.status === 'archived') {
+    return { id, isNew: false, archived: true };
+  }
 
   // Title update on an EXISTING entity — INSERT OR IGNORE never touches
   // `title` when the row already exists, so mirror knowledge-graph.ts's
@@ -836,6 +872,38 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // BY + the one join rule), via the generated fts-index copy.
   const prevObsText = isNew ? undefined : indexedObservationText(db, id);
 
+  // `replace`: the caller is restating the whole entity, not adding to it.
+  //
+  // Appending is right for a `commit-<sha>` or a `pre-compact-<id>`, where
+  // each capture is a new fact about the same subject. It is wrong for a
+  // session insight, whose three entities are a SNAPSHOT of one session: Stop
+  // fires at the end of every turn, so appending stored the same sentences
+  // over and over (measured: 56 observations, 16 unique) and the workaround —
+  // capture once, then skip — froze a two-day session's memory at its first
+  // turn (#322). Replacing is the third answer: the snapshot is rewritten, so
+  // it is neither duplicated nor stale.
+  //
+  // The old rows go AFTER `prevObsText` was read above, so the contentless-FTS
+  // delete still matches exactly what was indexed. The re-insert below must
+  // then leave that text out.
+  //
+  // This is a HARD delete — no history kept. That is a deliberate difference
+  // from `remember({ replace: true })` in src/core/operations.ts, which files
+  // the old text into `metadata.replaced_history` before overwriting: that
+  // path is a rare, user-invoked correction, where an audit trail is worth
+  // the bytes. This path fires on every Stop, every turn, for a session that
+  // can run for hours — keeping history here would mean growing metadata on
+  // every single turn for content nobody asks to undo.
+  if (replace && !isNew) {
+    db.prepare('DELETE FROM observations WHERE entity_id = ?').run(id);
+    // Tags get the same treatment, for the same reason: "restating the whole
+    // entity" was true for observations and FTS but not for tags until this
+    // line — a session-<id>-files entity that stopped mentioning file A kept
+    // answering `file:a.ts` lookups (pre-edit-recall's Strategy 1) for a
+    // snapshot that no longer said anything about that file.
+    db.prepare('DELETE FROM tags WHERE entity_id = ?').run(id);
+  }
+
   // Never store the same sentence twice on one entity (#240, widened).
   //
   // #240 was fixed in session-summary.js alone, with an EXISTENCE guard: "if
@@ -864,7 +932,10 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // the "database disk image is malformed" failure this file warns about
   // above. The `seen` set also collapses repeats WITHIN one call.
   const seen = new Set(
-    isNew
+    // `|| replace`: the rows a plain SELECT would find here were just
+    // DELETEd above (same transaction), so this skips a query that would
+    // only ever come back empty — not a second dedup path.
+    isNew || replace
       ? []
       : db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(id).map((r) => r.content),
   );
@@ -892,7 +963,9 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // Stop/PreCompact/PostToolUse capture, and the re-read grew with an
   // upserted entity's accumulated observation count.
   const obsParts = [];
-  if (prevObsText) obsParts.push(prevObsText);
+  // Not after a `replace`: those rows were deleted above, and carrying their
+  // text forward would index words the entity no longer holds.
+  if (prevObsText && !replace) obsParts.push(prevObsText);
   if (freshObservations.length) obsParts.push(joinIndexedObservations(freshObservations));
   const allObsText = joinIndexedObservations(obsParts);
   // Current title is fully determined by the branches above — no re-read.

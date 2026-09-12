@@ -12,11 +12,16 @@
 // The rules (`buildSessionInsights`) are host-neutral: they take counted
 // activity, not a transcript. Only the parser (`activityFromChatMessages`) is
 // format-specific. Two older copies of the same rules still exist: the Stop
-// hook's own (scripts/hooks/session-summary.js, owned by in-flight #322
-// work) and `RuleBasedExtractor` in ./extractor.ts (no titles, no file tags,
-// no Bash-edit paths; referenced only by its tests). Both should call this
-// module so there is one copy; until then the thresholds below are the ones
-// to keep in step.
+// hook's own (scripts/hooks/session-summary.js) and `RuleBasedExtractor` in
+// ./extractor.ts (no titles, no file tags, no Bash-edit paths; referenced
+// only by its tests). Both should call this module so there is one copy;
+// until then the thresholds below are the ones to keep in step.
+//
+// #322 diverged the Stop hook's write mode from this one's: it now REPLACES
+// its three entities on every Stop (a session-insight is a snapshot; Stop
+// fires every turn, so appending kept restating the same sentences), while
+// `captureChatSession` below still APPENDS. See its own doc comment for why
+// that split is intentional, not an oversight left behind by #322.
 
 import { redactSecrets } from './paths.js';
 import { truncateTitle } from './title.js';
@@ -294,11 +299,12 @@ export interface ChatSessionCaptureResult {
 
 /**
  * Parse a chat-format message list and store its insight entities, stamped
- * with `sourceHost`. Re-capturing the same session appends: in a chat host
- * the later boundary (session end after a compression) carries genuinely new
- * content, and `createEntity` already refuses to store an identical
- * observation twice on one entity. That is why the Stop hook's "already
- * captured → bail" guard is deliberately not copied here.
+ * with `sourceHost`. Re-capturing the same session appends rather than
+ * replacing (contrast the Stop hook, which replaces — see #322 in the
+ * module comment above): in a chat host the later boundary (session end
+ * after a compression) carries genuinely new content, and `createEntity`
+ * already refuses to store an identical observation twice on one entity, so
+ * appending here never restates a sentence that is already on the entity.
  */
 export function captureChatSession(input: {
   sessionId: string;
@@ -323,7 +329,7 @@ export function captureChatSession(input: {
   if (entities.length === 0) {
     const reason = activity.toolCallCount < MIN_TOOL_CALLS
       ? `too little activity to be worth saving (${activity.toolCallCount} tool call(s))`
-      : 'no rule matched (no edited file and fewer than 20 tool calls)';
+      : `no rule matched (no edited file and fewer than ${HEAVY_SESSION_TOOL_CALLS} tool calls)`;
     return { outcome: 'skipped', reason, written: [], ...counts };
   }
   for (const e of entities) {

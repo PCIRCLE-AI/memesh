@@ -1480,8 +1480,7 @@ memory layer saved anything lately, and if not, why not". `memesh doctor --json`
 - `hooks` — one summary per hook, over its last 20 triggered outcome records
   plus its last 5 not-triggered ones (so a flood of irrelevant runs cannot push
   the evidence out). `runs` counts every record in that window; `triggeredRuns` leaves out skips where the hook's
-  trigger did not apply (post-commit on a Bash call that is not a git commit,
-  session-summary on a Stop after the session was already captured).
+  trigger did not apply (post-commit on a Bash call that is not a git commit).
   `silent` is true only for post-commit, session-summary and pre-compact, when
   `triggeredRuns` is at least 5 and `writes` is 0.
 - `types` — auto-capture entities per type, this week (`last7`) against the

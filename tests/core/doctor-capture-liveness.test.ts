@@ -202,6 +202,11 @@ describe('doctor: capture-liveness', () => {
     // no guard matches, post-commit ignores every Bash call that is not a
     // commit, and one session ended with a capture. Nothing here is wrong,
     // and a PASS_WITH_CONCERNS would put a false banner up every day.
+    //
+    // The `alreadyCaptured` skips are LEGACY (#322): no install still
+    // produces them, but this window mixes 19 of them with one real `wrote`
+    // to prove they don't push a PASS install into concern on their own —
+    // the shape a record from just before an upgrade would still have.
     memeshDirWith([
       ...skips('guard-check', 20, 'no active guard matched this command'),
       ...skips('post-commit', 20, SKIP_REASONS.notGitCommit),
@@ -216,10 +221,13 @@ describe('doctor: capture-liveness', () => {
     expect(result.capture?.hooks.every((h) => !h.silent)).toBe(true);
   });
 
-  it('a window of "already captured" Stops is not session-summary silence', async () => {
-    // Stop fires every turn; after the one capture per session, every later
-    // Stop is "already captured". A long session pushes the write out of the
-    // 20-record window — that is not a hook that stopped saving.
+  it('a full window of LEGACY "already captured" records is not session-summary silence', async () => {
+    // `alreadyCaptured` is LEGACY (#322): session-summary stopped writing it
+    // when the skip-then-freeze guard was replaced by `replace` mode, so no
+    // CURRENT install can produce this fixture. What this guards is an
+    // install that upgraded mid-window: its outstanding pre-upgrade records
+    // must still classify as not-triggered, not silence, until they age out
+    // on their own.
     memeshDirWith(skips('session-summary', 20, SKIP_REASONS.alreadyCaptured));
     const result = await run();
     expect(result.capture?.status).toBe('PASS');

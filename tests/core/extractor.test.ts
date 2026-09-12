@@ -204,9 +204,10 @@ describe('RuleBasedExtractor: memory extraction', () => {
   it('memory names embed the full session ID (no shortId truncation collisions)', () => {
     // Used to truncate to first 8 chars, which silently merged two
     // sessions whose IDs happened to share a prefix (verify-fix-001
-    // vs verify-fix-002 both → "verify-f"). The dup-guard in the Stop
-    // hook then skipped the second session entirely. Lock the full
-    // ID into the name so this can never recur.
+    // vs verify-fix-002 both → "verify-f"). session-summary's `replace`
+    // write (#322) keys on this exact name, so a collision here would
+    // make the second session silently overwrite the first's memory.
+    // Lock the full ID into the name so this can never recur.
     writeTranscript([
       { type: 'tool_use', tool_name: 'Write', tool_input: { file_path: '/src/x.ts' } },
       { type: 'tool_use', tool_name: 'Bash', tool_input: { command: 'npm run build' } },
@@ -228,8 +229,10 @@ describe('RuleBasedExtractor: memory extraction', () => {
     // Production-realistic UUIDs almost never collide on 8 chars,
     // but artificial / sequential IDs (verify-fix-001 vs -002) DO.
     // Either way, the contract is: distinct session_id → distinct
-    // entity name. The Stop hook's alreadyCaptured guard depends on
-    // this to avoid silent skips of subsequent sessions.
+    // entity name. session-summary's `replace` write (#322) keys on
+    // that name to restate ONE session's snapshot on every Stop — a
+    // collision here would make a second, distinct session silently
+    // overwrite the first's memory instead of getting its own.
     writeTranscript([
       { type: 'tool_use', tool_name: 'Write', tool_input: { file_path: '/src/x.ts' } },
       { type: 'tool_use', tool_name: 'Bash', tool_input: { command: 'npm run build' } },

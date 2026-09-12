@@ -376,36 +376,23 @@ process.stdin.on('end', async () => {
     //
     const { db } = openHookDb(process.env, { fts: true });
     let writeFailed = false;
+    let firstFailedEntity = null;
+    // True once any of the three rules below actually calls storeMemory.
+    // Between the toolCallCount < 3 guard above and Rule 3's >= 20 bar, a
+    // session that ran real commands but edited no file matches none of
+    // them — storeMemory never runs, writeFailed stays false, and without
+    // this flag the outcome below fell through to record('wrote') anyway:
+    // a claimed write with zero entities actually touched.
+    let anyRuleMatched = false;
+    // True only once captureEntity actually lands a write. A matched rule
+    // whose entity is `forget`-archived sets anyRuleMatched but not this —
+    // the archived branch below returns before either flag changes, so a
+    // Stop where every matched rule's target was archived falls through to
+    // the `!anyWrote` branch instead of a false 'wrote' (same bug shape as
+    // the noRuleMatched fix above, one level deeper).
+    let anyWrote = false;
+    let lastWrittenEntity = null;
     try {
-      // Duplicate detection: if we already captured this session, bail.
-      //
-      // Use the FULL session_id rather than the first 8 chars: real
-      // Claude Code UUIDs collide on 8 chars only with cosmically small
-      // probability, but artificial test IDs (verify-fix-001 vs -002)
-      // share the prefix and silently skipped the second session
-      // entirely. The contract is one stored capture per distinct
-      // session_id, so the dedup key has to be the full id.
-      //
-      // A dedup bail is a SUCCESSFUL run — the loop executed and correctly
-      // decided there was nothing to do — so it stamps the heartbeat like
-      // the capture path below does. Only a throw leaves no stamp.
-      // Guard on ANY of this session's three entities, not only `-files`.
-      // A Bash-only session created no `-files` row, so the guard never
-      // tripped and `-summary` was re-appended on every Stop — measured: 56
-      // observations, 16 unique, three commands stored fourteen times each.
-      const alreadyCaptured = db.prepare(
-        "SELECT id FROM entities WHERE name IN (?, ?, ?) LIMIT 1",
-      ).get(`session-${sessionId}-files`, `session-${sessionId}-fixes`, `session-${sessionId}-summary`);
-      if (alreadyCaptured) {
-        recordHookRun(db, 'session-summary');
-        record('skipped', SKIP_REASONS.alreadyCaptured, `session-${sessionId}-summary`);
-        // A duplicate capture is still a completed Stop lifecycle. Update
-        // consent is session-scoped and must not be skipped merely because
-        // the same transcript was observed twice (a common host retry).
-        await runAutoUpdateAtStop(sessionId);
-        return exit0();
-      }
-
       // Build and store session memories
       const baseTags = [AUTO_CAPTURE_TAG, `session:${sessionId}`, `project:${projectName}`];
 
@@ -431,12 +418,51 @@ process.stdin.on('end', async () => {
       // entities_fts too. This copy used to insert entity + observations + tags
       // only, skipping the FTS reindex the sibling hooks did — which left every
       // session-insight memory unrecallable via the FTS keyword path.
+      //
+      // Known tradeoff, not a bug: the three Rule blocks below each call this
+      // function independently, and captureEntity() commits its own
+      // transaction per call. A failure partway through Rule 2 or 3 can leave
+      // an earlier entity (e.g. -files) replaced while a later one is not,
+      // even though the overall Stop is recorded as 'error'. Wrapping all
+      // three in one outer db.transaction() would close that gap (nested
+      // calls become SAVEPOINTs — see MemeshDatabase.transaction() in
+      // src/storage/sqlite.ts) but was deliberately not done here: it widens
+      // the write-lock hold on every Stop (this hook's busy_timeout is
+      // shorter than the harness timeout on purpose), to guard a failure mode
+      // that self-heals — the next Stop rebuilds each entity fresh from the
+      // transcript, since these are snapshots, not accumulations.
       function storeMemory(name, type, observations, tags, title) {
+        anyRuleMatched = true;
+        // `replace`: these three entities are a SNAPSHOT of one session, and
+        // Stop fires at the end of every turn. Appending stored the same
+        // sentences on every turn; skipping after the first froze a two-day
+        // session at its first turn (#322). A snapshot is restated, not added
+        // to.
+        const result = captureEntity(db, { name, type, observations, tags, title, replace: true });
+        if (result?.archived) {
+          // The user `forget`-archived this exact entity. Not a failure —
+          // captureEntity's contract left it untouched on purpose — so it
+          // must not set writeFailed (that would misreport an honoured
+          // `forget` as a broken hook). Traced, not silent (#3d): the next
+          // Stop will try again and say the same thing until the user either
+          // reactivates the entity or the session ends.
+          try { process.stderr.write(`MeMesh: session-summary left "${name}" alone — archived by forget.\n`); } catch {}
+          return;
+        }
         // null = the entity row could not be resolved = this write did NOT
         // happen (captureEntity's contract). A run with a failed write must
         // not stamp the heartbeat below — "alive" would be a lie about the
         // exact thing the heartbeat certifies.
-        if (!captureEntity(db, { name, type, observations, tags, title })) writeFailed = true;
+        if (!result) {
+          writeFailed = true;
+          // First failure, not last: with three independent per-entity
+          // transactions, the first is the root cause — later calls run
+          // regardless and naming one of them would point at a symptom.
+          if (firstFailedEntity === null) firstFailedEntity = name;
+          return;
+        }
+        anyWrote = true;
+        lastWrittenEntity = name;
       }
 
       // No free-form human text exists for these three entities the way a
@@ -446,7 +472,8 @@ process.stdin.on('end', async () => {
       const titleDate = new Date().toISOString().slice(0, 10);
       const titlePrefix = `${titleDate} ${projectName}`;
 
-      // Rule 1: File editing session summary
+      // Rule 1: File editing session summary — name uses the FULL
+      // session_id (tests/core/extractor.test.ts pins why).
       if (filesEdited.length > 0) {
         storeMemory(
           `session-${sessionId}-files`,
@@ -474,7 +501,15 @@ process.stdin.on('end', async () => {
         );
       }
 
-      // Rule 3: Heavy session summary (20+ tool calls = significant work)
+      // Rule 3: Heavy session summary (20+ tool calls = significant work).
+      // This literal is the one place that actually decides the bar; two
+      // doc strings describe it in prose without importing it (this file is
+      // plain JS with no shared constant module, and capture-liveness.ts is
+      // a deliberate zero-import leaf) — src/core/capture-liveness.ts's
+      // SKIP_REASONS.noRuleMatched and src/core/session-insight.ts's own
+      // (HEAVY_SESSION_TOOL_CALLS-derived) copy. A future change to this
+      // number needs both updated by hand, or doctor's text will drift from
+      // what actually happened.
       if (toolCallCount >= 20) {
         storeMemory(
           `session-${sessionId}-summary`,
@@ -670,11 +705,38 @@ process.stdin.on('end', async () => {
       // write did not land must not read as alive. (The recall-effectiveness
       // block catches its own errors — session memories were already stored
       // by then, so the run still counts.)
-      if (!writeFailed) {
+      if (writeFailed) {
+        // Name the entity whose captureEntity call actually returned null —
+        // not a fixed guess. With three independent per-entity writes, a
+        // hardcoded name here would point at the wrong one whenever the
+        // failure was in Rule 1 or 2.
+        record('error', 'captureEntity did not land the write', firstFailedEntity ?? undefined);
+      } else if (!anyRuleMatched) {
+        // Correctly deciding there was nothing to capture is still a
+        // completed run — same stance as the tooLittleActivity skip above,
+        // which stamps too. What it must NOT do is claim 'wrote': that was
+        // this hook's shape for every real-work-but-no-file-edit session
+        // until this branch existed.
         recordHookRun(db, 'session-summary');
-        record('wrote', undefined, `session-${sessionId}-summary`);
+        // No entity named: by definition no rule matched, so `-files`,
+        // `-fixes` and `-summary` are all equally untouched this Stop —
+        // naming one of them would misreport which entity this record is
+        // about.
+        record('skipped', SKIP_REASONS.noRuleMatched);
+      } else if (!anyWrote) {
+        // A rule DID match, but every entity it targeted was `forget`-
+        // archived — the same false-'wrote' shape as the branch above, one
+        // level deeper (a matched rule that produced no write). Its own
+        // reason, not noRuleMatched: a rule fired, saying otherwise would
+        // hide that.
+        recordHookRun(db, 'session-summary');
+        record('skipped', SKIP_REASONS.allMatchedEntitiesArchived);
       } else {
-        record('error', 'captureEntity did not land the write', `session-${sessionId}-summary`);
+        recordHookRun(db, 'session-summary');
+        // Name the entity that actually landed the write (the last one, if
+        // more than one rule wrote) — not a fixed guess at which of the
+        // three this Stop touched.
+        record('wrote', undefined, lastWrittenEntity ?? undefined);
       }
     } finally {
       db.close();

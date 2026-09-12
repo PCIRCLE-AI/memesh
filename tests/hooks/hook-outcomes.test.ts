@@ -236,7 +236,12 @@ describe('hook outcome records', () => {
     expect(rows.length).toBeGreaterThanOrEqual(1);
     const last = rows[rows.length - 1];
     expect(last.outcome, `expected a write, got ${JSON.stringify(last)}`).toBe('wrote');
-    expect(last.entity).toBe('session-sess-write-summary');
+    // Only 4 tool calls (2 edits + 2 Bash), no error — only Rule 1 (`-files`)
+    // matches; Rule 2 needs an error and Rule 3 needs 20+ calls. `entity`
+    // names whichever entity actually landed the write, not a fixed guess
+    // at which of the three this Stop touched (round-4 fix: the previous
+    // hardcoded `-summary` here named an entity this scenario never wrote).
+    expect(last.entity).toBe('session-sess-write-files');
   });
 
   // ── pre-compact ──────────────────────────────────────────────────────────

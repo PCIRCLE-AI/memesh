@@ -55305,6 +55305,8 @@ var init_capture_liveness = __esm({
       transcriptPathAbsent: "transcript_path absent",
       transcriptGone: "the transcript file named by the payload is gone",
       tooLittleActivity: "too little activity in the session to be worth saving",
+      noRuleMatched: "no rule matched (no edited file and fewer than 20 tool calls)",
+      allMatchedEntitiesArchived: "every rule that matched targeted an entity the user forget-archived",
       toolInputAbsent: "tool_input absent in payload",
       noFilePath: "no file_path in the tool input",
       noDatabaseForRecall: "no database yet \u2014 nothing to recall",
@@ -60501,7 +60503,7 @@ function captureChatSession(input) {
     titleLabel: input.titleLabel
   });
   if (entities.length === 0) {
-    const reason = activity.toolCallCount < MIN_TOOL_CALLS ? `too little activity to be worth saving (${activity.toolCallCount} tool call(s))` : "no rule matched (no edited file and fewer than 20 tool calls)";
+    const reason = activity.toolCallCount < MIN_TOOL_CALLS ? `too little activity to be worth saving (${activity.toolCallCount} tool call(s))` : `no rule matched (no edited file and fewer than ${HEAVY_SESSION_TOOL_CALLS} tool calls)`;
     return { outcome: "skipped", reason, written: [], ...counts };
   }
   for (const e of entities) {

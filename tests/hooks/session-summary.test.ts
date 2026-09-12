@@ -6,10 +6,14 @@ import os from 'os';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { createRequire } from 'module';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { HOOK_OUTCOMES_FILENAME, parseHookOutcomes, SKIP_REASONS } from '../../src/core/capture-liveness.js';
 
 const require = createRequire(import.meta.url);
 // Non-git identity = basename + real-path hash (tests/core/project-identity.test.ts).
 const { getProjectName: mirrorProjectName } = require('../../scripts/hooks/_shared.js');
+// Contentless FTS5 needs the special delete form to mirror what `forget`
+// (archiveEntity) actually does to an entity before the next Stop sees it.
+const { removeFromFts } = require('../../scripts/hooks/_generated/fts-index.js');
 
 describe('Feature: Session Summary (Stop Hook)', () => {
   let testDir: string;
@@ -59,14 +63,19 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     return { stderr: res.stderr || '' };
   }
 
+  /** One Edit tool_use per file, the shape every transcript below reuses. */
+  function edits(files: string[]) {
+    return files.map((f) => ({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/' + f } }] },
+    }));
+  }
+
   /** A transcript with enough tool calls to clear the low-signal guard. */
   function writeQualifyingTranscript(): void {
     writeTranscript([
       { type: 'user', message: { role: 'user', content: 'fix the parser' } },
-      ...['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts'].map((f) => ({
-        type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/' + f } }] },
-      })),
+      ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
     ]);
   }
 
@@ -770,7 +779,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     db.close();
   });
 
-  it('Scenario: Duplicate session is not re-captured', () => {
+  it('Scenario: a second Stop restates the same session\'s entity instead of creating a second one', () => {
     writeTranscript([
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
@@ -792,17 +801,17 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     const db = openDb();
     const entities = db.prepare("SELECT * FROM entities WHERE name LIKE 'session-test-ses%'").all();
-    // Should have exactly 1 entity (not duplicated)
+    // Should have exactly 1 entity: the second Stop replaced it, not appended
+    // a second one under the same name.
     expect(entities.length).toBe(1);
 
-    // Both runs stamp the heartbeat: a dedup bail is a SUCCESSFUL run — the
-    // loop executed and correctly decided there was nothing to do. If the
-    // bail stopped stamping, a day of already-captured sessions would read
-    // as "capture stopped" in doctor.
+    // Both runs stamp the heartbeat. A re-capture is a SUCCESSFUL run just
+    // like the first — it went through the same capture path, not a bail —
+    // so nothing here should read as "capture stopped" in doctor.
     const run = db.prepare("SELECT run_count FROM hook_runs WHERE hook = 'session-summary'").get() as
       { run_count: number } | undefined;
     expect(run, 'session-summary must stamp its heartbeat').toBeDefined();
-    expect(run!.run_count, 'the dedup bail must stamp too — it is a successful run').toBe(2);
+    expect(run!.run_count, 'a re-capture stamps too — it is a successful run').toBe(2);
     db.close();
   });
 
@@ -831,5 +840,132 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     const insights = db.prepare("SELECT * FROM entities WHERE type = 'session-insight'").all();
     expect(insights.length).toBeGreaterThan(0);
     db.close();
+  });
+
+  it('Scenario: a later Stop in the same session updates the insights instead of freezing them (#322)', () => {
+    // Stop fires at the END OF EVERY TURN, not once per session. The
+    // capture-once guard therefore froze a session's memory at its first
+    // turn: a two-day session remembered its first few minutes. The guard
+    // was not gratuitous — without it `remember`'s append semantics stored
+    // the same lines over and over (measured: 56 observations, 16 unique).
+    // `replace` is the primitive that makes a third answer possible.
+    const sessionId = 'stop-updates-322';
+    writeQualifyingTranscript();
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    // The same session keeps working: four more files in the same transcript.
+    writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'fix the parser' } },
+      ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
+      { type: 'user', message: { role: 'user', content: 'now the router' } },
+      ...edits(['router.ts', 'server.ts', 'cache.ts', 'queue.ts']),
+    ]);
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    const db = openDb();
+    const row = db.prepare(
+      "SELECT e.id FROM entities e WHERE e.name = ?",
+    ).get(`session-${sessionId}-files`) as { id: number } | undefined;
+    expect(row).toBeDefined();
+    const observations = db.prepare(
+      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
+    ).all(row!.id) as Array<{ content: string }>;
+    db.close();
+
+    const text = observations.map((o) => o.content).join('\n');
+    // The second turn's work is visible...
+    expect(text).toContain('router.ts');
+    expect(text).toContain('8 file(s)');
+    // ...and the first turn's snapshot was REPLACED, not appended to, so the
+    // stale count is gone rather than sitting beside the new one.
+    expect(text).not.toContain('4 file(s)');
+  });
+
+  it('Scenario: a pure-Bash session that edited nothing records "skipped", not a false "wrote"', () => {
+    // Between the two guards — toolCallCount < 3 (skipped) and >= 20 (Rule
+    // 3) — a session that ran real Bash commands but touched no file and
+    // stayed under 20 calls matches NONE of the three capture rules.
+    // storeMemory is never called, writeFailed stays false, and the code
+    // used to fall through to record('wrote') anyway: an outcome claiming a
+    // write that never happened, on every real read-only or analysis-only
+    // session.
+    writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'why is prod slow' } },
+      ...['ps aux', 'top -l 1', 'df -h', 'du -sh /var/log', 'netstat -an'].map((cmd) => ({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: { command: cmd } }] },
+      })),
+    ]);
+    const sessionId = 'bash-only-no-edits';
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    const db = openDb();
+    const entities = db
+      .prepare("SELECT name FROM entities WHERE name LIKE ?")
+      .all(`session-${sessionId}-%`) as Array<{ name: string }>;
+    db.close();
+    expect(entities, 'no rule matched, so no entity should exist').toHaveLength(0);
+
+    // The real, on-disk outcome record — spawned through the actual hook
+    // file, not a unit-level stub — is what `memesh doctor` reads.
+    const raw = fs.readFileSync(path.join(testDir, HOOK_OUTCOMES_FILENAME), 'utf8');
+    const runs = parseHookOutcomes(raw).hooks['session-summary'] ?? [];
+    const last = runs[runs.length - 1];
+    expect(last, 'session-summary must still record something').toBeDefined();
+    expect(last!.outcome, 'zero entities written is not "wrote"').toBe('skipped');
+    expect(last!.reason).toBe(SKIP_REASONS.noRuleMatched);
+  });
+
+  it('Scenario: a Stop whose only matching rule targets a forget-archived entity records "skipped", not a false "wrote"', () => {
+    // A deeper version of the test above: this time a rule DOES match (a
+    // file was edited), but the ONE entity it would write to has been
+    // `forget`-archived since the last Stop. `storeMemory`'s archived branch
+    // returns before setting `writeFailed` OR the new `anyWrote` flag —
+    // without that second flag, the hook fell through to the final `else`
+    // and claimed 'wrote' with zero entities actually touched, the same
+    // false-write shape `noRuleMatched` was added to close, one level
+    // deeper (a rule that matched but produced no write).
+    const sessionId = 'stop-archived-322';
+    writeQualifyingTranscript();
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    const entityName = `session-${sessionId}-files`;
+    const db = openDb();
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(entityName) as { id: number } | undefined;
+    expect(row, 'Rule 1 must have created the entity on the first Stop').toBeDefined();
+    const before = db.prepare(
+      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
+    ).all(row!.id) as Array<{ content: string }>;
+    db.close();
+
+    // Mirror what `forget` (src/knowledge-graph.ts archiveEntity) actually
+    // does: flip status, and remove the row from the contentless FTS index
+    // with the exact indexed text — not a bare DELETE, which FTS5 rejects.
+    // openDb() is read-only (it mirrors what `memesh doctor` reads); a
+    // writable handle is needed here to mutate the row directly.
+    const dbForArchive = new Database(dbPath);
+    dbForArchive.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(row!.id);
+    removeFromFts(dbForArchive, row!.id, entityName, before.map((o) => o.content).join(' '), null);
+    dbForArchive.close();
+
+    // Same session, same edited files — Rule 1 matches again, but its only
+    // target is now archived.
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    const dbAfter = openDb();
+    const status = dbAfter.prepare('SELECT status FROM entities WHERE id = ?').get(row!.id) as { status: string };
+    const after = dbAfter.prepare(
+      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
+    ).all(row!.id) as Array<{ content: string }>;
+    dbAfter.close();
+    expect(status.status, 'archived status must survive the second Stop').toBe('archived');
+    expect(after, 'the archived observations must not be overwritten').toEqual(before);
+
+    const raw = fs.readFileSync(path.join(testDir, HOOK_OUTCOMES_FILENAME), 'utf8');
+    const runs = parseHookOutcomes(raw).hooks['session-summary'] ?? [];
+    const last = runs[runs.length - 1];
+    expect(last, 'session-summary must still record something').toBeDefined();
+    expect(last!.outcome, 'a matched rule with zero landed writes is not "wrote"').toBe('skipped');
+    expect(last!.reason).toBe(SKIP_REASONS.allMatchedEntitiesArchived);
   });
 });

@@ -4,6 +4,21 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A later Stop in the same session updates its session insights instead of
+  freezing them (#322).** `session-summary.js` runs on `Stop`, which fires at
+  the end of every turn, not once per session; a guard added for #240 froze a
+  session's `session-<id>-*` memories at their first Stop to stop them from
+  duplicating the same sentences forever. `captureEntity` gains a `replace`
+  mode that restates an entity's observations and tags instead of appending
+  or skipping, so a long session's memory now reflects its latest state.
+  `replace` also now recognises an entity the user `forget`-archived and
+  leaves it untouched instead of silently undoing the `forget`, and the
+  hook's outcome record no longer claims a write ("wrote") when every rule
+  that matched targeted an archived entity, or names an entity it cannot
+  actually vouch for.
+
 ## [4.10.0] — 2026-09-11
 
 ### Removed

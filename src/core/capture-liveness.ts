@@ -305,7 +305,7 @@ export const SKIP_REASONS = {
   notGitCommit: 'not a git commit command',
   /** post-commit: a git commit DID run and no commit line came back — #321. */
   commitLineMissing: 'a git commit ran but printed no commit line',
-  /** session-summary: this session's capture already landed on an earlier Stop. */
+  /** LEGACY (#322), no longer written — see NOT_TRIGGERED_SKIP_REASONS below. */
   alreadyCaptured: 'this session was already captured',
   // Every other skip reason a hook records. They live HERE, not as literals
   // in the hooks, because doctor quotes only reasons it knows (see
@@ -329,6 +329,26 @@ export const SKIP_REASONS = {
   transcriptPathAbsent: 'transcript_path absent',
   transcriptGone: 'the transcript file named by the payload is gone',
   tooLittleActivity: 'too little activity in the session to be worth saving',
+  /**
+   * session-summary: enough activity to clear tooLittleActivity (3+ tool
+   * calls) but none of it fit a capture rule — no file edited, and fewer
+   * than 20 calls total (Rule 3's heavy-session bar). A pure read/analysis
+   * session lands here. Before this reason existed, the hook fell through
+   * to `record('wrote', ...)` with zero entities actually written — every
+   * run of this shape claimed a write that never happened.
+   */
+  noRuleMatched: 'no rule matched (no edited file and fewer than 20 tool calls)',
+  /**
+   * session-summary: a rule DID match (a file was edited, or the heavy-
+   * session bar was crossed), but every entity it targeted had been
+   * `forget`-archived, so `replace` left all of them untouched. Distinct
+   * from `noRuleMatched` (no rule fired at all) and from a write failure
+   * (this is an honoured `forget`, not a broken hook) — before this reason
+   * existed, this shape fell through to `record('wrote', ...)` with zero
+   * entities actually written, the same false-write shape `noRuleMatched`
+   * was added to close.
+   */
+  allMatchedEntitiesArchived: 'every rule that matched targeted an entity the user forget-archived',
   toolInputAbsent: 'tool_input absent in payload',
   noFilePath: 'no file_path in the tool input',
   noDatabaseForRecall: 'no database yet — nothing to recall',
@@ -457,9 +477,19 @@ function valueEnd(s: string, i: number): number {
 /**
  * Skips that mean the hook's trigger did not apply, per hook. They are not
  * counted as runs toward `silent`: a post-commit run on `ls` says nothing
- * about whether commits are captured, and session-summary fires on EVERY
- * Stop (every turn), so after one capture per session the rest of the window
- * is "already captured" — a write happened, it is just older than the window.
+ * about whether commits are captured.
+ *
+ * `session-summary`'s entry is LEGACY (#322): the hook used to skip every
+ * Stop after a session's first ("already captured" — a write happened, it is
+ * just older than the window), because `remember`'s append semantics had no
+ * other way to avoid restating the same sentences every turn. `replace` mode
+ * removed the need to skip — session-summary now restates its three
+ * `session-<id>-*` entities on every Stop instead — so the hook stopped
+ * writing this reason. It is kept here only so a record from BEFORE this
+ * upgrade still classifies as not-triggered instead of ageing into a false
+ * "silent" verdict. Removable once no installation's outcome window can
+ * still hold a pre-#322 record — that happens on its own, a few releases
+ * out, once every live install has had ~20 Stops since upgrading.
  *
  * Deliberately NOT here: post-commit's commit-line-missing skip (the #321
  * shape — a commit happened and nothing was saved) and session-summary's
@@ -469,7 +499,13 @@ function valueEnd(s: string, i: number): number {
  * worth saving" is recorded per Stop, i.e. per TURN, so a pure question-and-
  * answer day (five turns, no tool calls) can reach the silent threshold and
  * produce a banner. Classifying it as not-triggered would also hide a Stop
- * hook whose activity count broke, which is the worse error.
+ * hook whose activity count broke, which is the worse error. `noRuleMatched`
+ * (#322) widens this the same way and for the same reason: five-plus Stops
+ * each with real activity (3-19 tool calls) but no file edit and no heavy-
+ * session threshold reached can also produce the banner. In practice this
+ * needs several short, edit-free sessions inside one window — a single long
+ * session that crosses 20 tool calls writes via Rule 3 on the way — so it is
+ * a narrower door than the one above, not a new kind of false alarm.
  */
 export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>> = {
   'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],

@@ -121,6 +121,8 @@ export const SKIP_REASONS = {
     transcriptPathAbsent: 'transcript_path absent',
     transcriptGone: 'the transcript file named by the payload is gone',
     tooLittleActivity: 'too little activity in the session to be worth saving',
+    noRuleMatched: 'no rule matched (no edited file and fewer than 20 tool calls)',
+    allMatchedEntitiesArchived: 'every rule that matched targeted an entity the user forget-archived',
     toolInputAbsent: 'tool_input absent in payload',
     noFilePath: 'no file_path in the tool input',
     noDatabaseForRecall: 'no database yet — nothing to recall',
