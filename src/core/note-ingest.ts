@@ -469,7 +469,10 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // happened. The transport rejects the same shape and names the count;
       // so does this. contentSkip fingerprints it, so the file is not
       // re-read on every Stop until the user edits it.
-      contentSkip(`splits into ${observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+      // "observations", not "paragraphs": this count is post-split, and one
+      // paragraph can yield more than one observation. The cap is on what is
+      // stored, which is what the reader needs to act on.
+      contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
       continue;
     }
     claims.push({
