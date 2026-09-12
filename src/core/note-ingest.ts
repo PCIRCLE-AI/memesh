@@ -306,7 +306,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     const rel = relPath(realDir, abs);
     const reason = 'symlink refused';
     report(rel, reason);
-    let st: fs.Stats | null = null;
+    let st: fs.Stats | null;
     try { st = fs.lstatSync(abs); } catch { st = null; }
     nextSkips[rel] = st
       ? { mtime: st.mtimeMs, size: st.size, reason }
