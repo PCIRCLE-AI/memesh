@@ -18,7 +18,8 @@ import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
 import { RememberSchema } from '../schemas.js';
 import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
-import { assembleBriefing } from '../../core/briefing.js';
+import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
+import { buildReferenceContext } from '../../core/work-topology.js';
 import { captureChatSession } from '../../core/session-insight.js';
 import { captureChatTurn } from '../../core/turn-signal.js';
 import {
@@ -1232,22 +1233,32 @@ program
   .description('The assembled work topology for a project — task state, decisions, lessons, knowledge, recent activity')
   .option('--project <name>', 'Project name (default: the current directory’s project)')
   .option('--recipient <id>', 'Exact recipient; enables recipient-scoped unread message guidance')
+  .option('--index', 'Only the index of durable memories (decisions, lessons, patterns, references), newest first')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
     await withDatabase(() => {
+      if (opts.index) {
+        // The same section the full briefing closes with (#323), alone: what
+        // is known here, one line each, without the ranked sections.
+        const project = opts.project ?? getProjectName();
+        const index = readBriefingIndex(getDatabase(), project);
+        if (opts.json) {
+          console.log(JSON.stringify({ project, ...index }));
+          return;
+        }
+        console.log(buildReferenceContext(index.lines));
+        return;
+      }
       const result = assembleBriefing(opts.project, opts.recipient);
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;
       }
-      if (!result.text) {
-        console.log(
-          `No memories for "${result.project}" yet.\n` +
-          `Capture happens automatically as you work; or set the task state:  memesh task --goal "…"`,
-        );
-        return;
-      }
       console.log(result.text);
+      if (result.entityCount === 0 && !result.hasTaskState && result.index.shown === 0 && result.index.older === 0) {
+        // Outside the fence: a hint to the human, not memory content.
+        console.log(`\nCapture happens automatically as you work; or set the task state:  memesh task --goal "…"`);
+      }
     });
   });
 

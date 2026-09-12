@@ -1606,7 +1606,8 @@ function inspectCaptureLiveness(
   const writing = hooks.filter((h) => h.writes > 0);
   /** Hooks with enough triggered runs that "and wrote nothing" is a statement. */
   const ranEnough = hooks.filter((h) => h.triggeredRuns >= SILENT_HOOK_MIN_RUNS);
-  const summary = writing.length > 0
+  let summary: string;
+  if (writing.length > 0) {
     // "did their work", not "wrote something". Several hooks have an effect
     // the user can see and write nothing to the graph — a printed nudge, an
     // injected context block. Those runs record the `notified` outcome
@@ -1614,19 +1615,21 @@ function inspectCaptureLiveness(
     // reaching this branch really did write a memory. The wording stays
     // non-committal anyway: `writes > 0` is the only thing checked here, and
     // one sentence should not promise more than the predicate behind it.
-    ? `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(', ')}).`
-    : ranEnough.length > 0
-      // Consult the RUN COUNTS before explaining a zero. This branch used to
-      // assert every hook was below the threshold without looking, so a hook
-      // that had run 20 times and written nothing was reported as a fresh
-      // install with no records yet — a sentence contradicted by the
-      // triggeredRuns figure in the same `--json` output. The hooks that
-      // reach here are never SILENT_ELIGIBLE (those return above as a warn),
-      // so this stays a `pass`: writing nothing is their ordinary state.
-      ? `${ranEnough.map((h) => `${h.hook} (${h.triggeredRuns} runs)`).join(', ')} ran without writing anything. These hooks decide there is nothing to save on most runs by design, so that is not itself a fault — \`memesh doctor --json\` has the per-hook figures.`
-      : hooks.length > 0
-        ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything — too early to say, which is normal on a fresh install.`
-        : 'No hook has recorded an outcome yet — the records start on the next hook run, which is normal right after an upgrade.';
+    summary = `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(', ')}).`;
+  } else if (ranEnough.length > 0) {
+    // Consult the RUN COUNTS before explaining a zero. This branch used to
+    // assert every hook was below the threshold without looking, so a hook
+    // that had run 20 times and written nothing was reported as a fresh
+    // install with no records yet — a sentence contradicted by the
+    // triggeredRuns figure in the same `--json` output. The hooks that
+    // reach here are never SILENT_ELIGIBLE (those return above as a warn),
+    // so this stays a `pass`: writing nothing is their ordinary state.
+    summary = `${ranEnough.map((h) => `${h.hook} (${h.triggeredRuns} runs)`).join(', ')} ran without writing anything. These hooks decide there is nothing to save on most runs by design, so that is not itself a fault — \`memesh doctor --json\` has the per-hook figures.`;
+  } else if (hooks.length > 0) {
+    summary = `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything — too early to say, which is normal on a fresh install.`;
+  } else {
+    summary = 'No hook has recorded an outcome yet — the records start on the next hook run, which is normal right after an upgrade.';
+  }
   return {
     check: createCheck('capture-liveness', TITLE, 'pass', summary),
     report,

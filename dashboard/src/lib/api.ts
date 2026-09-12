@@ -296,6 +296,55 @@ export async function fetchTaskState(project: string): Promise<TaskStateData> {
   return data;
 }
 
+/** The durable-memory index for one project (#323) — the same section the
+ *  briefing and the SessionStart block close with, rendered server-side. */
+export interface BriefingIndexData {
+  project: string;
+  staleDays: number;
+  lines: string[];
+  shown: number;
+  more: number;
+  older: number;
+  truncated: boolean;
+  bytes: number;
+  tokens: number;
+  ids: number[];
+}
+
+/**
+ * Every field `BriefingIndexData` declares, checked — not a sample of two.
+ *
+ * The first version validated `lines` and `shown` only, and each field it let
+ * through fails SILENTLY downstream: a missing `older` makes the card's
+ * `older === 0` test false (`undefined === 0`), so the user gets a heading
+ * above an empty list with no error and no empty state; a missing `tokens` or
+ * `bytes` prints the literal `{tokens}` in the cost line. A payload this
+ * bundle can only partly read is unreadable, not usable.
+ */
+export function isBriefingIndexData(data: unknown): data is BriefingIndexData {
+  if (!data || typeof data !== 'object') return false;
+  const d = data as Record<string, unknown>;
+  return typeof d.project === 'string'
+    && typeof d.staleDays === 'number'
+    && Array.isArray(d.lines) && d.lines.every((line) => typeof line === 'string')
+    && typeof d.shown === 'number'
+    && typeof d.more === 'number'
+    && typeof d.older === 'number'
+    && typeof d.truncated === 'boolean'
+    && typeof d.bytes === 'number'
+    && typeof d.tokens === 'number'
+    && Array.isArray(d.ids) && d.ids.every((id) => typeof id === 'number');
+}
+
+export async function fetchBriefingIndex(project: string): Promise<BriefingIndexData> {
+  const data = await api<BriefingIndexData>('GET', `/v1/briefing-index?project=${encodeURIComponent(project)}`);
+  if (!isBriefingIndexData(data)) {
+    console.warn('[memesh dashboard] /v1/briefing-index answered with a shape this bundle cannot read:', data);
+    throw new Error('unreadable briefing-index payload');
+  }
+  return data;
+}
+
 export async function fetchProjects(): Promise<ProjectInfo[]> {
   const data = await api<ProjectInfo[]>('GET', '/v1/projects');
   // Throw, do not return []. ProjectTab now tells a failed fetch apart from

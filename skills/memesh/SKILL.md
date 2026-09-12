@@ -35,7 +35,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 | `import` | Import a JSON export with the required skip, append, or overwrite strategy |
 | `learn` | Record a structured lesson with error, fix, root cause, and prevention |
 | `task_state` | Read or update user-stated goal, next step, blocker, and finished work |
-| `briefing` | Assemble the current project's work topology |
+| `briefing` | Assemble the current project's work topology, closing with a capped index of its durable memories |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |

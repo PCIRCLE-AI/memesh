@@ -55,7 +55,11 @@ function storedProvenance(metadata) {
     }
 }
 function trustFor(verdict) {
-    return verdict === 'accepted' ? 'verified' : verdict === 'rejected' ? 'rejected' : 'untrusted-until-verified';
+    switch (verdict) {
+        case 'accepted': return 'verified';
+        case 'rejected': return 'rejected';
+        default: return 'untrusted-until-verified';
+    }
 }
 function verdictLine(verdict, at, note) {
     const base = verdict === 'unreviewed'
@@ -91,7 +95,11 @@ export function recordDelegation(input) {
     }
     const granted = input.grantedTools?.map((t) => clean(t, 64)).slice(0, 50);
     const allowedTools = granted ?? summary.allowedTools;
-    const allowedSource = granted ? 'orchestrator' : summary.allowedTools ? 'envelope' : null;
+    let allowedSource = null;
+    if (granted)
+        allowedSource = 'orchestrator';
+    else if (summary.allowedTools)
+        allowedSource = 'envelope';
     const toolsLine = allowedTools === null
         ? 'Allowed tools: not reported in the envelope'
         : `Allowed tools: ${allowedTools.length ? allowedTools.join(', ') : 'none'}${granted ? ' (granted by the orchestrator)' : ''}`;

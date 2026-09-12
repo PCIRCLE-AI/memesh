@@ -173,10 +173,10 @@ export function findUncoveredExits(source) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    // maskLexicalNoise() already blanked every comment, so a comment line
+    // arrives here as pure whitespace — blankness is the only skip needed.
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) {
-      continue;
-    }
+    if (!trimmed) continue;
 
     if (helperDepth > 0) {
       const delta = braceDelta(line);

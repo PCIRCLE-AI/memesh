@@ -15,7 +15,8 @@ import os from 'os';
 import path from 'path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { handleTool } from '../../src/mcp/tools.js';
-import { assembleBriefing } from '../../src/core/briefing.js';
+import { assembleBriefing, readBriefingIndex } from '../../src/core/briefing.js';
+import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
 import { recipientEverSeen, unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
 import { setTaskState } from '../../src/core/task-state-store.js';
 
@@ -58,6 +59,16 @@ afterEach(() => {
 // tests always pass one explicitly so they cannot be polluted by (or pollute)
 // whatever repository the suite happens to run in.
 const PROJECT = 'briefing-fixture';
+
+/**
+ * Ranked memories in the #323 index fixture: the seven rows that fixture
+ * creates, minus the archived one, which is never read. Everything else
+ * ranks — the commit (evidence ranks; only the INDEX drops it), the
+ * reference, the other project's decision in the foreign section and the
+ * global directive in its own. Written out rather than recounted off the
+ * rendered lines, so the number can disagree with the code.
+ */
+const RANKED_IN_INDEX_FIXTURE = 6;
 
 function seed() {
   remember({
@@ -307,11 +318,103 @@ describe('assembleBriefing', () => {
     });
   });
 
-  it('returns empty text, not an empty fence, when there is nothing to say', () => {
+  it('a project with nothing recorded gets the index empty-state line, not nothing (#323)', () => {
     const result = assembleBriefing('no-such-project');
-    expect(result.text).toBe('');
+    expect(result.text).toContain('Index of durable memories for "no-such-project" (newest first):');
+    expect(result.text).toContain('- No durable memories (decisions, lessons, patterns, references) for "no-such-project" yet.');
+    // Repository facts still prefix only ranked memories: the empty-state
+    // line is not a reason to tell the agent its own branch name.
+    expect(result.text).not.toMatch(/branch/i);
     expect(result.entityCount).toBe(0);
     expect(result.hasTaskState).toBe(false);
+    expect(result.index.shown).toBe(0);
+  });
+
+  it('closes the block with the durable-memory index: project-scoped, evidence and archived excluded (#323)', () => {
+    seed();
+    remember({
+      name: 'other-project-decision', type: 'decision', title: 'Another project decided this',
+      observations: ['Not ours.'], tags: ['project:someone-else'],
+    });
+    remember({
+      name: 'global-directive', type: 'directive', namespace: 'global', title: 'Global directive in index?',
+      observations: ['Applies everywhere.'], tags: [`project:${PROJECT}`],
+    });
+    remember({
+      name: 'secret-note', type: 'reference', title: 'Deploy notes',
+      observations: ['token sk-proj-abcdefghijklmnopqrstuvwxyz0123456789 lives in the vault'], tags: [`project:${PROJECT}`],
+    });
+    const db = getDatabase();
+    db.prepare(
+      "INSERT INTO entities (name, type, title, status) VALUES ('archived-decision', 'decision', 'Archived decision', 'archived')",
+    ).run();
+    const archivedId = (db.prepare("SELECT id FROM entities WHERE name = 'archived-decision'").get() as { id: number }).id;
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(archivedId, `project:${PROJECT}`);
+
+    const result = assembleBriefing(PROJECT);
+    const section = result.text.split('Index of durable memories for')[1] ?? '';
+    expect(section).toContain('Use PKCE for the CLI');
+    expect(section).toContain('Raising the timeout hid a deadlock');
+    expect(section).toContain('Deploy notes');
+    expect(section).toMatch(/\[mem:\d+\]/);
+    expect(section).not.toContain('repair the parser'); // commit: evidence layer
+    expect(section).not.toContain('Another project decided this');
+    expect(section).not.toContain('Global directive in index?');
+    expect(section).not.toContain('Archived decision');
+    expect(result.text).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    expect(section).toMatch(/\(index cost: 3 lines, \d+ bytes ≈ \d+ tokens; cap 40 lines \/ 3072 bytes\)/);
+    expect(result.index.shown).toBe(3);
+    // entityCount stays the RANKED count; the index reports its own. The
+    // number is written out rather than recomputed with the implementation's
+    // own expression: counting the `- [` lines the way the renderer produced
+    // them is an assertion that cannot disagree with the code.
+    //
+    // Which rows make up this number, and why, is written once where the
+    // constant is declared. A second copy here said four and named a
+    // different set; it was wrong, and it was wrong because it was a copy.
+    expect(result.entityCount, 'the ranked count moved — check which memory joined or left it').toBe(RANKED_IN_INDEX_FIXTURE);
+  });
+
+  it('#323: a full candidate window makes every count a lower bound, on the real read path', () => {
+    // `truncated` is not cosmetic: it is what turns "15 more" into "15+
+    // more", i.e. the difference between a count and a floor. The builder's
+    // own tests pass the flag in; only a read that actually fills the
+    // candidate window proves the QUERY sets it. Raw SQL, because 2000 rows
+    // through remember() would drag embedding work in for nothing.
+    const db = getDatabase();
+    const ins = db.prepare("INSERT INTO entities (name, type, title, status) VALUES (?, 'decision', ?, 'active')");
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    db.exec('BEGIN');
+    for (let i = 0; i < INDEX_CANDIDATE_CAP + 5; i++) {
+      const id = ins.run(`bulk-${i}`, `Bulk decision ${i}`).lastInsertRowid as number;
+      tag.run(id, `project:${PROJECT}`);
+    }
+    db.exec('COMMIT');
+
+    const index = readBriefingIndex(db, PROJECT);
+    expect(index.truncated, 'a full candidate window was reported as an exact count').toBe(true);
+    // The user-visible half: the "+" that says the number is a floor.
+    expect(index.lines.join('\n')).toMatch(/^- \d+\+ more — /m);
+
+    // And the opposite direction: a small project reports exact counts.
+    const small = readBriefingIndex(db, 'no-such-project-at-all');
+    expect(small.truncated).toBe(false);
+  });
+
+  it('#323: a memory whose metadata column cannot be parsed is not auto-injected', () => {
+    // The gate has to fail CLOSED on an unreadable trust marker, and the
+    // read path is where that is decided: a consumer that parses the column
+    // before handing it over turns "unreadable" into "absent", which is
+    // permission. `entities.metadata` has no CHECK(json_valid(...)), so an
+    // import or a hand edit reaches this.
+    seed();
+    const db = getDatabase();
+    db.prepare("UPDATE entities SET metadata = '{\"trust\": ' WHERE name = 'oauth-pkce-decision'").run();
+
+    const index = readBriefingIndex(db, PROJECT);
+    const text = index.lines.join('\n');
+    expect(text, 'a row with unreadable metadata was auto-injected').not.toContain('Use PKCE for the CLI');
+    expect(text).toContain('Raising the timeout hid a deadlock');
   });
 
   it('excludes what the auto-injection gate blocks, without restricting explicit recall', async () => {
@@ -431,6 +534,20 @@ describe('assembleBriefing', () => {
     // context, the separate cap, and trust/status rejection without pinning a
     // database-specific ranking implementation.
     expect(contentLines(briefing)).toEqual(contentLines(injected));
+    // The durable-memory index (#323) is compared byte-for-byte, footer
+    // included: its caps are a frozen contract and both sides render it
+    // from the same leaf, so there is no legitimate tail difference.
+    const indexSection = (block: string) => {
+      const start = block.indexOf('Index of durable memories for');
+      if (start < 0) return null;
+      const lines = block.slice(start).split('\n');
+      const fenceAt = lines.findIndex((l) => /^`{3,}$/.test(l));
+      return fenceAt < 0 ? lines : lines.slice(0, fenceAt);
+    };
+    expect(indexSection(briefing)).not.toBeNull();
+    expect(indexSection(briefing)).toEqual(indexSection(injected));
+    expect(indexSection(briefing)!.join('\n')).not.toContain('Global rule 3');
+    expect(indexSection(briefing)!.join('\n')).toContain('Project decision 6');
     expect(briefing).toContain('Prove the parity');
     expect(briefing).toContain('Global memory — applies across projects:');
     expect(briefing).toContain('Global rule 2');

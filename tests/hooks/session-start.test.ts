@@ -1,11 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
+// The cap the hook itself imports — a literal here would drift from it.
+import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 const require = createRequire(import.meta.url);
@@ -60,6 +62,25 @@ describe('Feature: Session Start Hook', () => {
       .sort((a, b) => b.mtime - a.mtime);
     if (files.length === 0) return null;
     return JSON.parse(fs.readFileSync(path.join(sessionsDir, files[0].f), 'utf8'));
+  }
+
+  /** The ids the RANKED block rendered, read back off the injected block
+   *  itself: everything before the index heading that #323 appends. Derived
+   *  rather than recorded — a session field holding this split had no reader
+   *  outside these tests, and `injectedContext` is the record production
+   *  already keeps. The handle regex is the hook's own, anchored to the end
+   *  of a line, so a `[mem:N]` written inside an observation is not counted. */
+  function rankedIds(session: NonNullable<ReturnType<typeof readLatestSessionFile>>): Set<number> {
+    const beforeIndex = session.injectedContext.split('Index of durable memories for')[0];
+    return new Set([...beforeIndex.matchAll(/ \[mem:(\d{1,10})\]$/gm)].map((m) => Number(m[1])));
+  }
+
+  /** Names the RANKED block injected — the durable-memory index (#323) that
+   *  closes the block is recorded too, and would otherwise read as the
+   *  ranked window overflowing its limit. */
+  function rankedNames(session: NonNullable<ReturnType<typeof readLatestSessionFile>>): string[] {
+    const ranked = rankedIds(session);
+    return session.entityNames.filter((_, i) => ranked.has(session.entityIds[i]));
   }
 
   function createTestDb(): Database {
@@ -302,7 +323,10 @@ describe('Feature: Session Start Hook', () => {
       // A phrase that occurs ONCE in the fixture's observation — "deadlock"
       // appears twice inside that one sentence and would count 2 for a
       // correctly deduped block.
-      const occurrences = injected.split('raising the vitest timeout').length - 1;
+      // Counted in the ranked part only: the durable-memory index (#323)
+      // closes the block and lists the same lesson again by design.
+      const ranked = injected.split('Index of durable memories for')[0];
+      const occurrences = ranked.split('raising the vitest timeout').length - 1;
       expect(occurrences).toBe(1);
     });
 
@@ -518,6 +542,228 @@ describe('Feature: Session Start Hook', () => {
     expect(session?.entityNames, 'global memory must reach a project it was never tagged with').toContain('always-memesh-on-failure');
   });
 
+  it('#323: the injected block closes with the durable-memory index, and its ids are recorded as shown', () => {
+    const db = createTestDb();
+    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const d = ins.run('idx-decision', 'decision').lastInsertRowid as number;
+    obs.run(d, 'Keep the index capped at forty lines');
+    tag.run(d, projTag('indexproj'));
+    const c = ins.run('commit-idx', 'commit').lastInsertRowid as number;
+    obs.run(c, 'chore: bump the lockfile');
+    tag.run(c, projTag('indexproj'));
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/indexproj' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const name = projTag('indexproj').slice('project:'.length);
+    const section = injected.split(`Index of durable memories for "${name}" (newest first):`)[1];
+    expect(section, 'index section present').toBeDefined();
+    expect(section).toContain(`- [decision] Keep the index capped at forty lines [mem:${d}]`);
+    expect(section).not.toContain('bump the lockfile');
+    expect(section).toMatch(/\(index cost: 1 line, \d+ bytes ≈ \d+ tokens; cap 40 lines \/ 3072 bytes\)/);
+    const session = readLatestSessionFile();
+    expect(session!.entityIds).toContain(d);
+  });
+
+  it('#323: a memory shown ONLY through the index is recorded as injected, so citing it is credited', () => {
+    const db = createTestDb();
+    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const decisions: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      const id = ins.run(`idx-only-${i}`, 'decision').lastInsertRowid as number;
+      obs.run(id, `Index only decision ${i}`);
+      tag.run(id, projTag('indexonly'));
+      decisions.push(id);
+    }
+    // Six newer rows elsewhere push the project's rows out of the
+    // cross-project recent pool, so with a ranked window of 1 at least two
+    // decisions can only have reached the block through the index.
+    for (let i = 0; i < 6; i++) {
+      const id = ins.run(`elsewhere-${i}`, 'note').lastInsertRowid as number;
+      obs.run(id, `elsewhere ${i}`);
+      tag.run(id, projTag('elsewhere'));
+    }
+    db.close();
+
+    runHook({ cwd: '/tmp/indexonly' }, { MEMESH_SESSION_LIMIT: '1' });
+    const session = readLatestSessionFile()!;
+    const ranked = rankedIds(session);
+    // Anti-vacuity: an empty ranked set would make every id below "index
+    // only" and the assertion would hold for the wrong reason.
+    expect(ranked.size, 'the ranked block rendered nothing, so the split is meaningless').toBeGreaterThan(0);
+    const indexOnly = decisions.filter((id) => !ranked.has(id));
+    expect(indexOnly.length, 'fixture leaves decisions that only the index shows').toBeGreaterThanOrEqual(2);
+    for (const id of indexOnly) expect(session.entityIds).toContain(id);
+  });
+
+  it('#323: the hook index excludes archived, other-project and global memories', () => {
+    const db = createTestDb();
+    db.exec("ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+    db.exec("ALTER TABLE entities ADD COLUMN namespace TEXT DEFAULT 'personal'");
+    const ins = db.prepare('INSERT INTO entities (name, type, status, namespace) VALUES (?, ?, ?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const add = (name: string, status: string, namespace: string, project: string, text: string) => {
+      const id = ins.run(name, 'decision', status, namespace).lastInsertRowid as number;
+      obs.run(id, text);
+      tag.run(id, projTag(project));
+      return id;
+    };
+    const kept = add('kept', 'active', 'personal', 'scopeproj', 'Kept project decision');
+    add('archived', 'archived', 'personal', 'scopeproj', 'Archived project decision');
+    add('global', 'active', 'global', 'scopeproj', 'Global tagged decision');
+    add('foreign', 'active', 'personal', 'foreignproj', 'Other project decision');
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/scopeproj' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const section = injected.split('Index of durable memories for')[1] ?? '';
+    expect(section).toContain(`Kept project decision [mem:${kept}]`);
+    expect(section).not.toContain('Archived project decision');
+    expect(section).not.toContain('Global tagged decision');
+    expect(section).not.toContain('Other project decision');
+    expect(section).toMatch(/\(index cost: 1 line,/);
+  });
+
+  // The `truncated` contract, guarded ON THE HOOK PATH. `src/core/briefing.ts`
+  // computes the same flag and has its own test, but this file's copy at
+  // `scripts/hooks/session-start.js` is a SECOND, parallel computation, and
+  // mutating it to `{ truncated: false }` left this suite fully green. That
+  // flag is the whole difference between `N more` and `N+ more` — between a
+  // total and a floor — and on this path the line goes straight into an
+  // agent's injected context. So the assertion has to drive the real hook
+  // process, exactly as every other test here does; importing
+  // `buildBriefingIndex` would re-test the core path and leave the hook's
+  // copy as unguarded as it was. Both directions are pinned, because a
+  // hardcoded `true` lies in the other direction just as loudly.
+  function seedIndexRows(project: string, count: number): void {
+    const db = createTestDb();
+    db.exec('BEGIN');
+    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    for (let i = 0; i < count; i++) {
+      const id = ins.run(`cap-${i}`, 'decision').lastInsertRowid as number;
+      obs.run(id, `Capped index decision ${i}`);
+      tag.run(id, projTag(project));
+    }
+    db.exec('COMMIT');
+    db.close();
+  }
+
+  /** The index's own "there is more" line, whatever its count. */
+  const MORE_LINE = /- (\d+)(\+?) more — memesh recall/;
+
+  it('#323: under the candidate cap the hook reports the overflow as an exact count', () => {
+    // Comfortably over INDEX_MAX_LINES (40) so a `more` line exists at all,
+    // and far under INDEX_CANDIDATE_CAP so nothing was cut off by the query.
+    seedIndexRows('capunder', 60);
+    const output = runHook({ cwd: '/tmp/capunder' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const section = injected.split('Index of durable memories for')[1] ?? '';
+    const m = section.match(MORE_LINE);
+    expect(m, 'fixture did not overflow the rendered window, so there is no more-line to check').not.toBeNull();
+    expect(m![2], 'an exact remainder was marked as a floor').toBe('');
+  }, 30000);
+
+  it('#323: at the candidate cap the hook marks the overflow as a floor, not a total', () => {
+    // Exactly INDEX_CANDIDATE_CAP rows: the hook's query returns the cap, so
+    // rows beyond it exist unseen and every count downstream is a lower bound.
+    seedIndexRows('capover', INDEX_CANDIDATE_CAP);
+    const output = runHook({ cwd: '/tmp/capover' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const section = injected.split('Index of durable memories for')[1] ?? '';
+    const m = section.match(MORE_LINE);
+    expect(m, 'the capped fixture rendered no more-line at all').not.toBeNull();
+    expect(m![2], 'a truncated count was reported as if it were the total').toBe('+');
+  }, 30000);
+
+  it('#323: a failed index read says so and records an error — never the empty-state line', () => {
+    // An observations table without created_at: every ranked query still
+    // works (none reads that column), only the index's last-activity read
+    // fails — which isolates the index's catch.
+    const db = new Database(dbPath);
+    db.exec(`
+      CREATE TABLE entities (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, metadata JSON);
+      CREATE TABLE observations (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_id INTEGER NOT NULL, content TEXT NOT NULL);
+      CREATE TABLE tags (id INTEGER PRIMARY KEY AUTOINCREMENT, entity_id INTEGER NOT NULL, tag TEXT NOT NULL);
+    `);
+    const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('d1', 'decision').lastInsertRowid as number;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'A ranked decision');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, projTag('brokenidx'));
+    db.close();
+
+    // stderr is captured here (execFileSync forwards it to the parent
+    // instead): this test asserts what does NOT reach the outcome file and
+    // must show the detail went somewhere.
+    const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd: '/tmp/brokenidx' }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    const output = JSON.parse(run.stdout.trim()) as Record<string, unknown>;
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    expect(injected).toContain('A ranked decision');
+    expect(injected).toMatch(/Index of durable memories for "[^"]+": could not be read this session — run `memesh doctor`\./);
+    expect(injected).not.toContain('No durable memories');
+    const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l));
+    const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error');
+    // The locus plus a LABEL, never the exception's message. This file is
+    // permanent, exportable and meant to be pasteable into an issue, and the
+    // message SQLite produced here quotes the failing statement; `reason`
+    // passes through redactSecrets but not redactUserPaths.
+    expect(err?.reason).toMatch(/^briefing-index: uncaught [A-Za-z][\w-]*$/);
+    expect(err?.reason, 'the raw exception message reached the outcome file').not.toContain('no such column');
+    expect(err?.reason).not.toContain('/');
+    // The full text is still on stderr, so nothing is lost.
+    expect(run.stderr, 'the detail vanished instead of moving to stderr').toContain('no such column');
+  });
+
+  it('#323: the hook index does not inject a memory whose metadata column cannot be parsed', () => {
+    // The ranked path drops such a row deliberately (isTrustedForAutoContext
+    // fails closed on an unparseable column). The index rode inside the SAME
+    // fence and admitted it, because parsing the column before the gate sees
+    // it turns "the trust markers are unreadable" into "there are none".
+    const db = createTestDb();
+    const ins = db.prepare('INSERT INTO entities (name, type, metadata) VALUES (?, ?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const add = (name: string, metadata: string | null, text: string) => {
+      const id = ins.run(name, 'decision', metadata).lastInsertRowid as number;
+      obs.run(id, text);
+      tag.run(id, projTag('corruptmeta'));
+      return id;
+    };
+    add('broken-meta', '{"trust": "trusted"', 'Decision with unreadable metadata');
+    add('clean-meta', null, 'Decision with no metadata recorded');
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/corruptmeta' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    expect(injected, 'a row with unreadable metadata was auto-injected').not.toContain('Decision with unreadable metadata');
+    expect(injected).toContain('Decision with no metadata recorded');
+  });
+
+  it('#323: a project with no durable memories injects the empty-state line, not nothing', () => {
+    const db = createTestDb();
+    const c = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('commit-only', 'commit').lastInsertRowid as number;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(c, 'fix: something');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(c, projTag('otherproj'));
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/emptyindexproj' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const name = projTag('emptyindexproj').slice('project:'.length);
+    expect(injected).toContain(`- No durable memories (decisions, lessons, patterns, references) for "${name}" yet.`);
+  });
+
   it('Regression #242: global memories do not displace the project window', () => {
     const db = createTestDb();
     const cols = new Set((db.prepare('PRAGMA table_info(entities)').all() as any[]).map((c) => c.name));
@@ -536,7 +782,7 @@ describe('Feature: Session Start Hook', () => {
     runHook({ cwd: '/tmp/testproj' }, { MEMESH_SESSION_LIMIT: '5' });
     const session = readLatestSessionFile();
     expect(session, 'session file was written').toBeTruthy();
-    const names = session!.entityNames;
+    const names = rankedNames(session!);
     const projectHits = names.filter((n: string) => n.startsWith('p')).length;
     const globalHits = names.filter((n: string) => n.startsWith('g')).length;
     expect(projectHits, 'the project keeps its full window').toBe(5);
@@ -682,7 +928,7 @@ describe('Feature: Session Start Hook', () => {
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toMatch(/5 project/);
     const session = readLatestSessionFile();
-    const projectNames = (session?.entityNames ?? []).filter((n) => n.startsWith('entity-'));
+    const projectNames = (session ? rankedNames(session) : []).filter((n) => n.startsWith('entity-'));
     expect(projectNames.length).toBe(5);
   });
 

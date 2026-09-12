@@ -23,17 +23,21 @@ export function isTriggeredRecord(record) {
         return true;
     return !(NOT_TRIGGERED_SKIP_REASONS[record.hook] ?? []).includes(record.reason);
 }
+function readHookOutcomeLines(raw) {
+    const entries = [];
+    for (const line of raw.split('\n')) {
+        const record = parseHookOutcomeLine(line);
+        if (record)
+            entries.push({ hook: record.hook, triggered: isTriggeredRecord(record), record, line });
+    }
+    return entries;
+}
 export const HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
 export function serializeHookOutcome(record) {
     return `${JSON.stringify(record)}\n`;
 }
 export function trimHookOutcomeLines(raw, max = HOOK_OUTCOMES_PER_HOOK, maxBytes = HOOK_OUTCOMES_ROTATE_BYTES) {
-    const records = [];
-    for (const line of raw.split('\n')) {
-        const record = parseHookOutcomeLine(line);
-        if (record)
-            records.push({ hook: record.hook, triggered: isTriggeredRecord(record), line });
-    }
+    const records = readHookOutcomeLines(raw);
     const keep = windowKeep(records, max, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
     let kept = records.filter((_, i) => keep[i]).map((r) => r.line);
     let bytes = kept.reduce((n, line) => n + utf8Length(line) + 1, 0);
@@ -205,18 +209,13 @@ export const NEVER_RAN_GRACE_HOURS = 72;
 export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
     if (!raw)
         return { hooks: {} };
-    const records = [];
-    for (const line of raw.split('\n')) {
-        const record = parseHookOutcomeLine(line);
-        if (record)
-            records.push(record);
-    }
-    const keep = windowKeep(records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })), limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
+    const entries = readHookOutcomeLines(raw);
+    const keep = windowKeep(entries, limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
     const hooks = {};
-    records.forEach((record, i) => {
+    entries.forEach(({ hook, record }, i) => {
         if (!keep[i])
             return;
-        (hooks[record.hook] ?? (hooks[record.hook] = [])).push(record);
+        (hooks[hook] ?? (hooks[hook] = [])).push(record);
     });
     return { hooks };
 }

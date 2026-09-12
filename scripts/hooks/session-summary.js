@@ -601,9 +601,42 @@ process.stdin.on('end', async () => {
               // session so it survives DB restores from either era) plus
               // the compliance denominators: sessions that HAD an injection
               // vs sessions whose transcript carried any citation marker.
+              //
+              // The counters are scoped to the generation named in the stamp.
+              // When a graph that counted under an EARLIER generation meets
+              // this one, they are cleared rather than added to: the
+              // numerator changed meaning (v1 asked "did the transcript
+              // contain any marker", v2 asks "was an id we injected cited"),
+              // so a sum across both is one ratio wearing the newer label and
+              // no key separates the eras. Readers — analytics.ts and
+              // scripts/audit/measure-signals.mjs — read the bare keys and
+              // therefore keep working unchanged; what they report is now
+              // this generation only. A graph that never counted has no
+              // stamp, so nothing resets on a new install.
+              const ACCOUNTING_MODE = 'citation-v2 since 2026-09-12';
+              const priorMode = db.prepare(
+                "SELECT value FROM memesh_metadata WHERE key = 'recall_accounting_mode'"
+              ).get()?.value;
+              if (priorMode && priorMode !== ACCOUNTING_MODE) {
+                // Traced, not silently dropped: the numbers being discarded
+                // are the only record of the previous era, and a reset that
+                // leaves no result record is the silent-skip shape.
+                const prior = (key) => db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key)?.value ?? 'absent';
+                const priorTotal = prior('citation_sessions_total');
+                const priorCited = prior('citation_sessions_cited');
+                db.prepare(
+                  "DELETE FROM memesh_metadata WHERE key IN ('citation_sessions_total', 'citation_sessions_cited')"
+                ).run();
+                try {
+                  process.stderr.write(
+                    `[memesh session-summary] citation accounting generation changed (${priorMode} -> ${ACCOUNTING_MODE}); ` +
+                      `counters reset from total=${priorTotal} cited=${priorCited} — the two eras count different things and are not comparable.\n`,
+                  );
+                } catch {}
+              }
               db.prepare(
                 'INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)'
-              ).run('recall_accounting_mode', 'citation-v1 since 2026-08-16');
+              ).run('recall_accounting_mode', ACCOUNTING_MODE);
               const bump = db.prepare(
                 `INSERT INTO memesh_metadata (key, value) VALUES (?, '1')
                  ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`
