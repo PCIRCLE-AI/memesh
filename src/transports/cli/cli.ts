@@ -285,7 +285,7 @@ program
   .argument('[text]', 'Quick-capture text — title, observations and name are derived from it (type defaults to note)')
   .description('Store knowledge as an entity (use flags for explicit form, or positional text for quick capture)')
   .option('--name <name>', 'Entity name')
-  .option('--type <type>', 'Entity type')
+  .option('--type <type>', 'Entity type (omit it with --replace to keep the type the memory already has)')
   .option('--title <title>', 'Short human-readable label shown as the headline (name stays the stable machine key)')
   .option('--obs <observations...>', 'Observations (space-separated)')
   .option('--tags <tags...>', 'Tags (space-separated)')
@@ -348,10 +348,16 @@ program
       if (!opts.obs || opts.obs.length === 0) opts.obs = [String(text)];
       else opts.obs = [...opts.obs, String(text)];
     }
-    if (note === undefined && (!opts.name || !opts.type)) {
+    // `--replace` with a `--name` inherits the stored type (#333 T4), so it is
+    // a complete call without `--type`. This check runs BEFORE the
+    // RememberSchema.safeParse below and is the CLI's own copy of the rule —
+    // relaxing only the schema would have left the terminal rejecting the
+    // documented correction call while MCP and HTTP accepted it.
+    if (note === undefined && (!opts.name || (!opts.type && opts.replace !== true))) {
       console.error(
-        'Error: provide --name and --type, OR pass quick-capture text as a positional arg.\n' +
+        'Error: provide --name and --type, OR --name with --replace to correct a memory that exists, OR pass quick-capture text as a positional arg.\n' +
         '  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0"\n' +
+        '  memesh remember --name "auth" --replace --obs "Use OAuth 2.0 with PKCE"\n' +
         '  memesh remember "Use OAuth 2.0 with PKCE"'
       );
       process.exit(1);

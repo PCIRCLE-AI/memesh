@@ -381,3 +381,53 @@ describe('remember() reports the stored title — #324 T3', () => {
     expect(r.title).toBe(storedTitle('t3-null'));
   });
 });
+
+// #333 T4. The documented way to correct a memory is `name` + `replace: true`.
+// The type inheritance it needs has always been in operations.ts — `typeGiven
+// && args.type !== existing.type` only rewrites the type when one was PASSED —
+// so the only thing forcing a caller to restate `type` was the transport
+// schema. These pin the seam where that was true: the value the call returns
+// and the value the row holds, not what a surface prints.
+describe('remember({ name, replace: true }) inherits the stored type — #333 T4', () => {
+  it('the documented correction call omits `type` and the memory keeps the one it has', () => {
+    remember({ name: 'pkce_decision', type: 'decision', title: 'PKCE', observations: ['before'] });
+
+    // The transport must let it through: this is the call the instructions
+    // and API_REFERENCE tell a caller to make.
+    expect(RememberSchema.safeParse({ name: 'pkce_decision', replace: true, title: 'Use PKCE' }).success).toBe(true);
+
+    const r = remember({ name: 'pkce_decision', replace: true, title: 'Use PKCE', observations: ['after'] });
+    expect(r.replaced).toBe(true);
+    expect(r.type, 'the receipt reported a type the caller never passed').toBe('decision');
+    const row = getDatabase().prepare('SELECT type, title FROM entities WHERE name = ?')
+      .get('pkce_decision') as { type: string; title: string | null };
+    expect(row.type, 'the stored type was rewritten by an omitted field').toBe('decision');
+    expect(row.title).toBe('Use PKCE');
+    expect(ftsHits('after')).toContain('pkce_decision');
+  });
+
+  it('passing `type` still reclassifies — inheriting an omitted type did not disable C5', () => {
+    remember({ name: 'still_retypes', type: 'feedback', observations: ['before'] });
+    const r = remember({ name: 'still_retypes', type: 'decision', observations: ['after'], replace: true });
+    expect(r.type).toBe('decision');
+    expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
+      .get('still_retypes') as { type: string }).type).toBe('decision');
+  });
+
+  it('`type` is still required without `replace` — the relaxation is scoped to the correction call', () => {
+    const parsed = RememberSchema.safeParse({ name: 'brand_new', title: 'x', observations: ['y'] });
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.some((i) => i.path[0] === 'type')).toBe(true);
+  });
+
+  it('`replace` on a name that does not exist asks for `type` instead of inventing one', () => {
+    // Relaxing the schema opens a path that did not exist before: create a NEW
+    // entity with no type. Defaulting it to "note" would be the same silent
+    // reclassification the typeGiven guard exists to prevent, so core — the
+    // layer that knows whether the name exists — refuses and says why.
+    expect(() => remember({ name: 'never_stored_yet', replace: true, title: 'x', observations: ['y'] }))
+      .toThrow(/no memory named "never_stored_yet".*pass `type`/s);
+    expect((getDatabase().prepare('SELECT COUNT(*) AS c FROM entities WHERE name = ?')
+      .get('never_stored_yet') as { c: number }).c, 'a typeless entity was created anyway').toBe(0);
+  });
+});

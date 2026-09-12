@@ -138,7 +138,11 @@ export interface ReplacedVersion {
   truncated?: boolean;
 }
 
-type ResolvedRememberInput = RememberInput & { name: string; type: string };
+// `type` stays optional: `replace` on an existing name inherits the stored
+// type (#333 T4), so the resolved input can legitimately carry none.
+// rememberInTransaction resolves it against the row and refuses when there is
+// no row to inherit from.
+type ResolvedRememberInput = RememberInput & { name: string };
 
 /**
  * Turn the `note` form into the structured form, or check the structured form
@@ -149,8 +153,12 @@ function resolveRememberInput(
   input: RememberInput,
 ): { args: ResolvedRememberInput; derived?: DerivedNote; typeGiven: boolean } {
   if (input.note === undefined) {
-    if (!input.name || !input.type) throw new Error('remember needs `name` and `type`, or `note`');
-    return { args: input as ResolvedRememberInput, typeGiven: true };
+    if (!input.name) throw new Error('remember needs `name` and `type`, or `note`');
+    // `type` may be omitted only alongside `replace`, which inherits it from
+    // the memory being corrected. The transports' RememberSchema says the
+    // same; this is the direct-caller copy.
+    if (!input.type && !input.replace) throw new Error('remember needs `name` and `type`, or `note`');
+    return { args: input as ResolvedRememberInput, typeGiven: input.type !== undefined };
   }
   if (input.title !== undefined || input.observations !== undefined) {
     throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
@@ -212,6 +220,20 @@ function rememberInTransaction(
     );
   }
 
+  // `type` omitted (only reachable with `replace`, per resolveRememberInput):
+  // take the one the memory already has. When there is no memory to inherit
+  // from, `replace` would CREATE one — and defaulting its type to
+  // NOTE_DEFAULT_TYPE here is exactly the silent reclassification the
+  // `typeGiven` guard below exists to prevent, so this refuses instead. This
+  // layer is the one that knows whether the name exists; the schema does not.
+  const entityType = args.type ?? existing?.type;
+  if (entityType === undefined) {
+    throw new Error(
+      `\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
+      + 'so this call would create one with no type — pass `type` to create it.',
+    );
+  }
+
   // `replace: true` on a memory that exists: capture what is there, then
   // clear it through `clearEntityData`, which deletes the contentless-FTS row
   // with the EXACT text that was indexed before removing the observations —
@@ -242,9 +264,11 @@ function rememberInTransaction(
     // from feedback to decision kept answering as feedback while the receipt
     // said `replaced`. `type` is not in the FTS document (name and
     // observations are — storage/fts-index.ts), so this needs no reindex.
-    if (typeGiven && args.type !== existing.type) {
-      db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(args.type, existing.id);
-      retypedTo = args.type;
+    // `entityType`, not `args.type`: under `typeGiven` the two are the same
+    // value, and this one is a plain string rather than an optional.
+    if (typeGiven && entityType !== existing.type) {
+      db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(entityType, existing.id);
+      retypedTo = entityType;
     }
     // Tags omitted means "keep them" — clearEntityData dropped them, so they
     // go back. Replacing a memory's text must not silently untag it from its
@@ -266,7 +290,7 @@ function rememberInTransaction(
   // Codex review caught a P1 where the trust was being written via
   // updateEntityMetadata AFTER createEntity returned, leaving the gate
   // looking at undefined and defaulting to trusted.
-  const entityId = kg.createEntity(args.name, args.type, {
+  const entityId = kg.createEntity(args.name, entityType, {
     observations,
     tags,
     namespace: args.namespace,
@@ -366,7 +390,7 @@ function rememberInTransaction(
     // that persisted value too; echoing args.type made a duplicate remember
     // receipt claim a type that was never written. The replace path is the
     // one place the stored type DOES change, and `retypedTo` carries it.
-    type: retypedTo ?? existing?.type ?? args.type,
+    type: retypedTo ?? existing?.type ?? entityType,
     observations: observations?.length ?? 0,
     tags: tags?.length ?? 0,
     relations: relationsCreated.length,
@@ -379,7 +403,7 @@ function rememberInTransaction(
     ...(relationErrors.length > 0 ? { relationErrors } : {}),
     ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
     ...(derived
-      ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? args.type, title: derived.title, observations: derived.observations } }
+      ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
       : {}),
   };
 }

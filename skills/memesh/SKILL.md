@@ -175,7 +175,7 @@ and retiring outdated info.
 |-----------|--------|
 | User states what they're working on / what's next / what's blocking | `memesh task --goal "…"` / `--next "…"` / `--blocked "…"` |
 | Design decision made | `memesh remember "Use OAuth 2.0 with PKCE for the API" --type decision --tags "project:myapp"` (or `remember({ note })` over MCP) |
-| A stored memory is wrong | `memesh remember --name "auth-choice" --type decision --obs "the corrected fact" --replace` — the old version moves to `metadata.replaced_history` |
+| A stored memory is wrong | `memesh remember --name "auth-choice" --obs "the corrected fact" --replace` — the memory keeps its type and the old version moves to `metadata.replaced_history` (add `--type` only to reclassify it) |
 | Bug fixed | `memesh learn --error "what broke" --fix "what fixed it" --root-cause "why" --severity major` |
 | Starting work on a feature | `memesh recall "feature-name" --json` |
 | User asks "what did we decide?" | `memesh recall "topic" --tag "project:myapp"` |
