@@ -23,7 +23,7 @@ function parseActivity(value) {
     const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(' ', 'T')}Z`;
     return Date.parse(iso);
 }
-export function compareIndexCandidates(a, b) {
+function compareIndexCandidates(a, b) {
     const at = parseActivity(a.lastActivity);
     const bt = parseActivity(b.lastActivity);
     const av = Number.isNaN(at) ? -Infinity : at;
@@ -44,10 +44,10 @@ function indexLine(candidate) {
     const text = title && snippet && !repeats ? `${title} — ${snippet}` : (title || snippet);
     return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || 'memory', title: text || null }, INDEX_LINE_MAX_CHARS);
 }
-export function indexHeading(projectName) {
+function indexHeading(projectName) {
     return `Index of durable memories for "${projectName}" (newest first):`;
 }
-export function indexEmptyLine(projectName) {
+function indexEmptyLine(projectName) {
     return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
 }
 function moreLine(n, truncated, projectName) {

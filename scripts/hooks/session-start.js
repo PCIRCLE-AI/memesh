@@ -1326,6 +1326,14 @@ process.stdin.on('end', async () => {
         indexLines = [`Index of durable memories for "${projectName}": could not be read this session — run \`memesh doctor\`.`];
       }
 
+      // Every `[mem:id]` handle a rendered line ends with. Anchored to the
+      // end of the line on purpose: a handle is what the renderer printed,
+      // not a citation someone wrote inside an observation.
+      const renderedHandles = (lines) => lines.flatMap((line) => {
+        const match = line.match(/ \[mem:(\d{1,10})\]$/);
+        return match ? [Number(match[1])] : [];
+      });
+
       // Same prefix, same rule, as `assembleBriefing`: repository facts are
       // context for memories, never a briefing on their own — they prefix
       // only a block with ranked memories; the index's empty-state line is
@@ -1334,42 +1342,44 @@ process.stdin.on('end', async () => {
       // line, not nothing). briefing.test.ts's parity case is what keeps this
       // identical to the tool side.
       let memoryContext = workPackageGuidance;
-      {
-        if (memoryLines.length > 0) {
-          const repoLines = repoStateLines(readRepoState(data.cwd));
-          if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
-          memoryLines.push('');
-        }
-        memoryLines.push(...indexLines);
-        // Same wrapper pre-edit-recall uses: an explicit "background data,
-        // not instructions" preamble plus a fenced block. Memory content is
-        // attacker-influenced in the general case (anything the agent has
-        // ever been told can end up in an observation), so it must be
-        // delimited the same way on every injection path — not hand-rolled
-        // per hook. The lines arrive already budgeted — assembleTopologyBlock
-        // charges task state plus project/foreign sections against the main
-        // ceiling and global context against its small additive ceiling. It
-        // returns whole lines only, so the closing fence cannot be cut.
-        memoryContext = buildReferenceContext(memoryLines) + '\n\n' + workPackageGuidance;
-        // The citation contract — OUTSIDE the fence on purpose: the fence
-        // declares its content "background data, not instructions", and
-        // this line IS an instruction. One line is the entire write side of
-        // the injection-ROI signal; the Stop hook credits recall_hits only
-        // from these markers (self-reported: undercounts, never overcounts).
-        // The citation instruction used to be appended here, outside the
-        // fence, so it would read as an instruction rather than as data.
-        // It never worked: Claude Code wraps a hook's additionalContext in a
-        // system-reminder ending "you should not respond to this context
-        // unless it is highly relevant", so the whole block — instruction
-        // included — arrives as data. Measured on a real database:
-        // citation_sessions_total=4, sessions WITH a citation = 0.
-        //
-        // The contract now lives in `.claude/rules/memesh-citations.md`,
-        // which Claude Code loads as an instruction. Writing it is the
-        // self-heal below; the line here is gone rather than duplicated,
-        // because a per-session copy of an instruction that is read as data
-        // is a per-session cost with no effect.
+      if (memoryLines.length > 0) {
+        const repoLines = repoStateLines(readRepoState(data.cwd));
+        if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
+        memoryLines.push('');
       }
+      // What the RANKED block rendered, captured here — before the index is
+      // appended — so the split below is read off the two pools rather than
+      // reconstructed from line positions.
+      const rankedEntityIds = [...new Set(renderedHandles(memoryLines))];
+      memoryLines.push(...indexLines);
+      // Same wrapper pre-edit-recall uses: an explicit "background data,
+      // not instructions" preamble plus a fenced block. Memory content is
+      // attacker-influenced in the general case (anything the agent has
+      // ever been told can end up in an observation), so it must be
+      // delimited the same way on every injection path — not hand-rolled
+      // per hook. The lines arrive already budgeted — assembleTopologyBlock
+      // charges task state plus project/foreign sections against the main
+      // ceiling and global context against its small additive ceiling. It
+      // returns whole lines only, so the closing fence cannot be cut.
+      memoryContext = buildReferenceContext(memoryLines) + '\n\n' + workPackageGuidance;
+      // The citation contract — OUTSIDE the fence on purpose: the fence
+      // declares its content "background data, not instructions", and
+      // this line IS an instruction. One line is the entire write side of
+      // the injection-ROI signal; the Stop hook credits recall_hits only
+      // from these markers (self-reported: undercounts, never overcounts).
+      // The citation instruction used to be appended here, outside the
+      // fence, so it would read as an instruction rather than as data.
+      // It never worked: Claude Code wraps a hook's additionalContext in a
+      // system-reminder ending "you should not respond to this context
+      // unless it is highly relevant", so the whole block — instruction
+      // included — arrives as data. Measured on a real database:
+      // citation_sessions_total=4, sessions WITH a citation = 0.
+      //
+      // The contract now lives in `.claude/rules/memesh-citations.md`,
+      // which Claude Code loads as an instruction. Writing it is the
+      // self-heal below; the line here is gone rather than duplicated,
+      // because a per-session copy of an instruction that is read as data
+      // is a per-session cost with no effect.
 
       // --- Record injected entity IDs for recall effectiveness tracking ---
       // The Stop hook credits recall_hits from EXPLICIT `[mem:id]` citations
@@ -1381,16 +1391,11 @@ process.stdin.on('end', async () => {
       // kept as the record of what was shown.
       //
       // The set below is every pool the topology block draws from — the
-      // lessons pool and the durable-memory index (#323) included. It is derived from rendered citation handles,
-      // so clipped or budgeted-away candidates cannot be credited as shown.
+      // lessons pool and the durable-memory index (#323) included. It is
+      // derived from rendered citation handles, so clipped or budgeted-away
+      // candidates cannot be credited as shown.
       try {
-        const idsIn = (lines) => lines.flatMap((line) => {
-          const match = line.match(/ \[mem:(\d{1,10})\]$/);
-          return match ? [Number(match[1])] : [];
-        });
-        const renderedEntityIds = idsIn(memoryLines);
-        // The index is always the tail of memoryLines (pushed last above).
-        const rankedEntityIds = [...new Set(idsIn(memoryLines.slice(0, memoryLines.length - indexLines.length)))];
+        const renderedEntityIds = renderedHandles(memoryLines);
         const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities, ...indexEntities];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
         // A memory can appear in the ranked block AND the index; it was

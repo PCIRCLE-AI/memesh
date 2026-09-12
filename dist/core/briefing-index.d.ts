@@ -24,9 +24,6 @@ export interface BriefingIndex {
     tokens: number;
     ids: number[];
 }
-export declare function compareIndexCandidates(a: IndexCandidate, b: IndexCandidate): number;
-export declare function indexHeading(projectName: string): string;
-export declare function indexEmptyLine(projectName: string): string;
 export declare function buildBriefingIndex(candidates: readonly IndexCandidate[], projectName: string, now: number, options?: {
     truncated?: boolean;
 }): BriefingIndex;

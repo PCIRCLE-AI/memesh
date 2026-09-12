@@ -110,7 +110,7 @@ function parseActivity(value: string | null): number {
 }
 
 /** Newest activity first; id breaks ties so two independent queries agree. */
-export function compareIndexCandidates(a: IndexCandidate, b: IndexCandidate): number {
+function compareIndexCandidates(a: IndexCandidate, b: IndexCandidate): number {
   const at = parseActivity(a.lastActivity);
   const bt = parseActivity(b.lastActivity);
   const av = Number.isNaN(at) ? -Infinity : at;
@@ -138,11 +138,11 @@ function indexLine(candidate: IndexCandidate): string {
   );
 }
 
-export function indexHeading(projectName: string): string {
+function indexHeading(projectName: string): string {
   return `Index of durable memories for "${projectName}" (newest first):`;
 }
 
-export function indexEmptyLine(projectName: string): string {
+function indexEmptyLine(projectName: string): string {
   return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
 }
 

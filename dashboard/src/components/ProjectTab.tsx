@@ -107,6 +107,10 @@ export function TaskStateCard({ data, error }: { data: TaskStateData | null; err
   );
 }
 
+/** A rendered memory line, told apart from the heading, trailers and footer
+ *  by the `[mem:id]` handle it ends with. */
+const MEM_LINE = /\s\[mem:(\d{1,10})\]$/;
+
 /**
  * What is known here (#323) — the durable-memory index an agent receives at
  * session start, shown as the agent gets it: one line per decision, lesson,
@@ -114,8 +118,6 @@ export function TaskStateCard({ data, error }: { data: TaskStateData | null; err
  * lines come from the server's renderer verbatim; only the framing around
  * them (heading, overflow, staleness, cost) is translated here.
  */
-const MEM_LINE = /\s\[mem:(\d{1,10})\]$/;
-
 export function BriefingIndexCard({ data, error }: { data: BriefingIndexData | null; error: string }) {
   if (error) return <div class="card" style={{ marginTop: 12 }}><div class="error-box" role="alert">{error}</div></div>;
   if (!data) return <div class="card" style={{ marginTop: 12 }}><div class="loading" role="status" /></div>;
