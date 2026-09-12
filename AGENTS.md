@@ -212,7 +212,9 @@ below with it:
   integration, claim coverage, authorization boundaries, and the final status.
   Implementers return a candidate, never `PASS`. A fresh read-only reviewer
   who authored none of the changed paths replays every claim on the exact
-  immutable candidate. Any source change invalidates earlier test and review
-  evidence for that candidate.
+  immutable candidate. After changes, replay only affected claims and dependencies
+  and have the independent reviewer reassess that delta. Retain unaffected evidence
+  with its original identity and verified applicability; a new SHA alone does not
+  require full-suite or all-host/UI replay. Never relabel an old execution as new.
 - **Internal notes stay local.** Plans and scratch analyses are never
   committed and never appear in commit messages or release notes.
