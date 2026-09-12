@@ -1605,7 +1605,11 @@ function inspectCaptureLiveness(
 
   const writing = hooks.filter((h) => h.writes > 0);
   const summary = writing.length > 0
-    ? `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(', ')}).`
+    // "did their work", not "wrote something": `remember-nudge` records a
+    // `wrote` outcome for a line it PRINTED, and writes nothing to the graph
+    // (scripts/hooks/_stop-notes.js). Reporting that as a write would make
+    // this sentence assert a memory that does not exist.
+    ? `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(', ')}).`
     : hooks.length > 0
       ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything — too early to say, which is normal on a fresh install.`
       : 'No hook has recorded an outcome yet — the records start on the next hook run, which is normal right after an upgrade.';

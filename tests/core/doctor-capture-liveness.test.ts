@@ -156,6 +156,24 @@ describe('doctor: capture-liveness', () => {
     expect(result.capture?.status).toBe('PASS');
   });
 
+  it('the PASS summary does not say a hook that only PRINTS wrote something (#324)', async () => {
+    // remember-nudge records `wrote` for a line it printed to the user; it
+    // never touches the graph. A summary claiming it "wrote something" would
+    // assert a memory that does not exist.
+    memeshDirWith([
+      ...skips('remember-nudge', 3, SKIP_REASONS.trivialTurn),
+      { hook: 'remember-nudge', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'wrote' },
+      { hook: 'note-ingest', at: '2026-09-09T01:00:01.000Z', host: 'claude-code', outcome: 'skipped', reason: SKIP_REASONS.noNoteChanged },
+    ]);
+    const result = await run({});
+    const check = result.checks.find((c) => c.id === 'capture-liveness');
+    expect(check!.summary).toContain('remember-nudge');
+    expect(check!.summary).not.toMatch(/wrote something/);
+    expect(result.capture?.hooks.map((h) => h.hook)).toEqual(
+      expect.arrayContaining(['note-ingest', 'remember-nudge']),
+    );
+  });
+
   it('PASS_WITH_CONCERNS — a hook that ran and never wrote, named with its dominant reason', async () => {
     // The #321 shape exactly: 48 git commits, 0 writes, no commit line printed.
     memeshDirWith(skips('post-commit', 48, SKIP_REASONS.commitLineMissing));
