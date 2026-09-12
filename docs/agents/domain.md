@@ -5,7 +5,7 @@ How the engineering skills should consume this repo's domain documentation when 
 ## Before exploring, read these
 
 - **`CONTEXT.md`** at the repo root
-- **`docs/adr/`**: read ADRs that touch the area you're about to work in.
+- **the architecture-decision directory**, once one exists: read the decisions that touch the area you're about to work in.
 
 If any of these files don't exist, **proceed silently**. Don't flag their absence; don't suggest creating them upfront. The `/domain-modeling` skill (reached via `/grill-with-docs` and `/improve-codebase-architecture`) creates them lazily when terms or decisions actually get resolved.
 
@@ -13,20 +13,22 @@ Neither exists yet in this repo, which is the expected starting state.
 
 ## File structure
 
-This is a single-context repo: one package, one `src/`, no workspaces.
+Treat this as a single-context repo, with one caveat worth knowing: there is no
+npm workspace (the root `package.json` has no `workspaces` field), but there are
+three `package.json` files and two `src/` trees — the root package, `dashboard/`
+(its own package and `src/`, built into `dashboard/dist/`), and
+`extensions/memory-memesh/`. They are one product with one domain vocabulary,
+which is why a single glossary fits; a reviewer enumerating source files must
+still remember that `dashboard/src/` exists.
 
-```
-/
-├── CONTEXT.md
-├── docs/adr/
-│   ├── 0001-....md
-│   └── 0002-....md
-└── src/
-```
+A glossary belongs at the repository root, and architecture decisions in a
+directory beside it. Neither is created yet, so this document does not name
+their paths — an agent writing the first one picks the conventional location and
+adds it here at the same time.
 
 (The skills also support a multi-context layout, keyed on a `CONTEXT-MAP.md` at
-the root. This repo does not use it; add one only if it ever splits into
-packages with their own `src/`.)
+the root. This repo does not use it; reach for it only if the three packages
+ever grow separate domain vocabularies.)
 
 ## Use the glossary's vocabulary
 
@@ -38,12 +40,10 @@ If the concept you need isn't in the glossary yet, that's a signal: either you'r
 
 If your output contradicts an existing ADR, surface it explicitly rather than silently overriding:
 
-> _Contradicts ADR-0007 (event-sourced orders), but worth reopening because…_
+> _Contradicts the decision to keep `entities_fts` contentless, but worth reopening because…_
 
 ## Note on this repo's existing documents
 
-`CLAUDE.md` is deliberately a pointer, not a copy: the architecture, the API
-surface and the contribution rules live in `docs/ARCHITECTURE.md`,
-`docs/api/API_REFERENCE.md` and `CONTRIBUTING.md`, and duplicating them is how
-they drift. A `CONTEXT.md` written here should hold the **domain vocabulary**
-and nothing those documents already answer.
+A glossary written here holds the **domain vocabulary** and nothing the
+architecture, API and contribution documents already answer. `CLAUDE.md` opens
+by explaining why.

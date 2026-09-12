@@ -218,7 +218,9 @@ The five canonical roles, each label string equal to its name. See
 
 ### Domain docs
 
-Single-context: a glossary file and an architecture-decision directory at the
-repository root. Neither exists yet — they are written lazily, when a term or a
-decision actually needs settling, not upfront. The names and the layout are in
+Single-context, with one caveat: there is no npm workspace, but three packages
+and two `src/` trees — the root, `dashboard/`, and `extensions/memory-memesh/` —
+share one domain vocabulary. A glossary and an architecture-decision directory
+are written lazily, when a term or a decision actually needs settling, not
+upfront; neither exists yet. See
 [docs/agents/domain.md](docs/agents/domain.md).

@@ -401,6 +401,14 @@ const livingDocs = [
   'docs/ARCHITECTURE.md',
   'docs/api/API_REFERENCE.md',
   'skills/memesh/SKILL.md',
+  // The agent-skill configuration. These name repository paths the way every
+  // other living document does, and a wrong one sends an agent to a directory
+  // that is not there. Left out of this list, a dangling reference in them is
+  // invisible: `docs/adr/` was caught by this gate in CLAUDE.md, moved into
+  // docs/agents/domain.md, and stopped being checked.
+  'docs/agents/domain.md',
+  'docs/agents/issue-tracker.md',
+  'docs/agents/triage-labels.md',
 ].filter(isTracked);
 const dangling = [];
 for (const doc of livingDocs) {

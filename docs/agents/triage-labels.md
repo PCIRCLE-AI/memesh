@@ -16,4 +16,4 @@ existed; the other four were created on 2026-09-12.
 
 When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the corresponding label string from this table.
 
-Edit the right-hand column to match whatever vocabulary you actually use.
+If this repo ever adopts different label names, change the right-hand column here rather than renaming labels in the tracker — the skills read this mapping, not the tracker.
