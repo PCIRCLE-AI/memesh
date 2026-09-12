@@ -201,3 +201,24 @@ Rules that hold in both modes:
 - `entities_fts` is a **contentless** FTS5 table. A delete must be issued with
   the exact text that was indexed, or the index silently keeps the old tokens
   and search answers for content that is gone.
+
+## Agent skills
+
+Configuration the engineering skills read. Pointers, like the rest of this file.
+
+### Issue tracker
+
+Issues live in this repository's GitHub Issues, via the `gh` CLI. See
+[docs/agents/issue-tracker.md](docs/agents/issue-tracker.md).
+
+### Triage labels
+
+The five canonical roles, each label string equal to its name. See
+[docs/agents/triage-labels.md](docs/agents/triage-labels.md).
+
+### Domain docs
+
+Single-context: a glossary file and an architecture-decision directory at the
+repository root. Neither exists yet — they are written lazily, when a term or a
+decision actually needs settling, not upfront. The names and the layout are in
+[docs/agents/domain.md](docs/agents/domain.md).
