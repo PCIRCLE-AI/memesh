@@ -46,7 +46,7 @@ export const TOOL_DEFINITIONS = [
         name: 'remember',
         description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. ' +
             'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
-            'To correct a memory, call again with its `name`, its `type` and `replace: true` — `type` is required whenever `note` is absent — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
+            'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -56,7 +56,7 @@ export const TOOL_DEFINITIONS = [
                 },
                 type: {
                     type: 'string',
-                    description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given, in which case it defaults to "note".',
+                    description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given (it then defaults to "note"), or `replace: true` is sent with the `name` of a memory that exists — that call keeps the stored type. Passing one on a `replace` reclassifies the memory.',
                 },
                 note: {
                     type: 'string',
@@ -110,6 +110,7 @@ export const TOOL_DEFINITIONS = [
             anyOf: [
                 { required: ['note'] },
                 { required: ['name', 'type'] },
+                { required: ['name', 'replace'], properties: { replace: { const: true } } },
             ],
         },
     },

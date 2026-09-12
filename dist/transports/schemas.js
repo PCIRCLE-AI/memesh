@@ -71,13 +71,13 @@ export const RememberSchema = z.object({
     if (data.note === undefined) {
         if (data.name === undefined)
             ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
-        if (data.type === undefined)
-            ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note")' });
+        if (data.type === undefined && !(data.replace && data.name !== undefined))
+            ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
         return;
     }
     for (const key of ['title', 'observations']) {
         if (data[key] !== undefined) {
-            ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, type, replace: true and a structured ${key}` });
+            ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
         }
     }
     if (data.replace && data.name === undefined) {
@@ -88,7 +88,7 @@ export const RememberSchema = z.object({
         ctx.addIssue({ code: 'custom', path: ['note'], message: 'note must contain some text' });
     }
     else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
-        ctx.addIssue({ code: 'custom', path: ['note'], message: `note splits into ${derived.observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+        ctx.addIssue({ code: 'custom', path: ['note'], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
     }
 });
 export const RecallSchema = z.object({

@@ -27276,9 +27276,13 @@ function summarizeReplacedHistory(entities) {
 }
 function resolveRememberInput(input) {
   if (input.note === void 0) {
-    if (!input.name || !input.type)
+    if (!input.name)
       throw new Error("remember needs `name` and `type`, or `note`");
-    return { args: input, typeGiven: true };
+    if (input.type === "")
+      throw new Error("remember needs `name` and `type`, or `note`");
+    if (input.type === void 0 && !input.replace)
+      throw new Error("remember needs `name` and `type`, or `note`");
+    return { args: input, typeGiven: input.type !== void 0 };
   }
   if (input.title !== void 0 || input.observations !== void 0) {
     throw new Error("`note` derives title and observations; do not also pass `title` or `observations`");
@@ -27306,6 +27310,10 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   if (args.replace && existing && existing.status === "archived") {
     throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. Remember it again without \`replace\` to bring it back, then replace it.`);
   }
+  const entityType = args.type ?? existing?.type;
+  if (entityType === void 0) {
+    throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, so this call would create one with no type \u2014 pass \`type\` to create it.`);
+  }
   let replacedVersion;
   let retypedTo;
   let tags = args.tags;
@@ -27320,9 +27328,9 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
       tags: previousTags
     };
     kg.clearEntityData(args.name);
-    if (typeGiven && args.type !== existing.type) {
-      db2.prepare("UPDATE entities SET type = ? WHERE id = ?").run(args.type, existing.id);
-      retypedTo = args.type;
+    if (typeGiven && entityType !== existing.type) {
+      db2.prepare("UPDATE entities SET type = ? WHERE id = ?").run(entityType, existing.id);
+      retypedTo = entityType;
     }
     if (tags === void 0)
       tags = previousTags;
@@ -27331,7 +27339,7 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     const stored = new Set(db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(existing.id).map((o) => o.content));
     observations = observations?.filter((o) => !stored.has(o));
   }
-  const entityId = kg.createEntity(args.name, args.type, {
+  const entityId = kg.createEntity(args.name, entityType, {
     observations,
     tags,
     namespace: args.namespace,
@@ -27375,12 +27383,13 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
       }
     }
   }
+  const storedTitle = db2.prepare("SELECT title FROM entities WHERE id = ?").get(entityId).title;
   return {
     stored: true,
     entityId,
     name: args.name,
-    ...title !== void 0 ? { title } : {},
-    type: retypedTo ?? existing?.type ?? args.type,
+    title: storedTitle,
+    type: retypedTo ?? existing?.type ?? entityType,
     observations: observations?.length ?? 0,
     tags: tags?.length ?? 0,
     relations: relationsCreated.length,
@@ -27389,7 +27398,7 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     ...superseded.length > 0 ? { superseded } : {},
     ...relationErrors.length > 0 ? { relationErrors } : {},
     ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
-    ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? args.type, title: derived.title, observations: derived.observations } } : {}
+    ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } } : {}
   };
 }
 function searchAndScore(args) {
@@ -29668,13 +29677,13 @@ var RememberSchema = external_exports.object({
   if (data.note === void 0) {
     if (data.name === void 0)
       ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
-    if (data.type === void 0)
-      ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note")' });
+    if (data.type === void 0 && !(data.replace && data.name !== void 0))
+      ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
     return;
   }
   for (const key of ["title", "observations"]) {
     if (data[key] !== void 0) {
-      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, type, replace: true and a structured ${key}` });
+      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
     }
   }
   if (data.replace && data.name === void 0) {
@@ -29684,7 +29693,7 @@ var RememberSchema = external_exports.object({
   if (!derived) {
     ctx.addIssue({ code: "custom", path: ["note"], message: "note must contain some text" });
   } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
-    ctx.addIssue({ code: "custom", path: ["note"], message: `note splits into ${derived.observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+    ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
 });
 var RecallSchema = external_exports.object({
@@ -30935,7 +30944,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "remember",
-    description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name`, its `type` and `replace: true` \u2014 `type` is required whenever `note` is absent \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix.",
+    description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix.",
     inputSchema: {
       type: "object",
       properties: {
@@ -30945,7 +30954,7 @@ var TOOL_DEFINITIONS = [
         },
         type: {
           type: "string",
-          description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given, in which case it defaults to "note".'
+          description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given (it then defaults to "note"), or `replace: true` is sent with the `name` of a memory that exists \u2014 that call keeps the stored type. Passing one on a `replace` reclassifies the memory.'
         },
         note: {
           type: "string",
@@ -30994,7 +31003,8 @@ var TOOL_DEFINITIONS = [
       additionalProperties: false,
       anyOf: [
         { required: ["note"] },
-        { required: ["name", "type"] }
+        { required: ["name", "type"] },
+        { required: ["name", "replace"], properties: { replace: { const: true } } }
       ]
     }
   },

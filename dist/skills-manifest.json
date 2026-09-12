@@ -108,8 +108,8 @@
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
-      "sha256": "27b52f983ab2bbc084915450e0b52bcc94c056f4b12fed6e1ea3f388d3e731a6",
-      "bytes": 24307
+      "sha256": "c02fb84a136c73eff4990baac143e2c28f991c257b973e3a7395afd44e418c18",
+      "bytes": 25081
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
@@ -163,8 +163,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "6e2295f963053346386882fc1dba597cf8b9eb5877f29e6475d7790ff6a32f5d",
-      "bytes": 20428
+      "sha256": "94da8057377fc4d6adeeb80744f75bedc84a28b4503dd80feae74966d75b4d3b",
+      "bytes": 20479
     }
   ]
 }

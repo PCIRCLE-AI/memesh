@@ -60,9 +60,13 @@ function summarizeReplacedHistory(entities) {
 }
 function resolveRememberInput(input) {
     if (input.note === undefined) {
-        if (!input.name || !input.type)
+        if (!input.name)
             throw new Error('remember needs `name` and `type`, or `note`');
-        return { args: input, typeGiven: true };
+        if (input.type === '')
+            throw new Error('remember needs `name` and `type`, or `note`');
+        if (input.type === undefined && !input.replace)
+            throw new Error('remember needs `name` and `type`, or `note`');
+        return { args: input, typeGiven: input.type !== undefined };
     }
     if (input.title !== undefined || input.observations !== undefined) {
         throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
@@ -93,6 +97,11 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. `
             + 'Remember it again without `replace` to bring it back, then replace it.');
     }
+    const entityType = args.type ?? existing?.type;
+    if (entityType === undefined) {
+        throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
+            + 'so this call would create one with no type — pass `type` to create it.');
+    }
     let replacedVersion;
     let retypedTo;
     let tags = args.tags;
@@ -109,9 +118,9 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
             tags: previousTags,
         };
         kg.clearEntityData(args.name);
-        if (typeGiven && args.type !== existing.type) {
-            db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(args.type, existing.id);
-            retypedTo = args.type;
+        if (typeGiven && entityType !== existing.type) {
+            db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(entityType, existing.id);
+            retypedTo = entityType;
         }
         if (tags === undefined)
             tags = previousTags;
@@ -122,7 +131,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
             .map((o) => o.content));
         observations = observations?.filter((o) => !stored.has(o));
     }
-    const entityId = kg.createEntity(args.name, args.type, {
+    const entityId = kg.createEntity(args.name, entityType, {
         observations,
         tags,
         namespace: args.namespace,
@@ -167,12 +176,15 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
             }
         }
     }
+    const storedTitle = db
+        .prepare('SELECT title FROM entities WHERE id = ?')
+        .get(entityId).title;
     return {
         stored: true,
         entityId,
         name: args.name,
-        ...(title !== undefined ? { title } : {}),
-        type: retypedTo ?? existing?.type ?? args.type,
+        title: storedTitle,
+        type: retypedTo ?? existing?.type ?? entityType,
         observations: observations?.length ?? 0,
         tags: tags?.length ?? 0,
         relations: relationsCreated.length,
@@ -184,7 +196,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         ...(relationErrors.length > 0 ? { relationErrors } : {}),
         ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
         ...(derived
-            ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? args.type, title: derived.title, observations: derived.observations } }
+            ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
             : {}),
     };
 }

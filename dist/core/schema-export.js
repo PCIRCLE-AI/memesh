@@ -43,6 +43,7 @@ export function exportOpenAITools() {
                     anyOf: [
                         { required: ['note'] },
                         { required: ['name', 'type'] },
+                        { required: ['name', 'replace'], properties: { replace: { const: true } } },
                     ],
                 },
             },

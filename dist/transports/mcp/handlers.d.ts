@@ -136,7 +136,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
             readonly type: {
                 readonly type: "string";
-                readonly description: "Entity type (e.g., \"decision\", \"pattern\", \"lesson\", \"commit\"). Required unless `note` is given, in which case it defaults to \"note\".";
+                readonly description: "Entity type (e.g., \"decision\", \"pattern\", \"lesson\", \"commit\"). Required unless `note` is given (it then defaults to \"note\"), or `replace: true` is sent with the `name` of a memory that exists — that call keeps the stored type. Passing one on a `replace` reclassifies the memory.";
             };
             readonly note: {
                 readonly type: "string";
@@ -194,6 +194,13 @@ export declare const TOOL_DEFINITIONS: readonly [{
             readonly required: readonly ["note"];
         }, {
             readonly required: readonly ["name", "type"];
+        }, {
+            readonly required: readonly ["name", "replace"];
+            readonly properties: {
+                readonly replace: {
+                    readonly const: true;
+                };
+            };
         }];
     };
 }, {
