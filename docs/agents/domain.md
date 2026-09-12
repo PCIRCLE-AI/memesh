@@ -16,18 +16,27 @@ Neither exists yet in this repo, which is the expected starting state.
 Treat this as a single-context repo: one product, one domain vocabulary, which
 is why a single glossary fits. The layout underneath that is not uniform, and an
 agent enumerating source files will miss code if it assumes it is. There is no
-npm workspace — the root `package.json` has no `workspaces` field — and the four
-places a `package.json`-or-`src/` sweep will find each look different:
+npm workspace — the root `package.json` has no `workspaces` field — and code
+lives in four differently-shaped places, **only three of which a
+`package.json`-or-`src/` sweep will find**:
 
 | Where | Shape |
 |---|---|
-| repository root | `package.json`; code in `src/`, and also in `scripts/`, `tests/` and `benchmarks/` — `"lint": "eslint src/ scripts/ tests/ dashboard/src/"` in `package.json` is the authority on which of those is first-class |
+| repository root | `package.json`; code in `src/`, `scripts/`, `tests/`, `benchmarks/`, and two root config files |
 | `dashboard/` | its own `package.json`, sources in `dashboard/src/`, built into `dashboard/dist/` |
 | `extensions/memory-memesh/` | its own `package.json`, TypeScript at the directory root (`index.ts`, `config.ts`) — **no `src/`** |
 | `extensions/hermes-memesh/` | Python: `__init__.py` and `plugin.yaml`, **no `package.json` at all** |
 
-So "three `package.json` files and two `src/` trees" is the whole of what a
-`package.json` or `src/` sweep will find, and it is not the whole of the code.
+The fourth row is the one the sweep misses, and it is why this table exists.
+
+For the root row, the scripts in `package.json` are the authority on which of
+those directories is first-class, and they disagree slightly, so read both:
+`lint` covers `src/ scripts/ tests/ dashboard/src/`, and `typecheck` runs
+`tsconfig.check.json`, whose `include` is `src/**/*.ts`, `tests/**/*.ts` and
+`*.config.ts` — which is what pulls in `vitest.config.ts` and
+`eslint.config.js`. `benchmarks/` is in neither. `dist/` holds the largest file
+count in the repository and is build output, not source; an agent walking the
+filesystem rather than `git ls-files` should skip it.
 
 The glossary is `CONTEXT.md` at the repository root, named throughout this
 document. Architecture decisions go in a directory beside it; that directory has
