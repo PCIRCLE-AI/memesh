@@ -5,6 +5,7 @@ import { deriveNote } from '../../src/core/note-derive.js';
 import { getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { RememberSchema } from '../../src/transports/schemas.js';
+import { exportMemories } from '../../src/core/serializer.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 useTestDatabase('memesh-note-replace-');
@@ -291,5 +292,34 @@ describe('remember({ replace: true }) rewrites the type too — #324 C5', () => 
     expect(r.type).toBe('feedback');
     expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
       .get('appended_thing') as { type: string }).type).toBe('feedback');
+  });
+});
+
+describe('the replaced-history exits a user can actually reach — #324 C8', () => {
+  it('`truncated` reaches the user through export, so it is a contract and not dead weight', () => {
+    // The flag is set in one place and read nowhere in src/. It is not dead:
+    // serializer emits `metadata` verbatim, and so does GET
+    // /v1/entities/:name — so a user who exports a memory whose single
+    // replaced version lost observations to the byte cap sees the flag that
+    // says so. Pinning the exit is what makes cutting it a visible change.
+    const huge = Array.from({ length: 10 }, (_, i) => `${'y'.repeat(9000)}${i}`);
+    remember({ name: 'exported_huge', type: 'note', observations: huge });
+    remember({ name: 'exported_huge', type: 'note', observations: ['small'], replace: true });
+
+    const bundle = exportMemories({}) as { entities: Array<{ name: string; metadata?: Record<string, unknown> }> };
+    const row = bundle.entities.find((e) => e.name === 'exported_huge');
+    expect(row, 'the memory is not in the export at all').toBeDefined();
+    const history = row!.metadata?.replaced_history as Array<{ truncated?: boolean; observations: string[] }>;
+    expect(history).toHaveLength(1);
+    expect(history[0].truncated).toBe(true);
+    expect(history[0].observations.length).toBeLessThan(10);
+  });
+
+  it('recall does NOT carry the history — the count stands in for it', () => {
+    remember({ name: 'recalled_hist', type: 'note', observations: ['first version text'] });
+    remember({ name: 'recalled_hist', type: 'note', observations: ['second version text'], replace: true });
+    const hit = recall({ query: 'recalled_hist' }).find((e) => e.name === 'recalled_hist')!;
+    expect(hit.metadata?.replaced_history).toBeUndefined();
+    expect(hit.metadata?.replaced_history_count).toBe(1);
   });
 });

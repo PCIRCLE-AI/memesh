@@ -51,6 +51,14 @@ export interface NoteIngestOptions {
   /** Adds a `project:<name>` tag to every ingested memory when given. */
   project?: string;
   maxFiles?: number;
+  /**
+   * Per-file size cap, default NOTE_FILE_MAX_BYTES.
+   *
+   * No production caller overrides it — the CLI and the Stop hook pass only
+   * `maxFiles`. It is kept as the SEAM for the size-refusal branch: without
+   * it, pinning that branch needs a 256 KB fixture written to disk on every
+   * run of the suite. tests/core/note-ingest.test.ts is the caller.
+   */
   maxBytes?: number;
 }
 
