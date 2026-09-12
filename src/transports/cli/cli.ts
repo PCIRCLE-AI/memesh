@@ -431,7 +431,15 @@ program
         console.log(`✅ Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
         // The derived shape, so a wrong title is fixable in one more call.
         if (result.derived) {
-          console.log(`   title: ${result.derived.title}`);
+          // The title the DATABASE holds, not the one the text would have
+          // produced. A memory that already exists keeps its own title
+          // (operations.ts leaves it alone on the append path), and printing
+          // the derived one told the user their new headline had been applied
+          // when it had not — screen "Use PKCE for auth", stored "T".
+          const storedTitle = result.title ?? (getDatabase()
+            .prepare('SELECT title FROM entities WHERE name = ?')
+            .get(result.name) as { title: string | null } | undefined)?.title;
+          if (storedTitle) console.log(`   title: ${storedTitle}`);
           console.log(`   fix it with: memesh remember --name "${result.name}" --type ${result.derived.type} --title "…" --obs "…" --replace`);
         }
         if (result.replaced) console.log('   replaced: the previous version is kept in metadata.replaced_history');

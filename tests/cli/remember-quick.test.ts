@@ -172,6 +172,26 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(rows.map((e) => e.name)).toEqual(['ok-one']);
   }, 60_000);
 
+  // #324 T3. The receipt printed result.derived.title — the title the text
+  // WOULD have produced — while a memory that already exists keeps its own.
+  // The screen said one thing and the database held another.
+  it('prints the title the database holds, not the derived one', () => {
+    const first = runCli(['remember', 'Use PKCE for auth'], { HOME: tmpHome });
+    const name = first.stdout.match(/Stored "([\w-]+)"/)?.[1];
+    expect(name, first.stdout).toBeDefined();
+    expect(runCli(['remember', `--name=${name}`, '--type=note', '--title=T', '--obs=body'], { HOME: tmpHome }).exitCode).toBe(0);
+
+    const again = runCli(['remember', 'Use PKCE for auth'], { HOME: tmpHome });
+    expect(again.exitCode, `stderr: ${again.stderr}`).toBe(0);
+
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const row = db.prepare('SELECT title FROM entities WHERE name = ?').get(name) as { title: string | null };
+    db.close();
+    expect(row.title).toBe('T');
+    expect(again.stdout).toContain('title: T');
+    expect(again.stdout).not.toContain('title: Use PKCE for auth');
+  }, 60_000);
+
   it('still accepts the explicit --name/--type form', () => {
     const { exitCode } = runCli(
       ['remember', '--name=auth-decision', '--type=decision', '--obs=Use OAuth 2.0'],
