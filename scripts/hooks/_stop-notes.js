@@ -256,9 +256,10 @@ export function readTranscriptWindow(transcriptPath, offset) {
  *
  * How often a pair actually straddles a Stop is NOT known. This comment used
  * to claim a scan of 1090 real transcripts had found every ExitPlanMode pair
- * adjacent; no command for that scan was ever recorded, the number appeared
- * nowhere else in the repository, and the findings register marks it REPORTED,
- * NOT REPRODUCED. It is written down here as unmeasured rather than deleted,
+ * adjacent. No command for that scan is recorded anywhere in this repository —
+ * `git log -S"1090 real transcripts"` reaches the commit that introduced the
+ * sentence and it carries no scan either — and the number appears nowhere but
+ * in this paragraph. It is written down here as unmeasured rather than deleted,
  * because a reader who wants the frequency should know it is still open and
  * not go looking for a result that does not exist. Two comments on this branch
  * had the same shape — each named a function nobody wrote.
