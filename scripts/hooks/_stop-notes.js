@@ -252,9 +252,20 @@ export function readTranscriptWindow(transcriptPath, offset) {
  * this window leaves for the next one. Without it a plan approved either side
  * of a Stop was never paired: the tool_use fell in one window and the
  * tool_result in the next, and the hook reported "no decision-shaped move
- * since the last Stop" — a miss that looks exactly like a quiet turn. A scan
- * of 1090 real transcripts found all four ExitPlanMode pairs adjacent, so it
- * is uncommon; it is also silent, and the reason it gives is plausible.
+ * since the last Stop" — a miss that looks exactly like a quiet turn.
+ *
+ * How often a pair actually straddles a Stop is NOT known. This comment used
+ * to claim a scan of 1090 real transcripts had found every ExitPlanMode pair
+ * adjacent; no command for that scan was ever recorded, the number appeared
+ * nowhere else in the repository, and the findings register marks it REPORTED,
+ * NOT REPRODUCED. It is written down here as unmeasured rather than deleted,
+ * because a reader who wants the frequency should know it is still open and
+ * not go looking for a result that does not exist. Two comments on this branch
+ * had the same shape — each named a function nobody wrote.
+ *
+ * The carry does not depend on that frequency. It costs one bounded map, and
+ * the failure it prevents is silent and gives a plausible reason, which is the
+ * combination that makes a rare miss expensive rather than tolerable.
  *
  * The map is capped (PENDING_CARRY_MAX, newest kept) so a session that opens
  * calls it never closes cannot grow the state file without bound.
