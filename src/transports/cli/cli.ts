@@ -369,27 +369,19 @@ program
     await withDatabase(async () => {
       let result;
       try {
-        result = remember(note !== undefined
-          ? {
-            note,
-            name: opts.name,
-            type: opts.type,
-            tags: opts.tags,
-            namespace: opts.namespace,
-            relations: relations.length > 0 ? relations : undefined,
-            sourceHost: 'cli',
-          }
-          : {
-            name: opts.name,
-            type: opts.type,
-            title: opts.title,
-            observations: opts.obs,
-            tags: opts.tags,
-            replace: opts.replace === true ? true : undefined,
-            namespace: opts.namespace,
-            relations: relations.length > 0 ? relations : undefined,
-            sourceHost: 'cli',
-          });
+        result = remember({
+          name: opts.name,
+          type: opts.type,
+          tags: opts.tags,
+          namespace: opts.namespace,
+          relations: relations.length > 0 ? relations : undefined,
+          sourceHost: 'cli',
+          // `note` derives title and observations; passing either alongside it
+          // — even an empty array — is what remember() refuses.
+          ...(note !== undefined
+            ? { note }
+            : { title: opts.title, observations: opts.obs, replace: opts.replace === true ? true : undefined }),
+        });
       } catch (err) {
         // remember() refuses an unusable note (e.g. only control characters)
         // with one sentence; a stack trace would bury it.

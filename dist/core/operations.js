@@ -31,7 +31,7 @@ export function remember(input) {
 export const REPLACED_HISTORY_MAX = 20;
 export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
 const jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), 'utf8');
-export function boundReplacedHistory(history) {
+function boundReplacedHistory(history) {
     let out = history.slice(-REPLACED_HISTORY_MAX);
     while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
         out = out.slice(1);

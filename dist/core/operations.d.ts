@@ -2,7 +2,6 @@ import type { RememberInput, RememberResult, RecallInput, ForgetInput, ForgetRes
 export declare function remember(input: RememberInput): RememberResult;
 export declare const REPLACED_HISTORY_MAX = 20;
 export declare const REPLACED_HISTORY_MAX_BYTES: number;
-export declare function boundReplacedHistory(history: ReplacedVersion[]): ReplacedVersion[];
 export interface ReplacedVersion {
     replaced_at: string;
     title: string | null;

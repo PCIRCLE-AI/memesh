@@ -59521,8 +59521,7 @@ function ingestNoteDirectory(opts) {
   }
   const nextSkips = {};
   const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
-  const claimedNameAt = /* @__PURE__ */ new Map();
-  const declaresNothing = /* @__PURE__ */ new Set();
+  const declaredNameAt = /* @__PURE__ */ new Map();
   const statOf = (rel) => {
     try {
       return fs10.lstatSync(path9.join(realDir, rel));
@@ -59549,7 +59548,7 @@ function ingestNoteDirectory(opts) {
     const contentSkip = (reason) => {
       skip(reason);
       nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
-      declaresNothing.add(rel);
+      declaredNameAt.set(rel, "");
     };
     try {
       stat = fs10.lstatSync(abs);
@@ -59563,7 +59562,7 @@ function ingestNoteDirectory(opts) {
         continue;
       }
       const priorSkip = priorSkips[rel];
-      const nameIsFree = priorSkip?.name !== void 0 && priorSkip.name !== "" && missingNames.has(priorSkip.name);
+      const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
       if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
@@ -59634,7 +59633,7 @@ function ingestNoteDirectory(opts) {
   }
   const touchedIds = /* @__PURE__ */ new Set();
   for (const c of claims)
-    claimedNameAt.set(c.rel, c.name);
+    declaredNameAt.set(c.rel, c.name);
   for (const [name, claimants] of byName) {
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
     const prov = existing ? parseProvenance(existing.metadata) : {};
@@ -59656,7 +59655,7 @@ function ingestNoteDirectory(opts) {
         continue;
       }
     }
-    const recordedRel = existing && typeof prov.note_path === "string" ? prov.note_path : void 0;
+    const recordedRel = typeof prov.note_path === "string" ? prov.note_path : void 0;
     if (recordedRel && existing && !existing.is_missing && presentRels.has(recordedRel) && !readRels.has(recordedRel) && !claimants.some((c) => c.rel === recordedRel)) {
       const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
       const ownerStat = statOf(recordedRel);
@@ -59735,7 +59734,7 @@ function ingestNoteDirectory(opts) {
     if (prov.note_dir_id !== dirId || typeof prov.note_path !== "string")
       continue;
     const gone = !presentRels.has(prov.note_path);
-    const declaresNow = claimedNameAt.get(prov.note_path) ?? (declaresNothing.has(prov.note_path) ? "" : void 0);
+    const declaresNow = declaredNameAt.get(prov.note_path);
     const renamedAway = declaresNow !== void 0 && declaresNow !== row.name;
     if (!gone && !renamedAway)
       continue;
@@ -60753,24 +60752,14 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
   await withDatabase(async () => {
     let result;
     try {
-      result = remember(note2 !== void 0 ? {
-        note: note2,
+      result = remember({
         name: opts.name,
         type: opts.type,
         tags: opts.tags,
         namespace: opts.namespace,
         relations: relations.length > 0 ? relations : void 0,
-        sourceHost: "cli"
-      } : {
-        name: opts.name,
-        type: opts.type,
-        title: opts.title,
-        observations: opts.obs,
-        tags: opts.tags,
-        replace: opts.replace === true ? true : void 0,
-        namespace: opts.namespace,
-        relations: relations.length > 0 ? relations : void 0,
-        sourceHost: "cli"
+        sourceHost: "cli",
+        ...note2 !== void 0 ? { note: note2 } : { title: opts.title, observations: opts.obs, replace: opts.replace === true ? true : void 0 }
       });
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);

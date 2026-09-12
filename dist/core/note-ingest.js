@@ -148,8 +148,7 @@ export function ingestNoteDirectory(opts) {
     }
     const nextSkips = {};
     const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
-    const claimedNameAt = new Map();
-    const declaresNothing = new Set();
+    const declaredNameAt = new Map();
     const statOf = (rel) => {
         try {
             return fs.lstatSync(path.join(realDir, rel));
@@ -175,7 +174,7 @@ export function ingestNoteDirectory(opts) {
         const contentSkip = (reason) => {
             skip(reason);
             nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
-            declaresNothing.add(rel);
+            declaredNameAt.set(rel, '');
         };
         try {
             stat = fs.lstatSync(abs);
@@ -189,7 +188,7 @@ export function ingestNoteDirectory(opts) {
                 continue;
             }
             const priorSkip = priorSkips[rel];
-            const nameIsFree = priorSkip?.name !== undefined && priorSkip.name !== '' && missingNames.has(priorSkip.name);
+            const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
             if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
                 skip(priorSkip.reason);
                 nextSkips[rel] = priorSkip;
@@ -261,7 +260,7 @@ export function ingestNoteDirectory(opts) {
     }
     const touchedIds = new Set();
     for (const c of claims)
-        claimedNameAt.set(c.rel, c.name);
+        declaredNameAt.set(c.rel, c.name);
     for (const [name, claimants] of byName) {
         const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
         const prov = existing ? parseProvenance(existing.metadata) : {};
@@ -281,7 +280,7 @@ export function ingestNoteDirectory(opts) {
                 continue;
             }
         }
-        const recordedRel = existing && typeof prov.note_path === 'string' ? prov.note_path : undefined;
+        const recordedRel = typeof prov.note_path === 'string' ? prov.note_path : undefined;
         if (recordedRel
             && existing && !existing.is_missing
             && presentRels.has(recordedRel)
@@ -370,8 +369,7 @@ export function ingestNoteDirectory(opts) {
         if (prov.note_dir_id !== dirId || typeof prov.note_path !== 'string')
             continue;
         const gone = !presentRels.has(prov.note_path);
-        const declaresNow = claimedNameAt.get(prov.note_path)
-            ?? (declaresNothing.has(prov.note_path) ? '' : undefined);
+        const declaresNow = declaredNameAt.get(prov.note_path);
         const renamedAway = declaresNow !== undefined && declaresNow !== row.name;
         if (!gone && !renamedAway)
             continue;

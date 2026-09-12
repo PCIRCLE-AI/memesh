@@ -96,8 +96,8 @@ export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
 
 const jsonBytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
 
-/** Apply both history bounds. Exported for tests. */
-export function boundReplacedHistory(history: ReplacedVersion[]): ReplacedVersion[] {
+/** Apply both history bounds. */
+function boundReplacedHistory(history: ReplacedVersion[]): ReplacedVersion[] {
   let out = history.slice(-REPLACED_HISTORY_MAX);
   while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) out = out.slice(1);
   if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {

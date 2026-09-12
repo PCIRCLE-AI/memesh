@@ -275,10 +275,13 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   const nextSkips: Record<string, SkipPrint> = {};
   /** Names whose memory is tagged missing: nobody owns them, so they are free. */
   const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
-  /** rel → the name that file declares, for files processed this run. */
-  const claimedNameAt = new Map<string, string>();
-  /** Files read this run that turned out to declare no name at all. */
-  const declaresNothing = new Set<string>();
+  /**
+   * rel → the name that file declares, for every file this run processed; `''`
+   * when it declared none (no frontmatter, no name, or too large to read).
+   * The missing sweep reads it: both "declares another name" and "declares
+   * nothing" mean the recorded file no longer holds the memory's name.
+   */
+  const declaredNameAt = new Map<string, string>();
   const statOf = (rel: string): fs.Stats | null => {
     try { return fs.lstatSync(path.join(realDir, rel)); } catch { return null; }
   };
@@ -300,10 +303,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     const contentSkip = (reason: string) => {
       skip(reason);
       nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
-      // A file that parsed into no name frees the name its memory holds —
-      // the sweep below reads this and reports that memory missing, exactly
-      // as it does for a file that now declares a DIFFERENT name.
-      declaresNothing.add(rel);
+      declaredNameAt.set(rel, '');
     };
     try {
       stat = fs.lstatSync(abs);
@@ -324,7 +324,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // never change again. Without this, a newcomer refused once (by the
       // per-run cap, or by a recorded file it could not see) stayed refused
       // while a file on disk declared that very name.
-      const nameIsFree = priorSkip?.name !== undefined && priorSkip.name !== '' && missingNames.has(priorSkip.name);
+      const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
       if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
@@ -378,10 +378,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     else byName.set(c.name, [c]);
   }
   const touchedIds = new Set<number>();
-  // What each file processed this run declares. Built BEFORE ownership is
-  // resolved: phase 2 asks it whether a memory's recorded file has moved on
-  // to another name, and the missing sweep asks it again afterwards.
-  for (const c of claims) claimedNameAt.set(c.rel, c.name);
+  for (const c of claims) declaredNameAt.set(c.rel, c.name);
 
   for (const [name, claimants] of byName) {
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name) as ExistingRow | undefined;
@@ -398,7 +395,8 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       if (existing.status === 'archived') { skipAll(`memory "${name}" was archived with forget; not re-ingested`); continue; }
     }
 
-    const recordedRel = existing && typeof prov.note_path === 'string' ? prov.note_path : undefined;
+    // `prov` is empty unless `existing`, so this is the recorded file or nothing.
+    const recordedRel = typeof prov.note_path === 'string' ? prov.note_path : undefined;
     // A name is free exactly when its memory is tagged missing — the sweep
     // below tags it in the same run the recorded file is read and found to
     // declare something else (or nothing at all). So the ONE case where a
@@ -407,8 +405,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     // cannot tell whether that file still holds the name. Everything else —
     // the recorded file renamed itself a run ago, or stopped being a note —
     // has already been recorded as missing, and the newcomer takes over
-    // whichever run it turns up in. Deciding this from what the run happened
-    // to read is what made the handover depend on arrival order, twice.
+    // whichever run it turns up in.
     if (recordedRel
       && existing && !existing.is_missing
       && presentRels.has(recordedRel)
@@ -529,8 +526,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     // report it — the missing tag is the only signal recall and the dashboard
     // get, and a memory silently pointing at a file that disowned it is the
     // shape this sweep exists to show.
-    const declaresNow = claimedNameAt.get(prov.note_path)
-      ?? (declaresNothing.has(prov.note_path) ? '' : undefined);
+    const declaresNow = declaredNameAt.get(prov.note_path);
     const renamedAway = declaresNow !== undefined && declaresNow !== row.name;
     if (!gone && !renamedAway) continue;
     tagMissing.run(row.id, NOTE_FILE_MISSING_TAG);
