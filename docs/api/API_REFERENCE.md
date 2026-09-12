@@ -1427,9 +1427,8 @@ never an absolute path.
   skipped, and one run reads at most 500 files (the rest are reported as "more"
   and picked up by the next run; unchanged files are recognised from their size
   and mtime without being read). Credential-shaped text is redacted.
-  A note file splits into observations the same way a `note` string does, so a
-  single paragraph over 10,000 characters is silently truncated with a
-  trailing `…` here too.
+  A note file splits into observations exactly as a `note` string does,
+  including the silent truncation described under `remember`.
 
 Under Claude Code the Stop hook runs the same ingestion on the memory directory
 next to the session transcript, throttled by mtime and capped at 100 file reads
@@ -1488,10 +1487,8 @@ memory layer saved anything lately, and if not, why not". `memesh doctor --json`
   `silent` is true only for post-commit, session-summary and pre-compact, when
   `triggeredRuns` is at least 5 and `writes` is 0.
   `notifies` counts runs that told someone something and stored nothing, so
-  `runs` is not `writes + skips + errors`. It does not rescue a hook from
-  `silent` either — but no hook that notifies is eligible to be called
-  silent in the first place: that list is post-commit, session-summary and
-  pre-compact.
+  `runs` is not `writes + skips + errors`. It does not rescue a hook from `silent`
+  either, and none of the three hooks that `silent` applies to ever notifies.
 - `types` — auto-capture entities per type, this week (`last7`) against the
   week before (`prev7`); `stopped` means the type wrote last week and nothing
   this week.
@@ -1507,9 +1504,7 @@ of `MEMESH_DB_PATH`, `~/.memesh` by default): every capture hook appends one
 JSON line per run — `hook`, `at`, `host`, `outcome` (`wrote` / `notified` /
 `skipped` / `error`), and a `reason` or `entity` — on every exit path. A run
 that printed something for a person or model to read and stored nothing
-records `notified`: it counts as triggered, but not as a write, so `runs` is
-not `writes + skips + errors` and a hook that only ever notifies is not
-silent. An error records a
+records `notified`. An error records a
 label — `uncaught <code or name>`, or a fixed literal such as `malformed stdin
 JSON` — never the exception text. Records naming a hook
 MeMesh does not ship are ignored, and reason text is stripped of control

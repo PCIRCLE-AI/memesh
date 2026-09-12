@@ -111,13 +111,12 @@ All notable changes to MeMesh are documented here.
 - **The over-cap refusal counts observations, not paragraphs (#324).** A single
   paragraph of 101 list items yields 101 observations, and the message said
   "101 paragraphs" — the wrong unit for the thing being capped.
-- **The MCP and exported schemas state the two forms (#324).** `remember`
+- **The MCP and exported schemas state the three forms (#324).** `remember`
   declares `anyOf` — `note`, or `name` + `type`, or `name` + `replace` — so a
   client reading the schema can tell which fields go together instead of
   inferring it from an error.
 - **`memesh import` rejects notes-only flags on the JSON path (#324).** Passing
   a note-directory option without `--notes` used to be accepted and ignored.
-
 - **Note files are ingested as memories (#324).** `memesh import --notes
   <dir>`, and the Stop hook for the project's own memory directory, upsert
   one memory per frontmatter note file, tagged `source:note-file`, with the

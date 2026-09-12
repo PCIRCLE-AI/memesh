@@ -255,10 +255,11 @@ Tool call: remember({name, type, observations, tags, relations})
         -> name from a slug of the title + a digest of the text
   -> replace: true only:
      -> refuse when the memory was archived with forget
-     -> KnowledgeGraph.clearEntityData(name)
-     -> previous title/observations/tags -> metadata.replaced_history
+     -> snapshot the previous title/observations/tags FIRST
+     -> KnowledgeGraph.clearEntityData(name)   # the snapshot must precede this
      -> stored type is kept unless a different `type` was passed
   -> KnowledgeGraph.createEntity(name, type, {observations, tags})
+  -> replace: true only: the snapshot -> metadata.replaced_history (after the write)
      -> INSERT OR IGNORE into entities
      -> INSERT observations
      -> Rebuild FTS5 index
@@ -420,7 +421,7 @@ Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecy
 - **Trigger**: `Stop` event (when Claude finishes responding)
 - **Matcher**: `*` (all sessions)
 - **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) with deterministic rules and stores it as entities in the knowledge graph. It reads the newest exact-project injection record under the database directory's `sessions/` folder, strips hook-output echoes, and increments `recall_hits` only for explicit `[mem:id]` citations that match entities injected into that session. `recall_misses` stays unchanged because absence of a citation is not proof that the memory was unused. Opt-out via `MEMESH_AUTO_CAPTURE=false`
-- **Two further things happen on the same Stop (#324)**, both in `scripts/hooks/_stop-notes.js`: the project's own memory directory is ingested as note files (`runNoteIngestion`, via `src/core/note-ingest.ts`, tagged `source:note-file`), and a decision-shaped move since the last Stop prints a remember nudge (`decideNudge`). Only the first is a write, and only the first is gated on `MEMESH_AUTO_CAPTURE=false`; the nudge sits outside that check, stores nothing, and records the `notified` outcome rather than `wrote`. `src/core/turn-signal.ts` is a different thing that sounds similar — the Hermes chat-turn classifier, which does write.
+- **On the same Stop (#324)**, `scripts/hooks/_stop-notes.js` also ingests the project's memory directory as note files and, separately, prints a remember nudge. Only the ingestion is a write, and only it is gated on `MEMESH_AUTO_CAPTURE=false`; the nudge sits outside that check.
 
 ### Pre-Compact (`scripts/hooks/pre-compact.js`)
 
