@@ -252,9 +252,12 @@ memesh reindex --fts                         # rebuild the local keyword index
 
 ## Memory hygiene
 
-1. **Stable names append.** Remembering under an existing name adds
-   observations and dedupes tags — it never replaces the entity. Reuse the
-   name to grow one memory; do not mint `-v2` / dated variants of it.
+1. **Stable names append — unless you ask to replace.** Remembering under an
+   existing name adds observations and dedupes tags by default. Pass
+   `replace: true` (CLI: `--replace`) to rewrite the entity's observations,
+   tags and title instead — the previous version moves to
+   `metadata.replaced_history`, not lost. Reuse the name to grow or correct
+   one memory; do not mint `-v2` / dated variants of it.
 2. **`supersedes` retires the loser.** When a new memory replaces an old one,
    record it with `--supersedes <old-name>` (MCP: a relation of type
    `supersedes`). The old entity is archived — recoverable, out of recall.
