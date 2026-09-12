@@ -68,7 +68,7 @@ export const TOOL_DEFINITIONS = [
     description:
       'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. ' +
       'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
-      'To correct a memory, call again with its `name` and `replace: true` — the old content moves to metadata.replaced_history instead of staying next to the fix.',
+      'To correct a memory, call again with its `name`, its `type` and `replace: true` — `type` is required whenever `note` is absent — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
     inputSchema: {
       type: 'object' as const,
       properties: {
