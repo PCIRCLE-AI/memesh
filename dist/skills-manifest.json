@@ -43,8 +43,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "e01fab8fbec8d07f63d730ed8f2f8da8e12c5e7228613961c6817249eea02018",
-      "bytes": 16812
+      "sha256": "2ab7d275aa5b24324868a5b9d9e0bea942f583f7652511c04c474bc4e71f9ee4",
+      "bytes": 16915
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -108,8 +108,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "5ae2c00e351f1d2ebbfa1d980955a76961503c1f61ccb5767da5c3278c2a192c",
-      "bytes": 63207
+      "sha256": "6e4fd96c1c29ad67c4a5e0cba400a8b93efd5ff92f9d0711b9a46dab46641b24",
+      "bytes": 63613
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -153,8 +153,8 @@
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "48983fccc6aea813cb9ff69714e9bfe7b098fbcba0bd013e89fd089aded63e60",
-      "bytes": 40340
+      "sha256": "d45a0acec012962e036e697c61d2216591fd851c56f992e339ff4fd8b6102d15",
+      "bytes": 42733
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",

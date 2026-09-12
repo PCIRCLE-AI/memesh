@@ -11,6 +11,9 @@ import { HOOK_OUTCOMES_FILENAME, parseHookOutcomes, SKIP_REASONS } from '../../s
 const require = createRequire(import.meta.url);
 // Non-git identity = basename + real-path hash (tests/core/project-identity.test.ts).
 const { getProjectName: mirrorProjectName } = require('../../scripts/hooks/_shared.js');
+// Contentless FTS5 needs the special delete form to mirror what `forget`
+// (archiveEntity) actually does to an entity before the next Stop sees it.
+const { removeFromFts } = require('../../scripts/hooks/_generated/fts-index.js');
 
 describe('Feature: Session Summary (Stop Hook)', () => {
   let testDir: string;
@@ -911,5 +914,58 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     expect(last, 'session-summary must still record something').toBeDefined();
     expect(last!.outcome, 'zero entities written is not "wrote"').toBe('skipped');
     expect(last!.reason).toBe(SKIP_REASONS.noRuleMatched);
+  });
+
+  it('Scenario: a Stop whose only matching rule targets a forget-archived entity records "skipped", not a false "wrote"', () => {
+    // A deeper version of the test above: this time a rule DOES match (a
+    // file was edited), but the ONE entity it would write to has been
+    // `forget`-archived since the last Stop. `storeMemory`'s archived branch
+    // returns before setting `writeFailed` OR the new `anyWrote` flag —
+    // without that second flag, the hook fell through to the final `else`
+    // and claimed 'wrote' with zero entities actually touched, the same
+    // false-write shape `noRuleMatched` was added to close, one level
+    // deeper (a rule that matched but produced no write).
+    const sessionId = 'stop-archived-322';
+    writeQualifyingTranscript();
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    const entityName = `session-${sessionId}-files`;
+    const db = openDb();
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(entityName) as { id: number } | undefined;
+    expect(row, 'Rule 1 must have created the entity on the first Stop').toBeDefined();
+    const before = db.prepare(
+      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
+    ).all(row!.id) as Array<{ content: string }>;
+    db.close();
+
+    // Mirror what `forget` (src/knowledge-graph.ts archiveEntity) actually
+    // does: flip status, and remove the row from the contentless FTS index
+    // with the exact indexed text — not a bare DELETE, which FTS5 rejects.
+    // openDb() is read-only (it mirrors what `memesh doctor` reads); a
+    // writable handle is needed here to mutate the row directly.
+    const dbForArchive = new Database(dbPath);
+    dbForArchive.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(row!.id);
+    removeFromFts(dbForArchive, row!.id, entityName, before.map((o) => o.content).join(' '), null);
+    dbForArchive.close();
+
+    // Same session, same edited files — Rule 1 matches again, but its only
+    // target is now archived.
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    const dbAfter = openDb();
+    const status = dbAfter.prepare('SELECT status FROM entities WHERE id = ?').get(row!.id) as { status: string };
+    const after = dbAfter.prepare(
+      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
+    ).all(row!.id) as Array<{ content: string }>;
+    dbAfter.close();
+    expect(status.status, 'archived status must survive the second Stop').toBe('archived');
+    expect(after, 'the archived observations must not be overwritten').toEqual(before);
+
+    const raw = fs.readFileSync(path.join(testDir, HOOK_OUTCOMES_FILENAME), 'utf8');
+    const runs = parseHookOutcomes(raw).hooks['session-summary'] ?? [];
+    const last = runs[runs.length - 1];
+    expect(last, 'session-summary must still record something').toBeDefined();
+    expect(last!.outcome, 'a matched rule with zero landed writes is not "wrote"').toBe('skipped');
+    expect(last!.reason).toBe(SKIP_REASONS.allMatchedEntitiesArchived);
   });
 });

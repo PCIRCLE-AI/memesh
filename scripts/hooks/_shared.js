@@ -808,15 +808,21 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // its observations and its FTS absence are all left exactly as `forget`
   // left them.
   //
-  // Without this, two things a user did on purpose would come undone on the
-  // next Stop: an observation-level `forget` (entity stays active) would be
-  // silently re-derived from the transcript and reappear, because `replace`
-  // rewrites the whole snapshot from scratch; and a whole-entity `forget`
-  // (archiveEntity) would have its observations overwritten and its FTS row
-  // reinserted — un-archiving it from search's perspective, and issuing a
-  // contentless-FTS5 delete below against a rowid that archiveEntity already
-  // removed from the index, the same "database disk image is malformed"
-  // shape this file warns about elsewhere.
+  // Without this, a whole-entity `forget` (archiveEntity: status flipped to
+  // 'archived', its row removed from entities_fts) would come undone on the
+  // next Stop — `replace` would overwrite the preserved observations with a
+  // fresh derivation from the transcript and reinsert the entity into
+  // entities_fts, un-hiding it from FTS keyword search even though its
+  // status stays 'archived' (recall's default query filters status='active',
+  // which caps but does not close that exposure). `removeFromFts` guards its
+  // own delete on a rowid COUNT, so calling it on an already-removed row is
+  // a safe no-op either way — this check is about not losing the user's
+  // forgotten content, not about a contentless-FTS5 delete failure.
+  //
+  // Out of scope here: an OBSERVATION-level `forget` leaves the entity's
+  // status 'active', so this check does not see it and cannot protect it —
+  // `replace` still re-derives and restores whatever the transcript says,
+  // undoing that kind of forget too. Unaddressed, not fixed by this check.
   if (replace && !isNew && row.status === 'archived') {
     return { id, isNew: false, archived: true };
   }

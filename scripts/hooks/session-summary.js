@@ -376,6 +376,7 @@ process.stdin.on('end', async () => {
     //
     const { db } = openHookDb(process.env, { fts: true });
     let writeFailed = false;
+    let firstFailedEntity = null;
     // True once any of the three rules below actually calls storeMemory.
     // Between the toolCallCount < 3 guard above and Rule 3's >= 20 bar, a
     // session that ran real commands but edited no file matches none of
@@ -383,6 +384,14 @@ process.stdin.on('end', async () => {
     // this flag the outcome below fell through to record('wrote') anyway:
     // a claimed write with zero entities actually touched.
     let anyRuleMatched = false;
+    // True only once captureEntity actually lands a write. A matched rule
+    // whose entity is `forget`-archived sets anyRuleMatched but not this —
+    // the archived branch below returns before either flag changes, so a
+    // Stop where every matched rule's target was archived falls through to
+    // the `!anyWrote` branch instead of a false 'wrote' (same bug shape as
+    // the noRuleMatched fix above, one level deeper).
+    let anyWrote = false;
+    let lastWrittenEntity = null;
     try {
       // Build and store session memories
       const baseTags = [AUTO_CAPTURE_TAG, `session:${sessionId}`, `project:${projectName}`];
@@ -444,7 +453,16 @@ process.stdin.on('end', async () => {
         // happen (captureEntity's contract). A run with a failed write must
         // not stamp the heartbeat below — "alive" would be a lie about the
         // exact thing the heartbeat certifies.
-        if (!result) writeFailed = true;
+        if (!result) {
+          writeFailed = true;
+          // First failure, not last: with three independent per-entity
+          // transactions, the first is the root cause — later calls run
+          // regardless and naming one of them would point at a symptom.
+          if (firstFailedEntity === null) firstFailedEntity = name;
+          return;
+        }
+        anyWrote = true;
+        lastWrittenEntity = name;
       }
 
       // No free-form human text exists for these three entities the way a
@@ -483,7 +501,15 @@ process.stdin.on('end', async () => {
         );
       }
 
-      // Rule 3: Heavy session summary (20+ tool calls = significant work)
+      // Rule 3: Heavy session summary (20+ tool calls = significant work).
+      // This literal is the one place that actually decides the bar; two
+      // doc strings describe it in prose without importing it (this file is
+      // plain JS with no shared constant module, and capture-liveness.ts is
+      // a deliberate zero-import leaf) — src/core/capture-liveness.ts's
+      // SKIP_REASONS.noRuleMatched and src/core/session-insight.ts's own
+      // (HEAVY_SESSION_TOOL_CALLS-derived) copy. A future change to this
+      // number needs both updated by hand, or doctor's text will drift from
+      // what actually happened.
       if (toolCallCount >= 20) {
         storeMemory(
           `session-${sessionId}-summary`,
@@ -680,7 +706,11 @@ process.stdin.on('end', async () => {
       // block catches its own errors — session memories were already stored
       // by then, so the run still counts.)
       if (writeFailed) {
-        record('error', 'captureEntity did not land the write', `session-${sessionId}-summary`);
+        // Name the entity whose captureEntity call actually returned null —
+        // not a fixed guess. With three independent per-entity writes, a
+        // hardcoded name here would point at the wrong one whenever the
+        // failure was in Rule 1 or 2.
+        record('error', 'captureEntity did not land the write', firstFailedEntity ?? undefined);
       } else if (!anyRuleMatched) {
         // Correctly deciding there was nothing to capture is still a
         // completed run — same stance as the tooLittleActivity skip above,
@@ -693,9 +723,20 @@ process.stdin.on('end', async () => {
         // naming one of them would misreport which entity this record is
         // about.
         record('skipped', SKIP_REASONS.noRuleMatched);
+      } else if (!anyWrote) {
+        // A rule DID match, but every entity it targeted was `forget`-
+        // archived — the same false-'wrote' shape as the branch above, one
+        // level deeper (a matched rule that produced no write). Its own
+        // reason, not noRuleMatched: a rule fired, saying otherwise would
+        // hide that.
+        recordHookRun(db, 'session-summary');
+        record('skipped', SKIP_REASONS.allMatchedEntitiesArchived);
       } else {
         recordHookRun(db, 'session-summary');
-        record('wrote', undefined, `session-${sessionId}-summary`);
+        // Name the entity that actually landed the write (the last one, if
+        // more than one rule wrote) — not a fixed guess at which of the
+        // three this Stop touched.
+        record('wrote', undefined, lastWrittenEntity ?? undefined);
       }
     } finally {
       db.close();

@@ -338,6 +338,17 @@ export const SKIP_REASONS = {
    * run of this shape claimed a write that never happened.
    */
   noRuleMatched: 'no rule matched (no edited file and fewer than 20 tool calls)',
+  /**
+   * session-summary: a rule DID match (a file was edited, or the heavy-
+   * session bar was crossed), but every entity it targeted had been
+   * `forget`-archived, so `replace` left all of them untouched. Distinct
+   * from `noRuleMatched` (no rule fired at all) and from a write failure
+   * (this is an honoured `forget`, not a broken hook) — before this reason
+   * existed, this shape fell through to `record('wrote', ...)` with zero
+   * entities actually written, the same false-write shape `noRuleMatched`
+   * was added to close.
+   */
+  allMatchedEntitiesArchived: 'every rule that matched targeted an entity the user forget-archived',
   toolInputAbsent: 'tool_input absent in payload',
   noFilePath: 'no file_path in the tool input',
   noDatabaseForRecall: 'no database yet — nothing to recall',
