@@ -115,6 +115,31 @@ export function isTriggeredRecord(record: Pick<HookOutcomeRecord, 'hook' | 'outc
   return !(NOT_TRIGGERED_SKIP_REASONS[record.hook] ?? []).includes(record.reason);
 }
 
+interface HookOutcomeEntry {
+  hook: string;
+  triggered: boolean;
+  record: HookOutcomeRecord;
+  /** The original line, so rotation can re-emit exactly what it read. */
+  line: string;
+}
+
+/**
+ * Every parseable line of the history, with the `windowKeep` inputs derived
+ * from it. ONE definition of "read this file", shared by the reader
+ * (parseHookOutcomes) and by rotation (trimHookOutcomeLines), so the two can
+ * never disagree about which lines exist. A line that does not parse — a torn
+ * last line an interrupted hook left behind, or a record naming a hook memesh
+ * does not ship — is dropped by both.
+ */
+function readHookOutcomeLines(raw: string): HookOutcomeEntry[] {
+  const entries: HookOutcomeEntry[] = [];
+  for (const line of raw.split('\n')) {
+    const record = parseHookOutcomeLine(line);
+    if (record) entries.push({ hook: record.hook, triggered: isTriggeredRecord(record), record, line });
+  }
+  return entries;
+}
+
 /**
  * Rotate lazily: counting lines on every append would mean reading the file
  * back on the hot path, which is the read step O_APPEND exists to remove. A
@@ -136,22 +161,16 @@ export function serializeHookOutcome(record: HookOutcomeRecord): string {
 /**
  * Keep each hook's window (the last `max` triggered records plus the last
  * HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK not-triggered ones), in their
- * original order. Used by
- * rotation; pure so the bound is testable without a filesystem. A line that
- * does not parse (a torn last line an interrupted hook left behind, or a
- * record naming a hook memesh does not ship) is dropped, not counted toward
- * any hook's window.
+ * original order. Used by rotation; pure so the bound is testable without a
+ * filesystem. Unparseable lines are dropped by readHookOutcomeLines, so they
+ * are not counted toward any hook's window.
  */
 export function trimHookOutcomeLines(
   raw: string,
   max: number = HOOK_OUTCOMES_PER_HOOK,
   maxBytes: number = HOOK_OUTCOMES_ROTATE_BYTES,
 ): string {
-  const records: Array<{ hook: string; triggered: boolean; line: string }> = [];
-  for (const line of raw.split('\n')) {
-    const record = parseHookOutcomeLine(line);
-    if (record) records.push({ hook: record.hook, triggered: isTriggeredRecord(record), line });
-  }
+  const records = readHookOutcomeLines(raw);
   // The same window the reader keeps, re-emitted in original order —
   // rotation must preserve tail ordering.
   const keep = windowKeep(records, max, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
@@ -442,20 +461,12 @@ export function parseHookOutcomes(
   limit: number = HOOK_OUTCOMES_PER_HOOK,
 ): HookOutcomeFile {
   if (!raw) return { hooks: {} };
-  const records: HookOutcomeRecord[] = [];
-  for (const line of raw.split('\n')) {
-    const record = parseHookOutcomeLine(line);
-    if (record) records.push(record);
-  }
-  const keep = windowKeep(
-    records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })),
-    limit,
-    HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK,
-  );
+  const entries = readHookOutcomeLines(raw);
+  const keep = windowKeep(entries, limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
   const hooks: Record<string, HookOutcomeRecord[]> = {};
-  records.forEach((record, i) => {
+  entries.forEach(({ hook, record }, i) => {
     if (!keep[i]) return;
-    (hooks[record.hook] ?? (hooks[record.hook] = [])).push(record);
+    (hooks[hook] ?? (hooks[hook] = [])).push(record);
   });
   return { hooks };
 }

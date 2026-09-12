@@ -108,7 +108,11 @@ function storedProvenance(metadata: string | null): Record<string, unknown> {
 }
 
 function trustFor(verdict: DelegationVerdict): DelegationTrust {
-  return verdict === 'accepted' ? 'verified' : verdict === 'rejected' ? 'rejected' : 'untrusted-until-verified';
+  switch (verdict) {
+    case 'accepted': return 'verified';
+    case 'rejected': return 'rejected';
+    default: return 'untrusted-until-verified';
+  }
 }
 
 function verdictLine(verdict: DelegationVerdict, at: string, note?: string): string {
@@ -178,7 +182,9 @@ export function recordDelegation(input: RecordDelegationInput): RecordDelegation
 
   const granted = input.grantedTools?.map((t) => clean(t, 64)).slice(0, 50);
   const allowedTools = granted ?? summary.allowedTools;
-  const allowedSource = granted ? 'orchestrator' : summary.allowedTools ? 'envelope' : null;
+  let allowedSource: 'orchestrator' | 'envelope' | null = null;
+  if (granted) allowedSource = 'orchestrator';
+  else if (summary.allowedTools) allowedSource = 'envelope';
   const toolsLine = allowedTools === null
     ? 'Allowed tools: not reported in the envelope'
     : `Allowed tools: ${allowedTools.length ? allowedTools.join(', ') : 'none'}${granted ? ' (granted by the orchestrator)' : ''}`;

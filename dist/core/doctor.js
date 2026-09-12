@@ -631,11 +631,16 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
         };
     }
     const writing = hooks.filter((h) => h.writes > 0);
-    const summary = writing.length > 0
-        ? `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(', ')}).`
-        : hooks.length > 0
-            ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything — too early to say, which is normal on a fresh install.`
-            : 'No hook has recorded an outcome yet — the records start on the next hook run, which is normal right after an upgrade.';
+    let summary;
+    if (writing.length > 0) {
+        summary = `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(', ')}).`;
+    }
+    else if (hooks.length > 0) {
+        summary = `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything — too early to say, which is normal on a fresh install.`;
+    }
+    else {
+        summary = 'No hook has recorded an outcome yet — the records start on the next hook run, which is normal right after an upgrade.';
+    }
     return {
         check: createCheck('capture-liveness', TITLE, 'pass', summary),
         report,
