@@ -101,6 +101,8 @@ Call the `briefing` MCP tool or run `memesh briefing`. It returns the assembled
 work topology: where the work was left off (goal / next / blocked / done),
 decisions and direction, lessons not to repeat, what is known, recent activity.
 One call is cheaper than re-exploring the repo to reconstruct the same picture.
+`memesh briefing --index` returns only the index of durable memories — what is
+known here, one line each, without the ranked sections.
 Generic briefing and SessionStart context do not report unread durable messages:
 they have no recipient identity. If you already know the exact logical
 recipient, pass `recipient` with `project` (MCP) or use

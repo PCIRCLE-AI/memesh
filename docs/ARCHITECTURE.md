@@ -247,13 +247,23 @@ The dashboard is a client of the ordinary HTTP API — no private endpoints — 
 
 ```
 Tool call: remember({name, type, observations, tags, relations})
+       or: remember({note})                      # free text, #324
   -> Zod validation (RememberSchema)
+  -> resolveRememberInput()
+     -> deriveNote() when `note` was given
+        -> title from the first line, one observation per paragraph
+        -> name from a slug of the title + a digest of the text
+  -> replace: true only:
+     -> refuse when the memory was archived with forget
+     -> KnowledgeGraph.clearEntityData(name)
+     -> previous title/observations/tags -> metadata.replaced_history
+     -> stored type is kept unless a different `type` was passed
   -> KnowledgeGraph.createEntity(name, type, {observations, tags})
      -> INSERT OR IGNORE into entities
      -> INSERT observations
      -> Rebuild FTS5 index
      -> INSERT OR IGNORE tags
-     -> Preserve original type on duplicate entity names
+     -> Preserve original type on duplicate entity names (append path)
   -> KnowledgeGraph.createRelation() for each relation
   -> Return {stored: true, entityId, ...}
 ```
@@ -410,6 +420,7 @@ Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecy
 - **Trigger**: `Stop` event (when Claude finishes responding)
 - **Matcher**: `*` (all sessions)
 - **Behavior**: Extracts session knowledge (files edited, errors fixed, decisions made) with deterministic rules and stores it as entities in the knowledge graph. It reads the newest exact-project injection record under the database directory's `sessions/` folder, strips hook-output echoes, and increments `recall_hits` only for explicit `[mem:id]` citations that match entities injected into that session. `recall_misses` stays unchanged because absence of a citation is not proof that the memory was unused. Opt-out via `MEMESH_AUTO_CAPTURE=false`
+- **Two further writes on the same Stop (#324)**: the project's own memory directory is ingested as note files (`src/core/note-ingest.ts`, tagged `source:note-file`), and a decision-shaped move since the last Stop prints a remember nudge (`src/core/turn-signal.ts`). The nudge only prints — it stores nothing, and records the `notified` outcome rather than `wrote`. Both writes respect `MEMESH_AUTO_CAPTURE=false`; the printed line does not.
 
 ### Pre-Compact (`scripts/hooks/pre-compact.js`)
 

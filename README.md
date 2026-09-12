@@ -139,7 +139,7 @@ Full command and tool reference: [docs/api/API_REFERENCE.md](docs/api/API_REFERE
 | Tool | What it does |
 |------|-------------|
 | `work_package` | Prepare one bounded untrusted calendar digest or Claude Code transcript package under one matching MCP workspace root; submit one strict result for pending human review, or defer without durable change. Transcript submission retains bounded redacted source turns; no file path, hidden reasoning, provider, embedding, or vector data is exposed. |
-| `remember` | Store knowledge with observations, relations, and tags |
+| `remember` | Store knowledge as observations, relations and tags — or pass free text as `note` and the title, observations and name are derived; `replace` corrects a memory in place |
 | `recall` | Local FTS5 search with multi-factor scoring (relevance, recency, frequency, confidence, recall impact) |
 | `forget` | Soft-archive (never deletes) or remove specific observations |
 | `export` | Back up, migrate, or move memories as JSON between compatible agents |
