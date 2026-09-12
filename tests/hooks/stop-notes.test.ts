@@ -163,8 +163,18 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'no note file changed since the last ingestion' });
   }, 60_000);
 
-  it('a first ingestion of a large memory directory finishes inside the declared Stop budget', () => {
-    // The budget is read from hooks/hooks.json, not restated here.
+  it('a first ingestion of a large memory directory stays bounded to INGEST_MAX_FILES per Stop', () => {
+    // What keeps a first ingestion inside the Stop budget is the per-run file
+    // cap, and THAT is what this asserts. It used to assert on elapsed wall
+    // time instead (`elapsed < budgetMs / 2`), which measured the machine, not
+    // the code: with the cap mutated from 100 to 150 — the bound removed
+    // outright — the run still finished in 149 ms of a 10,000 ms budget and
+    // only the `100 created` assertion below went red. So the timing check
+    // protected nothing the counts do not, while carrying the one risk this
+    // project has already paid for once: a fixture bound to the clock, red on
+    // a loaded runner for no defect, with 244 test files running serially.
+    // The budget is read from hooks/hooks.json, not restated here, and
+    // reported on failure as context — never as the verdict.
     const hooks = JSON.parse(fs.readFileSync(path.resolve('hooks/hooks.json'), 'utf8'));
     const stop = hooks.hooks.Stop[0].hooks.find((h: { command: string }) => h.command.includes('session-summary.js'));
     const budgetMs = stop.timeout * 1000;
@@ -181,14 +191,13 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     const r = run();
     const elapsed = Date.now() - started;
     expect(r.status).toBe(0);
-    // Half the budget: the rest of the Stop hook (capture, auto-update) and a
-    // slower machine must still fit.
-    expect(elapsed, `Stop hook took ${elapsed} ms against a ${budgetMs} ms budget`).toBeLessThan(budgetMs / 2);
+    const timing = `Stop hook took ${elapsed} ms against a ${budgetMs} ms budget`;
     const last = outcomes('note-ingest').at(-1)!;
-    expect(last.outcome).toBe('wrote');
-    // 150 files, 100 read per Stop: the rest are reported and wait.
-    expect(last.reason).toMatch(/100 created/);
-    expect(last.reason).toMatch(/50 more not processed/);
+    expect(last.outcome, timing).toBe('wrote');
+    // 150 files, 100 read per Stop: the rest are reported and wait. This pair
+    // is the budget guard — remove the cap and `150 created` comes back here.
+    expect(last.reason, timing).toMatch(/100 created/);
+    expect(last.reason, timing).toMatch(/50 more not processed/);
   }, 60_000);
 
   it('F8: a rejected plan is not an approved one — with or without is_error', () => {
