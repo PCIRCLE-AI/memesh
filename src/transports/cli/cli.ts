@@ -311,7 +311,7 @@ program
       if (!opts.obs?.length && opts.title === undefined) {
         note = String(text);
         // The same limits MCP and HTTP callers get from RememberSchema
-        // (length, paragraph count, blank text) — the CLI calls remember()
+        // (length, observation count, blank text) — the CLI calls remember()
         // directly, so it checks here rather than disagreeing with them.
         const check = RememberSchema.safeParse({ note, ...(opts.type ? { type: opts.type } : {}) });
         if (!check.success) {

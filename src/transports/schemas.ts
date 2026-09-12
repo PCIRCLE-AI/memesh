@@ -126,7 +126,12 @@ export const RememberSchema = z.object({
   if (!derived) {
     ctx.addIssue({ code: 'custom', path: ['note'], message: 'note must contain some text' });
   } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
-    ctx.addIssue({ code: 'custom', path: ['note'], message: `note splits into ${derived.observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+    // "observations", not "paragraphs": this count is taken AFTER the split,
+    // and a paragraph made only of list items yields one observation per item
+    // — so a single paragraph of 101 items was refused as "101 paragraphs".
+    // The cap is on what is stored, which is what the reader has to act on.
+    // note-ingest.ts says the same thing in the same unit for a note file.
+    ctx.addIssue({ code: 'custom', path: ['note'], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
 });
 

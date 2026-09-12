@@ -223,9 +223,19 @@ describe('RememberSchema (transport validation)', () => {
     expect(r.error!.issues[0].path).toEqual(['type']);
   });
 
-  it('rejects a note that splits into more paragraphs than a memory stores', () => {
+  it('rejects a note that yields more observations than a memory stores, and counts observations', () => {
     const note = ['title', ...Array.from({ length: 101 }, (_, i) => `p${i}`)].join('\n\n');
     expect(RememberSchema.safeParse({ note }).success).toBe(false);
+
+    // The refusal must name the unit it counted. One paragraph of 101 list
+    // items is 101 observations and ONE paragraph; the message used to call
+    // them paragraphs, which is the noun D5 corrected in API_REFERENCE.md.
+    const oneParagraph = `title\n\n${Array.from({ length: 101 }, (_, i) => `- item ${i}`).join('\n')}`;
+    const r = RememberSchema.safeParse({ note: oneParagraph });
+    expect(r.success).toBe(false);
+    const message = r.error!.issues.map((i) => i.message).join(' ');
+    expect(message).toContain('yields 101 observations');
+    expect(message).not.toContain('paragraphs');
   });
 
   it('still rejects an unknown key', () => {
