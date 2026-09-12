@@ -163,6 +163,12 @@ describe('memesh remember CLI: quick-capture form', () => {
     const q = runCli(['remember', 'a heading', '--obs', ...many], { HOME: tmpHome });
     expect(q.exitCode).toBe(1);
 
+    // And on the --title branch, where the text itself splits past the cap.
+    const overCapText = Array.from({ length: 103 }, (_, i) => `paragraph number ${i}`).join('\n\n');
+    const t = runCli(['remember', overCapText, '--title', 'T'], { HOME: tmpHome });
+    expect(t.exitCode).toBe(1);
+    expect(t.stderr).toContain('at most 100');
+
     // Both were refused before any write, so the only entity in the graph is
     // the one stored after them.
     expect(runCli(['remember', '--name=ok-one', '--type=note', '--obs=fine'], { HOME: tmpHome }).exitCode).toBe(0);
