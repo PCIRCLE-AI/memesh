@@ -78,6 +78,25 @@ All notable changes to MeMesh are documented here.
   provenance `source: deepseek-worker` and `trust: untrusted-until-verified`
   until `verify` flips it. The worker's own output is never stored, and there
   is no HTTP or MCP write path: the sandbox cannot write to the graph.
+- **The briefing and the SessionStart block close with an index of the
+  project's durable memories (#323).** One line per decision, lesson, pattern
+  or reference — every type outside the evidence layer and `task-state` —
+  newest activity first, each with its `[mem:id]` handle, secrets and user
+  paths redacted, archived / global / other-project rows excluded, and
+  memories unchanged for 180 days collapsed into one line. Retrieval has to
+  guess the query; an index the reader can scan does not, and ~93 % of stored
+  memories were never hit by recall. The budget is a frozen contract for
+  #250's measurements: 40 lines / 3072 bytes, an "N more — `memesh recall
+  --tag project:…`" line when it caps, and a footer reporting the index's own
+  token cost. An empty project gets an empty-state line, so `briefing.text` is
+  never empty, and a failed index read says so instead of looking empty.
+  Available as `memesh briefing --index`, the MCP `briefing` result's `index`
+  field, `GET /v1/briefing-index`, and on the dashboard Project tab.
+- **Index-only memories now count as injected (#323),** so citing one is
+  credited. `recall_hits` only — misses stay frozen. This widens the
+  `citation_sessions_total` denominator (a session whose ranked block was
+  empty now counts), so the accounting stamp moves to `citation-v2 since
+  2026-09-12`; numbers before and after it are not comparable.
 
 ### Changed
 
