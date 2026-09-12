@@ -86,10 +86,10 @@
       "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/operations.ts:299": {
+    "C5 src/core/operations.ts:327": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement)"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327)"
     },
     "C1 tests/cli-agent-message-ingress.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
