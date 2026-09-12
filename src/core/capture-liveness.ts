@@ -430,7 +430,49 @@ function valueEnd(s: string, i: number): number {
 export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>> = {
   'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
   'session-summary': [SKIP_REASONS.alreadyCaptured],
+  // #324: the Stop-side pair. Both fire on EVERY Stop, i.e. every turn, and
+  // both correctly do nothing on most of them — a turn that edited no note
+  // file, and a turn that made no decision. Counted as runs they filled the
+  // whole 20-record window within a day and evicted the hook's real `wrote`,
+  // so doctor reported a hook that had never written anything. That is the
+  // post-commit incident above, repeated.
+  //
+  // Deliberately NOT listed, and each for a reason:
+  //   - noteIngesterNotBuilt / noTranscript: a broken install and a missing
+  //     transcript are defects wearing a skip's clothes. They must keep
+  //     counting, or the one shape worth seeing becomes invisible.
+  //   - noMemoryDir: `claudeMemoryDir` collapses EACCES into "no directory"
+  //     (#324 H8), so this reason can hide a permissions failure.
+  //   - noteNothingNew: the files WERE read and a decision was made about
+  //     them. Same stance as session-summary's low-signal skips.
+  'note-ingest': [SKIP_REASONS.noNoteChanged],
+  'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
 };
+
+/**
+ * Recording hooks that deliberately have no not-triggered skip reasons.
+ *
+ * This list exists only so the pairing can be CHECKED. `note-ingest` and
+ * `remember-nudge` were added to CAPTURE_HOOKS and to SKIP_REASONS and
+ * missed here, and nothing could go red over it: an absent key and a
+ * deliberate "this hook has none" are the same absence. Two lists make them
+ * different, and tests/core/doctor-capture-liveness.test.ts requires every
+ * CAPTURE_HOOKS entry to appear in exactly one of them.
+ *
+ * A hook belongs here when every skip it records is a real decision about a
+ * trigger that DID apply — or, for the fire-on-everything hooks
+ * (guard-check, pre-edit-recall, user-prompt-intent, decision-nudge), when
+ * its silence is already discounted by leaving it out of
+ * SILENT_ELIGIBLE_HOOKS and it writes no memory whose eviction would matter.
+ */
+export const UNCLASSIFIED_SKIP_HOOKS = [
+  'pre-compact',
+  'pre-edit-recall',
+  'user-prompt-intent',
+  'decision-nudge',
+  'guard-check',
+  'session-start',
+] as const;
 
 /**
  * Grace period before "no records at all" is allowed to mean anything. On the

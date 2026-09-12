@@ -3,7 +3,10 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runDoctor as runDoctorImpl, formatDoctorReport } from '../../src/core/doctor.js';
-import { HOOK_OUTCOMES_FILENAME, SKIP_REASONS, UNRECOGNISED_REASON, type HookOutcomeRecord } from '../../src/core/capture-liveness.js';
+import {
+  CAPTURE_HOOKS, HOOK_OUTCOMES_FILENAME, NOT_TRIGGERED_SKIP_REASONS, SKIP_REASONS,
+  UNCLASSIFIED_SKIP_HOOKS, UNRECOGNISED_REASON, type HookOutcomeRecord,
+} from '../../src/core/capture-liveness.js';
 import type { UpdateCheck } from '../../src/core/version-check.js';
 import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
 import { AUTO_CAPTURE_TAG } from '../../src/core/types.js';
@@ -218,6 +221,44 @@ describe('doctor: capture-liveness', () => {
     memeshDirWith(skips('session-summary', 20, SKIP_REASONS.alreadyCaptured));
     const result = await run();
     expect(result.capture?.status).toBe('PASS');
+  });
+
+  it('routine note-ingest and remember-nudge skips do not evict the write (#324 C2)', async () => {
+    // The window keeps the last 20 TRIGGERED records per hook. `no note file
+    // changed` is recorded on nearly every Stop, so if it counts as a run the
+    // hook's real `wrote` is pushed out within a day and doctor reports a
+    // hook that has never written anything — the identical incident this
+    // file's own docblock records for post-commit's `not a git commit`.
+    memeshDirWith([
+      { hook: 'note-ingest', at: '2026-09-01T00:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'note_a' },
+      ...skips('note-ingest', 25, SKIP_REASONS.noNoteChanged),
+      { hook: 'remember-nudge', at: '2026-09-01T00:00:00.000Z', host: 'claude-code', outcome: 'wrote' },
+      ...skips('remember-nudge', 13, SKIP_REASONS.trivialTurn),
+      ...skips('remember-nudge', 13, SKIP_REASONS.noDecisionMove),
+    ]);
+    const result = await run();
+    const ingest = result.capture!.hooks.find((h) => h.hook === 'note-ingest')!;
+    expect(ingest.writes, 'the write was evicted by routine skips').toBe(1);
+    expect(ingest.lastWriteAt).toBe('2026-09-01T00:00:00.000Z');
+    expect(ingest.triggeredRuns).toBe(1);
+    const nudge = result.capture!.hooks.find((h) => h.hook === 'remember-nudge')!;
+    expect(nudge.writes, 'the nudge record was evicted by routine skips').toBe(1);
+  });
+
+  it('every recording hook is classified for not-triggered skips (#324 C2)', async () => {
+    // The defect was a hook added to CAPTURE_HOOKS and SKIP_REASONS but not
+    // to NOT_TRIGGERED_SKIP_REASONS. Nothing went red, because "no entry"
+    // and "deliberately no routine skips" look identical. They are separate
+    // lists now, and every hook must appear in exactly one of them.
+    const classified = Object.keys(NOT_TRIGGERED_SKIP_REASONS);
+    for (const hook of CAPTURE_HOOKS) {
+      const inTable = classified.includes(hook);
+      const declaredNone = (UNCLASSIFIED_SKIP_HOOKS as readonly string[]).includes(hook);
+      expect(
+        inTable !== declaredNone,
+        `${hook} must be in NOT_TRIGGERED_SKIP_REASONS or UNCLASSIFIED_SKIP_HOOKS, and not both`,
+      ).toBe(true);
+    }
   });
 
   it('post-commit silence counts commits, not Bash calls, and quotes the commit reason', async () => {
