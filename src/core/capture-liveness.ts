@@ -488,7 +488,13 @@ function valueEnd(s: string, i: number): number {
  * worth saving" is recorded per Stop, i.e. per TURN, so a pure question-and-
  * answer day (five turns, no tool calls) can reach the silent threshold and
  * produce a banner. Classifying it as not-triggered would also hide a Stop
- * hook whose activity count broke, which is the worse error.
+ * hook whose activity count broke, which is the worse error. `noRuleMatched`
+ * (#322) widens this the same way and for the same reason: five-plus Stops
+ * each with real activity (3-19 tool calls) but no file edit and no heavy-
+ * session threshold reached can also produce the banner. In practice this
+ * needs several short, edit-free sessions inside one window — a single long
+ * session that crosses 20 tool calls writes via Rule 3 on the way — so it is
+ * a narrower door than the one above, not a new kind of false alarm.
  */
 export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>> = {
   'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],

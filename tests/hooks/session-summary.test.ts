@@ -6,10 +6,11 @@ import os from 'os';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { createRequire } from 'module';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { HOOK_OUTCOMES_FILENAME, parseHookOutcomes, SKIP_REASONS } from '../../src/core/capture-liveness.js';
 
 const require = createRequire(import.meta.url);
 // Non-git identity = basename + real-path hash (tests/core/project-identity.test.ts).
-const { getProjectName: mirrorProjectName, HOOK_OUTCOMES_FILENAME, parseHookOutcomes } = require('../../scripts/hooks/_shared.js');
+const { getProjectName: mirrorProjectName } = require('../../scripts/hooks/_shared.js');
 
 describe('Feature: Session Summary (Stop Hook)', () => {
   let testDir: string;
@@ -858,7 +859,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     ]);
     runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
 
-    const db = new Database(dbPath);
+    const db = openDb();
     const row = db.prepare(
       "SELECT e.id FROM entities e WHERE e.name = ?",
     ).get(`session-${sessionId}-files`) as { id: number } | undefined;
@@ -895,9 +896,11 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     const sessionId = 'bash-only-no-edits';
     runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
 
-    const entities = new Database(dbPath, { readOnly: true })
+    const db = openDb();
+    const entities = db
       .prepare("SELECT name FROM entities WHERE name LIKE ?")
       .all(`session-${sessionId}-%`) as Array<{ name: string }>;
+    db.close();
     expect(entities, 'no rule matched, so no entity should exist').toHaveLength(0);
 
     // The real, on-disk outcome record — spawned through the actual hook
@@ -906,7 +909,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     const runs = parseHookOutcomes(raw).hooks['session-summary'] ?? [];
     const last = runs[runs.length - 1];
     expect(last, 'session-summary must still record something').toBeDefined();
-    expect(last!.outcome, 'zero entities written is not "wrote"').not.toBe('wrote');
-    expect(last!.outcome).toBe('skipped');
+    expect(last!.outcome, 'zero entities written is not "wrote"').toBe('skipped');
+    expect(last!.reason).toBe(SKIP_REASONS.noRuleMatched);
   });
 });

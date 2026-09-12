@@ -205,7 +205,7 @@ export function captureChatSession(input) {
     if (entities.length === 0) {
         const reason = activity.toolCallCount < MIN_TOOL_CALLS
             ? `too little activity to be worth saving (${activity.toolCallCount} tool call(s))`
-            : 'no rule matched (no edited file and fewer than 20 tool calls)';
+            : `no rule matched (no edited file and fewer than ${HEAVY_SESSION_TOOL_CALLS} tool calls)`;
         return { outcome: 'skipped', reason, written: [], ...counts };
     }
     for (const e of entities) {

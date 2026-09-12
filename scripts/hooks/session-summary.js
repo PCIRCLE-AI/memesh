@@ -409,22 +409,42 @@ process.stdin.on('end', async () => {
       // entities_fts too. This copy used to insert entity + observations + tags
       // only, skipping the FTS reindex the sibling hooks did — which left every
       // session-insight memory unrecallable via the FTS keyword path.
+      //
+      // Known tradeoff, not a bug: the three Rule blocks below each call this
+      // function independently, and captureEntity() commits its own
+      // transaction per call. A failure partway through Rule 2 or 3 can leave
+      // an earlier entity (e.g. -files) replaced while a later one is not,
+      // even though the overall Stop is recorded as 'error'. Wrapping all
+      // three in one outer db.transaction() would close that gap (nested
+      // calls become SAVEPOINTs — see MemeshDatabase.transaction() in
+      // src/storage/sqlite.ts) but was deliberately not done here: it widens
+      // the write-lock hold on every Stop (this hook's busy_timeout is
+      // shorter than the harness timeout on purpose), to guard a failure mode
+      // that self-heals — the next Stop rebuilds each entity fresh from the
+      // transcript, since these are snapshots, not accumulations.
       function storeMemory(name, type, observations, tags, title) {
-        // A rule matched — before touching the DB, so a caller that reads
-        // this and then throws still leaves the flag set correctly for the
-        // "did a rule apply" question (writeFailed is the separate "did it
-        // land" question).
         anyRuleMatched = true;
-        // null = the entity row could not be resolved = this write did NOT
-        // happen (captureEntity's contract). A run with a failed write must
-        // not stamp the heartbeat below — "alive" would be a lie about the
-        // exact thing the heartbeat certifies.
         // `replace`: these three entities are a SNAPSHOT of one session, and
         // Stop fires at the end of every turn. Appending stored the same
         // sentences on every turn; skipping after the first froze a two-day
         // session at its first turn (#322). A snapshot is restated, not added
         // to.
-        if (!captureEntity(db, { name, type, observations, tags, title, replace: true })) writeFailed = true;
+        const result = captureEntity(db, { name, type, observations, tags, title, replace: true });
+        if (result?.archived) {
+          // The user `forget`-archived this exact entity. Not a failure —
+          // captureEntity's contract left it untouched on purpose — so it
+          // must not set writeFailed (that would misreport an honoured
+          // `forget` as a broken hook). Traced, not silent (#3d): the next
+          // Stop will try again and say the same thing until the user either
+          // reactivates the entity or the session ends.
+          try { process.stderr.write(`MeMesh: session-summary left "${name}" alone — archived by forget.\n`); } catch {}
+          return;
+        }
+        // null = the entity row could not be resolved = this write did NOT
+        // happen (captureEntity's contract). A run with a failed write must
+        // not stamp the heartbeat below — "alive" would be a lie about the
+        // exact thing the heartbeat certifies.
+        if (!result) writeFailed = true;
       }
 
       // No free-form human text exists for these three entities the way a
@@ -434,14 +454,8 @@ process.stdin.on('end', async () => {
       const titleDate = new Date().toISOString().slice(0, 10);
       const titlePrefix = `${titleDate} ${projectName}`;
 
-      // The three names below use the FULL session_id, not the first 8
-      // chars: real Claude Code UUIDs collide on 8 chars only with
-      // cosmically small probability, but artificial test IDs
-      // (verify-fix-001 vs -002) share the prefix — and `replace` (below)
-      // keys on this exact name, so a collision here makes one session
-      // silently overwrite another's memory instead of getting its own.
-
-      // Rule 1: File editing session summary
+      // Rule 1: File editing session summary — name uses the FULL
+      // session_id (tests/core/extractor.test.ts pins why).
       if (filesEdited.length > 0) {
         storeMemory(
           `session-${sessionId}-files`,
@@ -674,7 +688,11 @@ process.stdin.on('end', async () => {
         // this hook's shape for every real-work-but-no-file-edit session
         // until this branch existed.
         recordHookRun(db, 'session-summary');
-        record('skipped', SKIP_REASONS.noRuleMatched, `session-${sessionId}-summary`);
+        // No entity named: by definition no rule matched, so `-files`,
+        // `-fixes` and `-summary` are all equally untouched this Stop —
+        // naming one of them would misreport which entity this record is
+        // about.
+        record('skipped', SKIP_REASONS.noRuleMatched);
       } else {
         recordHookRun(db, 'session-summary');
         record('wrote', undefined, `session-${sessionId}-summary`);

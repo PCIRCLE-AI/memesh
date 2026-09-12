@@ -487,8 +487,10 @@ function migrateHookDbToCurrent(db, opts) {
  * BEFORE opening the database — and a correct nothing-to-do decision is a
  * successful run that must stamp, or a user whose sessions are consistently
  * short reads as "capture has stopped" in doctor within a day: the exact
- * crying-wolf this table exists to end. Stop fires once per session, so one
- * extra open+close here is noise.
+ * crying-wolf this table exists to end. Stop fires at the end of EVERY turn
+ * (#322), so this extra open+close happens once per bailed turn, not once
+ * per session — still cheap enough next to the transcript read the bail
+ * already did to skip.
  *
  * Never throws: the heartbeat is diagnostics, and the bail it decorates was
  * already a successful exit.
@@ -750,7 +752,9 @@ export { truncateTitle } from './_generated/title.js';
  *   for a caller whose entity is a per-turn SNAPSHOT, not an accumulating log.
  *   Unlike `remember({ replace: true })` in core, this is a HARD delete: no
  *   `replaced_history` is kept (see the comment at the DELETE below for why).
- * @returns {{ id: number, isNew: boolean } | null} null if the row could not be resolved
+ * @returns {{ id: number, isNew: boolean, archived?: true } | null} null if the row
+ *   could not be resolved; `archived: true` if `replace` was requested on an
+ *   entity `forget` archived — nothing was written, by design
  */
 export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false }) {
   // One transaction, because this function performs six writes that only
@@ -791,9 +795,31 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
     .prepare('INSERT OR IGNORE INTO entities (name, type, metadata, title) VALUES (?, ?, ?, ?)')
     .run(name, type, JSON.stringify(insertMetadata), title ?? null);
   const isNew = insertResult.changes > 0;
-  const row = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name);
+  const row = db.prepare('SELECT id, title, status FROM entities WHERE name = ?').get(name);
   if (!row) return null;
   const id = row.id;
+
+  // `replace` never touches an archived entity. src/core/operations.ts's
+  // `remember({ replace: true })` REFUSES this case with a thrown error —
+  // right for a rare, interactive call the user reads the response of, but
+  // a hook must never throw (it would abort the OTHER two entities' writes
+  // this Stop, and crash risk is exactly what this file exists to avoid).
+  // So the hook path degrades to a silent no-op instead: the archived row,
+  // its observations and its FTS absence are all left exactly as `forget`
+  // left them.
+  //
+  // Without this, two things a user did on purpose would come undone on the
+  // next Stop: an observation-level `forget` (entity stays active) would be
+  // silently re-derived from the transcript and reappear, because `replace`
+  // rewrites the whole snapshot from scratch; and a whole-entity `forget`
+  // (archiveEntity) would have its observations overwritten and its FTS row
+  // reinserted — un-archiving it from search's perspective, and issuing a
+  // contentless-FTS5 delete below against a rowid that archiveEntity already
+  // removed from the index, the same "database disk image is malformed"
+  // shape this file warns about elsewhere.
+  if (replace && !isNew && row.status === 'archived') {
+    return { id, isNew: false, archived: true };
+  }
 
   // Title update on an EXISTING entity — INSERT OR IGNORE never touches
   // `title` when the row already exists, so mirror knowledge-graph.ts's
@@ -840,37 +866,6 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // BY + the one join rule), via the generated fts-index copy.
   const prevObsText = isNew ? undefined : indexedObservationText(db, id);
 
-  // Never store the same sentence twice on one entity (#240, widened).
-  //
-  // #240 was fixed in session-summary.js alone, with an EXISTENCE guard: "if
-  // this session already has an entity, bail". Its two siblings never got one
-  // and wrote 2,202 duplicate rows on the maintainer's graph —
-  // `pre-compact-<sessionId>` 2,188 of them (worst entity: 220 observations,
-  // 2 distinct), `commit-<sha>` 14.
-  //
-  // The guard belongs HERE, on CONTENT, not there, on existence, because a
-  // pre-compact entity is per-session and a session legitimately compacts
-  // more than once: entity 1947's 110 captures span four days. An existence
-  // guard would have dropped a second, genuinely different compaction
-  // ("Tool calls: 47", "Files edited: …") along with the identical ones. A
-  // content guard drops only rows that add nothing — a re-write of a sentence
-  // already stored carries no information, whatever produced it.
-  //
-  // Unconditional rather than opt-in: every caller of this function is an
-  // auto-capture hook writing machine-derived facts, and none of them has a
-  // case where re-storing an identical string means something. A flag two of
-  // three callers pass would be one more proxy for the question. (`replace`
-  // below answers a DIFFERENT question — what to do with rows that already
-  // exist, not whether re-storing an identical one means something — and
-  // empties `seen` only because those old rows are gone by the time it runs,
-  // not as an opt-out of this guard.)
-  //
-  // Filtered ONCE, up front, because `allObsText` below composes the FTS text
-  // from this list rather than re-reading the rows. Filtering only at the
-  // insert loop would index text for rows that do not exist, and
-  // `entities_fts` is contentless: the next delete would not match, which is
-  // the "database disk image is malformed" failure this file warns about
-  // above. The `seen` set also collapses repeats WITHIN one call.
   // `replace`: the caller is restating the whole entity, not adding to it.
   //
   // Appending is right for a `commit-<sha>` or a `pre-compact-<id>`, where
@@ -892,9 +887,7 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // path is a rare, user-invoked correction, where an audit trail is worth
   // the bytes. This path fires on every Stop, every turn, for a session that
   // can run for hours — keeping history here would mean growing metadata on
-  // every single turn for content nobody asks to undo. If a future caller
-  // besides session-summary starts passing `replace` and DOES need history,
-  // that is a reason to add an opt-in, not to change this default.
+  // every single turn for content nobody asks to undo.
   if (replace && !isNew) {
     db.prepare('DELETE FROM observations WHERE entity_id = ?').run(id);
     // Tags get the same treatment, for the same reason: "restating the whole
@@ -904,6 +897,34 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
     // snapshot that no longer said anything about that file.
     db.prepare('DELETE FROM tags WHERE entity_id = ?').run(id);
   }
+
+  // Never store the same sentence twice on one entity (#240, widened).
+  //
+  // #240 was fixed in session-summary.js alone, with an EXISTENCE guard: "if
+  // this session already has an entity, bail". Its two siblings never got one
+  // and wrote 2,202 duplicate rows on the maintainer's graph —
+  // `pre-compact-<sessionId>` 2,188 of them (worst entity: 220 observations,
+  // 2 distinct), `commit-<sha>` 14.
+  //
+  // The guard belongs HERE, on CONTENT, not there, on existence, because a
+  // pre-compact entity is per-session and a session legitimately compacts
+  // more than once: entity 1947's 110 captures span four days. An existence
+  // guard would have dropped a second, genuinely different compaction
+  // ("Tool calls: 47", "Files edited: …") along with the identical ones. A
+  // content guard drops only rows that add nothing — a re-write of a sentence
+  // already stored carries no information, whatever produced it.
+  //
+  // Unconditional rather than opt-in: every caller of this function is an
+  // auto-capture hook writing machine-derived facts, and none of them has a
+  // case where re-storing an identical string means something. A flag two of
+  // three callers pass would be one more proxy for the question.
+  //
+  // Filtered ONCE, up front, because `allObsText` below composes the FTS text
+  // from this list rather than re-reading the rows. Filtering only at the
+  // insert loop would index text for rows that do not exist, and
+  // `entities_fts` is contentless: the next delete would not match, which is
+  // the "database disk image is malformed" failure this file warns about
+  // above. The `seen` set also collapses repeats WITHIN one call.
   const seen = new Set(
     // `|| replace`: the rows a plain SELECT would find here were just
     // DELETEd above (same transaction), so this skips a query that would

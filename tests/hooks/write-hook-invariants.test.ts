@@ -17,6 +17,9 @@ import path from 'path';
 const require = createRequire(import.meta.url);
 // _shared.js is plain JS with no type declarations.
 const shared = require('../../scripts/hooks/_shared.js');
+// Contentless FTS5 needs the special delete form; only the generated copy
+// exposes it (see the header comment on captureEntity's own removeFromFts use).
+const { removeFromFts } = require('../../scripts/hooks/_generated/fts-index.js');
 import { TITLE_MAX_LENGTH } from '../../src/core/title.js';
 
 describe('write-hook invariants (fake-working gates)', () => {
@@ -32,7 +35,7 @@ describe('write-hook invariants (fake-working gates)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  /** Row ids whose FTS text matches `term` — the recallability check every test below needs. */
+  /** Row ids whose FTS text matches `term` — the recallability check the FTS tests below share. */
   function matchFts(db: any, term: string): number[] {
     return (db.prepare(
       `SELECT rowid FROM entities_fts WHERE entities_fts MATCH '${term}'`,
@@ -183,6 +186,48 @@ describe('write-hook invariants (fake-working gates)', () => {
         expect.arrayContaining(['file:c.ts', 'file:d.ts', 'project:alpha']),
       );
       expect(tags, 'a tag from the replaced snapshot survived').not.toContain('file:a.ts');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('captureEntity replace never resurrects an entity the user forget-archived', () => {
+    // Mirrors what `forget` actually does to an entity (src/knowledge-graph.ts
+    // archiveEntity): flip status to 'archived' and remove its contentless-FTS
+    // row with the exact text that was indexed — not a bare DELETE, which
+    // contentless FTS5 rejects outright.
+    const handle = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: dbPath }, { fts: true });
+    const { db } = handle;
+    try {
+      const res = shared.captureEntity(db, {
+        name: 'session-archived-files',
+        type: 'session-insight',
+        observations: ['secret the user wants forgotten'],
+        tags: ['file:a.ts'],
+      });
+      db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(res.id);
+      removeFromFts(db, res.id, 'session-archived-files', 'secret the user wants forgotten', null);
+
+      const result = shared.captureEntity(db, {
+        name: 'session-archived-files',
+        type: 'session-insight',
+        observations: ['edited b.ts'],
+        tags: ['file:b.ts'],
+        replace: true,
+      });
+
+      expect(result, 'must report archived, not a resolved write').toEqual({ id: res.id, isNew: false, archived: true });
+
+      const row = db.prepare('SELECT status FROM entities WHERE id = ?').get(res.id) as { status: string };
+      expect(row.status, 'archived status must survive a replace attempt').toBe('archived');
+      const stored = (db.prepare(
+        'SELECT content FROM observations WHERE entity_id = ?',
+      ).all(res.id) as Array<{ content: string }>).map((r) => r.content);
+      expect(stored, 'the forgotten observation must not be overwritten').toEqual(['secret the user wants forgotten']);
+      const hits = (db.prepare(
+        "SELECT rowid FROM entities_fts WHERE entities_fts MATCH 'edited'",
+      ).all() as Array<{ rowid: number }>).map((r) => r.rowid);
+      expect(hits, 'replace must not reinsert an archived entity into FTS').not.toContain(res.id);
     } finally {
       db.close();
     }
