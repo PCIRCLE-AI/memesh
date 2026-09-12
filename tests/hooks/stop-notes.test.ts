@@ -200,6 +200,43 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(last.reason, timing).toMatch(/50 more not processed/);
   }, 60_000);
 
+  it('the Stop after an over-cap run resumes it, without any file being touched', () => {
+    // The resume flag had no guard: mutating `more: result.more > 0` to
+    // `more: false` in _stop-notes.js left all fourteen tests green. The gap
+    // was never "no test runs a second Stop" — several do — it is that no
+    // test ran a second Stop AFTER AN OVER-CAP RUN. Without the flag the
+    // mtime throttle (`newest <= last`) short-circuits the second Stop, and
+    // the 50 notes the cap deferred are never ingested at all: they wait for
+    // an edit that will never come, silently.
+    fs.mkdirSync(memoryDir);
+    for (let i = 0; i < 150; i++) {
+      fs.writeFileSync(path.join(memoryDir, `n${String(i).padStart(3, '0')}.md`),
+        `---\nname: resume_note_${i}\ndescription: Resume note ${i}\nmetadata:\n  type: fact\n---\n\nbody of note ${i}\n`);
+    }
+    write(reads(1));
+    expect(run().status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)?.reason).toMatch(/100 created/);
+
+    const stored = () => {
+      const db = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
+      const row = db.prepare(
+        "SELECT COUNT(*) AS n FROM entities e JOIN tags t ON t.entity_id = e.id AND t.tag = 'source:note-file' WHERE e.name LIKE 'resume_note_%'",
+      ).get() as { n: number };
+      db.close();
+      return row.n;
+    };
+    expect(stored()).toBe(100);
+
+    // Second Stop. Nothing on disk changed — no write, no touch, no new
+    // transcript work beyond one trivial read. Only the resume flag can carry
+    // this run past the mtime throttle.
+    append(reads(1));
+    expect(run().status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
+    expect(outcomes('note-ingest').at(-1)?.reason).toMatch(/50 created/);
+    expect(stored()).toBe(150);
+  }, 120_000);
+
   it('F8: a rejected plan is not an approved one — with or without is_error', () => {
     const declined = "The user doesn't want to proceed with this tool use. The tool use was rejected.";
     write([...reads(4), ...toolCall('ExitPlanMode', {}, { error: true, content: declined })]);
