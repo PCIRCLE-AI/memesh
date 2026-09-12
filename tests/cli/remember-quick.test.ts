@@ -177,8 +177,8 @@ describe('memesh remember CLI: quick-capture form', () => {
   // The screen said one thing and the database held another.
   it('prints the title the database holds, not the derived one', () => {
     const first = runCli(['remember', 'Use PKCE for auth'], { HOME: tmpHome });
-    const name = first.stdout.match(/Stored "([\w-]+)"/)?.[1];
-    expect(name, first.stdout).toBeDefined();
+    const name = first.stdout.match(/Stored "([\w-]+)"/)?.[1] ?? '';
+    expect(name, first.stdout).not.toBe('');
     expect(runCli(['remember', `--name=${name}`, '--type=note', '--title=T', '--obs=body'], { HOME: tmpHome }).exitCode).toBe(0);
 
     const again = runCli(['remember', 'Use PKCE for auth'], { HOME: tmpHome });
