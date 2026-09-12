@@ -188,7 +188,10 @@ export function readBriefingIndex(db: MemeshDatabase, projectName: string, now: 
     title: row.title,
     snippet: row.snippet,
     lastActivity: row.last_activity,
-    metadata: parseMetadata(row.metadata),
+    // The RAW column, not a parsed object: the index's gate has to tell an
+    // absent metadata column (allowed) from one holding unparseable JSON
+    // (refused), and parsing here would collapse both to null.
+    metadata: row.metadata,
   }));
   return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
 }

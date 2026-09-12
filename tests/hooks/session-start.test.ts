@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
@@ -50,7 +50,6 @@ describe('Feature: Session Start Hook', () => {
     project: string;
     entityIds: number[];
     entityNames: string[];
-    rankedEntityIds?: number[];
     injectedContext: string;
   } | null {
     if (!fs.existsSync(sessionsDir)) return null;
@@ -63,11 +62,22 @@ describe('Feature: Session Start Hook', () => {
     return JSON.parse(fs.readFileSync(path.join(sessionsDir, files[0].f), 'utf8'));
   }
 
+  /** The ids the RANKED block rendered, read back off the injected block
+   *  itself: everything before the index heading that #323 appends. Derived
+   *  rather than recorded — a session field holding this split had no reader
+   *  outside these tests, and `injectedContext` is the record production
+   *  already keeps. The handle regex is the hook's own, anchored to the end
+   *  of a line, so a `[mem:N]` written inside an observation is not counted. */
+  function rankedIds(session: NonNullable<ReturnType<typeof readLatestSessionFile>>): Set<number> {
+    const beforeIndex = session.injectedContext.split('Index of durable memories for')[0];
+    return new Set([...beforeIndex.matchAll(/ \[mem:(\d{1,10})\]$/gm)].map((m) => Number(m[1])));
+  }
+
   /** Names the RANKED block injected — the durable-memory index (#323) that
    *  closes the block is recorded too, and would otherwise read as the
    *  ranked window overflowing its limit. */
   function rankedNames(session: NonNullable<ReturnType<typeof readLatestSessionFile>>): string[] {
-    const ranked = new Set(session.rankedEntityIds ?? []);
+    const ranked = rankedIds(session);
     return session.entityNames.filter((_, i) => ranked.has(session.entityIds[i]));
   }
 
@@ -579,7 +589,10 @@ describe('Feature: Session Start Hook', () => {
 
     runHook({ cwd: '/tmp/indexonly' }, { MEMESH_SESSION_LIMIT: '1' });
     const session = readLatestSessionFile()!;
-    const ranked = new Set(session.rankedEntityIds ?? []);
+    const ranked = rankedIds(session);
+    // Anti-vacuity: an empty ranked set would make every id below "index
+    // only" and the assertion would hold for the wrong reason.
+    expect(ranked.size, 'the ranked block rendered nothing, so the split is meaningless').toBeGreaterThan(0);
     const indexOnly = decisions.filter((id) => !ranked.has(id));
     expect(indexOnly.length, 'fixture leaves decisions that only the index shows').toBeGreaterThanOrEqual(2);
     for (const id of indexOnly) expect(session.entityIds).toContain(id);
@@ -630,7 +643,16 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, projTag('brokenidx'));
     db.close();
 
-    const output = runHook({ cwd: '/tmp/brokenidx' });
+    // stderr is captured here (execFileSync forwards it to the parent
+    // instead): this test asserts what does NOT reach the outcome file and
+    // must show the detail went somewhere.
+    const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd: '/tmp/brokenidx' }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    const output = JSON.parse(run.stdout.trim()) as Record<string, unknown>;
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     expect(injected).toContain('A ranked decision');
     expect(injected).toMatch(/Index of durable memories for "[^"]+": could not be read this session — run `memesh doctor`\./);
@@ -638,7 +660,40 @@ describe('Feature: Session Start Hook', () => {
     const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l));
     const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error');
-    expect(err?.reason).toMatch(/^briefing-index: /);
+    // The locus plus a LABEL, never the exception's message. This file is
+    // permanent, exportable and meant to be pasteable into an issue, and the
+    // message SQLite produced here quotes the failing statement; `reason`
+    // passes through redactSecrets but not redactUserPaths.
+    expect(err?.reason).toMatch(/^briefing-index: uncaught [A-Za-z][\w-]*$/);
+    expect(err?.reason, 'the raw exception message reached the outcome file').not.toContain('no such column');
+    expect(err?.reason).not.toContain('/');
+    // The full text is still on stderr, so nothing is lost.
+    expect(run.stderr, 'the detail vanished instead of moving to stderr').toContain('no such column');
+  });
+
+  it('#323: the hook index does not inject a memory whose metadata column cannot be parsed', () => {
+    // The ranked path drops such a row deliberately (isTrustedForAutoContext
+    // fails closed on an unparseable column). The index rode inside the SAME
+    // fence and admitted it, because parsing the column before the gate sees
+    // it turns "the trust markers are unreadable" into "there are none".
+    const db = createTestDb();
+    const ins = db.prepare('INSERT INTO entities (name, type, metadata) VALUES (?, ?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const add = (name: string, metadata: string | null, text: string) => {
+      const id = ins.run(name, 'decision', metadata).lastInsertRowid as number;
+      obs.run(id, text);
+      tag.run(id, projTag('corruptmeta'));
+      return id;
+    };
+    add('broken-meta', '{"trust": "trusted"', 'Decision with unreadable metadata');
+    add('clean-meta', null, 'Decision with no metadata recorded');
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/corruptmeta' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    expect(injected, 'a row with unreadable metadata was auto-injected').not.toContain('Decision with unreadable metadata');
+    expect(injected).toContain('Decision with no metadata recorded');
   });
 
   it('#323: a project with no durable memories injects the empty-state line, not nothing', () => {

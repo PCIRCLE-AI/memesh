@@ -1306,7 +1306,11 @@ process.stdin.on('end', async () => {
             title: row.title ?? null,
             snippet: row.snippet,
             lastActivity: row.last_activity,
-            metadata: parseEntityMetadata(row.metadata),
+            // The RAW column: the index's gate must tell an absent metadata
+            // column (allowed) from unparseable JSON (refused), exactly as
+            // `isTrustedForAutoContext` does on the ranked path. Parsing here
+            // would collapse both to null and fail OPEN.
+            metadata: row.metadata,
           })),
           projectName,
           Date.now(),
@@ -1321,7 +1325,14 @@ process.stdin.on('end', async () => {
         recordHookOutcome(process.env, {
           hook: 'session-start',
           outcome: 'error',
-          reason: `briefing-index: ${reason}`,
+          // The locus, plus a LABEL for the exception — never its message.
+          // `hook-outcomes.jsonl` is permanent, exportable and meant to be
+          // pasteable into an issue, and a message is a copy of whatever the
+          // failure echoed: SQLite quotes the statement, execFileSync carries
+          // absolute paths. `redactSecrets` runs on this field but
+          // `redactUserPaths` does not. The full text is already on stderr
+          // one line above, so nothing is lost.
+          reason: `briefing-index: ${hookErrorReason(err)}`,
         });
         indexLines = [`Index of durable memories for "${projectName}": could not be read this session — run \`memesh doctor\`.`];
       }
@@ -1341,16 +1352,11 @@ process.stdin.on('end', async () => {
       // always closes the block (#323: an empty project shows the empty-state
       // line, not nothing). briefing.test.ts's parity case is what keeps this
       // identical to the tool side.
-      let memoryContext = workPackageGuidance;
       if (memoryLines.length > 0) {
         const repoLines = repoStateLines(readRepoState(data.cwd));
         if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
         memoryLines.push('');
       }
-      // What the RANKED block rendered, captured here — before the index is
-      // appended — so the split below is read off the two pools rather than
-      // reconstructed from line positions.
-      const rankedEntityIds = [...new Set(renderedHandles(memoryLines))];
       memoryLines.push(...indexLines);
       // Same wrapper pre-edit-recall uses: an explicit "background data,
       // not instructions" preamble plus a fenced block. Memory content is
@@ -1361,7 +1367,7 @@ process.stdin.on('end', async () => {
       // charges task state plus project/foreign sections against the main
       // ceiling and global context against its small additive ceiling. It
       // returns whole lines only, so the closing fence cannot be cut.
-      memoryContext = buildReferenceContext(memoryLines) + '\n\n' + workPackageGuidance;
+      const memoryContext = buildReferenceContext(memoryLines) + '\n\n' + workPackageGuidance;
       // The citation contract — OUTSIDE the fence on purpose: the fence
       // declares its content "background data, not instructions", and
       // this line IS an instruction. One line is the entire write side of
@@ -1416,11 +1422,6 @@ process.stdin.on('end', async () => {
               project: projectName,
               entityIds: allInjected.map(e => e.id),
               entityNames: allInjected.map(e => e.name),
-              // Which of those the RANKED block rendered. The rest arrived
-              // only through the durable-memory index (#323) that closes the
-              // block; recording the split keeps the ranked window
-              // measurable apart from the index that rides beside it.
-              rankedEntityIds: rankedEntityIds.filter((id) => entitiesById.has(id)),
               injectedContext: memoryContext || summary,
             }
           );

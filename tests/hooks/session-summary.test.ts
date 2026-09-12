@@ -150,6 +150,85 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     }
   });
 
+  it('Scenario: a graph that counted under the previous accounting era starts the new one from zero', () => {
+    // The stamp says which question the counters answer. v1 counted a
+    // session as compliant when the transcript carried ANY `[mem:N]`; v2
+    // counts one only when an id THIS session injected was cited. Carrying
+    // v1's totals into v2 would report one mixed-era ratio under the v2
+    // label, with no key that separates them — so the change of stamp
+    // resets the pair, and the discarded numbers go to stderr rather than
+    // disappearing.
+    const cwd = '/tmp/erachange';
+    const projectName = mirrorProjectName(cwd);
+    writeQualifyingTranscript();
+    runHook({ session_id: 'seed-session', transcript_path: transcriptPath, cwd });
+
+    const db = new Database(dbPath);
+    db.prepare("INSERT INTO entities (name, type) VALUES ('era-decision', 'decision')").run();
+    const citedId = (db.prepare("SELECT id FROM entities WHERE name = 'era-decision'").get() as { id: number }).id;
+    const put = db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)');
+    put.run('recall_accounting_mode', 'citation-v1 since 2026-08-16');
+    put.run('citation_sessions_total', '412');
+    put.run('citation_sessions_cited', '37');
+    db.close();
+
+    const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionsDir, 'era-1.json'), JSON.stringify({
+      injectedAt: new Date().toISOString(),
+      project: projectName,
+      entityIds: [citedId],
+      entityNames: ['era-decision'],
+      injectedContext: 'unused-by-the-accounting',
+    }));
+    writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'fix the parser' } },
+      ...['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts'].map((f) => ({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/' + f } }] },
+      })),
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `per [mem:${citedId}] we keep the split` }] } },
+    ]);
+
+    const { stderr } = runHookCapturingStderr({ session_id: 'era-session', transcript_path: transcriptPath, cwd });
+
+    const check = new Database(dbPath, { readOnly: true });
+    try {
+      const meta = (key: string) => (check.prepare(
+        'SELECT value FROM memesh_metadata WHERE key = ?'
+      ).get(key) as { value: string } | undefined)?.value;
+      expect(meta('recall_accounting_mode')).toBe('citation-v2 since 2026-09-12');
+      // 1 and 1, not 413 and 38: this session is the whole v2 record so far.
+      expect(meta('citation_sessions_total'), 'v1 totals were carried into the v2 era').toBe('1');
+      expect(meta('citation_sessions_cited')).toBe('1');
+      // The reset left a record of what it discarded.
+      expect(stderr).toContain('citation accounting generation changed');
+      expect(stderr).toContain('total=412');
+      expect(stderr).toContain('cited=37');
+    } finally {
+      check.close();
+    }
+
+    // Idempotent: a second session in the SAME era keeps counting. It needs
+    // its own injected-set record — the hook consumes the first.
+    fs.writeFileSync(path.join(sessionsDir, 'era-2.json'), JSON.stringify({
+      injectedAt: new Date().toISOString(),
+      project: projectName,
+      entityIds: [citedId],
+      entityNames: ['era-decision'],
+      injectedContext: 'unused-by-the-accounting',
+    }));
+    runHook({ session_id: 'era-session-2', transcript_path: transcriptPath, cwd });
+    const again = new Database(dbPath, { readOnly: true });
+    try {
+      expect((again.prepare(
+        "SELECT value FROM memesh_metadata WHERE key = 'citation_sessions_total'"
+      ).get() as { value: string }).value, 'the reset fired again inside one era').toBe('2');
+    } finally {
+      again.close();
+    }
+  });
+
   it('Scenario: the hook does not load sqlite-vec — it has never used it', () => {
     // Not a style rule. This hook runs two statements, neither of them a
     // vector query, and `captureEntity` touches no vectors either — but it

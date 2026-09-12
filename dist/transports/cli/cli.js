@@ -7560,6 +7560,20 @@ function compareIndexCandidates(a, b) {
     return bv - av;
   return b.id - a.id;
 }
+function candidateIsAutoInjectable(metadata) {
+  if (metadata == null)
+    return true;
+  if (typeof metadata === "string") {
+    let parsed;
+    try {
+      parsed = JSON.parse(metadata);
+    } catch {
+      return false;
+    }
+    return parsed !== null && typeof parsed === "object" && isAutoInjectable(parsed);
+  }
+  return isAutoInjectable(metadata);
+}
 function redact(text) {
   if (!text)
     return "";
@@ -7578,8 +7592,8 @@ function indexHeading(projectName) {
 function indexEmptyLine(projectName) {
   return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
 }
-function moreLine(n, truncated, projectName) {
-  return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag project:${projectName}`;
+function moreLine(n, truncated) {
+  return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag "project:\u2026"`;
 }
 function olderLine(n, truncated) {
   return `- ${n}${truncated ? "+" : ""} older memor${n === 1 ? "y" : "ies"} (no change in ${INDEX_STALE_DAYS} days) \u2014 recall to see`;
@@ -7587,10 +7601,23 @@ function olderLine(n, truncated) {
 function footerLine(shown, bytes, tokens) {
   return `(index cost: ${shown} line${shown === 1 ? "" : "s"}, ${bytes} bytes \u2248 ${tokens} tokens; cap ${INDEX_MAX_LINES} lines / ${INDEX_MAX_BYTES} bytes)`;
 }
+function closeWithFooter(lines, shown) {
+  const above = sectionBytes(lines);
+  let footer = footerLine(shown, above, Math.ceil(above / 4));
+  for (let step = 0; step < 8; step++) {
+    const bytes = above + byteLength(footer) + 1;
+    const tokens = Math.ceil(bytes / 4);
+    const next = footerLine(shown, bytes, tokens);
+    if (next === footer)
+      return { lines: [...lines, footer], bytes, tokens };
+    footer = next;
+  }
+  throw new Error("briefing index: the footer cost did not converge");
+}
 function buildBriefingIndex(candidates, projectName, now, options = {}) {
   const truncated = options.truncated === true;
   const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
-  const eligible = candidates.filter((c) => isIndexableType(c.type) && isAutoInjectable(c.metadata)).slice().sort(compareIndexCandidates);
+  const eligible = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata)).slice().sort(compareIndexCandidates);
   const current = [];
   let older = 0;
   for (const c of eligible) {
@@ -7602,13 +7629,11 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
   }
   const heading = indexHeading(projectName);
   if (current.length === 0 && older === 0) {
-    const lines2 = [heading, indexEmptyLine(projectName)];
-    const bytes2 = sectionBytes(lines2);
-    const tokens2 = Math.ceil(bytes2 / 4);
-    return { lines: [...lines2, footerLine(0, bytes2, tokens2)], shown: 0, more: 0, older: 0, truncated, bytes: bytes2, tokens: tokens2, ids: [] };
+    const closed2 = closeWithFooter([heading, indexEmptyLine(projectName)], 0);
+    return { ...closed2, shown: 0, more: 0, older: 0, truncated, ids: [] };
   }
   const reserve = sectionBytes([
-    moreLine(current.length, truncated, projectName),
+    moreLine(current.length, truncated),
     olderLine(older, truncated),
     footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
   ]);
@@ -7628,15 +7653,13 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
     used += cost;
   }
   const more = current.length - rendered.length;
-  const lines = [heading, ...rendered];
+  const above = [heading, ...rendered];
   if (more > 0)
-    lines.push(moreLine(more, truncated, projectName));
+    above.push(moreLine(more, truncated));
   if (older > 0)
-    lines.push(olderLine(older, truncated));
-  const bytes = sectionBytes(lines);
-  const tokens = Math.ceil(bytes / 4);
-  lines.push(footerLine(rendered.length, bytes, tokens));
-  return { lines, shown: rendered.length, more, older, truncated, bytes, tokens, ids };
+    above.push(olderLine(older, truncated));
+  const closed = closeWithFooter(above, rendered.length);
+  return { ...closed, shown: rendered.length, more, older, truncated, ids };
 }
 var INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_STALE_DAYS, INDEX_LINE_MAX_CHARS, INDEX_SNIPPET_FETCH_CHARS, INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, DAY_MS;
 var init_briefing_index = __esm({
@@ -7713,7 +7736,7 @@ function readBriefingIndex(db2, projectName, now = Date.now()) {
     title: row.title,
     snippet: row.snippet,
     lastActivity: row.last_activity,
-    metadata: parseMetadata(row.metadata)
+    metadata: row.metadata
   }));
   return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
 }

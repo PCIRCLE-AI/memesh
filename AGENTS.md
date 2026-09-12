@@ -11,9 +11,15 @@ host is recallable from all of them. Not installed yet? Follow
    (CLI: `memesh briefing`). It returns the assembled work topology for the
    current project: goal / next / blocked / done, decisions, lessons,
    knowledge, recent activity, and — closing the block — a capped index of
-   every durable memory for the project, one line each with its `[mem:id]`
-   handle (`memesh briefing --index` prints just that). Read that instead of
-   re-reading the repo to reconstruct context.
+   recent durable memories, one line each with its `[mem:id]` handle
+   (`memesh briefing --index` prints just that). The index is a recent
+   window, not everything: it holds at most 40 lines / 3072 bytes, memories
+   untouched for 180 days collapse into a single count line with no
+   `[mem:id]`, and whatever else is cut past those caps becomes an
+   `N more — memesh recall --tag "project:…"` line, also with no
+   `[mem:id]`. Treat the index as "recent, capped" — when it says there is
+   more, call `recall` rather than assuming the index already covers it.
+   Read the index instead of re-reading the repo to reconstruct context.
 2. **When the user states a goal, a next step, or a blocker — record it.**
    Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`). It
    is injected at the start of the next session and acted on as fact.

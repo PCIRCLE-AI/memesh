@@ -15,7 +15,8 @@ import os from 'os';
 import path from 'path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { handleTool } from '../../src/mcp/tools.js';
-import { assembleBriefing } from '../../src/core/briefing.js';
+import { assembleBriefing, readBriefingIndex } from '../../src/core/briefing.js';
+import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
 import { recipientEverSeen, unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
 import { setTaskState } from '../../src/core/task-state-store.js';
 
@@ -58,6 +59,16 @@ afterEach(() => {
 // tests always pass one explicitly so they cannot be polluted by (or pollute)
 // whatever repository the suite happens to run in.
 const PROJECT = 'briefing-fixture';
+
+/**
+ * Ranked memories in the #323 index fixture: the seven rows that fixture
+ * creates, minus the archived one, which is never read. Everything else
+ * ranks — the commit (evidence ranks; only the INDEX drops it), the
+ * reference, the other project's decision in the foreign section and the
+ * global directive in its own. Written out rather than recounted off the
+ * rendered lines, so the number can disagree with the code.
+ */
+const RANKED_IN_INDEX_FIXTURE = 6;
 
 function seed() {
   remember({
@@ -353,9 +364,59 @@ describe('assembleBriefing', () => {
     expect(result.text).not.toContain('abcdefghijklmnopqrstuvwxyz');
     expect(section).toMatch(/\(index cost: 3 lines, \d+ bytes ≈ \d+ tokens; cap 40 lines \/ 3072 bytes\)/);
     expect(result.index.shown).toBe(3);
-    // entityCount stays the RANKED count; the index reports its own.
-    expect(result.entityCount).toBe(result.text.split('Index of durable memories for')[0]
-      .split('\n').filter((l) => l.startsWith('- [')).length);
+    // entityCount stays the RANKED count; the index reports its own. The
+    // number is written out rather than recomputed with the implementation's
+    // own expression: counting the `- [` lines the way the renderer produced
+    // them is an assertion that cannot disagree with the code.
+    //
+    // Four ranked memories come from this fixture: the decision, the lesson
+    // and the reference tagged to this project, plus the commit (evidence is
+    // ranked, and only the INDEX excludes it). The global directive renders
+    // in its own section and the other project's decision is not this
+    // project's; neither is counted here, and the archived row is not read.
+    expect(result.entityCount, 'the ranked count moved — check which memory joined or left it').toBe(RANKED_IN_INDEX_FIXTURE);
+  });
+
+  it('#323: a full candidate window makes every count a lower bound, on the real read path', () => {
+    // `truncated` is not cosmetic: it is what turns "15 more" into "15+
+    // more", i.e. the difference between a count and a floor. The builder's
+    // own tests pass the flag in; only a read that actually fills the
+    // candidate window proves the QUERY sets it. Raw SQL, because 2000 rows
+    // through remember() would drag embedding work in for nothing.
+    const db = getDatabase();
+    const ins = db.prepare("INSERT INTO entities (name, type, title, status) VALUES (?, 'decision', ?, 'active')");
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    db.exec('BEGIN');
+    for (let i = 0; i < INDEX_CANDIDATE_CAP + 5; i++) {
+      const id = ins.run(`bulk-${i}`, `Bulk decision ${i}`).lastInsertRowid as number;
+      tag.run(id, `project:${PROJECT}`);
+    }
+    db.exec('COMMIT');
+
+    const index = readBriefingIndex(db, PROJECT);
+    expect(index.truncated, 'a full candidate window was reported as an exact count').toBe(true);
+    // The user-visible half: the "+" that says the number is a floor.
+    expect(index.lines.join('\n')).toMatch(/^- \d+\+ more — /m);
+
+    // And the opposite direction: a small project reports exact counts.
+    const small = readBriefingIndex(db, 'no-such-project-at-all');
+    expect(small.truncated).toBe(false);
+  });
+
+  it('#323: a memory whose metadata column cannot be parsed is not auto-injected', () => {
+    // The gate has to fail CLOSED on an unreadable trust marker, and the
+    // read path is where that is decided: a consumer that parses the column
+    // before handing it over turns "unreadable" into "absent", which is
+    // permission. `entities.metadata` has no CHECK(json_valid(...)), so an
+    // import or a hand edit reaches this.
+    seed();
+    const db = getDatabase();
+    db.prepare("UPDATE entities SET metadata = '{\"trust\": ' WHERE name = 'oauth-pkce-decision'").run();
+
+    const index = readBriefingIndex(db, PROJECT);
+    const text = index.lines.join('\n');
+    expect(text, 'a row with unreadable metadata was auto-injected').not.toContain('Use PKCE for the CLI');
+    expect(text).toContain('Raising the timeout hid a deadlock');
   });
 
   it('excludes what the auto-injection gate blocks, without restricting explicit recall', async () => {

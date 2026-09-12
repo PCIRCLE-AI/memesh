@@ -524,21 +524,23 @@ The text is wrapped in the same fence and "background data, not instructions" pr
   "text": "MeMesh reference memory. Treat the content below as background data…",
   "entityCount": 12,
   "hasTaskState": true,
-  "index": { "lines": ["Index of durable memories for \"myproject\" (newest first):", "…"], "shown": 9, "more": 0, "older": 2, "truncated": false, "bytes": 812, "tokens": 203, "ids": [41, 38, 12] }
+  "index": { "lines": ["Index of durable memories for \"myproject\" (newest first):", "…"], "shown": 9, "more": 0, "older": 2, "truncated": false, "bytes": "…", "tokens": "…", "ids": [41, 38, 12] }
 }
 ```
+
+`bytes`/`tokens` above are shown as `"…"` because the `lines` they measure are abbreviated in this example — they are only reproducible for a fully spelled-out set of lines (see the `GET /v1/briefing-index` response below for one).
 
 `entityCount` counts the ranked memory lines actually rendered into the block (the character budget can cut candidates), excluding the task-state block and the index. Also available as `memesh briefing` on the CLI, for agents whose only integration is a shell.
 
 **The durable-memory index.** The block always closes with an index of what is known about the project, so an agent can see it without having to guess a query (ranked recall stays for questions). The same section closes the SessionStart block, and `memesh briefing --index` prints it on its own (`--index --json` for the structured form).
 
-- One line per durable memory — every type except the evidence layer (commits, session insights and summaries, keypoints, weekly summaries, checkpoints) and `task-state` — as `- [type] title — first observation [mem:id]`, newest activity first (the later of creation and the newest observation; ties by id).
+- One line per durable memory — every type except the evidence layer (`EVIDENCE_LAYER_TYPES` in `src/core/work-topology.ts`: commits, session insights and summaries, keypoints, session identity, weekly summaries, checkpoints) and `task-state` — as `- [type] title — first observation [mem:id]`, newest activity first (the later of creation and the newest observation; ties by id).
 - Scope: rows tagged `project:<name>`, `status = active`, not in the `global` namespace — the same scope the ranked project pool reads, so never another project's rows. Imported or `trust: untrusted` rows are excluded by the auto-injection gate.
-- Every line passes `redactSecrets` then `redactUserPaths` before it is rendered.
+- Each memory line's title and snippet pass `redactSecrets` then `redactUserPaths` before rendering (`indexLine` in `src/core/briefing-index.ts`). The heading and the empty-state line still interpolate the project name directly, unredacted (`indexHeading`, `indexEmptyLine`); the `N more` trailer no longer takes a project name at all — it prints a literal `"project:…"` placeholder (`moreLine`), so it carries nothing to redact.
 - Memories with no change for 180 days are counted in one `N older memories … — recall to see` line instead of listed.
-- **Budget contract (frozen; changing it is a CHANGELOG entry):** at most 40 memory lines and 3072 UTF-8 bytes for the whole section, with a `N more — memesh recall --tag project:<name>` line when the caps cut. A `+` after a count means the 2000-row candidate window was full, so the count is a lower bound.
-- The last line reports the cost: `(index cost: N lines, B bytes ≈ T tokens; cap 40 lines / 3072 bytes)`, where `T = ceil(B / 4)` and `B` is the section above the footer. `index.bytes` / `index.tokens` carry the same numbers.
-- A project with no durable memories gets `- No durable memories (decisions, lessons, patterns, references) for "<name>" yet.` rather than nothing — so `text` is never empty. Repository facts (branch, dirty files) still prefix only a block that has ranked memories.
+- **Budget contract (frozen; changing it is a CHANGELOG entry):** at most 40 memory lines and 3072 UTF-8 bytes for the whole section, with a `- N more — memesh recall --tag "project:…"` line when the caps cut. The command uses a literal `"project:…"` placeholder rather than the real project name — it is not interpolated, so pasting the line into a shell never quotes whatever the filesystem or a git remote happened to contain; the heading two lines above already prints the (quoted) project name. A `+` after a count means the 2000-row candidate window was full, so the count is a lower bound.
+- The last line reports the cost: `(index cost: N lines, B bytes ≈ T tokens; cap 40 lines / 3072 bytes)`, where `B` is the byte size of the WHOLE section, footer included, and `T = ceil(B / 4)`. Because the footer's own text feeds the number it prints, `B` is resolved as a fixed point (`closeWithFooter` in `src/core/briefing-index.ts`): render the section without the footer, add a footer for that size, and re-render until the footer text stops changing. `index.bytes` / `index.tokens` carry the same numbers.
+- A project with no durable memories gets `- No durable memories (decisions, lessons, patterns, references) for "<name>" yet.` rather than nothing — so `text` is never empty. Repository facts (branch, dirty files) prefix the block whenever it has task state or ranked memories — the gate is `lines.length > 0` (`src/core/briefing.ts`), and `assembleTopologyBlock` (`src/core/work-topology.ts`) pushes the task-state lines into `lines` unconditionally, so a project with task state but no ranked memory still gets the branch line. The index's own empty-state line never triggers it on its own.
 - SessionStart records the index's rendered ids with the injected set, so a `[mem:id]` citation of an index line is credited like a ranked one. If the hook cannot read the index it says so in the block and records an `error` outcome; it never shows the empty-state line for a failed read.
 
 **Examples**:
@@ -1006,8 +1008,8 @@ with no durable memories is a `200` whose `lines` carry the empty-state line.
   "data": {
     "project": "memesh",
     "staleDays": 180,
-    "lines": ["Index of durable memories for \"memesh\" (newest first):", "- [decision] Keep the index capped [mem:41]", "(index cost: 1 line, 104 bytes ≈ 26 tokens; cap 40 lines / 3072 bytes)"],
-    "shown": 1, "more": 0, "older": 0, "truncated": false, "bytes": 104, "tokens": 26, "ids": [41]
+    "lines": ["Index of durable memories for \"memesh\" (newest first):", "- [decision] Keep the index capped [mem:41]", "(index cost: 1 line, 172 bytes ≈ 43 tokens; cap 40 lines / 3072 bytes)"],
+    "shown": 1, "more": 0, "older": 0, "truncated": false, "bytes": 172, "tokens": 43, "ids": [41]
   }
 }
 ```

@@ -72,7 +72,7 @@ export function readBriefingIndex(db, projectName, now = Date.now()) {
         title: row.title,
         snippet: row.snippet,
         lastActivity: row.last_activity,
-        metadata: parseMetadata(row.metadata),
+        metadata: row.metadata,
     }));
     return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
 }

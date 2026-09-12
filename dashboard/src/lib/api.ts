@@ -311,9 +311,34 @@ export interface BriefingIndexData {
   ids: number[];
 }
 
+/**
+ * Every field `BriefingIndexData` declares, checked — not a sample of two.
+ *
+ * The first version validated `lines` and `shown` only, and each field it let
+ * through fails SILENTLY downstream: a missing `older` makes the card's
+ * `older === 0` test false (`undefined === 0`), so the user gets a heading
+ * above an empty list with no error and no empty state; a missing `tokens` or
+ * `bytes` prints the literal `{tokens}` in the cost line. A payload this
+ * bundle can only partly read is unreadable, not usable.
+ */
+export function isBriefingIndexData(data: unknown): data is BriefingIndexData {
+  if (!data || typeof data !== 'object') return false;
+  const d = data as Record<string, unknown>;
+  return typeof d.project === 'string'
+    && typeof d.staleDays === 'number'
+    && Array.isArray(d.lines) && d.lines.every((line) => typeof line === 'string')
+    && typeof d.shown === 'number'
+    && typeof d.more === 'number'
+    && typeof d.older === 'number'
+    && typeof d.truncated === 'boolean'
+    && typeof d.bytes === 'number'
+    && typeof d.tokens === 'number'
+    && Array.isArray(d.ids) && d.ids.every((id) => typeof id === 'number');
+}
+
 export async function fetchBriefingIndex(project: string): Promise<BriefingIndexData> {
   const data = await api<BriefingIndexData>('GET', `/v1/briefing-index?project=${encodeURIComponent(project)}`);
-  if (!data || typeof data !== 'object' || !Array.isArray((data as BriefingIndexData).lines) || typeof (data as BriefingIndexData).shown !== 'number') {
+  if (!isBriefingIndexData(data)) {
     console.warn('[memesh dashboard] /v1/briefing-index answered with a shape this bundle cannot read:', data);
     throw new Error('unreadable briefing-index payload');
   }

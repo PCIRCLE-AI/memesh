@@ -43,6 +43,12 @@ describe('GET /v1/briefing-index (#323: the Project tab shows what an agent is g
     const body = await res.json();
     expect(body.success).toBe(true);
     expect(body.data).toMatchObject({ project: 'alpha', shown: 1, more: 0, older: 0 });
+    // The staleness window travels with the data — the dashboard renders
+    // this number into its "no change in {days} days" copy, so dropping the
+    // field leaves that sentence with a hole. The literal is deliberate:
+    // comparing the response against INDEX_STALE_DAYS would compare the
+    // constant with itself and pass with the field missing on both sides.
+    expect(body.data.staleDays, 'staleDays left the payload').toBe(180);
     expect(body.data.ids).toHaveLength(1);
     expect(body.data.lines.join('\n')).toContain('Keep the index capped');
     expect(body.data.lines.join('\n')).not.toContain('chore: bump');

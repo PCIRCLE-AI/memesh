@@ -70,9 +70,23 @@ describe('buildBriefingIndex', () => {
   });
 
   it('excludes exactly the evidence layer and task-state — pinned to the type constants', () => {
-    // The exclusion list is DERIVED from EVIDENCE_LAYER_TYPES, not restated:
-    // a type classified as evidence there is out of the index here.
-    expect(new Set(INDEX_EXCLUDED_TYPES)).toEqual(new Set([...EVIDENCE_LAYER_TYPES, 'task-state']));
+    // Written out, NOT derived from EVIDENCE_LAYER_TYPES: comparing the list
+    // against the expression that defines it is an assertion that cannot
+    // fail. Spelled out, adding an evidence type turns this red on purpose —
+    // the failure is the notice that a type is now hidden from the index, and
+    // the fix is to extend this literal in the same change.
+    expect(new Set(INDEX_EXCLUDED_TYPES)).toEqual(new Set([
+      'commit',
+      'session-insight',
+      'session-summary',
+      'session_keypoint',
+      'session-identity',
+      'session_identity',
+      'weekly-summary',
+      'weekly_summary',
+      'workflow_checkpoint',
+      'task-state',
+    ]));
     const evidence = [...EVIDENCE_LAYER_TYPES].map((type, i) => candidate(100 + i, { type }));
     const idx = buildBriefingIndex(
       [...evidence, candidate(1, { type: 'task-state' }), candidate(2, { type: 'lesson_learned' }), candidate(3, { type: 'reference' })],
@@ -94,6 +108,26 @@ describe('buildBriefingIndex', () => {
       PROJECT, NOW,
     );
     expect(idx.ids).toEqual([3]);
+  });
+
+  it('fails CLOSED on a metadata column nothing can parse — absent is not the same as unreadable', () => {
+    // The raw column, exactly as SQLite hands it over. `entities.metadata`
+    // carries no CHECK(json_valid(...)), so an import or a hand edit reaches
+    // this. The hooks' ranked path drops such a row deliberately; the index
+    // used to auto-inject it inside the same fence, because parsing first
+    // turns "cannot read the trust markers" into "there are none".
+    const idx = buildBriefingIndex(
+      [
+        candidate(1, { metadata: '{"trust": "trusted"' }),   // truncated JSON
+        candidate(2, { metadata: 'not json at all' }),
+        candidate(3, { metadata: '"a string, not an object"' }),
+        candidate(4, { metadata: '{"trust":"untrusted"}' }), // parses, and is refused
+        candidate(5, { metadata: '{"signal_score":0.9}' }),  // parses, and is allowed
+        candidate(6, { metadata: null }),                    // nothing recorded: allowed
+      ],
+      PROJECT, NOW,
+    );
+    expect(idx.ids).toEqual([5, 6]);
   });
 
   it('redacts secrets and user paths before a line reaches a prompt', () => {
@@ -129,13 +163,33 @@ describe('buildBriefingIndex', () => {
     expect(fresh.older).toBe(0);
   });
 
+  it('lists a memory whose timestamp cannot be read rather than hiding it as old', () => {
+    // The staleness split is the only place a memory disappears from the
+    // section into a count. A row whose timestamp is missing or malformed
+    // has NOT been shown to be old, and collapsing it into "older memories"
+    // would hide a current memory behind a number. It sorts last (unknown
+    // activity is not a claim of freshness) but it is listed.
+    const idx = buildBriefingIndex(
+      [
+        candidate(1, { lastActivity: 'not-a-timestamp' }),
+        candidate(2, { lastActivity: null }),
+        candidate(3, { lastActivity: sqliteTs(NOW - DAY) }),
+        candidate(4, { lastActivity: sqliteTs(NOW - (INDEX_STALE_DAYS + 1) * DAY) }),
+      ],
+      PROJECT, NOW,
+    );
+    expect(idx.ids, 'an unreadable timestamp was counted as old instead of listed').toEqual([3, 2, 1]);
+    expect(idx.older).toBe(1);
+    expect(idx.shown).toBe(3);
+  });
+
   it('caps at INDEX_MAX_LINES and says how many more, with the recall command', () => {
     const many = Array.from({ length: INDEX_MAX_LINES + 15 }, (_, i) =>
       candidate(i + 1, { title: `D${i + 1}`, snippet: null }));
     const idx = buildBriefingIndex(many, PROJECT, NOW);
     expect(idx.shown).toBe(INDEX_MAX_LINES);
     expect(idx.more).toBe(15);
-    expect(idx.lines).toContain(`- 15 more — memesh recall --tag project:${PROJECT}`);
+    expect(idx.lines).toContain('- 15 more — memesh recall --tag "project:…"');
     expect(bytes(idx.lines)).toBeLessThanOrEqual(INDEX_MAX_BYTES);
   });
 
@@ -148,17 +202,55 @@ describe('buildBriefingIndex', () => {
     expect(idx.shown).toBeLessThan(30);
     expect(idx.shown).toBeGreaterThan(0);
     expect(bytes(idx.lines)).toBeLessThanOrEqual(INDEX_MAX_BYTES);
-    expect(idx.lines).toContain(`- ${30 - idx.shown}+ more — memesh recall --tag project:${PROJECT}`);
+    expect(idx.lines).toContain(`- ${30 - idx.shown}+ more — memesh recall --tag "project:…"`);
   });
 
-  it('reports its own cost in the footer', () => {
+  it('reports its own cost in the footer — the footer included', () => {
+    // The line that states the cost is part of the cost. Measuring the
+    // section without it under-reported by the footer's own ~75 bytes.
     const idx = buildBriefingIndex([candidate(1), candidate(2)], PROJECT, NOW);
-    const above = idx.lines.slice(0, -1);
-    expect(idx.bytes).toBe(bytes(above));
+    expect(idx.bytes, 'the footer left itself out of the number it prints').toBe(bytes(idx.lines));
+    expect(idx.bytes).toBeGreaterThan(bytes(idx.lines.slice(0, -1)));
     expect(idx.tokens).toBe(Math.ceil(idx.bytes / 4));
     expect(idx.lines.at(-1)).toBe(
       `(index cost: 2 lines, ${idx.bytes} bytes ≈ ${idx.tokens} tokens; cap ${INDEX_MAX_LINES} lines / ${INDEX_MAX_BYTES} bytes)`,
     );
+    expect(idx.bytes).toBeLessThanOrEqual(INDEX_MAX_BYTES);
+  });
+
+  it('the empty-state section reports its own cost the same way', () => {
+    const idx = buildBriefingIndex([], PROJECT, NOW);
+    expect(idx.bytes).toBe(bytes(idx.lines));
+    expect(idx.lines.at(-1)).toBe(
+      `(index cost: 0 lines, ${idx.bytes} bytes ≈ ${idx.tokens} tokens; cap ${INDEX_MAX_LINES} lines / ${INDEX_MAX_BYTES} bytes)`,
+    );
+  });
+
+  it('the cost stays exact at every size, including the digit boundaries', () => {
+    // The footer states a number that changes its own length, so it is
+    // resolved by iterating to a fixed point. The place that can go wrong is
+    // a total that crosses 99→100 or 999→1000 as the footer is added: the
+    // printed number and the returned one would then disagree by one pass.
+    // Sweeping the sizes walks the section across both boundaries.
+    for (let n = 0; n <= 12; n++) {
+      for (let width = 1; width <= 60; width += 7) {
+        const idx = buildBriefingIndex(
+          Array.from({ length: n }, (_, i) => candidate(i + 1, { title: 'x'.repeat(width), snippet: null })),
+          PROJECT, NOW,
+        );
+        expect(idx.bytes, `n=${n} width=${width}: the footer's number is not the section's size`)
+          .toBe(bytes(idx.lines));
+        expect(idx.lines.at(-1)).toContain(`${idx.bytes} bytes ≈ ${idx.tokens} tokens`);
+      }
+    }
+  });
+
+  it('a full section still fits the cap once the footer counts itself', () => {
+    const many = Array.from({ length: INDEX_MAX_LINES + 5 }, (_, i) =>
+      candidate(i + 1, { title: 'D'.repeat(90), snippet: null }));
+    const idx = buildBriefingIndex(many, PROJECT, NOW, { truncated: true });
+    expect(idx.bytes).toBe(bytes(idx.lines));
+    expect(idx.bytes).toBeLessThanOrEqual(INDEX_MAX_BYTES);
   });
 
   it('an empty project gets the empty-state line, not nothing', () => {

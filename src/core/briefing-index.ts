@@ -68,7 +68,11 @@ export interface IndexCandidate {
   /** SQLite UTC timestamp (`YYYY-MM-DD HH:MM:SS`) or ISO string: the later
    *  of the entity's creation and its newest observation. */
   lastActivity: string | null;
-  /** Parsed metadata — the auto-injection gate reads it. */
+  /** The `metadata` COLUMN as stored (a JSON string) or an already-parsed
+   *  object — the auto-injection gate reads it, and fails closed on a string
+   *  nothing can parse. Pass the raw column: a consumer that parses first
+   *  turns "unreadable" into "absent", which the gate is required to tell
+   *  apart. */
   metadata?: unknown;
 }
 
@@ -83,7 +87,8 @@ export interface BriefingIndex {
   older: number;
   /** True when the counts are a lower bound (the candidate window was full). */
   truncated: boolean;
-  /** UTF-8 bytes of the section above the footer. */
+  /** UTF-8 bytes of the WHOLE section, the footer included — the same number
+   *  the footer prints, so the line that reports the cost is part of it. */
   bytes: number;
   /** Estimated tokens for those bytes (bytes / 4, rounded up). */
   tokens: number;
@@ -119,6 +124,39 @@ function compareIndexCandidates(a: IndexCandidate, b: IndexCandidate): number {
   return b.id - a.id;
 }
 
+/**
+ * May this candidate be shown to an agent UNASKED?
+ *
+ * The POLICY — which metadata markers block auto-injection — stays
+ * single-owned in `isAutoInjectable`. What lives here is the raw-COLUMN
+ * contract, and it is the half that has to fail CLOSED:
+ *
+ *   - a NULL column means "no metadata recorded", the common case for
+ *     hook-captured rows, and is allowed;
+ *   - a column holding JSON nothing can parse is a row whose trust markers
+ *     cannot be read, and an unreadable marker is not permission.
+ *
+ * A consumer that parses first cannot express the difference — a parse
+ * failure and an absent column both arrive as `null` — so the index read
+ * the second case as the first and auto-injected rows the hooks' ranked
+ * path (`_shared.js`'s `isTrustedForAutoContext`) deliberately drops, inside
+ * the same fence. `entities.metadata` carries no `CHECK(json_valid(...))`,
+ * so an import or a hand edit reaches it.
+ */
+function candidateIsAutoInjectable(metadata: unknown): boolean {
+  if (metadata == null) return true;
+  if (typeof metadata === 'string') {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(metadata);
+    } catch {
+      return false;
+    }
+    return parsed !== null && typeof parsed === 'object' && isAutoInjectable(parsed);
+  }
+  return isAutoInjectable(metadata);
+}
+
 /** Secrets first, then paths — paths.ts documents why the order matters. */
 function redact(text: string | null | undefined): string {
   if (!text) return '';
@@ -146,8 +184,14 @@ function indexEmptyLine(projectName: string): string {
   return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
 }
 
-function moreLine(n: number, truncated: boolean, projectName: string): string {
-  return `- ${n}${truncated ? '+' : ''} more — memesh recall --tag project:${projectName}`;
+/** The project name is NOT interpolated into this command. It comes from a
+ *  directory name or a git remote's basename and is restricted to nothing, so
+ *  pasting it back into a shell is the caller quoting whatever the filesystem
+ *  happened to contain. The placeholder is the convention every other hint in
+ *  this codebase uses (`memesh task --goal "…"`), and it costs no
+ *  information: the heading two lines above prints the project name, quoted. */
+function moreLine(n: number, truncated: boolean): string {
+  return `- ${n}${truncated ? '+' : ''} more — memesh recall --tag "project:…"`;
 }
 
 function olderLine(n: number, truncated: boolean): string {
@@ -156,6 +200,41 @@ function olderLine(n: number, truncated: boolean): string {
 
 function footerLine(shown: number, bytes: number, tokens: number): string {
   return `(index cost: ${shown} line${shown === 1 ? '' : 's'}, ${bytes} bytes ≈ ${tokens} tokens; cap ${INDEX_MAX_LINES} lines / ${INDEX_MAX_BYTES} bytes)`;
+}
+
+/**
+ * Close the section with the footer that states the section's own cost.
+ *
+ * The statement is self-referential — the number changes the length of the
+ * line carrying it — and the footer used to be measured out of it, so it
+ * under-reported the section by its own size (646 reported against 721
+ * actual). Resolved as a least fixed point instead: start from the section
+ * WITHOUT the footer, which is an underestimate, and re-render until the
+ * total stops growing. Footer length is monotone in the byte count and the
+ * byte count monotone in footer length, so the ascent converges — one step
+ * in the ordinary case, two when adding the footer carries the count into
+ * another digit. The cap is unaffected: `reserve` already charges the
+ * worst-case footer before any line is admitted.
+ */
+function closeWithFooter(lines: readonly string[], shown: number): { lines: string[]; bytes: number; tokens: number } {
+  const above = sectionBytes(lines);
+  let footer = footerLine(shown, above, Math.ceil(above / 4));
+  // Each pass costs the footer it just rendered and re-renders from the new
+  // total. Converged means the re-render is character-identical, which is the
+  // only state in which the printed number and the returned one agree.
+  for (let step = 0; step < 8; step++) {
+    const bytes = above + byteLength(footer) + 1;
+    const tokens = Math.ceil(bytes / 4);
+    const next = footerLine(shown, bytes, tokens);
+    if (next === footer) return { lines: [...lines, footer], bytes, tokens };
+    footer = next;
+  }
+  // Unreachable: the count only ever grows, and it can cross a digit boundary
+  // a bounded number of times below the 3072-byte cap. Loud rather than
+  // silent all the same — returning here would mean printing one cost and
+  // reporting another, and a cost report that is quietly wrong is worse than
+  // one that is missing.
+  throw new Error('briefing index: the footer cost did not converge');
 }
 
 /**
@@ -180,7 +259,7 @@ export function buildBriefingIndex(
   const truncated = options.truncated === true;
   const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
   const eligible = candidates
-    .filter((c) => isIndexableType(c.type) && isAutoInjectable(c.metadata))
+    .filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata))
     .slice()
     .sort(compareIndexCandidates);
   const current: IndexCandidate[] = [];
@@ -194,16 +273,14 @@ export function buildBriefingIndex(
 
   const heading = indexHeading(projectName);
   if (current.length === 0 && older === 0) {
-    const lines = [heading, indexEmptyLine(projectName)];
-    const bytes = sectionBytes(lines);
-    const tokens = Math.ceil(bytes / 4);
-    return { lines: [...lines, footerLine(0, bytes, tokens)], shown: 0, more: 0, older: 0, truncated, bytes, tokens, ids: [] };
+    const closed = closeWithFooter([heading, indexEmptyLine(projectName)], 0);
+    return { ...closed, shown: 0, more: 0, older: 0, truncated, ids: [] };
   }
 
   // Reserve the worst-case trailers before filling: the lines that make the
   // cap visible must always fit under the cap.
   const reserve = sectionBytes([
-    moreLine(current.length, truncated, projectName),
+    moreLine(current.length, truncated),
     olderLine(older, truncated),
     footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES),
   ]);
@@ -223,11 +300,9 @@ export function buildBriefingIndex(
   }
 
   const more = current.length - rendered.length;
-  const lines = [heading, ...rendered];
-  if (more > 0) lines.push(moreLine(more, truncated, projectName));
-  if (older > 0) lines.push(olderLine(older, truncated));
-  const bytes = sectionBytes(lines);
-  const tokens = Math.ceil(bytes / 4);
-  lines.push(footerLine(rendered.length, bytes, tokens));
-  return { lines, shown: rendered.length, more, older, truncated, bytes, tokens, ids };
+  const above = [heading, ...rendered];
+  if (more > 0) above.push(moreLine(more, truncated));
+  if (older > 0) above.push(olderLine(older, truncated));
+  const closed = closeWithFooter(above, rendered.length);
+  return { ...closed, shown: rendered.length, more, older, truncated, ids };
 }

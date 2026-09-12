@@ -84,8 +84,12 @@ All notable changes to MeMesh are documented here.
   newest activity first, each with its `[mem:id]` handle, secrets and user
   paths redacted, archived / global / other-project rows excluded, and
   memories unchanged for 180 days collapsed into one line. Retrieval has to
-  guess the query; an index the reader can scan does not, and ~93 % of stored
-  memories were never hit by recall. The budget is a frozen contract for
+  guess the query; an index the reader can scan does not, and most stored
+  memories are never hit by recall at all (`node scripts/audit/measure-signals.mjs`
+  reports `entities.recall_hits` — the count of entities with at least one
+  recall hit, against the total — for the graph it runs against; run it to
+  see the figure for a given database, since the number is per-graph and not
+  a fixed constant to quote here). The budget is a frozen contract for
   #250's measurements: 40 lines / 3072 bytes, an "N more — `memesh recall
   --tag project:…`" line when it caps, and a footer reporting the index's own
   token cost. An empty project gets an empty-state line, so `briefing.text` is
@@ -96,7 +100,16 @@ All notable changes to MeMesh are documented here.
   credited. `recall_hits` only — misses stay frozen. This widens the
   `citation_sessions_total` denominator (a session whose ranked block was
   empty now counts), so the accounting stamp moves to `citation-v2 since
-  2026-09-12`; numbers before and after it are not comparable.
+  2026-09-12`. The two eras count different things (v1 asked whether the
+  transcript carried any `[mem:N]` marker at all; v2 asks whether an id this
+  session actually injected was cited), so on the first session that sees the
+  new stamp, `session-summary.js` deletes `citation_sessions_total` and
+  `citation_sessions_cited`, logs the discarded values to stderr, then writes
+  the new stamp and starts counting from zero — `analytics.ts` and
+  `scripts/audit/measure-signals.mjs` read the same bare keys unchanged, so
+  what they report from that point on is this generation only. A fresh
+  install, which has no prior stamp, is unaffected and simply counts from
+  install.
 
 ### Changed
 
