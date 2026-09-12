@@ -32,7 +32,11 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
-/** The hooks that own capture exits. Mirrors CAPTURE_HOOKS minus the mirror. */
+/**
+ * The same list as CAPTURE_HOOKS in src/core/capture-liveness.ts, copied
+ * rather than imported: this gate must run on a fresh clone, before `dist/`
+ * exists, and a gate that depends on the build it polices proves nothing.
+ */
 const CAPTURE_HOOKS = [
   'post-commit',
   'session-summary',
@@ -123,10 +127,10 @@ export function findUncoveredExits(source) {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    // maskLexicalNoise() already blanked every comment, so a comment line
+    // arrives here as pure whitespace — blankness is the only skip needed.
     const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('*')) {
-      continue;
-    }
+    if (!trimmed) continue;
 
     if (helperDepth > 0) {
       const delta = braceDelta(line);

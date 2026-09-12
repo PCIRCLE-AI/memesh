@@ -43,8 +43,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "a3212f770d3ea489eb40dcd2403fcd87f8f53c285d3f58b060590ac1992a9efa",
-      "bytes": 15456
+      "sha256": "89a738876fdee3def672ca0884b0e0f2d67562a802ff2909b798187c83d40ac2",
+      "bytes": 15372
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",

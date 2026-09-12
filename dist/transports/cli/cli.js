@@ -54894,6 +54894,15 @@ function isTriggeredRecord(record2) {
     return true;
   return !(NOT_TRIGGERED_SKIP_REASONS[record2.hook] ?? []).includes(record2.reason);
 }
+function readHookOutcomeLines(raw) {
+  const entries = [];
+  for (const line of raw.split("\n")) {
+    const record2 = parseHookOutcomeLine(line);
+    if (record2)
+      entries.push({ hook: record2.hook, triggered: isTriggeredRecord(record2), record: record2, line });
+  }
+  return entries;
+}
 function renderableSkipReason(reason) {
   if (reason === void 0)
     return "unspecified";
@@ -54902,18 +54911,13 @@ function renderableSkipReason(reason) {
 function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
   if (!raw)
     return { hooks: {} };
-  const records = [];
-  for (const line of raw.split("\n")) {
-    const record2 = parseHookOutcomeLine(line);
-    if (record2)
-      records.push(record2);
-  }
-  const keep = windowKeep(records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })), limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
+  const entries = readHookOutcomeLines(raw);
+  const keep = windowKeep(entries, limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
   const hooks = {};
-  records.forEach((record2, i) => {
+  entries.forEach(({ hook, record: record2 }, i) => {
     if (!keep[i])
       return;
-    (hooks[record2.hook] ?? (hooks[record2.hook] = [])).push(record2);
+    (hooks[hook] ?? (hooks[hook] = [])).push(record2);
   });
   return { hooks };
 }
@@ -55765,7 +55769,14 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     };
   }
   const writing = hooks.filter((h) => h.writes > 0);
-  const summary = writing.length > 0 ? `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(", ")}).` : hooks.length > 0 ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.` : "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
+  let summary;
+  if (writing.length > 0) {
+    summary = `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(", ")}).`;
+  } else if (hooks.length > 0) {
+    summary = `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.`;
+  } else {
+    summary = "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
+  }
   return {
     check: createCheck("capture-liveness", TITLE, "pass", summary),
     report
@@ -59984,7 +59995,14 @@ function storedProvenance(metadata) {
   }
 }
 function trustFor(verdict) {
-  return verdict === "accepted" ? "verified" : verdict === "rejected" ? "rejected" : "untrusted-until-verified";
+  switch (verdict) {
+    case "accepted":
+      return "verified";
+    case "rejected":
+      return "rejected";
+    default:
+      return "untrusted-until-verified";
+  }
 }
 function verdictLine(verdict, at, note2) {
   const base = verdict === "unreviewed" ? "Verdict: unreviewed \u2014 the worker output is untrusted until the orchestrator verifies it" : `Verdict: ${verdict} by the orchestrator at ${at}`;
@@ -60016,7 +60034,11 @@ function recordDelegation(input) {
   }
   const granted = input.grantedTools?.map((t) => clean(t, 64)).slice(0, 50);
   const allowedTools = granted ?? summary.allowedTools;
-  const allowedSource = granted ? "orchestrator" : summary.allowedTools ? "envelope" : null;
+  let allowedSource = null;
+  if (granted)
+    allowedSource = "orchestrator";
+  else if (summary.allowedTools)
+    allowedSource = "envelope";
   const toolsLine = allowedTools === null ? "Allowed tools: not reported in the envelope" : `Allowed tools: ${allowedTools.length ? allowedTools.join(", ") : "none"}${granted ? " (granted by the orchestrator)" : ""}`;
   const envelopeDisagrees = granted && summary.allowedTools && [...granted].sort().join("\0") !== [...summary.allowedTools].sort().join("\0");
   const at = (/* @__PURE__ */ new Date()).toISOString();
