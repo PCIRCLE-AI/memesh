@@ -86,8 +86,11 @@ All notable changes to MeMesh are documented here.
   same name is possible but very unlikely, not impossible. The response
   echoes what it derived, so a wrong guess is one more call to fix, not a
   second entity. The structured form is unchanged; `note` is an additional
-  path, and it goes through the same sanitisation, redaction and size caps
-  as observations.
+  path, and it goes through the same sanitisation and redaction as
+  observations, and the same 10,000-character-per-observation number — but
+  not the same failure mode: a structured observation over that length is
+  **rejected**, while an oversized paragraph derived from `note` is
+  **silently truncated** with a trailing `…`.
 - **`remember({ name, replace: true })` rewrites instead of appending
   (#324).** The previous version moves to a dated trail in
   `metadata.replaced_history` — bounded at 20 versions and 64 KB — so
