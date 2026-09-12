@@ -336,11 +336,32 @@ function rememberInTransaction(
     }
   }
 
+  // The title the DATABASE holds, not the one this call asked for. `title`
+  // above is the REQUESTED title, and it is `undefined` in the two cases a
+  // memory keeps the title it already had: `replace` without a `title`, and a
+  // note appended to an existing memory (which deliberately clears it at the
+  // branch above so the note's first line cannot overwrite the real one).
+  // Reporting the request meant the MCP `remember` tool and `POST /v1/remember`
+  // — both of which return this object verbatim — answered with no title for a
+  // row that plainly had one, while `derived.title` advertised the title the
+  // TEXT would have produced and never stored. The CLI worked around it by
+  // re-reading the row itself; an API caller had no such escape.
+  //
+  // Read back rather than reconstructed from the branches above: `createEntity`
+  // owns the rules for when a title is written (INSERT OR IGNORE on a new row,
+  // a guarded UPDATE on an existing one), so computing it here would be a
+  // second copy of those rules, free to disagree with the row. One PK-indexed
+  // SELECT on the write path, taken at the return site so no later statement
+  // can invalidate it.
+  const storedTitle = (db
+    .prepare('SELECT title FROM entities WHERE id = ?')
+    .get(entityId) as { title: string | null }).title;
+
   return {
     stored: true,
     entityId,
     name: args.name,
-    ...(title !== undefined ? { title } : {}),
+    title: storedTitle,
     // `createEntity` preserves the stored type on a name collision. Report
     // that persisted value too; echoing args.type made a duplicate remember
     // receipt claim a type that was never written. The replace path is the

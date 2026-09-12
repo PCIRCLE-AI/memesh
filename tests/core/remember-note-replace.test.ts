@@ -323,3 +323,51 @@ describe('the replaced-history exits a user can actually reach — #324 C8', () 
     expect(hit.metadata?.replaced_history_count).toBe(1);
   });
 });
+
+// #324 T3. `RememberResult.title` is what a caller of the MCP tool or
+// `POST /v1/remember` sees; those transports return this object verbatim
+// (mcp/handlers.ts:602, http/server.ts:726). It used to carry the REQUESTED
+// title, so every call that did not pass one reported no title at all while
+// the row plainly had one — and the note form reported nothing while
+// `derived.title` advertised a title that was never stored. The CLI was
+// taught to re-read the row; the API had no such escape.
+//
+// These assert on the RETURN VALUE, not on the entity. The earlier round of
+// tests checked the entity, which was never the broken half.
+describe('remember() reports the stored title — #324 T3', () => {
+  const storedTitle = (name: string) => kg().getEntity(name)!.title;
+
+  it('a new memory: the title it was given', () => {
+    const r = remember({ name: 't3-new', type: 'note', title: 'Fresh', observations: ['a'] });
+    expect(r.title).toBe('Fresh');
+    expect(r.title).toBe(storedTitle('t3-new'));
+  });
+
+  it('replace with a new title: the new one', () => {
+    remember({ name: 't3-rep', type: 'note', title: 'Old', observations: ['a'] });
+    const r = remember({ name: 't3-rep', type: 'note', title: 'New', observations: ['b'], replace: true });
+    expect(r.title).toBe('New');
+    expect(r.title).toBe(storedTitle('t3-rep'));
+  });
+
+  it('replace with no title given: the title that was kept', () => {
+    remember({ name: 't3-keep', type: 'note', title: 'Kept', observations: ['a'] });
+    const r = remember({ name: 't3-keep', type: 'note', observations: ['b'], replace: true });
+    expect(r.title).toBe('Kept');
+    expect(r.title).toBe(storedTitle('t3-keep'));
+  });
+
+  it('a note appended to an existing memory: that memory\'s own title, not the derived one', () => {
+    remember({ name: 't3-note', type: 'note', title: 'Its own', observations: ['a'] });
+    const r = remember({ name: 't3-note', note: 'Derived headline\n\nbody' });
+    expect(r.derived!.title).toBe('Derived headline');
+    expect(r.title).toBe('Its own');
+    expect(r.title).toBe(storedTitle('t3-note'));
+  });
+
+  it('a memory with no title at all: null, not absent', () => {
+    const r = remember({ name: 't3-null', type: 'note', observations: ['a'] });
+    expect(r.title).toBeNull();
+    expect(r.title).toBe(storedTitle('t3-null'));
+  });
+});

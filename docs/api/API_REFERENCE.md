@@ -103,12 +103,22 @@ the graph does not have.
   "stored": true,
   "entityId": 1,
   "name": "auth-decision",
+  "title": null,
   "type": "decision",
   "observations": 2,
   "tags": 1,
   "relations": 0
 }
 ```
+
+`title` is always present, and it is the title the memory HOLDS after the call
+— read back from the row, not echoed from the request. It is `null` when the
+memory has no title (the example above passed none). This matters on the two
+calls that do not supply one: `replace` without a `title`, and a `note` sent to
+a name that already exists both KEEP the existing title, and the response names
+it. Do not read `derived.title` as the stored title — that is the title the
+text would have produced, which on an existing memory is exactly the one that
+was not used.
 
 With `note`, the response also carries `derived: { name, type, title, observations }` — the shape the server derived, so a wrong title can be corrected with one more call (`name` + `type` + `replace: true` + `title`; `type` is required by the schema on every call that omits `note`, replace included). Pass the type the entity should have: `replace` now rewrites the stored type when it differs from what you pass, so a memory can be reclassified the same way it is corrected. With `replace: true` the response also carries `replaced: true` when an existing memory was rewritten, `false` when there was nothing to replace.
 
