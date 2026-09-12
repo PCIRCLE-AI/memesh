@@ -145,6 +145,17 @@ export const TOOL_DEFINITIONS = [
         },
       },
       additionalProperties: false,
+      // The rule RememberSchema's superRefine enforces: `note` alone, or
+      // `name` + `type`. Dropping the old `required: ['name','type']` — which
+      // was wrong for the note form — left this schema declaring nothing
+      // required at all, so a client reading it could believe `{}` is a valid
+      // call and only learn otherwise from a runtime rejection. Same branches
+      // in the same order as the exported OpenAI schema in
+      // src/core/schema-export.ts.
+      anyOf: [
+        { required: ['note'] },
+        { required: ['name', 'type'] },
+      ],
     },
   },
   {
