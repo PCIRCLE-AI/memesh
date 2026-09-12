@@ -420,6 +420,19 @@ describe('remember({ name, replace: true }) inherits the stored type — #333 T4
     expect(parsed.error?.issues.some((i) => i.path[0] === 'type')).toBe(true);
   });
 
+  it('an EMPTY `type` is still refused — absent and blank are not the same input', () => {
+    // `!input.type` is falsy for '' as well as undefined. Waiving the
+    // requirement on that test would have let a direct core caller write
+    // `type = ''` onto an existing row through the retype branch; the
+    // transports' `z.string().min(1)` never lets one through, so core is the
+    // only place this can be pinned.
+    remember({ name: 'blank_type_target', type: 'decision', observations: ['before'] });
+    expect(() => remember({ name: 'blank_type_target', type: '', replace: true, observations: ['after'] }))
+      .toThrow(/remember needs `name` and `type`/);
+    expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
+      .get('blank_type_target') as { type: string }).type).toBe('decision');
+  });
+
   it('`replace` on a name that does not exist asks for `type` instead of inventing one', () => {
     // Relaxing the schema opens a path that did not exist before: create a NEW
     // entity with no type. Defaulting it to "note" would be the same silent

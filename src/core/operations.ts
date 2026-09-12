@@ -154,10 +154,14 @@ function resolveRememberInput(
 ): { args: ResolvedRememberInput; derived?: DerivedNote; typeGiven: boolean } {
   if (input.note === undefined) {
     if (!input.name) throw new Error('remember needs `name` and `type`, or `note`');
-    // `type` may be omitted only alongside `replace`, which inherits it from
-    // the memory being corrected. The transports' RememberSchema says the
-    // same; this is the direct-caller copy.
-    if (!input.type && !input.replace) throw new Error('remember needs `name` and `type`, or `note`');
+    // ABSENT and BLANK are different inputs, and only the first one is a
+    // request to inherit. `replace` waives an omitted `type` — it takes the
+    // one the memory has — but an empty string is never a type: a truthiness
+    // test here would send `''` down the retype branch and blank the stored
+    // type of the memory being corrected. The transports' `z.string().min(1)`
+    // stops that before it arrives; this is the direct-caller copy.
+    if (input.type === '') throw new Error('remember needs `name` and `type`, or `note`');
+    if (input.type === undefined && !input.replace) throw new Error('remember needs `name` and `type`, or `note`');
     return { args: input as ResolvedRememberInput, typeGiven: input.type !== undefined };
   }
   if (input.title !== undefined || input.observations !== undefined) {
