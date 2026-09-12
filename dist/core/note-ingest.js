@@ -114,6 +114,7 @@ export function ingestNoteDirectory(opts) {
         replaced: [],
         unchanged: 0,
         repathed: [],
+        restored: [],
         markedMissing: [],
         skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: 'symlink refused' })),
         more: 0,
@@ -146,8 +147,9 @@ export function ingestNoteDirectory(opts) {
         priorSkips = {};
     }
     const nextSkips = {};
+    const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
     const claimedNameAt = new Map();
-    const skippedNameAt = new Map();
+    const declaresNothing = new Set();
     const statOf = (rel) => {
         try {
             return fs.lstatSync(path.join(realDir, rel));
@@ -173,6 +175,7 @@ export function ingestNoteDirectory(opts) {
         const contentSkip = (reason) => {
             skip(reason);
             nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+            declaresNothing.add(rel);
         };
         try {
             stat = fs.lstatSync(abs);
@@ -186,11 +189,10 @@ export function ingestNoteDirectory(opts) {
                 continue;
             }
             const priorSkip = priorSkips[rel];
-            if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
+            const nameIsFree = priorSkip?.name !== undefined && priorSkip.name !== '' && missingNames.has(priorSkip.name);
+            if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
                 skip(priorSkip.reason);
                 nextSkips[rel] = priorSkip;
-                if (priorSkip.name)
-                    skippedNameAt.set(rel, priorSkip.name);
                 continue;
             }
             if (read >= maxFiles) {
@@ -280,14 +282,11 @@ export function ingestNoteDirectory(opts) {
             }
         }
         const recordedRel = existing && typeof prov.note_path === 'string' ? prov.note_path : undefined;
-        const recordedDeclares = recordedRel
-            ? claimedNameAt.get(recordedRel) ?? skippedNameAt.get(recordedRel)
-            : undefined;
         if (recordedRel
+            && existing && !existing.is_missing
             && presentRels.has(recordedRel)
             && !readRels.has(recordedRel)
-            && !claimants.some((c) => c.rel === recordedRel)
-            && recordedDeclares === undefined) {
+            && !claimants.some((c) => c.rel === recordedRel)) {
             const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
             const ownerStat = statOf(recordedRel);
             for (const c of claimants) {
@@ -320,12 +319,13 @@ export function ingestNoteDirectory(opts) {
             db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), existing.id);
             if (existing.is_missing) {
                 db.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?').run(existing.id, NOTE_FILE_MISSING_TAG);
+                result.restored.push(name);
             }
-            touchedIds.add(existing.id);
-            if (moved)
+            else if (moved)
                 result.repathed.push(name);
             else
                 result.unchanged++;
+            touchedIds.add(existing.id);
             continue;
         }
         const currentTags = existing
@@ -370,7 +370,9 @@ export function ingestNoteDirectory(opts) {
         if (prov.note_dir_id !== dirId || typeof prov.note_path !== 'string')
             continue;
         const gone = !presentRels.has(prov.note_path);
-        const renamedAway = readRels.has(prov.note_path) && claimedNameAt.has(prov.note_path) && claimedNameAt.get(prov.note_path) !== row.name;
+        const declaresNow = claimedNameAt.get(prov.note_path)
+            ?? (declaresNothing.has(prov.note_path) ? '' : undefined);
+        const renamedAway = declaresNow !== undefined && declaresNow !== row.name;
         if (!gone && !renamedAway)
             continue;
         tagMissing.run(row.id, NOTE_FILE_MISSING_TAG);
@@ -384,6 +386,7 @@ export function summarizeNoteIngest(r) {
         `${r.replaced.length} replaced`,
         `${r.unchanged} unchanged`,
         ...(r.repathed.length ? [`${r.repathed.length} moved`] : []),
+        ...(r.restored.length ? [`${r.restored.length} restored`] : []),
         `${r.skipped.length} skipped`,
     ];
     if (r.markedMissing.length)

@@ -532,6 +532,58 @@ describe('ingestNoteDirectory', () => {
       expect(state('MV')).toEqual({ obs: ['the second real body'], path: 'mv24.md', missing: false });
     });
 
+    it('N10b: an unparseable recorded file frees its name a run later, exactly as it does in the same run', () => {
+      const dir = mk('n10b', { 'a.md': note('U10b', 'A', 'fact', 'from a') });
+      ingestNoteDirectory({ dir });
+      // The recorded file stops being a note at all.
+      put(dir, 'a.md', 'no frontmatter any more\n');
+      const broke = ingestNoteDirectory({ dir });
+      expect(broke.skipped).toContainEqual({ path: 'a.md', reason: 'no frontmatter — a note file needs a `---` block with a name' });
+      expect(broke.markedMissing).toEqual(['U10b']);
+
+      // The newcomer arrives a run later, with a.md skipped by fingerprint.
+      put(dir, 'b.md', note('U10b', 'B', 'fact', 'from b'));
+      const r = ingestNoteDirectory({ dir });
+      expect(r.replaced).toEqual(['U10b']);
+      expect(state('U10b')).toEqual({ obs: ['from b'], path: 'b.md', missing: false });
+      quiet(dir);
+    });
+
+    it('N11: a newcomer refused by the per-run cap still gets the name once it is freed', () => {
+      const dir = mk('n11', { 'm.md': note('X11', 'M', 'fact', 'm v1') });
+      ingestNoteDirectory({ dir, maxFiles: 1 });
+      put(dir, 'a.md', note('X11', 'A', 'fact', 'from a'));
+      put(dir, 'm.md', note('Y11', 'M2', 'fact', 'm renamed'));
+      // a.md sorts first and uses the one read; m.md is left for later.
+      const capped = ingestNoteDirectory({ dir, maxFiles: 1 });
+      expect(capped.more).toBe(1);
+      // Next run reads m.md: it declares Y11, so X11 loses its file.
+      const renamed = ingestNoteDirectory({ dir, maxFiles: 1 });
+      expect(renamed.created).toEqual(['Y11']);
+      expect(renamed.markedMissing).toEqual(['X11']);
+      // And now the newcomer must be able to claim the freed name.
+      ingestNoteDirectory({ dir, maxFiles: 1 });
+      ingestNoteDirectory({ dir, maxFiles: 1 });
+      expect(state('X11')).toEqual({ obs: ['from a'], path: 'a.md', missing: false });
+      expect(state('Y11')).toEqual({ obs: ['m renamed'], path: 'm.md', missing: false });
+    });
+
+    it('N11b: a freed name is given away even while the file that freed it is past the cap', () => {
+      const dir = mk('n11b', { 'm.md': note('X11b', 'M', 'fact', 'm v1') });
+      ingestNoteDirectory({ dir });
+      put(dir, 'm.md', note('Y11b', 'M2', 'fact', 'm renamed'));
+      expect(ingestNoteDirectory({ dir }).markedMissing).toEqual(['X11b']);
+      // m.md changes again, so it is no longer "unchanged", and the newcomer
+      // sorts first and takes the single read: this run cannot see what m.md
+      // declares — but X11b is already nobody's, so the newcomer gets it.
+      put(dir, 'm.md', note('Y11b', 'M3', 'fact', 'm edited again'));
+      put(dir, 'a.md', note('X11b', 'A', 'fact', 'from a'));
+      const r = ingestNoteDirectory({ dir, maxFiles: 1 });
+      expect(r.more).toBe(1);
+      expect(r.replaced).toEqual(['X11b']);
+      expect(state('X11b')).toEqual({ obs: ['from a'], path: 'a.md', missing: false });
+    });
+
     it('S6: the skip row follows the losers — gone when the dup takes over, back and gone again with the returning file', () => {
       const dir = mk('s6', { 'a.md': note('same6', 'A', 'fact', 'a'), 'b.md': note('same6', 'B', 'fact', 'b') });
       const key = `note_ingest_skips:${ingestNoteDirectory({ dir }).dirId}`;

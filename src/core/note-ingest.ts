@@ -64,6 +64,8 @@ export interface NoteIngestResult {
   unchanged: number;
   /** Memories whose file moved with its bytes intact: path updated, no new version. */
   repathed: string[];
+  /** Memories that were tagged missing and whose file came back. */
+  restored: string[];
   /** Memories newly tagged `source:note-file:missing` this run. */
   markedMissing: string[];
   /** Files looked at and not ingested, with the reason, by relative path. */
@@ -223,6 +225,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     replaced: [],
     unchanged: 0,
     repathed: [],
+    restored: [],
     markedMissing: [],
     skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: 'symlink refused' })),
     more: 0,
@@ -270,10 +273,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     priorSkips = {};
   }
   const nextSkips: Record<string, SkipPrint> = {};
+  /** Names whose memory is tagged missing: nobody owns them, so they are free. */
+  const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
   /** rel → the name that file declares, for files processed this run. */
   const claimedNameAt = new Map<string, string>();
-  /** rel → the name a fingerprint-skipped file declared when it was skipped. */
-  const skippedNameAt = new Map<string, string>();
+  /** Files read this run that turned out to declare no name at all. */
+  const declaresNothing = new Set<string>();
   const statOf = (rel: string): fs.Stats | null => {
     try { return fs.lstatSync(path.join(realDir, rel)); } catch { return null; }
   };
@@ -295,6 +300,10 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     const contentSkip = (reason: string) => {
       skip(reason);
       nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+      // A file that parsed into no name frees the name its memory holds —
+      // the sweep below reads this and reports that memory missing, exactly
+      // as it does for a file that now declares a DIFFERENT name.
+      declaresNothing.add(rel);
     };
     try {
       stat = fs.lstatSync(abs);
@@ -310,12 +319,15 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
         continue;
       }
       const priorSkip = priorSkips[rel];
-      if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
+      // A loser whose name's memory is now MISSING must be read again: the
+      // name is free, and its fingerprint is bound to a file whose stat may
+      // never change again. Without this, a newcomer refused once (by the
+      // per-run cap, or by a recorded file it could not see) stayed refused
+      // while a file on disk declared that very name.
+      const nameIsFree = priorSkip?.name !== undefined && priorSkip.name !== '' && missingNames.has(priorSkip.name);
+      if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
-        // Unread, but its name is on record from when it was skipped: phase 2
-        // uses it to answer "what does the recorded file declare now?".
-        if (priorSkip.name) skippedNameAt.set(rel, priorSkip.name);
         continue;
       }
       if (read >= maxFiles) { result.more++; continue; }
@@ -387,29 +399,29 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     }
 
     const recordedRel = existing && typeof prov.note_path === 'string' ? prov.note_path : undefined;
-    // The recorded file is present but was not read this run. Refuse the
-    // newcomers ONLY when this run cannot say what that file declares —
-    // i.e. it was past the per-run cap. When phase 1 saw it claim another
-    // name (an unchanged claimant), or skipped it by fingerprint as the
-    // loser of another name, its name is known and it has plainly let this
-    // one go, so the newcomer takes over. Refusing there made the handover
-    // depend on arrival order: the same events inside one run handed the
-    // name over, a run apart left the memory tagged missing for good.
-    const recordedDeclares = recordedRel
-      ? claimedNameAt.get(recordedRel) ?? skippedNameAt.get(recordedRel)
-      : undefined;
+    // A name is free exactly when its memory is tagged missing — the sweep
+    // below tags it in the same run the recorded file is read and found to
+    // declare something else (or nothing at all). So the ONE case where a
+    // newcomer must wait is a memory that is NOT missing whose recorded file
+    // is present but was not read this run (past the per-run cap): this run
+    // cannot tell whether that file still holds the name. Everything else —
+    // the recorded file renamed itself a run ago, or stopped being a note —
+    // has already been recorded as missing, and the newcomer takes over
+    // whichever run it turns up in. Deciding this from what the run happened
+    // to read is what made the handover depend on arrival order, twice.
     if (recordedRel
+      && existing && !existing.is_missing
       && presentRels.has(recordedRel)
       && !readRels.has(recordedRel)
-      && !claimants.some((c) => c.rel === recordedRel)
-      && recordedDeclares === undefined) {
+      && !claimants.some((c) => c.rel === recordedRel)) {
       const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
       const ownerStat = statOf(recordedRel);
       for (const c of claimants) {
         result.skipped.push({ path: c.rel, reason });
         // Fingerprinted against the recorded file, or the claimant would be
-        // re-read on every run and keep the cap away from the very file
-        // that owns the name.
+        // re-read on every run and keep the cap away from the very file that
+        // owns the name. `name` is what lets the fingerprint be dropped once
+        // that name is freed (see `nameIsFree` in phase 1).
         if (ownerStat) nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: recordedRel, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
       }
       continue;
@@ -445,10 +457,10 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
         // The file is back (or was renamed): the memory is no longer missing.
         // Tags are not in the FTS document, so no index work.
         db.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?').run(existing.id, NOTE_FILE_MISSING_TAG);
-      }
-      touchedIds.add(existing.id);
-      if (moved) result.repathed.push(name);
+        result.restored.push(name);
+      } else if (moved) result.repathed.push(name);
       else result.unchanged++;
+      touchedIds.add(existing.id);
       continue;
     }
 
@@ -507,7 +519,15 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     const prov = parseProvenance(row.metadata);
     if (prov.note_dir_id !== dirId || typeof prov.note_path !== 'string') continue;
     const gone = !presentRels.has(prov.note_path);
-    const renamedAway = readRels.has(prov.note_path) && claimedNameAt.has(prov.note_path) && claimedNameAt.get(prov.note_path) !== row.name;
+    // "Declares a different name" and "declares no name at all" (unparseable,
+    // nameless, or too large to read) are the same fact about the memory: the
+    // file it records no longer holds it. Both free the name, so both must
+    // report it — the missing tag is the only signal recall and the dashboard
+    // get, and a memory silently pointing at a file that disowned it is the
+    // shape this sweep exists to show.
+    const declaresNow = claimedNameAt.get(prov.note_path)
+      ?? (declaresNothing.has(prov.note_path) ? '' : undefined);
+    const renamedAway = declaresNow !== undefined && declaresNow !== row.name;
     if (!gone && !renamedAway) continue;
     tagMissing.run(row.id, NOTE_FILE_MISSING_TAG);
     result.markedMissing.push(row.name);
@@ -523,6 +543,7 @@ export function summarizeNoteIngest(r: NoteIngestResult): string {
     `${r.replaced.length} replaced`,
     `${r.unchanged} unchanged`,
     ...(r.repathed.length ? [`${r.repathed.length} moved`] : []),
+    ...(r.restored.length ? [`${r.restored.length} restored`] : []),
     `${r.skipped.length} skipped`,
   ];
   if (r.markedMissing.length) parts.push(`${r.markedMissing.length} marked missing`);

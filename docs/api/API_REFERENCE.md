@@ -1325,9 +1325,11 @@ never an absolute path.
   alone writes no new version (repeated renames therefore cannot push the
   real history out of the 20 kept versions), and a file coming back after
   being reported missing simply loses the tag. A file that changes the
-  `name` in its frontmatter leaves the old memory behind, tagged
-  `source:note-file:missing` like a vanished one, and creates the new one;
-  another file may then take the freed name on any later run.
+  `name` in its frontmatter — or stops being a note file at all — leaves the
+  old memory behind, tagged `source:note-file:missing` like a vanished one,
+  and creates the new one. A name is free exactly when its memory carries
+  that tag, so another file takes it over on whatever run it turns up, cap
+  or no cap.
 - Unchanged is decided by size, modification time and inode, so two files
   that swap places without changing either size or timestamp are still seen.
 - On a file change the file owns the `source:*` tags; any other tag a person

@@ -15,6 +15,7 @@ export interface NoteIngestResult {
     replaced: string[];
     unchanged: number;
     repathed: string[];
+    restored: string[];
     markedMissing: string[];
     skipped: Array<{
         path: string;

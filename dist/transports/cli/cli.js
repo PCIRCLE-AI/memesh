@@ -59487,6 +59487,7 @@ function ingestNoteDirectory(opts) {
     replaced: [],
     unchanged: 0,
     repathed: [],
+    restored: [],
     markedMissing: [],
     skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: "symlink refused" })),
     more: 0
@@ -59518,8 +59519,9 @@ function ingestNoteDirectory(opts) {
     priorSkips = {};
   }
   const nextSkips = {};
+  const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
   const claimedNameAt = /* @__PURE__ */ new Map();
-  const skippedNameAt = /* @__PURE__ */ new Map();
+  const declaresNothing = /* @__PURE__ */ new Set();
   const statOf = (rel) => {
     try {
       return fs10.lstatSync(path9.join(realDir, rel));
@@ -59546,6 +59548,7 @@ function ingestNoteDirectory(opts) {
     const contentSkip = (reason) => {
       skip(reason);
       nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+      declaresNothing.add(rel);
     };
     try {
       stat = fs10.lstatSync(abs);
@@ -59559,11 +59562,10 @@ function ingestNoteDirectory(opts) {
         continue;
       }
       const priorSkip = priorSkips[rel];
-      if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
+      const nameIsFree = priorSkip?.name !== void 0 && priorSkip.name !== "" && missingNames.has(priorSkip.name);
+      if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
-        if (priorSkip.name)
-          skippedNameAt.set(rel, priorSkip.name);
         continue;
       }
       if (read >= maxFiles) {
@@ -59654,8 +59656,7 @@ function ingestNoteDirectory(opts) {
       }
     }
     const recordedRel = existing && typeof prov.note_path === "string" ? prov.note_path : void 0;
-    const recordedDeclares = recordedRel ? claimedNameAt.get(recordedRel) ?? skippedNameAt.get(recordedRel) : void 0;
-    if (recordedRel && presentRels.has(recordedRel) && !readRels.has(recordedRel) && !claimants.some((c) => c.rel === recordedRel) && recordedDeclares === void 0) {
+    if (recordedRel && existing && !existing.is_missing && presentRels.has(recordedRel) && !readRels.has(recordedRel) && !claimants.some((c) => c.rel === recordedRel)) {
       const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
       const ownerStat = statOf(recordedRel);
       for (const c of claimants) {
@@ -59686,12 +59687,12 @@ function ingestNoteDirectory(opts) {
       db2.prepare("UPDATE entities SET metadata = ? WHERE id = ?").run(JSON.stringify(meta3), existing.id);
       if (existing.is_missing) {
         db2.prepare("DELETE FROM tags WHERE entity_id = ? AND tag = ?").run(existing.id, NOTE_FILE_MISSING_TAG);
-      }
-      touchedIds.add(existing.id);
-      if (moved)
+        result.restored.push(name);
+      } else if (moved)
         result.repathed.push(name);
       else
         result.unchanged++;
+      touchedIds.add(existing.id);
       continue;
     }
     const currentTags = existing ? db2.prepare("SELECT tag FROM tags WHERE entity_id = ?").all(existing.id).map((t) => t.tag) : [];
@@ -59733,7 +59734,8 @@ function ingestNoteDirectory(opts) {
     if (prov.note_dir_id !== dirId || typeof prov.note_path !== "string")
       continue;
     const gone = !presentRels.has(prov.note_path);
-    const renamedAway = readRels.has(prov.note_path) && claimedNameAt.has(prov.note_path) && claimedNameAt.get(prov.note_path) !== row.name;
+    const declaresNow = claimedNameAt.get(prov.note_path) ?? (declaresNothing.has(prov.note_path) ? "" : void 0);
+    const renamedAway = declaresNow !== void 0 && declaresNow !== row.name;
     if (!gone && !renamedAway)
       continue;
     tagMissing.run(row.id, NOTE_FILE_MISSING_TAG);
@@ -59747,6 +59749,7 @@ function summarizeNoteIngest(r) {
     `${r.replaced.length} replaced`,
     `${r.unchanged} unchanged`,
     ...r.repathed.length ? [`${r.repathed.length} moved`] : [],
+    ...r.restored.length ? [`${r.restored.length} restored`] : [],
     `${r.skipped.length} skipped`
   ];
   if (r.markedMissing.length)
