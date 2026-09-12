@@ -274,11 +274,18 @@ process.stdin.on('end', () => {
         additionalContext: buildReferenceContext(lines),
       },
     }));
-    // A recall hook's only effect is the INJECTION it produced, so it
-    // records `notified`, not `wrote`: doctor's `writes` answers "is memory
-    // capture still alive", and recalling a memory is reading one, never
-    // storing one. A run of skips here is normal; a long run of them on a
-    // machine that edits files daily is not (#327).
+    // A recall hook produces an INJECTION, so it records `notified`, not
+    // `wrote`: doctor's `writes` answers "is memory capture still alive",
+    // and recalling a memory is not storing one.
+    //
+    // Not "this hook writes nothing" — it does, and the distinction is the
+    // whole point of the outcome. `recordGuardFires` above issues an
+    // `UPDATE entities SET metadata = json_set(… '$.guard.fires' …)`
+    // (_shared.js), bumping a counter on a memory that already exists. That
+    // is a write to the database and NOT a write of a memory, which is what
+    // `writes` counts. guard-check.js does the same thing for the same
+    // reason. A run of skips here is normal; a long run of them on a machine
+    // that edits files daily is not (#327).
     record('notified', undefined, `injected:${guardMatches.length}g+${recallLines.length}r`);
   } catch (err) {
     // Never crash Claude Code, but trace — peer hooks (post-commit,
