@@ -53,6 +53,18 @@ export function exportOpenAITools(): object[] {
             },
             namespace: { type: 'string', enum: ['personal', 'team', 'global'], description: 'Storage scope (default: personal)' },
           },
+          // Two complete forms, not one list of required fields. When `note`
+          // arrived, `required: ['name','type']` was removed and nothing
+          // replaced it, so this export said every field was optional — a
+          // model driven off it is told an empty call is well-formed and
+          // finds out from a runtime error. Neither field is
+          // unconditionally required, so there is no top-level `required`
+          // that would be true; `anyOf` is the shape that says what the rule
+          // actually is. `note` first, the form a caller reaches for first.
+          anyOf: [
+            { required: ['note'] },
+            { required: ['name', 'type'] },
+          ],
         },
       },
     },
