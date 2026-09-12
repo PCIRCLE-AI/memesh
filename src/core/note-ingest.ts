@@ -335,6 +335,8 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   const claims: Claim[] = [];
   const readRels = new Set<string>();
   let read = 0;
+  /** Cap slots handed back to failed reads; bounded, see the catch below. */
+  let refunds = 0;
   for (const abs of files) {
     const rel = relPath(realDir, abs);
     const skip = (reason: string) => { report(rel, reason); };
@@ -345,8 +347,50 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
       declaredNameAt.set(rel, '');
     };
+    /**
+     * A file memesh could not reach: unreadable, or resolving outside the
+     * directory. Deliberately NOT fingerprinted, unlike contentSkip.
+     *
+     * The fingerprint's premise is "the same bytes will be refused the same
+     * way", and reachability is not a function of the bytes: `chmod +r`
+     * changes neither mtime nor size, so a fingerprinted file would stay
+     * refused after the problem was fixed — and its memory would stay tagged
+     * missing forever. One failed syscall per run is the price of noticing.
+     *
+     * It DOES record that the file declares no name, which is what the
+     * missing sweep needs: without it the sweep sees the path in
+     * presentRels and leaves the memory pointing at a file nobody can read,
+     * so `source:note-file:missing` — the only user-visible signal this
+     * module has — never appears.
+     *
+     * And it gives the per-run cap slot back, because it sits after
+     * `read++` and would otherwise spend a slot a readable file could use.
+     * Bounded by `maxFiles`, so a directory full of unreadable files cannot
+     * drive an unbounded number of attempts in one run.
+     */
+    const unreachableSkip = (reason: string) => {
+      skip(reason);
+      declaredNameAt.set(rel, '');
+      // `readRels.has(rel)` is exactly "read++ already ran for this file";
+      // the entry itself stays, because the file WAS looked at this run and
+      // the ownership rules below read that set to mean just that.
+      if (readRels.has(rel) && refunds < maxFiles) { read--; refunds++; }
+    };
+    // The lstat gets its own try. Everything below it needs `stat`, so a
+    // failure here cannot be fingerprinted — and folding the two together is
+    // how a catch ends up reading an uninitialised `stat`. Nothing has been
+    // charged to the per-run cap at this point either.
     try {
       stat = fs.lstatSync(abs);
+    } catch (err) {
+      // The file was listed by the directory walk and is gone or unreachable
+      // now. It declares no name, which is what the missing sweep needs to
+      // know: a memory recording this path no longer has it.
+      skip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
+      declaredNameAt.set(rel, '');
+      continue;
+    }
+    try {
       if (stat.isSymbolicLink()) { skip('symlink refused'); continue; }
       const prior = known.get(rel);
       // The inode is part of the fingerprint: two files of the same size
@@ -375,10 +419,10 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       readRels.add(rel);
       if (stat.size > maxBytes) { contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`); continue; }
       const real = fs.realpathSync(abs);
-      if (!real.startsWith(realDir + path.sep)) { skip('resolves outside the directory'); continue; }
+      if (!real.startsWith(realDir + path.sep)) { unreachableSkip('resolves outside the directory'); continue; }
       raw = fs.readFileSync(real);
     } catch (err) {
-      skip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
+      unreachableSkip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
       continue;
     }
 

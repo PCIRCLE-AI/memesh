@@ -719,3 +719,67 @@ describe('note-ingest: a file over the observation cap is refused, not silently 
     expect(second.refusedNow).toBe(0);
   });
 });
+
+/**
+ * An unreadable file is not "still holding its memory's name" — #324 C9.
+ *
+ * chmod is the only portable way to make a readable file unreadable, so
+ * these cases are POSIX-and-not-root. Named, not silently skipped: on
+ * Windows and as root the branch is exercised by no test here, and the
+ * refund case below covers the same code path without permissions.
+ */
+const canDenyReads = process.platform !== 'win32' && (process.getuid?.() ?? 0) !== 0;
+
+describe.skipIf(!canDenyReads)('note-ingest: an unreadable file marks its memory missing — #324 C9', () => {
+  it('tags source:note-file:missing instead of leaving a memory pointed at a file it cannot read', () => {
+    const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'decision', 'Alpha body.') });
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_a']);
+
+    // The bytes change so the stat fingerprint does not fast-path it, then
+    // the file becomes unreadable.
+    fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha', 'decision', 'Alpha body two.'));
+    fs.chmodSync(path.join(dir, 'a.md'), 0o000);
+    try {
+      const r = ingestNoteDirectory({ dir });
+      expect(r.skipped.map((x) => x.reason).join(' ')).toContain('unreadable');
+      // The skip recorded no declared name, so the missing sweep saw the path
+      // in presentRels and moved on: the one user-visible signal this module
+      // has never appeared.
+      expect(r.markedMissing, 'the memory was left pointing at a file nobody can read').toEqual(['note_a']);
+      const tags = kg().getEntity('note_a')!.tags ?? [];
+      expect(tags).toContain(NOTE_FILE_MISSING_TAG);
+    } finally {
+      fs.chmodSync(path.join(dir, 'a.md'), 0o644);
+    }
+  });
+
+  it('the file coming back clears the missing tag', () => {
+    const dir = makeDir({ 'b.md': note('note_b', 'Beta', 'decision', 'Beta body.') });
+    ingestNoteDirectory({ dir });
+    fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'decision', 'Beta body two.'));
+    fs.chmodSync(path.join(dir, 'b.md'), 0o000);
+    ingestNoteDirectory({ dir });
+    fs.chmodSync(path.join(dir, 'b.md'), 0o644);
+    const back = ingestNoteDirectory({ dir });
+    expect(back.replaced).toEqual(['note_b']);
+    expect(kg().getEntity('note_b')!.tags ?? []).not.toContain(NOTE_FILE_MISSING_TAG);
+  });
+
+  it('an unreadable file does not spend a per-run cap slot a good file could use', () => {
+    const dir = makeDir({
+      'bad.md': note('note_bad', 'Bad', 'decision', 'Bad body.'),
+      'good.md': note('note_good', 'Good', 'decision', 'Good body.'),
+    });
+    fs.chmodSync(path.join(dir, 'bad.md'), 0o000);
+    try {
+      // One slot, and `bad.md` sorts first. It sits after `read++`, so it
+      // consumed the whole run's budget and `good.md` was never reached —
+      // every run, forever, because the skip left no fingerprint either.
+      const r = ingestNoteDirectory({ dir, maxFiles: 1 });
+      expect(r.created, 'the unreadable file ate the only cap slot').toEqual(['note_good']);
+      expect(r.more).toBe(0);
+    } finally {
+      fs.chmodSync(path.join(dir, 'bad.md'), 0o644);
+    }
+  });
+});
