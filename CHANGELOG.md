@@ -70,9 +70,31 @@ All notable changes to MeMesh are documented here.
   ignores records for hooks MeMesh does not ship. Doctor and the banner quote
   only skip reasons the shipped hooks record (anything else shows as
   "unrecognised reason"), with control characters stripped and length capped.
+- **Delegations to the DeepSeek worker are recorded from the orchestrator side
+  (#326).** `memesh delegation record|verify` turns a worker envelope into one
+  `delegation` memory — prompt sha256 (never the prompt text), model, allowed
+  tools (from `--allow-tool`, else the envelope, else "not reported in the
+  envelope"), usage, finish reason and the orchestrator's verdict — with
+  provenance `source: deepseek-worker` and `trust: untrusted-until-verified`
+  until `verify` flips it. The worker's own output is never stored, and there
+  is no HTTP or MCP write path: the sandbox cannot write to the graph.
 
 ### Changed
 
+- **Hermes Agent stores insights, not transcripts (#326).** Session and
+  compression boundaries now write the same `session-<id>-files/-fixes/
+  -summary` insights the Claude Code Stop hook writes, instead of archiving the
+  raw message list, and `sync_turn()` stores a turn only when the assistant's
+  reply states a decision or a lesson — a negation in the same clause cancels
+  it, and fenced code, quoted text, questions and the injected recall block are
+  ignored. Turns go through a bounded background queue that never blocks the
+  host and is drained, once, at session end and shutdown; turns still queued
+  when the budget runs out are logged rather than dropped in silence. Hermes
+  writes are stamped `metadata.provenance.source_host: "hermes"` and reach the
+  graph through the new `memesh hermes capture-session|capture-turn` CLI, whose
+  payload travels on stdin. A contract test drives the real provider against a
+  real `memesh serve`, so the plugin can no longer drift from the API envelope
+  unnoticed.
 - **The update notice reaches every door, not only the SessionStart hook
   (#308).** The MCP server appends one `[memesh update] …` text item to the
   first successful tool result of each process (as a second content item, so
