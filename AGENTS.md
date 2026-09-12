@@ -122,7 +122,10 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
   a file that disappears is tagged `source:note-file:missing`, never deleted),
   and when the turn since the last Stop approved a plan, answered a question,
   committed, or turned a test red then green — with no `remember`/`learn` call
-  and no note-file change — it shows one line suggesting a `remember`.
+  and no note-file change — it shows one line suggesting a `remember`. Both
+  the session capture and the note-directory ingestion are writes, so both
+  stop when auto-capture is off (`memesh config set autoCapture false`, or
+  `MEMESH_AUTO_CAPTURE=false`); the reminder line still runs either way.
 - **PreCompact** saves important knowledge before history is compressed.
 - **UserPromptSubmit** detects "remember this" intent in the prompt.
 - **PreToolUse (Bash)** fires accepted lesson-guards: a fenced warning

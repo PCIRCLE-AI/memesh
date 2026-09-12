@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
+import { build } from 'esbuild';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -11,7 +12,41 @@ import { MemeshDatabase } from '../../src/storage/sqlite.js';
 // that behavior so a future refactor cannot silently regress the
 // first-time-user happy path.
 
-const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
+// These tests used to spawn `dist/transports/cli/cli.js`. That made them blind
+// to the source they exist to cover: mutating src/transports/cli/cli.ts left
+// the whole file green, because `dist` is whatever the last build wrote.
+// Bundle the SOURCE into a throwaway directory per run instead, and spawn
+// that. The layout matters — cli.ts reads '../../../package.json' relative to
+// its own URL, so the bundle sits at <tmp>/dist/transports/cli/cli.js with a
+// copy of the real package.json at <tmp>/package.json. `dist` itself stays
+// covered by the doctor-fix, setup and node-runtime-check tests.
+const REPO_ROOT = path.join(__dirname, '..', '..');
+let bundleDir: string;
+let CLI_PATH: string;
+
+async function bundleCliFromSource(): Promise<void> {
+  // A fresh mkdtemp every run: a stable path that is reused would let a stale
+  // bundle answer for edited source, which is the exact defect this replaces.
+  bundleDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-src-'));
+  CLI_PATH = path.join(bundleDir, 'dist', 'transports', 'cli', 'cli.js');
+  fs.mkdirSync(path.dirname(CLI_PATH), { recursive: true });
+  fs.copyFileSync(path.join(REPO_ROOT, 'package.json'), path.join(bundleDir, 'package.json'));
+  await build({
+    absWorkingDir: REPO_ROOT,
+    entryPoints: [path.join(REPO_ROOT, 'src', 'transports', 'cli', 'cli.ts')],
+    outfile: CLI_PATH,
+    bundle: true,
+    platform: 'node',
+    format: 'esm',
+    target: 'node22.13',
+    packages: 'bundle',
+    external: ['node:*'],
+    legalComments: 'none',
+    // Commander is CommonJS and needs a real `require`, same as the shipped
+    // bundle built by scripts/build-cli-bundle.mjs.
+    banner: { js: "import { createRequire as __memeshCreateRequire } from 'node:module'; const require = __memeshCreateRequire(import.meta.url);" },
+  });
+}
 
 function runCli(args: string[], env: Record<string, string>): { stdout: string; stderr: string; exitCode: number } {
   try {
@@ -32,6 +67,9 @@ function runCli(args: string[], env: Record<string, string>): { stdout: string; 
 
 describe('memesh remember CLI: quick-capture form', () => {
   let tmpHome: string;
+
+  beforeAll(async () => { await bundleCliFromSource(); }, 120_000);
+  afterAll(() => { fs.rmSync(bundleDir, { recursive: true, force: true }); });
 
   beforeEach(() => {
     tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-remember-'));
