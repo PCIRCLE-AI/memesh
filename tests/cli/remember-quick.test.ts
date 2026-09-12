@@ -112,6 +112,35 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(recalled.stdout).toContain('explicit note');
   }, 60_000);
 
+  // #324 T1, data loss. `remember "<text>" --title "X"` stored only the
+  // paragraphs AFTER the first line: deriveNote leaves the first line out of
+  // the observations only because it expects that line to BECOME the title,
+  // and an explicit --title removes that premise. The first line then existed
+  // nowhere but the slug. Asserted against the DATABASE, not the receipt —
+  // the receipt said "stored" while the text was gone.
+  it('--title alongside positional text keeps the first line as content', () => {
+    const r = runCli(
+      ['remember', 'First line title\n\nSecond paragraph body', '--title', 'MY TITLE'],
+      { HOME: tmpHome },
+    );
+    expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
+
+    // And with no blank line, the note splits into one paragraph: the shape
+    // changes, but nothing the user typed disappears.
+    const r2 = runCli(['remember', 'Alpha headline\nBeta detail', '--title', 'SECOND TITLE'], { HOME: tmpHome });
+    expect(r2.exitCode, `stderr: ${r2.stderr}`).toBe(0);
+
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const obsFor = (title: string) => (db
+      .prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.title = ? ORDER BY o.id')
+      .all(title) as { content: string }[]).map((o) => o.content);
+    const stored = { first: obsFor('MY TITLE'), second: obsFor('SECOND TITLE') };
+    db.close();
+
+    expect(stored.first).toEqual(['First line title', 'Second paragraph body']);
+    expect(stored.second).toEqual(['Alpha headline Beta detail']);
+  }, 60_000);
+
   it('flag form with positional text keeps both too', () => {
     const { stdout, stderr, exitCode } = runCli(
       ['remember', 'positional content', '--name=combo-note', '--type=note', '--obs=flagged note'],

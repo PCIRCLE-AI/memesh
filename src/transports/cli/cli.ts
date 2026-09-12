@@ -15,7 +15,7 @@ import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache 
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
-import { deriveNote, NOTE_DEFAULT_TYPE } from '../../core/note-derive.js';
+import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
 import { RememberSchema } from '../schemas.js';
 import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
 import { assembleBriefing } from '../../core/briefing.js';
@@ -330,8 +330,15 @@ program
         }
         opts.name = derived.name;
         opts.type ??= NOTE_DEFAULT_TYPE;
+        // With an explicit --title the derived title is never used, so the
+        // first line is not a headline — it is content. deriveNote leaves the
+        // first line OUT of derived.observations only because it expects that
+        // line to become the title; --title removes that premise, and using
+        // derived.observations here dropped the user's first line into
+        // nothing but the slug. Split the whole text instead.
+        const derivedObs = opts.title === undefined ? derived.observations : splitObservations(derived.text);
         opts.title ??= derived.title;
-        opts.obs = opts.obs?.length ? [...derived.observations, ...opts.obs] : derived.observations;
+        opts.obs = opts.obs?.length ? [...derivedObs, ...opts.obs] : derivedObs;
       }
     } else if (text) {
       // Positional text ALONGSIDE flags used to be dropped on the floor:
