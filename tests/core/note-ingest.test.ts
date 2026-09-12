@@ -277,12 +277,13 @@ describe('ingestNoteDirectory', () => {
     ingestNoteDirectory({ dir });
     fs.renameSync(path.join(dir, 'A.md'), path.join(dir, 'B.md'));
     const moved = ingestNoteDirectory({ dir });
-    expect(moved.replaced).toEqual(['x1']);
-    expect(moved.markedMissing).toHaveLength(0);
+    // A move with the bytes intact updates the path only: no new version.
+    expect(moved).toMatchObject({ replaced: [], repathed: ['x1'], markedMissing: [] });
     expect(kg().getEntity('x1')!.tags).not.toContain(NOTE_FILE_MISSING_TAG);
     const settled = ingestNoteDirectory({ dir });
     expect(settled).toMatchObject({ replaced: [], unchanged: 1 });
-    expect((kg().getEntity('x1')!.metadata?.replaced_history as unknown[]).length).toBe(1);
+    expect(kg().getEntity('x1')!.metadata?.replaced_history).toBeUndefined();
+    expect((kg().getEntity('x1')!.metadata?.provenance as Record<string, unknown>).note_path).toBe('B.md');
   });
 
   it('P2-a: a duplicate-name file is fingerprinted too, so it does not eat the cap', () => {
@@ -366,6 +367,7 @@ describe('ingestNoteDirectory', () => {
       const r = ingestNoteDirectory({ dir });
       expect(r.created).toHaveLength(0);
       expect(r.replaced).toHaveLength(0);
+      expect(r.repathed).toHaveLength(0);
       expect(r.markedMissing).toHaveLength(0);
       return r;
     };
@@ -400,8 +402,7 @@ describe('ingestNoteDirectory', () => {
       ingestNoteDirectory({ dir });
       fs.renameSync(path.join(dir, 'a.md'), path.join(dir, 'c.md'));
       const r = ingestNoteDirectory({ dir });
-      expect(r.replaced).toEqual(['same3']);
-      expect(r.markedMissing).toHaveLength(0);
+      expect(r).toMatchObject({ replaced: [], repathed: ['same3'], markedMissing: [] });
       quiet(dir);
       expect(state('same3')).toEqual({ obs: ['from a'], path: 'c.md', missing: false });
     });
@@ -453,6 +454,82 @@ describe('ingestNoteDirectory', () => {
       expect(r.skipped).toContainEqual({ path: 'a.md', reason: 'name "capname" belongs to z.md, which was not read this run' });
       ingestNoteDirectory({ dir, maxFiles: 1 });
       expect(state('capname')).toEqual({ obs: ['from z edited'], path: 'z.md', missing: false });
+    });
+
+    it('N7: a duplicate that arrives a run AFTER the rename still takes the name over', () => {
+      const dir = mk('n7', { 'a.md': note('S7', 'A', 'fact', 'a') });
+      ingestNoteDirectory({ dir });
+      put(dir, 'a.md', note('T7', 'A2', 'fact', 'a renamed'));
+      expect(ingestNoteDirectory({ dir }).markedMissing).toEqual(['S7']);
+      // The newcomer appears only now, so the file that used to own S7 is not
+      // read this run — but this run knows it declares T7.
+      put(dir, 'b.md', note('S7', 'B', 'fact', 'from b'));
+      const r = ingestNoteDirectory({ dir });
+      expect(r.replaced).toEqual(['S7']);
+      expect(state('S7')).toEqual({ obs: ['from b'], path: 'b.md', missing: false });
+      quiet(dir);
+      quiet(dir);
+    });
+
+    it('N8: the same when the file that let the name go is an unread, fingerprinted loser', () => {
+      const dir = mk('n8', { 'q.md': note('S8', 'Q', 'fact', 'from q') });
+      ingestNoteDirectory({ dir });
+      // q.md moves to another name, which p.md owns — so q.md loses, is
+      // fingerprinted, and S8 is left missing.
+      put(dir, 'p.md', note('L8', 'P', 'fact', 'from p'));
+      put(dir, 'q.md', note('L8', 'Q2', 'fact', 'from q now L8'));
+      const moved = ingestNoteDirectory({ dir });
+      expect(moved.created).toEqual(['L8']);
+      expect(moved.markedMissing).toEqual(['S8']);
+      expect(moved.skipped).toContainEqual({ path: 'q.md', reason: 'name "L8" already used by p.md in this directory' });
+
+      // A newcomer claims S8 while q.md — still the recorded file — is not
+      // read at all this run: its name is known from the skip fingerprint.
+      put(dir, 'b.md', note('S8', 'B', 'fact', 'from b'));
+      const r = ingestNoteDirectory({ dir });
+      expect(r.skipped).toContainEqual({ path: 'q.md', reason: 'name "L8" already used by p.md in this directory' });
+      expect(r.replaced).toEqual(['S8']);
+      expect(state('S8')).toEqual({ obs: ['from b'], path: 'b.md', missing: false });
+      quiet(dir);
+    });
+
+    it('N1d: two files of the same size and mtime that swap names are not both "unchanged"', () => {
+      const dir = mk('n1d', { 'a.md': note('SWAPA', 'S', 'fact', 'aaa'), 'b.md': note('SWAPB', 'S', 'fact', 'bbb') });
+      // Same size, and the same mtime — the whole fingerprint except the inode.
+      const same = new Date(Date.now() - 10_000);
+      fs.utimesSync(path.join(dir, 'a.md'), same, same);
+      fs.utimesSync(path.join(dir, 'b.md'), same, same);
+      expect(fs.statSync(path.join(dir, 'a.md')).size).toBe(fs.statSync(path.join(dir, 'b.md')).size);
+      ingestNoteDirectory({ dir });
+      expect(state('SWAPA')!.path).toBe('a.md');
+
+      // Swap the two files, keeping both mtimes.
+      fs.renameSync(path.join(dir, 'a.md'), path.join(dir, 'tmp.md'));
+      fs.renameSync(path.join(dir, 'b.md'), path.join(dir, 'a.md'));
+      fs.renameSync(path.join(dir, 'tmp.md'), path.join(dir, 'b.md'));
+      fs.utimesSync(path.join(dir, 'a.md'), same, same);
+      fs.utimesSync(path.join(dir, 'b.md'), same, same);
+
+      const r = ingestNoteDirectory({ dir });
+      expect(r.repathed.sort()).toEqual(['SWAPA', 'SWAPB']);
+      expect(state('SWAPA')).toEqual({ obs: ['aaa'], path: 'b.md', missing: false });
+      expect(state('SWAPB')).toEqual({ obs: ['bbb'], path: 'a.md', missing: false });
+      quiet(dir);
+    });
+
+    it('N1d: a rename of the file only — repeated — does not evict the real history', () => {
+      const dir = mk('mv', { 'v0.md': note('MV', 'V', 'fact', 'the one real body') });
+      ingestNoteDirectory({ dir });
+      put(dir, 'v0.md', note('MV', 'V2', 'fact', 'the second real body'));
+      ingestNoteDirectory({ dir });
+      for (let i = 0; i < 25; i++) {
+        fs.renameSync(path.join(dir, i === 0 ? 'v0.md' : `mv${i - 1}.md`), path.join(dir, `mv${i}.md`));
+        ingestNoteDirectory({ dir });
+      }
+      const history = kg().getEntity('MV')!.metadata?.replaced_history as Array<{ observations: string[] }>;
+      expect(history).toHaveLength(1);
+      expect(history[0].observations).toEqual(['the one real body']);
+      expect(state('MV')).toEqual({ obs: ['the second real body'], path: 'mv24.md', missing: false });
     });
 
     it('S6: the skip row follows the losers — gone when the dup takes over, back and gone again with the returning file', () => {

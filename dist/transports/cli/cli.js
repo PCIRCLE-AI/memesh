@@ -55531,7 +55531,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     };
   }
   const writing = hooks.filter((h) => h.writes > 0);
-  const summary = writing.length > 0 ? `${writing.length} of ${hooks.length} recording hooks wrote something in their recorded window (${writing.map((h) => h.hook).join(", ")}).` : hooks.length > 0 ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.` : "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
+  const summary = writing.length > 0 ? `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(", ")}).` : hooks.length > 0 ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.` : "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
   return {
     check: createCheck("capture-liveness", TITLE, "pass", summary),
     report
@@ -59486,6 +59486,7 @@ function ingestNoteDirectory(opts) {
     created: [],
     replaced: [],
     unchanged: 0,
+    repathed: [],
     markedMissing: [],
     skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: "symlink refused" })),
     more: 0
@@ -59503,7 +59504,7 @@ function ingestNoteDirectory(opts) {
   for (const row of noteRows) {
     const prov = parseProvenance(row.metadata);
     if (prov.note_dir_id === dirId && typeof prov.note_path === "string") {
-      known.set(prov.note_path, { id: row.id, name: row.name, mtime: prov.note_mtime_ms, size: prov.note_size, missing: row.is_missing === 1 });
+      known.set(prov.note_path, { id: row.id, name: row.name, mtime: prov.note_mtime_ms, size: prov.note_size, ino: prov.note_ino, missing: row.is_missing === 1 });
     }
   }
   const skipKey = `note_ingest_skips:${dirId}`;
@@ -59517,6 +59518,8 @@ function ingestNoteDirectory(opts) {
     priorSkips = {};
   }
   const nextSkips = {};
+  const claimedNameAt = /* @__PURE__ */ new Map();
+  const skippedNameAt = /* @__PURE__ */ new Map();
   const statOf = (rel) => {
     try {
       return fs10.lstatSync(path9.join(realDir, rel));
@@ -59551,7 +59554,7 @@ function ingestNoteDirectory(opts) {
         continue;
       }
       const prior = known.get(rel);
-      if (prior && !prior.missing && prior.mtime === stat.mtimeMs && prior.size === stat.size) {
+      if (prior && !prior.missing && prior.mtime === stat.mtimeMs && prior.size === stat.size && prior.ino === stat.ino) {
         claims.push({ rel, name: prior.name, stat, unchanged: true });
         continue;
       }
@@ -59559,6 +59562,8 @@ function ingestNoteDirectory(opts) {
       if (priorSkip && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
+        if (priorSkip.name)
+          skippedNameAt.set(rel, priorSkip.name);
         continue;
       }
       if (read >= maxFiles) {
@@ -59625,6 +59630,8 @@ function ingestNoteDirectory(opts) {
       byName.set(c.name, [c]);
   }
   const touchedIds = /* @__PURE__ */ new Set();
+  for (const c of claims)
+    claimedNameAt.set(c.rel, c.name);
   for (const [name, claimants] of byName) {
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
     const prov = existing ? parseProvenance(existing.metadata) : {};
@@ -59647,18 +59654,16 @@ function ingestNoteDirectory(opts) {
       }
     }
     const recordedRel = existing && typeof prov.note_path === "string" ? prov.note_path : void 0;
-    if (recordedRel && presentRels.has(recordedRel) && !readRels.has(recordedRel) && !claimants.some((c) => c.rel === recordedRel)) {
-      const pending = claimants.filter((c) => !c.unchanged);
-      if (pending.length === claimants.length) {
-        const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
-        const ownerStat = statOf(recordedRel);
-        for (const c of pending) {
-          result.skipped.push({ path: c.rel, reason });
-          if (ownerStat)
-            nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, owner: { rel: recordedRel, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
-        }
-        continue;
+    const recordedDeclares = recordedRel ? claimedNameAt.get(recordedRel) ?? skippedNameAt.get(recordedRel) : void 0;
+    if (recordedRel && presentRels.has(recordedRel) && !readRels.has(recordedRel) && !claimants.some((c) => c.rel === recordedRel) && recordedDeclares === void 0) {
+      const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
+      const ownerStat = statOf(recordedRel);
+      for (const c of claimants) {
+        result.skipped.push({ path: c.rel, reason });
+        if (ownerStat)
+          nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: recordedRel, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
       }
+      continue;
     }
     const owner = claimants.find((c) => c.rel === recordedRel) ?? (typeof prov.content_hash === "string" ? claimants.find((c) => c.contentHash === prov.content_hash) : void 0) ?? claimants[0];
     for (const c of claimants) {
@@ -59666,7 +59671,7 @@ function ingestNoteDirectory(opts) {
         continue;
       const reason = `name "${name}" already used by ${owner.rel} in this directory`;
       result.skipped.push({ path: c.rel, reason });
-      nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, owner: { rel: owner.rel, mtime: owner.stat.mtimeMs, size: owner.stat.size } };
+      nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: owner.rel, mtime: owner.stat.mtimeMs, size: owner.stat.size } };
     }
     if (owner.unchanged) {
       result.unchanged++;
@@ -59674,12 +59679,19 @@ function ingestNoteDirectory(opts) {
         touchedIds.add(existing.id);
       continue;
     }
-    if (existing && prov.content_hash === owner.contentHash && prov.note_path === owner.rel && !existing.is_missing) {
+    if (existing && prov.content_hash === owner.contentHash) {
+      const moved = prov.note_path !== owner.rel;
       const meta3 = JSON.parse(existing.metadata ?? "{}");
-      meta3.provenance = { ...prov, note_mtime_ms: owner.stat.mtimeMs, note_size: owner.stat.size };
+      meta3.provenance = { ...prov, note_path: owner.rel, note_mtime_ms: owner.stat.mtimeMs, note_size: owner.stat.size, note_ino: owner.stat.ino };
       db2.prepare("UPDATE entities SET metadata = ? WHERE id = ?").run(JSON.stringify(meta3), existing.id);
+      if (existing.is_missing) {
+        db2.prepare("DELETE FROM tags WHERE entity_id = ? AND tag = ?").run(existing.id, NOTE_FILE_MISSING_TAG);
+      }
       touchedIds.add(existing.id);
-      result.unchanged++;
+      if (moved)
+        result.repathed.push(name);
+      else
+        result.unchanged++;
       continue;
     }
     const currentTags = existing ? db2.prepare("SELECT tag FROM tags WHERE entity_id = ?").all(existing.id).map((t) => t.tag) : [];
@@ -59700,7 +59712,8 @@ function ingestNoteDirectory(opts) {
         content_hash: owner.contentHash,
         note_dir_id: dirId,
         note_mtime_ms: owner.stat.mtimeMs,
-        note_size: owner.stat.size
+        note_size: owner.stat.size,
+        note_ino: owner.stat.ino
       },
       sourceHost: "note-file"
     });
@@ -59712,7 +59725,6 @@ function ingestNoteDirectory(opts) {
   } else {
     db2.prepare("DELETE FROM memesh_metadata WHERE key = ?").run(skipKey);
   }
-  const claimedNameAt = new Map(claims.map((c) => [c.rel, c.name]));
   const tagMissing = db2.prepare("INSERT OR IGNORE INTO tags (entity_id, tag) VALUES (?, ?)");
   for (const row of noteRows) {
     if (row.is_missing || touchedIds.has(row.id))
@@ -59734,6 +59746,7 @@ function summarizeNoteIngest(r) {
     `${r.created.length} created`,
     `${r.replaced.length} replaced`,
     `${r.unchanged} unchanged`,
+    ...r.repathed.length ? [`${r.repathed.length} moved`] : [],
     `${r.skipped.length} skipped`
   ];
   if (r.markedMissing.length)

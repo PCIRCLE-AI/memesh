@@ -1320,10 +1320,16 @@ never an absolute path.
   reported and left alone, and takes the name over only once the owner
   releases it. Names are cleaned like the body, so two names that differ
   only in a redacted credential collide and are reported as duplicates.
-- A renamed file keeps its memory: the next run re-points `note_path` (one
-  history entry) and does not tag it missing. A file that changes the `name`
-  in its frontmatter leaves the old memory behind, tagged
-  `source:note-file:missing` like a vanished one, and creates the new one.
+- A renamed file keeps its memory: the next run re-points `note_path` and
+  does not tag it missing. The bytes are what the memory stores, so a move
+  alone writes no new version (repeated renames therefore cannot push the
+  real history out of the 20 kept versions), and a file coming back after
+  being reported missing simply loses the tag. A file that changes the
+  `name` in its frontmatter leaves the old memory behind, tagged
+  `source:note-file:missing` like a vanished one, and creates the new one;
+  another file may then take the freed name on any later run.
+- Unchanged is decided by size, modification time and inode, so two files
+  that swap places without changing either size or timestamp are still seen.
 - On a file change the file owns the `source:*` tags; any other tag a person
   added is kept, and the `project:` tag set on first ingestion stays. A
   memory a manual `remember` appended to is still replaced as a whole on the
