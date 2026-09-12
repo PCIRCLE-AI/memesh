@@ -70,6 +70,17 @@ export interface NoteIngestResult {
   markedMissing: string[];
   /** Files looked at and not ingested, with the reason, by relative path. */
   skipped: Array<{ path: string; reason: string }>;
+  /**
+   * How many of `skipped` are NEW — refused for a reason this file did not
+   * already carry on an earlier run.
+   *
+   * `skipped.length` cannot answer "did this run have anything to report":
+   * it sticks forever once a file is bad, so a caller using it either
+   * reports the same rejection on every Stop or, using the write counts
+   * alone, reports "nothing new needed storing" over a run that rejected
+   * files. Neither is what happened; this is the figure that is.
+   */
+  refusedNow: number;
   /** Files beyond the per-run cap, not processed this run. */
   more: number;
 }
@@ -227,7 +238,8 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     repathed: [],
     restored: [],
     markedMissing: [],
-    skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: 'symlink refused' })),
+    skipped: [],
+    refusedNow: 0,
     more: 0,
   };
 
@@ -273,6 +285,34 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     priorSkips = {};
   }
   const nextSkips: Record<string, SkipPrint> = {};
+  /**
+   * Report a file as skipped, and count it as newly refused unless it was
+   * already refused for the same reason. The comparison is against the
+   * stored fingerprints, so "new" survives a restart — an ephemeral counter
+   * would make every process's first run a flood of old news.
+   */
+  const counted = new Set<string>();
+  const report = (rel: string, reason: string) => {
+    result.skipped.push({ path: rel, reason });
+    if (priorSkips[rel]?.reason === reason || counted.has(rel)) return;
+    counted.add(rel);
+    result.refusedNow++;
+  };
+  // Symlinks are refused before the read loop (a link can point anywhere).
+  // They are fingerprinted like any other refusal, or every run would call
+  // the same link news again — the stickiness this counter exists to avoid,
+  // moved somewhere it is harder to see.
+  for (const abs of symlinks) {
+    const rel = relPath(realDir, abs);
+    const reason = 'symlink refused';
+    report(rel, reason);
+    let st: fs.Stats | null = null;
+    try { st = fs.lstatSync(abs); } catch { st = null; }
+    nextSkips[rel] = st
+      ? { mtime: st.mtimeMs, size: st.size, reason }
+      : { mtime: 0, size: 0, reason };
+  }
+
   /** Names whose memory is tagged missing: nobody owns them, so they are free. */
   const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
   /**
@@ -297,7 +337,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   let read = 0;
   for (const abs of files) {
     const rel = relPath(realDir, abs);
-    const skip = (reason: string) => { result.skipped.push({ path: rel, reason }); };
+    const skip = (reason: string) => { report(rel, reason); };
     let raw: Buffer;
     let stat: fs.Stats;
     const contentSkip = (reason: string) => {
@@ -383,7 +423,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   for (const [name, claimants] of byName) {
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name) as ExistingRow | undefined;
     const prov = existing ? parseProvenance(existing.metadata) : {};
-    const skipAll = (reason: string) => { for (const c of claimants) result.skipped.push({ path: c.rel, reason }); };
+    const skipAll = (reason: string) => { for (const c of claimants) report(c.rel, reason); };
     if (existing) {
       // Never overwrite a memory that did not come from a note file, nor one
       // ingested from a different directory (two projects' memory
@@ -414,7 +454,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
       const ownerStat = statOf(recordedRel);
       for (const c of claimants) {
-        result.skipped.push({ path: c.rel, reason });
+        report(c.rel, reason);
         // Fingerprinted against the recorded file, or the claimant would be
         // re-read on every run and keep the cap away from the very file that
         // owns the name. `name` is what lets the fingerprint be dropped once
@@ -431,7 +471,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     for (const c of claimants) {
       if (c === owner) continue;
       const reason = `name "${name}" already used by ${owner.rel} in this directory`;
-      result.skipped.push({ path: c.rel, reason });
+      report(c.rel, reason);
       nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: owner.rel, mtime: owner.stat.mtimeMs, size: owner.stat.size } };
     }
 
@@ -545,6 +585,7 @@ export function summarizeNoteIngest(r: NoteIngestResult): string {
     ...(r.repathed.length ? [`${r.repathed.length} moved`] : []),
     ...(r.restored.length ? [`${r.restored.length} restored`] : []),
     `${r.skipped.length} skipped`,
+    ...(r.refusedNow ? [`${r.refusedNow} newly refused`] : []),
   ];
   if (r.markedMissing.length) parts.push(`${r.markedMissing.length} marked missing`);
   if (r.more) parts.push(`${r.more} more not processed (per-run cap)`);

@@ -320,6 +320,10 @@ export const SKIP_REASONS = {
   noNoteChanged: 'no note file changed since the last ingestion',
   noteIngesterNotBuilt: 'the note ingester is not built (dist/core/note-ingest.js is missing)',
   noteNothingNew: 'note files were read and nothing new needed storing',
+  // A run that stored nothing but REFUSED files is not the same event, and
+  // `noteNothingNew` said it was. Uses NoteIngestResult.refusedNow, never
+  // `skipped.length` — the latter sticks forever once a file is bad.
+  noteFilesRefused: 'note files were refused and nothing was stored',
   // remember-nudge (#324)
   noTranscript: 'no transcript to read',
   trivialTurn: 'trivial turn — too few tool calls since the last Stop',

@@ -10,6 +10,7 @@ import {
   parseFrontmatter,
   NOTE_FILE_TAG,
   NOTE_FILE_MISSING_TAG,
+  summarizeNoteIngest,
 } from '../../src/core/note-ingest.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
@@ -628,5 +629,57 @@ describe('note-ingest: the entity type follows the file — #324 C5', () => {
     fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'Beta body changed.'));
     ingestNoteDirectory({ dir });
     expect(kg().getEntity('note_b')!.type).toBe('lesson');
+  });
+});
+
+describe('note-ingest: a refusal leaves a durable trace — #324 C3', () => {
+  it('counts files refused THIS run, and the count goes to zero when nothing changed', () => {
+    const dir = makeDir({
+      'good.md': note('note_good', 'Good', 'decision', 'Good body.'),
+      'nofm.md': '# no frontmatter here',
+      'noname.md': '---\ndescription: "nameless"\n---\n\nbody\n',
+    });
+    const first = ingestNoteDirectory({ dir });
+    expect(first.created).toEqual(['note_good']);
+    expect(first.skipped).toHaveLength(2);
+    // `skipped.length` sticks forever once a file is bad, so the hook cannot
+    // use it to decide whether this run had anything to report. The caller
+    // printed "note files were read and nothing new needed storing" over a
+    // run that rejected two files.
+    expect(first.refusedNow, 'two files were refused and nothing counted them').toBe(2);
+    expect(summarizeNoteIngest(first)).toContain('2 newly refused');
+
+    const second = ingestNoteDirectory({ dir });
+    expect(second.skipped).toHaveLength(2);
+    expect(second.refusedNow, 'the same two bad files are not news a second time').toBe(0);
+    expect(summarizeNoteIngest(second)).not.toContain('newly refused');
+
+    fs.writeFileSync(path.join(dir, 'third.md'), '# also no frontmatter');
+    const third = ingestNoteDirectory({ dir });
+    expect(third.skipped).toHaveLength(3);
+    expect(third.refusedNow).toBe(1);
+  });
+
+  it('a refused symlink is news once, not on every run', () => {
+    const dir = makeDir({ 'good.md': note('note_g', 'G', 'decision', 'G body.') });
+    fs.symlinkSync(path.join(dir, 'good.md'), path.join(dir, 'link.md'));
+    const first = ingestNoteDirectory({ dir });
+    expect(first.skipped.map((s) => s.reason)).toEqual(['symlink refused']);
+    expect(first.refusedNow).toBe(1);
+    // Symlinks are collected before the read loop and were never
+    // fingerprinted, so counting them naively says "1 newly refused" on
+    // every Stop forever — the same stickiness, relocated.
+    const second = ingestNoteDirectory({ dir });
+    expect(second.skipped).toHaveLength(1);
+    expect(second.refusedNow, 'the symlink was re-reported as new').toBe(0);
+  });
+
+  it('a run that stored nothing and refused nothing reports zero of both', () => {
+    const dir = makeDir({ 'good.md': note('note_q', 'Q', 'decision', 'Q body.') });
+    ingestNoteDirectory({ dir });
+    const again = ingestNoteDirectory({ dir });
+    expect(again.refusedNow).toBe(0);
+    expect(again.created).toEqual([]);
+    expect(again.replaced).toEqual([]);
   });
 });
