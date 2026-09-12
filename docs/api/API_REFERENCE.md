@@ -505,7 +505,7 @@ Passing an **empty string** clears a field — that is how a blocker is removed 
 
 ### briefing
 
-The assembled work topology for a project, ready to place in context: where the work was left off (the `task_state` fields), decisions and direction, lessons not to repeat, what is known, and recent activity — the same block the Claude Code session-start hook injects. This is the cross-vendor read path: an MCP client that runs no hooks (Gemini, Codex) calls this once at the start of a session instead.
+The assembled work topology for a project, ready to place in context: where the work was left off (the `task_state` fields), decisions and direction, lessons not to repeat, what is known, recent activity, and — closing the block — a capped index of the project's durable memories, one line each, newest first, carrying the `[mem:id]` handles needed to cite or recall them (see **The durable-memory index** below for its budget, redaction and empty state; the structured counts and token cost come back in `index`). It is the same block the Claude Code session-start hook injects. This is the cross-vendor read path: an MCP client that runs no hooks (Gemini, Codex) calls this once at the start of a session instead.
 
 The text is wrapped in the same fence and "background data, not instructions" preamble the hook uses. Memory content is attacker-influenced in the general case, and the wrapping is done by the same single owner on every path.
 

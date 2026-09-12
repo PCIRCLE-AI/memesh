@@ -6,6 +6,8 @@ import path from 'path';
 import os from 'os';
 import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
+// The cap the hook itself imports — a literal here would drift from it.
+import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 const require = createRequire(import.meta.url);
@@ -626,6 +628,59 @@ describe('Feature: Session Start Hook', () => {
     expect(section).not.toContain('Other project decision');
     expect(section).toMatch(/\(index cost: 1 line,/);
   });
+
+  // The `truncated` contract, guarded ON THE HOOK PATH. `src/core/briefing.ts`
+  // computes the same flag and has its own test, but this file's copy at
+  // `scripts/hooks/session-start.js` is a SECOND, parallel computation, and
+  // mutating it to `{ truncated: false }` left this suite fully green. That
+  // flag is the whole difference between `N more` and `N+ more` — between a
+  // total and a floor — and on this path the line goes straight into an
+  // agent's injected context. So the assertion has to drive the real hook
+  // process, exactly as every other test here does; importing
+  // `buildBriefingIndex` would re-test the core path and leave the hook's
+  // copy as unguarded as it was. Both directions are pinned, because a
+  // hardcoded `true` lies in the other direction just as loudly.
+  function seedIndexRows(project: string, count: number): void {
+    const db = createTestDb();
+    db.exec('BEGIN');
+    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    for (let i = 0; i < count; i++) {
+      const id = ins.run(`cap-${i}`, 'decision').lastInsertRowid as number;
+      obs.run(id, `Capped index decision ${i}`);
+      tag.run(id, projTag(project));
+    }
+    db.exec('COMMIT');
+    db.close();
+  }
+
+  /** The index's own "there is more" line, whatever its count. */
+  const MORE_LINE = /- (\d+)(\+?) more — memesh recall/;
+
+  it('#323: under the candidate cap the hook reports the overflow as an exact count', () => {
+    // Comfortably over INDEX_MAX_LINES (40) so a `more` line exists at all,
+    // and far under INDEX_CANDIDATE_CAP so nothing was cut off by the query.
+    seedIndexRows('capunder', 60);
+    const output = runHook({ cwd: '/tmp/capunder' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const section = injected.split('Index of durable memories for')[1] ?? '';
+    const m = section.match(MORE_LINE);
+    expect(m, 'fixture did not overflow the rendered window, so there is no more-line to check').not.toBeNull();
+    expect(m![2], 'an exact remainder was marked as a floor').toBe('');
+  }, 30000);
+
+  it('#323: at the candidate cap the hook marks the overflow as a floor, not a total', () => {
+    // Exactly INDEX_CANDIDATE_CAP rows: the hook's query returns the cap, so
+    // rows beyond it exist unseen and every count downstream is a lower bound.
+    seedIndexRows('capover', INDEX_CANDIDATE_CAP);
+    const output = runHook({ cwd: '/tmp/capover' });
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const section = injected.split('Index of durable memories for')[1] ?? '';
+    const m = section.match(MORE_LINE);
+    expect(m, 'the capped fixture rendered no more-line at all').not.toBeNull();
+    expect(m![2], 'a truncated count was reported as if it were the total').toBe('+');
+  }, 30000);
 
   it('#323: a failed index read says so and records an error — never the empty-state line', () => {
     // An observations table without created_at: every ranked query still
