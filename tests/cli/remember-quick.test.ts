@@ -268,4 +268,26 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(noName.exitCode).not.toBe(0);
     expect(noName.stderr).toContain('--replace needs --name');
   }, 60_000);
+
+  // #333 T4. cli.ts holds its OWN copy of the "name + type or nothing" rule,
+  // ahead of the RememberSchema check — so relaxing only the schema would
+  // have left the terminal rejecting the correction call that MCP and HTTP
+  // accept. Asserted on the stored row, not just the exit code.
+  it('--replace without --type keeps the type the memory already has', () => {
+    expect(runCli(['remember', '--name=r2', '--type=decision', '--obs=wrong line'], { HOME: tmpHome }).exitCode).toBe(0);
+    const r = runCli(['remember', '--name=r2', '--obs=right line', '--replace'], { HOME: tmpHome });
+    expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const row = db.prepare("SELECT type FROM entities WHERE name = 'r2'").get() as { type: string };
+    const obs = db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'r2'").all() as { content: string }[];
+    db.close();
+    expect(row.type).toBe('decision');
+    expect(obs.map((o) => o.content)).toEqual(['right line']);
+  }, 60_000);
+
+  it('--name without --replace still needs --type', () => {
+    const r = runCli(['remember', '--name=r3', '--obs=a new memory'], { HOME: tmpHome });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr).toContain('--name and --type');
+  }, 60_000);
 });
