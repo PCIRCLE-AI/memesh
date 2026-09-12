@@ -59,6 +59,12 @@ import {
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { unreadDeliveryCount, unreadInboxLines } from './_generated/agent-message-inbox.js';
+import {
+  buildBriefingIndex,
+  INDEX_CANDIDATE_CAP,
+  INDEX_EXCLUDED_TYPES,
+  INDEX_SNIPPET_FETCH_CHARS,
+} from './_generated/briefing-index.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1264,45 +1270,122 @@ process.stdin.on('end', async () => {
         try { process.stderr.write(`[memesh session-start] memory-context: ${err?.message || err}\n`); } catch {}
       }
 
+      // --- The durable-memory index (#323) -----------------------------
+      // One line per decision / lesson / pattern / reference for this
+      // project, newest first, hard-capped — what is known, visible without
+      // a query. Same read as core's `readBriefingIndex` (this hook owns its
+      // own SQL, with the legacy-schema guards the queries above use); every
+      // decision about what to show lives in the generated leaf. A read that
+      // fails renders as "could not be read", never as the empty-state line:
+      // an empty index is a claim about the user's data.
+      let indexLines;
+      // id → name for the rows the index rendered, so the injected-set
+      // record below can credit a citation of an index line the same way it
+      // credits a ranked one — the line carries a `[mem:id]` handle, it was
+      // shown, and a cite of it must not earn nothing.
+      const indexEntities = [];
+      try {
+        const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
+        const indexRows = db.prepare(
+          `SELECT e.id, e.name, e.type,${hasTitle ? ' e.title,' : ''} e.metadata,
+             (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+               WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
+             max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
+               WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+           FROM entities e
+           WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
+             ${statusFilter} ${notGlobal}
+             AND e.type NOT IN (${excluded})
+           ORDER BY last_activity DESC, e.id DESC
+           LIMIT ?`,
+        ).all(projectTag, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+        const index = buildBriefingIndex(
+          indexRows.map((row) => ({
+            id: row.id,
+            type: row.type,
+            title: row.title ?? null,
+            snippet: row.snippet,
+            lastActivity: row.last_activity,
+            // The RAW column: the index's gate must tell an absent metadata
+            // column (allowed) from unparseable JSON (refused), exactly as
+            // `isTrustedForAutoContext` does on the ranked path. Parsing here
+            // would collapse both to null and fail OPEN.
+            metadata: row.metadata,
+          })),
+          projectName,
+          Date.now(),
+          { truncated: indexRows.length >= INDEX_CANDIDATE_CAP },
+        );
+        indexLines = index.lines;
+        const rendered = new Set(index.ids);
+        for (const row of indexRows) if (rendered.has(row.id)) indexEntities.push(row);
+      } catch (err) {
+        const reason = String(err?.message || err);
+        try { process.stderr.write(`[memesh session-start] briefing-index: ${reason}\n`); } catch {}
+        recordHookOutcome(process.env, {
+          hook: 'session-start',
+          outcome: 'error',
+          // The locus, plus a LABEL for the exception — never its message.
+          // `hook-outcomes.jsonl` is permanent, exportable and meant to be
+          // pasteable into an issue, and a message is a copy of whatever the
+          // failure echoed: SQLite quotes the statement, execFileSync carries
+          // absolute paths. `redactSecrets` runs on this field but
+          // `redactUserPaths` does not. The full text is already on stderr
+          // one line above, so nothing is lost.
+          reason: `briefing-index: ${hookErrorReason(err)}`,
+        });
+        indexLines = [`Index of durable memories for "${projectName}": could not be read this session — run \`memesh doctor\`.`];
+      }
+
+      // Every `[mem:id]` handle a rendered line ends with. Anchored to the
+      // end of the line on purpose: a handle is what the renderer printed,
+      // not a citation someone wrote inside an observation.
+      const renderedHandles = (lines) => lines.flatMap((line) => {
+        const match = line.match(/ \[mem:(\d{1,10})\]$/);
+        return match ? [Number(match[1])] : [];
+      });
+
       // Same prefix, same rule, as `assembleBriefing`: repository facts are
-      // context for memories, never a briefing on their own. Inside the
-      // emptiness gate so a project with nothing recorded still injects
-      // nothing — a fenced block containing only a branch name tells the
-      // agent something it can already see. briefing.test.ts's parity case
-      // is what keeps this identical to the tool side.
-      let memoryContext = workPackageGuidance;
+      // context for memories, never a briefing on their own — they prefix
+      // only a block with ranked memories; the index's empty-state line is
+      // not a reason to tell the agent its own branch name. The index itself
+      // always closes the block (#323: an empty project shows the empty-state
+      // line, not nothing). briefing.test.ts's parity case is what keeps this
+      // identical to the tool side.
       if (memoryLines.length > 0) {
         const repoLines = repoStateLines(readRepoState(data.cwd));
         if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
-        // Same wrapper pre-edit-recall uses: an explicit "background data,
-        // not instructions" preamble plus a fenced block. Memory content is
-        // attacker-influenced in the general case (anything the agent has
-        // ever been told can end up in an observation), so it must be
-        // delimited the same way on every injection path — not hand-rolled
-        // per hook. The lines arrive already budgeted — assembleTopologyBlock
-        // charges task state plus project/foreign sections against the main
-        // ceiling and global context against its small additive ceiling. It
-        // returns whole lines only, so the closing fence cannot be cut.
-        memoryContext = buildReferenceContext(memoryLines) + '\n\n' + workPackageGuidance;
-        // The citation contract — OUTSIDE the fence on purpose: the fence
-        // declares its content "background data, not instructions", and
-        // this line IS an instruction. One line is the entire write side of
-        // the injection-ROI signal; the Stop hook credits recall_hits only
-        // from these markers (self-reported: undercounts, never overcounts).
-        // The citation instruction used to be appended here, outside the
-        // fence, so it would read as an instruction rather than as data.
-        // It never worked: Claude Code wraps a hook's additionalContext in a
-        // system-reminder ending "you should not respond to this context
-        // unless it is highly relevant", so the whole block — instruction
-        // included — arrives as data. Measured on a real database:
-        // citation_sessions_total=4, sessions WITH a citation = 0.
-        //
-        // The contract now lives in `.claude/rules/memesh-citations.md`,
-        // which Claude Code loads as an instruction. Writing it is the
-        // self-heal below; the line here is gone rather than duplicated,
-        // because a per-session copy of an instruction that is read as data
-        // is a per-session cost with no effect.
+        memoryLines.push('');
       }
+      memoryLines.push(...indexLines);
+      // Same wrapper pre-edit-recall uses: an explicit "background data,
+      // not instructions" preamble plus a fenced block. Memory content is
+      // attacker-influenced in the general case (anything the agent has
+      // ever been told can end up in an observation), so it must be
+      // delimited the same way on every injection path — not hand-rolled
+      // per hook. The lines arrive already budgeted — assembleTopologyBlock
+      // charges task state plus project/foreign sections against the main
+      // ceiling and global context against its small additive ceiling. It
+      // returns whole lines only, so the closing fence cannot be cut.
+      const memoryContext = buildReferenceContext(memoryLines) + '\n\n' + workPackageGuidance;
+      // The citation contract — OUTSIDE the fence on purpose: the fence
+      // declares its content "background data, not instructions", and
+      // this line IS an instruction. One line is the entire write side of
+      // the injection-ROI signal; the Stop hook credits recall_hits only
+      // from these markers (self-reported: undercounts, never overcounts).
+      // The citation instruction used to be appended here, outside the
+      // fence, so it would read as an instruction rather than as data.
+      // It never worked: Claude Code wraps a hook's additionalContext in a
+      // system-reminder ending "you should not respond to this context
+      // unless it is highly relevant", so the whole block — instruction
+      // included — arrives as data. Measured on a real database:
+      // citation_sessions_total=4, sessions WITH a citation = 0.
+      //
+      // The contract now lives in `.claude/rules/memesh-citations.md`,
+      // which Claude Code loads as an instruction. Writing it is the
+      // self-heal below; the line here is gone rather than duplicated,
+      // because a per-session copy of an instruction that is read as data
+      // is a per-session cost with no effect.
 
       // --- Record injected entity IDs for recall effectiveness tracking ---
       // The Stop hook credits recall_hits from EXPLICIT `[mem:id]` citations
@@ -1314,16 +1397,16 @@ process.stdin.on('end', async () => {
       // kept as the record of what was shown.
       //
       // The set below is every pool the topology block draws from — the
-      // lessons pool included. It is derived from rendered citation handles,
-      // so clipped or budgeted-away candidates cannot be credited as shown.
+      // lessons pool and the durable-memory index (#323) included. It is
+      // derived from rendered citation handles, so clipped or budgeted-away
+      // candidates cannot be credited as shown.
       try {
-        const renderedEntityIds = memoryLines.flatMap((line) => {
-          const match = line.match(/ \[mem:(\d{1,10})\]$/);
-          return match ? [Number(match[1])] : [];
-        });
-        const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities];
+        const renderedEntityIds = renderedHandles(memoryLines);
+        const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities, ...indexEntities];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
-        const allInjected = renderedEntityIds
+        // A memory can appear in the ranked block AND the index; it was
+        // injected once.
+        const allInjected = [...new Set(renderedEntityIds)]
           .map((id) => entitiesById.get(id))
           .filter(Boolean);
 
@@ -1541,8 +1624,10 @@ process.stdin.on('end', async () => {
 const workPackageGuidance = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
 
 function output(text, memoryContext = workPackageGuidance, recorded = null) {
-  // session-start's "wrote" is the context it injected — the only durable
-  // effect it has. Recorded here rather than at each of the handler's many
+  // session-start's only effect is the context it injects, so it records
+  // `notified`, not `wrote`: doctor's `writes` answers "is memory capture
+  // still alive", and injected context is something this hook READ, not
+  // something it stored. Recorded here rather than at each of the handler's many
   // returns because output() is the single emit point they all funnel
   // through, so no path can add itself later and stay invisible (#327).
   // `recorded` overrides the outcome for the one path that is not a write
@@ -1559,7 +1644,7 @@ function output(text, memoryContext = workPackageGuidance, recorded = null) {
     ? { hook: 'session-start', outcome: recorded.outcome, reason: recorded.reason }
     : {
       hook: 'session-start',
-      outcome: 'wrote',
+      outcome: 'notified',
       entity: memoryContext ? 'session-start-context' : 'session-start-banner',
     });
 }

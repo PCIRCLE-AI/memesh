@@ -68,6 +68,8 @@ const NUDGE_STATE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** Most stale offset files one Stop removes — the pruning stays bounded. */
 const NUDGE_PRUNE_PER_RUN = 50;
 const NOTE_PATH_RE = /(?:^|[\\/])(?:memory|\.remember)[\\/][^\\/]+\.md$/;
+/** Unresolved tool_use ids carried into the next Stop window (newest kept). */
+const PENDING_CARRY_MAX = 200;
 
 /**
  * Claude Code keeps a project's memory directory next to its transcripts:
@@ -75,6 +77,18 @@ const NOTE_PATH_RE = /(?:^|[\\/])(?:memory|\.remember)[\\/][^\\/]+\.md$/;
  * Deriving it from `transcript_path` avoids re-implementing Claude Code's
  * slug rule. Null when there is none (Codex, or a project with no memory yet),
  * and null for a symlinked directory — ingestion never follows links.
+ *
+ * THROWS when the directory cannot be looked at for a reason that is not
+ * "it is not there". The catch here used to swallow everything and return
+ * null, which made EACCES and EIO give the same answer as ENOENT: the run
+ * recorded `no Claude Code memory directory for this project`, a sentence
+ * that is false and reassuring at the same time. A user whose memory
+ * directory became unreadable would see a hook reporting, every Stop and
+ * forever, that they simply have no notes.
+ *
+ * ENOENT stays null because it is the ordinary case — most projects have no
+ * memory directory, and that is not a fault. Everything else is a fault, and
+ * the caller records it as one.
  */
 export function claudeMemoryDir(transcriptPath) {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
@@ -82,8 +96,9 @@ export function claudeMemoryDir(transcriptPath) {
   try {
     const st = lstatSync(dir);
     return st.isDirectory() && !st.isSymbolicLink() ? dir : null;
-  } catch {
-    return null; // ENOENT is the ordinary case: no memory directory.
+  } catch (err) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return null;
+    throw err;
   }
 }
 
@@ -129,11 +144,12 @@ function writeJsonAtomic(path, value) {
  * run. The mtime throttle makes the common Stop (nothing changed) cost one
  * directory walk and no database handle at all.
  *
- * Returns `{ outcome, reason }`. The outcome is `wrote` when the run changed
- * a memory: created, replaced, moved (its file was renamed), restored (its
- * file came back) or marked missing. A fingerprint refresh — same bytes, new
- * mtime after a `touch` or a checkout — is bookkeeping about the file, not a
- * change to anything the user stored, and reads as a skip.
+ * Returns `{ outcome, reason, entity }`. The outcome is `wrote` when the run
+ * changed a memory: created, replaced, moved (its file was renamed), restored
+ * (its file came back) or marked missing. A fingerprint refresh — same bytes,
+ * new mtime after a `touch` or a checkout — is bookkeeping about the file, not
+ * a change to anything the user stored, and reads as a skip. `entity` names one
+ * memory the run touched, and is set exactly when the outcome is `wrote`.
  */
 export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   if (!memoryDir) return { outcome: 'skipped', reason: SKIP_REASONS.noMemoryDir };
@@ -173,11 +189,31 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   // these records for. A fingerprint refresh (same bytes, new mtime) is
   // deliberately NOT counted: it updates provenance so the next run can skip
   // the read, and changes nothing a reader of the memory would notice.
+  // Named in the same precedence as `changed` below, so the entity doctor
+  // shows as `lastEntity` is one this run actually touched. Without it a
+  // `wrote` record carried no entity at all, and doctor reported a hook with
+  // `lastWriteAt` set and `lastEntity` null — a write with nothing written,
+  // which reads as a bug in doctor rather than as the missing field it is.
+  const touched = result.created[0] ?? result.replaced[0] ?? result.repathed[0]
+    ?? result.restored[0] ?? result.markedMissing[0];
   const changed = result.created.length + result.replaced.length + result.repathed.length
     + result.restored.length + result.markedMissing.length > 0;
   // A write records the summary (counts only); a skip records a known
   // reason, the only kind doctor will quote.
-  return { outcome: changed ? 'wrote' : 'skipped', reason: changed ? summarizeNoteIngest(result) : SKIP_REASONS.noteNothingNew };
+  // A run that stored nothing but REFUSED files is not the same event as a
+  // quiet one, and `noteNothingNew` — "note files were read and nothing new
+  // needed storing" — said it was: the user's file was rejected and the hook
+  // reported contentment. `refusedNow`, never `skipped.length`: the latter
+  // sticks forever once a file is bad, so every later Stop would keep
+  // re-reporting old news as if it had just happened. When the run DID store
+  // something, summarizeNoteIngest already names the refusals alongside it.
+  return {
+    outcome: changed ? 'wrote' : 'skipped',
+    reason: changed
+      ? summarizeNoteIngest(result)
+      : (result.refusedNow > 0 ? SKIP_REASONS.noteFilesRefused : SKIP_REASONS.noteNothingNew),
+    entity: changed ? touched : undefined,
+  };
 }
 
 /**
@@ -210,9 +246,38 @@ export function readTranscriptWindow(transcriptPath, offset) {
  * moves (the rules' own triggers — a plan approved, a question answered, a
  * commit, a test made red then green), and whether a memory was written
  * (`remember`/`learn` via MCP or the CLI, or a write to a note file).
+ *
+ * `carry` seeds the tool_use → kind map with calls whose RESULT had not
+ * arrived when the previous window ended, and the returned `pending` is what
+ * this window leaves for the next one. Without it a plan approved either side
+ * of a Stop was never paired: the tool_use fell in one window and the
+ * tool_result in the next, and the hook reported "no decision-shaped move
+ * since the last Stop" — a miss that looks exactly like a quiet turn.
+ *
+ * How often a pair actually straddles a Stop is NOT known. This comment used
+ * to claim a scan of 1090 real transcripts had found every ExitPlanMode pair
+ * adjacent. No command for that scan is recorded anywhere in this repository —
+ * `git log -S"1090 real transcripts"` reaches the commit that introduced the
+ * sentence and it carries no scan either — and the number appears nowhere but
+ * in this paragraph. It is written down here as unmeasured rather than deleted,
+ * because a reader who wants the frequency should know it is still open and
+ * not go looking for a result that does not exist. Two comments on this branch
+ * had the same shape — each named a function nobody wrote.
+ *
+ * The carry does not depend on that frequency. It costs one bounded map, and
+ * the failure it prevents is silent and gives a plausible reason, which is the
+ * combination that makes a rare miss expensive rather than tolerable.
+ *
+ * The map is capped (PENDING_CARRY_MAX, newest kept) so a session that opens
+ * calls it never closes cannot grow the state file without bound.
  */
-export function scanTranscriptWindow(text) {
+export function scanTranscriptWindow(text, carry = null) {
   const pending = new Map(); // tool_use_id → kind
+  if (carry && typeof carry === 'object') {
+    for (const [id, kind] of Object.entries(carry)) {
+      if (typeof id === 'string' && typeof kind === 'string') pending.set(id, kind);
+    }
+  }
   const moves = [];
   let toolCalls = 0;
   let wroteMemory = false;
@@ -264,7 +329,10 @@ export function scanTranscriptWindow(text) {
       }
     }
   }
-  return { toolCalls, moves, wroteMemory, firstTimestamp };
+  // Newest last: Map preserves insertion order, so the tail is the most
+  // recent unresolved calls — the ones whose result is still plausibly coming.
+  const carried = [...pending.entries()].slice(-PENDING_CARRY_MAX);
+  return { toolCalls, moves, wroteMemory, firstTimestamp, pending: Object.fromEntries(carried) };
 }
 
 /**
@@ -299,9 +367,19 @@ export function buildNudge(moves) {
 }
 
 /**
- * Decide the nudge for this Stop. Always advances the per-session offset, so
- * each Stop judges only what happened since the previous one.
- * Returns `{ message, reason }`; `message` is null when silent.
+ * Decide the nudge for this Stop, so each Stop judges only what happened
+ * since the previous one.
+ *
+ * Returns `{ message, reason, commit }`; `message` is null when silent.
+ *
+ * `commit` advances the per-session offset and is NOT called here. The offset
+ * used to move the moment the window was read, which meant a nudge that never
+ * reached the user was still paid for: the window was consumed, the next Stop
+ * saw only what came after it, and the decision-shaped moves the user was
+ * supposed to be told about were never mentioned again. Deciding and
+ * committing are separate so the caller can advance the offset only once the
+ * line has actually been written. The paths that return before the window is
+ * read have no `commit` — there is nothing to advance.
  */
 export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
   if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) return { message: null, reason: SKIP_REASONS.noSessionId };
@@ -315,17 +393,20 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
   const state = readJson(statePath) ?? {};
   const { text, nextOffset } = readTranscriptWindow(transcriptPath, state.offset);
   const now = Date.now();
-  writeJsonAtomic(statePath, { offset: nextOffset, lastStopAt: now });
+  const scan = scanTranscriptWindow(text, state.pending);
+  // The unresolved calls travel with the offset: both describe where this
+  // session's reading got to, and committing one without the other would
+  // either lose a pairing or replay one.
+  const commit = () => writeJsonAtomic(statePath, { offset: nextOffset, lastStopAt: now, pending: scan.pending });
 
-  const scan = scanTranscriptWindow(text);
-  if (scan.toolCalls < NUDGE_MIN_TOOL_CALLS) return { message: null, reason: SKIP_REASONS.trivialTurn };
-  if (scan.moves.length === 0) return { message: null, reason: SKIP_REASONS.noDecisionMove };
-  if (scan.wroteMemory) return { message: null, reason: SKIP_REASONS.memoryWritten };
+  if (scan.toolCalls < NUDGE_MIN_TOOL_CALLS) return { message: null, reason: SKIP_REASONS.trivialTurn, commit };
+  if (scan.moves.length === 0) return { message: null, reason: SKIP_REASONS.noDecisionMove, commit };
+  if (scan.wroteMemory) return { message: null, reason: SKIP_REASONS.memoryWritten, commit };
   const since = typeof state.lastStopAt === 'number' ? state.lastStopAt : scan.firstTimestamp;
   if (memoryDir && typeof since === 'number' && newestNoteMtime(memoryDir) >= since) {
-    return { message: null, reason: SKIP_REASONS.noteFileChanged };
+    return { message: null, reason: SKIP_REASONS.noteFileChanged, commit };
   }
-  return { message: buildNudge(scan.moves), reason: scan.moves.join('; ') };
+  return { message: buildNudge(scan.moves), reason: scan.moves.join('; '), commit };
 }
 
 /**
@@ -333,16 +414,53 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
  * searchable when the turn ends; the nudge judges "was a note written" by the
  * note files' mtimes rather than by what ingestion wrote, because the first
  * ingestion after install imports every OLD note and would otherwise silence
- * a nudge the session earned. Returns the one advisory line to print, or null.
+ * a nudge the session earned.
+ *
+ * Returns `{ message, settle }`. `message` is the one advisory line to print,
+ * or null. `settle(delivered)` MUST be called once the caller has tried to
+ * print it: it records the nudge's outcome — which is the delivery's verdict,
+ * not a prediction of it — and advances the per-session transcript offset only
+ * when the line actually went out. A caller that never settles leaves no
+ * record, which is the silent skip this whole module exists to avoid.
  */
 export async function runStopNotes(payload, { captureEnabled, project, metaUrl, env = process.env }) {
-  const memoryDir = claudeMemoryDir(payload?.transcript_path);
+  // `claudeMemoryDir` throws on anything that is not "no such directory"
+  // (EACCES, EIO). That is an error for ingestion — capture is being LOST,
+  // not declined — but it must not take the nudge down with it, so it is
+  // caught here rather than left to either half's try block. The nudge then
+  // runs with no memory directory, which only costs it the note-file check.
+  let memoryDir = null;
+  let memoryDirError = null;
+  try {
+    memoryDir = claudeMemoryDir(payload?.transcript_path);
+  } catch (err) {
+    memoryDirError = err;
+  }
   try {
     if (!captureEnabled) {
+      // Ordered before the directory error on purpose: with ingestion turned
+      // off there was never going to be a read, so a fault in a directory
+      // this run would not have opened is not this run's news.
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff, payload });
+    } else if (memoryDirError) {
+      try { process.stderr.write(`[memesh note-ingest] cannot read the memory directory: ${memoryDirError?.message || memoryDirError}\n`); } catch { /* stderr gone */ }
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: hookErrorReason(memoryDirError), payload });
+    } else if (project === undefined || project === null) {
+      // No `cwd` in the payload, so the caller could not resolve a project.
+      // Ingesting anyway files every note under NO project, and unlike a
+      // missed capture that is not recoverable: `note-ingest` fast-paths a
+      // file whose fingerprint is unchanged, so the run that could add the
+      // tag never reads the file again unless the user edits it.
+      //
+      // session-summary refuses session capture for this same condition and
+      // says why — better to miss one capture than to file it under the
+      // wrong project. A note with no project at all is the same mistake
+      // with a worse ending, so ingestion waits for a Stop that has a cwd.
+      // The nudge below is unaffected: it writes nothing and needs no project.
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.cwdAbsent, payload });
     } else {
       const r = await runNoteIngestion({ memoryDir, project, metaUrl });
-      recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, payload });
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, entity: r.entity, payload });
     }
   } catch (err) {
     try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
@@ -351,11 +469,36 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
 
   try {
     const n = decideNudge({ transcriptPath: payload?.transcript_path, sessionId: payload?.session_id, memoryDir });
-    recordHookOutcome(env, { hook: 'remember-nudge', outcome: n.message ? 'wrote' : 'skipped', reason: n.reason, payload });
-    return n.message;
+    return {
+      message: n.message,
+      settle: (delivered) => {
+        // The outcome is the DELIVERY's verdict, not a prediction of it.
+        // It used to be recorded here, before the line had been written:
+        // piping this hook's stdout into a process that exits immediately
+        // gave exit 0, empty stderr and a `wrote` record, with the user
+        // having seen nothing. The offset moved too, so the window was
+        // never reconsidered and the moves it described were never
+        // mentioned again.
+        if (n.message && !delivered) {
+          recordHookOutcome(env, {
+            hook: 'remember-nudge',
+            outcome: 'error',
+            reason: 'the host closed stdout before the nudge could be written',
+            payload,
+          });
+          return; // Offset not advanced: the next Stop judges this window again.
+        }
+        // `notified`, never `wrote`: the nudge stores nothing. It is what
+        // memesh says when nothing HAS been stored, so counting it towards
+        // doctor's `writes` let the one hook that fires because capture is
+        // quiet report that capture is alive.
+        recordHookOutcome(env, { hook: 'remember-nudge', outcome: n.message ? 'notified' : 'skipped', reason: n.reason, payload });
+        n.commit?.();
+      },
+    };
   } catch (err) {
     try { process.stderr.write(`[memesh remember-nudge] ${err?.message || err}\n`); } catch { /* stderr gone */ }
     recordHookOutcome(env, { hook: 'remember-nudge', outcome: 'error', reason: hookErrorReason(err), payload });
-    return null;
+    return { message: null, settle: () => {} };
   }
 }

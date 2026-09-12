@@ -37,9 +37,12 @@ import { MemeshDatabase } from './_generated/sqlite.js';
 const dbPath = getDbPath();
 
 // See post-commit.js for why every exit path leaves a record (#327). This
-// hook never writes a MEMORY — its "wrote" is the guard-fire counter, the
-// only durable thing it produces — so a run of skips here is normal and the
-// record exists to distinguish "no guard matched" from "never ran".
+// hook never writes a MEMORY. It bumps the guard-fire counter and injects a
+// warning, so its outcome is `notified`, not `wrote`: doctor's `writes`
+// answers "is memory capture still alive", and counting a printed warning
+// there inflated the numerator of the one signal that question has. A run of
+// skips here is normal, and the record exists to distinguish "no guard
+// matched" from "never ran".
 let payload = null;
 function record(outcome, reason, entity) {
   recordHookOutcome(process.env, { hook: 'guard-check', outcome, reason, entity, payload });
@@ -82,7 +85,7 @@ process.stdin.on('end', () => {
     }
 
     recordGuardFires(dbPath, matches.map((g) => g.lessonId));
-    record('wrote', undefined, `guard-fires:${matches.length}`);
+    record('notified', undefined, `guard-fires:${matches.length}`);
 
     console.log(JSON.stringify({
       hookSpecificOutput: {

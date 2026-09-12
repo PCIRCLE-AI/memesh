@@ -15,10 +15,11 @@ import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache 
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
-import { deriveNote, NOTE_DEFAULT_TYPE } from '../../core/note-derive.js';
+import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
 import { RememberSchema } from '../schemas.js';
 import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
-import { assembleBriefing } from '../../core/briefing.js';
+import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
+import { buildReferenceContext } from '../../core/work-topology.js';
 import { captureChatSession } from '../../core/session-insight.js';
 import { captureChatTurn } from '../../core/turn-signal.js';
 import {
@@ -285,7 +286,7 @@ program
   .argument('[text]', 'Quick-capture text — title, observations and name are derived from it (type defaults to note)')
   .description('Store knowledge as an entity (use flags for explicit form, or positional text for quick capture)')
   .option('--name <name>', 'Entity name')
-  .option('--type <type>', 'Entity type')
+  .option('--type <type>', 'Entity type (omit it with --replace to keep the type the memory already has)')
   .option('--title <title>', 'Short human-readable label shown as the headline (name stays the stable machine key)')
   .option('--obs <observations...>', 'Observations (space-separated)')
   .option('--tags <tags...>', 'Tags (space-separated)')
@@ -311,7 +312,7 @@ program
       if (!opts.obs?.length && opts.title === undefined) {
         note = String(text);
         // The same limits MCP and HTTP callers get from RememberSchema
-        // (length, paragraph count, blank text) — the CLI calls remember()
+        // (length, observation count, blank text) — the CLI calls remember()
         // directly, so it checks here rather than disagreeing with them.
         const check = RememberSchema.safeParse({ note, ...(opts.type ? { type: opts.type } : {}) });
         if (!check.success) {
@@ -330,8 +331,15 @@ program
         }
         opts.name = derived.name;
         opts.type ??= NOTE_DEFAULT_TYPE;
+        // With an explicit --title the derived title is never used, so the
+        // first line is not a headline — it is content. deriveNote leaves the
+        // first line OUT of derived.observations only because it expects that
+        // line to become the title; --title removes that premise, and using
+        // derived.observations here dropped the user's first line into
+        // nothing but the slug. Split the whole text instead.
+        const derivedObs = opts.title === undefined ? derived.observations : splitObservations(derived.text);
         opts.title ??= derived.title;
-        opts.obs = opts.obs?.length ? [...derived.observations, ...opts.obs] : derived.observations;
+        opts.obs = opts.obs?.length ? [...derivedObs, ...opts.obs] : derivedObs;
       }
     } else if (text) {
       // Positional text ALONGSIDE flags used to be dropped on the floor:
@@ -341,10 +349,16 @@ program
       if (!opts.obs || opts.obs.length === 0) opts.obs = [String(text)];
       else opts.obs = [...opts.obs, String(text)];
     }
-    if (note === undefined && (!opts.name || !opts.type)) {
+    // `--replace` with a `--name` inherits the stored type (#333 T4), so it is
+    // a complete call without `--type`. This check runs BEFORE the
+    // RememberSchema.safeParse below and is the CLI's own copy of the rule —
+    // relaxing only the schema would have left the terminal rejecting the
+    // documented correction call while MCP and HTTP accepted it.
+    if (note === undefined && (!opts.name || (!opts.type && opts.replace !== true))) {
       console.error(
-        'Error: provide --name and --type, OR pass quick-capture text as a positional arg.\n' +
+        'Error: provide --name and --type, OR --name with --replace to correct a memory that exists, OR pass quick-capture text as a positional arg.\n' +
         '  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0"\n' +
+        '  memesh remember --name "auth" --replace --obs "Use OAuth 2.0 with PKCE"\n' +
         '  memesh remember "Use OAuth 2.0 with PKCE"'
       );
       process.exit(1);
@@ -365,6 +379,36 @@ program
       ...supersedes.map(to => ({ to, type: 'supersedes' })),
       ...contradicts.map(to => ({ to, type: 'contradicts' })),
     ];
+
+    // The note branch above validates the note form against RememberSchema;
+    // this validates the STRUCTURED one, which used to reach remember()
+    // unchecked. The two surfaces disagreed in the user's favour and then
+    // against it: 101 paragraphs as a pure note exited 1, while the same
+    // content passed as --obs exited 0 and stored 102 observations — more
+    // than MCP or HTTP would ever accept for the same memory.
+    if (note === undefined) {
+      // Zod's own message for this one is "Too big: expected array to have
+      // <=100 items", which does not tell a caller what to do; the note path
+      // names the count, so this does too.
+      if (opts.obs && opts.obs.length > NOTE_MAX_OBSERVATIONS) {
+        console.error(`Error: that is ${opts.obs.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory.`);
+        process.exit(1);
+      }
+      const check = RememberSchema.safeParse({
+        name: opts.name,
+        type: opts.type,
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.obs?.length ? { observations: opts.obs } : {}),
+        ...(opts.tags?.length ? { tags: opts.tags } : {}),
+        ...(opts.replace === true ? { replace: true } : {}),
+        ...(relations.length > 0 ? { relations } : {}),
+        ...(opts.namespace !== undefined ? { namespace: opts.namespace } : {}),
+      });
+      if (!check.success) {
+        console.error(`Error: ${check.error.issues.map((i) => i.message).join('; ')}`);
+        process.exit(1);
+      }
+    }
 
     await withDatabase(async () => {
       let result;
@@ -394,7 +438,14 @@ program
         console.log(`✅ Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
         // The derived shape, so a wrong title is fixable in one more call.
         if (result.derived) {
-          console.log(`   title: ${result.derived.title}`);
+          // `result.title` is the title the DATABASE holds — operations.ts
+          // reads it back at the return site. A memory that already exists
+          // keeps its own title, and printing the derived one told the user
+          // their new headline had been applied when it had not — screen
+          // "Use PKCE for auth", stored "T". This used to re-read the row
+          // here because the result carried only the REQUESTED title; that
+          // half of the fix has moved to core, where every caller gets it.
+          if (result.title) console.log(`   title: ${result.title}`);
           console.log(`   fix it with: memesh remember --name "${result.name}" --type ${result.derived.type} --title "…" --obs "…" --replace`);
         }
         if (result.replaced) console.log('   replaced: the previous version is kept in metadata.replaced_history');
@@ -667,6 +718,15 @@ program
     }
     if (!file) {
       console.error('Error: pass a JSON export file (memesh import my-export.json) or --notes <dir>.');
+      process.exit(1);
+    }
+    // The mirror of the --notes guard above. These two flags mean something
+    // only for note ingestion; taking them silently here let a user believe a
+    // JSON bundle had been filed under --project, or that --json would
+    // produce a machine-readable result.
+    const notesOnly = ['project', 'json'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+    if (notesOnly.length > 0) {
+      console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(' and ')} only appl${notesOnly.length > 1 ? 'y' : 'ies'} to --notes. A JSON export file is imported with --namespace and --merge.`);
       process.exit(1);
     }
     requireOneOf(opts.merge, ['skip', 'overwrite', 'append'], '--merge');
@@ -1173,22 +1233,32 @@ program
   .description('The assembled work topology for a project — task state, decisions, lessons, knowledge, recent activity')
   .option('--project <name>', 'Project name (default: the current directory’s project)')
   .option('--recipient <id>', 'Exact recipient; enables recipient-scoped unread message guidance')
+  .option('--index', 'Only the index of durable memories (decisions, lessons, patterns, references), newest first')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
     await withDatabase(() => {
+      if (opts.index) {
+        // The same section the full briefing closes with (#323), alone: what
+        // is known here, one line each, without the ranked sections.
+        const project = opts.project ?? getProjectName();
+        const index = readBriefingIndex(getDatabase(), project);
+        if (opts.json) {
+          console.log(JSON.stringify({ project, ...index }));
+          return;
+        }
+        console.log(buildReferenceContext(index.lines));
+        return;
+      }
       const result = assembleBriefing(opts.project, opts.recipient);
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;
       }
-      if (!result.text) {
-        console.log(
-          `No memories for "${result.project}" yet.\n` +
-          `Capture happens automatically as you work; or set the task state:  memesh task --goal "…"`,
-        );
-        return;
-      }
       console.log(result.text);
+      if (result.entityCount === 0 && !result.hasTaskState && result.index.shown === 0 && result.index.older === 0) {
+        // Outside the fence: a hint to the human, not memory content.
+        console.log(`\nCapture happens automatically as you work; or set the task state:  memesh task --goal "…"`);
+      }
     });
   });
 

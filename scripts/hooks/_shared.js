@@ -539,7 +539,15 @@ const READ_NOFOLLOW_FLAGS = fsConstants.O_RDONLY | NOFOLLOW;
  *     new one.
  *
  * @param {Record<string,string|undefined>} env
- * @param {{hook: string, outcome: 'wrote'|'skipped'|'error', reason?: string, entity?: string, payload?: object}} info
+ * `outcome` has four kinds, and the line between the first two is the whole
+ * point of the record: `wrote` means a MEMORY was stored, and nothing else —
+ * it is the numerator of the signal `memesh doctor` uses to answer "is memory
+ * capture still alive". `notified` is for a hook whose effect is text the user
+ * or the model sees: an injected context, a printed warning, a nudge. Six
+ * hooks recorded those as `wrote`, each with its own comment saying it was not
+ * a memory, and the answer to that question was inflated by all six.
+ *
+ * @param {{hook: string, outcome: 'wrote'|'notified'|'skipped'|'error', reason?: string, entity?: string, payload?: object}} info
  */
 export function recordHookOutcome(env, { hook, outcome, reason, entity, payload }) {
   try {
@@ -733,11 +741,13 @@ export { truncateTitle } from './_generated/title.js';
  * hooks stay a cheap always-on capture path and core owns later enrichment.
  *
  * @param {import('./_generated/sqlite.js').MemeshDatabase} db - an open hook DB handle
- * @param {{name: string, type: string, observations?: string[], tags?: string[], title?: string | null, metadata?: Record<string, unknown>}} entity
+ * @param {{name: string, type: string, observations?: string[], tags?: string[], title?: string | null, metadata?: Record<string, unknown>, replace?: boolean}} entity
  *   `metadata` is extra INSERT-only metadata (e.g. post-commit's session_id +
  *   files). It cannot override the provenance/title_source stamps below, and
  *   an OR IGNORE re-capture of an existing entity leaves it untouched — same
- *   first-writer-wins rule provenance already follows.
+ *   first-writer-wins rule provenance already follows. `replace` (#322)
+ *   restates the entity's observations and tags instead of adding to them —
+ *   for a caller whose entity is a per-turn SNAPSHOT, not an accumulating log.
  * @returns {{ id: number, isNew: boolean } | null} null if the row could not be resolved
  */
 export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false }) {
@@ -847,7 +857,11 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // Unconditional rather than opt-in: every caller of this function is an
   // auto-capture hook writing machine-derived facts, and none of them has a
   // case where re-storing an identical string means something. A flag two of
-  // three callers pass would be one more proxy for the question.
+  // three callers pass would be one more proxy for the question. (`replace`
+  // below answers a DIFFERENT question — what to do with rows that already
+  // exist, not whether re-storing an identical one means something — and
+  // empties `seen` only because those old rows are gone by the time it runs,
+  // not as an opt-out of this guard.)
   //
   // Filtered ONCE, up front, because `allObsText` below composes the FTS text
   // from this list rather than re-reading the rows. Filtering only at the
@@ -867,11 +881,21 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // it is neither duplicated nor stale.
   //
   // The old rows go AFTER `prevObsText` was read above, so the contentless-FTS
-  // delete still matches exactly what was indexed.
+  // delete still matches exactly what was indexed. The re-insert below must
+  // then leave that text out.
   if (replace && !isNew) {
     db.prepare('DELETE FROM observations WHERE entity_id = ?').run(id);
+    // Tags get the same treatment, for the same reason: "restating the whole
+    // entity" was true for observations and FTS but not for tags until this
+    // line — a session-<id>-files entity that stopped mentioning file A kept
+    // answering `file:a.ts` lookups (pre-edit-recall's Strategy 1) for a
+    // snapshot that no longer said anything about that file.
+    db.prepare('DELETE FROM tags WHERE entity_id = ?').run(id);
   }
   const seen = new Set(
+    // `|| replace`: the rows a plain SELECT would find here were just
+    // DELETEd above (same transaction), so this skips a query that would
+    // only ever come back empty — not a second dedup path.
     isNew || replace
       ? []
       : db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(id).map((r) => r.content),
@@ -900,7 +924,9 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // Stop/PreCompact/PostToolUse capture, and the re-read grew with an
   // upserted entity's accumulated observation count.
   const obsParts = [];
-  if (prevObsText) obsParts.push(prevObsText);
+  // Not after a `replace`: those rows were deleted above, and carrying their
+  // text forward would index words the entity no longer holds.
+  if (prevObsText && !replace) obsParts.push(prevObsText);
   if (freshObservations.length) obsParts.push(joinIndexedObservations(freshObservations));
   const allObsText = joinIndexedObservations(obsParts);
   // Current title is fully determined by the branches above — no re-read.

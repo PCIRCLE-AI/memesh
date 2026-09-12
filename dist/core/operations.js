@@ -25,8 +25,8 @@ function buildRelevanceMap(entities) {
 export function remember(input) {
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
-    const { args, derived } = resolveRememberInput(input);
-    return db.transaction(() => rememberInTransaction(args, derived, db, kg)).immediate();
+    const { args, derived, typeGiven } = resolveRememberInput(input);
+    return db.transaction(() => rememberInTransaction(args, derived, typeGiven, db, kg)).immediate();
 }
 export const REPLACED_HISTORY_MAX = 20;
 export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
@@ -60,9 +60,13 @@ function summarizeReplacedHistory(entities) {
 }
 function resolveRememberInput(input) {
     if (input.note === undefined) {
-        if (!input.name || !input.type)
+        if (!input.name)
             throw new Error('remember needs `name` and `type`, or `note`');
-        return { args: input };
+        if (input.type === '')
+            throw new Error('remember needs `name` and `type`, or `note`');
+        if (input.type === undefined && !input.replace)
+            throw new Error('remember needs `name` and `type`, or `note`');
+        return { args: input, typeGiven: input.type !== undefined };
     }
     if (input.title !== undefined || input.observations !== undefined) {
         throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
@@ -82,13 +86,24 @@ function resolveRememberInput(input) {
             observations: derived.observations,
         },
         derived,
+        typeGiven: input.type !== undefined,
     };
 }
-function rememberInTransaction(args, derived, db, kg) {
+function rememberInTransaction(args, derived, typeGiven, db, kg) {
     const existing = db
-        .prepare('SELECT id, namespace, type, title FROM entities WHERE name = ?')
+        .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
         .get(args.name);
+    if (args.replace && existing && existing.status === 'archived') {
+        throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. `
+            + 'Remember it again without `replace` to bring it back, then replace it.');
+    }
+    const entityType = args.type ?? existing?.type;
+    if (entityType === undefined) {
+        throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
+            + 'so this call would create one with no type — pass `type` to create it.');
+    }
     let replacedVersion;
+    let retypedTo;
     let tags = args.tags;
     let title = args.title;
     let observations = args.observations;
@@ -103,6 +118,10 @@ function rememberInTransaction(args, derived, db, kg) {
             tags: previousTags,
         };
         kg.clearEntityData(args.name);
+        if (typeGiven && entityType !== existing.type) {
+            db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(entityType, existing.id);
+            retypedTo = entityType;
+        }
         if (tags === undefined)
             tags = previousTags;
     }
@@ -112,7 +131,7 @@ function rememberInTransaction(args, derived, db, kg) {
             .map((o) => o.content));
         observations = observations?.filter((o) => !stored.has(o));
     }
-    const entityId = kg.createEntity(args.name, args.type, {
+    const entityId = kg.createEntity(args.name, entityType, {
         observations,
         tags,
         namespace: args.namespace,
@@ -157,12 +176,15 @@ function rememberInTransaction(args, derived, db, kg) {
             }
         }
     }
+    const storedTitle = db
+        .prepare('SELECT title FROM entities WHERE id = ?')
+        .get(entityId).title;
     return {
         stored: true,
         entityId,
         name: args.name,
-        ...(title !== undefined ? { title } : {}),
-        type: existing?.type ?? args.type,
+        title: storedTitle,
+        type: retypedTo ?? existing?.type ?? entityType,
         observations: observations?.length ?? 0,
         tags: tags?.length ?? 0,
         relations: relationsCreated.length,
@@ -174,7 +196,7 @@ function rememberInTransaction(args, derived, db, kg) {
         ...(relationErrors.length > 0 ? { relationErrors } : {}),
         ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
         ...(derived
-            ? { derived: { name: args.name, type: existing?.type ?? args.type, title: derived.title, observations: derived.observations } }
+            ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
             : {}),
     };
 }

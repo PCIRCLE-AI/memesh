@@ -28,3 +28,23 @@ export function expectPrivateFile(filePath: string): void {
 
   expect(stats.mode & 0o777).toBe(0o600);
 }
+
+/**
+ * Whether this environment can actually make a path unreadable.
+ *
+ * A test that needs a real EACCES has to ask, because two common environments
+ * cannot produce one however the mode bits are set: root ignores them, and
+ * Windows does not model POSIX read or traversal permission at all — a
+ * `chmod` there leaves the directory readable, so the code under test takes
+ * its success path and the assertion fails on a platform difference rather
+ * than on the behaviour it was written to pin.
+ *
+ * Measured: `tests/hooks/stop-notes.test.ts` guarded only the root half, and
+ * both windows-latest legs of the #333 matrix failed with `expected 'wrote'
+ * to be 'error'` — the hook had read the directory the test believed it had
+ * locked. Every other leg passed.
+ *
+ * Skip on this rather than weaken the assertion: the branch stays genuinely
+ * covered where an EACCES is real, instead of everywhere and vacuously.
+ */
+export const canDenyReads = process.platform !== 'win32' && (process.getuid?.() ?? 0) !== 0;

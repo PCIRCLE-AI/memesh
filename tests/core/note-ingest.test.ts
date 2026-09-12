@@ -10,6 +10,7 @@ import {
   parseFrontmatter,
   NOTE_FILE_TAG,
   NOTE_FILE_MISSING_TAG,
+  summarizeNoteIngest,
 } from '../../src/core/note-ingest.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
@@ -34,7 +35,12 @@ describe('parseFrontmatter', () => {
   it('reads top-level keys, quoted values and one nested map', () => {
     const fm = parseFrontmatter(note('feedback_x', 'KT wants: "no squash"', 'feedback', 'body'))!;
     expect(fm.data.name).toBe('feedback_x');
-    expect(fm.data.description).toBe('KT wants: "no squash"'.replace(/"/g, '"'));
+    // The helper wraps the value in double quotes, so the line the parser sees
+    // is `description: "KT wants: "no squash""` — the inner pair has to survive
+    // and the outer pair has to go. Written as a literal: this used to call
+    // .replace(/"/g, '"'), which replaces a quote with itself and made the
+    // assertion look like it was testing unescaping while testing nothing.
+    expect(fm.data.description).toBe('KT wants: "no squash"');
     expect(fm.data.metadata).toEqual({ node_type: 'memory', type: 'feedback' });
     expect(fm.body.trim()).toBe('body');
   });
@@ -600,5 +606,221 @@ describe('ingestNoteDirectory', () => {
       expect(row()).toBeUndefined();
       expect(state('same6')).toEqual({ obs: ['b'], path: 'b.md', missing: false });
     });
+  });
+});
+
+describe('note-ingest: the entity type follows the file — #324 C5', () => {
+  it('a changed metadata.type updates the stored type, not only the title', () => {
+    const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'feedback', 'Alpha body.') });
+    ingestNoteDirectory({ dir });
+    expect(kg().getEntity('note_a')!.type).toBe('feedback');
+
+    fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha revised', 'decision', 'Alpha body revised.'));
+    const r = ingestNoteDirectory({ dir });
+    expect(r.replaced).toEqual(['note_a']);
+    const e = kg().getEntity('note_a')!;
+    // The receipt already said `replaced`, and the title already followed the
+    // file. The type did not: createEntity's INSERT OR IGNORE leaves it, and
+    // the replace path cleared observations and tags without touching it — so
+    // a note reclassified from feedback to decision kept answering as
+    // feedback, to recall and to every type-filtered view.
+    expect(e.type, 'the type did not follow the file').toBe('decision');
+    expect(e.title).toBe('Alpha revised');
+  });
+
+  it('an unchanged type is not churned', () => {
+    const dir = makeDir({ 'b.md': note('note_b', 'Beta', 'lesson', 'Beta body.') });
+    ingestNoteDirectory({ dir });
+    fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'Beta body changed.'));
+    ingestNoteDirectory({ dir });
+    expect(kg().getEntity('note_b')!.type).toBe('lesson');
+  });
+});
+
+describe('note-ingest: a refusal leaves a durable trace — #324 C3', () => {
+  it('counts files refused THIS run, and the count goes to zero when nothing changed', () => {
+    const dir = makeDir({
+      'good.md': note('note_good', 'Good', 'decision', 'Good body.'),
+      'nofm.md': '# no frontmatter here',
+      'noname.md': '---\ndescription: "nameless"\n---\n\nbody\n',
+    });
+    const first = ingestNoteDirectory({ dir });
+    expect(first.created).toEqual(['note_good']);
+    expect(first.skipped).toHaveLength(2);
+    // `skipped.length` sticks forever once a file is bad, so the hook cannot
+    // use it to decide whether this run had anything to report. The caller
+    // printed "note files were read and nothing new needed storing" over a
+    // run that rejected two files.
+    expect(first.refusedNow, 'two files were refused and nothing counted them').toBe(2);
+    expect(summarizeNoteIngest(first)).toContain('2 newly refused');
+
+    const second = ingestNoteDirectory({ dir });
+    expect(second.skipped).toHaveLength(2);
+    expect(second.refusedNow, 'the same two bad files are not news a second time').toBe(0);
+    expect(summarizeNoteIngest(second)).not.toContain('newly refused');
+
+    fs.writeFileSync(path.join(dir, 'third.md'), '# also no frontmatter');
+    const third = ingestNoteDirectory({ dir });
+    expect(third.skipped).toHaveLength(3);
+    expect(third.refusedNow).toBe(1);
+  });
+
+  it('a refused symlink is news once, not on every run', () => {
+    const dir = makeDir({ 'good.md': note('note_g', 'G', 'decision', 'G body.') });
+    fs.symlinkSync(path.join(dir, 'good.md'), path.join(dir, 'link.md'));
+    const first = ingestNoteDirectory({ dir });
+    expect(first.skipped.map((s) => s.reason)).toEqual(['symlink refused']);
+    expect(first.refusedNow).toBe(1);
+    // Symlinks are collected before the read loop and were never
+    // fingerprinted, so counting them naively says "1 newly refused" on
+    // every Stop forever — the same stickiness, relocated.
+    const second = ingestNoteDirectory({ dir });
+    expect(second.skipped).toHaveLength(1);
+    expect(second.refusedNow, 'the symlink was re-reported as new').toBe(0);
+  });
+
+  it('a run that stored nothing and refused nothing reports zero of both', () => {
+    const dir = makeDir({ 'good.md': note('note_q', 'Q', 'decision', 'Q body.') });
+    ingestNoteDirectory({ dir });
+    const again = ingestNoteDirectory({ dir });
+    expect(again.refusedNow).toBe(0);
+    expect(again.created).toEqual([]);
+    expect(again.replaced).toEqual([]);
+  });
+});
+
+describe('note-ingest: a file over the observation cap is refused, not silently trimmed — #324 C6', () => {
+  it('names the count instead of storing the first 100 and dropping the rest', () => {
+    const body = Array.from({ length: 130 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n');
+    const dir = makeDir({ 'big.md': note('note_big', 'Big', 'decision', body) });
+    const r = ingestNoteDirectory({ dir });
+    // This is a Stop-hook path: a silent drop is indistinguishable from
+    // nothing happening. The transport rejects the same shape and names the
+    // count; storing 100 with {"skipped":[],"more":0} told nobody that 30
+    // paragraphs of the user's note were gone.
+    expect(r.created, 'the over-cap file was stored anyway').toEqual([]);
+    expect(r.skipped).toHaveLength(1);
+    expect(r.skipped[0].path).toBe('big.md');
+    expect(r.skipped[0].reason).toContain('130');
+    expect(r.skipped[0].reason).toContain('100');
+    expect(r.refusedNow).toBe(1);
+    expect(kg().getEntity('note_big')).toBeNull();
+  });
+
+  it('exactly at the cap is still stored', () => {
+    const body = Array.from({ length: 100 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n');
+    const dir = makeDir({ 'edge.md': note('note_edge', 'Edge', 'decision', body) });
+    const r = ingestNoteDirectory({ dir });
+    expect(r.created).toEqual(['note_edge']);
+    expect(kg().getEntity('note_edge')!.observations).toHaveLength(100);
+  });
+
+  it('the refusal is fingerprinted, so the file is not re-read on every run', () => {
+    const body = Array.from({ length: 130 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n');
+    const dir = makeDir({ 'big.md': note('note_big2', 'Big', 'decision', body) });
+    ingestNoteDirectory({ dir });
+    const second = ingestNoteDirectory({ dir });
+    expect(second.skipped).toHaveLength(1);
+    expect(second.refusedNow).toBe(0);
+  });
+});
+
+/**
+ * An unreadable file is not "still holding its memory's name" — #324 C9.
+ *
+ * chmod is the only portable way to make a readable file unreadable, so
+ * these cases are POSIX-and-not-root. Named, not silently skipped: on
+ * Windows and as root the branch is exercised by no test here, and the
+ * refund case below covers the same code path without permissions.
+ */
+const canDenyReads = process.platform !== 'win32' && (process.getuid?.() ?? 0) !== 0;
+
+describe.skipIf(!canDenyReads)('note-ingest: an unreadable file marks its memory missing — #324 C9', () => {
+  it('tags source:note-file:missing instead of leaving a memory pointed at a file it cannot read', () => {
+    const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'decision', 'Alpha body.') });
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_a']);
+
+    // The bytes change so the stat fingerprint does not fast-path it, then
+    // the file becomes unreadable.
+    fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha', 'decision', 'Alpha body two.'));
+    fs.chmodSync(path.join(dir, 'a.md'), 0o000);
+    try {
+      const r = ingestNoteDirectory({ dir });
+      expect(r.skipped.map((x) => x.reason).join(' ')).toContain('unreadable');
+      // The skip recorded no declared name, so the missing sweep saw the path
+      // in presentRels and moved on: the one user-visible signal this module
+      // has never appeared.
+      expect(r.markedMissing, 'the memory was left pointing at a file nobody can read').toEqual(['note_a']);
+      const tags = kg().getEntity('note_a')!.tags ?? [];
+      expect(tags).toContain(NOTE_FILE_MISSING_TAG);
+    } finally {
+      fs.chmodSync(path.join(dir, 'a.md'), 0o644);
+    }
+  });
+
+  it('the file coming back clears the missing tag', () => {
+    const dir = makeDir({ 'b.md': note('note_b', 'Beta', 'decision', 'Beta body.') });
+    ingestNoteDirectory({ dir });
+    fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'decision', 'Beta body two.'));
+    fs.chmodSync(path.join(dir, 'b.md'), 0o000);
+    ingestNoteDirectory({ dir });
+    fs.chmodSync(path.join(dir, 'b.md'), 0o644);
+    const back = ingestNoteDirectory({ dir });
+    expect(back.replaced).toEqual(['note_b']);
+    expect(kg().getEntity('note_b')!.tags ?? []).not.toContain(NOTE_FILE_MISSING_TAG);
+  });
+
+  it('an unreadable file does not spend a per-run cap slot a good file could use', () => {
+    const dir = makeDir({
+      'bad.md': note('note_bad', 'Bad', 'decision', 'Bad body.'),
+      'good.md': note('note_good', 'Good', 'decision', 'Good body.'),
+    });
+    fs.chmodSync(path.join(dir, 'bad.md'), 0o000);
+    try {
+      // One slot, and `bad.md` sorts first. It sits after `read++`, so it
+      // consumed the whole run's budget and `good.md` was never reached —
+      // every run, forever, because the skip left no fingerprint either.
+      const r = ingestNoteDirectory({ dir, maxFiles: 1 });
+      expect(r.created, 'the unreadable file ate the only cap slot').toEqual(['note_good']);
+      expect(r.more).toBe(0);
+    } finally {
+      fs.chmodSync(path.join(dir, 'bad.md'), 0o644);
+    }
+  });
+});
+
+describe('note-ingest: a name-level refusal is news once too — #324 C3', () => {
+  it('a file whose memory was forgotten is not reported as newly refused every run', () => {
+    const dir = makeDir({ 'a.md': note('note_arch', 'Alpha', 'decision', 'Alpha body.') });
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_arch']);
+    forget({ name: 'note_arch' });
+
+    const first = ingestNoteDirectory({ dir });
+    expect(first.skipped.map((x) => x.reason).join(' ')).toContain('archived with forget');
+    expect(first.refusedNow).toBe(1);
+
+    // The three name-level refusals go through skipAll, which reports but
+    // records no fingerprint — so without one they are new on every single
+    // Stop, which is the stickiness refusedNow exists to remove.
+    const second = ingestNoteDirectory({ dir });
+    expect(second.skipped).toHaveLength(1);
+    expect(second.refusedNow, 'the same refusal was announced again').toBe(0);
+    const third = ingestNoteDirectory({ dir });
+    expect(third.refusedNow).toBe(0);
+  });
+
+  it('the file is still re-read each run, so the refusal lifts when its cause does', () => {
+    const dir = makeDir({ 'b.md': note('note_rev', 'Beta', 'decision', 'Beta body.') });
+    ingestNoteDirectory({ dir });
+    forget({ name: 'note_rev' });
+    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ dir });
+
+    // Un-archived without the file changing. A fingerprint that drove the
+    // phase-1 early skip would leave this file refused forever, which is the
+    // trap the unreadable path (C9) documents.
+    remember({ name: 'note_rev', type: 'decision', observations: ['Beta body.'] });
+    const back = ingestNoteDirectory({ dir });
+    expect(back.skipped, 'the file was never re-read after its memory came back').toHaveLength(0);
   });
 });

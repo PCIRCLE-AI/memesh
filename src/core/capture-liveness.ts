@@ -20,7 +20,24 @@
  * what "gone quiet" means.
  */
 
-export type HookOutcome = 'wrote' | 'skipped' | 'error';
+/**
+ * What a hook did on one exit path.
+ *
+ * `wrote` means a MEMORY was written — that is the whole point of the kind,
+ * because `writes` is the numerator of the signal `memesh doctor` uses to
+ * answer "is memory capture still alive". Six hooks were recording `wrote`
+ * for something that never touches the graph, and each one's own comment
+ * said so: guard-check's is a guard-fire counter, user-prompt-intent's and
+ * session-start's are the context they injected, decision-nudge's and
+ * pre-edit-recall's and remember-nudge's are a line they printed. So the
+ * kind is `notified`: the hook ran, it had an effect the user can see, and
+ * nothing was saved.
+ *
+ * A fourth kind rather than excluding remember-nudge by name inside
+ * summarizeHookOutcomes: excluding one name would leave the other five
+ * counted as memory writes.
+ */
+export type HookOutcome = 'wrote' | 'skipped' | 'notified' | 'error';
 
 /** Which agent host produced the run. `unknown` is never treated as evidence. */
 export type HookHost = 'claude-code' | 'codex' | 'unknown';
@@ -109,10 +126,39 @@ function windowKeep(
   return keep;
 }
 
-/** True unless the record is a skip whose reason says the trigger did not apply. */
+/**
+ * True unless the record is a skip whose reason says the trigger did not
+ * apply. `wrote`, `notified` and `error` are all triggered runs: the hook
+ * fired and did something.
+ */
 export function isTriggeredRecord(record: Pick<HookOutcomeRecord, 'hook' | 'outcome' | 'reason'>): boolean {
   if (record.outcome !== 'skipped' || record.reason === undefined) return true;
   return !(NOT_TRIGGERED_SKIP_REASONS[record.hook] ?? []).includes(record.reason);
+}
+
+interface HookOutcomeEntry {
+  hook: string;
+  triggered: boolean;
+  record: HookOutcomeRecord;
+  /** The original line, so rotation can re-emit exactly what it read. */
+  line: string;
+}
+
+/**
+ * Every parseable line of the history, with the `windowKeep` inputs derived
+ * from it. ONE definition of "read this file", shared by the reader
+ * (parseHookOutcomes) and by rotation (trimHookOutcomeLines), so the two can
+ * never disagree about which lines exist. A line that does not parse — a torn
+ * last line an interrupted hook left behind, or a record naming a hook memesh
+ * does not ship — is dropped by both.
+ */
+function readHookOutcomeLines(raw: string): HookOutcomeEntry[] {
+  const entries: HookOutcomeEntry[] = [];
+  for (const line of raw.split('\n')) {
+    const record = parseHookOutcomeLine(line);
+    if (record) entries.push({ hook: record.hook, triggered: isTriggeredRecord(record), record, line });
+  }
+  return entries;
 }
 
 /**
@@ -136,22 +182,16 @@ export function serializeHookOutcome(record: HookOutcomeRecord): string {
 /**
  * Keep each hook's window (the last `max` triggered records plus the last
  * HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK not-triggered ones), in their
- * original order. Used by
- * rotation; pure so the bound is testable without a filesystem. A line that
- * does not parse (a torn last line an interrupted hook left behind, or a
- * record naming a hook memesh does not ship) is dropped, not counted toward
- * any hook's window.
+ * original order. Used by rotation; pure so the bound is testable without a
+ * filesystem. Unparseable lines are dropped by readHookOutcomeLines, so they
+ * are not counted toward any hook's window.
  */
 export function trimHookOutcomeLines(
   raw: string,
   max: number = HOOK_OUTCOMES_PER_HOOK,
   maxBytes: number = HOOK_OUTCOMES_ROTATE_BYTES,
 ): string {
-  const records: Array<{ hook: string; triggered: boolean; line: string }> = [];
-  for (const line of raw.split('\n')) {
-    const record = parseHookOutcomeLine(line);
-    if (record) records.push({ hook: record.hook, triggered: isTriggeredRecord(record), line });
-  }
+  const records = readHookOutcomeLines(raw);
   // The same window the reader keeps, re-emitted in original order —
   // rotation must preserve tail ordering.
   const keep = windowKeep(records, max, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
@@ -265,7 +305,7 @@ export const SKIP_REASONS = {
   notGitCommit: 'not a git commit command',
   /** post-commit: a git commit DID run and no commit line came back — #321. */
   commitLineMissing: 'a git commit ran but printed no commit line',
-  /** session-summary: this session's capture already landed on an earlier Stop. */
+  /** LEGACY (#322), no longer written — see NOT_TRIGGERED_SKIP_REASONS below. */
   alreadyCaptured: 'this session was already captured',
   // Every other skip reason a hook records. They live HERE, not as literals
   // in the hooks, because doctor quotes only reasons it knows (see
@@ -299,6 +339,10 @@ export const SKIP_REASONS = {
   noNoteChanged: 'no note file changed since the last ingestion',
   noteIngesterNotBuilt: 'the note ingester is not built (dist/core/note-ingest.js is missing)',
   noteNothingNew: 'note files were read and nothing new needed storing',
+  // A run that stored nothing but REFUSED files is not the same event, and
+  // `noteNothingNew` said it was. Uses NoteIngestResult.refusedNow, never
+  // `skipped.length` — the latter sticks forever once a file is bad.
+  noteFilesRefused: 'note files were refused and nothing was stored',
   // remember-nudge (#324)
   noTranscript: 'no transcript to read',
   trivialTurn: 'trivial turn — too few tool calls since the last Stop',
@@ -413,9 +457,19 @@ function valueEnd(s: string, i: number): number {
 /**
  * Skips that mean the hook's trigger did not apply, per hook. They are not
  * counted as runs toward `silent`: a post-commit run on `ls` says nothing
- * about whether commits are captured, and session-summary fires on EVERY
- * Stop (every turn), so after one capture per session the rest of the window
- * is "already captured" — a write happened, it is just older than the window.
+ * about whether commits are captured.
+ *
+ * `session-summary`'s entry is LEGACY (#322): the hook used to skip every
+ * Stop after a session's first ("already captured" — a write happened, it is
+ * just older than the window), because `remember`'s append semantics had no
+ * other way to avoid restating the same sentences every turn. `replace` mode
+ * removed the need to skip — session-summary now restates its three
+ * `session-<id>-*` entities on every Stop instead — so the hook stopped
+ * writing this reason. It is kept here only so a record from BEFORE this
+ * upgrade still classifies as not-triggered instead of ageing into a false
+ * "silent" verdict. Removable once no installation's outcome window can
+ * still hold a pre-#322 record — that happens on its own, a few releases
+ * out, once every live install has had ~20 Stops since upgrading.
  *
  * Deliberately NOT here: post-commit's commit-line-missing skip (the #321
  * shape — a commit happened and nothing was saved) and session-summary's
@@ -430,7 +484,49 @@ function valueEnd(s: string, i: number): number {
 export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>> = {
   'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
   'session-summary': [SKIP_REASONS.alreadyCaptured],
+  // #324: the Stop-side pair. Both fire on EVERY Stop, i.e. every turn, and
+  // both correctly do nothing on most of them — a turn that edited no note
+  // file, and a turn that made no decision. Counted as runs they filled the
+  // whole 20-record window within a day and evicted the hook's real `wrote`,
+  // so doctor reported a hook that had never written anything. That is the
+  // post-commit incident above, repeated.
+  //
+  // Deliberately NOT listed, and each for a reason:
+  //   - noteIngesterNotBuilt / noTranscript: a broken install and a missing
+  //     transcript are defects wearing a skip's clothes. They must keep
+  //     counting, or the one shape worth seeing becomes invisible.
+  //   - noMemoryDir: `claudeMemoryDir` collapses EACCES into "no directory"
+  //     (#324 H8), so this reason can hide a permissions failure.
+  //   - noteNothingNew: the files WERE read and a decision was made about
+  //     them. Same stance as session-summary's low-signal skips.
+  'note-ingest': [SKIP_REASONS.noNoteChanged],
+  'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
 };
+
+/**
+ * Recording hooks that deliberately have no not-triggered skip reasons.
+ *
+ * This list exists only so the pairing can be CHECKED. `note-ingest` and
+ * `remember-nudge` were added to CAPTURE_HOOKS and to SKIP_REASONS and
+ * missed here, and nothing could go red over it: an absent key and a
+ * deliberate "this hook has none" are the same absence. Two lists make them
+ * different, and tests/core/doctor-capture-liveness.test.ts requires every
+ * CAPTURE_HOOKS entry to appear in exactly one of them.
+ *
+ * A hook belongs here when every skip it records is a real decision about a
+ * trigger that DID apply — or, for the fire-on-everything hooks
+ * (guard-check, pre-edit-recall, user-prompt-intent, decision-nudge), when
+ * its silence is already discounted by leaving it out of
+ * SILENT_ELIGIBLE_HOOKS and it writes no memory whose eviction would matter.
+ */
+export const UNCLASSIFIED_SKIP_HOOKS = [
+  'pre-compact',
+  'pre-edit-recall',
+  'user-prompt-intent',
+  'decision-nudge',
+  'guard-check',
+  'session-start',
+] as const;
 
 /**
  * Grace period before "no records at all" is allowed to mean anything. On the
@@ -460,20 +556,12 @@ export function parseHookOutcomes(
   limit: number = HOOK_OUTCOMES_PER_HOOK,
 ): HookOutcomeFile {
   if (!raw) return { hooks: {} };
-  const records: HookOutcomeRecord[] = [];
-  for (const line of raw.split('\n')) {
-    const record = parseHookOutcomeLine(line);
-    if (record) records.push(record);
-  }
-  const keep = windowKeep(
-    records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })),
-    limit,
-    HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK,
-  );
+  const entries = readHookOutcomeLines(raw);
+  const keep = windowKeep(entries, limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
   const hooks: Record<string, HookOutcomeRecord[]> = {};
-  records.forEach((record, i) => {
+  entries.forEach(({ hook, record }, i) => {
     if (!keep[i]) return;
-    (hooks[record.hook] ?? (hooks[record.hook] = [])).push(record);
+    (hooks[hook] ?? (hooks[hook] = [])).push(record);
   });
   return { hooks };
 }
@@ -496,7 +584,12 @@ export function parseHookOutcomeLine(line: string): HookOutcomeRecord | null {
   // a hook that does not exist is foreign by definition.
   if (typeof rec.hook !== 'string' || !(CAPTURE_HOOKS as readonly string[]).includes(rec.hook)) return null;
   if (typeof rec.at !== 'string') return null;
-  if (rec.outcome !== 'wrote' && rec.outcome !== 'skipped' && rec.outcome !== 'error') return null;
+  // An outcome this version does not know discards the WHOLE record — which
+  // is why `notified` has to be readable before any hook emits it. Records
+  // written by older versions carry only wrote/skipped/error and keep
+  // reading exactly as they did.
+  if (rec.outcome !== 'wrote' && rec.outcome !== 'skipped'
+    && rec.outcome !== 'notified' && rec.outcome !== 'error') return null;
   const record: HookOutcomeRecord = {
     hook: rec.hook,
     at: rec.at,
@@ -542,6 +635,13 @@ export interface HookLivenessSummary {
   firstTriggeredAt: string | null;
   lastWriteAt: string | null;
   lastEntity: string | null;
+  /**
+   * Runs that told the user something and saved nothing. Kept OUT of
+   * `writes`, `lastWriteAt` and `lastEntity`: a nudge is evidence the hook is
+   * alive, never evidence a memory exists.
+   */
+  notifies: number;
+  lastNotifiedAt: string | null;
   lastSkipReason: string | null;
   dominantSkipReason: string | null;
   dominantSkipCount: number;
@@ -574,6 +674,8 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
   let triggeredRuns = 0;
   let lastWriteAt: string | null = null;
   let lastEntity: string | null = null;
+  let notifies = 0;
+  let lastNotifiedAt: string | null = null;
   let lastSkipReason: string | null = null;
   const skipCounts = new Map<string, number>();
   const hosts = new Set<HookHost>();
@@ -591,6 +693,13 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
         lastWriteAt = r.at;
         lastEntity = r.entity ?? null;
       }
+    } else if (r.outcome === 'notified') {
+      // An explicit branch, not a fall-through: the final `else` below is
+      // `errors++`, so an unhandled kind would turn every nudge into a
+      // doctor error — a new kind going wrong loudly instead of invisibly,
+      // but wrong either way.
+      notifies++;
+      if (lastNotifiedAt === null || r.at >= lastNotifiedAt) lastNotifiedAt = r.at;
     } else if (r.outcome === 'skipped') {
       skips++;
       // Rendered, not raw: these two are what doctor QUOTES (see
@@ -627,10 +736,17 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
     firstTriggeredAt,
     lastWriteAt,
     lastEntity,
+    notifies,
+    lastNotifiedAt,
     lastSkipReason,
     dominantSkipReason,
     dominantSkipCount,
     hosts: [...hosts].sort(),
+    // `writes === 0` is unchanged, and `notified` deliberately does not
+    // rescue a hook from it — a hook that only printed lines HAS written
+    // nothing. Safe because no notifying hook is in SILENT_ELIGIBLE_HOOKS
+    // (post-commit, session-summary, pre-compact), so this cannot turn the
+    // repair into a daily false alarm; the test file pins that pairing.
     silent: (SILENT_ELIGIBLE_HOOKS as readonly string[]).includes(hook)
       && triggeredRuns >= SILENT_HOOK_MIN_RUNS
       && writes === 0,

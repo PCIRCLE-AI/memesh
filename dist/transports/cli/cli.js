@@ -6090,8 +6090,8 @@ function buildRelevanceMap(entities) {
 function remember(input) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
-  const { args, derived } = resolveRememberInput(input);
-  return db2.transaction(() => rememberInTransaction(args, derived, db2, kg)).immediate();
+  const { args, derived, typeGiven } = resolveRememberInput(input);
+  return db2.transaction(() => rememberInTransaction(args, derived, typeGiven, db2, kg)).immediate();
 }
 function boundReplacedHistory(history) {
   let out = history.slice(-REPLACED_HISTORY_MAX);
@@ -6122,9 +6122,13 @@ function summarizeReplacedHistory(entities) {
 }
 function resolveRememberInput(input) {
   if (input.note === void 0) {
-    if (!input.name || !input.type)
+    if (!input.name)
       throw new Error("remember needs `name` and `type`, or `note`");
-    return { args: input };
+    if (input.type === "")
+      throw new Error("remember needs `name` and `type`, or `note`");
+    if (input.type === void 0 && !input.replace)
+      throw new Error("remember needs `name` and `type`, or `note`");
+    return { args: input, typeGiven: input.type !== void 0 };
   }
   if (input.title !== void 0 || input.observations !== void 0) {
     throw new Error("`note` derives title and observations; do not also pass `title` or `observations`");
@@ -6143,12 +6147,21 @@ function resolveRememberInput(input) {
       title: derived.title,
       observations: derived.observations
     },
-    derived
+    derived,
+    typeGiven: input.type !== void 0
   };
 }
-function rememberInTransaction(args, derived, db2, kg) {
-  const existing = db2.prepare("SELECT id, namespace, type, title FROM entities WHERE name = ?").get(args.name);
+function rememberInTransaction(args, derived, typeGiven, db2, kg) {
+  const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
+  if (args.replace && existing && existing.status === "archived") {
+    throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. Remember it again without \`replace\` to bring it back, then replace it.`);
+  }
+  const entityType = args.type ?? existing?.type;
+  if (entityType === void 0) {
+    throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, so this call would create one with no type \u2014 pass \`type\` to create it.`);
+  }
   let replacedVersion;
+  let retypedTo;
   let tags = args.tags;
   let title = args.title;
   let observations = args.observations;
@@ -6161,6 +6174,10 @@ function rememberInTransaction(args, derived, db2, kg) {
       tags: previousTags
     };
     kg.clearEntityData(args.name);
+    if (typeGiven && entityType !== existing.type) {
+      db2.prepare("UPDATE entities SET type = ? WHERE id = ?").run(entityType, existing.id);
+      retypedTo = entityType;
+    }
     if (tags === void 0)
       tags = previousTags;
   } else if (derived && existing) {
@@ -6168,7 +6185,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     const stored = new Set(db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(existing.id).map((o) => o.content));
     observations = observations?.filter((o) => !stored.has(o));
   }
-  const entityId = kg.createEntity(args.name, args.type, {
+  const entityId = kg.createEntity(args.name, entityType, {
     observations,
     tags,
     namespace: args.namespace,
@@ -6212,12 +6229,13 @@ function rememberInTransaction(args, derived, db2, kg) {
       }
     }
   }
+  const storedTitle = db2.prepare("SELECT title FROM entities WHERE id = ?").get(entityId).title;
   return {
     stored: true,
     entityId,
     name: args.name,
-    ...title !== void 0 ? { title } : {},
-    type: existing?.type ?? args.type,
+    title: storedTitle,
+    type: retypedTo ?? existing?.type ?? entityType,
     observations: observations?.length ?? 0,
     tags: tags?.length ?? 0,
     relations: relationsCreated.length,
@@ -6226,7 +6244,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     ...superseded.length > 0 ? { superseded } : {},
     ...relationErrors.length > 0 ? { relationErrors } : {},
     ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
-    ...derived ? { derived: { name: args.name, type: existing?.type ?? args.type, title: derived.title, observations: derived.observations } } : {}
+    ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } } : {}
   };
 }
 function searchAndScore(args) {
@@ -23418,13 +23436,13 @@ var init_schemas3 = __esm({
       if (data.note === void 0) {
         if (data.name === void 0)
           ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
-        if (data.type === void 0)
-          ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note")' });
+        if (data.type === void 0 && !(data.replace && data.name !== void 0))
+          ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
         return;
       }
       for (const key of ["title", "observations"]) {
         if (data[key] !== void 0) {
-          ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key}` });
+          ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
         }
       }
       if (data.replace && data.name === void 0) {
@@ -23434,7 +23452,7 @@ var init_schemas3 = __esm({
       if (!derived) {
         ctx.addIssue({ code: "custom", path: ["note"], message: "note must contain some text" });
       } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
-        ctx.addIssue({ code: "custom", path: ["note"], message: `note splits into ${derived.observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+        ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
       }
     });
     RecallSchema = external_exports.object({
@@ -23598,6 +23616,79 @@ var init_schemas3 = __esm({
   }
 });
 
+// dist/core/repo-state.js
+import { execFileSync as execFileSync4 } from "child_process";
+import fs11 from "fs";
+import path10 from "path";
+function tryGit2(cwd, args) {
+  try {
+    return execFileSync4("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      timeout: GIT_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "pipe"]
+    }).trim();
+  } catch {
+    return null;
+  }
+}
+function declaredVersionOf(repoRoot) {
+  try {
+    const raw = fs11.readFileSync(path10.join(repoRoot, "package.json"), "utf8");
+    const version2 = JSON.parse(raw).version;
+    return typeof version2 === "string" && version2.length > 0 ? version2 : null;
+  } catch {
+    return null;
+  }
+}
+function readRepoState(cwdInput) {
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  const repoRoot = tryGit2(cwd, ["rev-parse", "--show-toplevel"]);
+  if (!repoRoot)
+    return null;
+  const branchRaw = tryGit2(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
+  const branch = branchRaw && branchRaw !== "HEAD" ? branchRaw : null;
+  const statusOut = tryGit2(cwd, ["status", "--porcelain"]);
+  const uncommitted = statusOut ? statusOut.split("\n").filter((l) => l.trim() !== "").length : 0;
+  const lastTag = tryGit2(cwd, ["describe", "--tags", "--abbrev=0"]);
+  let commitsSinceTag = null;
+  if (lastTag) {
+    const count = tryGit2(cwd, ["rev-list", "--count", `${lastTag}..HEAD`]);
+    const parsed = count === null ? Number.NaN : Number.parseInt(count, 10);
+    commitsSinceTag = Number.isFinite(parsed) ? parsed : null;
+  }
+  const declaredVersion = declaredVersionOf(repoRoot);
+  let declaredVersionIsTagged = null;
+  if (declaredVersion) {
+    const hit = tryGit2(cwd, ["tag", "--list", `v${declaredVersion}`]);
+    declaredVersionIsTagged = hit === null ? null : hit.length > 0;
+  }
+  return { branch, uncommitted, lastTag, commitsSinceTag, declaredVersion, declaredVersionIsTagged };
+}
+function repoStateLines(state) {
+  if (!state)
+    return [];
+  const first = [];
+  if (state.branch)
+    first.push(`branch ${state.branch}`);
+  first.push(state.uncommitted === 0 ? "working tree clean" : `${state.uncommitted} uncommitted`);
+  const lines = ["Where the repository actually stands (read just now):", `- ${first.join(" \xB7 ")}`];
+  if (state.lastTag) {
+    const since = state.commitsSinceTag;
+    lines.push(since === null ? `- last tag ${state.lastTag}` : since === 0 ? `- at tag ${state.lastTag}` : `- ${since} commit${since === 1 ? "" : "s"} since ${state.lastTag}`);
+  }
+  if (state.declaredVersion && state.declaredVersionIsTagged === false) {
+    lines.push(`- package.json declares ${state.declaredVersion}, which has no tag yet`);
+  }
+  return lines;
+}
+var GIT_TIMEOUT_MS;
+var init_repo_state = __esm({
+  "dist/core/repo-state.js"() {
+    "use strict";
+    GIT_TIMEOUT_MS = 5e3;
+  }
+});
+
 // dist/core/task-state.js
 function taskStateName(project) {
   return `${TASK_STATE_TYPE}:${project}`;
@@ -23754,6 +23845,60 @@ var init_task_state_store = __esm({
         this.name = "TaskStateUnreadableError";
       }
     };
+  }
+});
+
+// dist/core/agent-message-inbox.js
+function unreadDeliveryCount(db2, project, recipient) {
+  if (!recipient)
+    return 0;
+  try {
+    const row = db2.prepare(`SELECT COUNT(*) AS n
+       FROM agent_message_deliveries d
+       WHERE d.project = ?
+         AND d.recipient = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_message_receipts r
+           WHERE r.project = d.project
+             AND r.recipient = d.recipient
+             AND r.message_id = d.message_id
+             AND r.receipt_kind = 'intake'
+         )`).get(project, recipient);
+    const n = row?.n;
+    return typeof n === "number" && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+function recipientEverSeen(db2, project, recipient) {
+  try {
+    const row = db2.prepare(`SELECT (
+         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
+         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
+         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
+       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
+    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
+  } catch {
+    return void 0;
+  }
+}
+function unreadInboxLines(count, project, recipient, everSeen) {
+  if (!recipient)
+    return [];
+  const displayProject = JSON.stringify(project);
+  const displayRecipient = JSON.stringify(recipient);
+  if (count > 0) {
+    const noun = count === 1 ? "message" : "messages";
+    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id; fetching does not acknowledge.`];
+  }
+  if (everSeen === false) {
+    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
+  }
+  return [];
+}
+var init_agent_message_inbox = __esm({
+  "dist/core/agent-message-inbox.js"() {
+    "use strict";
   }
 });
 
@@ -23964,6 +24109,302 @@ var init_work_topology = __esm({
     };
     TOPOLOGY_CANDIDATE_CAP = 400;
     SNIPPET_FETCH_CHARS = DEFAULT_TOPOLOGY_BUDGET.maxLineChars * 4;
+  }
+});
+
+// dist/core/briefing-index.js
+function isIndexableType(type) {
+  return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
+}
+function byteLength(text) {
+  return new TextEncoder().encode(text).length;
+}
+function sectionBytes(lines) {
+  return lines.reduce((sum, line) => sum + byteLength(line) + 1, 0);
+}
+function parseActivity(value) {
+  if (!value)
+    return Number.NaN;
+  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`;
+  return Date.parse(iso);
+}
+function compareIndexCandidates(a, b) {
+  const at = parseActivity(a.lastActivity);
+  const bt = parseActivity(b.lastActivity);
+  const av = Number.isNaN(at) ? -Infinity : at;
+  const bv = Number.isNaN(bt) ? -Infinity : bt;
+  if (av !== bv)
+    return bv - av;
+  return b.id - a.id;
+}
+function candidateIsAutoInjectable(metadata) {
+  if (metadata == null)
+    return true;
+  if (typeof metadata === "string") {
+    let parsed;
+    try {
+      parsed = JSON.parse(metadata);
+    } catch {
+      return false;
+    }
+    return parsed !== null && typeof parsed === "object" && isAutoInjectable(parsed);
+  }
+  return isAutoInjectable(metadata);
+}
+function redact(text) {
+  if (!text)
+    return "";
+  return redactUserPaths(redactSecrets(String(text))).replace(/\s+/g, " ").trim();
+}
+function indexLine(candidate) {
+  const title = redact(candidate.title);
+  const snippet = redact(candidate.snippet);
+  const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, "").toLowerCase());
+  const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
+  return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
+}
+function indexHeading(projectName) {
+  return `Index of durable memories for "${projectName}" (newest first):`;
+}
+function indexEmptyLine(projectName) {
+  return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
+}
+function moreLine(n, truncated) {
+  return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag "project:\u2026"`;
+}
+function olderLine(n, truncated) {
+  return `- ${n}${truncated ? "+" : ""} older memor${n === 1 ? "y" : "ies"} (no change in ${INDEX_STALE_DAYS} days) \u2014 recall to see`;
+}
+function footerLine(shown, bytes, tokens) {
+  return `(index cost: ${shown} line${shown === 1 ? "" : "s"}, ${bytes} bytes \u2248 ${tokens} tokens; cap ${INDEX_MAX_LINES} lines / ${INDEX_MAX_BYTES} bytes)`;
+}
+function closeWithFooter(lines, shown) {
+  const above = sectionBytes(lines);
+  let footer = footerLine(shown, above, Math.ceil(above / 4));
+  for (let step = 0; step < 8; step++) {
+    const bytes = above + byteLength(footer) + 1;
+    const tokens = Math.ceil(bytes / 4);
+    const next = footerLine(shown, bytes, tokens);
+    if (next === footer)
+      return { lines: [...lines, footer], bytes, tokens };
+    footer = next;
+  }
+  throw new Error("briefing index: the footer cost did not converge");
+}
+function buildBriefingIndex(candidates, projectName, now, options = {}) {
+  const truncated = options.truncated === true;
+  const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
+  const eligible = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata)).slice().sort(compareIndexCandidates);
+  const current = [];
+  let older = 0;
+  for (const c of eligible) {
+    const at = parseActivity(c.lastActivity);
+    if (!Number.isNaN(at) && at < cutoff)
+      older++;
+    else
+      current.push(c);
+  }
+  const heading = indexHeading(projectName);
+  if (current.length === 0 && older === 0) {
+    const closed2 = closeWithFooter([heading, indexEmptyLine(projectName)], 0);
+    return { ...closed2, shown: 0, more: 0, older: 0, truncated, ids: [] };
+  }
+  const reserve = sectionBytes([
+    moreLine(current.length, truncated),
+    olderLine(older, truncated),
+    footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
+  ]);
+  const budget = INDEX_MAX_BYTES - reserve - sectionBytes([heading]);
+  const rendered = [];
+  const ids = [];
+  let used = 0;
+  for (const c of current) {
+    if (rendered.length >= INDEX_MAX_LINES)
+      break;
+    const line = indexLine(c);
+    const cost = byteLength(line) + 1;
+    if (used + cost > budget)
+      break;
+    rendered.push(line);
+    ids.push(c.id);
+    used += cost;
+  }
+  const more = current.length - rendered.length;
+  const above = [heading, ...rendered];
+  if (more > 0)
+    above.push(moreLine(more, truncated));
+  if (older > 0)
+    above.push(olderLine(older, truncated));
+  const closed = closeWithFooter(above, rendered.length);
+  return { ...closed, shown: rendered.length, more, older, truncated, ids };
+}
+var INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_STALE_DAYS, INDEX_LINE_MAX_CHARS, INDEX_SNIPPET_FETCH_CHARS, INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, DAY_MS;
+var init_briefing_index = __esm({
+  "dist/core/briefing-index.js"() {
+    "use strict";
+    init_paths();
+    init_work_topology();
+    INDEX_MAX_LINES = 40;
+    INDEX_MAX_BYTES = 3072;
+    INDEX_STALE_DAYS = 180;
+    INDEX_LINE_MAX_CHARS = 120;
+    INDEX_SNIPPET_FETCH_CHARS = 4e3;
+    INDEX_CANDIDATE_CAP = 2e3;
+    INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state"];
+    DAY_MS = 24 * 60 * 60 * 1e3;
+  }
+});
+
+// dist/core/briefing.js
+function parseMetadata(raw) {
+  if (!raw)
+    return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function selectPool(rows, cap) {
+  const withMeta = rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    title: row.title,
+    meta: parseMetadata(row.metadata),
+    access_count: row.access_count ?? void 0,
+    last_accessed_at: row.last_accessed_at ?? void 0,
+    confidence: row.confidence ?? void 0,
+    recall_hits: row.recall_hits ?? void 0,
+    recall_misses: row.recall_misses ?? void 0
+  }));
+  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
+}
+function toTopologyEntity(row, snippet) {
+  const signal = row.meta?.signal_score;
+  return {
+    name: row.name,
+    type: row.type || "memory",
+    id: row.id,
+    title: row.title,
+    snippet,
+    signalScore: typeof signal === "number" ? signal : null
+  };
+}
+function readBriefingIndex(db2, projectName, now = Date.now()) {
+  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
+  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
+  const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
+  const rows = db2.prepare(`SELECT e.id, e.type, e.title, e.metadata,
+       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+         WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
+       max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
+         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+     FROM entities e
+     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
+       AND e.status = 'active'${nonGlobal}
+       AND e.type NOT IN (${excluded})
+     ORDER BY last_activity DESC, e.id DESC
+     LIMIT ?`).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+  const candidates = rows.map((row) => ({
+    id: row.id,
+    type: row.type,
+    title: row.title,
+    snippet: row.snippet,
+    lastActivity: row.last_activity,
+    metadata: row.metadata
+  }));
+  return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
+}
+function assembleBriefing(project, recipient) {
+  const projectName = project ?? getProjectName();
+  const db2 = getDatabase();
+  const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
+  let taskLines;
+  try {
+    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
+  } catch (err) {
+    if (!(err instanceof TaskStateUnreadableError))
+      throw err;
+    taskLines = [`task state for ${projectName}: ${err.message}`];
+  }
+  const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
+  const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient);
+  const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName), inboxRecipient) : void 0;
+  const stateLines = [
+    ...taskLines,
+    ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)
+  ];
+  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
+  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
+  const projectRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ? AND e.status = 'active'${nonGlobal}
+     ORDER BY e.id DESC
+     LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
+  const projectPool = selectPool(projectRows, PROJECT_LIMIT);
+  const globalRows = hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+       FROM entities e
+       WHERE e.namespace = 'global' AND e.status = 'active'
+       ORDER BY e.id DESC
+       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
+  const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
+  const recentRows = db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+     FROM entities e
+     WHERE e.status = 'active'${nonGlobal}
+     ORDER BY e.id DESC
+     LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP);
+  const recentPool = selectPool(recentRows, RECENT_LIMIT);
+  const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
+  const snippets = /* @__PURE__ */ new Map();
+  if (survivorIds.length > 0) {
+    const placeholders = survivorIds.map(() => "?").join(",");
+    const obsRows = db2.prepare(`SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content
+       FROM observations WHERE entity_id IN (${placeholders})
+       ORDER BY id ASC`).all(...survivorIds);
+    for (const row of obsRows) {
+      if (snippets.has(row.entity_id))
+        continue;
+      const text = String(row.content ?? "").trim();
+      if (text)
+        snippets.set(row.entity_id, text);
+    }
+  }
+  const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
+  const lines = assembleTopologyBlock(stateLines, [
+    { entities: toEntities(projectPool), foreign: false },
+    { entities: toEntities(globalPool), foreign: false, global: true },
+    { entities: toEntities(recentPool), foreign: true }
+  ], projectName);
+  const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
+  const index = readBriefingIndex(db2, projectName);
+  const block = withRepo.length > 0 ? [...withRepo, "", ...index.lines] : index.lines;
+  return {
+    project: projectName,
+    text: buildReferenceContext(block),
+    entityCount: lines.filter((l) => l.startsWith("- [")).length,
+    hasTaskState: stateLines.length > 0,
+    index
+  };
+}
+var PROJECT_LIMIT, RECENT_LIMIT, CANDIDATE_COLUMNS;
+var init_briefing = __esm({
+  "dist/core/briefing.js"() {
+    "use strict";
+    init_db();
+    init_paths();
+    init_repo_state();
+    init_scoring();
+    init_task_state_store();
+    init_agent_message_inbox();
+    init_agent_scope_id();
+    init_task_state();
+    init_briefing_index();
+    init_work_topology();
+    PROJECT_LIMIT = 30;
+    RECENT_LIMIT = 5;
+    CANDIDATE_COLUMNS = "e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses";
   }
 });
 
@@ -25157,7 +25598,12 @@ function exportOpenAITools() {
               }
             },
             namespace: { type: "string", enum: ["personal", "team", "global"], description: "Storage scope (default: personal)" }
-          }
+          },
+          anyOf: [
+            { required: ["note"] },
+            { required: ["name", "type"] },
+            { required: ["name", "replace"], properties: { replace: { const: true } } }
+          ]
         }
       }
     },
@@ -54649,6 +55095,15 @@ function isTriggeredRecord(record2) {
     return true;
   return !(NOT_TRIGGERED_SKIP_REASONS[record2.hook] ?? []).includes(record2.reason);
 }
+function readHookOutcomeLines(raw) {
+  const entries = [];
+  for (const line of raw.split("\n")) {
+    const record2 = parseHookOutcomeLine(line);
+    if (record2)
+      entries.push({ hook: record2.hook, triggered: isTriggeredRecord(record2), record: record2, line });
+  }
+  return entries;
+}
 function renderableSkipReason(reason) {
   if (reason === void 0)
     return "unspecified";
@@ -54657,18 +55112,13 @@ function renderableSkipReason(reason) {
 function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
   if (!raw)
     return { hooks: {} };
-  const records = [];
-  for (const line of raw.split("\n")) {
-    const record2 = parseHookOutcomeLine(line);
-    if (record2)
-      records.push(record2);
-  }
-  const keep = windowKeep(records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })), limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
+  const entries = readHookOutcomeLines(raw);
+  const keep = windowKeep(entries, limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
   const hooks = {};
-  records.forEach((record2, i) => {
+  entries.forEach(({ hook, record: record2 }, i) => {
     if (!keep[i])
       return;
-    (hooks[record2.hook] ?? (hooks[record2.hook] = [])).push(record2);
+    (hooks[hook] ?? (hooks[hook] = [])).push(record2);
   });
   return { hooks };
 }
@@ -54689,7 +55139,7 @@ function parseHookOutcomeLine(line) {
     return null;
   if (typeof rec.at !== "string")
     return null;
-  if (rec.outcome !== "wrote" && rec.outcome !== "skipped" && rec.outcome !== "error")
+  if (rec.outcome !== "wrote" && rec.outcome !== "skipped" && rec.outcome !== "notified" && rec.outcome !== "error")
     return null;
   const record2 = {
     hook: rec.hook,
@@ -54728,6 +55178,8 @@ function summarizeOne(hook, records) {
   let triggeredRuns = 0;
   let lastWriteAt = null;
   let lastEntity = null;
+  let notifies = 0;
+  let lastNotifiedAt = null;
   let lastSkipReason = null;
   const skipCounts = /* @__PURE__ */ new Map();
   const hosts = /* @__PURE__ */ new Set();
@@ -54747,6 +55199,10 @@ function summarizeOne(hook, records) {
         lastWriteAt = r.at;
         lastEntity = r.entity ?? null;
       }
+    } else if (r.outcome === "notified") {
+      notifies++;
+      if (lastNotifiedAt === null || r.at >= lastNotifiedAt)
+        lastNotifiedAt = r.at;
     } else if (r.outcome === "skipped") {
       skips++;
       lastSkipReason = r.reason === void 0 ? null : renderableSkipReason(r.reason);
@@ -54778,6 +55234,8 @@ function summarizeOne(hook, records) {
     firstTriggeredAt,
     lastWriteAt,
     lastEntity,
+    notifies,
+    lastNotifiedAt,
     lastSkipReason,
     dominantSkipReason,
     dominantSkipCount,
@@ -54856,6 +55314,7 @@ var init_capture_liveness = __esm({
       noNoteChanged: "no note file changed since the last ingestion",
       noteIngesterNotBuilt: "the note ingester is not built (dist/core/note-ingest.js is missing)",
       noteNothingNew: "note files were read and nothing new needed storing",
+      noteFilesRefused: "note files were refused and nothing was stored",
       noTranscript: "no transcript to read",
       trivialTurn: "trivial turn \u2014 too few tool calls since the last Stop",
       noDecisionMove: "no decision-shaped move since the last Stop",
@@ -54866,7 +55325,9 @@ var init_capture_liveness = __esm({
     UNRECOGNISED_REASON = "unrecognised reason";
     NOT_TRIGGERED_SKIP_REASONS = {
       "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-      "session-summary": [SKIP_REASONS.alreadyCaptured]
+      "session-summary": [SKIP_REASONS.alreadyCaptured],
+      "note-ingest": [SKIP_REASONS.noNoteChanged],
+      "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove]
     };
     NEVER_RAN_GRACE_HOURS = 72;
     RECORD_TEXT_MAX = 200;
@@ -55531,7 +55992,17 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     };
   }
   const writing = hooks.filter((h) => h.writes > 0);
-  const summary = writing.length > 0 ? `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(", ")}).` : hooks.length > 0 ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.` : "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
+  const ranEnough = hooks.filter((h) => h.triggeredRuns >= SILENT_HOOK_MIN_RUNS);
+  let summary;
+  if (writing.length > 0) {
+    summary = `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(", ")}).`;
+  } else if (ranEnough.length > 0) {
+    summary = `${ranEnough.map((h) => `${h.hook} (${h.triggeredRuns} runs)`).join(", ")} ran without writing anything. These hooks decide there is nothing to save on most runs by design, so that is not itself a fault \u2014 \`memesh doctor --json\` has the per-hook figures.`;
+  } else if (hooks.length > 0) {
+    summary = `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.`;
+  } else {
+    summary = "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
+  }
   return {
     check: createCheck("capture-liveness", TITLE, "pass", summary),
     report
@@ -57846,6 +58317,8 @@ var init_server = __esm({
     init_stats();
     init_projects();
     init_task_state_store();
+    init_briefing();
+    init_briefing_index();
     init_schemas3();
     init_agent_messaging2();
     init_version_check();
@@ -58073,6 +58546,22 @@ var init_server = __esm({
         return;
       }
       handleGet(res, () => getTaskState(parsed.data.project));
+    });
+    app.get("/v1/briefing-index", (req, res) => {
+      const parsed = TaskStateQuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(400).json({
+          success: false,
+          errorCode: "validation.bad-param",
+          error: "project query parameter is required (the project name as shown by /v1/projects)"
+        });
+        return;
+      }
+      handleGet(res, () => ({
+        project: parsed.data.project,
+        staleDays: INDEX_STALE_DAYS,
+        ...readBriefingIndex(getDatabase(), parsed.data.project)
+      }));
     });
     app.get("/v1/stats", (_req, res) => handleGet(res, () => computeStats(getDatabase())));
     app.get("/v1/analytics", (_req, res) => handleGet(res, () => computeAnalytics(getDatabase())));
@@ -59490,7 +59979,8 @@ function ingestNoteDirectory(opts) {
     repathed: [],
     restored: [],
     markedMissing: [],
-    skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: "symlink refused" })),
+    skipped: [],
+    refusedNow: 0,
     more: 0
   };
   const db2 = getDatabase();
@@ -59520,6 +60010,26 @@ function ingestNoteDirectory(opts) {
     priorSkips = {};
   }
   const nextSkips = {};
+  const counted = /* @__PURE__ */ new Set();
+  const report = (rel, reason) => {
+    result.skipped.push({ path: rel, reason });
+    if (priorSkips[rel]?.reason === reason || counted.has(rel))
+      return;
+    counted.add(rel);
+    result.refusedNow++;
+  };
+  for (const abs of symlinks) {
+    const rel = relPath(realDir, abs);
+    const reason = "symlink refused";
+    report(rel, reason);
+    let st;
+    try {
+      st = fs10.lstatSync(abs);
+    } catch {
+      st = null;
+    }
+    nextSkips[rel] = st ? { mtime: st.mtimeMs, size: st.size, reason } : { mtime: 0, size: 0, reason };
+  }
   const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
   const declaredNameAt = /* @__PURE__ */ new Map();
   const statOf = (rel) => {
@@ -59538,10 +60048,11 @@ function ingestNoteDirectory(opts) {
   const claims = [];
   const readRels = /* @__PURE__ */ new Set();
   let read = 0;
+  let refunds = 0;
   for (const abs of files) {
     const rel = relPath(realDir, abs);
     const skip = (reason) => {
-      result.skipped.push({ path: rel, reason });
+      report(rel, reason);
     };
     let raw;
     let stat;
@@ -59550,8 +60061,22 @@ function ingestNoteDirectory(opts) {
       nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
       declaredNameAt.set(rel, "");
     };
+    const unreachableSkip = (reason) => {
+      skip(reason);
+      declaredNameAt.set(rel, "");
+      if (readRels.has(rel) && refunds < maxFiles) {
+        read--;
+        refunds++;
+      }
+    };
     try {
       stat = fs10.lstatSync(abs);
+    } catch (err) {
+      skip(`unreadable: ${err.code ?? "error"}`);
+      declaredNameAt.set(rel, "");
+      continue;
+    }
+    try {
       if (stat.isSymbolicLink()) {
         skip("symlink refused");
         continue;
@@ -59563,7 +60088,7 @@ function ingestNoteDirectory(opts) {
       }
       const priorSkip = priorSkips[rel];
       const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
-      if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
+      if (priorSkip && !priorSkip.reportOnly && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
         continue;
@@ -59580,12 +60105,12 @@ function ingestNoteDirectory(opts) {
       }
       const real = fs10.realpathSync(abs);
       if (!real.startsWith(realDir + path9.sep)) {
-        skip("resolves outside the directory");
+        unreachableSkip("resolves outside the directory");
         continue;
       }
       raw = fs10.readFileSync(real);
     } catch (err) {
-      skip(`unreadable: ${err.code ?? "error"}`);
+      unreachableSkip(`unreadable: ${err.code ?? "error"}`);
       continue;
     }
     const parsed = parseFrontmatter(raw.toString("utf8"));
@@ -59611,7 +60136,10 @@ function ingestNoteDirectory(opts) {
       contentSkip("empty note \u2014 no description and no body");
       continue;
     }
-    observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
+    if (observations.length > NOTE_MAX_OBSERVATIONS) {
+      contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+      continue;
+    }
     claims.push({
       rel,
       name,
@@ -59638,8 +60166,10 @@ function ingestNoteDirectory(opts) {
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
     const prov = existing ? parseProvenance(existing.metadata) : {};
     const skipAll = (reason) => {
-      for (const c of claimants)
-        result.skipped.push({ path: c.rel, reason });
+      for (const c of claimants) {
+        report(c.rel, reason);
+        nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, reportOnly: true };
+      }
     };
     if (existing) {
       if (!existing.is_note) {
@@ -59660,7 +60190,7 @@ function ingestNoteDirectory(opts) {
       const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
       const ownerStat = statOf(recordedRel);
       for (const c of claimants) {
-        result.skipped.push({ path: c.rel, reason });
+        report(c.rel, reason);
         if (ownerStat)
           nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: recordedRel, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
       }
@@ -59671,7 +60201,7 @@ function ingestNoteDirectory(opts) {
       if (c === owner)
         continue;
       const reason = `name "${name}" already used by ${owner.rel} in this directory`;
-      result.skipped.push({ path: c.rel, reason });
+      report(c.rel, reason);
       nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: owner.rel, mtime: owner.stat.mtimeMs, size: owner.stat.size } };
     }
     if (owner.unchanged) {
@@ -59750,7 +60280,8 @@ function summarizeNoteIngest(r) {
     `${r.unchanged} unchanged`,
     ...r.repathed.length ? [`${r.repathed.length} moved`] : [],
     ...r.restored.length ? [`${r.restored.length} restored`] : [],
-    `${r.skipped.length} skipped`
+    `${r.skipped.length} skipped`,
+    ...r.refusedNow ? [`${r.refusedNow} newly refused`] : []
   ];
   if (r.markedMissing.length)
     parts.push(`${r.markedMissing.length} marked missing`);
@@ -59759,241 +60290,9 @@ function summarizeNoteIngest(r) {
   return parts.join(", ");
 }
 
-// dist/core/briefing.js
-init_db();
-init_paths();
-
-// dist/core/repo-state.js
-import { execFileSync as execFileSync4 } from "child_process";
-import fs11 from "fs";
-import path10 from "path";
-var GIT_TIMEOUT_MS = 5e3;
-function tryGit2(cwd, args) {
-  try {
-    return execFileSync4("git", ["-C", cwd, ...args], {
-      encoding: "utf8",
-      timeout: GIT_TIMEOUT_MS,
-      stdio: ["ignore", "pipe", "pipe"]
-    }).trim();
-  } catch {
-    return null;
-  }
-}
-function declaredVersionOf(repoRoot) {
-  try {
-    const raw = fs11.readFileSync(path10.join(repoRoot, "package.json"), "utf8");
-    const version2 = JSON.parse(raw).version;
-    return typeof version2 === "string" && version2.length > 0 ? version2 : null;
-  } catch {
-    return null;
-  }
-}
-function readRepoState(cwdInput) {
-  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
-  const repoRoot = tryGit2(cwd, ["rev-parse", "--show-toplevel"]);
-  if (!repoRoot)
-    return null;
-  const branchRaw = tryGit2(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const branch = branchRaw && branchRaw !== "HEAD" ? branchRaw : null;
-  const statusOut = tryGit2(cwd, ["status", "--porcelain"]);
-  const uncommitted = statusOut ? statusOut.split("\n").filter((l) => l.trim() !== "").length : 0;
-  const lastTag = tryGit2(cwd, ["describe", "--tags", "--abbrev=0"]);
-  let commitsSinceTag = null;
-  if (lastTag) {
-    const count = tryGit2(cwd, ["rev-list", "--count", `${lastTag}..HEAD`]);
-    const parsed = count === null ? Number.NaN : Number.parseInt(count, 10);
-    commitsSinceTag = Number.isFinite(parsed) ? parsed : null;
-  }
-  const declaredVersion = declaredVersionOf(repoRoot);
-  let declaredVersionIsTagged = null;
-  if (declaredVersion) {
-    const hit = tryGit2(cwd, ["tag", "--list", `v${declaredVersion}`]);
-    declaredVersionIsTagged = hit === null ? null : hit.length > 0;
-  }
-  return { branch, uncommitted, lastTag, commitsSinceTag, declaredVersion, declaredVersionIsTagged };
-}
-function repoStateLines(state) {
-  if (!state)
-    return [];
-  const first = [];
-  if (state.branch)
-    first.push(`branch ${state.branch}`);
-  first.push(state.uncommitted === 0 ? "working tree clean" : `${state.uncommitted} uncommitted`);
-  const lines = ["Where the repository actually stands (read just now):", `- ${first.join(" \xB7 ")}`];
-  if (state.lastTag) {
-    const since = state.commitsSinceTag;
-    lines.push(since === null ? `- last tag ${state.lastTag}` : since === 0 ? `- at tag ${state.lastTag}` : `- ${since} commit${since === 1 ? "" : "s"} since ${state.lastTag}`);
-  }
-  if (state.declaredVersion && state.declaredVersionIsTagged === false) {
-    lines.push(`- package.json declares ${state.declaredVersion}, which has no tag yet`);
-  }
-  return lines;
-}
-
-// dist/core/briefing.js
-init_scoring();
-init_task_state_store();
-
-// dist/core/agent-message-inbox.js
-function unreadDeliveryCount(db2, project, recipient) {
-  if (!recipient)
-    return 0;
-  try {
-    const row = db2.prepare(`SELECT COUNT(*) AS n
-       FROM agent_message_deliveries d
-       WHERE d.project = ?
-         AND d.recipient = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM agent_message_receipts r
-           WHERE r.project = d.project
-             AND r.recipient = d.recipient
-             AND r.message_id = d.message_id
-             AND r.receipt_kind = 'intake'
-         )`).get(project, recipient);
-    const n = row?.n;
-    return typeof n === "number" && n > 0 ? n : 0;
-  } catch {
-    return 0;
-  }
-}
-function recipientEverSeen(db2, project, recipient) {
-  try {
-    const row = db2.prepare(`SELECT (
-         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
-         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
-         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
-       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
-    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
-  } catch {
-    return void 0;
-  }
-}
-function unreadInboxLines(count, project, recipient, everSeen) {
-  if (!recipient)
-    return [];
-  const displayProject = JSON.stringify(project);
-  const displayRecipient = JSON.stringify(recipient);
-  if (count > 0) {
-    const noun = count === 1 ? "message" : "messages";
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id; fetching does not acknowledge.`];
-  }
-  if (everSeen === false) {
-    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
-  }
-  return [];
-}
-
-// dist/core/briefing.js
-init_agent_scope_id();
-init_task_state();
+// dist/transports/cli/cli.js
+init_briefing();
 init_work_topology();
-var PROJECT_LIMIT = 30;
-var RECENT_LIMIT = 5;
-var CANDIDATE_COLUMNS = "e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses";
-function parseMetadata(raw) {
-  if (!raw)
-    return null;
-  try {
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === "object" ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-function selectPool(rows, cap) {
-  const withMeta = rows.map((row) => ({
-    id: row.id,
-    name: row.name,
-    type: row.type,
-    title: row.title,
-    meta: parseMetadata(row.metadata),
-    access_count: row.access_count ?? void 0,
-    last_accessed_at: row.last_accessed_at ?? void 0,
-    confidence: row.confidence ?? void 0,
-    recall_hits: row.recall_hits ?? void 0,
-    recall_misses: row.recall_misses ?? void 0
-  }));
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
-}
-function toTopologyEntity(row, snippet) {
-  const signal = row.meta?.signal_score;
-  return {
-    name: row.name,
-    type: row.type || "memory",
-    id: row.id,
-    title: row.title,
-    snippet,
-    signalScore: typeof signal === "number" ? signal : null
-  };
-}
-function assembleBriefing(project, recipient) {
-  const projectName = project ?? getProjectName();
-  const db2 = getDatabase();
-  const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
-  let taskLines;
-  try {
-    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
-  } catch (err) {
-    if (!(err instanceof TaskStateUnreadableError))
-      throw err;
-    taskLines = [`task state for ${projectName}: ${err.message}`];
-  }
-  const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
-  const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient);
-  const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName), inboxRecipient) : void 0;
-  const stateLines = [
-    ...taskLines,
-    ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)
-  ];
-  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
-  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
-  const projectRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
-     FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ? AND e.status = 'active'${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
-  const projectPool = selectPool(projectRows, PROJECT_LIMIT);
-  const globalRows = hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
-       FROM entities e
-       WHERE e.namespace = 'global' AND e.status = 'active'
-       ORDER BY e.id DESC
-       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
-  const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
-  const recentRows = db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
-     FROM entities e
-     WHERE e.status = 'active'${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP);
-  const recentPool = selectPool(recentRows, RECENT_LIMIT);
-  const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
-  const snippets = /* @__PURE__ */ new Map();
-  if (survivorIds.length > 0) {
-    const placeholders = survivorIds.map(() => "?").join(",");
-    const obsRows = db2.prepare(`SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content
-       FROM observations WHERE entity_id IN (${placeholders})
-       ORDER BY id ASC`).all(...survivorIds);
-    for (const row of obsRows) {
-      if (snippets.has(row.entity_id))
-        continue;
-      const text = String(row.content ?? "").trim();
-      if (text)
-        snippets.set(row.entity_id, text);
-    }
-  }
-  const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
-  const lines = assembleTopologyBlock(stateLines, [
-    { entities: toEntities(projectPool), foreign: false },
-    { entities: toEntities(globalPool), foreign: false, global: true },
-    { entities: toEntities(recentPool), foreign: true }
-  ], projectName);
-  const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
-  return {
-    project: projectName,
-    text: lines.length > 0 ? buildReferenceContext(withRepo) : "",
-    entityCount: lines.filter((l) => l.startsWith("- [")).length,
-    hasTaskState: stateLines.length > 0
-  };
-}
 
 // dist/core/session-insight.js
 init_paths();
@@ -60353,7 +60652,14 @@ function storedProvenance(metadata) {
   }
 }
 function trustFor(verdict) {
-  return verdict === "accepted" ? "verified" : verdict === "rejected" ? "rejected" : "untrusted-until-verified";
+  switch (verdict) {
+    case "accepted":
+      return "verified";
+    case "rejected":
+      return "rejected";
+    default:
+      return "untrusted-until-verified";
+  }
 }
 function verdictLine(verdict, at, note2) {
   const base = verdict === "unreviewed" ? "Verdict: unreviewed \u2014 the worker output is untrusted until the orchestrator verifies it" : `Verdict: ${verdict} by the orchestrator at ${at}`;
@@ -60385,7 +60691,11 @@ function recordDelegation(input) {
   }
   const granted = input.grantedTools?.map((t) => clean(t, 64)).slice(0, 50);
   const allowedTools = granted ?? summary.allowedTools;
-  const allowedSource = granted ? "orchestrator" : summary.allowedTools ? "envelope" : null;
+  let allowedSource = null;
+  if (granted)
+    allowedSource = "orchestrator";
+  else if (summary.allowedTools)
+    allowedSource = "envelope";
   const toolsLine = allowedTools === null ? "Allowed tools: not reported in the envelope" : `Allowed tools: ${allowedTools.length ? allowedTools.join(", ") : "none"}${granted ? " (granted by the orchestrator)" : ""}`;
   const envelopeDisagrees = granted && summary.allowedTools && [...granted].sort().join("\0") !== [...summary.allowedTools].sort().join("\0");
   const at = (/* @__PURE__ */ new Date()).toISOString();
@@ -60703,7 +61013,7 @@ program2.hook("preAction", (_thisCommand, actionCommand) => {
     process.stderr.write(`${line}
 `);
 });
-program2.command("remember").argument("[text]", "Quick-capture text \u2014 title, observations and name are derived from it (type defaults to note)").description("Store knowledge as an entity (use flags for explicit form, or positional text for quick capture)").option("--name <name>", "Entity name").option("--type <type>", "Entity type").option("--title <title>", "Short human-readable label shown as the headline (name stays the stable machine key)").option("--obs <observations...>", "Observations (space-separated)").option("--tags <tags...>", "Tags (space-separated)").option("--replace", "Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history").option("--namespace <namespace>", "Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in \u2014 omit the flag to leave it alone.").option("--supersedes <name...>", "This memory replaces the named one \u2014 ARCHIVES it immediately (recoverable; nothing is deleted)").option("--contradicts <name...>", "This memory cannot both be true with the named one \u2014 both surface as a conflict on every recall").option("--json", "Output as JSON").action(async (text, opts) => {
+program2.command("remember").argument("[text]", "Quick-capture text \u2014 title, observations and name are derived from it (type defaults to note)").description("Store knowledge as an entity (use flags for explicit form, or positional text for quick capture)").option("--name <name>", "Entity name").option("--type <type>", "Entity type (omit it with --replace to keep the type the memory already has)").option("--title <title>", "Short human-readable label shown as the headline (name stays the stable machine key)").option("--obs <observations...>", "Observations (space-separated)").option("--tags <tags...>", "Tags (space-separated)").option("--replace", "Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history").option("--namespace <namespace>", "Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in \u2014 omit the flag to leave it alone.").option("--supersedes <name...>", "This memory replaces the named one \u2014 ARCHIVES it immediately (recoverable; nothing is deleted)").option("--contradicts <name...>", "This memory cannot both be true with the named one \u2014 both surface as a conflict on every recall").option("--json", "Output as JSON").action(async (text, opts) => {
   requireOneOf(opts.namespace, NAMESPACES, "--namespace");
   if (opts.replace && !opts.name) {
     console.error("Error: --replace needs --name \u2014 it rewrites the memory with that name.");
@@ -60726,8 +61036,9 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       }
       opts.name = derived.name;
       opts.type ??= NOTE_DEFAULT_TYPE;
+      const derivedObs = opts.title === void 0 ? derived.observations : splitObservations(derived.text);
       opts.title ??= derived.title;
-      opts.obs = opts.obs?.length ? [...derived.observations, ...opts.obs] : derived.observations;
+      opts.obs = opts.obs?.length ? [...derivedObs, ...opts.obs] : derivedObs;
     }
   } else if (text) {
     if (!opts.obs || opts.obs.length === 0)
@@ -60735,8 +61046,8 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
     else
       opts.obs = [...opts.obs, String(text)];
   }
-  if (note2 === void 0 && (!opts.name || !opts.type)) {
-    console.error('Error: provide --name and --type, OR pass quick-capture text as a positional arg.\n  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0"\n  memesh remember "Use OAuth 2.0 with PKCE"');
+  if (note2 === void 0 && (!opts.name || !opts.type && opts.replace !== true)) {
+    console.error('Error: provide --name and --type, OR --name with --replace to correct a memory that exists, OR pass quick-capture text as a positional arg.\n  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0"\n  memesh remember --name "auth" --replace --obs "Use OAuth 2.0 with PKCE"\n  memesh remember "Use OAuth 2.0 with PKCE"');
     process.exit(1);
   }
   if (opts.obs?.some((o) => o.trim() === "")) {
@@ -60749,6 +61060,26 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
     ...supersedes.map((to) => ({ to, type: "supersedes" })),
     ...contradicts.map((to) => ({ to, type: "contradicts" }))
   ];
+  if (note2 === void 0) {
+    if (opts.obs && opts.obs.length > NOTE_MAX_OBSERVATIONS) {
+      console.error(`Error: that is ${opts.obs.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory.`);
+      process.exit(1);
+    }
+    const check2 = RememberSchema.safeParse({
+      name: opts.name,
+      type: opts.type,
+      ...opts.title !== void 0 ? { title: opts.title } : {},
+      ...opts.obs?.length ? { observations: opts.obs } : {},
+      ...opts.tags?.length ? { tags: opts.tags } : {},
+      ...opts.replace === true ? { replace: true } : {},
+      ...relations.length > 0 ? { relations } : {},
+      ...opts.namespace !== void 0 ? { namespace: opts.namespace } : {}
+    });
+    if (!check2.success) {
+      console.error(`Error: ${check2.error.issues.map((i) => i.message).join("; ")}`);
+      process.exit(1);
+    }
+  }
   await withDatabase(async () => {
     let result;
     try {
@@ -60770,7 +61101,8 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
     } else {
       console.log(`\u2705 Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
       if (result.derived) {
-        console.log(`   title: ${result.derived.title}`);
+        if (result.title)
+          console.log(`   title: ${result.title}`);
         console.log(`   fix it with: memesh remember --name "${result.name}" --type ${result.derived.type} --title "\u2026" --obs "\u2026" --replace`);
       }
       if (result.replaced)
@@ -60942,6 +61274,11 @@ program2.command("import").description("Import memories from a JSON export file,
   }
   if (!file2) {
     console.error("Error: pass a JSON export file (memesh import my-export.json) or --notes <dir>.");
+    process.exit(1);
+  }
+  const notesOnly = ["project", "json"].filter((k) => cmd.getOptionValueSource(k) === "cli");
+  if (notesOnly.length > 0) {
+    console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(" and ")} only appl${notesOnly.length > 1 ? "y" : "ies"} to --notes. A JSON export file is imported with --namespace and --merge.`);
     process.exit(1);
   }
   requireOneOf(opts.merge, ["skip", "overwrite", "append"], "--merge");
@@ -61274,19 +61611,28 @@ agentCmd.command("setup").argument("<host>", "codex-session | codex | claude | g
     ]
   ].join("\n"));
 });
-program2.command("briefing").description("The assembled work topology for a project \u2014 task state, decisions, lessons, knowledge, recent activity").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--json", "Output as JSON").action(async (opts) => {
+program2.command("briefing").description("The assembled work topology for a project \u2014 task state, decisions, lessons, knowledge, recent activity").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--index", "Only the index of durable memories (decisions, lessons, patterns, references), newest first").option("--json", "Output as JSON").action(async (opts) => {
   await withDatabase(() => {
+    if (opts.index) {
+      const project = opts.project ?? getProjectName();
+      const index = readBriefingIndex(getDatabase(), project);
+      if (opts.json) {
+        console.log(JSON.stringify({ project, ...index }));
+        return;
+      }
+      console.log(buildReferenceContext(index.lines));
+      return;
+    }
     const result = assembleBriefing(opts.project, opts.recipient);
     if (opts.json) {
       console.log(JSON.stringify(result));
       return;
     }
-    if (!result.text) {
-      console.log(`No memories for "${result.project}" yet.
-Capture happens automatically as you work; or set the task state:  memesh task --goal "\u2026"`);
-      return;
-    }
     console.log(result.text);
+    if (result.entityCount === 0 && !result.hasTaskState && result.index.shown === 0 && result.index.older === 0) {
+      console.log(`
+Capture happens automatically as you work; or set the task state:  memesh task --goal "\u2026"`);
+    }
   });
 });
 var WHY_ABSTENTION_TEXT = {

@@ -29,6 +29,29 @@ on:
   # matrix and watching the matrix not run on it.
   pull_request:
 
+  # Run the whole matrix on any branch, on demand.
+  #
+  # Without this the matrix is unreachable in two states a branch actually
+  # spends time in. A branch with no pull request yet gets nothing, because
+  # the `push` trigger above is filtered to `main`. And a pull request GitHub
+  # considers conflicting gets nothing either: it does not schedule
+  # `pull_request` checks while the merge state is dirty. Measured on #333 —
+  # fifty-five commits sat without a single run, and all twelve checks
+  # scheduled the moment the merge landed and the state turned MERGEABLE. The
+  # platform-specific failures this matrix exists to catch (CRLF, a
+  # clock-bound fixture, a Windows-only path) were therefore unreachable
+  # precisely while the branch was hardest to reason about.
+  #
+  # No inputs: the branch is chosen by the ref the run is dispatched on, and
+  # every job below is unconditional — there is no `if:` in this file — so a
+  # dispatched run does exactly what a pull request run does, rather than a
+  # quieter subset that would make a green tick mean something different.
+  #
+  # Free here, and that is checked rather than assumed: this repository is
+  # public, and GitHub reports `billable.duration_ms = 0` for every leg
+  # including the two Windows ones, which bill at 2x on private repositories.
+  workflow_dispatch:
+
 # Least privilege, stated here rather than inherited.
 #
 # Every other workflow in this directory declares its own; this one did not,

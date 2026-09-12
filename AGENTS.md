@@ -10,8 +10,16 @@ host is recallable from all of them. Not installed yet? Follow
 1. **Session start — load, don't re-explore.** Call the `briefing` tool once
    (CLI: `memesh briefing`). It returns the assembled work topology for the
    current project: goal / next / blocked / done, decisions, lessons,
-   knowledge, recent activity. Read that instead of re-reading the repo to
-   reconstruct context.
+   knowledge, recent activity, and — closing the block — a capped index of
+   recent durable memories, one line each with its `[mem:id]` handle
+   (`memesh briefing --index` prints just that). The index is a recent
+   window, not everything: it holds at most 40 lines / 3072 bytes, memories
+   untouched for 180 days collapse into a single count line with no
+   `[mem:id]`, and whatever else is cut past those caps becomes an
+   `N more — memesh recall --tag "project:…"` line, also with no
+   `[mem:id]`. Treat the index as "recent, capped" — when it says there is
+   more, call `recall` rather than assuming the index already covers it.
+   Read the index instead of re-reading the repo to reconstruct context.
 2. **When the user states a goal, a next step, or a blocker — record it.**
    Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`). It
    is injected at the start of the next session and acted on as fact.
@@ -58,7 +66,7 @@ host is recallable from all of them. Not installed yet? Follow
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
 | `learn` | Record a structured lesson: error, root cause, fix, prevention |
 | `task_state` | Read or update where the work stands: goal / next / blocked / done |
-| `briefing` | The assembled work topology; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology, closing with a capped index of the project's durable memories; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition |
@@ -73,11 +81,14 @@ host is recallable from all of them. Not installed yet? Follow
   name appends observations and dedupes tags. A fresh name for every update
   creates duplicates that recall must wade through.
 - **Correct a memory in one call**: `remember` it again with its `name` and
-  `replace: true`. Observations are rewritten (tags too when you pass them,
-  the title when you pass `title` or `note`); what was there moves to
-  `metadata.replaced_history` with the time it was replaced, so the wrong
-  line stops showing up in recall but is not lost (recall shows only
-  `replaced_history_count`; `export` has the versions).
+  `replace: true`. `type` is not needed — the memory keeps the one it has.
+  Pass a `type` only to reclassify: one that differs from what is stored
+  rewrites it. (`type` is still required on a call with no `note` that is
+  not a `replace`, and on a `replace` whose `name` does not exist yet.) Observations are rewritten (tags too
+  when you pass them, the title when you pass `title` or `note`); what was
+  there moves to `metadata.replaced_history` with the time it was replaced,
+  so the wrong line stops showing up in recall but is not lost (recall shows
+  only `replaced_history_count`; `export` has the versions).
 - **Replacing a decision**: `remember` the new one with a relation of type
   `supersedes` pointing at the old — the old entity is archived (recoverable),
   not left active to contradict the new one.
@@ -122,7 +133,10 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
   a file that disappears is tagged `source:note-file:missing`, never deleted),
   and when the turn since the last Stop approved a plan, answered a question,
   committed, or turned a test red then green — with no `remember`/`learn` call
-  and no note-file change — it shows one line suggesting a `remember`.
+  and no note-file change — it shows one line suggesting a `remember`. Both
+  the session capture and the note-directory ingestion are writes, so both
+  stop when auto-capture is off (`memesh config set autoCapture false`, or
+  `MEMESH_AUTO_CAPTURE=false`); the reminder line still runs either way.
 - **PreCompact** saves important knowledge before history is compressed.
 - **UserPromptSubmit** detects "remember this" intent in the prompt.
 - **PreToolUse (Bash)** fires accepted lesson-guards: a fenced warning

@@ -84,7 +84,7 @@ export interface RememberResult {
     stored: boolean;
     entityId: number;
     name: string;
-    title?: string | null;
+    title: string | null;
     type: string;
     observations: number;
     tags: number;

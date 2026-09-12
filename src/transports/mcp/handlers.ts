@@ -68,7 +68,7 @@ export const TOOL_DEFINITIONS = [
     description:
       'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. ' +
       'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
-      'To correct a memory, call again with its `name` and `replace: true` — the old content moves to metadata.replaced_history instead of staying next to the fix.',
+      'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -80,7 +80,7 @@ export const TOOL_DEFINITIONS = [
         type: {
           type: 'string',
           description:
-            'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given, in which case it defaults to "note".',
+            'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given (it then defaults to "note"), or `replace: true` is sent with the `name` of a memory that exists — that call keeps the stored type. Passing one on a `replace` reclassifies the memory.',
         },
         note: {
           type: 'string',
@@ -145,6 +145,19 @@ export const TOOL_DEFINITIONS = [
         },
       },
       additionalProperties: false,
+      // The rule RememberSchema's superRefine enforces: `note` alone,
+      // `name` + `type`, or `name` + `replace: true` (which inherits the
+      // stored type — #333 T4). Dropping the old `required: ['name','type']`
+      // — which was wrong for the note form — left this schema declaring
+      // nothing required at all, so a client reading it could believe `{}` is
+      // a valid call and only learn otherwise from a runtime rejection. Same
+      // branches in the same order as the exported OpenAI schema in
+      // src/core/schema-export.ts.
+      anyOf: [
+        { required: ['note'] },
+        { required: ['name', 'type'] },
+        { required: ['name', 'replace'], properties: { replace: { const: true } } },
+      ],
     },
   },
   {
@@ -289,7 +302,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'briefing',
     description:
-      'The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, and recent activity — the same block Claude Code receives at session start. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.',
+      'The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, recent activity, and a capped index of the project’s durable memories (one line each, newest first, with [mem:id] handles; structured counts and token cost in `index`) — the same block Claude Code receives at session start. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.',
     inputSchema: {
       type: 'object' as const,
       properties: {

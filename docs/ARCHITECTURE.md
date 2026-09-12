@@ -73,7 +73,7 @@ MeMesh separates concerns into two layers:
 
 **Transports** (`src/transports/`) — thin adapters that expose core operations:
 - `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, and `dream` have subcommands)
-- `http/server.ts` — Express server (`memesh serve`, default port 3737): 30 `/v1` endpoints including two retired 410 routes, plus `/dashboard` and `/favicon.ico`; bearer-auth gate when bound non-loopback
+- `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including two retired 410 routes, plus `/dashboard` and `/favicon.ico`; bearer-auth gate when bound non-loopback
 - `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that records cooperative transport provenance (not authenticated human/model identity) and never turns a read into a receipt
 - `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
 
@@ -433,7 +433,13 @@ capture hooks (`post-commit`, `session-summary`, `pre-compact`,
 `hook-outcomes.jsonl` beside the database, through `recordHookOutcome` in
 `scripts/hooks/_shared.js`:
 
-- **Every exit path records** `wrote`, `skipped` + reason, or `error`. Skip
+- **Every exit path records** `wrote`, `notified`, `skipped` + reason, or
+  `error`. The line between the first two is the point of the record: `wrote`
+  means a memory was stored and nothing else, because it is the numerator of the
+  signal doctor uses to answer "is capture alive"; `notified` is for a hook whose
+  effect is text a person or a model sees — an injected context, a printed
+  warning, a nudge. Six hooks recorded those as `wrote` until #324, each with its
+  own comment saying it was not a memory. Skip
   reasons are `SKIP_REASONS` constants (the gate below rejects a literal), and
   doctor quotes only those; anything else shows as `unrecognised reason`. An outer
   catch records only `uncaught <code or name>`; the exception text goes to

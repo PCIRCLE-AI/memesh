@@ -27241,8 +27241,8 @@ function buildRelevanceMap(entities) {
 function remember(input) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
-  const { args, derived } = resolveRememberInput(input);
-  return db2.transaction(() => rememberInTransaction(args, derived, db2, kg)).immediate();
+  const { args, derived, typeGiven } = resolveRememberInput(input);
+  return db2.transaction(() => rememberInTransaction(args, derived, typeGiven, db2, kg)).immediate();
 }
 var REPLACED_HISTORY_MAX = 20;
 var REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
@@ -27276,9 +27276,13 @@ function summarizeReplacedHistory(entities) {
 }
 function resolveRememberInput(input) {
   if (input.note === void 0) {
-    if (!input.name || !input.type)
+    if (!input.name)
       throw new Error("remember needs `name` and `type`, or `note`");
-    return { args: input };
+    if (input.type === "")
+      throw new Error("remember needs `name` and `type`, or `note`");
+    if (input.type === void 0 && !input.replace)
+      throw new Error("remember needs `name` and `type`, or `note`");
+    return { args: input, typeGiven: input.type !== void 0 };
   }
   if (input.title !== void 0 || input.observations !== void 0) {
     throw new Error("`note` derives title and observations; do not also pass `title` or `observations`");
@@ -27297,12 +27301,21 @@ function resolveRememberInput(input) {
       title: derived.title,
       observations: derived.observations
     },
-    derived
+    derived,
+    typeGiven: input.type !== void 0
   };
 }
-function rememberInTransaction(args, derived, db2, kg) {
-  const existing = db2.prepare("SELECT id, namespace, type, title FROM entities WHERE name = ?").get(args.name);
+function rememberInTransaction(args, derived, typeGiven, db2, kg) {
+  const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
+  if (args.replace && existing && existing.status === "archived") {
+    throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. Remember it again without \`replace\` to bring it back, then replace it.`);
+  }
+  const entityType = args.type ?? existing?.type;
+  if (entityType === void 0) {
+    throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, so this call would create one with no type \u2014 pass \`type\` to create it.`);
+  }
   let replacedVersion;
+  let retypedTo;
   let tags = args.tags;
   let title = args.title;
   let observations = args.observations;
@@ -27315,6 +27328,10 @@ function rememberInTransaction(args, derived, db2, kg) {
       tags: previousTags
     };
     kg.clearEntityData(args.name);
+    if (typeGiven && entityType !== existing.type) {
+      db2.prepare("UPDATE entities SET type = ? WHERE id = ?").run(entityType, existing.id);
+      retypedTo = entityType;
+    }
     if (tags === void 0)
       tags = previousTags;
   } else if (derived && existing) {
@@ -27322,7 +27339,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     const stored = new Set(db2.prepare("SELECT content FROM observations WHERE entity_id = ?").all(existing.id).map((o) => o.content));
     observations = observations?.filter((o) => !stored.has(o));
   }
-  const entityId = kg.createEntity(args.name, args.type, {
+  const entityId = kg.createEntity(args.name, entityType, {
     observations,
     tags,
     namespace: args.namespace,
@@ -27366,12 +27383,13 @@ function rememberInTransaction(args, derived, db2, kg) {
       }
     }
   }
+  const storedTitle = db2.prepare("SELECT title FROM entities WHERE id = ?").get(entityId).title;
   return {
     stored: true,
     entityId,
     name: args.name,
-    ...title !== void 0 ? { title } : {},
-    type: existing?.type ?? args.type,
+    title: storedTitle,
+    type: retypedTo ?? existing?.type ?? entityType,
     observations: observations?.length ?? 0,
     tags: tags?.length ?? 0,
     relations: relationsCreated.length,
@@ -27380,7 +27398,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     ...superseded.length > 0 ? { superseded } : {},
     ...relationErrors.length > 0 ? { relationErrors } : {},
     ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
-    ...derived ? { derived: { name: args.name, type: existing?.type ?? args.type, title: derived.title, observations: derived.observations } } : {}
+    ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } } : {}
   };
 }
 function searchAndScore(args) {
@@ -28732,6 +28750,141 @@ function buildReferenceContext(memoryLines) {
   ].join("\n");
 }
 
+// dist/core/briefing-index.js
+var INDEX_MAX_LINES = 40;
+var INDEX_MAX_BYTES = 3072;
+var INDEX_STALE_DAYS = 180;
+var INDEX_LINE_MAX_CHARS = 120;
+var INDEX_SNIPPET_FETCH_CHARS = 4e3;
+var INDEX_CANDIDATE_CAP = 2e3;
+var INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state"];
+function isIndexableType(type) {
+  return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
+}
+var DAY_MS = 24 * 60 * 60 * 1e3;
+function byteLength(text) {
+  return new TextEncoder().encode(text).length;
+}
+function sectionBytes(lines) {
+  return lines.reduce((sum, line) => sum + byteLength(line) + 1, 0);
+}
+function parseActivity(value) {
+  if (!value)
+    return Number.NaN;
+  const iso = /[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`;
+  return Date.parse(iso);
+}
+function compareIndexCandidates(a, b) {
+  const at = parseActivity(a.lastActivity);
+  const bt = parseActivity(b.lastActivity);
+  const av = Number.isNaN(at) ? -Infinity : at;
+  const bv = Number.isNaN(bt) ? -Infinity : bt;
+  if (av !== bv)
+    return bv - av;
+  return b.id - a.id;
+}
+function candidateIsAutoInjectable(metadata) {
+  if (metadata == null)
+    return true;
+  if (typeof metadata === "string") {
+    let parsed;
+    try {
+      parsed = JSON.parse(metadata);
+    } catch {
+      return false;
+    }
+    return parsed !== null && typeof parsed === "object" && isAutoInjectable(parsed);
+  }
+  return isAutoInjectable(metadata);
+}
+function redact(text) {
+  if (!text)
+    return "";
+  return redactUserPaths(redactSecrets(String(text))).replace(/\s+/g, " ").trim();
+}
+function indexLine(candidate) {
+  const title = redact(candidate.title);
+  const snippet = redact(candidate.snippet);
+  const repeats = title && snippet && snippet.toLowerCase().startsWith(title.replace(/…$/, "").toLowerCase());
+  const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
+  return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
+}
+function indexHeading(projectName) {
+  return `Index of durable memories for "${projectName}" (newest first):`;
+}
+function indexEmptyLine(projectName) {
+  return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
+}
+function moreLine(n, truncated) {
+  return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag "project:\u2026"`;
+}
+function olderLine(n, truncated) {
+  return `- ${n}${truncated ? "+" : ""} older memor${n === 1 ? "y" : "ies"} (no change in ${INDEX_STALE_DAYS} days) \u2014 recall to see`;
+}
+function footerLine(shown, bytes, tokens) {
+  return `(index cost: ${shown} line${shown === 1 ? "" : "s"}, ${bytes} bytes \u2248 ${tokens} tokens; cap ${INDEX_MAX_LINES} lines / ${INDEX_MAX_BYTES} bytes)`;
+}
+function closeWithFooter(lines, shown) {
+  const above = sectionBytes(lines);
+  let footer = footerLine(shown, above, Math.ceil(above / 4));
+  for (let step = 0; step < 8; step++) {
+    const bytes = above + byteLength(footer) + 1;
+    const tokens = Math.ceil(bytes / 4);
+    const next = footerLine(shown, bytes, tokens);
+    if (next === footer)
+      return { lines: [...lines, footer], bytes, tokens };
+    footer = next;
+  }
+  throw new Error("briefing index: the footer cost did not converge");
+}
+function buildBriefingIndex(candidates, projectName, now, options = {}) {
+  const truncated = options.truncated === true;
+  const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
+  const eligible = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata)).slice().sort(compareIndexCandidates);
+  const current = [];
+  let older = 0;
+  for (const c of eligible) {
+    const at = parseActivity(c.lastActivity);
+    if (!Number.isNaN(at) && at < cutoff)
+      older++;
+    else
+      current.push(c);
+  }
+  const heading = indexHeading(projectName);
+  if (current.length === 0 && older === 0) {
+    const closed2 = closeWithFooter([heading, indexEmptyLine(projectName)], 0);
+    return { ...closed2, shown: 0, more: 0, older: 0, truncated, ids: [] };
+  }
+  const reserve = sectionBytes([
+    moreLine(current.length, truncated),
+    olderLine(older, truncated),
+    footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
+  ]);
+  const budget = INDEX_MAX_BYTES - reserve - sectionBytes([heading]);
+  const rendered = [];
+  const ids = [];
+  let used = 0;
+  for (const c of current) {
+    if (rendered.length >= INDEX_MAX_LINES)
+      break;
+    const line = indexLine(c);
+    const cost = byteLength(line) + 1;
+    if (used + cost > budget)
+      break;
+    rendered.push(line);
+    ids.push(c.id);
+    used += cost;
+  }
+  const more = current.length - rendered.length;
+  const above = [heading, ...rendered];
+  if (more > 0)
+    above.push(moreLine(more, truncated));
+  if (older > 0)
+    above.push(olderLine(older, truncated));
+  const closed = closeWithFooter(above, rendered.length);
+  return { ...closed, shown: rendered.length, more, older, truncated, ids };
+}
+
 // dist/core/briefing.js
 var PROJECT_LIMIT = 30;
 var RECENT_LIMIT = 5;
@@ -28771,6 +28924,31 @@ function toTopologyEntity(row, snippet) {
     snippet,
     signalScore: typeof signal === "number" ? signal : null
   };
+}
+function readBriefingIndex(db2, projectName, now = Date.now()) {
+  const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
+  const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
+  const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
+  const rows = db2.prepare(`SELECT e.id, e.type, e.title, e.metadata,
+       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+         WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
+       max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
+         WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
+     FROM entities e
+     WHERE e.id IN (SELECT entity_id FROM tags WHERE tag = ?)
+       AND e.status = 'active'${nonGlobal}
+       AND e.type NOT IN (${excluded})
+     ORDER BY last_activity DESC, e.id DESC
+     LIMIT ?`).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+  const candidates = rows.map((row) => ({
+    id: row.id,
+    type: row.type,
+    title: row.title,
+    snippet: row.snippet,
+    lastActivity: row.last_activity,
+    metadata: row.metadata
+  }));
+  return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
 }
 function assembleBriefing(project, recipient) {
   const projectName = project ?? getProjectName();
@@ -28833,11 +29011,14 @@ function assembleBriefing(project, recipient) {
     { entities: toEntities(recentPool), foreign: true }
   ], projectName);
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
+  const index = readBriefingIndex(db2, projectName);
+  const block = withRepo.length > 0 ? [...withRepo, "", ...index.lines] : index.lines;
   return {
     project: projectName,
-    text: lines.length > 0 ? buildReferenceContext(withRepo) : "",
+    text: buildReferenceContext(block),
     entityCount: lines.filter((l) => l.startsWith("- [")).length,
-    hasTaskState: stateLines.length > 0
+    hasTaskState: stateLines.length > 0,
+    index
   };
 }
 
@@ -29659,13 +29840,13 @@ var RememberSchema = external_exports.object({
   if (data.note === void 0) {
     if (data.name === void 0)
       ctx.addIssue({ code: "custom", path: ["name"], message: "name is required (or pass `note` to have it derived)" });
-    if (data.type === void 0)
-      ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note")' });
+    if (data.type === void 0 && !(data.replace && data.name !== void 0))
+      ctx.addIssue({ code: "custom", path: ["type"], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
     return;
   }
   for (const key of ["title", "observations"]) {
     if (data[key] !== void 0) {
-      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key}` });
+      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
     }
   }
   if (data.replace && data.name === void 0) {
@@ -29675,7 +29856,7 @@ var RememberSchema = external_exports.object({
   if (!derived) {
     ctx.addIssue({ code: "custom", path: ["note"], message: "note must contain some text" });
   } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
-    ctx.addIssue({ code: "custom", path: ["note"], message: `note splits into ${derived.observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+    ctx.addIssue({ code: "custom", path: ["note"], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
 });
 var RecallSchema = external_exports.object({
@@ -30926,7 +31107,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "remember",
-    description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the old content moves to metadata.replaced_history instead of staying next to the fix.",
+    description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix.",
     inputSchema: {
       type: "object",
       properties: {
@@ -30936,7 +31117,7 @@ var TOOL_DEFINITIONS = [
         },
         type: {
           type: "string",
-          description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given, in which case it defaults to "note".'
+          description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given (it then defaults to "note"), or `replace: true` is sent with the `name` of a memory that exists \u2014 that call keeps the stored type. Passing one on a `replace` reclassifies the memory.'
         },
         note: {
           type: "string",
@@ -30982,7 +31163,12 @@ var TOOL_DEFINITIONS = [
           description: 'Namespace for organizing the entity. Omit it to leave an existing memory where it is \u2014 supplying it MOVES a memory that already exists, and it drops out of every other scoped view. New memories default to "personal".'
         }
       },
-      additionalProperties: false
+      additionalProperties: false,
+      anyOf: [
+        { required: ["note"] },
+        { required: ["name", "type"] },
+        { required: ["name", "replace"], properties: { replace: { const: true } } }
+      ]
     }
   },
   {
@@ -31107,7 +31293,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "briefing",
-    description: "The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, and recent activity \u2014 the same block Claude Code receives at session start. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.",
+    description: "The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, recent activity, and a capped index of the project\u2019s durable memories (one line each, newest first, with [mem:id] handles; structured counts and token cost in `index`) \u2014 the same block Claude Code receives at session start. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.",
     inputSchema: {
       type: "object",
       properties: {

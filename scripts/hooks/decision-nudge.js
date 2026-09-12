@@ -54,8 +54,10 @@ const MAX_STDIN_BYTES = 1_048_576;
 
 // See post-commit.js for why every exit path leaves a record (#327). This
 // hook opens no database (see the contract above), and recordHookOutcome
-// touches only a small JSON file, so that constraint still holds. Its
-// "wrote" is the nudge it emitted — the only effect it has.
+// touches only a small JSON file, so that constraint still holds. Its only
+// effect is the nudge it emits, so it records `notified`, not `wrote`:
+// doctor's `writes` answers "is memory capture still alive", and a nudge is
+// the opposite — it is what memesh says when nothing has been stored.
 let payload = null;
 function record(outcome, reason, entity) {
   recordHookOutcome(process.env, { hook: 'decision-nudge', outcome, reason, entity, payload });
@@ -112,7 +114,7 @@ process.stdin.on('end', () => {
         additionalContext: buildNudge(toolName),
       },
     }));
-    record('wrote', undefined, `nudge:${toolName}`);
+    record('notified', undefined, `nudge:${toolName}`);
     process.exit(0);
   } catch (err) {
     // Never crash Claude Code, but trace — a silent break here means the

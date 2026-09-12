@@ -217,7 +217,17 @@ export interface RememberResult {
   stored: boolean;
   entityId: number;
   name: string;
-  title?: string | null;
+  /**
+   * The title the row HOLDS after this call, read back from the database —
+   * not the one the call asked for, and not the one `derived` says the text
+   * would have produced.
+   *
+   * It was optional, and absent meant "this call passed no title" — which is
+   * the one case a caller most needs answered, because the memory keeps the
+   * title it already had. `null` is a real answer (a memory with no title);
+   * absence was not an answer at all.
+   */
+  title: string | null;
   type: string;
   observations: number;
   tags: number;

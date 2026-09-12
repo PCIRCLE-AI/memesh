@@ -70,13 +70,37 @@ describe('exportOpenAITools', () => {
     expect(tool.function.parameters.required).toBeUndefined();
   });
 
-  it('memesh_remember requires nothing up front — `note` alone is a complete call (#324)', () => {
+  it('memesh_remember states the two complete forms, not "nothing is required" (#324 C7)', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_remember') as any;
+    // Dropping `required: ['name','type']` when `note` arrived left the
+    // exported schema saying every field is optional — so a model driven off
+    // this export is told an empty call is well-formed, and learns otherwise
+    // only from a runtime error. The rule is `note`, OR `name` + `type`, OR
+    // `name` + `replace: true` (the correction call, which inherits the
+    // stored type — #333 T4).
+    expect(tool.function.parameters.anyOf).toEqual([
+      { required: ['note'] },
+      { required: ['name', 'type'] },
+      { required: ['name', 'replace'], properties: { replace: { const: true } } },
+    ]);
+    // `required` stays absent: a top-level list would be a THIRD claim, and
+    // neither field is unconditionally required.
     expect(tool.function.parameters.required).toBeUndefined();
-    // …but the runtime still refuses a call that has neither form, naming the key.
+  });
+
+  it('the three forms the export declares are exactly the three the runtime accepts', () => {
+    expect(RememberSchema.safeParse({ note: 'a thought' }).success).toBe(true);
+    expect(RememberSchema.safeParse({ name: 'n', type: 'decision', observations: ['x'] }).success).toBe(true);
+    expect(RememberSchema.safeParse({ name: 'n', replace: true, observations: ['x'] }).success).toBe(true);
+    // `replace` is what makes the third form a form: without it the same
+    // call is a new memory with no type, which the export does not declare.
+    expect(RememberSchema.safeParse({ name: 'n', replace: false, observations: ['x'] }).success).toBe(false);
+    // Neither form: refused, naming the key.
     const bad = RememberSchema.safeParse({ observations: ['x'] });
     expect(bad.success).toBe(false);
     expect(JSON.stringify(bad.error?.issues)).toMatch(/name is required/);
+    // Half of the structured form is not a form.
+    expect(RememberSchema.safeParse({ name: 'n', observations: ['x'] }).success).toBe(false);
   });
 
   it('memesh_recall has no required fields', () => {

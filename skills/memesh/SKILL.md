@@ -35,7 +35,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 | `import` | Import a JSON export with the required skip, append, or overwrite strategy |
 | `learn` | Record a structured lesson with error, fix, root cause, and prevention |
 | `task_state` | Read or update user-stated goal, next step, blocker, and finished work |
-| `briefing` | Assemble the current project's work topology |
+| `briefing` | Assemble the current project's work topology, closing with a capped index of its durable memories |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |
@@ -154,7 +154,7 @@ With the Claude Code plugin, the first eight rows happen **without any action fr
 | **UserPromptSubmit** | When you submit a prompt | Detects "remember this" intent (5 languages) and reminds Claude to use memesh |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
 | **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision if it's worth keeping — once per tool per session |
-| **Stop** | Session ends | Auto-captures session knowledge, ingests the project's Claude Code memory directory (frontmatter notes → `source:note-file` memories), shows one line when the turn made a decision-shaped move and stored no memory, and applies the configured update policy |
+| **Stop** | Session ends | Auto-captures session knowledge, ingests the project's Claude Code memory directory (frontmatter notes → `source:note-file` memories), shows one line when the turn made a decision-shaped move and stored no memory, and applies the configured update policy. The two writes (session capture, note-directory ingestion) stop when auto-capture is off (`memesh config set autoCapture false` / `MEMESH_AUTO_CAPTURE=false`); the advisory line still runs |
 | **PreCompact** | Before context compaction | Saves important knowledge before history is compressed |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
 | **SessionStart/SessionEnd (Codex)** | An ordinary Codex CLI plugin session starts, resumes, or ends | Launches the detached exact-thread companion, replaces its generation on resume, and retires it after the bounded idle queue window; a matching owner-private config may override its project/principal |
@@ -175,7 +175,7 @@ and retiring outdated info.
 |-----------|--------|
 | User states what they're working on / what's next / what's blocking | `memesh task --goal "…"` / `--next "…"` / `--blocked "…"` |
 | Design decision made | `memesh remember "Use OAuth 2.0 with PKCE for the API" --type decision --tags "project:myapp"` (or `remember({ note })` over MCP) |
-| A stored memory is wrong | `memesh remember --name "auth-choice" --type decision --obs "the corrected fact" --replace` — the old version moves to `metadata.replaced_history` |
+| A stored memory is wrong | `memesh remember --name "auth-choice" --obs "the corrected fact" --replace` — the memory keeps its type and the old version moves to `metadata.replaced_history` (add `--type` only to reclassify it) |
 | Bug fixed | `memesh learn --error "what broke" --fix "what fixed it" --root-cause "why" --severity major` |
 | Starting work on a feature | `memesh recall "feature-name" --json` |
 | User asks "what did we decide?" | `memesh recall "topic" --tag "project:myapp"` |
@@ -252,9 +252,12 @@ memesh reindex --fts                         # rebuild the local keyword index
 
 ## Memory hygiene
 
-1. **Stable names append.** Remembering under an existing name adds
-   observations and dedupes tags — it never replaces the entity. Reuse the
-   name to grow one memory; do not mint `-v2` / dated variants of it.
+1. **Stable names append — unless you ask to replace.** Remembering under an
+   existing name adds observations and dedupes tags by default. Pass
+   `replace: true` (CLI: `--replace`) to rewrite the entity's observations,
+   tags and title instead — the previous version moves to
+   `metadata.replaced_history`, not lost. Reuse the name to grow or correct
+   one memory; do not mint `-v2` / dated variants of it.
 2. **`supersedes` retires the loser.** When a new memory replaces an old one,
    record it with `--supersedes <old-name>` (MCP: a relation of type
    `supersedes`). The old entity is archived — recoverable, out of recall.

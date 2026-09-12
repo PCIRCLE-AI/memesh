@@ -218,6 +218,8 @@ process.stdin.on('data', (chunk) => { input += chunk; });
 // See post-commit.js for why every exit path leaves a record (#327).
 let payload = null;
 let pendingSystemMessage = null;
+/** Set by runStopNotes; called by exit0() with whether the nudge went out. */
+let settleNudge = null;
 function record(outcome, reason, entity) {
   recordHookOutcome(process.env, { hook: 'session-summary', outcome, reason, entity, payload });
 }
@@ -259,11 +261,13 @@ process.stdin.on('end', async () => {
     // "decided things, stored nothing" nudge. Records its own outcomes under
     // `note-ingest` / `remember-nudge`, never throws, and only ever yields
     // one line for exit0() to print.
-    pendingSystemMessage = await runStopNotes(inputData, {
+    const stopNotes = await runStopNotes(inputData, {
       captureEnabled,
       project: inputData.cwd ? getProjectName(inputData.cwd) : undefined,
       metaUrl: import.meta.url,
     });
+    pendingSystemMessage = stopNotes.message;
+    settleNudge = stopNotes.settle;
 
     if (!captureEnabled) {
       record('skipped', SKIP_REASONS.autoCaptureOff);
@@ -373,23 +377,6 @@ process.stdin.on('end', async () => {
     const { db } = openHookDb(process.env, { fts: true });
     let writeFailed = false;
     try {
-      // Duplicate detection: if we already captured this session, bail.
-      //
-      // Use the FULL session_id rather than the first 8 chars: real
-      // Claude Code UUIDs collide on 8 chars only with cosmically small
-      // probability, but artificial test IDs (verify-fix-001 vs -002)
-      // share the prefix and silently skipped the second session
-      // entirely. The contract is one stored capture per distinct
-      // session_id, so the dedup key has to be the full id.
-      //
-      // A dedup bail is a SUCCESSFUL run — the loop executed and correctly
-      // decided there was nothing to do — so it stamps the heartbeat like
-      // the capture path below does. Only a throw leaves no stamp.
-      // Guard on ANY of this session's three entities, not only `-files`.
-      // A Bash-only session created no `-files` row, so the guard never
-      // tripped and `-summary` was re-appended on every Stop — measured: 56
-      // observations, 16 unique, three commands stored fourteen times each.
-
       // Build and store session memories
       const baseTags = [AUTO_CAPTURE_TAG, `session:${sessionId}`, `project:${projectName}`];
 
@@ -434,6 +421,13 @@ process.stdin.on('end', async () => {
       // heuristic the design settled on for hooks with no natural title source.
       const titleDate = new Date().toISOString().slice(0, 10);
       const titlePrefix = `${titleDate} ${projectName}`;
+
+      // The three names below use the FULL session_id, not the first 8
+      // chars: real Claude Code UUIDs collide on 8 chars only with
+      // cosmically small probability, but artificial test IDs
+      // (verify-fix-001 vs -002) share the prefix — and `replace` (below)
+      // keys on this exact name, so a collision here makes one session
+      // silently overwrite another's memory instead of getting its own.
 
       // Rule 1: File editing session summary
       if (filesEdited.length > 0) {
@@ -590,9 +584,42 @@ process.stdin.on('end', async () => {
               // session so it survives DB restores from either era) plus
               // the compliance denominators: sessions that HAD an injection
               // vs sessions whose transcript carried any citation marker.
+              //
+              // The counters are scoped to the generation named in the stamp.
+              // When a graph that counted under an EARLIER generation meets
+              // this one, they are cleared rather than added to: the
+              // numerator changed meaning (v1 asked "did the transcript
+              // contain any marker", v2 asks "was an id we injected cited"),
+              // so a sum across both is one ratio wearing the newer label and
+              // no key separates the eras. Readers — analytics.ts and
+              // scripts/audit/measure-signals.mjs — read the bare keys and
+              // therefore keep working unchanged; what they report is now
+              // this generation only. A graph that never counted has no
+              // stamp, so nothing resets on a new install.
+              const ACCOUNTING_MODE = 'citation-v2 since 2026-09-12';
+              const priorMode = db.prepare(
+                "SELECT value FROM memesh_metadata WHERE key = 'recall_accounting_mode'"
+              ).get()?.value;
+              if (priorMode && priorMode !== ACCOUNTING_MODE) {
+                // Traced, not silently dropped: the numbers being discarded
+                // are the only record of the previous era, and a reset that
+                // leaves no result record is the silent-skip shape.
+                const prior = (key) => db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key)?.value ?? 'absent';
+                const priorTotal = prior('citation_sessions_total');
+                const priorCited = prior('citation_sessions_cited');
+                db.prepare(
+                  "DELETE FROM memesh_metadata WHERE key IN ('citation_sessions_total', 'citation_sessions_cited')"
+                ).run();
+                try {
+                  process.stderr.write(
+                    `[memesh session-summary] citation accounting generation changed (${priorMode} -> ${ACCOUNTING_MODE}); ` +
+                      `counters reset from total=${priorTotal} cited=${priorCited} — the two eras count different things and are not comparable.\n`,
+                  );
+                } catch {}
+              }
               db.prepare(
                 'INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)'
-              ).run('recall_accounting_mode', 'citation-v1 since 2026-08-16');
+              ).run('recall_accounting_mode', ACCOUNTING_MODE);
               const bump = db.prepare(
                 `INSERT INTO memesh_metadata (key, value) VALUES (?, '1')
                  ON CONFLICT(key) DO UPDATE SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)`
@@ -675,9 +702,20 @@ function exit0() {
   // exact envelope so a rejection report maps to one line. `suppressOutput`,
   // which Codex did reject, stays gone. writeSync, not console.log: stdout is a
   // pipe, and an async pipe write can be cut off by process.exit on macOS.
+  //
+  // The nudge's outcome is decided HERE, by whether the write succeeded —
+  // not by runStopNotes, which cannot know. A host that closed stdout gets
+  // an `error` record and keeps its transcript offset, so the next Stop
+  // judges the same window again instead of losing it to a line nobody read.
+  let delivered = true;
   if (pendingSystemMessage) {
-    try { writeSync(1, `${JSON.stringify({ systemMessage: pendingSystemMessage })}\n`); } catch { /* host closed stdout; nothing to tell */ }
+    try {
+      writeSync(1, `${JSON.stringify({ systemMessage: pendingSystemMessage })}\n`);
+    } catch {
+      delivered = false; // host closed stdout; the record says so.
+    }
   }
+  try { settleNudge?.(delivered); } catch { /* diagnostics never take the hook down */ }
   process.exit(0);
 }
 /**

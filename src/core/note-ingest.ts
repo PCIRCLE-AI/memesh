@@ -51,6 +51,14 @@ export interface NoteIngestOptions {
   /** Adds a `project:<name>` tag to every ingested memory when given. */
   project?: string;
   maxFiles?: number;
+  /**
+   * Per-file size cap, default NOTE_FILE_MAX_BYTES.
+   *
+   * No production caller overrides it — the CLI and the Stop hook pass only
+   * `maxFiles`. It is kept as the SEAM for the size-refusal branch: without
+   * it, pinning that branch needs a 256 KB fixture written to disk on every
+   * run of the suite. tests/core/note-ingest.test.ts is the caller.
+   */
   maxBytes?: number;
 }
 
@@ -70,6 +78,17 @@ export interface NoteIngestResult {
   markedMissing: string[];
   /** Files looked at and not ingested, with the reason, by relative path. */
   skipped: Array<{ path: string; reason: string }>;
+  /**
+   * How many of `skipped` are NEW — refused for a reason this file did not
+   * already carry on an earlier run.
+   *
+   * `skipped.length` cannot answer "did this run have anything to report":
+   * it sticks forever once a file is bad, so a caller using it either
+   * reports the same rejection on every Stop or, using the write counts
+   * alone, reports "nothing new needed storing" over a run that rejected
+   * files. Neither is what happened; this is the figure that is.
+   */
+  refusedNow: number;
   /** Files beyond the per-run cap, not processed this run. */
   more: number;
 }
@@ -189,6 +208,18 @@ type SkipPrint = {
   reason: string;
   name?: string;
   owner?: { rel: string; mtime: number; size: number };
+  /**
+   * Recorded so the refusal is not announced as NEW every run, but NOT used
+   * to skip the read in phase 1.
+   *
+   * The three name-level refusals depend on the state of some OTHER memory —
+   * it is not a note, it came from another directory, it was forgotten — and
+   * none of those is a function of this file's bytes. Letting the
+   * fingerprint skip the read would leave the file refused after its cause
+   * was gone, which is the trap `unreachableSkip` documents. So the file is
+   * re-read every run and simply stops being news.
+   */
+  reportOnly?: boolean;
 };
 
 /**
@@ -227,7 +258,8 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     repathed: [],
     restored: [],
     markedMissing: [],
-    skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: 'symlink refused' })),
+    skipped: [],
+    refusedNow: 0,
     more: 0,
   };
 
@@ -273,6 +305,34 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     priorSkips = {};
   }
   const nextSkips: Record<string, SkipPrint> = {};
+  /**
+   * Report a file as skipped, and count it as newly refused unless it was
+   * already refused for the same reason. The comparison is against the
+   * stored fingerprints, so "new" survives a restart — an ephemeral counter
+   * would make every process's first run a flood of old news.
+   */
+  const counted = new Set<string>();
+  const report = (rel: string, reason: string) => {
+    result.skipped.push({ path: rel, reason });
+    if (priorSkips[rel]?.reason === reason || counted.has(rel)) return;
+    counted.add(rel);
+    result.refusedNow++;
+  };
+  // Symlinks are refused before the read loop (a link can point anywhere).
+  // They are fingerprinted like any other refusal, or every run would call
+  // the same link news again — the stickiness this counter exists to avoid,
+  // moved somewhere it is harder to see.
+  for (const abs of symlinks) {
+    const rel = relPath(realDir, abs);
+    const reason = 'symlink refused';
+    report(rel, reason);
+    let st: fs.Stats | null;
+    try { st = fs.lstatSync(abs); } catch { st = null; }
+    nextSkips[rel] = st
+      ? { mtime: st.mtimeMs, size: st.size, reason }
+      : { mtime: 0, size: 0, reason };
+  }
+
   /** Names whose memory is tagged missing: nobody owns them, so they are free. */
   const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
   /**
@@ -295,9 +355,11 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   const claims: Claim[] = [];
   const readRels = new Set<string>();
   let read = 0;
+  /** Cap slots handed back to failed reads; bounded, see the catch below. */
+  let refunds = 0;
   for (const abs of files) {
     const rel = relPath(realDir, abs);
-    const skip = (reason: string) => { result.skipped.push({ path: rel, reason }); };
+    const skip = (reason: string) => { report(rel, reason); };
     let raw: Buffer;
     let stat: fs.Stats;
     const contentSkip = (reason: string) => {
@@ -305,8 +367,50 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
       declaredNameAt.set(rel, '');
     };
+    /**
+     * A file memesh could not reach: unreadable, or resolving outside the
+     * directory. Deliberately NOT fingerprinted, unlike contentSkip.
+     *
+     * The fingerprint's premise is "the same bytes will be refused the same
+     * way", and reachability is not a function of the bytes: `chmod +r`
+     * changes neither mtime nor size, so a fingerprinted file would stay
+     * refused after the problem was fixed — and its memory would stay tagged
+     * missing forever. One failed syscall per run is the price of noticing.
+     *
+     * It DOES record that the file declares no name, which is what the
+     * missing sweep needs: without it the sweep sees the path in
+     * presentRels and leaves the memory pointing at a file nobody can read,
+     * so `source:note-file:missing` — the only user-visible signal this
+     * module has — never appears.
+     *
+     * And it gives the per-run cap slot back, because it sits after
+     * `read++` and would otherwise spend a slot a readable file could use.
+     * Bounded by `maxFiles`, so a directory full of unreadable files cannot
+     * drive an unbounded number of attempts in one run.
+     */
+    const unreachableSkip = (reason: string) => {
+      skip(reason);
+      declaredNameAt.set(rel, '');
+      // `readRels.has(rel)` is exactly "read++ already ran for this file";
+      // the entry itself stays, because the file WAS looked at this run and
+      // the ownership rules below read that set to mean just that.
+      if (readRels.has(rel) && refunds < maxFiles) { read--; refunds++; }
+    };
+    // The lstat gets its own try. Everything below it needs `stat`, so a
+    // failure here cannot be fingerprinted — and folding the two together is
+    // how a catch ends up reading an uninitialised `stat`. Nothing has been
+    // charged to the per-run cap at this point either.
     try {
       stat = fs.lstatSync(abs);
+    } catch (err) {
+      // The file was listed by the directory walk and is gone or unreachable
+      // now. It declares no name, which is what the missing sweep needs to
+      // know: a memory recording this path no longer has it.
+      skip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
+      declaredNameAt.set(rel, '');
+      continue;
+    }
+    try {
       if (stat.isSymbolicLink()) { skip('symlink refused'); continue; }
       const prior = known.get(rel);
       // The inode is part of the fingerprint: two files of the same size
@@ -325,7 +429,8 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // per-run cap, or by a recorded file it could not see) stayed refused
       // while a file on disk declared that very name.
       const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
-      if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
+      if (priorSkip && !priorSkip.reportOnly && !nameIsFree
+        && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
         continue;
@@ -335,10 +440,10 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       readRels.add(rel);
       if (stat.size > maxBytes) { contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`); continue; }
       const real = fs.realpathSync(abs);
-      if (!real.startsWith(realDir + path.sep)) { skip('resolves outside the directory'); continue; }
+      if (!real.startsWith(realDir + path.sep)) { unreachableSkip('resolves outside the directory'); continue; }
       raw = fs.readFileSync(real);
     } catch (err) {
-      skip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
+      unreachableSkip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
       continue;
     }
 
@@ -357,7 +462,19 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     let observations = splitObservations(sanitizeNoteText(parsed.body));
     if (observations.length === 0 && cleanDescription) observations = [cleanDescription];
     if (observations.length === 0) { contentSkip('empty note — no description and no body'); continue; }
-    observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
+    if (observations.length > NOTE_MAX_OBSERVATIONS) {
+      // Refused, not trimmed. `slice` stored the first 100 and dropped the
+      // rest with `skipped` empty and `more` zero — on a Stop-hook path,
+      // where a silent drop is indistinguishable from nothing having
+      // happened. The transport rejects the same shape and names the count;
+      // so does this. contentSkip fingerprints it, so the file is not
+      // re-read on every Stop until the user edits it.
+      // "observations", not "paragraphs": this count is post-split, and one
+      // paragraph can yield more than one observation. The cap is on what is
+      // stored, which is what the reader needs to act on.
+      contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+      continue;
+    }
     claims.push({
       rel,
       name,
@@ -383,7 +500,14 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   for (const [name, claimants] of byName) {
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name) as ExistingRow | undefined;
     const prov = existing ? parseProvenance(existing.metadata) : {};
-    const skipAll = (reason: string) => { for (const c of claimants) result.skipped.push({ path: c.rel, reason }); };
+    const skipAll = (reason: string) => {
+      for (const c of claimants) {
+        report(c.rel, reason);
+        // Fingerprinted `reportOnly`: remembered so it is not news again,
+        // but the file is still read next run so the refusal can lift.
+        nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, reportOnly: true };
+      }
+    };
     if (existing) {
       // Never overwrite a memory that did not come from a note file, nor one
       // ingested from a different directory (two projects' memory
@@ -414,7 +538,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
       const ownerStat = statOf(recordedRel);
       for (const c of claimants) {
-        result.skipped.push({ path: c.rel, reason });
+        report(c.rel, reason);
         // Fingerprinted against the recorded file, or the claimant would be
         // re-read on every run and keep the cap away from the very file that
         // owns the name. `name` is what lets the fingerprint be dropped once
@@ -431,7 +555,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     for (const c of claimants) {
       if (c === owner) continue;
       const reason = `name "${name}" already used by ${owner.rel} in this directory`;
-      result.skipped.push({ path: c.rel, reason });
+      report(c.rel, reason);
       nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: owner.rel, mtime: owner.stat.mtimeMs, size: owner.stat.size } };
     }
 
@@ -545,6 +669,7 @@ export function summarizeNoteIngest(r: NoteIngestResult): string {
     ...(r.repathed.length ? [`${r.repathed.length} moved`] : []),
     ...(r.restored.length ? [`${r.restored.length} restored`] : []),
     `${r.skipped.length} skipped`,
+    ...(r.refusedNow ? [`${r.refusedNow} newly refused`] : []),
   ];
   if (r.markedMissing.length) parts.push(`${r.markedMissing.length} marked missing`);
   if (r.more) parts.push(`${r.more} more not processed (per-run cap)`);

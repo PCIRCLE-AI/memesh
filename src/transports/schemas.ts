@@ -111,12 +111,19 @@ export const RememberSchema = z.object({
 }).strict().superRefine((data, ctx) => {
   if (data.note === undefined) {
     if (data.name === undefined) ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
-    if (data.type === undefined) ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note")' });
+    // `replace` on a named memory inherits the type it already has —
+    // operations.ts only rewrites the stored type when one was PASSED
+    // (`typeGiven`), so that inheritance has always worked; this schema was
+    // the only thing making the documented correction call restate a field
+    // the server would ignore. Scoped to `replace` + `name` on purpose: a
+    // `name` without `replace` is usually a NEW memory, and a new memory with
+    // no type is the silent default this codebase spent a release removing.
+    if (data.type === undefined && !(data.replace && data.name !== undefined)) ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
     return;
   }
   for (const key of ['title', 'observations'] as const) {
     if (data[key] !== undefined) {
-      ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key}` });
+      ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
     }
   }
   if (data.replace && data.name === undefined) {
@@ -126,7 +133,12 @@ export const RememberSchema = z.object({
   if (!derived) {
     ctx.addIssue({ code: 'custom', path: ['note'], message: 'note must contain some text' });
   } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
-    ctx.addIssue({ code: 'custom', path: ['note'], message: `note splits into ${derived.observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+    // "observations", not "paragraphs": this count is taken AFTER the split,
+    // and a paragraph made only of list items yields one observation per item
+    // — so a single paragraph of 101 items was refused as "101 paragraphs".
+    // The cap is on what is stored, which is what the reader has to act on.
+    // note-ingest.ts says the same thing in the same unit for a note file.
+    ctx.addIssue({ code: 'custom', path: ['note'], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
   }
 });
 

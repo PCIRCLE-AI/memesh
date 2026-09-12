@@ -32,6 +32,13 @@ describe('write-hook invariants (fake-working gates)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
+  /** Row ids whose FTS text matches `term` — the recallability check every test below needs. */
+  function matchFts(db: any, term: string): number[] {
+    return (db.prepare(
+      `SELECT rowid FROM entities_fts WHERE entities_fts MATCH '${term}'`,
+    ).all() as Array<{ rowid: number }>).map((r) => r.rowid);
+  }
+
   it('captureEntity keeps entities_fts in sync, so hook-written memories are FTS-recallable', () => {
     const handle = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: dbPath }, { fts: true });
     expect(handle).not.toBeNull();
@@ -106,12 +113,76 @@ describe('write-hook invariants (fake-working gates)', () => {
         title: 'pelican phase two',
       });
 
-      const match = (term: string) => (db.prepare(
-        `SELECT rowid FROM entities_fts WHERE entities_fts MATCH '${term}'`,
-      ).all() as Array<{ rowid: number }>).map((r) => r.rowid);
+      expect(matchFts(db, 'pelican'), 'the new title must be indexed').toContain(res.id);
+      expect(matchFts(db, 'ostrich'), 'stale tokens from the replaced title survived — asymmetric delete').not.toContain(res.id);
+    } finally {
+      db.close();
+    }
+  });
 
-      expect(match('pelican'), 'the new title must be indexed').toContain(res.id);
-      expect(match('ostrich'), 'stale tokens from the replaced title survived — asymmetric delete').not.toContain(res.id);
+  it('captureEntity replace removes the replaced observations from the FTS index too', () => {
+    // `replace` deletes an entity's observation rows and writes the new set
+    // (#322: a session insight is a snapshot, restated on every Stop). The
+    // table is only half of it. entities_fts is contentless, so the index
+    // text has to be rebuilt from the NEW set alone — carrying the previous
+    // text forward leaves search answering for words the entity no longer
+    // holds, and every later replace deletes text that was never indexed.
+    const handle = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: dbPath }, { fts: true });
+    const { db } = handle;
+    try {
+      const capture = (observation: string, replace: boolean) => shared.captureEntity(db, {
+        name: 'session-snapshot-files',
+        type: 'session-insight',
+        observations: [observation],
+        replace,
+      });
+      const res = capture('edited ostrich.ts', false);
+      capture('edited pelican.ts', true);
+      capture('edited heron.ts', true);
+
+      const stored = (db.prepare(
+        'SELECT content FROM observations WHERE entity_id = ?',
+      ).all(res.id) as Array<{ content: string }>).map((r) => r.content);
+
+      expect(stored).toEqual(['edited heron.ts']);
+      expect(matchFts(db, 'heron'), 'the current snapshot must be indexed').toContain(res.id);
+      expect(matchFts(db, 'ostrich'), 'the first snapshot is still searchable after two replaces').not.toContain(res.id);
+      expect(matchFts(db, 'pelican'), 'the second snapshot is still searchable after a replace').not.toContain(res.id);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('captureEntity replace clears the previous tag set too, not just observations', () => {
+    // A session-<id>-files entity that stopped mentioning file A must stop
+    // answering pre-edit-recall's `file:a.ts` lookup for it — otherwise
+    // "restating the whole entity" (the #322 contract) is true for the text
+    // but not for the tags a reader actually queries by.
+    const handle = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: dbPath }, { fts: true });
+    const { db } = handle;
+    try {
+      const res = shared.captureEntity(db, {
+        name: 'session-tags-files',
+        type: 'session-insight',
+        observations: ['edited a.ts'],
+        tags: ['file:a.ts', 'project:alpha'],
+      });
+      shared.captureEntity(db, {
+        name: 'session-tags-files',
+        type: 'session-insight',
+        observations: ['edited c.ts, d.ts'],
+        tags: ['file:c.ts', 'file:d.ts', 'project:alpha'],
+        replace: true,
+      });
+
+      const tags = (db.prepare(
+        'SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag',
+      ).all(res.id) as Array<{ tag: string }>).map((r) => r.tag);
+
+      expect(tags, 'the current snapshot\'s tags must be present').toEqual(
+        expect.arrayContaining(['file:c.ts', 'file:d.ts', 'project:alpha']),
+      );
+      expect(tags, 'a tag from the replaced snapshot survived').not.toContain('file:a.ts');
     } finally {
       db.close();
     }

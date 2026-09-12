@@ -1,10 +1,11 @@
 // #324 pieces A and B: `remember({ note })` and `remember({ replace: true })`.
 import { describe, it, expect } from 'vitest';
-import { remember, recall, REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from '../../src/core/operations.js';
+import { remember, recall, forget, REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from '../../src/core/operations.js';
 import { deriveNote } from '../../src/core/note-derive.js';
 import { getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { RememberSchema } from '../../src/transports/schemas.js';
+import { exportMemories } from '../../src/core/serializer.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 useTestDatabase('memesh-note-replace-');
@@ -222,12 +223,224 @@ describe('RememberSchema (transport validation)', () => {
     expect(r.error!.issues[0].path).toEqual(['type']);
   });
 
-  it('rejects a note that splits into more paragraphs than a memory stores', () => {
+  it('rejects a note that yields more observations than a memory stores, and counts observations', () => {
     const note = ['title', ...Array.from({ length: 101 }, (_, i) => `p${i}`)].join('\n\n');
     expect(RememberSchema.safeParse({ note }).success).toBe(false);
+
+    // The refusal must name the unit it counted. One paragraph of 101 list
+    // items is 101 observations and ONE paragraph; the message used to call
+    // them paragraphs, which is the noun D5 corrected in API_REFERENCE.md.
+    const oneParagraph = `title\n\n${Array.from({ length: 101 }, (_, i) => `- item ${i}`).join('\n')}`;
+    const r = RememberSchema.safeParse({ note: oneParagraph });
+    expect(r.success).toBe(false);
+    const message = r.error!.issues.map((i) => i.message).join(' ');
+    expect(message).toContain('yields 101 observations');
+    expect(message).not.toContain('paragraphs');
   });
 
   it('still rejects an unknown key', () => {
     expect(RememberSchema.safeParse({ note: 'x', notes: 'y' }).success).toBe(false);
+  });
+});
+
+describe('remember({ replace: true }) on a forgotten memory — #324 C4', () => {
+  it('refuses, and names a recovery path that actually works', () => {
+    remember({ name: 'forgotten_thing', type: 'decision', observations: ['the original text'] });
+    expect(forget({ name: 'forgotten_thing' }).archived).toBe(true);
+
+    // `replace` rewrites the memory in place. On an archived row that is a
+    // silent undo of an explicit forget, with the original text gone into
+    // replaced_history and a live memory in its place — note-ingest.ts:395
+    // refuses exactly this, and the direct call did not.
+    expect(() => remember({
+      name: 'forgotten_thing', type: 'decision', observations: ['smuggled back in'], replace: true,
+    })).toThrow(/archived with forget/);
+
+    const row = getDatabase().prepare('SELECT status FROM entities WHERE name = ?')
+      .get('forgotten_thing') as { status: string };
+    expect(row.status).toBe('archived');
+    const obs = getDatabase().prepare(
+      'SELECT content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ?',
+    ).all('forgotten_thing') as { content: string }[];
+    expect(obs.map((o) => o.content)).toEqual(['the original text']);
+  });
+
+  it('the recovery path in the message is real: plain remember brings it back, then replace works', () => {
+    remember({ name: 'recovered_thing', type: 'decision', observations: ['original'] });
+    forget({ name: 'recovered_thing' });
+
+    // No `replace`: createEntity reactivates an archived row (knowledge-graph.ts).
+    remember({ name: 'recovered_thing', type: 'decision', observations: ['original'] });
+    expect((getDatabase().prepare('SELECT status FROM entities WHERE name = ?')
+      .get('recovered_thing') as { status: string }).status).toBe('active');
+
+    const replaced = remember({ name: 'recovered_thing', type: 'decision', observations: ['rewritten'], replace: true });
+    expect(replaced.replaced).toBe(true);
+  });
+
+  it('a memory that was never archived still replaces', () => {
+    remember({ name: 'live_thing', type: 'decision', observations: ['before'] });
+    expect(remember({ name: 'live_thing', type: 'decision', observations: ['after'], replace: true }).replaced).toBe(true);
+  });
+});
+
+describe('remember({ replace: true }) rewrites the type too — #324 C5', () => {
+  it('the stored type follows the replacement, and the receipt reports what was stored', () => {
+    remember({ name: 'retyped_thing', type: 'feedback', observations: ['before'] });
+    const r = remember({ name: 'retyped_thing', type: 'decision', observations: ['after'], replace: true });
+    expect(r.replaced).toBe(true);
+    expect(r.type, 'the receipt echoed the old type').toBe('decision');
+    expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
+      .get('retyped_thing') as { type: string }).type).toBe('decision');
+  });
+
+  it('without `replace`, an append still reports the type that is actually stored', () => {
+    remember({ name: 'appended_thing', type: 'feedback', observations: ['before'] });
+    const r = remember({ name: 'appended_thing', type: 'decision', observations: ['after'] });
+    // createEntity preserves the stored type on a name collision, so echoing
+    // args.type would make the receipt claim a type that was never written.
+    expect(r.type).toBe('feedback');
+    expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
+      .get('appended_thing') as { type: string }).type).toBe('feedback');
+  });
+});
+
+describe('the replaced-history exits a user can actually reach — #324 C8', () => {
+  it('`truncated` reaches the user through export, so it is a contract and not dead weight', () => {
+    // The flag is set in one place and read nowhere in src/. It is not dead:
+    // serializer emits `metadata` verbatim, and so does GET
+    // /v1/entities/:name — so a user who exports a memory whose single
+    // replaced version lost observations to the byte cap sees the flag that
+    // says so. Pinning the exit is what makes cutting it a visible change.
+    const huge = Array.from({ length: 10 }, (_, i) => `${'y'.repeat(9000)}${i}`);
+    remember({ name: 'exported_huge', type: 'note', observations: huge });
+    remember({ name: 'exported_huge', type: 'note', observations: ['small'], replace: true });
+
+    const bundle = exportMemories({}) as { entities: Array<{ name: string; metadata?: Record<string, unknown> }> };
+    const row = bundle.entities.find((e) => e.name === 'exported_huge');
+    expect(row, 'the memory is not in the export at all').toBeDefined();
+    const history = row!.metadata?.replaced_history as Array<{ truncated?: boolean; observations: string[] }>;
+    expect(history).toHaveLength(1);
+    expect(history[0].truncated).toBe(true);
+    expect(history[0].observations.length).toBeLessThan(10);
+  });
+
+  it('recall does NOT carry the history — the count stands in for it', () => {
+    remember({ name: 'recalled_hist', type: 'note', observations: ['first version text'] });
+    remember({ name: 'recalled_hist', type: 'note', observations: ['second version text'], replace: true });
+    const hit = recall({ query: 'recalled_hist' }).find((e) => e.name === 'recalled_hist')!;
+    expect(hit.metadata?.replaced_history).toBeUndefined();
+    expect(hit.metadata?.replaced_history_count).toBe(1);
+  });
+});
+
+// #324 T3. `RememberResult.title` is what a caller of the MCP tool or
+// `POST /v1/remember` sees; those transports return this object verbatim
+// (mcp/handlers.ts:602, http/server.ts:726). It used to carry the REQUESTED
+// title, so every call that did not pass one reported no title at all while
+// the row plainly had one — and the note form reported nothing while
+// `derived.title` advertised a title that was never stored. The CLI was
+// taught to re-read the row; the API had no such escape.
+//
+// These assert on the RETURN VALUE, not on the entity. The earlier round of
+// tests checked the entity, which was never the broken half.
+describe('remember() reports the stored title — #324 T3', () => {
+  const storedTitle = (name: string) => kg().getEntity(name)!.title;
+
+  it('a new memory: the title it was given', () => {
+    const r = remember({ name: 't3-new', type: 'note', title: 'Fresh', observations: ['a'] });
+    expect(r.title).toBe('Fresh');
+    expect(r.title).toBe(storedTitle('t3-new'));
+  });
+
+  it('replace with a new title: the new one', () => {
+    remember({ name: 't3-rep', type: 'note', title: 'Old', observations: ['a'] });
+    const r = remember({ name: 't3-rep', type: 'note', title: 'New', observations: ['b'], replace: true });
+    expect(r.title).toBe('New');
+    expect(r.title).toBe(storedTitle('t3-rep'));
+  });
+
+  it('replace with no title given: the title that was kept', () => {
+    remember({ name: 't3-keep', type: 'note', title: 'Kept', observations: ['a'] });
+    const r = remember({ name: 't3-keep', type: 'note', observations: ['b'], replace: true });
+    expect(r.title).toBe('Kept');
+    expect(r.title).toBe(storedTitle('t3-keep'));
+  });
+
+  it('a note appended to an existing memory: that memory\'s own title, not the derived one', () => {
+    remember({ name: 't3-note', type: 'note', title: 'Its own', observations: ['a'] });
+    const r = remember({ name: 't3-note', note: 'Derived headline\n\nbody' });
+    expect(r.derived!.title).toBe('Derived headline');
+    expect(r.title).toBe('Its own');
+    expect(r.title).toBe(storedTitle('t3-note'));
+  });
+
+  it('a memory with no title at all: null, not absent', () => {
+    const r = remember({ name: 't3-null', type: 'note', observations: ['a'] });
+    expect(r.title).toBeNull();
+    expect(r.title).toBe(storedTitle('t3-null'));
+  });
+});
+
+// #333 T4. The documented way to correct a memory is `name` + `replace: true`.
+// The type inheritance it needs has always been in operations.ts — `typeGiven
+// && args.type !== existing.type` only rewrites the type when one was PASSED —
+// so the only thing forcing a caller to restate `type` was the transport
+// schema. These pin the seam where that was true: the value the call returns
+// and the value the row holds, not what a surface prints.
+describe('remember({ name, replace: true }) inherits the stored type — #333 T4', () => {
+  it('the documented correction call omits `type` and the memory keeps the one it has', () => {
+    remember({ name: 'pkce_decision', type: 'decision', title: 'PKCE', observations: ['before'] });
+
+    // The transport must let it through: this is the call the instructions
+    // and API_REFERENCE tell a caller to make.
+    expect(RememberSchema.safeParse({ name: 'pkce_decision', replace: true, title: 'Use PKCE' }).success).toBe(true);
+
+    const r = remember({ name: 'pkce_decision', replace: true, title: 'Use PKCE', observations: ['after'] });
+    expect(r.replaced).toBe(true);
+    expect(r.type, 'the receipt reported a type the caller never passed').toBe('decision');
+    const row = getDatabase().prepare('SELECT type, title FROM entities WHERE name = ?')
+      .get('pkce_decision') as { type: string; title: string | null };
+    expect(row.type, 'the stored type was rewritten by an omitted field').toBe('decision');
+    expect(row.title).toBe('Use PKCE');
+    expect(ftsHits('after')).toContain('pkce_decision');
+  });
+
+  it('passing `type` still reclassifies — inheriting an omitted type did not disable C5', () => {
+    remember({ name: 'still_retypes', type: 'feedback', observations: ['before'] });
+    const r = remember({ name: 'still_retypes', type: 'decision', observations: ['after'], replace: true });
+    expect(r.type).toBe('decision');
+    expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
+      .get('still_retypes') as { type: string }).type).toBe('decision');
+  });
+
+  it('`type` is still required without `replace` — the relaxation is scoped to the correction call', () => {
+    const parsed = RememberSchema.safeParse({ name: 'brand_new', title: 'x', observations: ['y'] });
+    expect(parsed.success).toBe(false);
+    expect(parsed.error?.issues.some((i) => i.path[0] === 'type')).toBe(true);
+  });
+
+  it('an EMPTY `type` is still refused — absent and blank are not the same input', () => {
+    // `!input.type` is falsy for '' as well as undefined. Waiving the
+    // requirement on that test would have let a direct core caller write
+    // `type = ''` onto an existing row through the retype branch; the
+    // transports' `z.string().min(1)` never lets one through, so core is the
+    // only place this can be pinned.
+    remember({ name: 'blank_type_target', type: 'decision', observations: ['before'] });
+    expect(() => remember({ name: 'blank_type_target', type: '', replace: true, observations: ['after'] }))
+      .toThrow(/remember needs `name` and `type`/);
+    expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
+      .get('blank_type_target') as { type: string }).type).toBe('decision');
+  });
+
+  it('`replace` on a name that does not exist asks for `type` instead of inventing one', () => {
+    // Relaxing the schema opens a path that did not exist before: create a NEW
+    // entity with no type. Defaulting it to "note" would be the same silent
+    // reclassification the typeGiven guard exists to prevent, so core — the
+    // layer that knows whether the name exists — refuses and says why.
+    expect(() => remember({ name: 'never_stored_yet', replace: true, title: 'x', observations: ['y'] }))
+      .toThrow(/no memory named "never_stored_yet".*pass `type`/s);
+    expect((getDatabase().prepare('SELECT COUNT(*) AS c FROM entities WHERE name = ?')
+      .get('never_stored_yet') as { c: number }).c, 'a typeless entity was created anyway').toBe(0);
   });
 });

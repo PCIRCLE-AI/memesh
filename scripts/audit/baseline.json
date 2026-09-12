@@ -6,15 +6,15 @@
       "reason": "Source-only typography and palette guard, explicitly not rendered usability evidence. Controlled old palette and inline font failures establish sensitivity; independent browser review separately exercises computed contrast, clipping and responsive layout.",
       "triaged": "2026-09-08"
     },
-    "C4 .github/workflows/ci.yml:222": {
+    "C4 .github/workflows/ci.yml:245": {
       "class": "SAFE-CAPTURED-EXIT",
       "reason": "The doctor exit code is captured and rejected before this grep; the grep is an additional content assertion, not the verdict owner.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement)"
     },
-    "C4 .github/workflows/ci.yml:228": {
+    "C4 .github/workflows/ci.yml:251": {
       "class": "SAFE-CAPTURED-EXIT",
       "reason": "The doctor exit code is captured and rejected first; this grep independently checks the skills and hooks content.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement)"
     },
     "C4 scripts/release-verify.sh:106": {
       "class": "SAFE-DIAGNOSTIC",
@@ -86,10 +86,10 @@
       "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/operations.ts:259": {
+    "C5 src/core/operations.ts:327": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327)"
     },
     "C1 tests/cli-agent-message-ingress.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
@@ -576,25 +576,20 @@
       "reason": "The detector's `.toBe(0)` is `hooks[0].writes).toBe(0)` — asserting zero WRITES from a fixture that deliberately loaded 48 skip records, the exact #321 silent-hook semantics under test. The same test pins the non-empty halves in shapes the detector cannot see: `runs).toBe(20)`, `status).toBe('warn')`, `code).toBe('capture-liveness.silent-hook')`.",
       "triaged": "2026-09-11 #327 capture-liveness"
     },
-    "C5 src/core/capture-liveness.ts:565": {
+    "C5 src/core/capture-liveness.ts:665": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "`file.hooks[hook] ?? []` in summarizeHookOutcomes: a hook with no recorded outcomes correctly summarises to an empty window (0 runs, 0 writes), the honest reading — absence of records is reported as no runs, not masked as success.",
-      "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement); re-keyed 2026-09-12 (#327 review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 re-review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 round-3 doc comment shifted the unchanged statement)"
+      "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement); re-keyed 2026-09-12 (#327 review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 re-review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 round-3 doc comment shifted the unchanged statement); re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed 2026-09-12 (merge of origin/main into feat/324-on327 shifted the unchanged statement); re-keyed 2026-09-13 (#322 alreadyCaptured LEGACY comment shifted the unchanged statement, twice as the comment was revised)"
     },
-    "C5 src/core/capture-liveness.ts:689": {
+    "C5 src/core/capture-liveness.ts:805": {
       "class": "SAFE-OPTIONAL-COLLECTION",
       "reason": "`input.neverRanHooks ?? []` in captureLivenessVerdict: when the caller supplies no heartbeat-never-ran list there is no dead hook, so deadHooks is emptily computed — and the FAIL branch only fires when a FAIL-eligible hook is actually absent past the grace, never from the missing default itself.",
-      "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement); re-keyed 2026-09-12 (#327 review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 re-review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 round-3 doc comment shifted the unchanged statement)"
+      "triaged": "2026-09-11 #327 capture-liveness; re-keyed 2026-09-11 (dead-code cleanup shifted the unchanged statement); re-keyed 2026-09-12 (#327 review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 re-review fixes shifted the unchanged statement); re-keyed 2026-09-12 (#327 round-3 doc comment shifted the unchanged statement); re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed 2026-09-12 (merge of origin/main into feat/324-on327 shifted the unchanged statement); re-keyed 2026-09-13 (#322 alreadyCaptured LEGACY comment shifted the unchanged statement, twice as the comment was revised)"
     },
-    "C5 src/core/capture-liveness.ts:115": {
+    "C5 src/core/capture-liveness.ts:136": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "`NOT_TRIGGERED_SKIP_REASONS[hook] ?? []` in isTriggeredRecord: a hook with no not-triggered reasons counts every run as triggered — the stricter reading. Absence can only make a hook MORE eligible for the silent verdict, never read as success.",
-      "triaged": "2026-09-12 #327 review fixes (C1); moved into isTriggeredRecord 2026-09-12 (#327 re-review P1)"
-    },
-    "C1 tests/audit/hook-outcome-gate.test.ts": {
-      "class": "SAFE",
-      "reason": "the toEqual([]) assertions are 'the gate correctly stays quiet' — each is paired in the same file with toEqual([4])/toEqual([3]) assertions that the gate flags an uncovered exit, so the emptiness is the no-false-positive contract under test, not vacuity.",
-      "triaged": "2026-09-11 #327 audit detector"
+      "triaged": "2026-09-12 #327 review fixes (C1); moved into isTriggeredRecord 2026-09-12 (#327 re-review P1); re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement)"
     },
     "C6 tests/audit/hook-outcome-gate.test.ts": {
       "class": "DATA-EXTRACTION",

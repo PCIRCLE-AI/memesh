@@ -1,4 +1,4 @@
-export type HookOutcome = 'wrote' | 'skipped' | 'error';
+export type HookOutcome = 'wrote' | 'skipped' | 'notified' | 'error';
 export type HookHost = 'claude-code' | 'codex' | 'unknown';
 export interface HookOutcomeRecord {
     hook: string;
@@ -54,6 +54,7 @@ export declare const SKIP_REASONS: {
     readonly noNoteChanged: "no note file changed since the last ingestion";
     readonly noteIngesterNotBuilt: "the note ingester is not built (dist/core/note-ingest.js is missing)";
     readonly noteNothingNew: "note files were read and nothing new needed storing";
+    readonly noteFilesRefused: "note files were refused and nothing was stored";
     readonly noTranscript: "no transcript to read";
     readonly trivialTurn: "trivial turn — too few tool calls since the last Stop";
     readonly noDecisionMove: "no decision-shaped move since the last Stop";
@@ -64,6 +65,7 @@ export declare const UNRECOGNISED_REASON = "unrecognised reason";
 export declare function renderableSkipReason(reason: string | undefined): string;
 export declare function isGitCommitCommand(command: string): boolean;
 export declare const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>>;
+export declare const UNCLASSIFIED_SKIP_HOOKS: readonly ["pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start"];
 export declare const NEVER_RAN_GRACE_HOURS = 72;
 export declare function parseHookOutcomes(raw: string | null | undefined, limit?: number): HookOutcomeFile;
 export declare function parseHookOutcomeLine(line: string): HookOutcomeRecord | null;
@@ -80,6 +82,8 @@ export interface HookLivenessSummary {
     firstTriggeredAt: string | null;
     lastWriteAt: string | null;
     lastEntity: string | null;
+    notifies: number;
+    lastNotifiedAt: string | null;
     lastSkipReason: string | null;
     dominantSkipReason: string | null;
     dominantSkipCount: number;

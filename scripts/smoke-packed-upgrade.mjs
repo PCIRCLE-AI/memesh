@@ -474,5 +474,38 @@ try {
   console.log(`✅ Packaged upgrade smoke passed — ${proven.length} upgrade path(s) proved: `
     + proven.map((from) => `${from} -> ${candidateVersion}`).join(', '));
 } finally {
-  fs.rmSync(upgradeRoot, { recursive: true, force: true });
+  removeThrowawayRoot(upgradeRoot);
+}
+
+/**
+ * Delete the throwaway root without letting a detached child fail the gate.
+ *
+ * Every install this smoke exercises runs the real CLI, and the real CLI
+ * starts a detached, unref'd `memesh status` to refresh the update-check
+ * cache (src/core/update-entrypoint.ts) — deliberately fire-and-forget, so a
+ * slow npm lookup never blocks a command. Nothing waits for it, and it writes
+ * into the same MEMESH_DIR this function is deleting. `rmSync` enumerates the
+ * directory, removes what it saw, calls rmdir — and the child has created a
+ * file in between: `ENOTEMPTY`. On Windows a file the child still holds open
+ * gives `EPERM` instead; same cause, different errno.
+ *
+ * The proof is already printed by then ("✅ Packaged upgrade smoke passed"),
+ * so a lost cleanup race was turning a PASSING gate red, and a gate that goes
+ * red for a reason unrelated to the change is how a team learns to ignore
+ * gates. A leaked temp directory on a CI runner is harmless; nothing here
+ * asserts anything about cleanup.
+ *
+ * Widening the retry window is NOT the fix and has been disconfirmed twice in
+ * this repository (5/100 ms → 10/200 ms, failed identically): a retry budget
+ * only helps when the holder is slow, never when it is still running. This
+ * mirrors `removeTempDir` in tests/helpers/temp-dir.ts, which the ten test
+ * files with the same constraint already use. Every other error still throws.
+ */
+function removeThrowawayRoot(dir) {
+  try {
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  } catch (err) {
+    if (err?.code !== 'ENOTEMPTY' && err?.code !== 'EBUSY' && err?.code !== 'EPERM') throw err;
+    console.log(`cleanup: left ${dir} behind (${err.code}) — a detached update-check child was still writing`);
+  }
 }

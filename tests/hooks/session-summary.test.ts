@@ -59,14 +59,19 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     return { stderr: res.stderr || '' };
   }
 
+  /** One Edit tool_use per file, the shape every transcript below reuses. */
+  function edits(files: string[]) {
+    return files.map((f) => ({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/' + f } }] },
+    }));
+  }
+
   /** A transcript with enough tool calls to clear the low-signal guard. */
   function writeQualifyingTranscript(): void {
     writeTranscript([
       { type: 'user', message: { role: 'user', content: 'fix the parser' } },
-      ...['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts'].map((f) => ({
-        type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/' + f } }] },
-      })),
+      ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
     ]);
   }
 
@@ -140,11 +145,92 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       const meta = (key: string) => (check.prepare(
         'SELECT value FROM memesh_metadata WHERE key = ?'
       ).get(key) as { value: string } | undefined)?.value;
-      expect(meta('recall_accounting_mode')).toContain('citation-v1');
+      // v2 (#323): the injected set includes durable-memory index ids, which
+      // widens the citation_sessions_total denominator — a new era.
+      expect(meta('recall_accounting_mode')).toContain('citation-v2');
       expect(meta('citation_sessions_total')).toBe('1');
       expect(meta('citation_sessions_cited')).toBe('1');
     } finally {
       check.close();
+    }
+  });
+
+  it('Scenario: a graph that counted under the previous accounting era starts the new one from zero', () => {
+    // The stamp says which question the counters answer. v1 counted a
+    // session as compliant when the transcript carried ANY `[mem:N]`; v2
+    // counts one only when an id THIS session injected was cited. Carrying
+    // v1's totals into v2 would report one mixed-era ratio under the v2
+    // label, with no key that separates them — so the change of stamp
+    // resets the pair, and the discarded numbers go to stderr rather than
+    // disappearing.
+    const cwd = '/tmp/erachange';
+    const projectName = mirrorProjectName(cwd);
+    writeQualifyingTranscript();
+    runHook({ session_id: 'seed-session', transcript_path: transcriptPath, cwd });
+
+    const db = new Database(dbPath);
+    db.prepare("INSERT INTO entities (name, type) VALUES ('era-decision', 'decision')").run();
+    const citedId = (db.prepare("SELECT id FROM entities WHERE name = 'era-decision'").get() as { id: number }).id;
+    const put = db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)');
+    put.run('recall_accounting_mode', 'citation-v1 since 2026-08-16');
+    put.run('citation_sessions_total', '412');
+    put.run('citation_sessions_cited', '37');
+    db.close();
+
+    const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionsDir, 'era-1.json'), JSON.stringify({
+      injectedAt: new Date().toISOString(),
+      project: projectName,
+      entityIds: [citedId],
+      entityNames: ['era-decision'],
+      injectedContext: 'unused-by-the-accounting',
+    }));
+    writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'fix the parser' } },
+      ...['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts'].map((f) => ({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/' + f } }] },
+      })),
+      { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `per [mem:${citedId}] we keep the split` }] } },
+    ]);
+
+    const { stderr } = runHookCapturingStderr({ session_id: 'era-session', transcript_path: transcriptPath, cwd });
+
+    const check = new Database(dbPath, { readOnly: true });
+    try {
+      const meta = (key: string) => (check.prepare(
+        'SELECT value FROM memesh_metadata WHERE key = ?'
+      ).get(key) as { value: string } | undefined)?.value;
+      expect(meta('recall_accounting_mode')).toBe('citation-v2 since 2026-09-12');
+      // 1 and 1, not 413 and 38: this session is the whole v2 record so far.
+      expect(meta('citation_sessions_total'), 'v1 totals were carried into the v2 era').toBe('1');
+      expect(meta('citation_sessions_cited')).toBe('1');
+      // The reset left a record of what it discarded.
+      expect(stderr).toContain('citation accounting generation changed');
+      expect(stderr).toContain('total=412');
+      expect(stderr).toContain('cited=37');
+    } finally {
+      check.close();
+    }
+
+    // Idempotent: a second session in the SAME era keeps counting. It needs
+    // its own injected-set record — the hook consumes the first.
+    fs.writeFileSync(path.join(sessionsDir, 'era-2.json'), JSON.stringify({
+      injectedAt: new Date().toISOString(),
+      project: projectName,
+      entityIds: [citedId],
+      entityNames: ['era-decision'],
+      injectedContext: 'unused-by-the-accounting',
+    }));
+    runHook({ session_id: 'era-session-2', transcript_path: transcriptPath, cwd });
+    const again = new Database(dbPath, { readOnly: true });
+    try {
+      expect((again.prepare(
+        "SELECT value FROM memesh_metadata WHERE key = 'citation_sessions_total'"
+      ).get() as { value: string }).value, 'the reset fired again inside one era').toBe('2');
+    } finally {
+      again.close();
     }
   });
 
@@ -689,7 +775,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     db.close();
   });
 
-  it('Scenario: Duplicate session is not re-captured', () => {
+  it('Scenario: a second Stop restates the same session\'s entity instead of creating a second one', () => {
     writeTranscript([
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
@@ -711,17 +797,17 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     const db = openDb();
     const entities = db.prepare("SELECT * FROM entities WHERE name LIKE 'session-test-ses%'").all();
-    // Should have exactly 1 entity (not duplicated)
+    // Should have exactly 1 entity: the second Stop replaced it, not appended
+    // a second one under the same name.
     expect(entities.length).toBe(1);
 
-    // Both runs stamp the heartbeat: a dedup bail is a SUCCESSFUL run — the
-    // loop executed and correctly decided there was nothing to do. If the
-    // bail stopped stamping, a day of already-captured sessions would read
-    // as "capture stopped" in doctor.
+    // Both runs stamp the heartbeat. A re-capture is a SUCCESSFUL run just
+    // like the first — it went through the same capture path, not a bail —
+    // so nothing here should read as "capture stopped" in doctor.
     const run = db.prepare("SELECT run_count FROM hook_runs WHERE hook = 'session-summary'").get() as
       { run_count: number } | undefined;
     expect(run, 'session-summary must stamp its heartbeat').toBeDefined();
-    expect(run!.run_count, 'the dedup bail must stamp too — it is a successful run').toBe(2);
+    expect(run!.run_count, 'a re-capture stamps too — it is a successful run').toBe(2);
     db.close();
   });
 
@@ -760,15 +846,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     // the same lines over and over (measured: 56 observations, 16 unique).
     // `replace` is the primitive that makes a third answer possible.
     const sessionId = 'stop-updates-322';
-    const edits = (files: string[]) => files.map((f) => ({
-      type: 'assistant',
-      message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/' + f } }] },
-    }));
-
-    writeTranscript([
-      { type: 'user', message: { role: 'user', content: 'fix the parser' } },
-      ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
-    ]);
+    writeQualifyingTranscript();
     runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
 
     // The same session keeps working: four more files in the same transcript.
@@ -793,7 +871,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     const text = observations.map((o) => o.content).join('\n');
     // The second turn's work is visible...
     expect(text).toContain('router.ts');
-    expect(text).toContain('8 file');
+    expect(text).toContain('8 file(s)');
     // ...and the first turn's snapshot was REPLACED, not appended to, so the
     // stale count is gone rather than sitting beside the new one.
     expect(text).not.toContain('4 file(s)');

@@ -146,7 +146,7 @@ Full command and tool reference: [docs/api/API_REFERENCE.md](docs/api/API_REFERE
 | `import` | Import memories with merge strategies (skip / overwrite / append) |
 | `learn` | Record structured lessons from mistakes (error, root cause, fix, prevention) |
 | `task_state` | Read or record where the work stands — goal, next step, blocker, what was just finished |
-| `briefing` | The assembled work topology for any MCP client; generic context stays quiet, while exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology for any MCP client, closing with a capped index of the project's durable memories; generic context stays quiet, while exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze your work patterns — schedule, tools, strengths, learning areas |
 | `improvement` | Stage an evidence-linked product improvement for human review, or read its status; agents cannot accept or reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages. Durable JSON payload max: 64 KiB; complete native envelope max: 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` failures. Native acceptance, discovery, poll, and fetch never imply acknowledgement or disposition |

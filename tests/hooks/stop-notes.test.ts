@@ -17,6 +17,7 @@ import path from 'path';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
+import { canDenyReads } from '../helpers/permissions.js';
 
 const HOOK = path.resolve('scripts/hooks/session-summary.js');
 
@@ -38,12 +39,12 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
 
   afterEach(() => removeTempDir(home));
 
-  function run(env: Record<string, string> = {}) {
+  function run(env: Record<string, string> = {}, payload: Record<string, unknown> = {}) {
     const childEnv: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, ...env };
     delete childEnv.MEMESH_DB_PATH;
     delete childEnv.MEMESH_DIR;
     const r = spawnSync('node', [HOOK], {
-      input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop' }),
+      input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop', ...payload }),
       env: childEnv,
       encoding: 'utf8',
       timeout: 20_000,
@@ -67,7 +68,7 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
   /** The recorded outcomes for one hook name. Pinned non-empty: every Stop
    *  must leave a record, so an empty list is itself a failure, never a
    *  vacuous pass for the `.at(-1)` assertions that follow. */
-  function outcomes(hook: string): Array<{ outcome: string; reason?: string }> {
+  function outcomes(hook: string): Array<{ outcome: string; reason?: string; entity?: string }> {
     const file = path.join(home, '.memesh', 'hook-outcomes.jsonl');
     const records = fs.existsSync(file)
       ? fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.hook === hook)
@@ -84,7 +85,9 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(v.kind).toBe('json');
     expect(Object.keys(v.parsed!)).toEqual(['systemMessage']);
     expect(v.parsed!.systemMessage).toMatch(/1 decision-shaped move\(s\) \(a plan was approved\) and stored no memory/);
-    expect(outcomes('remember-nudge').at(-1)).toMatchObject({ outcome: 'wrote' });
+    // `notified`, not `wrote` — the nudge stores nothing, and is precisely
+    // what memesh says when nothing has been stored.
+    expect(outcomes('remember-nudge').at(-1)).toMatchObject({ outcome: 'notified' });
 
     // The next Stop sees only what was appended since: a trivial turn → silent.
     append(reads(1));
@@ -150,6 +153,10 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(run().status).toBe(0);
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
     expect(outcomes('note-ingest').at(-1)?.reason).toMatch(/1 created/);
+    // X2: a `wrote` record must name something it wrote. Without this the
+    // record carried no entity and doctor reported the hook with
+    // `lastWriteAt` set and `lastEntity` null — a write with nothing written.
+    expect(outcomes('note-ingest').at(-1)?.entity).toBe('hook_note_a');
 
     const db = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
     const row = db.prepare(
@@ -163,8 +170,18 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'no note file changed since the last ingestion' });
   }, 60_000);
 
-  it('a first ingestion of a large memory directory finishes inside the declared Stop budget', () => {
-    // The budget is read from hooks/hooks.json, not restated here.
+  it('a first ingestion of a large memory directory stays bounded to INGEST_MAX_FILES per Stop', () => {
+    // What keeps a first ingestion inside the Stop budget is the per-run file
+    // cap, and THAT is what this asserts. It used to assert on elapsed wall
+    // time instead (`elapsed < budgetMs / 2`), which measured the machine, not
+    // the code: with the cap mutated from 100 to 150 — the bound removed
+    // outright — the run still finished in 149 ms of a 10,000 ms budget and
+    // only the `100 created` assertion below went red. So the timing check
+    // protected nothing the counts do not, while carrying the one risk this
+    // project has already paid for once: a fixture bound to the clock, red on
+    // a loaded runner for no defect, with 244 test files running serially.
+    // The budget is read from hooks/hooks.json, not restated here, and
+    // reported on failure as context — never as the verdict.
     const hooks = JSON.parse(fs.readFileSync(path.resolve('hooks/hooks.json'), 'utf8'));
     const stop = hooks.hooks.Stop[0].hooks.find((h: { command: string }) => h.command.includes('session-summary.js'));
     const budgetMs = stop.timeout * 1000;
@@ -181,15 +198,224 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     const r = run();
     const elapsed = Date.now() - started;
     expect(r.status).toBe(0);
-    // Half the budget: the rest of the Stop hook (capture, auto-update) and a
-    // slower machine must still fit.
-    expect(elapsed, `Stop hook took ${elapsed} ms against a ${budgetMs} ms budget`).toBeLessThan(budgetMs / 2);
+    const timing = `Stop hook took ${elapsed} ms against a ${budgetMs} ms budget`;
     const last = outcomes('note-ingest').at(-1)!;
-    expect(last.outcome).toBe('wrote');
-    // 150 files, 100 read per Stop: the rest are reported and wait.
-    expect(last.reason).toMatch(/100 created/);
-    expect(last.reason).toMatch(/50 more not processed/);
+    expect(last.outcome, timing).toBe('wrote');
+    // 150 files, 100 read per Stop: the rest are reported and wait. This pair
+    // is the budget guard — remove the cap and `150 created` comes back here.
+    expect(last.reason, timing).toMatch(/100 created/);
+    expect(last.reason, timing).toMatch(/50 more not processed/);
   }, 60_000);
+
+  // Permission bits mean nothing to root, and Windows does not model read or
+  // traversal permission at all, so the EACCES this test needs cannot be
+  // produced in either. Skipped rather than silently vacuous — this guard
+  // named only root, and both windows-latest legs failed with
+  // `expected 'wrote' to be 'error'`: the hook had read the directory the
+  // test believed it had locked.
+  it.skipIf(!canDenyReads)('an unreadable memory directory is an error, not "no memory directory"', () => {
+    // claudeMemoryDir's `catch { return null; }` gave EACCES and EIO the same
+    // answer as ENOENT, so a user whose memory directory became unreadable
+    // was told every Stop, forever, that they simply have no notes — a
+    // sentence that is both false and reassuring. It is worse than a plain
+    // silent skip: note-ingest is not in SILENT_ELIGIBLE_HOOKS, so doctor
+    // never escalates the hook that keeps answering "nothing to do here".
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'a.md'),
+      '---\nname: locked_note\ndescription: Locked\nmetadata:\n  type: fact\n---\n\nbody\n');
+    write(reads(1));
+    // No search permission on the parent: lstat of any child fails EACCES.
+    fs.chmodSync(projectDir, 0o600);
+    try {
+      const r = run();
+      expect(r.status).toBe(0);
+      const last = outcomes('note-ingest').at(-1)!;
+      expect(last.outcome, 'a permissions failure recorded as a skip').toBe('error');
+      expect(last.reason).not.toBe('no Claude Code memory directory for this project');
+    } finally {
+      fs.chmodSync(projectDir, 0o700);
+    }
+  }, 60_000);
+
+  it('a plan approved across a Stop boundary is still a decision-shaped move', () => {
+    // The pending tool_use → kind map was rebuilt from scratch each Stop, so a
+    // call in one window and its result in the next were never paired. The
+    // nudge then reported "no decision-shaped move since the last Stop" — a
+    // miss whose stated reason is entirely plausible, which is what makes it
+    // expensive: nothing about the output says a pairing was dropped.
+    const id = 'tu_split_1';
+    write([
+      ...reads(5),
+      { type: 'assistant', timestamp: at(60_000), message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'ExitPlanMode', input: { plan: 'do X' } }] } },
+    ]);
+    // First Stop: the plan is open, no result yet, so nothing to nudge about.
+    expect(run().stdout.trim()).toBe('');
+
+    // Second Stop: only the result arrives — five more reads keep the window
+    // above the trivial-turn floor.
+    append([
+      { type: 'user', timestamp: at(30_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: 'ok' }] } },
+      ...reads(5),
+    ]);
+    const second = run();
+    expect(second.status).toBe(0);
+    expect(JSON.parse(second.stdout).systemMessage).toMatch(/a plan was approved/);
+  }, 60_000);
+
+  it('a run that refused every file does not report that nothing needed storing', () => {
+    // `changed` counts only stored things, so a Stop whose only event was a
+    // refusal recorded `note files were read and nothing new needed storing`
+    // — the user's file was rejected and the hook reported contentment. On a
+    // Stop path a silent drop is indistinguishable from nothing happening.
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(home, 'elsewhere.md'),
+      '---\nname: outside_note\ndescription: Outside\nmetadata:\n  type: fact\n---\n\nbody\n');
+    fs.symlinkSync(path.join(home, 'elsewhere.md'), path.join(memoryDir, 'link.md'));
+    write(reads(1));
+
+    expect(run().status).toBe(0);
+    const last = outcomes('note-ingest').at(-1)!;
+    expect(last.outcome).toBe('skipped');
+    expect(last.reason).toBe('note files were refused and nothing was stored');
+  }, 60_000);
+
+  it('a nudge nobody could be told is not recorded as delivered, and its window is kept', () => {
+    // The outcome used to be recorded inside runStopNotes, before the line
+    // had been written. Piping this hook's stdout into a process that exits
+    // immediately gave exit 0, empty stderr and `{"outcome":"wrote"}` while
+    // the user saw nothing — and the transcript offset advanced too, so the
+    // window was never reconsidered and the moves it described were never
+    // mentioned again.
+    write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
+
+    const childEnv: Record<string, string | undefined> = {
+      ...process.env, HOME: home, USERPROFILE: home,
+      // The hook path reaches `sh` as an environment value, read back as
+      // "$STOP_HOOK". Interpolating it into the command string instead —
+      // even through JSON.stringify, which is not shell quoting — puts a
+      // path this process does not control into a shell word, and breaks
+      // outright on a checkout whose directory name carries a metacharacter.
+      STOP_HOOK: HOOK,
+    };
+    delete childEnv.MEMESH_DB_PATH;
+    delete childEnv.MEMESH_DIR;
+    // `true` exits before the hook reaches its write, so writeSync(1) gets
+    // EPIPE — a host that stopped listening, reproduced exactly.
+    const r = spawnSync('sh', ['-c', 'node "$STOP_HOOK" | true'], {
+      input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop' }),
+      env: childEnv,
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    expect(r.status).toBe(0);
+    expect(outcomes('remember-nudge').at(-1)).toMatchObject({
+      outcome: 'error',
+      reason: 'the host closed stdout before the nudge could be written',
+    });
+
+    // The window was kept: a second Stop with nothing appended still finds
+    // the same approved plan and says so.
+    const second = run();
+    expect(second.status).toBe(0);
+    expect(JSON.parse(second.stdout).systemMessage).toMatch(/a plan was approved/);
+  }, 60_000);
+
+  it('a payload with no cwd does not file notes under no project at all', () => {
+    // Ingestion used to run BEFORE the cwd guard, with
+    // `project: inputData.cwd ? getProjectName(inputData.cwd) : undefined`.
+    // The same file refuses session capture for this exact condition, saying
+    // it is better to miss one capture than to file it under the wrong
+    // project — and a note filed under NO project is not recoverable later
+    // either: note-ingest fast-paths an unchanged file, so the tag backfill
+    // is never reached unless the user edits the note again.
+    //
+    // The nudge half must still run: it writes nothing and needs no project.
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'a.md'),
+      '---\nname: nocwd_note\ndescription: No cwd\nmetadata:\n  type: decision\n---\n\nbody\n');
+    write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
+
+    const r = run({}, { cwd: undefined });
+    expect(r.status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({
+      outcome: 'skipped',
+      reason: 'cwd absent in payload — cannot resolve project',
+    });
+
+    // Nothing was stored. On a first Stop the skip is total — ingestion never
+    // opens a database, so there is no `entities` table to query; both that
+    // and an empty answer mean the same thing here.
+    const dbPath = path.join(home, '.memesh', 'knowledge-graph.db');
+    let stored: unknown;
+    if (fs.existsSync(dbPath)) {
+      const db = new MemeshDatabase(dbPath);
+      try {
+        stored = db.prepare("SELECT id FROM entities WHERE name = 'nocwd_note'").get();
+      } catch (err) {
+        expect(String(err), 'the only tolerated failure is that no graph exists yet').toMatch(/no such table: entities/);
+      }
+      db.close();
+    }
+    expect(stored, 'a note was stored with no project tag it can never gain').toBeUndefined();
+
+    // The nudge half still ran and reached its own verdict — it is silenced
+    // here by the note file this test just wrote, which is its normal rule,
+    // not by the missing cwd. What matters is that skipping ingestion did not
+    // take the nudge down with it.
+    expect(outcomes('remember-nudge').at(-1)).toMatchObject({
+      outcome: 'skipped',
+      reason: 'a note file changed since the last Stop',
+    });
+
+    // And with cwd present the same directory ingests normally.
+    fs.utimesSync(path.join(memoryDir, 'a.md'), new Date(), new Date());
+    append(reads(1));
+    expect(run().status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
+    const db2 = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
+    const tags = db2.prepare(
+      "SELECT t.tag FROM entities e JOIN tags t ON t.entity_id = e.id WHERE e.name = 'nocwd_note' AND t.tag LIKE 'project:%'",
+    ).all() as Array<{ tag: string }>;
+    db2.close();
+    expect(tags.length).toBeGreaterThan(0);
+  }, 60_000);
+
+  it('the Stop after an over-cap run resumes it, without any file being touched', () => {
+    // The resume flag had no guard: mutating `more: result.more > 0` to
+    // `more: false` in _stop-notes.js left all fourteen tests green. The gap
+    // was never "no test runs a second Stop" — several do — it is that no
+    // test ran a second Stop AFTER AN OVER-CAP RUN. Without the flag the
+    // mtime throttle (`newest <= last`) short-circuits the second Stop, and
+    // the 50 notes the cap deferred are never ingested at all: they wait for
+    // an edit that will never come, silently.
+    fs.mkdirSync(memoryDir);
+    for (let i = 0; i < 150; i++) {
+      fs.writeFileSync(path.join(memoryDir, `n${String(i).padStart(3, '0')}.md`),
+        `---\nname: resume_note_${i}\ndescription: Resume note ${i}\nmetadata:\n  type: fact\n---\n\nbody of note ${i}\n`);
+    }
+    write(reads(1));
+    expect(run().status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)?.reason).toMatch(/100 created/);
+
+    const stored = () => {
+      const db = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
+      const row = db.prepare(
+        "SELECT COUNT(*) AS n FROM entities e JOIN tags t ON t.entity_id = e.id AND t.tag = 'source:note-file' WHERE e.name LIKE 'resume_note_%'",
+      ).get() as { n: number };
+      db.close();
+      return row.n;
+    };
+    expect(stored()).toBe(100);
+
+    // Second Stop. Nothing on disk changed — no write, no touch, no new
+    // transcript work beyond one trivial read. Only the resume flag can carry
+    // this run past the mtime throttle.
+    append(reads(1));
+    expect(run().status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
+    expect(outcomes('note-ingest').at(-1)?.reason).toMatch(/50 created/);
+    expect(stored()).toBe(150);
+  }, 120_000);
 
   it('F8: a rejected plan is not an approved one — with or without is_error', () => {
     const declined = "The user doesn't want to proceed with this tool use. The tool use was rejected.";

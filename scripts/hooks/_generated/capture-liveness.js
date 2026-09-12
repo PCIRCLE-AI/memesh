@@ -31,17 +31,21 @@ export function isTriggeredRecord(record) {
         return true;
     return !(NOT_TRIGGERED_SKIP_REASONS[record.hook] ?? []).includes(record.reason);
 }
+function readHookOutcomeLines(raw) {
+    const entries = [];
+    for (const line of raw.split('\n')) {
+        const record = parseHookOutcomeLine(line);
+        if (record)
+            entries.push({ hook: record.hook, triggered: isTriggeredRecord(record), record, line });
+    }
+    return entries;
+}
 export const HOOK_OUTCOMES_ROTATE_BYTES = 64 * 1024;
 export function serializeHookOutcome(record) {
     return `${JSON.stringify(record)}\n`;
 }
 export function trimHookOutcomeLines(raw, max = HOOK_OUTCOMES_PER_HOOK, maxBytes = HOOK_OUTCOMES_ROTATE_BYTES) {
-    const records = [];
-    for (const line of raw.split('\n')) {
-        const record = parseHookOutcomeLine(line);
-        if (record)
-            records.push({ hook: record.hook, triggered: isTriggeredRecord(record), line });
-    }
+    const records = readHookOutcomeLines(raw);
     const keep = windowKeep(records, max, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
     let kept = records.filter((_, i) => keep[i]).map((r) => r.line);
     let bytes = kept.reduce((n, line) => n + utf8Length(line) + 1, 0);
@@ -126,6 +130,7 @@ export const SKIP_REASONS = {
     noNoteChanged: 'no note file changed since the last ingestion',
     noteIngesterNotBuilt: 'the note ingester is not built (dist/core/note-ingest.js is missing)',
     noteNothingNew: 'note files were read and nothing new needed storing',
+    noteFilesRefused: 'note files were refused and nothing was stored',
     noTranscript: 'no transcript to read',
     trivialTurn: 'trivial turn — too few tool calls since the last Stop',
     noDecisionMove: 'no decision-shaped move since the last Stop',
@@ -197,23 +202,28 @@ function valueEnd(s, i) {
 export const NOT_TRIGGERED_SKIP_REASONS = {
     'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
     'session-summary': [SKIP_REASONS.alreadyCaptured],
+    'note-ingest': [SKIP_REASONS.noNoteChanged],
+    'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
 };
+export const UNCLASSIFIED_SKIP_HOOKS = [
+    'pre-compact',
+    'pre-edit-recall',
+    'user-prompt-intent',
+    'decision-nudge',
+    'guard-check',
+    'session-start',
+];
 export const NEVER_RAN_GRACE_HOURS = 72;
 export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
     if (!raw)
         return { hooks: {} };
-    const records = [];
-    for (const line of raw.split('\n')) {
-        const record = parseHookOutcomeLine(line);
-        if (record)
-            records.push(record);
-    }
-    const keep = windowKeep(records.map((r) => ({ hook: r.hook, triggered: isTriggeredRecord(r) })), limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
+    const entries = readHookOutcomeLines(raw);
+    const keep = windowKeep(entries, limit, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK);
     const hooks = {};
-    records.forEach((record, i) => {
+    entries.forEach(({ hook, record }, i) => {
         if (!keep[i])
             return;
-        (hooks[record.hook] ?? (hooks[record.hook] = [])).push(record);
+        (hooks[hook] ?? (hooks[hook] = [])).push(record);
     });
     return { hooks };
 }
@@ -235,7 +245,8 @@ export function parseHookOutcomeLine(line) {
         return null;
     if (typeof rec.at !== 'string')
         return null;
-    if (rec.outcome !== 'wrote' && rec.outcome !== 'skipped' && rec.outcome !== 'error')
+    if (rec.outcome !== 'wrote' && rec.outcome !== 'skipped'
+        && rec.outcome !== 'notified' && rec.outcome !== 'error')
         return null;
     const record = {
         hook: rec.hook,
@@ -275,6 +286,8 @@ function summarizeOne(hook, records) {
     let triggeredRuns = 0;
     let lastWriteAt = null;
     let lastEntity = null;
+    let notifies = 0;
+    let lastNotifiedAt = null;
     let lastSkipReason = null;
     const skipCounts = new Map();
     const hosts = new Set();
@@ -294,6 +307,11 @@ function summarizeOne(hook, records) {
                 lastWriteAt = r.at;
                 lastEntity = r.entity ?? null;
             }
+        }
+        else if (r.outcome === 'notified') {
+            notifies++;
+            if (lastNotifiedAt === null || r.at >= lastNotifiedAt)
+                lastNotifiedAt = r.at;
         }
         else if (r.outcome === 'skipped') {
             skips++;
@@ -327,6 +345,8 @@ function summarizeOne(hook, records) {
         firstTriggeredAt,
         lastWriteAt,
         lastEntity,
+        notifies,
+        lastNotifiedAt,
         lastSkipReason,
         dominantSkipReason,
         dominantSkipCount,

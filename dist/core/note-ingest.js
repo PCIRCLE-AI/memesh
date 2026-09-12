@@ -116,7 +116,8 @@ export function ingestNoteDirectory(opts) {
         repathed: [],
         restored: [],
         markedMissing: [],
-        skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: 'symlink refused' })),
+        skipped: [],
+        refusedNow: 0,
         more: 0,
     };
     const db = getDatabase();
@@ -147,6 +148,29 @@ export function ingestNoteDirectory(opts) {
         priorSkips = {};
     }
     const nextSkips = {};
+    const counted = new Set();
+    const report = (rel, reason) => {
+        result.skipped.push({ path: rel, reason });
+        if (priorSkips[rel]?.reason === reason || counted.has(rel))
+            return;
+        counted.add(rel);
+        result.refusedNow++;
+    };
+    for (const abs of symlinks) {
+        const rel = relPath(realDir, abs);
+        const reason = 'symlink refused';
+        report(rel, reason);
+        let st;
+        try {
+            st = fs.lstatSync(abs);
+        }
+        catch {
+            st = null;
+        }
+        nextSkips[rel] = st
+            ? { mtime: st.mtimeMs, size: st.size, reason }
+            : { mtime: 0, size: 0, reason };
+    }
     const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
     const declaredNameAt = new Map();
     const statOf = (rel) => {
@@ -166,9 +190,10 @@ export function ingestNoteDirectory(opts) {
     const claims = [];
     const readRels = new Set();
     let read = 0;
+    let refunds = 0;
     for (const abs of files) {
         const rel = relPath(realDir, abs);
-        const skip = (reason) => { result.skipped.push({ path: rel, reason }); };
+        const skip = (reason) => { report(rel, reason); };
         let raw;
         let stat;
         const contentSkip = (reason) => {
@@ -176,8 +201,23 @@ export function ingestNoteDirectory(opts) {
             nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
             declaredNameAt.set(rel, '');
         };
+        const unreachableSkip = (reason) => {
+            skip(reason);
+            declaredNameAt.set(rel, '');
+            if (readRels.has(rel) && refunds < maxFiles) {
+                read--;
+                refunds++;
+            }
+        };
         try {
             stat = fs.lstatSync(abs);
+        }
+        catch (err) {
+            skip(`unreadable: ${err.code ?? 'error'}`);
+            declaredNameAt.set(rel, '');
+            continue;
+        }
+        try {
             if (stat.isSymbolicLink()) {
                 skip('symlink refused');
                 continue;
@@ -189,7 +229,8 @@ export function ingestNoteDirectory(opts) {
             }
             const priorSkip = priorSkips[rel];
             const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
-            if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
+            if (priorSkip && !priorSkip.reportOnly && !nameIsFree
+                && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
                 skip(priorSkip.reason);
                 nextSkips[rel] = priorSkip;
                 continue;
@@ -206,13 +247,13 @@ export function ingestNoteDirectory(opts) {
             }
             const real = fs.realpathSync(abs);
             if (!real.startsWith(realDir + path.sep)) {
-                skip('resolves outside the directory');
+                unreachableSkip('resolves outside the directory');
                 continue;
             }
             raw = fs.readFileSync(real);
         }
         catch (err) {
-            skip(`unreadable: ${err.code ?? 'error'}`);
+            unreachableSkip(`unreadable: ${err.code ?? 'error'}`);
             continue;
         }
         const parsed = parseFrontmatter(raw.toString('utf8'));
@@ -238,7 +279,10 @@ export function ingestNoteDirectory(opts) {
             contentSkip('empty note — no description and no body');
             continue;
         }
-        observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
+        if (observations.length > NOTE_MAX_OBSERVATIONS) {
+            contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+            continue;
+        }
         claims.push({
             rel,
             name,
@@ -264,8 +308,12 @@ export function ingestNoteDirectory(opts) {
     for (const [name, claimants] of byName) {
         const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
         const prov = existing ? parseProvenance(existing.metadata) : {};
-        const skipAll = (reason) => { for (const c of claimants)
-            result.skipped.push({ path: c.rel, reason }); };
+        const skipAll = (reason) => {
+            for (const c of claimants) {
+                report(c.rel, reason);
+                nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, reportOnly: true };
+            }
+        };
         if (existing) {
             if (!existing.is_note) {
                 skipAll(`name "${name}" belongs to a memory that did not come from a note file`);
@@ -289,7 +337,7 @@ export function ingestNoteDirectory(opts) {
             const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
             const ownerStat = statOf(recordedRel);
             for (const c of claimants) {
-                result.skipped.push({ path: c.rel, reason });
+                report(c.rel, reason);
                 if (ownerStat)
                     nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: recordedRel, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
             }
@@ -302,7 +350,7 @@ export function ingestNoteDirectory(opts) {
             if (c === owner)
                 continue;
             const reason = `name "${name}" already used by ${owner.rel} in this directory`;
-            result.skipped.push({ path: c.rel, reason });
+            report(c.rel, reason);
             nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: owner.rel, mtime: owner.stat.mtimeMs, size: owner.stat.size } };
         }
         if (owner.unchanged) {
@@ -386,6 +434,7 @@ export function summarizeNoteIngest(r) {
         ...(r.repathed.length ? [`${r.repathed.length} moved`] : []),
         ...(r.restored.length ? [`${r.restored.length} restored`] : []),
         `${r.skipped.length} skipped`,
+        ...(r.refusedNow ? [`${r.refusedNow} newly refused`] : []),
     ];
     if (r.markedMissing.length)
         parts.push(`${r.markedMissing.length} marked missing`);
