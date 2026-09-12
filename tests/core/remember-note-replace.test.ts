@@ -272,3 +272,24 @@ describe('remember({ replace: true }) on a forgotten memory — #324 C4', () => 
     expect(remember({ name: 'live_thing', type: 'decision', observations: ['after'], replace: true }).replaced).toBe(true);
   });
 });
+
+describe('remember({ replace: true }) rewrites the type too — #324 C5', () => {
+  it('the stored type follows the replacement, and the receipt reports what was stored', () => {
+    remember({ name: 'retyped_thing', type: 'feedback', observations: ['before'] });
+    const r = remember({ name: 'retyped_thing', type: 'decision', observations: ['after'], replace: true });
+    expect(r.replaced).toBe(true);
+    expect(r.type, 'the receipt echoed the old type').toBe('decision');
+    expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
+      .get('retyped_thing') as { type: string }).type).toBe('decision');
+  });
+
+  it('without `replace`, an append still reports the type that is actually stored', () => {
+    remember({ name: 'appended_thing', type: 'feedback', observations: ['before'] });
+    const r = remember({ name: 'appended_thing', type: 'decision', observations: ['after'] });
+    // createEntity preserves the stored type on a name collision, so echoing
+    // args.type would make the receipt claim a type that was never written.
+    expect(r.type).toBe('feedback');
+    expect((getDatabase().prepare('SELECT type FROM entities WHERE name = ?')
+      .get('appended_thing') as { type: string }).type).toBe('feedback');
+  });
+});

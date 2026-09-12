@@ -602,3 +602,31 @@ describe('ingestNoteDirectory', () => {
     });
   });
 });
+
+describe('note-ingest: the entity type follows the file — #324 C5', () => {
+  it('a changed metadata.type updates the stored type, not only the title', () => {
+    const dir = makeDir({ 'a.md': note('note_a', 'Alpha', 'feedback', 'Alpha body.') });
+    ingestNoteDirectory({ dir });
+    expect(kg().getEntity('note_a')!.type).toBe('feedback');
+
+    fs.writeFileSync(path.join(dir, 'a.md'), note('note_a', 'Alpha revised', 'decision', 'Alpha body revised.'));
+    const r = ingestNoteDirectory({ dir });
+    expect(r.replaced).toEqual(['note_a']);
+    const e = kg().getEntity('note_a')!;
+    // The receipt already said `replaced`, and the title already followed the
+    // file. The type did not: createEntity's INSERT OR IGNORE leaves it, and
+    // the replace path cleared observations and tags without touching it — so
+    // a note reclassified from feedback to decision kept answering as
+    // feedback, to recall and to every type-filtered view.
+    expect(e.type, 'the type did not follow the file').toBe('decision');
+    expect(e.title).toBe('Alpha revised');
+  });
+
+  it('an unchanged type is not churned', () => {
+    const dir = makeDir({ 'b.md': note('note_b', 'Beta', 'lesson', 'Beta body.') });
+    ingestNoteDirectory({ dir });
+    fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'Beta body changed.'));
+    ingestNoteDirectory({ dir });
+    expect(kg().getEntity('note_b')!.type).toBe('lesson');
+  });
+});

@@ -75,13 +75,13 @@ function buildRelevanceMap(entities: Entity[]): Map<string, number> {
 export function remember(input: RememberInput): RememberResult {
   const db = getDatabase();
   const kg = new KnowledgeGraph(db);
-  const { args, derived } = resolveRememberInput(input);
+  const { args, derived, typeGiven } = resolveRememberInput(input);
   // `remember` is one logical write: the source entity (including metadata),
   // every accepted relation, and every superseded target must either all land
   // or all roll back. The narrower KnowledgeGraph transactions protect their
   // own rows, but without this outer boundary a failure while archiving a
   // superseded target left the new source and relation committed.
-  return db.transaction(() => rememberInTransaction(args, derived, db, kg)).immediate();
+  return db.transaction(() => rememberInTransaction(args, derived, typeGiven, db, kg)).immediate();
 }
 
 /** Most previous versions a replaced memory keeps in `metadata.replaced_history`. */
@@ -145,10 +145,12 @@ type ResolvedRememberInput = RememberInput & { name: string; type: string };
  * is complete. The transports' RememberSchema rejects the same shapes first,
  * with a message naming the key; these throws are for direct core callers.
  */
-function resolveRememberInput(input: RememberInput): { args: ResolvedRememberInput; derived?: DerivedNote } {
+function resolveRememberInput(
+  input: RememberInput,
+): { args: ResolvedRememberInput; derived?: DerivedNote; typeGiven: boolean } {
   if (input.note === undefined) {
     if (!input.name || !input.type) throw new Error('remember needs `name` and `type`, or `note`');
-    return { args: input as ResolvedRememberInput };
+    return { args: input as ResolvedRememberInput, typeGiven: true };
   }
   if (input.title !== undefined || input.observations !== undefined) {
     throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
@@ -167,12 +169,19 @@ function resolveRememberInput(input: RememberInput): { args: ResolvedRememberInp
       observations: derived.observations,
     },
     derived,
+    // The note form DEFAULTS the type, so `args.type` alone cannot tell a
+    // caller who asked for `note` from one who said nothing. The replace path
+    // below rewrites the stored type, and rewriting a decision into a `note`
+    // because the caller omitted the field would be the same class of silent
+    // change it exists to end.
+    typeGiven: input.type !== undefined,
   };
 }
 
 function rememberInTransaction(
   args: ResolvedRememberInput,
   derived: DerivedNote | undefined,
+  typeGiven: boolean,
   db: ReturnType<typeof getDatabase>,
   kg: KnowledgeGraph,
 ): RememberResult {
@@ -211,6 +220,8 @@ function rememberInTransaction(
   // this transaction, clearEntityData's own transaction is a SAVEPOINT, so a
   // failure anywhere below rolls the clear back too.
   let replacedVersion: ReplacedVersion | undefined;
+  /** Set when the replace path rewrote the stored type, so the receipt can report it. */
+  let retypedTo: string | undefined;
   let tags = args.tags;
   let title = args.title;
   let observations = args.observations;
@@ -225,6 +236,16 @@ function rememberInTransaction(
       tags: previousTags,
     };
     kg.clearEntityData(args.name);
+    // The type is part of what `replace` replaces. `createEntity` below uses
+    // INSERT OR IGNORE, which leaves the stored type alone, and the clear
+    // above only removes observations and tags — so a note file reclassified
+    // from feedback to decision kept answering as feedback while the receipt
+    // said `replaced`. `type` is not in the FTS document (name and
+    // observations are — storage/fts-index.ts), so this needs no reindex.
+    if (typeGiven && args.type !== existing.type) {
+      db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(args.type, existing.id);
+      retypedTo = args.type;
+    }
     // Tags omitted means "keep them" — clearEntityData dropped them, so they
     // go back. Replacing a memory's text must not silently untag it from its
     // project.
@@ -322,8 +343,9 @@ function rememberInTransaction(
     ...(title !== undefined ? { title } : {}),
     // `createEntity` preserves the stored type on a name collision. Report
     // that persisted value too; echoing args.type made a duplicate remember
-    // receipt claim a type that was never written.
-    type: existing?.type ?? args.type,
+    // receipt claim a type that was never written. The replace path is the
+    // one place the stored type DOES change, and `retypedTo` carries it.
+    type: retypedTo ?? existing?.type ?? args.type,
     observations: observations?.length ?? 0,
     tags: tags?.length ?? 0,
     relations: relationsCreated.length,
@@ -336,7 +358,7 @@ function rememberInTransaction(
     ...(relationErrors.length > 0 ? { relationErrors } : {}),
     ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
     ...(derived
-      ? { derived: { name: args.name, type: existing?.type ?? args.type, title: derived.title, observations: derived.observations } }
+      ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? args.type, title: derived.title, observations: derived.observations } }
       : {}),
   };
 }
