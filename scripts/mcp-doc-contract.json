@@ -2,12 +2,12 @@
   "schema_version": "mcp-doc-contract/v2",
   "source_sha256": "ced0bbac77f4b05d9e74b3f8514d5ba925d3058a0c3dc5995ee7a24bc0264770",
   "surfaces": {
-    "README.md": "a675c51ecc1220c4fd0b390068f317f27400fc5aa1a3a96171fc9261bc551e1e",
-    "README.zh-TW.md": "0a0e5677b18e7732e64d97cfe1d52570b07352113d994b42c0ba559b1df7e5f7",
-    "README.de.md": "31d9d8fb507cb876c71bf9a388379c23031c747771dab37e7dc7e83957c3fec0",
+    "README.md": "a0aa3dbb0bab4a02f611b146e1f55cf83d5f3f4e4bde49adc10a046d3d7e445e",
+    "README.zh-TW.md": "bd1b959c503a3c912f7fff0a012e1c626cb6639bcdd1d8c7150d21bb0fba4a63",
+    "README.de.md": "a077386d2a15a862b12700e40bfbf3d06797cbc3421e9d3b1905cf1d3d4a59ab",
     "AGENTS.md": "fae5875686223faecbdf26a0092ae6682549a7c31c38ec496c54a6b9cab83e92",
     "skills/memesh/SKILL.md": "ec91acad08e982776d0f499f41672217252e0848614d13b4c0602149028f85f8",
-    "docs/api/API_REFERENCE.md": "31b22679e97509722245b19bc95b139671382bee984755d8d791243f3c50637c",
+    "docs/api/API_REFERENCE.md": "6d5f087e7e828f85ded4a3609b4adf89a3dc4e266e1e59313b857e9bbb11d944",
     "docs/ARCHITECTURE.md": "37b3ae97f6e242e7102cd7ee30876a36503e31400b8ac9e2325ac41d3b965bc2"
   }
 }

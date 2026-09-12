@@ -141,7 +141,7 @@ memesh serve           # 啟動本機 server 並印出儀表板網址
 | 工具 | 做什麼 |
 |------|--------|
 | `work_package` | 準備一份有界限且不受信任的日曆摘要，或從唯一符合的 MCP workspace root 準備 Claude Code transcript 套件；提交一份嚴格結果等待人工審核，或延後而不產生耐久變更。Transcript 提交會保留有界且已遮蔽的來源輪次；不會暴露檔案路徑、隱藏推理、provider、embedding 或 vector 資料。 |
-| `remember` | 用觀察、關係和標籤儲存知識 |
+| `remember` | 用觀察、關係和標籤儲存知識；也可以只給一段自由文字（`note`），標題、觀察和名稱會自動推導出來；`replace` 則是直接改掉既有的那一筆 |
 | `recall` | 本機 FTS5 搜尋，包含多因素評分（相關性、近期性、頻率、信心、回憶影響） |
 | `forget` | 軟歸檔（永不刪除）或移除特定觀察 |
 | `export` | 以 JSON 備份、搬遷記憶，或在相容代理之間轉移 |

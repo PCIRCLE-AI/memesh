@@ -47,8 +47,9 @@ All notable changes to MeMesh are documented here.
   statistics are frozen. Evidence tooling only; nothing ships in the package.
 - **Capture liveness: MeMesh can now tell a quiet hook from a broken one
   (#327).** Every capture hook leaves an outcome record on every exit path —
-  `wrote`, `skipped` with a reason, or `error` with a label (never the
-  exception text) — appended to `hook-outcomes.jsonl` beside the database.
+  `wrote`, `notified` (the hook printed something a person or model reads
+  and stored nothing), `skipped` with a reason, or `error` with a label
+  (never the exception text) — appended to `hook-outcomes.jsonl` beside the database.
   `memesh doctor` gains a **Capture liveness** row, and `memesh doctor --json`
   / `GET /v1/doctor` carry per-hook figures and per-type week-over-week write
   counts under a new `capture` field. Only hooks whose trigger means a write
@@ -98,6 +99,24 @@ All notable changes to MeMesh are documented here.
   Without `replace` the append semantics are exactly as before. The
   contentless FTS index is deleted with the exact text that was indexed, so
   the old words stop matching.
+  The memory keeps the `type` it already has: `type` is required only on a
+  `replace` whose name does not exist yet, and passing a different one is how
+  a memory is reclassified. A `replace` on a memory archived with `forget` is
+  refused — remember it again without `replace` first.
+- **The remember receipt reports the title the row holds (#324).** The response
+  used to carry the title the text *would* have produced, so a memory that kept
+  its own headline was described with one it never had. MCP `remember` and
+  `POST /v1/remember` return the stored value; the CLI no longer re-reads the
+  row to work around it.
+- **The over-cap refusal counts observations, not paragraphs (#324).** A single
+  paragraph of 101 list items yields 101 observations, and the message said
+  "101 paragraphs" — the wrong unit for the thing being capped.
+- **The MCP and exported schemas state the three forms (#324).** `remember`
+  declares `anyOf` — `note`, or `name` + `type`, or `name` + `replace` — so a
+  client reading the schema can tell which fields go together instead of
+  inferring it from an error.
+- **`memesh import` rejects notes-only flags on the JSON path (#324).** Passing
+  a note-directory option without `--notes` used to be accepted and ignored.
 - **Note files are ingested as memories (#324).** `memesh import --notes
   <dir>`, and the Stop hook for the project's own memory directory, upsert
   one memory per frontmatter note file, tagged `source:note-file`, with the

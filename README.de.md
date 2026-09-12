@@ -139,7 +139,7 @@ Alle Befehle und Tools: [docs/api/API_REFERENCE.md](docs/api/API_REFERENCE.md). 
 | Tool | Was es tut |
 |------|-------------|
 | `work_package` | Einen begrenzten, nicht vertrauenswürdigen Kalender-Digest oder ein Claude-Code-Transkript-Paket unter einem passenden MCP-Workspace-Root vorbereiten; genau ein striktes Ergebnis zur menschlichen Prüfung einreichen oder ohne dauerhafte Änderung zurückstellen. Die Transkript-Einreichung bewahrt begrenzte redigierte Quellzüge auf; Dateipfad, verborgenes Denken, Provider-, Embedding- oder Vektordaten werden nicht offengelegt. |
-| `remember` | Wissen mit Beobachtungen, Relationen und Tags speichern |
+| `remember` | Wissen mit Beobachtungen, Relationen und Tags speichern — oder Freitext als `note` übergeben, woraus Titel, Beobachtungen und Name abgeleitet werden; `replace` korrigiert eine Erinnerung an Ort und Stelle |
 | `recall` | Lokale FTS5-Suche mit Multi-Faktor-Bewertung (Relevanz, Aktualität, Häufigkeit, Konfidenz, Abruf-Auswirkung) |
 | `forget` | Soft-Archivierung (löscht nie) oder entfernt spezifische Beobachtungen |
 | `export` | Memories als JSON sichern, migrieren oder zwischen kompatiblen Agenten übertragen |
