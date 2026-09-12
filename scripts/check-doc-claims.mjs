@@ -401,6 +401,17 @@ const livingDocs = [
   'docs/ARCHITECTURE.md',
   'docs/api/API_REFERENCE.md',
   'skills/memesh/SKILL.md',
+  // The agent-skill configuration. These name repository paths the way every
+  // other living document does, and a wrong one sends an agent to a directory
+  // that is not there. Left out of this list, a dangling reference in them is
+  // invisible from the moment it is written: docs/agents/domain.md arrived in
+  // 5e1b18a8 naming `docs/adr/`, which does not exist, and this gate was green on that
+  // commit — `node scripts/check-doc-claims.mjs` there reports 13 living
+  // documents and no dangling paths. Adding the three turned it red on that
+  // same path immediately.
+  'docs/agents/domain.md',
+  'docs/agents/issue-tracker.md',
+  'docs/agents/triage-labels.md',
 ].filter(isTracked);
 const dangling = [];
 for (const doc of livingDocs) {
