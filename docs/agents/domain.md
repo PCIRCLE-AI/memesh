@@ -17,11 +17,11 @@ Treat this as a single-context repo: one product, one domain vocabulary, which
 is why a single glossary fits. The layout underneath that is not uniform, and an
 agent enumerating source files will miss code if it assumes it is. There is no
 npm workspace — the root `package.json` has no `workspaces` field — and the four
-places code lives each look different:
+places a `package.json`-or-`src/` sweep will find each look different:
 
 | Where | Shape |
 |---|---|
-| repository root | `package.json`, sources in `src/` |
+| repository root | `package.json`; code in `src/`, and also in `scripts/`, `tests/` and `benchmarks/` — `"lint": "eslint src/ scripts/ tests/ dashboard/src/"` in `package.json` is the authority on which of those is first-class |
 | `dashboard/` | its own `package.json`, sources in `dashboard/src/`, built into `dashboard/dist/` |
 | `extensions/memory-memesh/` | its own `package.json`, TypeScript at the directory root (`index.ts`, `config.ts`) — **no `src/`** |
 | `extensions/hermes-memesh/` | Python: `__init__.py` and `plugin.yaml`, **no `package.json` at all** |
