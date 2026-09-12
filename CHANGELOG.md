@@ -81,11 +81,13 @@ All notable changes to MeMesh are documented here.
 - **A memory now costs what a note costs (#324).** `remember({ note: "…" })`
   — and `memesh remember "<text>"` — takes free text and derives the rest:
   the title from the first line, one observation per following paragraph, and
-  a name from a slug plus a digest of the text, so the same text is one
-  memory and two different texts never collide. The response echoes what it
-  derived, so a wrong guess is one more call to fix, not a second entity. The
-  structured form is unchanged; `note` is an additional path, and it goes
-  through the same sanitisation, redaction and size caps as observations.
+  a name from a slug plus 8 hex characters (32 bits) of a digest of the text,
+  so the same text is always one memory; a different text landing on the
+  same name is possible but very unlikely, not impossible. The response
+  echoes what it derived, so a wrong guess is one more call to fix, not a
+  second entity. The structured form is unchanged; `note` is an additional
+  path, and it goes through the same sanitisation, redaction and size caps
+  as observations.
 - **`remember({ name, replace: true })` rewrites instead of appending
   (#324).** The previous version moves to a dated trail in
   `metadata.replaced_history` — bounded at 20 versions and 64 KB — so
