@@ -20,7 +20,24 @@
  * what "gone quiet" means.
  */
 
-export type HookOutcome = 'wrote' | 'skipped' | 'error';
+/**
+ * What a hook did on one exit path.
+ *
+ * `wrote` means a MEMORY was written — that is the whole point of the kind,
+ * because `writes` is the numerator of the signal `memesh doctor` uses to
+ * answer "is memory capture still alive". Six hooks were recording `wrote`
+ * for something that never touches the graph, and each one's own comment
+ * said so: guard-check's is a guard-fire counter, user-prompt-intent's and
+ * session-start's are the context they injected, decision-nudge's and
+ * pre-edit-recall's and remember-nudge's are a line they printed. So the
+ * kind is `notified`: the hook ran, it had an effect the user can see, and
+ * nothing was saved.
+ *
+ * A fourth kind rather than excluding remember-nudge by name inside
+ * summarizeHookOutcomes: excluding one name would leave the other five
+ * counted as memory writes.
+ */
+export type HookOutcome = 'wrote' | 'skipped' | 'notified' | 'error';
 
 /** Which agent host produced the run. `unknown` is never treated as evidence. */
 export type HookHost = 'claude-code' | 'codex' | 'unknown';
@@ -109,7 +126,11 @@ function windowKeep(
   return keep;
 }
 
-/** True unless the record is a skip whose reason says the trigger did not apply. */
+/**
+ * True unless the record is a skip whose reason says the trigger did not
+ * apply. `wrote`, `notified` and `error` are all triggered runs: the hook
+ * fired and did something.
+ */
 export function isTriggeredRecord(record: Pick<HookOutcomeRecord, 'hook' | 'outcome' | 'reason'>): boolean {
   if (record.outcome !== 'skipped' || record.reason === undefined) return true;
   return !(NOT_TRIGGERED_SKIP_REASONS[record.hook] ?? []).includes(record.reason);
@@ -538,7 +559,12 @@ export function parseHookOutcomeLine(line: string): HookOutcomeRecord | null {
   // a hook that does not exist is foreign by definition.
   if (typeof rec.hook !== 'string' || !(CAPTURE_HOOKS as readonly string[]).includes(rec.hook)) return null;
   if (typeof rec.at !== 'string') return null;
-  if (rec.outcome !== 'wrote' && rec.outcome !== 'skipped' && rec.outcome !== 'error') return null;
+  // An outcome this version does not know discards the WHOLE record — which
+  // is why `notified` has to be readable before any hook emits it. Records
+  // written by older versions carry only wrote/skipped/error and keep
+  // reading exactly as they did.
+  if (rec.outcome !== 'wrote' && rec.outcome !== 'skipped'
+    && rec.outcome !== 'notified' && rec.outcome !== 'error') return null;
   const record: HookOutcomeRecord = {
     hook: rec.hook,
     at: rec.at,
@@ -584,6 +610,13 @@ export interface HookLivenessSummary {
   firstTriggeredAt: string | null;
   lastWriteAt: string | null;
   lastEntity: string | null;
+  /**
+   * Runs that told the user something and saved nothing. Kept OUT of
+   * `writes`, `lastWriteAt` and `lastEntity`: a nudge is evidence the hook is
+   * alive, never evidence a memory exists.
+   */
+  notifies: number;
+  lastNotifiedAt: string | null;
   lastSkipReason: string | null;
   dominantSkipReason: string | null;
   dominantSkipCount: number;
@@ -616,6 +649,8 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
   let triggeredRuns = 0;
   let lastWriteAt: string | null = null;
   let lastEntity: string | null = null;
+  let notifies = 0;
+  let lastNotifiedAt: string | null = null;
   let lastSkipReason: string | null = null;
   const skipCounts = new Map<string, number>();
   const hosts = new Set<HookHost>();
@@ -633,6 +668,13 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
         lastWriteAt = r.at;
         lastEntity = r.entity ?? null;
       }
+    } else if (r.outcome === 'notified') {
+      // An explicit branch, not a fall-through: the final `else` below is
+      // `errors++`, so an unhandled kind would turn every nudge into a
+      // doctor error — a new kind going wrong loudly instead of invisibly,
+      // but wrong either way.
+      notifies++;
+      if (lastNotifiedAt === null || r.at >= lastNotifiedAt) lastNotifiedAt = r.at;
     } else if (r.outcome === 'skipped') {
       skips++;
       // Rendered, not raw: these two are what doctor QUOTES (see
@@ -669,10 +711,17 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
     firstTriggeredAt,
     lastWriteAt,
     lastEntity,
+    notifies,
+    lastNotifiedAt,
     lastSkipReason,
     dominantSkipReason,
     dominantSkipCount,
     hosts: [...hosts].sort(),
+    // `writes === 0` is unchanged, and `notified` deliberately does not
+    // rescue a hook from it — a hook that only printed lines HAS written
+    // nothing. Safe because no notifying hook is in SILENT_ELIGIBLE_HOOKS
+    // (post-commit, session-summary, pre-compact), so this cannot turn the
+    // repair into a daily false alarm; the test file pins that pairing.
     silent: (SILENT_ELIGIBLE_HOOKS as readonly string[]).includes(hook)
       && triggeredRuns >= SILENT_HOOK_MIN_RUNS
       && writes === 0,

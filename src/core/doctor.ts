@@ -1607,10 +1607,13 @@ function inspectCaptureLiveness(
   /** Hooks with enough triggered runs that "and wrote nothing" is a statement. */
   const ranEnough = hooks.filter((h) => h.triggeredRuns >= SILENT_HOOK_MIN_RUNS);
   const summary = writing.length > 0
-    // "did their work", not "wrote something": `remember-nudge` records a
-    // `wrote` outcome for a line it PRINTED, and writes nothing to the graph
-    // (scripts/hooks/_stop-notes.js). Reporting that as a write would make
-    // this sentence assert a memory that does not exist.
+    // "did their work", not "wrote something". Several hooks have an effect
+    // the user can see and write nothing to the graph — a printed nudge, an
+    // injected context block — and reporting that as a write would make this
+    // sentence assert a memory that does not exist. Those runs are the
+    // `notified` outcome (capture-liveness.ts), which is kept out of
+    // `writes`; until the hooks are switched over they still record `wrote`,
+    // so the wording stays deliberately non-committal.
     ? `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(', ')}).`
     : ranEnough.length > 0
       // Consult the RUN COUNTS before explaining a zero. This branch used to

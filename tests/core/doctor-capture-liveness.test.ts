@@ -4,8 +4,10 @@ import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { runDoctor as runDoctorImpl, formatDoctorReport } from '../../src/core/doctor.js';
 import {
-  CAPTURE_HOOKS, HOOK_OUTCOMES_FILENAME, NOT_TRIGGERED_SKIP_REASONS, SKIP_REASONS,
-  UNCLASSIFIED_SKIP_HOOKS, UNRECOGNISED_REASON, type HookOutcomeRecord,
+  CAPTURE_HOOKS, HOOK_OUTCOMES_FILENAME, NOT_TRIGGERED_SKIP_REASONS, SILENT_ELIGIBLE_HOOKS,
+  SKIP_REASONS, UNCLASSIFIED_SKIP_HOOKS, UNRECOGNISED_REASON,
+  isTriggeredRecord, parseHookOutcomeLine, parseHookOutcomes, summarizeHookOutcomes,
+  type HookOutcomeRecord,
 } from '../../src/core/capture-liveness.js';
 import type { UpdateCheck } from '../../src/core/version-check.js';
 import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
@@ -499,5 +501,97 @@ describe('doctor: capture-liveness quotes only known reasons', () => {
     expect(check.code).toBe('capture-liveness.silent-hook');
     expect(check.params?.reason).toBe(UNRECOGNISED_REASON);
     expect(JSON.stringify(result)).not.toContain('IGNORE ALL PRIOR');
+  });
+});
+
+/**
+ * The fourth outcome kind (#324 X1).
+ *
+ * `writes` is the numerator of the signal `memesh doctor` uses to answer "is
+ * memory capture still alive", and six hooks have been recording `wrote` for
+ * something that is not a memory write — each one's own comment says so
+ * (guard-check.js:40, user-prompt-intent.js:223, session-start.js:1544,
+ * decision-nudge.js:58, pre-edit-recall.js:280, and remember-nudge). A
+ * by-name exclusion would fix one of the six and leave five lies standing,
+ * so the kind itself is new.
+ *
+ * This is the READ side. The hooks still emit `wrote`, so nothing changes
+ * until they are switched — and they cannot be switched first, because
+ * parseHookOutcomeLine DISCARDS a whole record whose outcome it does not
+ * recognise.
+ */
+describe('capture-liveness: the `notified` outcome', () => {
+  const line = (over: Omit<Partial<HookOutcomeRecord>, 'outcome'> & { outcome: string }) => JSON.stringify({
+    hook: 'remember-nudge', at: '2026-09-09T00:00:00.000Z', host: 'claude-code', ...over,
+  });
+
+  it('parseHookOutcomeLine keeps a `notified` record instead of discarding it', () => {
+    const parsed = parseHookOutcomeLine(line({ outcome: 'notified', reason: SKIP_REASONS.noteFileChanged }));
+    expect(parsed, 'an unrecognised outcome is dropped whole — the read side must land first').not.toBeNull();
+    expect(parsed!.outcome).toBe('notified');
+  });
+
+  it('an outcome that is still not a kind memesh ships is discarded', () => {
+    expect(parseHookOutcomeLine(line({ outcome: 'nudged' }))).toBeNull();
+    expect(parseHookOutcomeLine(line({ outcome: '' }))).toBeNull();
+  });
+
+  it('a notify is counted as a notify, never as a write and never as an error', () => {
+    const [summary] = summarizeHookOutcomes(parseHookOutcomes([
+      line({ outcome: 'notified', at: '2026-09-09T00:00:00.000Z' }),
+      line({ outcome: 'notified', at: '2026-09-09T02:00:00.000Z' }),
+      line({ outcome: 'skipped', at: '2026-09-09T03:00:00.000Z', reason: SKIP_REASONS.trivialTurn }),
+    ].join('\n')));
+    expect(summary.notifies).toBe(2);
+    expect(summary.lastNotifiedAt).toBe('2026-09-09T02:00:00.000Z');
+    // The two failure shapes this kind exists to prevent, both silent:
+    // counted as a write it inflates the liveness numerator; falling through
+    // the `wrote`/`skipped` branches it lands in `errors` and every nudge
+    // becomes a doctor error.
+    expect(summary.writes).toBe(0);
+    expect(summary.errors).toBe(0);
+    expect(summary.lastWriteAt).toBeNull();
+    expect(summary.lastEntity).toBeNull();
+    expect(summary.runs).toBe(3);
+  });
+
+  it('a notify is a triggered run — the hook ran and did what it does', () => {
+    expect(isTriggeredRecord({ hook: 'remember-nudge', outcome: 'notified' })).toBe(true);
+  });
+
+  it('no hook that notifies is FAIL- or silence-eligible, so notifies cannot become a false alarm', () => {
+    // The repair would turn into a daily banner if a SILENT_ELIGIBLE hook's
+    // writes dropped to zero. None of the six notifying hooks is in that list.
+    const notifying = ['guard-check', 'user-prompt-intent', 'session-start', 'decision-nudge', 'pre-edit-recall', 'remember-nudge'];
+    for (const hook of notifying) {
+      expect((SILENT_ELIGIBLE_HOOKS as readonly string[]).includes(hook), `${hook} is silence-eligible`).toBe(false);
+    }
+  });
+
+  it('records written by older versions carry only the three old kinds and still read', () => {
+    const [summary] = summarizeHookOutcomes(parseHookOutcomes([
+      line({ hook: 'post-commit', outcome: 'wrote', entity: 'commit-abc1234', at: '2026-09-09T00:00:00.000Z' }),
+      line({ hook: 'post-commit', outcome: 'skipped', reason: SKIP_REASONS.notGitCommit, at: '2026-09-09T01:00:00.000Z' }),
+      line({ hook: 'post-commit', outcome: 'error', reason: 'boom', at: '2026-09-09T02:00:00.000Z' }),
+    ].join('\n')));
+    expect(summary.writes).toBe(1);
+    expect(summary.lastEntity).toBe('commit-abc1234');
+    expect(summary.skips).toBe(1);
+    expect(summary.errors).toBe(1);
+    expect(summary.notifies).toBe(0);
+    expect(summary.lastNotifiedAt).toBeNull();
+  });
+
+  it('doctor does not report a hook that only notified as one that did its work', async () => {
+    memeshDirWith([
+      { hook: 'remember-nudge', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'notified' },
+      { hook: 'session-summary', at: '2026-09-09T02:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'session-s1-summary' },
+    ]);
+    const result = await run();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('pass');
+    expect(check.summary).toContain('session-summary');
+    expect(check.summary).not.toContain('remember-nudge');
+    expect(result.capture!.hooks.find((h) => h.hook === 'remember-nudge')!.notifies).toBe(1);
   });
 });
