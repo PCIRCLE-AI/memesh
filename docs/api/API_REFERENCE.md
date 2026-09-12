@@ -1335,8 +1335,12 @@ never an absolute path.
   cap: the missing tag is what says the name is nobody's, so it holds across
   runs (within a single run the handover can happen before the tag is
   written), and a name no memory uses is free for the asking.
-- Unchanged is decided by size, modification time and inode, so two files
-  that swap places without changing either size or timestamp are still seen.
+- A file that already has a stored memory is unchanged when its size,
+  modification time **and inode** all still match — the inode is what
+  catches two files that swap places without changing either size or
+  timestamp. A file with no stored memory yet (skipped for its own content,
+  or never read) has no inode on record to compare, so it is fingerprinted
+  by size and modification time only, in the two bullets below.
 - On a file change the file owns the `source:*` tags; any other tag a person
   added is kept, and the `project:` tag set on first ingestion stays. A
   memory a manual `remember` appended to is still replaced as a whole on the
