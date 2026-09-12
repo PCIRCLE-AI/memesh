@@ -591,11 +591,6 @@
       "reason": "`NOT_TRIGGERED_SKIP_REASONS[hook] ?? []` in isTriggeredRecord: a hook with no not-triggered reasons counts every run as triggered — the stricter reading. Absence can only make a hook MORE eligible for the silent verdict, never read as success.",
       "triaged": "2026-09-12 #327 review fixes (C1); moved into isTriggeredRecord 2026-09-12 (#327 re-review P1); re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement)"
     },
-    "C1 tests/audit/hook-outcome-gate.test.ts": {
-      "class": "SAFE",
-      "reason": "the toEqual([]) assertions are 'the gate correctly stays quiet' — each is paired in the same file with toEqual([4])/toEqual([3]) assertions that the gate flags an uncovered exit, so the emptiness is the no-false-positive contract under test, not vacuity.",
-      "triaged": "2026-09-11 #327 audit detector"
-    },
     "C6 tests/audit/hook-outcome-gate.test.ts": {
       "class": "DATA-EXTRACTION",
       "reason": "The gate under test is a static analyzer of hook source, so the hook source IS its input: the test reads scripts/hooks/session-start.js to feed validateSessionStart the real file and a mutant of it (M3). The toMatch assertions are on the gate's verdict string, not on the hook text.",
