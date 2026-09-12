@@ -53,7 +53,7 @@ Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Not
 
 The note is cleaned before anything is derived from it: control characters (other than newline and tab) are removed and credential-shaped substrings are replaced with `***REDACTED***`. It may be at most 20,000 characters, and the paragraphs it splits into may not derive more than 100 observations — a paragraph made only of list items yields one observation per item, so a single paragraph can push the count over the limit on its own; beyond that the call is rejected. One derived observation longer than 10,000 characters is **silently truncated** to that length with a trailing `…` — unlike a structured `observations` entry of the same length, which is rejected. Nothing in the response says it happened, so a caller sending one very long paragraph should split it rather than rely on the cap. `note` cannot be combined with `title` or `observations`. A note sent to a `name` that already exists appends its observations and leaves the existing title alone.
 
-**Replace**: `replace: true` with a `name` rewrites that memory: its observations are replaced by the ones given (or derived from `note`), its tags too when `tags` is given (omitted tags are kept), its title when `title` or `note` is given. The previous title, observations and tags are appended to `metadata.replaced_history` as `{ replaced_at, title, observations, tags }`, so the wrong line leaves recall but is not lost. The history keeps the newest 20 versions and at most 64 KB: older versions are dropped first, and a single version larger than that keeps the observations that fit and is marked `truncated: true`. Relations are untouched by a replace. `recall` results do not carry the history — they carry `metadata.replaced_history_count` — so read the versions from `export` or `GET /v1/entities/:name`. The keyword index is rewritten in the same transaction. On a name that does not exist yet, `replace: true` simply creates the memory and reports `replaced: false`. A memory archived with `forget` refuses `replace` instead: remember it again without `replace` to bring it back, then replace it. `replace` with `note` requires an explicit `name`.
+**Replace**: `replace: true` with a `name` rewrites that memory: its observations are replaced by the ones given (or derived from `note`), its tags too when `tags` is given (omitted tags are kept), its title when `title` or `note` is given. The previous title, observations and tags are appended to `metadata.replaced_history` as `{ replaced_at, title, observations, tags }`, so the wrong line leaves recall but is not lost. The history keeps the newest 20 versions and at most 64 KB: older versions are dropped first, and a single version larger than that keeps the observations that fit and is marked `truncated: true`. Relations are untouched by a replace. `recall` results do not carry the history — they carry `metadata.replaced_history_count` — so read the versions from `export` or `GET /v1/entities/:name`. The keyword index is rewritten in the same transaction. On a name that does not exist yet there is no stored type to inherit, so `replace: true` needs an explicit `type`; with one it creates the memory and reports `replaced: false`, without one it is rejected. A memory archived with `forget` refuses `replace` outright: remember it again without `replace` to bring it back, then replace it. `replace` with `note` requires an explicit `name`.
 
 **Input Schema**:
 
@@ -1488,8 +1488,10 @@ memory layer saved anything lately, and if not, why not". `memesh doctor --json`
   `silent` is true only for post-commit, session-summary and pre-compact, when
   `triggeredRuns` is at least 5 and `writes` is 0.
   `notifies` counts runs that told someone something and stored nothing, so
-  `runs` is not `writes + skips + errors`; a hook that only notifies still
-  has `writes` 0 and can be reported silent.
+  `runs` is not `writes + skips + errors`. It does not rescue a hook from
+  `silent` either — but no hook that notifies is eligible to be called
+  silent in the first place: that list is post-commit, session-summary and
+  pre-compact.
 - `types` — auto-capture entities per type, this week (`last7`) against the
   week before (`prev7`); `stopped` means the type wrote last week and nothing
   this week.
