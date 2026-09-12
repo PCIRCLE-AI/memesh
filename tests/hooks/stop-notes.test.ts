@@ -233,6 +233,31 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     }
   }, 60_000);
 
+  it('a plan approved across a Stop boundary is still a decision-shaped move', () => {
+    // The pending tool_use → kind map was rebuilt from scratch each Stop, so a
+    // call in one window and its result in the next were never paired. The
+    // nudge then reported "no decision-shaped move since the last Stop" — a
+    // miss whose stated reason is entirely plausible, which is what makes it
+    // expensive: nothing about the output says a pairing was dropped.
+    const id = 'tu_split_1';
+    write([
+      ...reads(5),
+      { type: 'assistant', timestamp: at(60_000), message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'ExitPlanMode', input: { plan: 'do X' } }] } },
+    ]);
+    // First Stop: the plan is open, no result yet, so nothing to nudge about.
+    expect(run().stdout.trim()).toBe('');
+
+    // Second Stop: only the result arrives — five more reads keep the window
+    // above the trivial-turn floor.
+    append([
+      { type: 'user', timestamp: at(30_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: 'ok' }] } },
+      ...reads(5),
+    ]);
+    const second = run();
+    expect(second.status).toBe(0);
+    expect(JSON.parse(second.stdout).systemMessage).toMatch(/a plan was approved/);
+  }, 60_000);
+
   it('a run that refused every file does not report that nothing needed storing', () => {
     // `changed` counts only stored things, so a Stop whose only event was a
     // refusal recorded `note files were read and nothing new needed storing`

@@ -68,6 +68,8 @@ const NUDGE_STATE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 /** Most stale offset files one Stop removes — the pruning stays bounded. */
 const NUDGE_PRUNE_PER_RUN = 50;
 const NOTE_PATH_RE = /(?:^|[\\/])(?:memory|\.remember)[\\/][^\\/]+\.md$/;
+/** Unresolved tool_use ids carried into the next Stop window (newest kept). */
+const PENDING_CARRY_MAX = 200;
 
 /**
  * Claude Code keeps a project's memory directory next to its transcripts:
@@ -244,9 +246,26 @@ export function readTranscriptWindow(transcriptPath, offset) {
  * moves (the rules' own triggers — a plan approved, a question answered, a
  * commit, a test made red then green), and whether a memory was written
  * (`remember`/`learn` via MCP or the CLI, or a write to a note file).
+ *
+ * `carry` seeds the tool_use → kind map with calls whose RESULT had not
+ * arrived when the previous window ended, and the returned `pending` is what
+ * this window leaves for the next one. Without it a plan approved either side
+ * of a Stop was never paired: the tool_use fell in one window and the
+ * tool_result in the next, and the hook reported "no decision-shaped move
+ * since the last Stop" — a miss that looks exactly like a quiet turn. A scan
+ * of 1090 real transcripts found all four ExitPlanMode pairs adjacent, so it
+ * is uncommon; it is also silent, and the reason it gives is plausible.
+ *
+ * The map is capped (PENDING_CARRY_MAX, newest kept) so a session that opens
+ * calls it never closes cannot grow the state file without bound.
  */
-export function scanTranscriptWindow(text) {
+export function scanTranscriptWindow(text, carry = null) {
   const pending = new Map(); // tool_use_id → kind
+  if (carry && typeof carry === 'object') {
+    for (const [id, kind] of Object.entries(carry)) {
+      if (typeof id === 'string' && typeof kind === 'string') pending.set(id, kind);
+    }
+  }
   const moves = [];
   let toolCalls = 0;
   let wroteMemory = false;
@@ -298,7 +317,10 @@ export function scanTranscriptWindow(text) {
       }
     }
   }
-  return { toolCalls, moves, wroteMemory, firstTimestamp };
+  // Newest last: Map preserves insertion order, so the tail is the most
+  // recent unresolved calls — the ones whose result is still plausibly coming.
+  const carried = [...pending.entries()].slice(-PENDING_CARRY_MAX);
+  return { toolCalls, moves, wroteMemory, firstTimestamp, pending: Object.fromEntries(carried) };
 }
 
 /**
@@ -359,9 +381,12 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
   const state = readJson(statePath) ?? {};
   const { text, nextOffset } = readTranscriptWindow(transcriptPath, state.offset);
   const now = Date.now();
-  const commit = () => writeJsonAtomic(statePath, { offset: nextOffset, lastStopAt: now });
+  const scan = scanTranscriptWindow(text, state.pending);
+  // The unresolved calls travel with the offset: both describe where this
+  // session's reading got to, and committing one without the other would
+  // either lose a pairing or replay one.
+  const commit = () => writeJsonAtomic(statePath, { offset: nextOffset, lastStopAt: now, pending: scan.pending });
 
-  const scan = scanTranscriptWindow(text);
   if (scan.toolCalls < NUDGE_MIN_TOOL_CALLS) return { message: null, reason: SKIP_REASONS.trivialTurn, commit };
   if (scan.moves.length === 0) return { message: null, reason: SKIP_REASONS.noDecisionMove, commit };
   if (scan.wroteMemory) return { message: null, reason: SKIP_REASONS.memoryWritten, commit };
