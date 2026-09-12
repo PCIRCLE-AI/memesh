@@ -163,7 +163,12 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   // `startedAt`, not `newest`: a file edited while this run was reading is
   // newer than the stamp and is picked up next time.
   writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0 } });
-  const changed = result.created.length + result.replaced.length + result.markedMissing.length > 0;
+  // Every shape of write counts, not only the ones that store text: a move
+  // rewrites provenance and a restore removes the missing tag, and a record
+  // saying "nothing new" about a run that changed the database is exactly the
+  // silent-skip shape doctor's capture-liveness reads these records for.
+  const changed = result.created.length + result.replaced.length + result.repathed.length
+    + result.restored.length + result.markedMissing.length > 0;
   // A write records the summary (counts only); a skip records a known
   // reason, the only kind doctor will quote.
   return { outcome: changed ? 'wrote' : 'skipped', reason: changed ? summarizeNoteIngest(result) : SKIP_REASONS.noteNothingNew, changed };

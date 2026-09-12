@@ -247,4 +247,34 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     append([...reads(4), ...toolCall('Bash', { command: 'sudo git commit -m y' })]);
     expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
   }, 60_000);
+
+  it('a move and a returning file are writes, not "nothing new" (#324)', () => {
+    fs.mkdirSync(memoryDir);
+    const body = '---\nname: moved_note\ndescription: Moved\nmetadata:\n  type: decision\n---\n\nmoved body\n';
+    fs.writeFileSync(path.join(memoryDir, 'a.md'), body);
+    write(reads(1));
+    expect(run().status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
+
+    // A pure rename: the bytes are the same, the path is not.
+    fs.renameSync(path.join(memoryDir, 'a.md'), path.join(memoryDir, 'b.md'));
+    append(reads(1));
+    expect(run().status).toBe(0);
+    const moved = outcomes('note-ingest').at(-1)!;
+    expect(moved.outcome, 'a move changed the database and was recorded as nothing').toBe('wrote');
+    expect(moved.reason).toMatch(/1 moved/);
+
+    // Gone, then back at the same path: the missing tag is cleared, which is
+    // also a write.
+    fs.renameSync(path.join(memoryDir, 'b.md'), path.join(home, 'away.md'));
+    append(reads(1));
+    expect(run().status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
+    fs.renameSync(path.join(home, 'away.md'), path.join(memoryDir, 'b.md'));
+    append(reads(1));
+    expect(run().status).toBe(0);
+    const restored = outcomes('note-ingest').at(-1)!;
+    expect(restored.outcome, 'a memory coming back out of "missing" was recorded as nothing').toBe('wrote');
+    expect(restored.reason).toMatch(/1 restored/);
+  }, 60_000);
 });
