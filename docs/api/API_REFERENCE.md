@@ -1587,6 +1587,82 @@ human-authority actions; an agent using `work_package` can only submit a pending
 proposal or defer. The Dashboard exposes the same list, detail, accept, and
 reject review surface without adding another queue or execution path.
 
+### memesh hermes
+
+The write path of the Hermes Agent memory plugin
+(`extensions/hermes-memesh`, see [Hermes Agent](../platforms/hermes-agent.md)).
+Called by the plugin, not typed by a person. Input is one JSON object on
+stdin — never on the command line, where every local process can read it —
+and the result is one JSON line on stdout.
+
+```bash
+echo '{"messages": [...]}' | memesh hermes capture-session --session <id>
+echo '{"user": "...", "assistant": "..."}' | memesh hermes capture-turn --session <id>
+```
+
+| Option | Description |
+|--------|-------------|
+| `--session <id>` | Hermes session id: 1-128 letters, digits, `.`, `_`, `:` or `-`. Required. |
+
+`capture-session` runs the same rules as the Claude Code Stop hook over an
+OpenAI-format message list (`tool_calls` on assistant messages, `role: "tool"`
+results) and stores up to three `session-insight` entities:
+`session-<id>-files`, `session-<id>-fixes` and `session-<id>-summary`. Fewer
+than three tool calls stores nothing. A tool result counts as an error only
+when its JSON says so (`error`, `success: false`, or a non-zero `exit_code`);
+results that are not a JSON object are counted in `toolResultsNonJson` so a
+host that returns plain text shows up as a blind spot, not as "no errors".
+Shell commands and error text are redacted before they are stored. Running it
+again for the same session adds only observations that are not already there.
+
+`capture-turn` stores one `conversation` entity, tagged `signal:decision` or
+`signal:lesson`, only when the assistant's reply states a decision or a
+lesson (the user text is not classified: it can carry questions and the
+injected recall block). A negated cue ("not decided yet") does not count.
+Anything else stores nothing and reports `{"outcome":"skipped"}`. The name is a digest
+of the turn text, so a retry does not add a second row.
+
+Both stamp `metadata.provenance.source_host: "hermes"` and tag `platform:hermes`.
+Bad input (not JSON, wrong shape, over 8 MiB, bad `--session`) exits `1` with
+a message on stderr.
+
+### memesh delegation
+
+Record a task handed to a delegate worker (the DeepSeek worker), from the
+orchestrator's side. Guide: [Delegate worker](../platforms/deepseek-worker.md).
+
+```bash
+memesh delegation record --envelope envelope.json --prompt-file prompt.txt [--allow-tool <name> ...] [--verdict unreviewed|accepted|rejected] [--follow-up "<text>"] [--json]
+memesh delegation verify <name> --verdict accepted|rejected [--note "<text>"] [--json]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--envelope <file>` | The worker client's JSON envelope (`record`, required). It must be a JSON object with a boolean `ok`; at most 4 MiB. |
+| `--prompt-file <file>` | The prompt that was sent (`record`, required). Only its sha256 is stored. |
+| `--allow-tool <name>` | `record`: a tool you granted the worker; repeat for each. This list is recorded as authoritative; if the envelope reports a different one, the mismatch is stored too. |
+| `--verdict <verdict>` | `record`: `unreviewed` (default), `accepted` or `rejected`. `verify`: `accepted` or `rejected` (required). |
+| `--follow-up <text>` | `record`: what you decided to do next, stored as one line. |
+| `--note <text>` | `verify`: why, stored with the verdict. |
+
+`record` stores one `delegation` entity named
+`delegation-<prompt sha256, 12>-<envelope sha256, 8>`, tagged
+`source:deepseek-worker` and `project:<current project>`. It keeps the model,
+mode (`harness` when the envelope has a `task_id`, otherwise `direct`),
+the allowed tools (from `--allow-tool`, else the envelope's `allowed_tools`, else "not reported" — never a guessed "none"), `usage`, `finish_reason`, `ok`, and the verdict. It never
+keeps the prompt text or the worker's output. `metadata.provenance` carries
+`source: "deepseek-worker"` and `trust`: `untrusted-until-verified` until a
+verdict is given, then `verified` or `rejected`; `metadata.trust` is
+`untrusted` until the verdict is `accepted`. Recording the same envelope
+again writes nothing (`"stored": false`) and reports the stored verdict.
+
+`verify` changes the verdict and `trust` in place, keeps every other
+provenance field, and adds the verdict as a new observation. It refuses a
+name that is not a delegation record.
+
+There is deliberately no HTTP route or MCP tool for this: the only writer is
+the orchestrator's local CLI.
+
 ## Anthropic memory tool (`memory_20250818`)
 
 For applications that call the **Messages API directly** rather than through MCP. Claude gets a memory tool whose storage is MeMesh instead of a folder of text files, so it also gets search, ranking, decay, relations and namespaces without knowing they are there.

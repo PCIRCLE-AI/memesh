@@ -11,8 +11,8 @@
  * it — pointed at whatever clients live here now, so the next one cannot drift
  * the same way.
  *
- * Today that is the dashboard, which is the client every `memesh serve` user
- * actually loads.
+ * Today that is the dashboard (the client every `memesh serve` user
+ * actually loads), the CLI, the scripts, and the Hermes Agent plugin.
  */
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
@@ -74,7 +74,7 @@ if (retiredRoutesAreRegisteredFromTheMap) {
  * decorative: a root that contributes zero matches is indistinguishable from
  * a root the walker silently skipped.
  */
-const CLIENT_ROOTS = ['dashboard/src', 'src/cli', 'scripts'];
+const CLIENT_ROOTS = ['dashboard/src', 'src/cli', 'scripts', 'extensions/hermes-memesh'];
 
 /**
  * One known call per root, as an existence pin. If the dashboard stops
@@ -86,6 +86,8 @@ const KNOWN_CALLS: Record<string, string> = {
   'dashboard/src': '/v1/stats',
   'src/cli': '/v1/entities',
   'scripts': '/v1/health',
+  // The Hermes Agent plugin: its recall shape drifted once already (#159).
+  'extensions/hermes-memesh': '/v1/recall',
 };
 
 
