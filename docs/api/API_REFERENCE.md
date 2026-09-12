@@ -1285,13 +1285,16 @@ and `--tags` apply.
 text as an observation and adds theirs, rather than replacing it —
 positional text is never dropped, an explicit `--title` wins over the
 derived one, and `--obs` values are appended after the text's own paragraphs.
-This path does **not** run the note form's length/count validation: a text
-that bare quick-capture rejects for deriving too many observations is
-accepted once any of `--obs`/`--title`/`--name` is also given. Measured with
-one 103-line text (one line becomes the title, 102 remain): alone it is
-rejected — "note splits into 102 paragraphs; at most 100 are stored per
-memory" — and combined with `--obs "extra one"` it is stored with 103
-observations.
+This path is validated too, against the same 100-observation cap, but it is
+checked in its own words rather than the note form's: the note form counts
+what the text *splits into* ("note splits into N paragraphs"), the combined
+path counts the *final observations array* it would store ("that is N
+observations") — the same distinction the note form's own paragraph/
+observation count draws above. Measured with one 103-line text (one line
+becomes the title, 102 remain): alone it is rejected — "note splits into 102
+paragraphs; at most 100 are stored per memory" — and combined with
+`--obs "extra one"` (103 observations total) it is also rejected — "that is
+103 observations; at most 100 are stored per memory."
 
 `--replace` (requires `--name`) rewrites the named memory and keeps its
 previous version in `metadata.replaced_history`, as described under
