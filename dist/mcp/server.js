@@ -27241,8 +27241,8 @@ function buildRelevanceMap(entities) {
 function remember(input) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
-  const { args, derived } = resolveRememberInput(input);
-  return db2.transaction(() => rememberInTransaction(args, derived, db2, kg)).immediate();
+  const { args, derived, typeGiven } = resolveRememberInput(input);
+  return db2.transaction(() => rememberInTransaction(args, derived, typeGiven, db2, kg)).immediate();
 }
 var REPLACED_HISTORY_MAX = 20;
 var REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
@@ -27278,7 +27278,7 @@ function resolveRememberInput(input) {
   if (input.note === void 0) {
     if (!input.name || !input.type)
       throw new Error("remember needs `name` and `type`, or `note`");
-    return { args: input };
+    return { args: input, typeGiven: true };
   }
   if (input.title !== void 0 || input.observations !== void 0) {
     throw new Error("`note` derives title and observations; do not also pass `title` or `observations`");
@@ -27297,12 +27297,17 @@ function resolveRememberInput(input) {
       title: derived.title,
       observations: derived.observations
     },
-    derived
+    derived,
+    typeGiven: input.type !== void 0
   };
 }
-function rememberInTransaction(args, derived, db2, kg) {
-  const existing = db2.prepare("SELECT id, namespace, type, title FROM entities WHERE name = ?").get(args.name);
+function rememberInTransaction(args, derived, typeGiven, db2, kg) {
+  const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
+  if (args.replace && existing && existing.status === "archived") {
+    throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. Remember it again without \`replace\` to bring it back, then replace it.`);
+  }
   let replacedVersion;
+  let retypedTo;
   let tags = args.tags;
   let title = args.title;
   let observations = args.observations;
@@ -27315,6 +27320,10 @@ function rememberInTransaction(args, derived, db2, kg) {
       tags: previousTags
     };
     kg.clearEntityData(args.name);
+    if (typeGiven && args.type !== existing.type) {
+      db2.prepare("UPDATE entities SET type = ? WHERE id = ?").run(args.type, existing.id);
+      retypedTo = args.type;
+    }
     if (tags === void 0)
       tags = previousTags;
   } else if (derived && existing) {
@@ -27371,7 +27380,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     entityId,
     name: args.name,
     ...title !== void 0 ? { title } : {},
-    type: existing?.type ?? args.type,
+    type: retypedTo ?? existing?.type ?? args.type,
     observations: observations?.length ?? 0,
     tags: tags?.length ?? 0,
     relations: relationsCreated.length,
@@ -27380,7 +27389,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     ...superseded.length > 0 ? { superseded } : {},
     ...relationErrors.length > 0 ? { relationErrors } : {},
     ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
-    ...derived ? { derived: { name: args.name, type: existing?.type ?? args.type, title: derived.title, observations: derived.observations } } : {}
+    ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? args.type, title: derived.title, observations: derived.observations } } : {}
   };
 }
 function searchAndScore(args) {
@@ -29665,7 +29674,7 @@ var RememberSchema = external_exports.object({
   }
   for (const key of ["title", "observations"]) {
     if (data[key] !== void 0) {
-      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key}` });
+      ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, type, replace: true and a structured ${key}` });
     }
   }
   if (data.replace && data.name === void 0) {
@@ -30926,7 +30935,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "remember",
-    description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the old content moves to metadata.replaced_history instead of staying next to the fix.",
+    description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name`, its `type` and `replace: true` \u2014 `type` is required whenever `note` is absent \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix.",
     inputSchema: {
       type: "object",
       properties: {
@@ -30982,7 +30991,11 @@ var TOOL_DEFINITIONS = [
           description: 'Namespace for organizing the entity. Omit it to leave an existing memory where it is \u2014 supplying it MOVES a memory that already exists, and it drops out of every other scoped view. New memories default to "personal".'
         }
       },
-      additionalProperties: false
+      additionalProperties: false,
+      anyOf: [
+        { required: ["note"] },
+        { required: ["name", "type"] }
+      ]
     }
   },
   {

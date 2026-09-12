@@ -21,6 +21,7 @@ export interface NoteIngestResult {
         path: string;
         reason: string;
     }>;
+    refusedNow: number;
     more: number;
 }
 export interface Frontmatter {

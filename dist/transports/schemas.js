@@ -77,7 +77,7 @@ export const RememberSchema = z.object({
     }
     for (const key of ['title', 'observations']) {
         if (data[key] !== undefined) {
-            ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key}` });
+            ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, type, replace: true and a structured ${key}` });
         }
     }
     if (data.replace && data.name === undefined) {

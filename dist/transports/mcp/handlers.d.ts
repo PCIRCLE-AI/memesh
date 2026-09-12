@@ -190,6 +190,11 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
         };
         readonly additionalProperties: false;
+        readonly anyOf: readonly [{
+            readonly required: readonly ["note"];
+        }, {
+            readonly required: readonly ["name", "type"];
+        }];
     };
 }, {
     readonly name: "recall";

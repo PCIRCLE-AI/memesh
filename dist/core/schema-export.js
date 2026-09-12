@@ -40,6 +40,10 @@ export function exportOpenAITools() {
                         },
                         namespace: { type: 'string', enum: ['personal', 'team', 'global'], description: 'Storage scope (default: personal)' },
                     },
+                    anyOf: [
+                        { required: ['note'] },
+                        { required: ['name', 'type'] },
+                    ],
                 },
             },
         },

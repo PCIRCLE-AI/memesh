@@ -6090,8 +6090,8 @@ function buildRelevanceMap(entities) {
 function remember(input) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
-  const { args, derived } = resolveRememberInput(input);
-  return db2.transaction(() => rememberInTransaction(args, derived, db2, kg)).immediate();
+  const { args, derived, typeGiven } = resolveRememberInput(input);
+  return db2.transaction(() => rememberInTransaction(args, derived, typeGiven, db2, kg)).immediate();
 }
 function boundReplacedHistory(history) {
   let out = history.slice(-REPLACED_HISTORY_MAX);
@@ -6124,7 +6124,7 @@ function resolveRememberInput(input) {
   if (input.note === void 0) {
     if (!input.name || !input.type)
       throw new Error("remember needs `name` and `type`, or `note`");
-    return { args: input };
+    return { args: input, typeGiven: true };
   }
   if (input.title !== void 0 || input.observations !== void 0) {
     throw new Error("`note` derives title and observations; do not also pass `title` or `observations`");
@@ -6143,12 +6143,17 @@ function resolveRememberInput(input) {
       title: derived.title,
       observations: derived.observations
     },
-    derived
+    derived,
+    typeGiven: input.type !== void 0
   };
 }
-function rememberInTransaction(args, derived, db2, kg) {
-  const existing = db2.prepare("SELECT id, namespace, type, title FROM entities WHERE name = ?").get(args.name);
+function rememberInTransaction(args, derived, typeGiven, db2, kg) {
+  const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
+  if (args.replace && existing && existing.status === "archived") {
+    throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. Remember it again without \`replace\` to bring it back, then replace it.`);
+  }
   let replacedVersion;
+  let retypedTo;
   let tags = args.tags;
   let title = args.title;
   let observations = args.observations;
@@ -6161,6 +6166,10 @@ function rememberInTransaction(args, derived, db2, kg) {
       tags: previousTags
     };
     kg.clearEntityData(args.name);
+    if (typeGiven && args.type !== existing.type) {
+      db2.prepare("UPDATE entities SET type = ? WHERE id = ?").run(args.type, existing.id);
+      retypedTo = args.type;
+    }
     if (tags === void 0)
       tags = previousTags;
   } else if (derived && existing) {
@@ -6217,7 +6226,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     entityId,
     name: args.name,
     ...title !== void 0 ? { title } : {},
-    type: existing?.type ?? args.type,
+    type: retypedTo ?? existing?.type ?? args.type,
     observations: observations?.length ?? 0,
     tags: tags?.length ?? 0,
     relations: relationsCreated.length,
@@ -6226,7 +6235,7 @@ function rememberInTransaction(args, derived, db2, kg) {
     ...superseded.length > 0 ? { superseded } : {},
     ...relationErrors.length > 0 ? { relationErrors } : {},
     ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
-    ...derived ? { derived: { name: args.name, type: existing?.type ?? args.type, title: derived.title, observations: derived.observations } } : {}
+    ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? args.type, title: derived.title, observations: derived.observations } } : {}
   };
 }
 function searchAndScore(args) {
@@ -23424,7 +23433,7 @@ var init_schemas3 = __esm({
       }
       for (const key of ["title", "observations"]) {
         if (data[key] !== void 0) {
-          ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key}` });
+          ctx.addIssue({ code: "custom", path: [key], message: `${key} cannot be combined with note \u2014 note derives it; to correct the derived ${key}, call again with name, type, replace: true and a structured ${key}` });
         }
       }
       if (data.replace && data.name === void 0) {
@@ -25157,7 +25166,11 @@ function exportOpenAITools() {
               }
             },
             namespace: { type: "string", enum: ["personal", "team", "global"], description: "Storage scope (default: personal)" }
-          }
+          },
+          anyOf: [
+            { required: ["note"] },
+            { required: ["name", "type"] }
+          ]
         }
       }
     },
@@ -54689,7 +54702,7 @@ function parseHookOutcomeLine(line) {
     return null;
   if (typeof rec.at !== "string")
     return null;
-  if (rec.outcome !== "wrote" && rec.outcome !== "skipped" && rec.outcome !== "error")
+  if (rec.outcome !== "wrote" && rec.outcome !== "skipped" && rec.outcome !== "notified" && rec.outcome !== "error")
     return null;
   const record2 = {
     hook: rec.hook,
@@ -54728,6 +54741,8 @@ function summarizeOne(hook, records) {
   let triggeredRuns = 0;
   let lastWriteAt = null;
   let lastEntity = null;
+  let notifies = 0;
+  let lastNotifiedAt = null;
   let lastSkipReason = null;
   const skipCounts = /* @__PURE__ */ new Map();
   const hosts = /* @__PURE__ */ new Set();
@@ -54747,6 +54762,10 @@ function summarizeOne(hook, records) {
         lastWriteAt = r.at;
         lastEntity = r.entity ?? null;
       }
+    } else if (r.outcome === "notified") {
+      notifies++;
+      if (lastNotifiedAt === null || r.at >= lastNotifiedAt)
+        lastNotifiedAt = r.at;
     } else if (r.outcome === "skipped") {
       skips++;
       lastSkipReason = r.reason === void 0 ? null : renderableSkipReason(r.reason);
@@ -54778,6 +54797,8 @@ function summarizeOne(hook, records) {
     firstTriggeredAt,
     lastWriteAt,
     lastEntity,
+    notifies,
+    lastNotifiedAt,
     lastSkipReason,
     dominantSkipReason,
     dominantSkipCount,
@@ -54856,6 +54877,7 @@ var init_capture_liveness = __esm({
       noNoteChanged: "no note file changed since the last ingestion",
       noteIngesterNotBuilt: "the note ingester is not built (dist/core/note-ingest.js is missing)",
       noteNothingNew: "note files were read and nothing new needed storing",
+      noteFilesRefused: "note files were refused and nothing was stored",
       noTranscript: "no transcript to read",
       trivialTurn: "trivial turn \u2014 too few tool calls since the last Stop",
       noDecisionMove: "no decision-shaped move since the last Stop",
@@ -54866,7 +54888,9 @@ var init_capture_liveness = __esm({
     UNRECOGNISED_REASON = "unrecognised reason";
     NOT_TRIGGERED_SKIP_REASONS = {
       "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-      "session-summary": [SKIP_REASONS.alreadyCaptured]
+      "session-summary": [SKIP_REASONS.alreadyCaptured],
+      "note-ingest": [SKIP_REASONS.noNoteChanged],
+      "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove]
     };
     NEVER_RAN_GRACE_HOURS = 72;
     RECORD_TEXT_MAX = 200;
@@ -55531,7 +55555,8 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     };
   }
   const writing = hooks.filter((h) => h.writes > 0);
-  const summary = writing.length > 0 ? `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(", ")}).` : hooks.length > 0 ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.` : "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
+  const ranEnough = hooks.filter((h) => h.triggeredRuns >= SILENT_HOOK_MIN_RUNS);
+  const summary = writing.length > 0 ? `${writing.length} of ${hooks.length} recording hooks did their work in their recorded window (${writing.map((h) => h.hook).join(", ")}).` : ranEnough.length > 0 ? `${ranEnough.map((h) => `${h.hook} (${h.triggeredRuns} runs)`).join(", ")} ran without writing anything. These hooks decide there is nothing to save on most runs by design, so that is not itself a fault \u2014 \`memesh doctor --json\` has the per-hook figures.` : hooks.length > 0 ? `Every recording hook is below the ${SILENT_HOOK_MIN_RUNS}-run threshold where silence would mean anything \u2014 too early to say, which is normal on a fresh install.` : "No hook has recorded an outcome yet \u2014 the records start on the next hook run, which is normal right after an upgrade.";
   return {
     check: createCheck("capture-liveness", TITLE, "pass", summary),
     report
@@ -59490,7 +59515,8 @@ function ingestNoteDirectory(opts) {
     repathed: [],
     restored: [],
     markedMissing: [],
-    skipped: symlinks.map((abs) => ({ path: relPath(realDir, abs), reason: "symlink refused" })),
+    skipped: [],
+    refusedNow: 0,
     more: 0
   };
   const db2 = getDatabase();
@@ -59520,6 +59546,26 @@ function ingestNoteDirectory(opts) {
     priorSkips = {};
   }
   const nextSkips = {};
+  const counted = /* @__PURE__ */ new Set();
+  const report = (rel, reason) => {
+    result.skipped.push({ path: rel, reason });
+    if (priorSkips[rel]?.reason === reason || counted.has(rel))
+      return;
+    counted.add(rel);
+    result.refusedNow++;
+  };
+  for (const abs of symlinks) {
+    const rel = relPath(realDir, abs);
+    const reason = "symlink refused";
+    report(rel, reason);
+    let st;
+    try {
+      st = fs10.lstatSync(abs);
+    } catch {
+      st = null;
+    }
+    nextSkips[rel] = st ? { mtime: st.mtimeMs, size: st.size, reason } : { mtime: 0, size: 0, reason };
+  }
   const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
   const declaredNameAt = /* @__PURE__ */ new Map();
   const statOf = (rel) => {
@@ -59538,10 +59584,11 @@ function ingestNoteDirectory(opts) {
   const claims = [];
   const readRels = /* @__PURE__ */ new Set();
   let read = 0;
+  let refunds = 0;
   for (const abs of files) {
     const rel = relPath(realDir, abs);
     const skip = (reason) => {
-      result.skipped.push({ path: rel, reason });
+      report(rel, reason);
     };
     let raw;
     let stat;
@@ -59550,8 +59597,22 @@ function ingestNoteDirectory(opts) {
       nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
       declaredNameAt.set(rel, "");
     };
+    const unreachableSkip = (reason) => {
+      skip(reason);
+      declaredNameAt.set(rel, "");
+      if (readRels.has(rel) && refunds < maxFiles) {
+        read--;
+        refunds++;
+      }
+    };
     try {
       stat = fs10.lstatSync(abs);
+    } catch (err) {
+      skip(`unreadable: ${err.code ?? "error"}`);
+      declaredNameAt.set(rel, "");
+      continue;
+    }
+    try {
       if (stat.isSymbolicLink()) {
         skip("symlink refused");
         continue;
@@ -59563,7 +59624,7 @@ function ingestNoteDirectory(opts) {
       }
       const priorSkip = priorSkips[rel];
       const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
-      if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
+      if (priorSkip && !priorSkip.reportOnly && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
         continue;
@@ -59580,12 +59641,12 @@ function ingestNoteDirectory(opts) {
       }
       const real = fs10.realpathSync(abs);
       if (!real.startsWith(realDir + path9.sep)) {
-        skip("resolves outside the directory");
+        unreachableSkip("resolves outside the directory");
         continue;
       }
       raw = fs10.readFileSync(real);
     } catch (err) {
-      skip(`unreadable: ${err.code ?? "error"}`);
+      unreachableSkip(`unreadable: ${err.code ?? "error"}`);
       continue;
     }
     const parsed = parseFrontmatter(raw.toString("utf8"));
@@ -59611,7 +59672,10 @@ function ingestNoteDirectory(opts) {
       contentSkip("empty note \u2014 no description and no body");
       continue;
     }
-    observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
+    if (observations.length > NOTE_MAX_OBSERVATIONS) {
+      contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+      continue;
+    }
     claims.push({
       rel,
       name,
@@ -59638,8 +59702,10 @@ function ingestNoteDirectory(opts) {
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
     const prov = existing ? parseProvenance(existing.metadata) : {};
     const skipAll = (reason) => {
-      for (const c of claimants)
-        result.skipped.push({ path: c.rel, reason });
+      for (const c of claimants) {
+        report(c.rel, reason);
+        nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, reportOnly: true };
+      }
     };
     if (existing) {
       if (!existing.is_note) {
@@ -59660,7 +59726,7 @@ function ingestNoteDirectory(opts) {
       const reason = `name "${name}" belongs to ${recordedRel}, which was not read this run`;
       const ownerStat = statOf(recordedRel);
       for (const c of claimants) {
-        result.skipped.push({ path: c.rel, reason });
+        report(c.rel, reason);
         if (ownerStat)
           nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: recordedRel, mtime: ownerStat.mtimeMs, size: ownerStat.size } };
       }
@@ -59671,7 +59737,7 @@ function ingestNoteDirectory(opts) {
       if (c === owner)
         continue;
       const reason = `name "${name}" already used by ${owner.rel} in this directory`;
-      result.skipped.push({ path: c.rel, reason });
+      report(c.rel, reason);
       nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, owner: { rel: owner.rel, mtime: owner.stat.mtimeMs, size: owner.stat.size } };
     }
     if (owner.unchanged) {
@@ -59750,7 +59816,8 @@ function summarizeNoteIngest(r) {
     `${r.unchanged} unchanged`,
     ...r.repathed.length ? [`${r.repathed.length} moved`] : [],
     ...r.restored.length ? [`${r.restored.length} restored`] : [],
-    `${r.skipped.length} skipped`
+    `${r.skipped.length} skipped`,
+    ...r.refusedNow ? [`${r.refusedNow} newly refused`] : []
   ];
   if (r.markedMissing.length)
     parts.push(`${r.markedMissing.length} marked missing`);
@@ -60726,8 +60793,9 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
       }
       opts.name = derived.name;
       opts.type ??= NOTE_DEFAULT_TYPE;
+      const derivedObs = opts.title === void 0 ? derived.observations : splitObservations(derived.text);
       opts.title ??= derived.title;
-      opts.obs = opts.obs?.length ? [...derived.observations, ...opts.obs] : derived.observations;
+      opts.obs = opts.obs?.length ? [...derivedObs, ...opts.obs] : derivedObs;
     }
   } else if (text) {
     if (!opts.obs || opts.obs.length === 0)
@@ -60749,6 +60817,26 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
     ...supersedes.map((to) => ({ to, type: "supersedes" })),
     ...contradicts.map((to) => ({ to, type: "contradicts" }))
   ];
+  if (note2 === void 0) {
+    if (opts.obs && opts.obs.length > NOTE_MAX_OBSERVATIONS) {
+      console.error(`Error: that is ${opts.obs.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory.`);
+      process.exit(1);
+    }
+    const check2 = RememberSchema.safeParse({
+      name: opts.name,
+      type: opts.type,
+      ...opts.title !== void 0 ? { title: opts.title } : {},
+      ...opts.obs?.length ? { observations: opts.obs } : {},
+      ...opts.tags?.length ? { tags: opts.tags } : {},
+      ...opts.replace === true ? { replace: true } : {},
+      ...relations.length > 0 ? { relations } : {},
+      ...opts.namespace !== void 0 ? { namespace: opts.namespace } : {}
+    });
+    if (!check2.success) {
+      console.error(`Error: ${check2.error.issues.map((i) => i.message).join("; ")}`);
+      process.exit(1);
+    }
+  }
   await withDatabase(async () => {
     let result;
     try {
@@ -60770,7 +60858,9 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
     } else {
       console.log(`\u2705 Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
       if (result.derived) {
-        console.log(`   title: ${result.derived.title}`);
+        const storedTitle = result.title ?? getDatabase().prepare("SELECT title FROM entities WHERE name = ?").get(result.name)?.title;
+        if (storedTitle)
+          console.log(`   title: ${storedTitle}`);
         console.log(`   fix it with: memesh remember --name "${result.name}" --type ${result.derived.type} --title "\u2026" --obs "\u2026" --replace`);
       }
       if (result.replaced)
@@ -60942,6 +61032,11 @@ program2.command("import").description("Import memories from a JSON export file,
   }
   if (!file2) {
     console.error("Error: pass a JSON export file (memesh import my-export.json) or --notes <dir>.");
+    process.exit(1);
+  }
+  const notesOnly = ["project", "json"].filter((k) => cmd.getOptionValueSource(k) === "cli");
+  if (notesOnly.length > 0) {
+    console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(" and ")} only appl${notesOnly.length > 1 ? "y" : "ies"} to --notes. A JSON export file is imported with --namespace and --merge.`);
     process.exit(1);
   }
   requireOneOf(opts.merge, ["skip", "overwrite", "append"], "--merge");
