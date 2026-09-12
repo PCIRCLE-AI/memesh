@@ -451,7 +451,11 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
           });
           return; // Offset not advanced: the next Stop judges this window again.
         }
-        recordHookOutcome(env, { hook: 'remember-nudge', outcome: n.message ? 'wrote' : 'skipped', reason: n.reason, payload });
+        // `notified`, never `wrote`: the nudge stores nothing. It is what
+        // memesh says when nothing HAS been stored, so counting it towards
+        // doctor's `writes` let the one hook that fires because capture is
+        // quiet report that capture is alive.
+        recordHookOutcome(env, { hook: 'remember-nudge', outcome: n.message ? 'notified' : 'skipped', reason: n.reason, payload });
         n.commit?.();
       },
     };

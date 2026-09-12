@@ -84,7 +84,9 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(v.kind).toBe('json');
     expect(Object.keys(v.parsed!)).toEqual(['systemMessage']);
     expect(v.parsed!.systemMessage).toMatch(/1 decision-shaped move\(s\) \(a plan was approved\) and stored no memory/);
-    expect(outcomes('remember-nudge').at(-1)).toMatchObject({ outcome: 'wrote' });
+    // `notified`, not `wrote` — the nudge stores nothing, and is precisely
+    // what memesh says when nothing has been stored.
+    expect(outcomes('remember-nudge').at(-1)).toMatchObject({ outcome: 'notified' });
 
     // The next Stop sees only what was appended since: a trivial turn → silent.
     append(reads(1));
