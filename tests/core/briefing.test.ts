@@ -369,11 +369,9 @@ describe('assembleBriefing', () => {
     // own expression: counting the `- [` lines the way the renderer produced
     // them is an assertion that cannot disagree with the code.
     //
-    // Four ranked memories come from this fixture: the decision, the lesson
-    // and the reference tagged to this project, plus the commit (evidence is
-    // ranked, and only the INDEX excludes it). The global directive renders
-    // in its own section and the other project's decision is not this
-    // project's; neither is counted here, and the archived row is not read.
+    // Which rows make up this number, and why, is written once where the
+    // constant is declared. A second copy here said four and named a
+    // different set; it was wrong, and it was wrong because it was a copy.
     expect(result.entityCount, 'the ranked count moved — check which memory joined or left it').toBe(RANKED_IN_INDEX_FIXTURE);
   });
 

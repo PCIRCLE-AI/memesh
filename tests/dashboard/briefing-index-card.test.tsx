@@ -164,7 +164,22 @@ describe('Project tab: the durable-memory index (#323)', () => {
     const { container } = render(<BriefingIndexCard error="" data={index({ more: 12 })} />);
     expect(container.textContent).not.toContain('`');
     const codes = [...container.querySelectorAll('code')].map((el) => el.textContent);
-    expect(codes).toContain('memesh recall --tag project:alpha');
+    expect(codes).toContain('memesh recall --tag "project:…"');
+  });
+
+  // The project name is a directory name or a git remote's basename, and
+  // nothing constrains its characters. This line is rendered as `code`, which
+  // invites copying it into a shell, so it carries a placeholder rather than
+  // the name — the same choice `moreLine()` makes inside the injected block.
+  // The card's own heading already says which project the reader is looking at.
+  it('never puts the project name inside the copyable recall command', () => {
+    const hostile = 'x"; touch /tmp/pwned; echo "';
+    const { container } = render(
+      <BriefingIndexCard error="" data={index({ more: 12, project: hostile })} />,
+    );
+    const codes = [...container.querySelectorAll('code')].map((el) => el.textContent ?? '');
+    expect(codes.some((code) => code.includes(hostile))).toBe(false);
+    expect(container.textContent).not.toContain('touch /tmp/pwned');
   });
 
   // F6 — a pure CSS spinner announces nothing.

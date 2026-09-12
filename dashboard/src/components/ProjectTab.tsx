@@ -185,7 +185,7 @@ export function BriefingIndexCard({ data, error }: { data: BriefingIndexData | n
             ))}
           </ul>
         )}
-      {data.more > 0 && <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{monoMarked(t('project.index.more', { n: `\`${data.more}${plus}\``, project: data.project }))}</p>}
+      {data.more > 0 && <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{monoMarked(t('project.index.more', { n: `\`${data.more}${plus}\`` }))}</p>}
       {data.older > 0 && <p style={{ margin: '8px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{monoMarked(t('project.index.older', { n: `\`${data.older}${plus}\``, days: `\`${data.staleDays}\`` }))}</p>}
       <p style={{ margin: '10px 0 0', fontSize: 14, color: 'var(--text-3)' }}>{monoMarked(t('project.index.cost', { tokens: `\`${data.tokens}\``, bytes: `\`${data.bytes}\`` }))}</p>
     </section>
