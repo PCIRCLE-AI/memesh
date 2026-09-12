@@ -198,9 +198,18 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
     + result.restored.length + result.markedMissing.length > 0;
   // A write records the summary (counts only); a skip records a known
   // reason, the only kind doctor will quote.
+  // A run that stored nothing but REFUSED files is not the same event as a
+  // quiet one, and `noteNothingNew` — "note files were read and nothing new
+  // needed storing" — said it was: the user's file was rejected and the hook
+  // reported contentment. `refusedNow`, never `skipped.length`: the latter
+  // sticks forever once a file is bad, so every later Stop would keep
+  // re-reporting old news as if it had just happened. When the run DID store
+  // something, summarizeNoteIngest already names the refusals alongside it.
   return {
     outcome: changed ? 'wrote' : 'skipped',
-    reason: changed ? summarizeNoteIngest(result) : SKIP_REASONS.noteNothingNew,
+    reason: changed
+      ? summarizeNoteIngest(result)
+      : (result.refusedNow > 0 ? SKIP_REASONS.noteFilesRefused : SKIP_REASONS.noteNothingNew),
     entity: changed ? touched : undefined,
   };
 }

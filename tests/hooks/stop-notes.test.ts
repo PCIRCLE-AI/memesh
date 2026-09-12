@@ -231,6 +231,23 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     }
   }, 60_000);
 
+  it('a run that refused every file does not report that nothing needed storing', () => {
+    // `changed` counts only stored things, so a Stop whose only event was a
+    // refusal recorded `note files were read and nothing new needed storing`
+    // — the user's file was rejected and the hook reported contentment. On a
+    // Stop path a silent drop is indistinguishable from nothing happening.
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(home, 'elsewhere.md'),
+      '---\nname: outside_note\ndescription: Outside\nmetadata:\n  type: fact\n---\n\nbody\n');
+    fs.symlinkSync(path.join(home, 'elsewhere.md'), path.join(memoryDir, 'link.md'));
+    write(reads(1));
+
+    expect(run().status).toBe(0);
+    const last = outcomes('note-ingest').at(-1)!;
+    expect(last.outcome).toBe('skipped');
+    expect(last.reason).toBe('note files were refused and nothing was stored');
+  }, 60_000);
+
   it('a nudge nobody could be told is not recorded as delivered, and its window is kept', () => {
     // The outcome used to be recorded inside runStopNotes, before the line
     // had been written. Piping this hook's stdout into a process that exits
