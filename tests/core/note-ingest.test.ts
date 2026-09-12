@@ -783,3 +783,39 @@ describe.skipIf(!canDenyReads)('note-ingest: an unreadable file marks its memory
     }
   });
 });
+
+describe('note-ingest: a name-level refusal is news once too — #324 C3', () => {
+  it('a file whose memory was forgotten is not reported as newly refused every run', () => {
+    const dir = makeDir({ 'a.md': note('note_arch', 'Alpha', 'decision', 'Alpha body.') });
+    expect(ingestNoteDirectory({ dir }).created).toEqual(['note_arch']);
+    forget({ name: 'note_arch' });
+
+    const first = ingestNoteDirectory({ dir });
+    expect(first.skipped.map((x) => x.reason).join(' ')).toContain('archived with forget');
+    expect(first.refusedNow).toBe(1);
+
+    // The three name-level refusals go through skipAll, which reports but
+    // records no fingerprint — so without one they are new on every single
+    // Stop, which is the stickiness refusedNow exists to remove.
+    const second = ingestNoteDirectory({ dir });
+    expect(second.skipped).toHaveLength(1);
+    expect(second.refusedNow, 'the same refusal was announced again').toBe(0);
+    const third = ingestNoteDirectory({ dir });
+    expect(third.refusedNow).toBe(0);
+  });
+
+  it('the file is still re-read each run, so the refusal lifts when its cause does', () => {
+    const dir = makeDir({ 'b.md': note('note_rev', 'Beta', 'decision', 'Beta body.') });
+    ingestNoteDirectory({ dir });
+    forget({ name: 'note_rev' });
+    ingestNoteDirectory({ dir });
+    ingestNoteDirectory({ dir });
+
+    // Un-archived without the file changing. A fingerprint that drove the
+    // phase-1 early skip would leave this file refused forever, which is the
+    // trap the unreadable path (C9) documents.
+    remember({ name: 'note_rev', type: 'decision', observations: ['Beta body.'] });
+    const back = ingestNoteDirectory({ dir });
+    expect(back.skipped, 'the file was never re-read after its memory came back').toHaveLength(0);
+  });
+});

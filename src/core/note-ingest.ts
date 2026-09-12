@@ -208,6 +208,18 @@ type SkipPrint = {
   reason: string;
   name?: string;
   owner?: { rel: string; mtime: number; size: number };
+  /**
+   * Recorded so the refusal is not announced as NEW every run, but NOT used
+   * to skip the read in phase 1.
+   *
+   * The three name-level refusals depend on the state of some OTHER memory —
+   * it is not a note, it came from another directory, it was forgotten — and
+   * none of those is a function of this file's bytes. Letting the
+   * fingerprint skip the read would leave the file refused after its cause
+   * was gone, which is the trap `unreachableSkip` documents. So the file is
+   * re-read every run and simply stops being news.
+   */
+  reportOnly?: boolean;
 };
 
 /**
@@ -417,7 +429,8 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // per-run cap, or by a recorded file it could not see) stayed refused
       // while a file on disk declared that very name.
       const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
-      if (priorSkip && !nameIsFree && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
+      if (priorSkip && !priorSkip.reportOnly && !nameIsFree
+        && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
         skip(priorSkip.reason);
         nextSkips[rel] = priorSkip;
         continue;
@@ -484,7 +497,14 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   for (const [name, claimants] of byName) {
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name) as ExistingRow | undefined;
     const prov = existing ? parseProvenance(existing.metadata) : {};
-    const skipAll = (reason: string) => { for (const c of claimants) report(c.rel, reason); };
+    const skipAll = (reason: string) => {
+      for (const c of claimants) {
+        report(c.rel, reason);
+        // Fingerprinted `reportOnly`: remembered so it is not news again,
+        // but the file is still read next run so the refusal can lift.
+        nextSkips[c.rel] = { mtime: c.stat.mtimeMs, size: c.stat.size, reason, name: c.name, reportOnly: true };
+      }
+    };
     if (existing) {
       // Never overwrite a memory that did not come from a note file, nor one
       // ingested from a different directory (two projects' memory
