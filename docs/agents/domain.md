@@ -33,10 +33,13 @@ For the root row, the scripts in `package.json` are the authority on which of
 those directories is first-class, and they disagree slightly, so read both:
 `lint` covers `src/ scripts/ tests/ dashboard/src/`, and `typecheck` runs
 `tsconfig.check.json`, whose `include` is `src/**/*.ts`, `tests/**/*.ts` and
-`*.config.ts` — which is what pulls in `vitest.config.ts` and
-`eslint.config.js`. `benchmarks/` is in neither. `dist/` holds the largest file
-count in the repository and is build output, not source; an agent walking the
-filesystem rather than `git ls-files` should skip it.
+`*.config.ts`. That last entry pulls in `vitest.config.ts` and nothing else —
+`tsc --listFiles` names exactly one root file. So `benchmarks/` is checked by
+neither script, and `eslint.config.js` is checked by neither either: it is
+`.js`, so the `*.config.ts` glob misses it, and `lint`'s path list never
+reaches the repository root. `dist/` holds the largest file count here and is
+build output, not source; an agent walking the filesystem rather than
+`git ls-files` should skip it.
 
 The glossary is `CONTEXT.md` at the repository root, named throughout this
 document. Architecture decisions go in a directory beside it; that directory has
