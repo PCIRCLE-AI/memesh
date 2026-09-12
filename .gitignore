@@ -115,6 +115,7 @@ docs/guides/
 
 # === Browser automation ===
 .playwright-mcp/
+.playwright-cli/
 
 # === AI tool caches ===
 .codex/
