@@ -46,7 +46,7 @@ If `remember` is called again with an existing `name`, MeMesh treats it as an ap
 
 Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Note**: `note` alone (free text), with optional `type`, `tags`, `name` — the server derives the rest:
 
-- `title` = the first non-empty line (a leading `#` heading or list marker is dropped; a line over 200 characters is cut to its first sentence, then to 200);
+- `title` = the first non-empty line (a leading `#` heading or list marker is dropped; a line over 200 characters is cut to its first sentence, then to 200). When the line had to be cut, the full original line is *also* kept as the first observation — nothing the caller wrote is dropped, so a long first line ends up in the response twice: shortened as the title, in full as an observation;
 - `observations` = the remaining paragraphs, one each (blank-line separated; a paragraph made only of list items gives one observation per item). A one-line note keeps its line as the single observation;
 - `name` (when absent) = slug of the title + `-` + the first 8 hex characters of the SHA-256 of the cleaned text, so the same text twice is one memory (the second call adds nothing); two different texts landing on the same name is possible but very unlikely, not impossible — the suffix is only 32 bits; a title with no ASCII letters or digits slugs to `note`;
 - `type` defaults to `"note"`.
