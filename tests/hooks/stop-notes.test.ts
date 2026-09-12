@@ -17,6 +17,7 @@ import path from 'path';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
+import { canDenyReads } from '../helpers/permissions.js';
 
 const HOOK = path.resolve('scripts/hooks/session-summary.js');
 
@@ -206,10 +207,13 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(last.reason, timing).toMatch(/50 more not processed/);
   }, 60_000);
 
-  // Permission bits mean nothing to root, so the EACCES this test needs
-  // cannot be produced there. Skipped rather than silently vacuous.
-  const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-  it.skipIf(asRoot)('an unreadable memory directory is an error, not "no memory directory"', () => {
+  // Permission bits mean nothing to root, and Windows does not model read or
+  // traversal permission at all, so the EACCES this test needs cannot be
+  // produced in either. Skipped rather than silently vacuous — this guard
+  // named only root, and both windows-latest legs failed with
+  // `expected 'wrote' to be 'error'`: the hook had read the directory the
+  // test believed it had locked.
+  it.skipIf(!canDenyReads)('an unreadable memory directory is an error, not "no memory directory"', () => {
     // claudeMemoryDir's `catch { return null; }` gave EACCES and EIO the same
     // answer as ENOENT, so a user whose memory directory became unreadable
     // was told every Stop, forever, that they simply have no notes — a
