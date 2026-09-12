@@ -459,6 +459,10 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
         db.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?').run(existing.id, NOTE_FILE_MISSING_TAG);
         result.restored.push(name);
       } else if (moved) result.repathed.push(name);
+      // Same bytes at the same path: this UPDATE only refreshes the stat
+      // fingerprint so the next run can skip the read. Nothing a reader of
+      // the memory would notice changed, so it counts as unchanged — and the
+      // Stop hook records it as a skip rather than a capture.
       else result.unchanged++;
       touchedIds.add(existing.id);
       continue;

@@ -129,11 +129,14 @@ function writeJsonAtomic(path, value) {
  * run. The mtime throttle makes the common Stop (nothing changed) cost one
  * directory walk and no database handle at all.
  *
- * Returns `{ outcome, reason, changed }`; `changed` is true when the run
- * created, replaced or marked a memory missing.
+ * Returns `{ outcome, reason }`. The outcome is `wrote` when the run changed
+ * a memory: created, replaced, moved (its file was renamed), restored (its
+ * file came back) or marked missing. A fingerprint refresh — same bytes, new
+ * mtime after a `touch` or a checkout — is bookkeeping about the file, not a
+ * change to anything the user stored, and reads as a skip.
  */
 export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
-  if (!memoryDir) return { outcome: 'skipped', reason: SKIP_REASONS.noMemoryDir, changed: false };
+  if (!memoryDir) return { outcome: 'skipped', reason: SKIP_REASONS.noMemoryDir };
   const memeshDir = getMemeshDirFromDbPath();
   const statePath = join(memeshDir, 'note-ingest-state.json');
   const key = createHash('sha256').update(memoryDir).digest('hex').slice(0, 16);
@@ -141,13 +144,13 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   const newest = newestNoteMtime(memoryDir);
   const last = typeof state[key]?.at === 'number' ? state[key].at : 0;
   if (newest <= last && !state[key]?.more) {
-    return { outcome: 'skipped', reason: SKIP_REASONS.noNoteChanged, changed: false };
+    return { outcome: 'skipped', reason: SKIP_REASONS.noNoteChanged };
   }
 
   const pluginRoot = resolvePluginRoot(metaUrl);
   const ingestPath = join(pluginRoot, 'dist/core/note-ingest.js');
   if (!existsSync(ingestPath)) {
-    return { outcome: 'skipped', reason: SKIP_REASONS.noteIngesterNotBuilt, changed: false };
+    return { outcome: 'skipped', reason: SKIP_REASONS.noteIngesterNotBuilt };
   }
   const { ingestNoteDirectory, summarizeNoteIngest } = await importFromPluginRoot(pluginRoot, 'dist/core/note-ingest.js');
   const { openDatabase, closeDatabase } = await importFromPluginRoot(pluginRoot, 'dist/db.js');
@@ -163,15 +166,18 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   // `startedAt`, not `newest`: a file edited while this run was reading is
   // newer than the stamp and is picked up next time.
   writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0 } });
-  // Every shape of write counts, not only the ones that store text: a move
-  // rewrites provenance and a restore removes the missing tag, and a record
-  // saying "nothing new" about a run that changed the database is exactly the
-  // silent-skip shape doctor's capture-liveness reads these records for.
+  // Every shape of MEMORY change counts, not only the ones that store text:
+  // a move re-points the memory at its file and a restore takes it out of
+  // missing, and a record saying "nothing new" about a run that changed a
+  // memory is exactly the silent-skip shape doctor's capture-liveness reads
+  // these records for. A fingerprint refresh (same bytes, new mtime) is
+  // deliberately NOT counted: it updates provenance so the next run can skip
+  // the read, and changes nothing a reader of the memory would notice.
   const changed = result.created.length + result.replaced.length + result.repathed.length
     + result.restored.length + result.markedMissing.length > 0;
   // A write records the summary (counts only); a skip records a known
   // reason, the only kind doctor will quote.
-  return { outcome: changed ? 'wrote' : 'skipped', reason: changed ? summarizeNoteIngest(result) : SKIP_REASONS.noteNothingNew, changed };
+  return { outcome: changed ? 'wrote' : 'skipped', reason: changed ? summarizeNoteIngest(result) : SKIP_REASONS.noteNothingNew };
 }
 
 /**
