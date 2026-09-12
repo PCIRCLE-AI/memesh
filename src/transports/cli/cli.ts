@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { createHash, randomBytes } from 'crypto';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -15,6 +15,9 @@ import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache 
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
+import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
+import { RememberSchema } from '../schemas.js';
+import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
 import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
 import { buildReferenceContext } from '../../core/work-topology.js';
 import { captureChatSession } from '../../core/session-insight.js';
@@ -271,19 +274,23 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
 // Two forms:
 //   1. Explicit:  memesh remember --name "auth-decision" --type "decision" --obs "OAuth 2.0"
 //   2. Quick:     memesh remember "OAuth 2.0 with PKCE"
-// Quick form auto-generates name (date + slug) and defaults type to "note".
-// The explicit form is the canonical contract; the quick form exists to
-// reduce first-use friction since fresh users naturally try the one-arg
-// shape before reading the README.
+// The quick form is `remember({ note })` (#324): the server derives the title
+// (first line), observations (the remaining paragraphs) and a name from the
+// text — slug of the title plus a digest of the text. So the SAME text twice
+// is one memory, not two, and two different texts never merge, even when
+// they share a first line. (The earlier `quick-<date>-<slug40>` name merged
+// different texts that began alike on the same day; the random suffix that
+// fixed it then made every repeat a duplicate.) `--type` is honoured.
 program
   .command('remember')
-  .argument('[text]', 'Quick-capture text — auto-generates name and uses type=note')
+  .argument('[text]', 'Quick-capture text — title, observations and name are derived from it (type defaults to note)')
   .description('Store knowledge as an entity (use flags for explicit form, or positional text for quick capture)')
   .option('--name <name>', 'Entity name')
-  .option('--type <type>', 'Entity type')
+  .option('--type <type>', 'Entity type (omit it with --replace to keep the type the memory already has)')
   .option('--title <title>', 'Short human-readable label shown as the headline (name stays the stable machine key)')
   .option('--obs <observations...>', 'Observations (space-separated)')
   .option('--tags <tags...>', 'Tags (space-separated)')
+  .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history')
   .option('--namespace <namespace>', 'Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in — omit the flag to leave it alone.')
   // The two relation types that DO something. MCP and HTTP callers could state
   // them through `relations`; the CLI had no way to state any relation at all,
@@ -296,34 +303,44 @@ program
   .option('--json', 'Output as JSON')
   .action(async (text, opts) => {
     requireOneOf(opts.namespace, NAMESPACES, '--namespace');
-    // Resolve quick-capture form into name/type/obs.
-    //
-    // Each invocation produces a UNIQUE name. The earlier scheme used
-    // `quick-<date>-<slug>` which is deterministic by day + first 40
-    // chars of text — two calls of `memesh remember "fixed bug"` on
-    // the same day would collide and `remember()` would silently merge
-    // them into one entity (it appends observations on duplicate
-    // name). For a journal/quick-capture flow, that's data loss.
-    // Append a short random suffix so each call is a new entity.
-    if (text && !opts.name && !opts.type) {
-      const slug = String(text)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '')
-        .slice(0, 40);
-      const date = new Date().toISOString().slice(0, 10);
-      const suffix = randomBytes(3).toString('hex'); // 6 hex chars = 16M outcomes
-      opts.name = `quick-${date}-${slug || 'note'}-${suffix}`;
-      opts.type = 'note';
-      // The quick-capture text IS the human title — the generated name above
-      // is exactly the machine-key noise titles exist to replace. Slice to
-      // the transport max; an explicit --title still wins.
-      if (!opts.title) opts.title = String(text).slice(0, 200);
-      // Same rule as the flag form below: positional text is an observation,
-      // never dropped. Without the else, `remember "content" --obs "note"`
-      // discarded the content while naming the entity after it.
-      if (!opts.obs || opts.obs.length === 0) opts.obs = [String(text)];
-      else opts.obs = [...opts.obs, String(text)];
+    if (opts.replace && !opts.name) {
+      console.error('Error: --replace needs --name — it rewrites the memory with that name.');
+      process.exit(1);
+    }
+    let note: string | undefined;
+    if (text && !opts.name) {
+      if (!opts.obs?.length && opts.title === undefined) {
+        note = String(text);
+        // The same limits MCP and HTTP callers get from RememberSchema
+        // (length, observation count, blank text) — the CLI calls remember()
+        // directly, so it checks here rather than disagreeing with them.
+        const check = RememberSchema.safeParse({ note, ...(opts.type ? { type: opts.type } : {}) });
+        if (!check.success) {
+          console.error(`Error: ${check.error.issues.map((i) => i.message).join('; ')}`);
+          process.exit(1);
+        }
+      } else {
+        // Quick text alongside --obs/--title: derive the name and title the
+        // same way, but keep BOTH the positional text and the flag
+        // observations (the P7 text-drop bug: an earlier version stored only
+        // the --obs value while naming the memory after the text).
+        const derived = deriveNote(String(text));
+        if (!derived) {
+          console.error('Error: the text is empty.');
+          process.exit(1);
+        }
+        opts.name = derived.name;
+        opts.type ??= NOTE_DEFAULT_TYPE;
+        // With an explicit --title the derived title is never used, so the
+        // first line is not a headline — it is content. deriveNote leaves the
+        // first line OUT of derived.observations only because it expects that
+        // line to become the title; --title removes that premise, and using
+        // derived.observations here dropped the user's first line into
+        // nothing but the slug. Split the whole text instead.
+        const derivedObs = opts.title === undefined ? derived.observations : splitObservations(derived.text);
+        opts.title ??= derived.title;
+        opts.obs = opts.obs?.length ? [...derivedObs, ...opts.obs] : derivedObs;
+      }
     } else if (text) {
       // Positional text ALONGSIDE flags used to be dropped on the floor:
       // `memesh remember "the content" --name x --type note` reported
@@ -332,10 +349,16 @@ program
       if (!opts.obs || opts.obs.length === 0) opts.obs = [String(text)];
       else opts.obs = [...opts.obs, String(text)];
     }
-    if (!opts.name || !opts.type) {
+    // `--replace` with a `--name` inherits the stored type (#333 T4), so it is
+    // a complete call without `--type`. This check runs BEFORE the
+    // RememberSchema.safeParse below and is the CLI's own copy of the rule —
+    // relaxing only the schema would have left the terminal rejecting the
+    // documented correction call while MCP and HTTP accepted it.
+    if (note === undefined && (!opts.name || (!opts.type && opts.replace !== true))) {
       console.error(
-        'Error: provide --name and --type, OR pass quick-capture text as a positional arg.\n' +
+        'Error: provide --name and --type, OR --name with --replace to correct a memory that exists, OR pass quick-capture text as a positional arg.\n' +
         '  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0"\n' +
+        '  memesh remember --name "auth" --replace --obs "Use OAuth 2.0 with PKCE"\n' +
         '  memesh remember "Use OAuth 2.0 with PKCE"'
       );
       process.exit(1);
@@ -357,21 +380,75 @@ program
       ...contradicts.map(to => ({ to, type: 'contradicts' })),
     ];
 
-    await withDatabase(async () => {
-      const result = remember({
+    // The note branch above validates the note form against RememberSchema;
+    // this validates the STRUCTURED one, which used to reach remember()
+    // unchecked. The two surfaces disagreed in the user's favour and then
+    // against it: 101 paragraphs as a pure note exited 1, while the same
+    // content passed as --obs exited 0 and stored 102 observations — more
+    // than MCP or HTTP would ever accept for the same memory.
+    if (note === undefined) {
+      // Zod's own message for this one is "Too big: expected array to have
+      // <=100 items", which does not tell a caller what to do; the note path
+      // names the count, so this does too.
+      if (opts.obs && opts.obs.length > NOTE_MAX_OBSERVATIONS) {
+        console.error(`Error: that is ${opts.obs.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory.`);
+        process.exit(1);
+      }
+      const check = RememberSchema.safeParse({
         name: opts.name,
         type: opts.type,
-        title: opts.title,
-        observations: opts.obs,
-        tags: opts.tags,
-        namespace: opts.namespace,
-        relations: relations.length > 0 ? relations : undefined,
-        sourceHost: 'cli',
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.obs?.length ? { observations: opts.obs } : {}),
+        ...(opts.tags?.length ? { tags: opts.tags } : {}),
+        ...(opts.replace === true ? { replace: true } : {}),
+        ...(relations.length > 0 ? { relations } : {}),
+        ...(opts.namespace !== undefined ? { namespace: opts.namespace } : {}),
       });
+      if (!check.success) {
+        console.error(`Error: ${check.error.issues.map((i) => i.message).join('; ')}`);
+        process.exit(1);
+      }
+    }
+
+    await withDatabase(async () => {
+      let result;
+      try {
+        result = remember({
+          name: opts.name,
+          type: opts.type,
+          tags: opts.tags,
+          namespace: opts.namespace,
+          relations: relations.length > 0 ? relations : undefined,
+          sourceHost: 'cli',
+          // `note` derives title and observations; passing either alongside it
+          // — even an empty array — is what remember() refuses.
+          ...(note !== undefined
+            ? { note }
+            : { title: opts.title, observations: opts.obs, replace: opts.replace === true ? true : undefined }),
+        });
+      } catch (err) {
+        // remember() refuses an unusable note (e.g. only control characters)
+        // with one sentence; a stack trace would bury it.
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exit(1);
+      }
       if (opts.json) {
         console.log(JSON.stringify(result));
       } else {
         console.log(`✅ Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
+        // The derived shape, so a wrong title is fixable in one more call.
+        if (result.derived) {
+          // `result.title` is the title the DATABASE holds — operations.ts
+          // reads it back at the return site. A memory that already exists
+          // keeps its own title, and printing the derived one told the user
+          // their new headline had been applied when it had not — screen
+          // "Use PKCE for auth", stored "T". This used to re-read the row
+          // here because the result carried only the REQUESTED title; that
+          // half of the fix has moved to core, where every caller gets it.
+          if (result.title) console.log(`   title: ${result.title}`);
+          console.log(`   fix it with: memesh remember --name "${result.name}" --type ${result.derived.type} --title "…" --obs "…" --replace`);
+        }
+        if (result.replaced) console.log('   replaced: the previous version is kept in metadata.replaced_history');
         // A move drops the memory out of every scoped view it used to appear
         // in, so it is never silent.
         if (result.movedFromNamespace) {
@@ -596,11 +673,62 @@ program
 // --- import ---
 program
   .command('import')
-  .description('Import memories from a JSON export file')
-  .argument('<file>', 'Path to JSON export file')
+  .description('Import memories from a JSON export file, or a directory of note files (--notes)')
+  .argument('[file]', 'Path to JSON export file')
   .option('--namespace <ns>', 'Override namespace for all imported entities')
   .option('--merge <strategy>', 'Merge strategy: skip | overwrite | append', 'skip')
-  .action(async (file, opts) => {
+  .option('--notes <dir>', 'Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.')
+  .option('--project <name>', 'With --notes: the project tag for ingested memories (default: the current directory\'s project)')
+  .option('--json', 'With --notes: output the ingestion result as JSON')
+  .action(async (file, opts, cmd: Command) => {
+    if (opts.notes !== undefined) {
+      if (file) {
+        console.error('Error: pass either a JSON export file or --notes <dir>, not both.');
+        process.exit(1);
+      }
+      // Both flags mean something for a JSON bundle and nothing here; taking
+      // them silently would let a user believe notes went into "team", or
+      // were merged some other way.
+      const ignored = ['namespace', 'merge'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+      if (ignored.length > 0) {
+        console.error(`Error: --notes does not take ${ignored.map((k) => `--${k}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
+        process.exit(1);
+      }
+      await withDatabase(() => {
+        let result;
+        try {
+          result = ingestNoteDirectory({ dir: String(opts.notes), project: opts.project ?? getProjectName() });
+        } catch (err) {
+          const code = (err as NodeJS.ErrnoException)?.code;
+          console.error(code === 'ENOENT'
+            ? `Error: directory not found: ${opts.notes}`
+            : `Error: cannot read ${opts.notes}: ${err instanceof Error ? err.message : String(err)}`);
+          process.exit(1);
+        }
+        if (opts.json) {
+          console.log(JSON.stringify(result));
+          return;
+        }
+        console.log(`Notes: ${summarizeNoteIngest(result)} (${result.discovered} note files found)`);
+        for (const s of result.skipped) console.error(`  skipped ${s.path}: ${s.reason}`);
+        if (result.markedMissing.length) console.log(`  file gone, memory kept and tagged source:note-file:missing: ${result.markedMissing.join(', ')}`);
+        if (result.more) console.log(`  ${result.more} more file(s) past the per-run cap — run the command again to continue`);
+      });
+      return;
+    }
+    if (!file) {
+      console.error('Error: pass a JSON export file (memesh import my-export.json) or --notes <dir>.');
+      process.exit(1);
+    }
+    // The mirror of the --notes guard above. These two flags mean something
+    // only for note ingestion; taking them silently here let a user believe a
+    // JSON bundle had been filed under --project, or that --json would
+    // produce a machine-readable result.
+    const notesOnly = ['project', 'json'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+    if (notesOnly.length > 0) {
+      console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(' and ')} only appl${notesOnly.length > 1 ? 'y' : 'ies'} to --notes. A JSON export file is imported with --namespace and --merge.`);
+      process.exit(1);
+    }
     requireOneOf(opts.merge, ['skip', 'overwrite', 'append'], '--merge');
     requireOneOf(opts.namespace, NAMESPACES, '--namespace');
     await withDatabase(() => {

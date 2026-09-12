@@ -78,6 +78,44 @@ All notable changes to MeMesh are documented here.
   provenance `source: deepseek-worker` and `trust: untrusted-until-verified`
   until `verify` flips it. The worker's own output is never stored, and there
   is no HTTP or MCP write path: the sandbox cannot write to the graph.
+- **A memory now costs what a note costs (#324).** `remember({ note: "…" })`
+  — and `memesh remember "<text>"` — takes free text and derives the rest:
+  the title from the first line, one observation per following paragraph, and
+  a name from a slug plus 8 hex characters (32 bits) of a digest of the text,
+  so the same text is always one memory; a different text landing on the
+  same name is possible but very unlikely, not impossible. The response
+  echoes what it derived, so a wrong guess is one more call to fix, not a
+  second entity. The structured form is unchanged; `note` is an additional
+  path, and it goes through the same sanitisation and redaction as
+  observations, and the same 10,000-character-per-observation number — but
+  not the same failure mode: a structured observation over that length is
+  **rejected**, while an oversized paragraph derived from `note` is
+  **silently truncated** with a trailing `…`.
+- **`remember({ name, replace: true })` rewrites instead of appending
+  (#324).** The previous version moves to a dated trail in
+  `metadata.replaced_history` — bounded at 20 versions and 64 KB — so
+  correcting a memory is one call and the wrong line does not survive.
+  Without `replace` the append semantics are exactly as before. The
+  contentless FTS index is deleted with the exact text that was indexed, so
+  the old words stop matching.
+- **Note files are ingested as memories (#324).** `memesh import --notes
+  <dir>`, and the Stop hook for the project's own memory directory, upsert
+  one memory per frontmatter note file, tagged `source:note-file`, with the
+  relative path and a content hash as provenance. Reading is bounded and
+  read-only: symlinks and paths escaping the directory are refused by
+  realpath, files are capped at 256 KB and 500 per run, `.git` and
+  `node_modules` are skipped, and a file whose content cannot be used is
+  fingerprinted so it neither starves the cap nor is silently retried
+  forever. A changed file replaces its memory; a **deleted** file never
+  deletes one — it is tagged `source:note-file:missing`, and that tag is what
+  frees its name for another file. Deleting memories stays an explicit
+  `forget`.
+- **The Stop hook says something when a session that decided things stored
+  nothing (#324).** One line, once per Stop, only when the transcript shows a
+  decision-shaped move — a plan approved, a question answered, a commit, a
+  test taken red then green — and no `remember`, `learn` or note-file change
+  happened. Silent on trivial sessions and whenever a memory was written;
+  never a non-zero exit.
 - **The briefing and the SessionStart block close with an index of the
   project's durable memories (#323).** One line per decision, lesson, pattern
   or reference — every type outside the evidence layer and `task-state` —
@@ -113,6 +151,13 @@ All notable changes to MeMesh are documented here.
 
 ### Changed
 
+- **`memesh remember "<text>"` names memories by their content (#324).** The
+  name is now `<slug>-<digest>` instead of `quick-<date>-<slug>-<random>`, so
+  recording the same text twice is one memory rather than two.
+- **`recall` returns `metadata.replaced_history_count`, not the replaced
+  versions themselves (#324).** The full history is still readable through
+  `export` and `GET /v1/entities/:name`; recall results no longer carry a
+  memory's whole edit history into every hit.
 - **Hermes Agent stores insights, not transcripts (#326).** Session and
   compression boundaries now write the same `session-<id>-files/-fixes/
   -summary` insights the Claude Code Stop hook writes, instead of archiving the

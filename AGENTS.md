@@ -59,7 +59,7 @@ host is recallable from all of them. Not installed yet? Follow
 | Tool | Purpose |
 |---|---|
 | `work_package` | Prepare one bounded untrusted digest (calendar-selected) or transcript package from the newest Claude Code session under the client's single matching MCP workspace root; submit one strictly validated result for pending human review or defer without durable change. Submission retains bounded redacted source turns for comparison; agents cannot apply or reject, and hashes identify freshness and workspace scope rather than authentication. |
-| `remember` | Store knowledge as an entity with observations, tags, and relations |
+| `remember` | Store knowledge as an entity with observations, tags, and relations; or pass only `note` (free text) and the title, observations and name are derived; `replace: true` rewrites a named memory, keeping the old version as history |
 | `recall` | Search stored knowledge (words are OR-ed, ranked by relevance); empty query lists recent |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |
 | `export` | Export memories as portable JSON for sharing or backup |
@@ -73,9 +73,22 @@ host is recallable from all of them. Not installed yet? Follow
 
 ## Memory hygiene
 
+- **The cheapest write is `remember({ note: "…" })`.** First line → title,
+  each following paragraph → one observation, name derived from the text
+  (the same text twice is one memory). Optional `type` (default `note`),
+  `tags`, `name`. The response echoes the derived shape under `derived`.
 - **Reuse a stable `name` to append.** Calling `remember` with an existing
   name appends observations and dedupes tags. A fresh name for every update
   creates duplicates that recall must wade through.
+- **Correct a memory in one call**: `remember` it again with its `name` and
+  `replace: true`. `type` is not needed — the memory keeps the one it has.
+  Pass a `type` only to reclassify: one that differs from what is stored
+  rewrites it. (`type` is still required on a call with no `note` that is
+  not a `replace`, and on a `replace` whose `name` does not exist yet.) Observations are rewritten (tags too
+  when you pass them, the title when you pass `title` or `note`); what was
+  there moves to `metadata.replaced_history` with the time it was replaced,
+  so the wrong line stops showing up in recall but is not lost (recall shows
+  only `replaced_history_count`; `export` has the versions).
 - **Replacing a decision**: `remember` the new one with a relation of type
   `supersedes` pointing at the old — the old entity is archived (recoverable),
   not left active to contradict the new one.
@@ -114,6 +127,16 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
   decision just made — once per tool per session. It only reminds; unlike
   the hooks above, it writes nothing to the graph itself.
 - **Stop** captures bounded session evidence, including observed error/fix signals.
+  It also ingests the project's Claude Code memory directory
+  (`~/.claude/projects/<slug>/memory/*.md` — one memory per file with
+  `name`/`description`/`metadata.type` frontmatter, tagged `source:note-file`;
+  a file that disappears is tagged `source:note-file:missing`, never deleted),
+  and when the turn since the last Stop approved a plan, answered a question,
+  committed, or turned a test red then green — with no `remember`/`learn` call
+  and no note-file change — it shows one line suggesting a `remember`. Both
+  the session capture and the note-directory ingestion are writes, so both
+  stop when auto-capture is off (`memesh config set autoCapture false`, or
+  `MEMESH_AUTO_CAPTURE=false`); the reminder line still runs either way.
 - **PreCompact** saves important knowledge before history is compressed.
 - **UserPromptSubmit** detects "remember this" intent in the prompt.
 - **PreToolUse (Bash)** fires accepted lesson-guards: a fenced warning

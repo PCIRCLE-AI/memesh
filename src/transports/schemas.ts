@@ -6,6 +6,7 @@
 import { z } from 'zod';
 import { NAMESPACES } from '../core/types.js';
 import { TITLE_MAX_LENGTH } from '../core/title.js';
+import { deriveNote, NOTE_MAX_CHARS, NOTE_MAX_OBSERVATIONS } from '../core/note-derive.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../core/agent-messaging.js';
 import {
   AGENT_SCOPE_ID_MAX_LENGTH,
@@ -89,18 +90,57 @@ export const WorkPackageSchema = z.discriminatedUnion('action', [
   }).strict(),
 ]);
 
+// Two forms, one schema (#324). Structured: `name` + `type` (+ title,
+// observations). Note: `note` alone, with the server deriving title,
+// observations and — when absent — name (core/note-derive.ts). The refine
+// below names the exact missing or conflicting key, because a caller told
+// "invalid input" cannot fix its call.
 export const RememberSchema = z.object({
-  name: nameField,
-  type: z.string().min(1).max(100),
+  name: nameField.optional(),
+  type: z.string().min(1).max(100).optional(),
   title: titleField,
   observations: z.array(observationField).max(100).optional(),
+  note: z.string().max(NOTE_MAX_CHARS).optional(),
+  replace: z.boolean().optional(),
   tags: z.array(z.string().max(255)).max(50).optional(),
   relations: z
     .array(z.object({ to: z.string().min(1).max(255), type: z.string().min(1).max(100) }).strict())
     .max(50)
     .optional(),
   namespace: z.enum(NAMESPACES).optional(),
-}).strict();
+}).strict().superRefine((data, ctx) => {
+  if (data.note === undefined) {
+    if (data.name === undefined) ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
+    // `replace` on a named memory inherits the type it already has —
+    // operations.ts only rewrites the stored type when one was PASSED
+    // (`typeGiven`), so that inheritance has always worked; this schema was
+    // the only thing making the documented correction call restate a field
+    // the server would ignore. Scoped to `replace` + `name` on purpose: a
+    // `name` without `replace` is usually a NEW memory, and a new memory with
+    // no type is the silent default this codebase spent a release removing.
+    if (data.type === undefined && !(data.replace && data.name !== undefined)) ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
+    return;
+  }
+  for (const key of ['title', 'observations'] as const) {
+    if (data[key] !== undefined) {
+      ctx.addIssue({ code: 'custom', path: [key], message: `${key} cannot be combined with note — note derives it; to correct the derived ${key}, call again with name, replace: true and a structured ${key} (pass \`type\` only to also change the memory's type)` });
+    }
+  }
+  if (data.replace && data.name === undefined) {
+    ctx.addIssue({ code: 'custom', path: ['name'], message: 'replace with note needs an explicit name — a derived name changes with the text, so there is nothing to replace' });
+  }
+  const derived = deriveNote(data.note);
+  if (!derived) {
+    ctx.addIssue({ code: 'custom', path: ['note'], message: 'note must contain some text' });
+  } else if (derived.observations.length > NOTE_MAX_OBSERVATIONS) {
+    // "observations", not "paragraphs": this count is taken AFTER the split,
+    // and a paragraph made only of list items yields one observation per item
+    // — so a single paragraph of 101 items was refused as "101 paragraphs".
+    // The cap is on what is stored, which is what the reader has to act on.
+    // note-ingest.ts says the same thing in the same unit for a note file.
+    ctx.addIssue({ code: 'custom', path: ['note'], message: `note yields ${derived.observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory` });
+  }
+});
 
 export const RecallSchema = z.object({
   query: z.string().max(1000).optional(),

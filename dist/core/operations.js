@@ -3,6 +3,7 @@ import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
+import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
 function buildLocalMetadata(existingMetadata, overrides) {
     return {
         ...(existingMetadata ?? {}),
@@ -21,21 +22,121 @@ function recallTagFilter(args) {
 function buildRelevanceMap(entities) {
     return new Map(entities.map((entity, index) => [entity.name, 1 - index / (entities.length + 1)]));
 }
-export function remember(args) {
+export function remember(input) {
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
-    return db.transaction(() => rememberInTransaction(args, db, kg)).immediate();
+    const { args, derived, typeGiven } = resolveRememberInput(input);
+    return db.transaction(() => rememberInTransaction(args, derived, typeGiven, db, kg)).immediate();
 }
-function rememberInTransaction(args, db, kg) {
+export const REPLACED_HISTORY_MAX = 20;
+export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
+const jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), 'utf8');
+function boundReplacedHistory(history) {
+    let out = history.slice(-REPLACED_HISTORY_MAX);
+    while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
+        out = out.slice(1);
+    if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
+        const only = out[0];
+        const kept = [];
+        const base = { ...only, observations: [], truncated: true };
+        for (const obs of only.observations) {
+            if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
+                break;
+            kept.push(obs);
+        }
+        out = [{ ...base, observations: kept }];
+    }
+    return out;
+}
+function summarizeReplacedHistory(entities) {
+    for (const e of entities) {
+        const history = e.metadata?.replaced_history;
+        if (!Array.isArray(history))
+            continue;
+        const { replaced_history: _dropped, ...rest } = e.metadata;
+        e.metadata = { ...rest, replaced_history_count: history.length };
+    }
+    return entities;
+}
+function resolveRememberInput(input) {
+    if (input.note === undefined) {
+        if (!input.name)
+            throw new Error('remember needs `name` and `type`, or `note`');
+        if (input.type === '')
+            throw new Error('remember needs `name` and `type`, or `note`');
+        if (input.type === undefined && !input.replace)
+            throw new Error('remember needs `name` and `type`, or `note`');
+        return { args: input, typeGiven: input.type !== undefined };
+    }
+    if (input.title !== undefined || input.observations !== undefined) {
+        throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
+    }
+    const derived = deriveNote(input.note);
+    if (!derived)
+        throw new Error('`note` is empty after removing control characters');
+    if (input.replace && !input.name) {
+        throw new Error('`replace` with `note` needs an explicit `name` (a derived name changes with the text)');
+    }
+    return {
+        args: {
+            ...input,
+            name: input.name ?? derived.name,
+            type: input.type ?? NOTE_DEFAULT_TYPE,
+            title: derived.title,
+            observations: derived.observations,
+        },
+        derived,
+        typeGiven: input.type !== undefined,
+    };
+}
+function rememberInTransaction(args, derived, typeGiven, db, kg) {
     const existing = db
-        .prepare('SELECT id, namespace, type FROM entities WHERE name = ?')
+        .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
         .get(args.name);
-    const entityId = kg.createEntity(args.name, args.type, {
-        observations: args.observations,
-        tags: args.tags,
+    if (args.replace && existing && existing.status === 'archived') {
+        throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. `
+            + 'Remember it again without `replace` to bring it back, then replace it.');
+    }
+    const entityType = args.type ?? existing?.type;
+    if (entityType === undefined) {
+        throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
+            + 'so this call would create one with no type — pass `type` to create it.');
+    }
+    let replacedVersion;
+    let retypedTo;
+    let tags = args.tags;
+    let title = args.title;
+    let observations = args.observations;
+    if (args.replace && existing) {
+        const previousTags = db.prepare('SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag').all(existing.id)
+            .map((t) => t.tag);
+        replacedVersion = {
+            replaced_at: new Date().toISOString(),
+            title: existing.title,
+            observations: db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(existing.id)
+                .map((o) => o.content),
+            tags: previousTags,
+        };
+        kg.clearEntityData(args.name);
+        if (typeGiven && entityType !== existing.type) {
+            db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(entityType, existing.id);
+            retypedTo = entityType;
+        }
+        if (tags === undefined)
+            tags = previousTags;
+    }
+    else if (derived && existing) {
+        title = undefined;
+        const stored = new Set(db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(existing.id)
+            .map((o) => o.content));
+        observations = observations?.filter((o) => !stored.has(o));
+    }
+    const entityId = kg.createEntity(args.name, entityType, {
+        observations,
+        tags,
         namespace: args.namespace,
         trustOverride: args.trustOverride,
-        title: args.title,
+        title,
     });
     kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
         trust: args.trustOverride,
@@ -44,6 +145,13 @@ function rememberInTransaction(args, db, kg) {
             ...(args.provenanceOverride ?? {}),
         },
     }));
+    if (replacedVersion) {
+        const version = replacedVersion;
+        kg.updateEntityMetadata(args.name, (current) => {
+            const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
+            return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
+        });
+    }
     const relationsCreated = [];
     const relationErrors = [];
     if (args.relations) {
@@ -68,14 +176,17 @@ function rememberInTransaction(args, db, kg) {
             }
         }
     }
+    const storedTitle = db
+        .prepare('SELECT title FROM entities WHERE id = ?')
+        .get(entityId).title;
     return {
         stored: true,
         entityId,
         name: args.name,
-        ...(args.title !== undefined ? { title: args.title } : {}),
-        type: existing?.type ?? args.type,
-        observations: args.observations?.length ?? 0,
-        tags: args.tags?.length ?? 0,
+        title: storedTitle,
+        type: retypedTo ?? existing?.type ?? entityType,
+        observations: observations?.length ?? 0,
+        tags: tags?.length ?? 0,
         relations: relationsCreated.length,
         ...(relationsCreated.length > 0 ? { relationsCreated } : {}),
         ...(existing && args.namespace !== undefined && (existing.namespace ?? 'personal') !== args.namespace
@@ -83,6 +194,10 @@ function rememberInTransaction(args, db, kg) {
             : {}),
         ...(superseded.length > 0 ? { superseded } : {}),
         ...(relationErrors.length > 0 ? { relationErrors } : {}),
+        ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
+        ...(derived
+            ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
+            : {}),
     };
 }
 export function recall(args) {
@@ -91,12 +206,12 @@ export function recall(args) {
 }
 function searchAndScore(args) {
     const kg = new KnowledgeGraph(getDatabase());
-    const entities = kg.search(args.query, {
+    const entities = summarizeReplacedHistory(kg.search(args.query, {
         tag: recallTagFilter(args),
         limit: args.limit,
         includeArchived: args.include_archived,
         namespace: args.namespace,
-    });
+    }));
     return {
         entities,
         relevanceMap: args.query ? buildRelevanceMap(entities) : new Map(),

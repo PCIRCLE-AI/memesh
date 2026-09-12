@@ -28,7 +28,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 | Tool | Purpose |
 |---|---|
 | `work_package` | Prepare one bounded untrusted `digest` (calendar cluster) or `transcript` package from the newest Claude Code session under the client's single matching MCP workspace root; submit exactly one strict result or defer. Submit only stages pending human review and retains bounded redacted source turns for comparison; agents cannot apply or reject. No hidden reasoning, raw transcript, transcript path, API key, LLM, embedding, or vector data is exposed or used; hashes identify freshness and workspace scope rather than authentication. |
-| `remember` | Store knowledge as an entity with observations, tags, and relations |
+| `remember` | Store knowledge as an entity with observations, tags, and relations; `note` (free text) derives title/observations/name; `replace: true` rewrites a named memory, keeping history |
 | `recall` | Search stored knowledge; empty query lists recent memories |
 | `forget` | Archive an entity or remove one exact observation |
 | `export` | Export memories as portable JSON |
@@ -154,7 +154,7 @@ With the Claude Code plugin, the first eight rows happen **without any action fr
 | **UserPromptSubmit** | When you submit a prompt | Detects "remember this" intent (5 languages) and reminds Claude to use memesh |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
 | **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision if it's worth keeping — once per tool per session |
-| **Stop** | Session ends | Auto-captures session knowledge and applies the configured update policy |
+| **Stop** | Session ends | Auto-captures session knowledge, ingests the project's Claude Code memory directory (frontmatter notes → `source:note-file` memories), shows one line when the turn made a decision-shaped move and stored no memory, and applies the configured update policy. The two writes (session capture, note-directory ingestion) stop when auto-capture is off (`memesh config set autoCapture false` / `MEMESH_AUTO_CAPTURE=false`); the advisory line still runs |
 | **PreCompact** | Before context compaction | Saves important knowledge before history is compressed |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
 | **SessionStart/SessionEnd (Codex)** | An ordinary Codex CLI plugin session starts, resumes, or ends | Launches the detached exact-thread companion, replaces its generation on resume, and retires it after the bounded idle queue window; a matching owner-private config may override its project/principal |
@@ -174,7 +174,8 @@ and retiring outdated info.
 | Situation | Action |
 |-----------|--------|
 | User states what they're working on / what's next / what's blocking | `memesh task --goal "…"` / `--next "…"` / `--blocked "…"` |
-| Design decision made | `memesh remember --name "auth-choice" --type decision --obs "Use OAuth 2.0 with PKCE" --tags "project:myapp"` |
+| Design decision made | `memesh remember "Use OAuth 2.0 with PKCE for the API" --type decision --tags "project:myapp"` (or `remember({ note })` over MCP) |
+| A stored memory is wrong | `memesh remember --name "auth-choice" --obs "the corrected fact" --replace` — the memory keeps its type and the old version moves to `metadata.replaced_history` (add `--type` only to reclassify it) |
 | Bug fixed | `memesh learn --error "what broke" --fix "what fixed it" --root-cause "why" --severity major` |
 | Starting work on a feature | `memesh recall "feature-name" --json` |
 | User asks "what did we decide?" | `memesh recall "topic" --tag "project:myapp"` |
@@ -211,7 +212,13 @@ memesh remember \
 Use a **stable name** (`db-choice`, not `db-choice-2026-08-16`): reusing the
 name appends to the same entity instead of scattering duplicates. `--title` is
 the human-readable headline; the name stays the machine key. If this replaces
-an older decision, add `--supersedes "old-db-choice"`.
+an older decision, add `--supersedes "old-db-choice"`. To correct it instead
+of adding to it, repeat the call with `--replace`.
+
+Quicker when the text is all you have: `memesh remember "SQLite for local-first
+storage"` (MCP: `remember({ note: "…" })`). The first line becomes the title,
+each following paragraph an observation, and the name is derived from the text,
+so repeating the same text does not create a duplicate.
 Types: `decision` `pattern` `lesson_learned` `bug_fix` `architecture` `convention` `feature` `best_practice` `concept` `tool` `note`
 
 ### You need context on a specific topic
@@ -245,9 +252,12 @@ memesh reindex --fts                         # rebuild the local keyword index
 
 ## Memory hygiene
 
-1. **Stable names append.** Remembering under an existing name adds
-   observations and dedupes tags — it never replaces the entity. Reuse the
-   name to grow one memory; do not mint `-v2` / dated variants of it.
+1. **Stable names append — unless you ask to replace.** Remembering under an
+   existing name adds observations and dedupes tags by default. Pass
+   `replace: true` (CLI: `--replace`) to rewrite the entity's observations,
+   tags and title instead — the previous version moves to
+   `metadata.replaced_history`, not lost. Reuse the name to grow or correct
+   one memory; do not mint `-v2` / dated variants of it.
 2. **`supersedes` retires the loser.** When a new memory replaces an old one,
    record it with `--supersedes <old-name>` (MCP: a relation of type
    `supersedes`). The old entity is archived — recoverable, out of recall.

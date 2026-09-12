@@ -52,8 +52,10 @@ export interface SearchOptions {
     countAsAccess?: boolean;
 }
 export interface RememberInput {
-    name: string;
-    type: string;
+    name?: string;
+    type?: string;
+    note?: string;
+    replace?: boolean;
     title?: string;
     observations?: string[];
     tags?: string[];
@@ -82,7 +84,7 @@ export interface RememberResult {
     stored: boolean;
     entityId: number;
     name: string;
-    title?: string | null;
+    title: string | null;
     type: string;
     observations: number;
     tags: number;
@@ -94,6 +96,13 @@ export interface RememberResult {
         type: string;
     }>;
     movedFromNamespace?: string;
+    replaced?: boolean;
+    derived?: {
+        name: string;
+        type: string;
+        title: string;
+        observations: string[];
+    };
 }
 export interface ForgetResult {
     archived?: boolean;

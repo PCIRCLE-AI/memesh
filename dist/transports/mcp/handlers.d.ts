@@ -126,17 +126,25 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "remember";
-    readonly description: "Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context.";
+    readonly description: string;
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
             readonly name: {
                 readonly type: "string";
-                readonly description: "Unique entity name (e.g., \"auth-decision\", \"jwt-pattern\"). Reusing a name appends observations and dedupes tags instead of replacing the entity.";
+                readonly description: "Unique entity name (e.g., \"auth-decision\", \"jwt-pattern\"). Reusing a name appends observations and dedupes tags instead of replacing the entity (unless `replace` is true). Required unless `note` is given, in which case it is derived from the text (same text → same name).";
             };
             readonly type: {
                 readonly type: "string";
-                readonly description: "Entity type (e.g., \"decision\", \"pattern\", \"lesson\", \"commit\")";
+                readonly description: "Entity type (e.g., \"decision\", \"pattern\", \"lesson\", \"commit\"). Required unless `note` is given (it then defaults to \"note\"), or `replace: true` is sent with the `name` of a memory that exists — that call keeps the stored type. Passing one on a `replace` reclassifies the memory.";
+            };
+            readonly note: {
+                readonly type: "string";
+                readonly description: "Free text, instead of title + observations: the first line becomes the title and each following paragraph an observation. Cannot be combined with `title` or `observations`. Control characters and credential-shaped strings are removed before storing.";
+            };
+            readonly replace: {
+                readonly type: "boolean";
+                readonly description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).";
             };
             readonly title: {
                 readonly type: "string";
@@ -181,8 +189,19 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly description: "Namespace for organizing the entity. Omit it to leave an existing memory where it is — supplying it MOVES a memory that already exists, and it drops out of every other scoped view. New memories default to \"personal\".";
             };
         };
-        readonly required: readonly ["name", "type"];
         readonly additionalProperties: false;
+        readonly anyOf: readonly [{
+            readonly required: readonly ["note"];
+        }, {
+            readonly required: readonly ["name", "type"];
+        }, {
+            readonly required: readonly ["name", "replace"];
+            readonly properties: {
+                readonly replace: {
+                    readonly const: true;
+                };
+            };
+        }];
     };
 }, {
     readonly name: "recall";

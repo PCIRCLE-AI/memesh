@@ -296,8 +296,19 @@ export function _clearProjectNameCache(): void {
  * leave part of the secret naked (the PEM body would otherwise survive its
  * own header being masked).
  *
- * Source strings, not RegExp objects: consumers compile with their own flags,
- * and a shared global-flag RegExp would leak `lastIndex` state between calls.
+ * Source strings, not RegExp objects, so a consumer can compile with the
+ * flags it needs.
+ *
+ * This used to say a shared global-flag RegExp "would leak `lastIndex` state
+ * between calls" — while, forty lines down, SECRET_PATTERNS compiles exactly
+ * such a shared array. Both could not be true, and the array is the one that
+ * ships. What makes it safe is narrower, and it is a rule about the
+ * CONSUMER rather than about the pattern: `String.prototype.replace` resets
+ * a global regex's `lastIndex` around the call, and `redactSecrets` below —
+ * the only thing that compiles these — uses nothing else. A future consumer
+ * reaching for `.test()` or `.exec()` on a shared global regex WOULD carry
+ * `lastIndex` from one call into the next and skip matches; such a consumer
+ * must compile its own, from these sources.
  */
 export const SECRET_PATTERN_SOURCES: readonly string[] = [
   // PEM private key — whole BEGIN..END block first...
@@ -330,9 +341,11 @@ export const SECRET_PATTERN_SOURCES: readonly string[] = [
   //
   // The leading \\b is load-bearing. Without it the pattern fires inside
   // ordinary words that happen to contain `sk-`: `task-runner`, `disk-usage`,
-  // `risk-level`, `ask-first`. That is not merely noisy — this same list backs
-  // `containsSecret()` in transcript-extractor, which DROPS a memory rather
-  // than staging it, so a false positive silently discards real content.
+  // `risk-level`, `ask-first`. That is not merely noisy — a false positive
+  // costs real content, not a masked word: dreamer.ts reads
+  // `redactSecrets(s) !== s` as "this text is secret-shaped" and refuses the
+  // whole submitted result with `secret_shaped_result`. That is the drop
+  // gate this list feeds, and it is the reason to keep the patterns narrow.
   //
   // The run is unbounded in LENGTH but bounded in CHARACTER SET: `[^\s"\\]`,
   // not `\S`. This function runs over `JSON.stringify(doctorResult)` (see

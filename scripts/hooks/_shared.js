@@ -539,7 +539,15 @@ const READ_NOFOLLOW_FLAGS = fsConstants.O_RDONLY | NOFOLLOW;
  *     new one.
  *
  * @param {Record<string,string|undefined>} env
- * @param {{hook: string, outcome: 'wrote'|'skipped'|'error', reason?: string, entity?: string, payload?: object}} info
+ * `outcome` has four kinds, and the line between the first two is the whole
+ * point of the record: `wrote` means a MEMORY was stored, and nothing else —
+ * it is the numerator of the signal `memesh doctor` uses to answer "is memory
+ * capture still alive". `notified` is for a hook whose effect is text the user
+ * or the model sees: an injected context, a printed warning, a nudge. Six
+ * hooks recorded those as `wrote`, each with its own comment saying it was not
+ * a memory, and the answer to that question was inflated by all six.
+ *
+ * @param {{hook: string, outcome: 'wrote'|'notified'|'skipped'|'error', reason?: string, entity?: string, payload?: object}} info
  */
 export function recordHookOutcome(env, { hook, outcome, reason, entity, payload }) {
   try {

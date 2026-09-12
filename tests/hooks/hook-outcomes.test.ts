@@ -306,11 +306,14 @@ describe('hook outcome records', () => {
     expect(rows[0].reason).toBe('the prompt carried no remember intent and no update decision');
   });
 
-  it('decision-nudge records a WROTE naming the nudged tool', () => {
+  it('decision-nudge records a NOTIFIED naming the nudged tool', () => {
+    // Not `wrote`: the nudge is the only effect this hook has, and doctor's
+    // `writes` answers "is memory capture still alive". A nudge is the
+    // opposite of a write — it is what memesh says when nothing was stored.
     runHook('decision-nudge', { tool_name: 'ExitPlanMode', session_id: 'nudge-1' });
     const rows = records('decision-nudge');
     expect(rows.length).toBe(1);
-    expect(rows[0].outcome).toBe('wrote');
+    expect(rows[0].outcome).toBe('notified');
     expect(rows[0].entity).toBe('nudge:ExitPlanMode');
   });
 
@@ -322,11 +325,13 @@ describe('hook outcome records', () => {
     expect(rows[0].reason).toBe('no Bash command in the payload');
   });
 
-  it('session-start records a WROTE when it injects context', () => {
+  it('session-start records a NOTIFIED when it injects context', () => {
+    // Injected context is something this hook READ, never something it
+    // stored, so it must not count towards doctor's `writes`.
     runHook('session-start', { session_id: 'ss-1', cwd: repoDir });
     const rows = records('session-start');
     expect(rows.length).toBeGreaterThanOrEqual(1);
-    expect(rows[0].outcome).toBe('wrote');
+    expect(rows[0].outcome).toBe('notified');
   });
 
   it('session-start records exactly one ERROR, and still emits one JSON document, when recall throws', () => {

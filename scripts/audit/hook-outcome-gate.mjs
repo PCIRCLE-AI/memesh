@@ -32,21 +32,67 @@ import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
+const LIVENESS_SOURCE = path.join(REPO, 'src', 'core', 'capture-liveness.ts');
+
 /**
- * The same list as CAPTURE_HOOKS in src/core/capture-liveness.ts, copied
- * rather than imported: this gate must run on a fresh clone, before `dist/`
- * exists, and a gate that depends on the build it polices proves nothing.
+ * The hook names, READ from capture-liveness.ts rather than copied.
+ *
+ * This list used to be a hand-maintained copy with a comment claiming it
+ * mirrored CAPTURE_HOOKS, and nothing tied the two together. It drifted
+ * exactly as a copy does: CAPTURE_HOOKS grew to ten names and this stayed at
+ * eight, so the gate silently stopped covering the two newest recording
+ * paths — including the 361-line one #324 added. A gate that cannot see a new
+ * background path is worth less than no gate, because it reports success.
+ *
+ * Throws on an empty parse. An empty list would make every loop below run
+ * zero times and the gate print a cheerful tick, which is the same failure
+ * wearing a different hat.
  */
-const CAPTURE_HOOKS = [
-  'post-commit',
-  'session-summary',
-  'pre-compact',
-  'pre-edit-recall',
-  'user-prompt-intent',
-  'decision-nudge',
-  'guard-check',
-  'session-start',
-];
+export function readCaptureHooks() {
+  const source = fs.readFileSync(LIVENESS_SOURCE, 'utf8');
+  const block = source.match(/export const CAPTURE_HOOKS = \[([\s\S]*?)\] as const;/);
+  if (!block) throw new Error('cannot find CAPTURE_HOOKS in src/core/capture-liveness.ts');
+  // Comment lines first. The block carries prose containing apostrophes
+  // ("session-summary's window"), and matching quotes across those produced
+  // hook "names" made of half a sentence.
+  const code = block[1]
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('//'))
+    .join('\n');
+  const names = [...code.matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  if (names.length === 0) throw new Error('parsed CAPTURE_HOOKS as empty — the gate would vacuously pass');
+  return names;
+}
+
+/**
+ * Hook names that are NOT files. `note-ingest` and `remember-nudge` are
+ * recorded by `_stop-notes.js`, which the Stop hook calls once per Stop;
+ * there is no `note-ingest.js` to look for, and looking for one is the wrong
+ * fix — it makes the gate fail on a file that was never meant to exist.
+ *
+ * Declared, not inferred: a name with no file must be claimed by a named
+ * owner here, so the next recording helper cannot pass by simply having no
+ * file of its own. `main()` fails on a parsed name that is neither a file nor
+ * claimed here, and on a claim for a name CAPTURE_HOOKS does not contain.
+ */
+const HELPER_OWNED_HOOKS = {
+  'note-ingest': '_stop-notes.js',
+  'remember-nudge': '_stop-notes.js',
+};
+
+/**
+ * A helper that RETURNS its outcome instead of exiting needs a different
+ * criterion, because the one above is written in terms of exits: `EXIT_RE`
+ * looks for `exit0()` / `pass()` / `process.exit()`, and `_stop-notes.js` has
+ * none of them — it hands `{ outcome, reason }` back to its caller, which
+ * records it. So the rule for these functions is on their RETURNS: every one
+ * must carry a `reason`. A new early `return { outcome: 'skipped' }` with
+ * nothing to say is exactly the silent skip this gate exists to forbid, and
+ * it would sail through an exit-shaped check.
+ */
+const RETURNING_DECISION_FUNCTIONS = {
+  '_stop-notes.js': ['runNoteIngestion', 'decideNudge'],
+};
 
 const EXIT_RE = /(?<![\w$.])(?:exit0|pass)\s*\(|(?<![\w$.])process\.exit\s*\(/;
 const RECORD_RE = /(?<![\w$.])(?:record|recordHookOutcome)\s*\(/;
@@ -225,25 +271,141 @@ export function validateSessionStart(source) {
   return null;
 }
 
+/**
+ * Line numbers (1-based) of `return` statements inside `fnName` that do not
+ * carry a `reason`. Pure, so a mutation can be fed to it without touching the
+ * filesystem. Returns null when the function is not found at all — a rename
+ * must fail the gate rather than silently check nothing.
+ */
+export function findUnreasonedReturns(source, fnName) {
+  const masked = maskLexicalNoise(source);
+  const defRe = new RegExp(`(?:export\\s+)?(?:async\\s+)?function\\s+${fnName}\\s*\\(`);
+  const match = defRe.exec(masked);
+  if (!match) return null;
+  // Step over the PARAMETER LIST before looking for the body. These functions
+  // destructure their argument — `runNoteIngestion({ memoryDir, … })` — so
+  // the first `{` after the name opens the parameter object, and brace
+  // matching from there returns the parameter list as the "body": no returns
+  // inside it, so the check passed while checking nothing. Measured: an
+  // unrecorded `return { outcome: 'skipped' }` injected into
+  // runNoteIngestion left the gate at exit 0.
+  let paren = 0;
+  let afterParams = -1;
+  for (let i = match.index + match[0].length - 1; i < masked.length; i++) {
+    if (masked[i] === '(') paren++;
+    else if (masked[i] === ')' && --paren === 0) { afterParams = i; break; }
+  }
+  if (afterParams < 0) return null;
+  const open = masked.indexOf('{', afterParams);
+  if (open < 0) return null;
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < masked.length; i++) {
+    if (masked[i] === '{') depth++;
+    else if (masked[i] === '}' && --depth === 0) { close = i; break; }
+  }
+  if (close < 0) return null;
+  const body = masked.slice(open, close + 1);
+  const out = [];
+  for (const m of body.matchAll(/(?<![\w$.])return(?![\w$])/g)) {
+    // The statement runs to the first `;` at the depth the return started at,
+    // so a `;` inside a nested object or call does not end it early.
+    let d = 0;
+    let end = body.length;
+    for (let i = m.index; i < body.length; i++) {
+      const ch = body[i];
+      if (ch === '{' || ch === '(' || ch === '[') d++;
+      else if (ch === '}' || ch === ')' || ch === ']') d--;
+      else if (ch === ';' && d === 0) { end = i; break; }
+      if (d < 0) { end = i; break; }
+    }
+    const statement = body.slice(m.index, end);
+    if (!/(?<![\w$.])reason(?![\w$])/.test(statement)) {
+      out.push(masked.slice(0, open + m.index).split('\n').length);
+    }
+  }
+  return out;
+}
+
 export function main() {
   const violations = [];
-  for (const hook of CAPTURE_HOOKS) {
+  const captureHooks = readCaptureHooks();
+
+  // Both directions. A parsed name with neither a file nor a declared owner
+  // is a recording path nobody checks; a declared owner for a name that is
+  // not in CAPTURE_HOOKS is a stale claim that would keep the first check
+  // looking satisfied after a rename.
+  const fileHooks = [];
+  for (const hook of captureHooks) {
     const file = path.join(REPO, 'scripts', 'hooks', `${hook}.js`);
-    const source = fs.readFileSync(file, 'utf8');
+    if (fs.existsSync(file)) fileHooks.push(hook);
+    else if (!HELPER_OWNED_HOOKS[hook]) {
+      violations.push(
+        `${hook}: named in CAPTURE_HOOKS with no scripts/hooks/${hook}.js and no owner in HELPER_OWNED_HOOKS — `
+          + 'a recording path this gate cannot see',
+      );
+    }
+  }
+  for (const hook of Object.keys(HELPER_OWNED_HOOKS)) {
+    if (!captureHooks.includes(hook)) {
+      violations.push(`${hook}: claimed in HELPER_OWNED_HOOKS but absent from CAPTURE_HOOKS — a stale claim`);
+    }
+  }
+
+  for (const hook of fileHooks) {
+    const rel = `scripts/hooks/${hook}.js`;
     try {
+      // Inside the try: an unreadable file must be reported as a violation,
+      // not thrown out of main() where it looks like a crashed gate.
+      const source = fs.readFileSync(path.join(REPO, 'scripts', 'hooks', `${hook}.js`), 'utf8');
       const uncovered = findUncoveredExits(source);
-      for (const line of uncovered) violations.push(`scripts/hooks/${hook}.js:${line}`);
+      for (const line of uncovered) violations.push(`${rel}:${line}`);
       for (const line of findLiteralSkipReasons(source)) {
-        violations.push(`scripts/hooks/${hook}.js:${line}: skip reason is a literal — add it to SKIP_REASONS in src/core/capture-liveness.ts and record the constant`);
+        violations.push(`${rel}:${line}: skip reason is a literal — add it to SKIP_REASONS in src/core/capture-liveness.ts and record the constant`);
       }
       if (hook === 'session-start') {
         const funnelError = validateSessionStart(source);
-        if (funnelError) violations.push(`scripts/hooks/${hook}.js: ${funnelError}`);
+        if (funnelError) violations.push(`${rel}: ${funnelError}`);
       }
     } catch (error) {
-      violations.push(`scripts/hooks/${hook}.js: analysis failed (${error.message})`);
+      violations.push(`${rel}: analysis failed (${error.message})`);
     }
   }
+
+  // The returning helpers. Their outcome is a RETURN VALUE, so the exit-shaped
+  // check above says nothing about them at all.
+  for (const [basename, fns] of Object.entries(RETURNING_DECISION_FUNCTIONS)) {
+    const rel = `scripts/hooks/${basename}`;
+    try {
+      const source = fs.readFileSync(path.join(REPO, 'scripts', 'hooks', basename), 'utf8');
+      for (const fn of fns) {
+        const lines = findUnreasonedReturns(source, fn);
+        if (lines === null) {
+          violations.push(`${rel}: ${fn}() not found — this gate checks its returns and cannot`);
+          continue;
+        }
+        for (const line of lines) {
+          violations.push(`${rel}:${line}: ${fn}() returns without a reason — the caller records that as an outcome nobody can explain`);
+        }
+      }
+    } catch (error) {
+      violations.push(`${rel}: analysis failed (${error.message})`);
+    }
+  }
+
+  // Every helper-owned hook name must actually be recorded by its owner.
+  for (const [hook, basename] of Object.entries(HELPER_OWNED_HOOKS)) {
+    const rel = `scripts/hooks/${basename}`;
+    try {
+      const source = fs.readFileSync(path.join(REPO, 'scripts', 'hooks', basename), 'utf8');
+      if (!source.includes(`hook: '${hook}'`)) {
+        violations.push(`${rel}: records no outcome for '${hook}', which it is declared to own`);
+      }
+    } catch (error) {
+      violations.push(`${rel}: analysis failed (${error.message})`);
+    }
+  }
+
   if (violations.length > 0) {
     console.error(
       `✗ capture hooks exit without an outcome record — the "silent skip" this gate exists to forbid:\n  ` +
@@ -252,8 +414,13 @@ export function main() {
     );
     process.exit(1);
   }
-  const explicit = CAPTURE_HOOKS.filter((h) => h !== 'session-start').length;
-  console.log(`✓ ${explicit} explicit-exit hooks record outcomes; session-start writes stdout only through output(), which records an outcome (${CAPTURE_HOOKS.length} hooks)`);
+  const explicit = fileHooks.filter((h) => h !== 'session-start').length;
+  const helpers = Object.keys(RETURNING_DECISION_FUNCTIONS).length;
+  console.log(
+    `✓ ${explicit} explicit-exit hooks record outcomes; session-start writes stdout only through output(), `
+      + `which records an outcome; ${helpers} returning helper(s) return a reason on every path `
+      + `(${captureHooks.length} hooks in CAPTURE_HOOKS)`,
+  );
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
