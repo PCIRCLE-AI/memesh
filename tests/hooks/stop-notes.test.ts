@@ -200,6 +200,33 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(last.reason, timing).toMatch(/50 more not processed/);
   }, 60_000);
 
+  // Permission bits mean nothing to root, so the EACCES this test needs
+  // cannot be produced there. Skipped rather than silently vacuous.
+  const asRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  it.skipIf(asRoot)('an unreadable memory directory is an error, not "no memory directory"', () => {
+    // claudeMemoryDir's `catch { return null; }` gave EACCES and EIO the same
+    // answer as ENOENT, so a user whose memory directory became unreadable
+    // was told every Stop, forever, that they simply have no notes — a
+    // sentence that is both false and reassuring. It is worse than a plain
+    // silent skip: note-ingest is not in SILENT_ELIGIBLE_HOOKS, so doctor
+    // never escalates the hook that keeps answering "nothing to do here".
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'a.md'),
+      '---\nname: locked_note\ndescription: Locked\nmetadata:\n  type: fact\n---\n\nbody\n');
+    write(reads(1));
+    // No search permission on the parent: lstat of any child fails EACCES.
+    fs.chmodSync(projectDir, 0o600);
+    try {
+      const r = run();
+      expect(r.status).toBe(0);
+      const last = outcomes('note-ingest').at(-1)!;
+      expect(last.outcome, 'a permissions failure recorded as a skip').toBe('error');
+      expect(last.reason).not.toBe('no Claude Code memory directory for this project');
+    } finally {
+      fs.chmodSync(projectDir, 0o700);
+    }
+  }, 60_000);
+
   it('a payload with no cwd does not file notes under no project at all', () => {
     // Ingestion used to run BEFORE the cwd guard, with
     // `project: inputData.cwd ? getProjectName(inputData.cwd) : undefined`.

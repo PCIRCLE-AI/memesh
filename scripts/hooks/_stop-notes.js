@@ -75,6 +75,18 @@ const NOTE_PATH_RE = /(?:^|[\\/])(?:memory|\.remember)[\\/][^\\/]+\.md$/;
  * Deriving it from `transcript_path` avoids re-implementing Claude Code's
  * slug rule. Null when there is none (Codex, or a project with no memory yet),
  * and null for a symlinked directory — ingestion never follows links.
+ *
+ * THROWS when the directory cannot be looked at for a reason that is not
+ * "it is not there". The catch here used to swallow everything and return
+ * null, which made EACCES and EIO give the same answer as ENOENT: the run
+ * recorded `no Claude Code memory directory for this project`, a sentence
+ * that is false and reassuring at the same time. A user whose memory
+ * directory became unreadable would see a hook reporting, every Stop and
+ * forever, that they simply have no notes.
+ *
+ * ENOENT stays null because it is the ordinary case — most projects have no
+ * memory directory, and that is not a fault. Everything else is a fault, and
+ * the caller records it as one.
  */
 export function claudeMemoryDir(transcriptPath) {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
@@ -82,8 +94,9 @@ export function claudeMemoryDir(transcriptPath) {
   try {
     const st = lstatSync(dir);
     return st.isDirectory() && !st.isSymbolicLink() ? dir : null;
-  } catch {
-    return null; // ENOENT is the ordinary case: no memory directory.
+  } catch (err) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return null;
+    throw err;
   }
 }
 
@@ -336,10 +349,27 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
  * a nudge the session earned. Returns the one advisory line to print, or null.
  */
 export async function runStopNotes(payload, { captureEnabled, project, metaUrl, env = process.env }) {
-  const memoryDir = claudeMemoryDir(payload?.transcript_path);
+  // `claudeMemoryDir` throws on anything that is not "no such directory"
+  // (EACCES, EIO). That is an error for ingestion — capture is being LOST,
+  // not declined — but it must not take the nudge down with it, so it is
+  // caught here rather than left to either half's try block. The nudge then
+  // runs with no memory directory, which only costs it the note-file check.
+  let memoryDir = null;
+  let memoryDirError = null;
+  try {
+    memoryDir = claudeMemoryDir(payload?.transcript_path);
+  } catch (err) {
+    memoryDirError = err;
+  }
   try {
     if (!captureEnabled) {
+      // Ordered before the directory error on purpose: with ingestion turned
+      // off there was never going to be a read, so a fault in a directory
+      // this run would not have opened is not this run's news.
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff, payload });
+    } else if (memoryDirError) {
+      try { process.stderr.write(`[memesh note-ingest] cannot read the memory directory: ${memoryDirError?.message || memoryDirError}\n`); } catch { /* stderr gone */ }
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: hookErrorReason(memoryDirError), payload });
     } else if (project === undefined || project === null) {
       // No `cwd` in the payload, so the caller could not resolve a project.
       // Ingesting anyway files every note under NO project, and unlike a
