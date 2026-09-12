@@ -13,18 +13,27 @@ Neither exists yet in this repo, which is the expected starting state.
 
 ## File structure
 
-Treat this as a single-context repo, with one caveat worth knowing: there is no
-npm workspace (the root `package.json` has no `workspaces` field), but there are
-three `package.json` files and two `src/` trees — the root package, `dashboard/`
-(its own package and `src/`, built into `dashboard/dist/`), and
-`extensions/memory-memesh/`. They are one product with one domain vocabulary,
-which is why a single glossary fits; a reviewer enumerating source files must
-still remember that `dashboard/src/` exists.
+Treat this as a single-context repo: one product, one domain vocabulary, which
+is why a single glossary fits. The layout underneath that is not uniform, and an
+agent enumerating source files will miss code if it assumes it is. There is no
+npm workspace — the root `package.json` has no `workspaces` field — and the four
+places code lives each look different:
 
-A glossary belongs at the repository root, and architecture decisions in a
-directory beside it. Neither is created yet, so this document does not name
-their paths — an agent writing the first one picks the conventional location and
-adds it here at the same time.
+| Where | Shape |
+|---|---|
+| repository root | `package.json`, sources in `src/` |
+| `dashboard/` | its own `package.json`, sources in `dashboard/src/`, built into `dashboard/dist/` |
+| `extensions/memory-memesh/` | its own `package.json`, TypeScript at the directory root (`index.ts`, `config.ts`) — **no `src/`** |
+| `extensions/hermes-memesh/` | Python: `__init__.py` and `plugin.yaml`, **no `package.json` at all** |
+
+So "three `package.json` files and two `src/` trees" is the whole of what a
+`package.json` or `src/` sweep will find, and it is not the whole of the code.
+
+The glossary is `CONTEXT.md` at the repository root, named throughout this
+document. Architecture decisions go in a directory beside it; that directory has
+no agreed path yet, so this document deliberately does not name one — the agent
+writing the first decision picks the conventional location and records it here
+in the same change.
 
 (The skills also support a multi-context layout, keyed on a `CONTEXT-MAP.md` at
 the root. This repo does not use it; reach for it only if the three packages
