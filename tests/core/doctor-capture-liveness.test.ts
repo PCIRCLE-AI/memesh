@@ -223,6 +223,32 @@ describe('doctor: capture-liveness', () => {
     expect(result.capture?.status).toBe('PASS');
   });
 
+  it('PASS does not claim a fresh install when hooks ran well past the threshold (#324 C1)', async () => {
+    // note-ingest is not SILENT_ELIGIBLE, so 20 runs with no write is still a
+    // PASS — but the sentence must not explain it with a threshold nobody is
+    // below and an install that is not fresh. Measured on a throwaway HOME:
+    // `STATUS: pass`, "below the 5-run threshold ... normal on a fresh
+    // install", with {"hook":"note-ingest","triggeredRuns":20,"writes":0} in
+    // the same JSON.
+    memeshDirWith(skips('note-ingest', 20, SKIP_REASONS.noteNothingNew));
+    const result = await run();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('pass');
+    expect(result.capture!.hooks[0].triggeredRuns).toBe(20);
+    expect(result.capture!.hooks[0].writes).toBe(0);
+    expect(check.summary).not.toContain('fresh install');
+    expect(check.summary).not.toContain(`below the ${5}-run threshold`);
+    expect(check.summary).toContain('note-ingest');
+  });
+
+  it('PASS still says "too early to say" when every hook really is below the threshold', async () => {
+    memeshDirWith(skips('note-ingest', 3, SKIP_REASONS.noteNothingNew));
+    const result = await run();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('pass');
+    expect(check.summary).toContain('too early to say');
+  });
+
   it('routine note-ingest and remember-nudge skips do not evict the write (#324 C2)', async () => {
     // The window keeps the last 20 TRIGGERED records per hook. `no note file
     // changed` is recorded on nearly every Stop, so if it counts as a run the
