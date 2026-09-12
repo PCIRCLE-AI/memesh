@@ -329,6 +329,15 @@ export const SKIP_REASONS = {
   transcriptPathAbsent: 'transcript_path absent',
   transcriptGone: 'the transcript file named by the payload is gone',
   tooLittleActivity: 'too little activity in the session to be worth saving',
+  /**
+   * session-summary: enough activity to clear tooLittleActivity (3+ tool
+   * calls) but none of it fit a capture rule — no file edited, and fewer
+   * than 20 calls total (Rule 3's heavy-session bar). A pure read/analysis
+   * session lands here. Before this reason existed, the hook fell through
+   * to `record('wrote', ...)` with zero entities actually written — every
+   * run of this shape claimed a write that never happened.
+   */
+  noRuleMatched: 'no rule matched (no edited file and fewer than 20 tool calls)',
   toolInputAbsent: 'tool_input absent in payload',
   noFilePath: 'no file_path in the tool input',
   noDatabaseForRecall: 'no database yet — nothing to recall',

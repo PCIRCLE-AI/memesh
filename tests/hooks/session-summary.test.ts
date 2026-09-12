@@ -9,7 +9,7 @@ import { removeTempDir } from '../helpers/temp-dir.js';
 
 const require = createRequire(import.meta.url);
 // Non-git identity = basename + real-path hash (tests/core/project-identity.test.ts).
-const { getProjectName: mirrorProjectName } = require('../../scripts/hooks/_shared.js');
+const { getProjectName: mirrorProjectName, HOOK_OUTCOMES_FILENAME, parseHookOutcomes } = require('../../scripts/hooks/_shared.js');
 
 describe('Feature: Session Summary (Stop Hook)', () => {
   let testDir: string;
@@ -875,5 +875,38 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     // ...and the first turn's snapshot was REPLACED, not appended to, so the
     // stale count is gone rather than sitting beside the new one.
     expect(text).not.toContain('4 file(s)');
+  });
+
+  it('Scenario: a pure-Bash session that edited nothing records "skipped", not a false "wrote"', () => {
+    // Between the two guards — toolCallCount < 3 (skipped) and >= 20 (Rule
+    // 3) — a session that ran real Bash commands but touched no file and
+    // stayed under 20 calls matches NONE of the three capture rules.
+    // storeMemory is never called, writeFailed stays false, and the code
+    // used to fall through to record('wrote') anyway: an outcome claiming a
+    // write that never happened, on every real read-only or analysis-only
+    // session.
+    writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'why is prod slow' } },
+      ...['ps aux', 'top -l 1', 'df -h', 'du -sh /var/log', 'netstat -an'].map((cmd) => ({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: { command: cmd } }] },
+      })),
+    ]);
+    const sessionId = 'bash-only-no-edits';
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    const entities = new Database(dbPath, { readOnly: true })
+      .prepare("SELECT name FROM entities WHERE name LIKE ?")
+      .all(`session-${sessionId}-%`) as Array<{ name: string }>;
+    expect(entities, 'no rule matched, so no entity should exist').toHaveLength(0);
+
+    // The real, on-disk outcome record — spawned through the actual hook
+    // file, not a unit-level stub — is what `memesh doctor` reads.
+    const raw = fs.readFileSync(path.join(testDir, HOOK_OUTCOMES_FILENAME), 'utf8');
+    const runs = parseHookOutcomes(raw).hooks['session-summary'] ?? [];
+    const last = runs[runs.length - 1];
+    expect(last, 'session-summary must still record something').toBeDefined();
+    expect(last!.outcome, 'zero entities written is not "wrote"').not.toBe('wrote');
+    expect(last!.outcome).toBe('skipped');
   });
 });

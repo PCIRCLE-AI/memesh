@@ -748,6 +748,8 @@ export { truncateTitle } from './_generated/title.js';
  *   first-writer-wins rule provenance already follows. `replace` (#322)
  *   restates the entity's observations and tags instead of adding to them —
  *   for a caller whose entity is a per-turn SNAPSHOT, not an accumulating log.
+ *   Unlike `remember({ replace: true })` in core, this is a HARD delete: no
+ *   `replaced_history` is kept (see the comment at the DELETE below for why).
  * @returns {{ id: number, isNew: boolean } | null} null if the row could not be resolved
  */
 export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false }) {
@@ -883,6 +885,16 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // The old rows go AFTER `prevObsText` was read above, so the contentless-FTS
   // delete still matches exactly what was indexed. The re-insert below must
   // then leave that text out.
+  //
+  // This is a HARD delete — no history kept. That is a deliberate difference
+  // from `remember({ replace: true })` in src/core/operations.ts, which files
+  // the old text into `metadata.replaced_history` before overwriting: that
+  // path is a rare, user-invoked correction, where an audit trail is worth
+  // the bytes. This path fires on every Stop, every turn, for a session that
+  // can run for hours — keeping history here would mean growing metadata on
+  // every single turn for content nobody asks to undo. If a future caller
+  // besides session-summary starts passing `replace` and DOES need history,
+  // that is a reason to add an opt-in, not to change this default.
   if (replace && !isNew) {
     db.prepare('DELETE FROM observations WHERE entity_id = ?').run(id);
     // Tags get the same treatment, for the same reason: "restating the whole

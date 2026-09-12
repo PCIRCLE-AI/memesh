@@ -376,6 +376,13 @@ process.stdin.on('end', async () => {
     //
     const { db } = openHookDb(process.env, { fts: true });
     let writeFailed = false;
+    // True once any of the three rules below actually calls storeMemory.
+    // Between the toolCallCount < 3 guard above and Rule 3's >= 20 bar, a
+    // session that ran real commands but edited no file matches none of
+    // them — storeMemory never runs, writeFailed stays false, and without
+    // this flag the outcome below fell through to record('wrote') anyway:
+    // a claimed write with zero entities actually touched.
+    let anyRuleMatched = false;
     try {
       // Build and store session memories
       const baseTags = [AUTO_CAPTURE_TAG, `session:${sessionId}`, `project:${projectName}`];
@@ -403,6 +410,11 @@ process.stdin.on('end', async () => {
       // only, skipping the FTS reindex the sibling hooks did — which left every
       // session-insight memory unrecallable via the FTS keyword path.
       function storeMemory(name, type, observations, tags, title) {
+        // A rule matched — before touching the DB, so a caller that reads
+        // this and then throws still leaves the flag set correctly for the
+        // "did a rule apply" question (writeFailed is the separate "did it
+        // land" question).
+        anyRuleMatched = true;
         // null = the entity row could not be resolved = this write did NOT
         // happen (captureEntity's contract). A run with a failed write must
         // not stamp the heartbeat below — "alive" would be a lie about the
@@ -653,11 +665,19 @@ process.stdin.on('end', async () => {
       // write did not land must not read as alive. (The recall-effectiveness
       // block catches its own errors — session memories were already stored
       // by then, so the run still counts.)
-      if (!writeFailed) {
+      if (writeFailed) {
+        record('error', 'captureEntity did not land the write', `session-${sessionId}-summary`);
+      } else if (!anyRuleMatched) {
+        // Correctly deciding there was nothing to capture is still a
+        // completed run — same stance as the tooLittleActivity skip above,
+        // which stamps too. What it must NOT do is claim 'wrote': that was
+        // this hook's shape for every real-work-but-no-file-edit session
+        // until this branch existed.
+        recordHookRun(db, 'session-summary');
+        record('skipped', SKIP_REASONS.noRuleMatched, `session-${sessionId}-summary`);
+      } else {
         recordHookRun(db, 'session-summary');
         record('wrote', undefined, `session-${sessionId}-summary`);
-      } else {
-        record('error', 'captureEntity did not land the write', `session-${sessionId}-summary`);
       }
     } finally {
       db.close();
