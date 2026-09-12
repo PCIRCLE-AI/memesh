@@ -98,6 +98,25 @@ describe('memesh import --notes', () => {
     expect(merge.stderr).toContain('--merge');
   }, 60_000);
 
+  // #324 T6. --notes refuses --namespace and --merge rather than ignoring
+  // them, but the JSON path took --project and --json and did nothing with
+  // them: a user could believe the bundle had been filed under that project.
+  it('refuses --project and --json on the JSON import path instead of ignoring them', () => {
+    const bundle = path.join(home, 'export.json');
+    fs.writeFileSync(bundle, JSON.stringify({ entities: [], relations: [] }));
+
+    const withProject = runCli(['import', bundle, '--project', 'p'], home);
+    expect(withProject.exitCode).toBe(1);
+    expect(withProject.stderr).toContain('--project');
+
+    const withJson = runCli(['import', bundle, '--json'], home);
+    expect(withJson.exitCode).toBe(1);
+    expect(withJson.stderr).toContain('--json');
+
+    // The bundle itself still imports.
+    expect(runCli(['import', bundle], home).exitCode).toBe(0);
+  }, 60_000);
+
   it('refuses a file and --notes together, and neither', () => {
     expect(runCli(['import', 'x.json', '--notes', notes], home).stderr).toContain('not both');
     expect(runCli(['import'], home).stderr).toContain('--notes');

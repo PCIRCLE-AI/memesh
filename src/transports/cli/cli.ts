@@ -714,6 +714,15 @@ program
       console.error('Error: pass a JSON export file (memesh import my-export.json) or --notes <dir>.');
       process.exit(1);
     }
+    // The mirror of the --notes guard above. These two flags mean something
+    // only for note ingestion; taking them silently here let a user believe a
+    // JSON bundle had been filed under --project, or that --json would
+    // produce a machine-readable result.
+    const notesOnly = ['project', 'json'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+    if (notesOnly.length > 0) {
+      console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(' and ')} only appl${notesOnly.length > 1 ? 'y' : 'ies'} to --notes. A JSON export file is imported with --namespace and --merge.`);
+      process.exit(1);
+    }
     requireOneOf(opts.merge, ['skip', 'overwrite', 'append'], '--merge');
     requireOneOf(opts.namespace, NAMESPACES, '--namespace');
     await withDatabase(() => {
