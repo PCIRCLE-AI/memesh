@@ -740,7 +740,7 @@ export { truncateTitle } from './_generated/title.js';
  *   first-writer-wins rule provenance already follows.
  * @returns {{ id: number, isNew: boolean } | null} null if the row could not be resolved
  */
-export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata }) {
+export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false }) {
   // One transaction, because this function performs six writes that only
   // mean anything together: the entity row, its observations, its tags, and
   // the contentless-FTS delete + insert that make them findable.
@@ -759,10 +759,10 @@ export function captureEntity(db, { name, type, observations = [], tags = [], ti
   // could not be resolved. `observationsWritten` may be lower than
   // `observations.length`: an observation whose exact content is already on
   // the entity is not stored again (see the dedupe in captureEntityInner).
-  return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata }))();
+  return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace }))();
 }
 
-function captureEntityInner(db, { name, type, observations, tags, title, metadata }) {
+function captureEntityInner(db, { name, type, observations, tags, title, metadata, replace }) {
   // source_host provenance: these hooks only ever run under Claude Code (they
   // are wired into ~/.claude/settings.json), so a hook-captured entity is by
   // definition a claude-code capture. Stamped only on the INSERT — an OR
@@ -855,8 +855,24 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // `entities_fts` is contentless: the next delete would not match, which is
   // the "database disk image is malformed" failure this file warns about
   // above. The `seen` set also collapses repeats WITHIN one call.
+  // `replace`: the caller is restating the whole entity, not adding to it.
+  //
+  // Appending is right for a `commit-<sha>` or a `pre-compact-<id>`, where
+  // each capture is a new fact about the same subject. It is wrong for a
+  // session insight, whose three entities are a SNAPSHOT of one session: Stop
+  // fires at the end of every turn, so appending stored the same sentences
+  // over and over (measured: 56 observations, 16 unique) and the workaround —
+  // capture once, then skip — froze a two-day session's memory at its first
+  // turn (#322). Replacing is the third answer: the snapshot is rewritten, so
+  // it is neither duplicated nor stale.
+  //
+  // The old rows go AFTER `prevObsText` was read above, so the contentless-FTS
+  // delete still matches exactly what was indexed.
+  if (replace && !isNew) {
+    db.prepare('DELETE FROM observations WHERE entity_id = ?').run(id);
+  }
   const seen = new Set(
-    isNew
+    isNew || replace
       ? []
       : db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(id).map((r) => r.content),
   );

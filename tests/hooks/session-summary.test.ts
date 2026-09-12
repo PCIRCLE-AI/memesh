@@ -751,4 +751,51 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     expect(insights.length).toBeGreaterThan(0);
     db.close();
   });
+
+  it('Scenario: a later Stop in the same session updates the insights instead of freezing them (#322)', () => {
+    // Stop fires at the END OF EVERY TURN, not once per session. The
+    // capture-once guard therefore froze a session's memory at its first
+    // turn: a two-day session remembered its first few minutes. The guard
+    // was not gratuitous — without it `remember`'s append semantics stored
+    // the same lines over and over (measured: 56 observations, 16 unique).
+    // `replace` is the primitive that makes a third answer possible.
+    const sessionId = 'stop-updates-322';
+    const edits = (files: string[]) => files.map((f) => ({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/src/' + f } }] },
+    }));
+
+    writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'fix the parser' } },
+      ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
+    ]);
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    // The same session keeps working: four more files in the same transcript.
+    writeTranscript([
+      { type: 'user', message: { role: 'user', content: 'fix the parser' } },
+      ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
+      { type: 'user', message: { role: 'user', content: 'now the router' } },
+      ...edits(['router.ts', 'server.ts', 'cache.ts', 'queue.ts']),
+    ]);
+    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
+
+    const db = new Database(dbPath);
+    const row = db.prepare(
+      "SELECT e.id FROM entities e WHERE e.name = ?",
+    ).get(`session-${sessionId}-files`) as { id: number } | undefined;
+    expect(row).toBeDefined();
+    const observations = db.prepare(
+      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
+    ).all(row!.id) as Array<{ content: string }>;
+    db.close();
+
+    const text = observations.map((o) => o.content).join('\n');
+    // The second turn's work is visible...
+    expect(text).toContain('router.ts');
+    expect(text).toContain('8 file');
+    // ...and the first turn's snapshot was REPLACED, not appended to, so the
+    // stale count is gone rather than sitting beside the new one.
+    expect(text).not.toContain('4 file(s)');
+  });
 });

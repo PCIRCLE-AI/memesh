@@ -389,18 +389,6 @@ process.stdin.on('end', async () => {
       // A Bash-only session created no `-files` row, so the guard never
       // tripped and `-summary` was re-appended on every Stop — measured: 56
       // observations, 16 unique, three commands stored fourteen times each.
-      const alreadyCaptured = db.prepare(
-        "SELECT id FROM entities WHERE name IN (?, ?, ?) LIMIT 1",
-      ).get(`session-${sessionId}-files`, `session-${sessionId}-fixes`, `session-${sessionId}-summary`);
-      if (alreadyCaptured) {
-        recordHookRun(db, 'session-summary');
-        record('skipped', SKIP_REASONS.alreadyCaptured, `session-${sessionId}-summary`);
-        // A duplicate capture is still a completed Stop lifecycle. Update
-        // consent is session-scoped and must not be skipped merely because
-        // the same transcript was observed twice (a common host retry).
-        await runAutoUpdateAtStop(sessionId);
-        return exit0();
-      }
 
       // Build and store session memories
       const baseTags = [AUTO_CAPTURE_TAG, `session:${sessionId}`, `project:${projectName}`];
@@ -432,7 +420,12 @@ process.stdin.on('end', async () => {
         // happen (captureEntity's contract). A run with a failed write must
         // not stamp the heartbeat below — "alive" would be a lie about the
         // exact thing the heartbeat certifies.
-        if (!captureEntity(db, { name, type, observations, tags, title })) writeFailed = true;
+        // `replace`: these three entities are a SNAPSHOT of one session, and
+        // Stop fires at the end of every turn. Appending stored the same
+        // sentences on every turn; skipping after the first froze a two-day
+        // session at its first turn (#322). A snapshot is restated, not added
+        // to.
+        if (!captureEntity(db, { name, type, observations, tags, title, replace: true })) writeFailed = true;
       }
 
       // No free-form human text exists for these three entities the way a

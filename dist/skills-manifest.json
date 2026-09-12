@@ -103,8 +103,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "0af010cffe421210a6001dc3ca77b149b729cb6f2f764b62bea6cbceaa66a73b",
-      "bytes": 58367
+      "sha256": "88f38e43f83074045910cfaaf1087f0f974928ddf5370d8b2003bb207978b2cd",
+      "bytes": 59319
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -148,8 +148,8 @@
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "d0f748bb58de8e48b9d11b0d402647773a451c8b54076736a05e926fbf011a20",
-      "bytes": 36036
+      "sha256": "045918ec729c1a7bebca0d41204b736ea08d223fd0253491bfa8db0d8df70f0a",
+      "bytes": 35694
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
