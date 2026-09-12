@@ -6,15 +6,15 @@
       "reason": "Source-only typography and palette guard, explicitly not rendered usability evidence. Controlled old palette and inline font failures establish sensitivity; independent browser review separately exercises computed contrast, clipping and responsive layout.",
       "triaged": "2026-09-08"
     },
-    "C4 .github/workflows/ci.yml:222": {
+    "C4 .github/workflows/ci.yml:245": {
       "class": "SAFE-CAPTURED-EXIT",
       "reason": "The doctor exit code is captured and rejected before this grep; the grep is an additional content assertion, not the verdict owner.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement)"
     },
-    "C4 .github/workflows/ci.yml:228": {
+    "C4 .github/workflows/ci.yml:251": {
       "class": "SAFE-CAPTURED-EXIT",
       "reason": "The doctor exit code is captured and rejected first; this grep independently checks the skills and hooks content.",
-      "triaged": "2026-09-06 provider-vector retirement audit"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement)"
     },
     "C4 scripts/release-verify.sh:106": {
       "class": "SAFE-DIAGNOSTIC",
