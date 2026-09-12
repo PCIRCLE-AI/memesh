@@ -340,6 +340,19 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
   try {
     if (!captureEnabled) {
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff, payload });
+    } else if (project === undefined || project === null) {
+      // No `cwd` in the payload, so the caller could not resolve a project.
+      // Ingesting anyway files every note under NO project, and unlike a
+      // missed capture that is not recoverable: `note-ingest` fast-paths a
+      // file whose fingerprint is unchanged, so the run that could add the
+      // tag never reads the file again unless the user edits it.
+      //
+      // session-summary refuses session capture for this same condition and
+      // says why — better to miss one capture than to file it under the
+      // wrong project. A note with no project at all is the same mistake
+      // with a worse ending, so ingestion waits for a Stop that has a cwd.
+      // The nudge below is unaffected: it writes nothing and needs no project.
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.cwdAbsent, payload });
     } else {
       const r = await runNoteIngestion({ memoryDir, project, metaUrl });
       recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, payload });

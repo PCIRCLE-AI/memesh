@@ -38,12 +38,12 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
 
   afterEach(() => removeTempDir(home));
 
-  function run(env: Record<string, string> = {}) {
+  function run(env: Record<string, string> = {}, payload: Record<string, unknown> = {}) {
     const childEnv: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, ...env };
     delete childEnv.MEMESH_DB_PATH;
     delete childEnv.MEMESH_DIR;
     const r = spawnSync('node', [HOOK], {
-      input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop' }),
+      input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop', ...payload }),
       env: childEnv,
       encoding: 'utf8',
       timeout: 20_000,
@@ -198,6 +198,66 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     // is the budget guard — remove the cap and `150 created` comes back here.
     expect(last.reason, timing).toMatch(/100 created/);
     expect(last.reason, timing).toMatch(/50 more not processed/);
+  }, 60_000);
+
+  it('a payload with no cwd does not file notes under no project at all', () => {
+    // Ingestion used to run BEFORE the cwd guard, with
+    // `project: inputData.cwd ? getProjectName(inputData.cwd) : undefined`.
+    // The same file refuses session capture for this exact condition, saying
+    // it is better to miss one capture than to file it under the wrong
+    // project — and a note filed under NO project is not recoverable later
+    // either: note-ingest fast-paths an unchanged file, so the tag backfill
+    // is never reached unless the user edits the note again.
+    //
+    // The nudge half must still run: it writes nothing and needs no project.
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'a.md'),
+      '---\nname: nocwd_note\ndescription: No cwd\nmetadata:\n  type: decision\n---\n\nbody\n');
+    write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
+
+    const r = run({}, { cwd: undefined });
+    expect(r.status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({
+      outcome: 'skipped',
+      reason: 'cwd absent in payload — cannot resolve project',
+    });
+
+    // Nothing was stored. On a first Stop the skip is total — ingestion never
+    // opens a database, so there is no `entities` table to query; both that
+    // and an empty answer mean the same thing here.
+    const dbPath = path.join(home, '.memesh', 'knowledge-graph.db');
+    let stored: unknown;
+    if (fs.existsSync(dbPath)) {
+      const db = new MemeshDatabase(dbPath);
+      try {
+        stored = db.prepare("SELECT id FROM entities WHERE name = 'nocwd_note'").get();
+      } catch (err) {
+        expect(String(err), 'the only tolerated failure is that no graph exists yet').toMatch(/no such table: entities/);
+      }
+      db.close();
+    }
+    expect(stored, 'a note was stored with no project tag it can never gain').toBeUndefined();
+
+    // The nudge half still ran and reached its own verdict — it is silenced
+    // here by the note file this test just wrote, which is its normal rule,
+    // not by the missing cwd. What matters is that skipping ingestion did not
+    // take the nudge down with it.
+    expect(outcomes('remember-nudge').at(-1)).toMatchObject({
+      outcome: 'skipped',
+      reason: 'a note file changed since the last Stop',
+    });
+
+    // And with cwd present the same directory ingests normally.
+    fs.utimesSync(path.join(memoryDir, 'a.md'), new Date(), new Date());
+    append(reads(1));
+    expect(run().status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
+    const db2 = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
+    const tags = db2.prepare(
+      "SELECT t.tag FROM entities e JOIN tags t ON t.entity_id = e.id WHERE e.name = 'nocwd_note' AND t.tag LIKE 'project:%'",
+    ).all() as Array<{ tag: string }>;
+    db2.close();
+    expect(tags.length).toBeGreaterThan(0);
   }, 60_000);
 
   it('the Stop after an over-cap run resumes it, without any file being touched', () => {
