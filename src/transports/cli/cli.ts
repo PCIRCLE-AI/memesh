@@ -373,6 +373,36 @@ program
       ...contradicts.map(to => ({ to, type: 'contradicts' })),
     ];
 
+    // The note branch above validates the note form against RememberSchema;
+    // this validates the STRUCTURED one, which used to reach remember()
+    // unchecked. The two surfaces disagreed in the user's favour and then
+    // against it: 101 paragraphs as a pure note exited 1, while the same
+    // content passed as --obs exited 0 and stored 102 observations — more
+    // than MCP or HTTP would ever accept for the same memory.
+    if (note === undefined) {
+      // Zod's own message for this one is "Too big: expected array to have
+      // <=100 items", which does not tell a caller what to do; the note path
+      // names the count, so this does too.
+      if (opts.obs && opts.obs.length > NOTE_MAX_OBSERVATIONS) {
+        console.error(`Error: that is ${opts.obs.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory.`);
+        process.exit(1);
+      }
+      const check = RememberSchema.safeParse({
+        name: opts.name,
+        type: opts.type,
+        ...(opts.title !== undefined ? { title: opts.title } : {}),
+        ...(opts.obs?.length ? { observations: opts.obs } : {}),
+        ...(opts.tags?.length ? { tags: opts.tags } : {}),
+        ...(opts.replace === true ? { replace: true } : {}),
+        ...(relations.length > 0 ? { relations } : {}),
+        ...(opts.namespace !== undefined ? { namespace: opts.namespace } : {}),
+      });
+      if (!check.success) {
+        console.error(`Error: ${check.error.issues.map((i) => i.message).join('; ')}`);
+        process.exit(1);
+      }
+    }
+
     await withDatabase(async () => {
       let result;
       try {

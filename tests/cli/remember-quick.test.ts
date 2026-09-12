@@ -150,6 +150,28 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(stdout).toContain('2 observations');
   }, 60_000);
 
+  // #324 T2. RememberSchema ran only on the pure-note branch, so the CLI
+  // accepted what MCP and HTTP reject: 101 paragraphs as a note exited 1,
+  // the same content as --obs exited 0 and stored 102 observations.
+  it('the structured form gets the same limits as the note form', () => {
+    const many = Array.from({ length: 101 }, (_, i) => `paragraph number ${i}`);
+    const r = runCli(['remember', '--name=too-many', '--type=note', '--obs', ...many], { HOME: tmpHome });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('at most 100');
+
+    // Same cap when the observations come from quick-capture text plus --obs.
+    const q = runCli(['remember', 'a heading', '--obs', ...many], { HOME: tmpHome });
+    expect(q.exitCode).toBe(1);
+
+    // Both were refused before any write, so the only entity in the graph is
+    // the one stored after them.
+    expect(runCli(['remember', '--name=ok-one', '--type=note', '--obs=fine'], { HOME: tmpHome }).exitCode).toBe(0);
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const rows = db.prepare('SELECT name FROM entities').all() as { name: string }[];
+    db.close();
+    expect(rows.map((e) => e.name)).toEqual(['ok-one']);
+  }, 60_000);
+
   it('still accepts the explicit --name/--type form', () => {
     const { exitCode } = runCli(
       ['remember', '--name=auth-decision', '--type=decision', '--obs=Use OAuth 2.0'],
