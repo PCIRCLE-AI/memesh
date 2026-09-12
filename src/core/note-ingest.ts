@@ -397,7 +397,16 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     let observations = splitObservations(sanitizeNoteText(parsed.body));
     if (observations.length === 0 && cleanDescription) observations = [cleanDescription];
     if (observations.length === 0) { contentSkip('empty note — no description and no body'); continue; }
-    observations = observations.slice(0, NOTE_MAX_OBSERVATIONS);
+    if (observations.length > NOTE_MAX_OBSERVATIONS) {
+      // Refused, not trimmed. `slice` stored the first 100 and dropped the
+      // rest with `skipped` empty and `more` zero — on a Stop-hook path,
+      // where a silent drop is indistinguishable from nothing having
+      // happened. The transport rejects the same shape and names the count;
+      // so does this. contentSkip fingerprints it, so the file is not
+      // re-read on every Stop until the user edits it.
+      contentSkip(`splits into ${observations.length} paragraphs; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+      continue;
+    }
     claims.push({
       rel,
       name,

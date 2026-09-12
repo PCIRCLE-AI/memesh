@@ -683,3 +683,39 @@ describe('note-ingest: a refusal leaves a durable trace — #324 C3', () => {
     expect(again.replaced).toEqual([]);
   });
 });
+
+describe('note-ingest: a file over the observation cap is refused, not silently trimmed — #324 C6', () => {
+  it('names the count instead of storing the first 100 and dropping the rest', () => {
+    const body = Array.from({ length: 130 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n');
+    const dir = makeDir({ 'big.md': note('note_big', 'Big', 'decision', body) });
+    const r = ingestNoteDirectory({ dir });
+    // This is a Stop-hook path: a silent drop is indistinguishable from
+    // nothing happening. The transport rejects the same shape and names the
+    // count; storing 100 with {"skipped":[],"more":0} told nobody that 30
+    // paragraphs of the user's note were gone.
+    expect(r.created, 'the over-cap file was stored anyway').toEqual([]);
+    expect(r.skipped).toHaveLength(1);
+    expect(r.skipped[0].path).toBe('big.md');
+    expect(r.skipped[0].reason).toContain('130');
+    expect(r.skipped[0].reason).toContain('100');
+    expect(r.refusedNow).toBe(1);
+    expect(kg().getEntity('note_big')).toBeNull();
+  });
+
+  it('exactly at the cap is still stored', () => {
+    const body = Array.from({ length: 100 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n');
+    const dir = makeDir({ 'edge.md': note('note_edge', 'Edge', 'decision', body) });
+    const r = ingestNoteDirectory({ dir });
+    expect(r.created).toEqual(['note_edge']);
+    expect(kg().getEntity('note_edge')!.observations).toHaveLength(100);
+  });
+
+  it('the refusal is fingerprinted, so the file is not re-read on every run', () => {
+    const body = Array.from({ length: 130 }, (_, i) => `Paragraph ${i + 1}.`).join('\n\n');
+    const dir = makeDir({ 'big.md': note('note_big2', 'Big', 'decision', body) });
+    ingestNoteDirectory({ dir });
+    const second = ingestNoteDirectory({ dir });
+    expect(second.skipped).toHaveLength(1);
+    expect(second.refusedNow).toBe(0);
+  });
+});
