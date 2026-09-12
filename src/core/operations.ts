@@ -181,8 +181,27 @@ function rememberInTransaction(
   // observation text materialized and thrown away, on the write hot path
   // (also hit per-entity by importMemories/createEntitiesBatch).
   const existing = db
-    .prepare('SELECT id, namespace, type, title FROM entities WHERE name = ?')
-    .get(args.name) as { id: number; namespace: string | null; type: string; title: string | null } | undefined;
+    .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
+    .get(args.name) as { id: number; namespace: string | null; type: string; title: string | null; status: string } | undefined;
+
+  // An explicit `forget` is not undone by a rewrite. `replace` clears the
+  // observations and files the old ones into replaced_history, so on an
+  // archived memory it would leave a live-looking memory the user had
+  // deliberately deleted, with the text they deleted still in its metadata.
+  // note-ingest.ts refuses exactly this for a note file; a direct call did
+  // not, and `replace` is new in this release.
+  //
+  // Refusing does not make the name unwritable: plain `remember` reactivates
+  // an archived row (knowledge-graph.ts createEntity) and is append-only, so
+  // the recovery named here is a real one — pinned by a test, because an
+  // error message that recommends something that does not work is its own
+  // defect.
+  if (args.replace && existing && existing.status === 'archived') {
+    throw new Error(
+      `"${args.name}" was archived with forget; \`replace\` will not overwrite it. `
+      + 'Remember it again without `replace` to bring it back, then replace it.',
+    );
+  }
 
   // `replace: true` on a memory that exists: capture what is there, then
   // clear it through `clearEntityData`, which deletes the contentless-FTS row

@@ -1,6 +1,6 @@
 // #324 pieces A and B: `remember({ note })` and `remember({ replace: true })`.
 import { describe, it, expect } from 'vitest';
-import { remember, recall, REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from '../../src/core/operations.js';
+import { remember, recall, forget, REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from '../../src/core/operations.js';
 import { deriveNote } from '../../src/core/note-derive.js';
 import { getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
@@ -229,5 +229,46 @@ describe('RememberSchema (transport validation)', () => {
 
   it('still rejects an unknown key', () => {
     expect(RememberSchema.safeParse({ note: 'x', notes: 'y' }).success).toBe(false);
+  });
+});
+
+describe('remember({ replace: true }) on a forgotten memory — #324 C4', () => {
+  it('refuses, and names a recovery path that actually works', () => {
+    remember({ name: 'forgotten_thing', type: 'decision', observations: ['the original text'] });
+    expect(forget({ name: 'forgotten_thing' }).archived).toBe(true);
+
+    // `replace` rewrites the memory in place. On an archived row that is a
+    // silent undo of an explicit forget, with the original text gone into
+    // replaced_history and a live memory in its place — note-ingest.ts:395
+    // refuses exactly this, and the direct call did not.
+    expect(() => remember({
+      name: 'forgotten_thing', type: 'decision', observations: ['smuggled back in'], replace: true,
+    })).toThrow(/archived with forget/);
+
+    const row = getDatabase().prepare('SELECT status FROM entities WHERE name = ?')
+      .get('forgotten_thing') as { status: string };
+    expect(row.status).toBe('archived');
+    const obs = getDatabase().prepare(
+      'SELECT content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ?',
+    ).all('forgotten_thing') as { content: string }[];
+    expect(obs.map((o) => o.content)).toEqual(['the original text']);
+  });
+
+  it('the recovery path in the message is real: plain remember brings it back, then replace works', () => {
+    remember({ name: 'recovered_thing', type: 'decision', observations: ['original'] });
+    forget({ name: 'recovered_thing' });
+
+    // No `replace`: createEntity reactivates an archived row (knowledge-graph.ts).
+    remember({ name: 'recovered_thing', type: 'decision', observations: ['original'] });
+    expect((getDatabase().prepare('SELECT status FROM entities WHERE name = ?')
+      .get('recovered_thing') as { status: string }).status).toBe('active');
+
+    const replaced = remember({ name: 'recovered_thing', type: 'decision', observations: ['rewritten'], replace: true });
+    expect(replaced.replaced).toBe(true);
+  });
+
+  it('a memory that was never archived still replaces', () => {
+    remember({ name: 'live_thing', type: 'decision', observations: ['before'] });
+    expect(remember({ name: 'live_thing', type: 'decision', observations: ['after'], replace: true }).replaced).toBe(true);
   });
 });
