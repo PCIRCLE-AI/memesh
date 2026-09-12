@@ -324,9 +324,19 @@ export function buildNudge(moves) {
 }
 
 /**
- * Decide the nudge for this Stop. Always advances the per-session offset, so
- * each Stop judges only what happened since the previous one.
- * Returns `{ message, reason }`; `message` is null when silent.
+ * Decide the nudge for this Stop, so each Stop judges only what happened
+ * since the previous one.
+ *
+ * Returns `{ message, reason, commit }`; `message` is null when silent.
+ *
+ * `commit` advances the per-session offset and is NOT called here. The offset
+ * used to move the moment the window was read, which meant a nudge that never
+ * reached the user was still paid for: the window was consumed, the next Stop
+ * saw only what came after it, and the decision-shaped moves the user was
+ * supposed to be told about were never mentioned again. Deciding and
+ * committing are separate so the caller can advance the offset only once the
+ * line has actually been written. The paths that return before the window is
+ * read have no `commit` — there is nothing to advance.
  */
 export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
   if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) return { message: null, reason: SKIP_REASONS.noSessionId };
@@ -340,17 +350,17 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
   const state = readJson(statePath) ?? {};
   const { text, nextOffset } = readTranscriptWindow(transcriptPath, state.offset);
   const now = Date.now();
-  writeJsonAtomic(statePath, { offset: nextOffset, lastStopAt: now });
+  const commit = () => writeJsonAtomic(statePath, { offset: nextOffset, lastStopAt: now });
 
   const scan = scanTranscriptWindow(text);
-  if (scan.toolCalls < NUDGE_MIN_TOOL_CALLS) return { message: null, reason: SKIP_REASONS.trivialTurn };
-  if (scan.moves.length === 0) return { message: null, reason: SKIP_REASONS.noDecisionMove };
-  if (scan.wroteMemory) return { message: null, reason: SKIP_REASONS.memoryWritten };
+  if (scan.toolCalls < NUDGE_MIN_TOOL_CALLS) return { message: null, reason: SKIP_REASONS.trivialTurn, commit };
+  if (scan.moves.length === 0) return { message: null, reason: SKIP_REASONS.noDecisionMove, commit };
+  if (scan.wroteMemory) return { message: null, reason: SKIP_REASONS.memoryWritten, commit };
   const since = typeof state.lastStopAt === 'number' ? state.lastStopAt : scan.firstTimestamp;
   if (memoryDir && typeof since === 'number' && newestNoteMtime(memoryDir) >= since) {
-    return { message: null, reason: SKIP_REASONS.noteFileChanged };
+    return { message: null, reason: SKIP_REASONS.noteFileChanged, commit };
   }
-  return { message: buildNudge(scan.moves), reason: scan.moves.join('; ') };
+  return { message: buildNudge(scan.moves), reason: scan.moves.join('; '), commit };
 }
 
 /**
@@ -358,7 +368,14 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
  * searchable when the turn ends; the nudge judges "was a note written" by the
  * note files' mtimes rather than by what ingestion wrote, because the first
  * ingestion after install imports every OLD note and would otherwise silence
- * a nudge the session earned. Returns the one advisory line to print, or null.
+ * a nudge the session earned.
+ *
+ * Returns `{ message, settle }`. `message` is the one advisory line to print,
+ * or null. `settle(delivered)` MUST be called once the caller has tried to
+ * print it: it records the nudge's outcome — which is the delivery's verdict,
+ * not a prediction of it — and advances the per-session transcript offset only
+ * when the line actually went out. A caller that never settles leaves no
+ * record, which is the silent skip this whole module exists to avoid.
  */
 export async function runStopNotes(payload, { captureEnabled, project, metaUrl, env = process.env }) {
   // `claudeMemoryDir` throws on anything that is not "no such directory"
@@ -406,11 +423,32 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
 
   try {
     const n = decideNudge({ transcriptPath: payload?.transcript_path, sessionId: payload?.session_id, memoryDir });
-    recordHookOutcome(env, { hook: 'remember-nudge', outcome: n.message ? 'wrote' : 'skipped', reason: n.reason, payload });
-    return n.message;
+    return {
+      message: n.message,
+      settle: (delivered) => {
+        // The outcome is the DELIVERY's verdict, not a prediction of it.
+        // It used to be recorded here, before the line had been written:
+        // piping this hook's stdout into a process that exits immediately
+        // gave exit 0, empty stderr and a `wrote` record, with the user
+        // having seen nothing. The offset moved too, so the window was
+        // never reconsidered and the moves it described were never
+        // mentioned again.
+        if (n.message && !delivered) {
+          recordHookOutcome(env, {
+            hook: 'remember-nudge',
+            outcome: 'error',
+            reason: 'the host closed stdout before the nudge could be written',
+            payload,
+          });
+          return; // Offset not advanced: the next Stop judges this window again.
+        }
+        recordHookOutcome(env, { hook: 'remember-nudge', outcome: n.message ? 'wrote' : 'skipped', reason: n.reason, payload });
+        n.commit?.();
+      },
+    };
   } catch (err) {
     try { process.stderr.write(`[memesh remember-nudge] ${err?.message || err}\n`); } catch { /* stderr gone */ }
     recordHookOutcome(env, { hook: 'remember-nudge', outcome: 'error', reason: hookErrorReason(err), payload });
-    return null;
+    return { message: null, settle: () => {} };
   }
 }

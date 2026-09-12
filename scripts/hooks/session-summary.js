@@ -218,6 +218,8 @@ process.stdin.on('data', (chunk) => { input += chunk; });
 // See post-commit.js for why every exit path leaves a record (#327).
 let payload = null;
 let pendingSystemMessage = null;
+/** Set by runStopNotes; called by exit0() with whether the nudge went out. */
+let settleNudge = null;
 function record(outcome, reason, entity) {
   recordHookOutcome(process.env, { hook: 'session-summary', outcome, reason, entity, payload });
 }
@@ -259,11 +261,13 @@ process.stdin.on('end', async () => {
     // "decided things, stored nothing" nudge. Records its own outcomes under
     // `note-ingest` / `remember-nudge`, never throws, and only ever yields
     // one line for exit0() to print.
-    pendingSystemMessage = await runStopNotes(inputData, {
+    const stopNotes = await runStopNotes(inputData, {
       captureEnabled,
       project: inputData.cwd ? getProjectName(inputData.cwd) : undefined,
       metaUrl: import.meta.url,
     });
+    pendingSystemMessage = stopNotes.message;
+    settleNudge = stopNotes.settle;
 
     if (!captureEnabled) {
       record('skipped', SKIP_REASONS.autoCaptureOff);
@@ -682,9 +686,20 @@ function exit0() {
   // exact envelope so a rejection report maps to one line. `suppressOutput`,
   // which Codex did reject, stays gone. writeSync, not console.log: stdout is a
   // pipe, and an async pipe write can be cut off by process.exit on macOS.
+  //
+  // The nudge's outcome is decided HERE, by whether the write succeeded —
+  // not by runStopNotes, which cannot know. A host that closed stdout gets
+  // an `error` record and keeps its transcript offset, so the next Stop
+  // judges the same window again instead of losing it to a line nobody read.
+  let delivered = true;
   if (pendingSystemMessage) {
-    try { writeSync(1, `${JSON.stringify({ systemMessage: pendingSystemMessage })}\n`); } catch { /* host closed stdout; nothing to tell */ }
+    try {
+      writeSync(1, `${JSON.stringify({ systemMessage: pendingSystemMessage })}\n`);
+    } catch {
+      delivered = false; // host closed stdout; the record says so.
+    }
   }
+  try { settleNudge?.(delivered); } catch { /* diagnostics never take the hook down */ }
   process.exit(0);
 }
 /**

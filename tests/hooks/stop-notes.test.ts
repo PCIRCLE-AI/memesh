@@ -231,6 +231,39 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     }
   }, 60_000);
 
+  it('a nudge nobody could be told is not recorded as delivered, and its window is kept', () => {
+    // The outcome used to be recorded inside runStopNotes, before the line
+    // had been written. Piping this hook's stdout into a process that exits
+    // immediately gave exit 0, empty stderr and `{"outcome":"wrote"}` while
+    // the user saw nothing — and the transcript offset advanced too, so the
+    // window was never reconsidered and the moves it described were never
+    // mentioned again.
+    write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
+
+    const childEnv: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home };
+    delete childEnv.MEMESH_DB_PATH;
+    delete childEnv.MEMESH_DIR;
+    // `true` exits before the hook reaches its write, so writeSync(1) gets
+    // EPIPE — a host that stopped listening, reproduced exactly.
+    const r = spawnSync('sh', ['-c', `node ${JSON.stringify(HOOK)} | true`], {
+      input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop' }),
+      env: childEnv,
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    expect(r.status).toBe(0);
+    expect(outcomes('remember-nudge').at(-1)).toMatchObject({
+      outcome: 'error',
+      reason: 'the host closed stdout before the nudge could be written',
+    });
+
+    // The window was kept: a second Stop with nothing appended still finds
+    // the same approved plan and says so.
+    const second = run();
+    expect(second.status).toBe(0);
+    expect(JSON.parse(second.stdout).systemMessage).toMatch(/a plan was approved/);
+  }, 60_000);
+
   it('a payload with no cwd does not file notes under no project at all', () => {
     // Ingestion used to run BEFORE the cwd guard, with
     // `project: inputData.cwd ? getProjectName(inputData.cwd) : undefined`.
