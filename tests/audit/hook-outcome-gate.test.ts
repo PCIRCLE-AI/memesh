@@ -1,7 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import { findLiteralSkipReasons, findUncoveredExits, validateSessionStart } from '../../scripts/audit/hook-outcome-gate.mjs';
+import {
+  findLiteralSkipReasons,
+  findUncoveredExits,
+  findUnreasonedReturns,
+  readCaptureHooks,
+  validateSessionStart,
+} from '../../scripts/audit/hook-outcome-gate.mjs';
 
 /**
  * The gate behind #328 item-1: an exit with no outcome record before it is
@@ -184,5 +190,70 @@ describe('skip reasons come from SKIP_REASONS (#327 P3-c)', () => {
       "record('wrote', undefined, 'entity');",
     ].join('\n');
     expect(findLiteralSkipReasons(src)).toEqual([1]);
+  });
+});
+
+/**
+ * #324 H3. The gate's hook list was a hand-maintained copy of CAPTURE_HOOKS
+ * with a comment claiming it mirrored it, and nothing tied the two together.
+ * It drifted to eight names against ten, so the gate silently stopped covering
+ * the two newest recording paths — a gate that cannot see a new background
+ * path is worth less than no gate, because it reports success.
+ */
+describe('the gate reads the real hook list (#324 H3)', () => {
+  it('parses CAPTURE_HOOKS from capture-liveness.ts, including the helper-owned names', () => {
+    const names = readCaptureHooks();
+    expect(names.length).toBeGreaterThanOrEqual(10);
+    // These two are record NAMES, not files — the drift that started this.
+    expect(names).toContain('note-ingest');
+    expect(names).toContain('remember-nudge');
+    // Prose in the block carries apostrophes ("session-summary's window");
+    // none of them may come back as a hook name.
+    for (const n of names) expect(n, `parsed a sentence as a hook name: ${n}`).toMatch(/^[a-z][a-z-]*$/);
+  });
+});
+
+/**
+ * The returning-helper criterion. `_stop-notes.js` never calls exit0() or
+ * process.exit() — it hands `{ outcome, reason }` back to its caller — so the
+ * exit-shaped check says nothing about it at all.
+ */
+describe('returning helpers must return a reason (#324 H3)', () => {
+  it('flags a return with no reason and accepts one with it', () => {
+    const src = [
+      'export async function decide(opts) {', // 1
+      "  if (!opts.dir) return { outcome: 'skipped' };", // 2  <-- no reason
+      "  if (opts.off) return { outcome: 'skipped', reason: SKIP_REASONS.off };", // 3
+      "  return { outcome: 'wrote', reason: summarize(r) };", // 4
+      '}', // 5
+    ].join('\n');
+    expect(findUnreasonedReturns(src, 'decide')).toEqual([2]);
+  });
+
+  it('steps over a destructured parameter list to reach the body', () => {
+    // The first version matched braces from the function NAME, so for
+    // `decide({ dir, project })` it took the PARAMETER OBJECT as the body,
+    // found no returns in it, and passed while checking nothing. Measured: an
+    // unrecorded `return { outcome: 'skipped' }` injected into
+    // runNoteIngestion left the real gate at exit 0.
+    const src = [
+      'export async function decide({ dir, project, metaUrl }) {', // 1
+      "  if (!dir) return { outcome: 'skipped' };", // 2  <-- must still be found
+      '}', // 3
+    ].join('\n');
+    expect(findUnreasonedReturns(src, 'decide')).toEqual([2]);
+  });
+
+  it('returns null when the function is not there, so a rename fails the gate', () => {
+    expect(findUnreasonedReturns('function other() { return 1; }', 'decide')).toBeNull();
+  });
+
+  it('does not mistake a `;` inside the returned object for the end of the statement', () => {
+    const src = [
+      'function decide() {', // 1
+      '  return { reason: pick(a, b), extra: fn(";") };', // 2
+      '}', // 3
+    ].join('\n');
+    expect(findUnreasonedReturns(src, 'decide')).toEqual([]);
   });
 });

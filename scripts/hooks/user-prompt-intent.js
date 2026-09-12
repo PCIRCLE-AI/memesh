@@ -220,8 +220,11 @@ function logError(scope, msg) {
 const isMainModule = import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMainModule) {
   // See post-commit.js for why every exit path leaves a record (#327). This
-  // hook's "wrote" is the additionalContext it injected — the only durable
-  // effect it has.
+  // hook's only effect is the additionalContext it injects, so its outcome is
+  // `notified`, not `wrote`: doctor's `writes` answers "is memory capture
+  // still alive", and an injected hint is not a memory. Both branches that
+  // reach it — a remember intent and an update-consent decision — inject and
+  // store nothing, so there is no writing branch here to keep.
   let payload = null;
   const record = (outcome, reason, entity) =>
     recordHookOutcome(process.env, { hook: 'user-prompt-intent', outcome, reason, entity, payload });
@@ -276,7 +279,7 @@ if (isMainModule) {
       if (rememberIntent) contexts.push(buildHint());
       const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: contexts.join('\n\n') } };
       process.stdout.write(JSON.stringify(out));
-      record('wrote', undefined, `hint:${updateDecision ?? 'remember-intent'}`);
+      record('notified', undefined, `hint:${updateDecision ?? 'remember-intent'}`);
       process.exit(0);
     } catch (err) {
       logError('user-prompt-intent', err?.message || err);

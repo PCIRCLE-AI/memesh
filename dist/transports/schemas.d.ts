@@ -52,10 +52,12 @@ export declare const WorkPackageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     action: z.ZodLiteral<"defer">;
 }, z.core.$strict>], "action">;
 export declare const RememberSchema: z.ZodObject<{
-    name: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;
-    type: z.ZodString;
+    name: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
+    type: z.ZodOptional<z.ZodString>;
     title: z.ZodOptional<z.ZodPipe<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>, z.ZodTransform<string | undefined, string>>>;
     observations: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    note: z.ZodOptional<z.ZodString>;
+    replace: z.ZodOptional<z.ZodBoolean>;
     tags: z.ZodOptional<z.ZodArray<z.ZodString>>;
     relations: z.ZodOptional<z.ZodArray<z.ZodObject<{
         to: z.ZodString;

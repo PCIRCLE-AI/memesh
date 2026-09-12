@@ -14,6 +14,7 @@ import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
+import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
 import type {
   RememberInput,
   RememberResult,
@@ -71,19 +72,128 @@ function buildRelevanceMap(entities: Entity[]): Map<string, number> {
  * If entity exists, appends observations and dedupes tags.
  * If any relation has type "supersedes", auto-archives the target entity.
  */
-export function remember(args: RememberInput): RememberResult {
+export function remember(input: RememberInput): RememberResult {
   const db = getDatabase();
   const kg = new KnowledgeGraph(db);
+  const { args, derived, typeGiven } = resolveRememberInput(input);
   // `remember` is one logical write: the source entity (including metadata),
   // every accepted relation, and every superseded target must either all land
   // or all roll back. The narrower KnowledgeGraph transactions protect their
   // own rows, but without this outer boundary a failure while archiving a
   // superseded target left the new source and relation committed.
-  return db.transaction(() => rememberInTransaction(args, db, kg)).immediate();
+  return db.transaction(() => rememberInTransaction(args, derived, typeGiven, db, kg)).immediate();
+}
+
+/** Most previous versions a replaced memory keeps in `metadata.replaced_history`. */
+export const REPLACED_HISTORY_MAX = 20;
+/**
+ * Most bytes (serialized JSON) the history may take. The count alone did not
+ * bound it: a 256 KB note replaced twenty times is megabytes of metadata on
+ * one row. Oldest versions go first; a single version larger than the cap
+ * keeps as many of its observations as fit and is marked `truncated`.
+ */
+export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
+
+const jsonBytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
+
+/** Apply both history bounds. */
+function boundReplacedHistory(history: ReplacedVersion[]): ReplacedVersion[] {
+  let out = history.slice(-REPLACED_HISTORY_MAX);
+  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) out = out.slice(1);
+  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
+    const only = out[0];
+    const kept: string[] = [];
+    const base = { ...only, observations: [] as string[], truncated: true };
+    for (const obs of only.observations) {
+      if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES) break;
+      kept.push(obs);
+    }
+    out = [{ ...base, observations: kept }];
+  }
+  return out;
+}
+
+/**
+ * Recall answers carry `replaced_history_count` instead of the history
+ * itself: every hit's metadata is serialized to the caller, and the history
+ * is the one field that can be large. The full history stays readable from
+ * `export` and `GET /v1/entities/:name`.
+ */
+function summarizeReplacedHistory(entities: Entity[]): Entity[] {
+  for (const e of entities) {
+    const history = e.metadata?.replaced_history;
+    if (!Array.isArray(history)) continue;
+    const { replaced_history: _dropped, ...rest } = e.metadata!;
+    e.metadata = { ...rest, replaced_history_count: history.length };
+  }
+  return entities;
+}
+
+export interface ReplacedVersion {
+  replaced_at: string;
+  title: string | null;
+  observations: string[];
+  tags: string[];
+  /** Set when the version alone exceeded the byte cap and lost observations. */
+  truncated?: boolean;
+}
+
+// `type` stays optional: `replace` on an existing name inherits the stored
+// type (#333 T4), so the resolved input can legitimately carry none.
+// rememberInTransaction resolves it against the row and refuses when there is
+// no row to inherit from.
+type ResolvedRememberInput = RememberInput & { name: string };
+
+/**
+ * Turn the `note` form into the structured form, or check the structured form
+ * is complete. The transports' RememberSchema rejects the same shapes first,
+ * with a message naming the key; these throws are for direct core callers.
+ */
+function resolveRememberInput(
+  input: RememberInput,
+): { args: ResolvedRememberInput; derived?: DerivedNote; typeGiven: boolean } {
+  if (input.note === undefined) {
+    if (!input.name) throw new Error('remember needs `name` and `type`, or `note`');
+    // ABSENT and BLANK are different inputs, and only the first one is a
+    // request to inherit. `replace` waives an omitted `type` — it takes the
+    // one the memory has — but an empty string is never a type: a truthiness
+    // test here would send `''` down the retype branch and blank the stored
+    // type of the memory being corrected. The transports' `z.string().min(1)`
+    // stops that before it arrives; this is the direct-caller copy.
+    if (input.type === '') throw new Error('remember needs `name` and `type`, or `note`');
+    if (input.type === undefined && !input.replace) throw new Error('remember needs `name` and `type`, or `note`');
+    return { args: input as ResolvedRememberInput, typeGiven: input.type !== undefined };
+  }
+  if (input.title !== undefined || input.observations !== undefined) {
+    throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
+  }
+  const derived = deriveNote(input.note);
+  if (!derived) throw new Error('`note` is empty after removing control characters');
+  if (input.replace && !input.name) {
+    throw new Error('`replace` with `note` needs an explicit `name` (a derived name changes with the text)');
+  }
+  return {
+    args: {
+      ...input,
+      name: input.name ?? derived.name,
+      type: input.type ?? NOTE_DEFAULT_TYPE,
+      title: derived.title,
+      observations: derived.observations,
+    },
+    derived,
+    // The note form DEFAULTS the type, so `args.type` alone cannot tell a
+    // caller who asked for `note` from one who said nothing. The replace path
+    // below rewrites the stored type, and rewriting a decision into a `note`
+    // because the caller omitted the field would be the same class of silent
+    // change it exists to end.
+    typeGiven: input.type !== undefined,
+  };
 }
 
 function rememberInTransaction(
-  args: RememberInput,
+  args: ResolvedRememberInput,
+  derived: DerivedNote | undefined,
+  typeGiven: boolean,
   db: ReturnType<typeof getDatabase>,
   kg: KnowledgeGraph,
 ): RememberResult {
@@ -92,20 +202,104 @@ function rememberInTransaction(
   // observation text materialized and thrown away, on the write hot path
   // (also hit per-entity by importMemories/createEntitiesBatch).
   const existing = db
-    .prepare('SELECT id, namespace, type FROM entities WHERE name = ?')
-    .get(args.name) as { id: number; namespace: string | null; type: string } | undefined;
+    .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
+    .get(args.name) as { id: number; namespace: string | null; type: string; title: string | null; status: string } | undefined;
+
+  // An explicit `forget` is not undone by a rewrite. `replace` clears the
+  // observations and files the old ones into replaced_history, so on an
+  // archived memory it would leave a live-looking memory the user had
+  // deliberately deleted, with the text they deleted still in its metadata.
+  // note-ingest.ts refuses exactly this for a note file; a direct call did
+  // not, and `replace` is new in this release.
+  //
+  // Refusing does not make the name unwritable: plain `remember` reactivates
+  // an archived row (knowledge-graph.ts createEntity) and is append-only, so
+  // the recovery named here is a real one — pinned by a test, because an
+  // error message that recommends something that does not work is its own
+  // defect.
+  if (args.replace && existing && existing.status === 'archived') {
+    throw new Error(
+      `"${args.name}" was archived with forget; \`replace\` will not overwrite it. `
+      + 'Remember it again without `replace` to bring it back, then replace it.',
+    );
+  }
+
+  // `type` omitted (only reachable with `replace`, per resolveRememberInput):
+  // take the one the memory already has. When there is no memory to inherit
+  // from, `replace` would CREATE one — and defaulting its type to
+  // NOTE_DEFAULT_TYPE here is exactly the silent reclassification the
+  // `typeGiven` guard below exists to prevent, so this refuses instead. This
+  // layer is the one that knows whether the name exists; the schema does not.
+  const entityType = args.type ?? existing?.type;
+  if (entityType === undefined) {
+    throw new Error(
+      `\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
+      + 'so this call would create one with no type — pass `type` to create it.',
+    );
+  }
+
+  // `replace: true` on a memory that exists: capture what is there, then
+  // clear it through `clearEntityData`, which deletes the contentless-FTS row
+  // with the EXACT text that was indexed before removing the observations —
+  // the only order that leaves no stale tokens behind. `createEntity` below
+  // then writes the new content as if onto an empty entity. Nested inside
+  // this transaction, clearEntityData's own transaction is a SAVEPOINT, so a
+  // failure anywhere below rolls the clear back too.
+  let replacedVersion: ReplacedVersion | undefined;
+  /** Set when the replace path rewrote the stored type, so the receipt can report it. */
+  let retypedTo: string | undefined;
+  let tags = args.tags;
+  let title = args.title;
+  let observations = args.observations;
+  if (args.replace && existing) {
+    const previousTags = (db.prepare('SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag').all(existing.id) as { tag: string }[])
+      .map((t) => t.tag);
+    replacedVersion = {
+      replaced_at: new Date().toISOString(),
+      title: existing.title,
+      observations: (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(existing.id) as { content: string }[])
+        .map((o) => o.content),
+      tags: previousTags,
+    };
+    kg.clearEntityData(args.name);
+    // The type is part of what `replace` replaces. `createEntity` below uses
+    // INSERT OR IGNORE, which leaves the stored type alone, and the clear
+    // above only removes observations and tags — so a note file reclassified
+    // from feedback to decision kept answering as feedback while the receipt
+    // said `replaced`. `type` is not in the FTS document (name and
+    // observations are — storage/fts-index.ts), so this needs no reindex.
+    // `entityType`, not `args.type`: under `typeGiven` the two are the same
+    // value, and this one is a plain string rather than an optional.
+    if (typeGiven && entityType !== existing.type) {
+      db.prepare('UPDATE entities SET type = ? WHERE id = ?').run(entityType, existing.id);
+      retypedTo = entityType;
+    }
+    // Tags omitted means "keep them" — clearEntityData dropped them, so they
+    // go back. Replacing a memory's text must not silently untag it from its
+    // project.
+    if (tags === undefined) tags = previousTags;
+  } else if (derived && existing) {
+    // A note appended to a memory that already exists (the same text again,
+    // or an explicit `name`): its first line must not overwrite the title the
+    // memory already has, and a repeat must add nothing — including for the
+    // lesson family, whose append path deliberately keeps repeats.
+    title = undefined;
+    const stored = new Set((db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(existing.id) as { content: string }[])
+      .map((o) => o.content));
+    observations = observations?.filter((o) => !stored.has(o));
+  }
 
   // Trust signal MUST arrive at createEntity time so the confidence-
   // bump gate (knowledge-graph.ts) can deny it for untrusted callers.
   // Codex review caught a P1 where the trust was being written via
   // updateEntityMetadata AFTER createEntity returned, leaving the gate
   // looking at undefined and defaulting to trusted.
-  const entityId = kg.createEntity(args.name, args.type, {
-    observations: args.observations,
-    tags: args.tags,
+  const entityId = kg.createEntity(args.name, entityType, {
+    observations,
+    tags,
     namespace: args.namespace,
     trustOverride: args.trustOverride,
-    title: args.title,
+    title,
   });
   // `current`, not the snapshot taken before `createEntity`. The updater used
   // to ignore what it was handed and rebuild from `existing?.metadata`, which
@@ -134,6 +328,13 @@ function rememberInTransaction(
       },
     }
   ));
+  if (replacedVersion) {
+    const version = replacedVersion;
+    kg.updateEntityMetadata(args.name, (current) => {
+      const history = Array.isArray(current.replaced_history) ? current.replaced_history as ReplacedVersion[] : [];
+      return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
+    });
+  }
 
   // Create relations (target entities must already exist)
   const relationsCreated: Array<{ to: string; type: string }> = [];
@@ -163,17 +364,39 @@ function rememberInTransaction(
     }
   }
 
+  // The title the DATABASE holds, not the one this call asked for. `title`
+  // above is the REQUESTED title, and it is `undefined` in the two cases a
+  // memory keeps the title it already had: `replace` without a `title`, and a
+  // note appended to an existing memory (which deliberately clears it at the
+  // branch above so the note's first line cannot overwrite the real one).
+  // Reporting the request meant the MCP `remember` tool and `POST /v1/remember`
+  // — both of which return this object verbatim — answered with no title for a
+  // row that plainly had one, while `derived.title` advertised the title the
+  // TEXT would have produced and never stored. The CLI worked around it by
+  // re-reading the row itself; an API caller had no such escape.
+  //
+  // Read back rather than reconstructed from the branches above: `createEntity`
+  // owns the rules for when a title is written (INSERT OR IGNORE on a new row,
+  // a guarded UPDATE on an existing one), so computing it here would be a
+  // second copy of those rules, free to disagree with the row. One PK-indexed
+  // SELECT on the write path, taken at the return site so no later statement
+  // can invalidate it.
+  const storedTitle = (db
+    .prepare('SELECT title FROM entities WHERE id = ?')
+    .get(entityId) as { title: string | null }).title;
+
   return {
     stored: true,
     entityId,
     name: args.name,
-    ...(args.title !== undefined ? { title: args.title } : {}),
+    title: storedTitle,
     // `createEntity` preserves the stored type on a name collision. Report
     // that persisted value too; echoing args.type made a duplicate remember
-    // receipt claim a type that was never written.
-    type: existing?.type ?? args.type,
-    observations: args.observations?.length ?? 0,
-    tags: args.tags?.length ?? 0,
+    // receipt claim a type that was never written. The replace path is the
+    // one place the stored type DOES change, and `retypedTo` carries it.
+    type: retypedTo ?? existing?.type ?? entityType,
+    observations: observations?.length ?? 0,
+    tags: tags?.length ?? 0,
     relations: relationsCreated.length,
     ...(relationsCreated.length > 0 ? { relationsCreated } : {}),
     // Only when it actually moved: same-scope re-remembers say nothing.
@@ -182,6 +405,10 @@ function rememberInTransaction(
       : {}),
     ...(superseded.length > 0 ? { superseded } : {}),
     ...(relationErrors.length > 0 ? { relationErrors } : {}),
+    ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
+    ...(derived
+      ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
+      : {}),
   };
 }
 
@@ -208,12 +435,12 @@ export function recall(args: RecallInput): Entity[] {
 function searchAndScore(args: RecallInput): { entities: Entity[]; relevanceMap: Map<string, number> } {
   const kg = new KnowledgeGraph(getDatabase());
   // cross_project=true means don't filter by project tag — pass no tag to search all projects
-  const entities = kg.search(args.query, {
+  const entities = summarizeReplacedHistory(kg.search(args.query, {
     tag: recallTagFilter(args),
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace,
-  });
+  }));
   return {
     entities,
     relevanceMap: args.query ? buildRelevanceMap(entities) : new Map<string, number>(),

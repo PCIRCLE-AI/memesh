@@ -157,10 +157,17 @@ describe('redactSecrets does not corrupt diagnostics', () => {
 });
 
 /**
- * The pattern list has a THIRD consumer that the egress tests never exercised:
- * `containsSecret()` in transcript-extractor, which is a DROP gate — a mined
- * memory that trips it is discarded rather than staged. A pattern that is
- * merely noisy at the egress silently destroys content there.
+ * The pattern list has a THIRD consumer that the egress tests never exercised,
+ * and it is a DROP gate rather than a masking one: `dreamer.ts:238` reads
+ * `redactSecrets(s) !== s` as "this text is secret-shaped" and refuses the whole
+ * submitted result with `secret_shaped_result`. A pattern that is merely noisy at
+ * the egress destroys content there.
+ *
+ * This comment used to name `containsSecret()` in transcript-extractor. No such
+ * function exists — `grep -rn containsSecret src/ scripts/ tests/` finds only
+ * these comments — and the same false name was in `src/core/paths.ts` until it
+ * was corrected. A comment that invents its own evidence is worse than none: it
+ * is what a reader checks the design against.
  *
  * That is not hypothetical. `sk[-_]\S{4,}` without a word boundary matched
  * inside `task-runner`, `disk-usage`, `risk-level` and `ask-first`: six

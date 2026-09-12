@@ -433,7 +433,13 @@ capture hooks (`post-commit`, `session-summary`, `pre-compact`,
 `hook-outcomes.jsonl` beside the database, through `recordHookOutcome` in
 `scripts/hooks/_shared.js`:
 
-- **Every exit path records** `wrote`, `skipped` + reason, or `error`. Skip
+- **Every exit path records** `wrote`, `notified`, `skipped` + reason, or
+  `error`. The line between the first two is the point of the record: `wrote`
+  means a memory was stored and nothing else, because it is the numerator of the
+  signal doctor uses to answer "is capture alive"; `notified` is for a hook whose
+  effect is text a person or a model sees — an injected context, a printed
+  warning, a nudge. Six hooks recorded those as `wrote` until #324, each with its
+  own comment saying it was not a memory. Skip
   reasons are `SKIP_REASONS` constants (the gate below rejects a literal), and
   doctor quotes only those; anything else shows as `unrecognised reason`. An outer
   catch records only `uncaught <code or name>`; the exception text goes to

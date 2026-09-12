@@ -42,14 +42,27 @@ The `ref` is strict and kind-specific. A digest ref has `project`, sorted unique
 
 Store knowledge as an entity with observations, tags, and relations.
 
-If `remember` is called again with an existing `name`, MeMesh treats it as an append-style upsert: new observations are appended, tags are deduped, and the original entity type is retained.
+If `remember` is called again with an existing `name`, MeMesh treats it as an append-style upsert: new observations are appended, tags are deduped, and the original entity type is retained. With `replace: true` it rewrites the entity instead (see below).
+
+Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Note**: `note` alone (free text), with optional `type`, `tags`, `name` — the server derives the rest:
+
+- `title` = the first non-empty line (a leading `#` heading or list marker is dropped; a line over 200 characters is cut to its first sentence, then to 200). When the line had to be cut, the full original line is *also* kept as the first observation — nothing the caller wrote is dropped, so a long first line ends up in the response twice: shortened as the title, in full as an observation;
+- `observations` = the remaining paragraphs, one each (blank-line separated; a paragraph made only of list items gives one observation per item). A one-line note keeps its line as the single observation;
+- `name` (when absent) = slug of the title + `-` + the first 8 hex characters of the SHA-256 of the cleaned text, so the same text twice is one memory (the second call adds nothing); two different texts landing on the same name is possible but very unlikely, not impossible — the suffix is only 32 bits; a title with no ASCII letters or digits slugs to `note`;
+- `type` defaults to `"note"`.
+
+The note is cleaned before anything is derived from it: control characters (other than newline and tab) are removed and credential-shaped substrings are replaced with `***REDACTED***`. It may be at most 20,000 characters, and the paragraphs it splits into may not derive more than 100 observations — a paragraph made only of list items yields one observation per item, so a single paragraph can push the count over the limit on its own; beyond that the call is rejected. `note` cannot be combined with `title` or `observations`. A note sent to a `name` that already exists appends its observations and leaves the existing title alone.
+
+**Replace**: `replace: true` with a `name` rewrites that memory: its observations are replaced by the ones given (or derived from `note`), its tags too when `tags` is given (omitted tags are kept), its title when `title` or `note` is given. The previous title, observations and tags are appended to `metadata.replaced_history` as `{ replaced_at, title, observations, tags }`, so the wrong line leaves recall but is not lost. The history keeps the newest 20 versions and at most 64 KB: older versions are dropped first, and a single version larger than that keeps the observations that fit and is marked `truncated: true`. Relations are untouched by a replace. `recall` results do not carry the history — they carry `metadata.replaced_history_count` — so read the versions from `export` or `GET /v1/entities/:name`. The keyword index is rewritten in the same transaction. On a name that does not exist yet, `replace: true` simply creates the memory and reports `replaced: false`. `replace` with `note` requires an explicit `name`.
 
 **Input Schema**:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `name` | string | Yes | Unique entity name (e.g., `"auth-decision"`, `"jwt-pattern"`) |
-| `type` | string | Yes | Entity type (e.g., `"decision"`, `"pattern"`, `"lesson"`, `"commit"`) |
+| `name` | string | Unless `note` | Unique entity name (e.g., `"auth-decision"`, `"jwt-pattern"`). Derived from the text when `note` is given without one |
+| `type` | string | Unless `note` | Entity type (e.g., `"decision"`, `"pattern"`, `"lesson"`, `"commit"`). Defaults to `"note"` with `note` |
+| `note` | string | No | Free text instead of `title` + `observations` (see above) |
+| `replace` | boolean | No | Rewrite the named memory instead of appending (see above). Default `false` |
 | `title` | string | No | Short human-readable label shown wherever the memory is listed (e.g. `"Why we dropped JWT"`), max 200 characters — longer is **rejected**, not truncated, so the caller can shorten it themselves. On an entity that already exists, supplying this replaces the title; omitting it leaves the title it already has. Whitespace-only counts as omitted. |
 | `observations` | string[] | No | Key facts or observations about this entity |
 | `tags` | string[] | No | Tags for filtering (e.g., `"project:myapp"`, `"type:decision"`) |
@@ -90,6 +103,7 @@ the graph does not have.
   "stored": true,
   "entityId": 1,
   "name": "auth-decision",
+  "title": null,
   "type": "decision",
   "observations": 2,
   "tags": 1,
@@ -97,7 +111,18 @@ the graph does not have.
 }
 ```
 
-Three fields are conditional. `relationsCreated` lists the relations actually created — report from it rather than subtracting errors from what you asked for. `relationErrors` is included when a relation target does not exist; the entity is still stored. `movedFromNamespace` appears only when the call MOVED a memory that already existed, naming the scope it came from, and pairs with `metadata.previous_namespace` so the move can be reversed.
+`title` is always present, and it is the title the memory HOLDS after the call
+— read back from the row, not echoed from the request. It is `null` when the
+memory has no title (the example above passed none). This matters on the two
+calls that do not supply one: `replace` without a `title`, and a `note` sent to
+a name that already exists both KEEP the existing title, and the response names
+it. Do not read `derived.title` as the stored title — that is the title the
+text would have produced, which on an existing memory is exactly the one that
+was not used.
+
+With `note`, the response also carries `derived: { name, type, title, observations }` — the shape the server derived, so a wrong title can be corrected with one more call (`name` + `replace: true` + `title`). `type` is required on a call that omits `note` **except** on a `replace` with a `name`: that call keeps the type the memory already has, so a correction does not have to restate it. Pass a `type` there only to reclassify — `replace` rewrites the stored type when it differs from what you pass. On a `replace` whose `name` does not exist there is no stored type to inherit, so `type` is required to create it. With `replace: true` the response also carries `replaced: true` when an existing memory was rewritten, `false` when there was nothing to replace.
+
+Three more fields are conditional. `relationsCreated` lists the relations actually created — report from it rather than subtracting errors from what you asked for. `relationErrors` is included when a relation target does not exist; the entity is still stored. `movedFromNamespace` appears only when the call MOVED a memory that already existed, naming the scope it came from, and pairs with `metadata.previous_namespace` so the move can be reversed.
 
 **Write provenance.** Every entity created through `remember` or `learn` carries `metadata.provenance.source_host` — which surface wrote it. It is **not an input parameter** on any transport (a provenance field the caller's model could fill in is not provenance); the transport sets it: the MCP server stamps the client's self-declared `initialize` name (`claude-code`, `codex`, `gemini-cli`, …; `mcp` when the client declares none), the CLI stamps `cli`, and the HTTP API stamps `http`. The stamp lands on first insert only — appending to an existing entity from another host does not rewrite it. The field is returned wherever entity `metadata` is returned (e.g. `recall` results).
 
@@ -1295,6 +1320,117 @@ form. `--no-open` prints only the pre-filled URL and does not launch a browser.
 MeMesh never submits the issue automatically. There is no MCP `report_issue`
 tool and no HTTP report-issue endpoint. The `improvement` MCP tool remains a
 separate private, human-governed product-proposal workflow.
+
+### memesh remember — quick text and `--replace`
+
+`memesh remember "<text>"` alone (no `--obs`, `--title` or `--name`) is the
+note form: title, observations and name are derived from the text and
+validated exactly as for `remember({ note })` above (the same 20,000-character
+and 100-observation caps), and the output echoes the derived title. `--type`
+and `--tags` apply.
+
+`--obs` or `--title` alongside the text take a second path that keeps the
+text as an observation and adds theirs, rather than replacing it —
+positional text is never dropped, an explicit `--title` wins over the
+derived one, and `--obs` values are appended after the text's own paragraphs.
+This path is validated too, against the same 100-observation cap. Both paths
+count the same unit — observations, never paragraphs, because a paragraph made
+only of list items yields one observation per item and a single paragraph can
+exceed the cap on its own. What differs is only what each one has to count:
+the note form counts the observations the text derives ("note yields N
+observations"), while the combined path counts the *final observations array*
+it would store, the text's own plus every `--obs` ("that is N observations").
+Measured with one 103-line text (one line becomes the title, 102 remain):
+alone it is rejected — "note yields 102 observations; at most 100 are stored
+per memory" — and combined with `--obs "extra one"` (103 observations total)
+it is also rejected — "that is 103 observations; at most 100 are stored per
+memory."
+
+`--replace` (requires `--name`) rewrites the named memory and keeps its
+previous version in `metadata.replaced_history`, as described under
+**Replace** above. Correcting a memory this way does **not** need `--type`:
+the memory keeps the type it has. Pass `--type` only to reclassify — a type
+that differs from what is stored rewrites it, so `--replace` doubles as how
+you reclassify a memory. `--type` is still required when `--name` is used
+without `--replace`, and on a `--replace` whose name does not exist yet,
+where there is no stored type to keep.
+
+```bash
+memesh remember "Use PKCE for the public client"            # derived name, type note
+memesh remember --name auth-choice --obs "PKCE, not implicit" --replace   # keeps type
+memesh remember --name auth-choice --type decision --obs "PKCE, not implicit" --replace  # reclassifies
+```
+
+### memesh import --notes — note-file directories
+
+```bash
+memesh import --notes ~/.claude/projects/<slug>/memory [--project <name>] [--json]
+```
+
+Ingests every `*.md` file under the directory that opens with YAML frontmatter
+carrying a `name` (Claude Code's per-project memory files have this shape):
+one memory per file, `name` from frontmatter, `title` from `description`, `type`
+from `metadata.type` (default `note`), observations from the body paragraphs,
+tagged `source:note-file` and `project:<name>` (default: the current directory's
+project). Provenance records `note_path` **relative to the directory**, a
+SHA-256 `content_hash` of the file, and a digest identifying the directory —
+never an absolute path.
+
+- A changed file **replaces** its memory (the previous version goes to
+  `metadata.replaced_history`); an unchanged file is a no-op.
+- A file without frontmatter or without `name` is reported and skipped, not
+  guessed at. (The `.remember/` handoff files have no frontmatter, so they are
+  reported, not ingested.)
+- A file that disappears does **not** delete its memory: the memory is tagged
+  `source:note-file:missing`. Deleting stays an explicit `forget`; a memory
+  archived with `forget` is not revived by a later edit of its file.
+- A name already used by a memory that did not come from a note file, or that
+  was ingested from a different directory, is skipped rather than overwritten.
+  Within one directory, a name belongs to exactly one file, decided in this
+  order: the file the memory records (`provenance.note_path`) when it is
+  still there and still declares that name; otherwise a file whose bytes
+  match the recorded `content_hash` (the recorded file was renamed);
+  otherwise the first claimant in path order. Every other claimant is
+  reported and left alone, and takes the name over only once the owner
+  releases it. Names are cleaned like the body, so two names that differ
+  only in a redacted credential collide and are reported as duplicates.
+- A renamed file keeps its memory: the next run re-points `note_path` and
+  does not tag it missing. The bytes are what the memory stores, so a move
+  alone writes no new version (repeated renames therefore cannot push the
+  real history out of the 20 kept versions). A file coming back after being
+  reported missing loses the tag — unless another file claimed the name
+  while it was away, in which case the returning file is the duplicate and
+  is reported as one.
+- A file that changes the `name` in its frontmatter leaves the old memory
+  behind, tagged `source:note-file:missing` like a vanished one, and creates
+  the memory its new name asks for. A file that stops being a note file at
+  all frees its name the same way, and creates nothing. A freed name is
+  taken over by another file on whatever run that file turns up, cap or no
+  cap: the missing tag is what says the name is nobody's, so it holds across
+  runs (within a single run the handover can happen before the tag is
+  written), and a name no memory uses is free for the asking.
+- A file that already has a stored memory is unchanged when its size,
+  modification time **and inode** all still match — the inode is what
+  catches two files that swap places without changing either size or
+  timestamp. A file with no stored memory yet (skipped for its own content,
+  or never read) has no inode on record to compare, so it is fingerprinted
+  by size and modification time only, in the two bullets below.
+- On a file change the file owns the `source:*` tags; any other tag a person
+  added is kept, and the `project:` tag set on first ingestion stays. A
+  memory a manual `remember` appended to is still replaced as a whole on the
+  next file change — the appended lines go to `metadata.replaced_history`.
+- A file skipped for its own content (no frontmatter, no name, empty, too
+  large) is remembered by size and mtime and reported again without being
+  re-read, until it changes.
+- Read-only and bounded: symlinks and paths resolving outside the directory are
+  refused, `.git` and `node_modules` are not entered, files over 256 KB are
+  skipped, and one run reads at most 500 files (the rest are reported as "more"
+  and picked up by the next run; unchanged files are recognised from their size
+  and mtime without being read). Credential-shaped text is redacted.
+
+Under Claude Code the Stop hook runs the same ingestion on the memory directory
+next to the session transcript, throttled by mtime and capped at 100 file reads
+per Stop; it honours `autoCapture` off. There is no MCP or HTTP form.
 
 ### memesh remember — stating a relation
 

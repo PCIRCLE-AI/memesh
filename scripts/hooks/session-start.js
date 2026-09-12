@@ -1624,8 +1624,10 @@ process.stdin.on('end', async () => {
 const workPackageGuidance = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
 
 function output(text, memoryContext = workPackageGuidance, recorded = null) {
-  // session-start's "wrote" is the context it injected — the only durable
-  // effect it has. Recorded here rather than at each of the handler's many
+  // session-start's only effect is the context it injects, so it records
+  // `notified`, not `wrote`: doctor's `writes` answers "is memory capture
+  // still alive", and injected context is something this hook READ, not
+  // something it stored. Recorded here rather than at each of the handler's many
   // returns because output() is the single emit point they all funnel
   // through, so no path can add itself later and stay invisible (#327).
   // `recorded` overrides the outcome for the one path that is not a write
@@ -1642,7 +1644,7 @@ function output(text, memoryContext = workPackageGuidance, recorded = null) {
     ? { hook: 'session-start', outcome: recorded.outcome, reason: recorded.reason }
     : {
       hook: 'session-start',
-      outcome: 'wrote',
+      outcome: 'notified',
       entity: memoryContext ? 'session-start-context' : 'session-start-banner',
     });
 }

@@ -1,4 +1,4 @@
-export type HookOutcome = 'wrote' | 'skipped' | 'error';
+export type HookOutcome = 'wrote' | 'skipped' | 'notified' | 'error';
 export type HookHost = 'claude-code' | 'codex' | 'unknown';
 export interface HookOutcomeRecord {
     hook: string;
@@ -19,7 +19,7 @@ export declare const HOOK_OUTCOMES_ROTATE_BYTES: number;
 export declare function serializeHookOutcome(record: HookOutcomeRecord): string;
 export declare function trimHookOutcomeLines(raw: string, max?: number, maxBytes?: number): string;
 export declare const SILENT_HOOK_MIN_RUNS = 5;
-export declare const CAPTURE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start"];
+export declare const CAPTURE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start", "note-ingest", "remember-nudge"];
 export declare const FAIL_ELIGIBLE_HOOKS: readonly ["session-summary"];
 export declare const SILENT_ELIGIBLE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact"];
 export declare const SKIP_REASONS: {
@@ -50,11 +50,22 @@ export declare const SKIP_REASONS: {
     readonly noDatabaseForRecall: "no database yet — nothing to recall";
     readonly nothingToRecall: "no guard matched and nothing to recall for this file";
     readonly noPromptIntent: "the prompt carried no remember intent and no update decision";
+    readonly noMemoryDir: "no Claude Code memory directory for this project";
+    readonly noNoteChanged: "no note file changed since the last ingestion";
+    readonly noteIngesterNotBuilt: "the note ingester is not built (dist/core/note-ingest.js is missing)";
+    readonly noteNothingNew: "note files were read and nothing new needed storing";
+    readonly noteFilesRefused: "note files were refused and nothing was stored";
+    readonly noTranscript: "no transcript to read";
+    readonly trivialTurn: "trivial turn — too few tool calls since the last Stop";
+    readonly noDecisionMove: "no decision-shaped move since the last Stop";
+    readonly memoryWritten: "a memory was written since the last Stop";
+    readonly noteFileChanged: "a note file changed since the last Stop";
 };
 export declare const UNRECOGNISED_REASON = "unrecognised reason";
 export declare function renderableSkipReason(reason: string | undefined): string;
 export declare function isGitCommitCommand(command: string): boolean;
 export declare const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>>;
+export declare const UNCLASSIFIED_SKIP_HOOKS: readonly ["pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start"];
 export declare const NEVER_RAN_GRACE_HOURS = 72;
 export declare function parseHookOutcomes(raw: string | null | undefined, limit?: number): HookOutcomeFile;
 export declare function parseHookOutcomeLine(line: string): HookOutcomeRecord | null;
@@ -71,6 +82,8 @@ export interface HookLivenessSummary {
     firstTriggeredAt: string | null;
     lastWriteAt: string | null;
     lastEntity: string | null;
+    notifies: number;
+    lastNotifiedAt: string | null;
     lastSkipReason: string | null;
     dominantSkipReason: string | null;
     dominantSkipCount: number;
