@@ -72,5 +72,7 @@ export function buildIsolatedSuiteEnv(baseEnv, { runtimeHome }) {
   delete isolatedEnv.ANTHROPIC_API_KEY;
   delete isolatedEnv.OPENAI_API_KEY;
   delete isolatedEnv.OLLAMA_HOST;
-  return isolatedEnv;
+  return envWithNpmCache(path.join(runtimeHome, 'npm-cache'), isolatedEnv);
 }
+import path from 'node:path';
+import { envWithNpmCache } from './npm-bin.mjs';

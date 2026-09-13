@@ -6,8 +6,8 @@
 
 ## Symptom
 
-The isolated test suite passed 3,803 tests, then its packaged plugin test
-failed with `EPERM` while `npm pack` tried to open a temporary file in the
+The isolated test suite reached its packaged plugin test, then failed with
+`EPERM` while `npm pack` tried to open a temporary file in the
 maintainer's `~/.npm` cache.
 
 ## Root cause
