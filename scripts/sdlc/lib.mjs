@@ -43,9 +43,10 @@ export function verifyCommand(root = REPO_ROOT) {
 // Two trees with the same hash have identical content as git stores it (with
 // core.autocrlf or .gitattributes text rules, that is the normalized form),
 // so a receipt bound to this hash cannot be reused after any further edit.
-// Ignored build output (apps/web/.next/) is not hashed; `pnpm verify`
-// rebuilds it from this tree on every run, so it never carries stale state
-// into a receipt.
+// Ignored build output is not hashed; the verify command rebuilds it from
+// this tree on every run. Tracked build output (a committed dist/) is hashed,
+// and a verify step marked `regenerates` re-baselines the tree after rewriting
+// it (scripts/verify.mjs).
 export function treeHash(cwd = REPO_ROOT) {
   const indexDir = mkdtempSync(path.join(tmpdir(), "sdlc-index-"));
   const indexFile = path.join(indexDir, "index");

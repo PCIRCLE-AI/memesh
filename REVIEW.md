@@ -1,6 +1,6 @@
 # Review instructions
 
-Applied to every pull/merge request by the review workflow (`.github/workflows/sdlc-review.yml` on GitHub, `sdlc:review` in `ci/sdlc.gitlab-ci.yml` on GitLab) and by any reviewer, human or agent. The agent that wrote a change never approves it; approval comes from a code owner through branch protection, informed by the findings here.
+Applied to every pull/merge request by the review workflow (the host's SDLC review job, running `scripts/sdlc/review.mjs` with the provider in `sdlc/config.json`) and by any reviewer, human or agent. The agent that wrote a change never approves it and runs on a different model than the reviewer; acceptance is a person merging, under whatever branch protection the repository set in bootstrap step 3 (an approval count of 0 on a one-person repository means the person merging is the approval).
 
 ## Passes
 

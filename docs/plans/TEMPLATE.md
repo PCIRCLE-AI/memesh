@@ -28,7 +28,7 @@ exact name of a Playwright test, a unit-test file with the behavior it covers,
 or a screenshot compared with a named mock.
 
 - `npm run verify` exit 0
-- Playwright: `<exact test name>` in `apps/web/e2e/...`
+- Journey: `<exact test name>` in the suite a `journeys: true` step of `sdlc/config.json` runs
 
 ## Neighbouring flows
 

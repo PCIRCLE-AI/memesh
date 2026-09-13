@@ -5,8 +5,9 @@
 import { readPayload, isVerifyPath, allow, block, verifyCommand } from "./lib.mjs";
 
 const payload = readPayload();
+if (payload.__parseError) block(`protect-verify-dir: could not parse the hook payload (${payload.__parseError}); refusing the write rather than guessing.`);
 const input = payload?.tool_input;
-if (!input || typeof input !== "object") allow("protect-verify-dir: payload has no tool_input to inspect; nothing under .verify/ can be named, allowed.");
+if (!input || typeof input !== "object") block("protect-verify-dir: the payload has no tool_input, so the target path cannot be checked; refusing the write rather than guessing.");
 const candidates = [input.file_path, input.path, ...(Array.isArray(input.edits) ? input.edits.map((edit) => edit?.file_path) : [])].filter(Boolean);
 const hit = candidates.find((candidate) => isVerifyPath(candidate));
 if (hit) {

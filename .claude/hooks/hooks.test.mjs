@@ -214,3 +214,18 @@ test("gate messages quote the verify command the project configured, and npm's s
     s.cleanup();
   }
 });
+
+test("a malformed payload fails closed on every gate that could otherwise let something through", () => {
+  const s = scratch();
+  try {
+    for (const name of ["pre-bash-gate.mjs", "stop-receipt.mjs", "protect-verify-dir.mjs"]) {
+      const result = spawnSync(process.execPath, [path.join(HOOKS, name)], { input: "not json {", encoding: "utf8", env: { ...process.env, CLAUDE_PROJECT_DIR: s.dir } });
+      assert.equal(result.status, 2, `${name} must block: ${result.stdout}${result.stderr}`);
+      assert.match(result.stderr, /could not parse/u, name);
+    }
+    const noInput = hook("protect-verify-dir.mjs", { session_id: "x" }, s.dir);
+    assert.equal(noInput.code, 2, "a Write/Edit payload without tool_input cannot be checked, so it is refused");
+  } finally {
+    s.cleanup();
+  }
+});

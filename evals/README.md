@@ -27,7 +27,7 @@ Case shape:
   "prompt": "...",
   "allowedTools": "Read,Grep,Glob,Bash(npm run verify:receipt)",
   "maxTurns": 20,
-  "check": "node evals/checks/verify-before-done.mjs"
+  "check": "node evals/checks/consulted-receipt.mjs"
 }
 ```
 

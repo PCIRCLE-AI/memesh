@@ -611,35 +611,35 @@
       "reason": "The smoke verdict is captured on the line above (`if node scripts/sdlc/smoke-public.mjs --json …; then red=false; else red=true`) and gates the receipt step; this line only renders the saved JSON into the job summary.",
       "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
     },
-    "C4 .github/workflows/sdlc-review.yml:63": {
-      "class": "DATA-EXTRACTION",
-      "reason": "awk derives the top-level directory list from the changed-files list to size the review matrix; the list itself came from `git diff --name-only` on the line above and no verdict flows through this pipe.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
-    },
-    "C4 .github/workflows/sdlc-review.yml:64": {
-      "class": "DATA-EXTRACTION",
-      "reason": "grep -c counts the directories from the previous line; a count, not a verdict.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
-    },
-    "C4 .github/workflows/sdlc-review.yml:66": {
-      "class": "DATA-EXTRACTION",
-      "reason": "grep's exit code is the intended signal here (does any changed path match a sensitive pattern) and sets `sensitive=true`; a no-match is the ordinary case, not a swallowed failure.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
-    },
-    "C4 .github/workflows/sdlc-review.yml:69": {
-      "class": "DATA-EXTRACTION",
-      "reason": "head caps the directory list at 8 rows before node builds the matrix JSON; the matrix is validated when the job consumes it.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
-    },
     "C4 scripts/sdlc/bootstrap.sh:13": {
       "class": "SAFE-PIPEFAIL",
       "reason": "`set -euo pipefail` at the top of the file; a failing `gh secret list` therefore reads as \"secret missing\" and the script prompts to set it, never as present.",
       "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
     },
-    "C4 scripts/sdlc/bootstrap.sh:83": {
+    "C4 .github/workflows/sdlc-review.yml:84": {
+      "class": "DATA-EXTRACTION",
+      "reason": "awk derives the top-level directory list from the changed-files list to size the review matrix; the list itself came from `git diff --name-only` on the line above and no verdict flows through this pipe.",
+      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 after the provider refactor moved the lines"
+    },
+    "C4 .github/workflows/sdlc-review.yml:85": {
+      "class": "DATA-EXTRACTION",
+      "reason": "grep -c counts the directories from the previous line; a count, not a verdict.",
+      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 after the provider refactor moved the lines"
+    },
+    "C4 .github/workflows/sdlc-review.yml:87": {
+      "class": "DATA-EXTRACTION",
+      "reason": "grep's exit code is the intended signal here (does any changed path match a sensitive pattern) and sets `sensitive=true`; a no-match is the ordinary case, not a swallowed failure.",
+      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 after the provider refactor moved the lines"
+    },
+    "C4 .github/workflows/sdlc-review.yml:90": {
+      "class": "DATA-EXTRACTION",
+      "reason": "head caps the directory list at 8 rows before node builds the matrix JSON; the workflow only parses it with fromJSON, and a malformed list fails that parse loudly.",
+      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 after the provider refactor moved the lines"
+    },
+    "C4 scripts/sdlc/bootstrap.sh:128": {
       "class": "SAFE-PIPEFAIL",
       "reason": "`set -euo pipefail` at the top of the file; a failing `gh label list` reads as \"label missing\" and the script tries to create it, whose own exit code is checked with &&.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
+      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 after the provider refactor moved the lines"
     }
   }
 }

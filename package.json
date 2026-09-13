@@ -73,7 +73,7 @@
     "verify:journeys": "node scripts/verify.mjs --journeys",
     "verify:receipt": "node scripts/verify-receipt.mjs",
     "sdlc:next": "node scripts/sdlc/next-stage.mjs --human",
-    "sdlc:test": "node --test scripts/sdlc/lib.test.mjs scripts/sdlc/monitor.test.mjs scripts/sdlc/next-stage.test.mjs scripts/sdlc/run-stage.test.mjs scripts/sdlc/smoke-public.test.mjs scripts/verify.test.mjs .claude/hooks/hooks.test.mjs",
+    "sdlc:test": "node --test scripts/sdlc/agent.test.mjs scripts/sdlc/lib.test.mjs scripts/sdlc/monitor.test.mjs scripts/sdlc/next-stage.test.mjs scripts/sdlc/run-stage.test.mjs scripts/sdlc/smoke-public.test.mjs scripts/verify.test.mjs .claude/hooks/hooks.test.mjs",
     "sdlc:smoke": "node scripts/sdlc/smoke-public.mjs",
     "sdlc:monitor": "node scripts/sdlc/monitor.mjs"
   },

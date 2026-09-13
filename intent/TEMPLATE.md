@@ -19,8 +19,8 @@ What better looks like, in the user's terms. Not a design.
 
 ## Affected users and systems
 
-Which users, which parts of SignalScope (Web routes, MCP tools, the data
-publisher), which external sources.
+Which users, which parts of the product (routes, tools, jobs, packages), which
+external systems.
 
 ## Constraints
 

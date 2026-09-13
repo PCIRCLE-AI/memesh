@@ -79,3 +79,23 @@ test("a tree that changes while verify runs gets no receipt", async () => {
     repo.cleanup();
   }
 });
+
+test("a step marked regenerates may change tracked output; the receipt binds to the tree after it", async () => {
+  const repo = tempRepo();
+  try {
+    const regen = { ...config, verify: { steps: [{ id: "build", label: "build", command: "node", args: ["-e", "1"], cwd: ".", regenerates: true }, { id: "unit", label: "unit", command: "node", args: ["-e", "1"], cwd: "." }] } };
+    const before = treeHash(repo.dir);
+    const execute = async (step) => { if (step.id === "build") writeFileSync(path.join(repo.dir, "dist.txt"), "regenerated\n"); return { exit: 0, seconds: 0.1 }; };
+    const result = await verify({ cwd: repo.dir, config: regen, logger: quiet, execute });
+    assert.equal(result.ok, true, "a regenerating step is not a tree change during the run");
+    const receipt = readJson(receiptPath(repo.dir));
+    assert.notEqual(receipt.tree, before);
+    assert.equal(receipt.tree, treeHash(repo.dir));
+    const plain = { ...regen, verify: { steps: regen.verify.steps.map((s) => ({ ...s, regenerates: false })) } };
+    const execute2 = async (step) => { if (step.id === "build") writeFileSync(path.join(repo.dir, "dist.txt"), "regenerated again\n"); return { exit: 0, seconds: 0.1 }; };
+    const second = await verify({ cwd: repo.dir, config: plain, logger: quiet, execute: execute2 });
+    assert.equal(second.ok, false, "without the flag the same change is still treeChangedDuringRun");
+  } finally {
+    repo.cleanup();
+  }
+});

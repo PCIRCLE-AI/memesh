@@ -26,9 +26,10 @@ No parallel backend, no new runtime.
 
 ## Concerns
 
-Every place this conflicts with `docs/product/CURRENT.md`, `docs/design/CURRENT.md`,
-`SECURITY.md`, an ADR, or the data-rights matrix; quote the constraint. The product
-owner resolves each one before this spec is accepted.
+Every place this conflicts with one of the constraint documents listed in
+`sdlc/config.json` (`constraints`, in order of authority), or two of them conflict
+with each other; quote the constraint. The product owner resolves each one before
+this spec is accepted.
 
 ## Open questions
 

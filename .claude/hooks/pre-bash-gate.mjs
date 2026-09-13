@@ -132,6 +132,7 @@ function planFilesOnBranch(base) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const payload = readPayload();
+  if (payload.__parseError) block(`verify gate: could not parse the hook payload (${payload.__parseError}); refusing the command rather than guessing.`);
   const command = payload?.tool_input?.command ?? "";
 
   if (writesVerifyDir(command)) {

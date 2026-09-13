@@ -7,6 +7,7 @@ import { loadSdlc, readPayload, sessionFile, allow, verifyCommand } from "./lib.
 const VERIFY = verifyCommand();
 
 const payload = readPayload();
+if (payload.__parseError) allow(`verify gate: could not parse the SessionStart payload (${payload.__parseError}); no baseline recorded, the Stop hook will compare against HEAD.`);
 try {
   const sdlc = await loadSdlc();
   const tree = sdlc.treeHash(process.env.CLAUDE_PROJECT_DIR ?? process.cwd());

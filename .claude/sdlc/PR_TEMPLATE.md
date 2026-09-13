@@ -9,8 +9,8 @@ Plan: `docs/plans/<slug>.md` · Spec: `docs/specs/<slug>.md` · Intent: `intent/
 <!-- Paste the closing lines of `npm run verify` and the receipt tree from .verify/receipt.json. A red run goes here too, verbatim, with the failing step. -->
 
 ```
-[verify 4/4] Golden journeys: hosted SaaS, Web -> MCP -> Web (Playwright)
-[verify] ok journeys-saas (24s)
+[verify N/N] <last step's label from sdlc/config.json>
+[verify] ok <step id> (<seconds>s)
 [verify] GREEN. Receipt for tree <hash> written to .verify/receipt.json.
 ```
 

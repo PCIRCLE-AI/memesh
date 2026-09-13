@@ -8,7 +8,7 @@ name: SDLC monitor
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
 
 permissions:
@@ -32,8 +32,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       - id: eval
@@ -46,10 +46,14 @@ jobs:
           echo "tier=$tier" >> "$GITHUB_OUTPUT"
           echo "metric=$metric" >> "$GITHUB_OUTPUT"
           echo "slug=$(date -u +%Y-%m-%d)-monitor-${metric:-none}" >> "$GITHUB_OUTPUT"
-      - uses: actions/upload-artifact@v4
+      # The breach record is uploaded only when the respond job will read it;
+      # every run's metrics are already in the step summary above.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.eval.outputs.tier == 'diagnose' || steps.eval.outputs.tier == 'propose'
         with:
           name: monitor-${{ github.run_id }}
           path: .sdlc-run/breach.json
+          retention-days: 14
       - id: dedupe
         if: steps.eval.outputs.tier == 'diagnose' || steps.eval.outputs.tier == 'propose'
         env:
@@ -73,38 +77,41 @@ jobs:
       GH_TOKEN: ${{ secrets.SDLC_GITHUB_TOKEN || github.token }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       METRIC: ${{ needs.detect.outputs.metric }}
       TIER: ${{ needs.detect.outputs.tier }}
       SLUG: ${{ needs.detect.outputs.slug }}
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           token: ${{ secrets.SDLC_GITHUB_TOKEN || github.token }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: monitor-${{ github.run_id }}
           path: .sdlc-run
       - name: Tracking issue (always, so a breach is never silent)
         run: |
-          gh issue create --label sdlc:breach --title "Control band breached: $METRIC ($TIER)" --body "$(printf 'Detected by scripts/sdlc/monitor.mjs on run %s.\n\n```json\n%s\n```\n\nThe loop files an intent PR from this issue when a model credential (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) and SDLC_GITHUB_TOKEN are set; otherwise a person writes intent/%s.md.' "$RUN_URL" "$(cat .sdlc-run/breach.json)" "$SLUG")"
+          gh issue create --label sdlc:breach --title "Control band breached: $METRIC ($TIER)" --body "$(printf 'Detected by scripts/sdlc/monitor.mjs on run %s.\n\n```json\n%s\n```\n\nThe loop files an intent PR from this issue when the configured provider'"'"'s model credential and SDLC_GITHUB_TOKEN are set; otherwise a person writes intent/%s.md.' "$RUN_URL" "$(cat .sdlc-run/breach.json)" "$SLUG")"
       - name: Secrets present for the diagnosis
         id: secrets
         env:
           PAT: ${{ secrets.SDLC_GITHUB_TOKEN }}
         run: |
-          if { [ -n "$ANTHROPIC_API_KEY" ] || [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; } && [ -n "$PAT" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else
+          if node scripts/sdlc/agent.mjs --check && [ -n "$PAT" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else
             echo "ok=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::No model credential (ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN) or no SDLC_GITHUB_TOKEN; breach recorded as an issue only, no intent PR."
+            echo "::warning::No model credential for the configured provider, or no SDLC_GITHUB_TOKEN; breach recorded as an issue only, no intent PR."
             echo "Diagnosis skipped: a required secret is missing. The breach is on the issue." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Install Claude Code (pinned)
+      - name: Install the configured provider CLI (sdlc/config.json agent.provider)
         if: steps.secrets.outputs.ok == 'true'
-        run: npm install -g @anthropic-ai/claude-code@2.1.270
+        run: node scripts/sdlc/agent.mjs --install
       - name: Read-only diagnosis into an intent PR
         if: steps.secrets.outputs.ok == 'true'
         run: node scripts/sdlc/run-stage.mjs --stage diagnose --slug "$SLUG" --metric "$METRIC" --breach .sdlc-run/breach.json

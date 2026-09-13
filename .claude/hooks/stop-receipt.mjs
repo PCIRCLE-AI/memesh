@@ -14,6 +14,7 @@ import { loadSdlc, readPayload, sessionFile, allow, block, verifyCommand } from 
 const VERIFY = verifyCommand();
 
 const payload = readPayload();
+if (payload.__parseError) block(`verify gate: could not parse the Stop payload (${payload.__parseError}); refusing to end the session rather than guessing.`);
 let sdlc;
 try {
   sdlc = await loadSdlc();

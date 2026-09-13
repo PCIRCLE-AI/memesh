@@ -33,6 +33,7 @@ export function verifySteps({ journeysOnly = false, config = loadConfig(), root 
     args: step.args ?? [],
     cwd: path.resolve(root, step.cwd ?? "."),
     journeys: Boolean(step.journeys),
+    regenerates: Boolean(step.regenerates),
   }));
   return journeysOnly ? steps.filter((step) => step.journeys) : steps;
 }
@@ -49,7 +50,7 @@ function run(step) {
 export async function verify({ journeysOnly = false, logger = console, execute = run, cwd = REPO_ROOT, config } = {}) {
   const steps = verifySteps({ journeysOnly, root: cwd, config: config ?? loadConfig(cwd) });
   const startedAt = new Date().toISOString();
-  const treeBefore = treeHash(cwd);
+  let treeBefore = treeHash(cwd);
   const results = [];
   let failed = null;
   let crashed = null;
@@ -64,6 +65,14 @@ export async function verify({ journeysOnly = false, logger = console, execute =
         break;
       }
       logger.log(`[verify] ok ${step.id} (${result.seconds.toFixed(0)}s)`);
+      // A step that regenerates tracked output (a committed dist/) changes the
+      // tree on purpose; the tree after it is the one the remaining steps
+      // verify and the one a person commits, so the receipt binds to that.
+      if (step.regenerates) {
+        const regenerated = treeHash(cwd);
+        if (regenerated !== treeBefore) logger.log(`[verify] tree re-baselined after ${step.id}: ${treeBefore.slice(0, 12)} -> ${regenerated.slice(0, 12)} (regenerated tracked output)`);
+        treeBefore = regenerated;
+      }
     }
   } catch (error) {
     crashed = error;

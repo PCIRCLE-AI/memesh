@@ -20,7 +20,7 @@
     "README.md"
   ],
   "verify": {
-    "$comment": "Run in order; the first steps are the fast local checks, `journeys: true` marks the steps CI reruns on every PR/MR (build + the suites that drive the running app). command `pnpm` becomes pnpm.cmd on Windows; `node` is the running Node binary.",
+    "$comment": "Run in order; the first steps are the fast local checks, `journeys: true` marks the steps CI reruns on every PR/MR (build + the suites that drive the running app). `regenerates: true` marks a step that rewrites tracked output (a committed dist/): the tree is re-baselined after it, so the receipt binds to the tree a person commits. command `pnpm`/`npm`/`npx` gets .cmd on Windows; `node` is the running Node binary.",
     "steps": [
       {
         "id": "build",
@@ -31,7 +31,8 @@
           "build"
         ],
         "cwd": ".",
-        "journeys": true
+        "journeys": true,
+        "regenerates": true
       },
       {
         "id": "release-gates",
@@ -164,9 +165,31 @@
     }
   },
   "agent": {
-    "$comment": "Optional. Where the CI-run stages send model calls. Omit to use Anthropic through the claude CLI's credentials. baseUrl: any server speaking the Anthropic Messages API (e.g. a LiteLLM proxy in front of the DGX90 DeepSeek vLLM). authTokenEnv: name of the env var holding that server's token. models: per-stage model names that server expects (spec, plan, build, diagnose, review). Runners must be able to reach baseUrl (a private DGX needs a self-hosted runner on the same network).",
+    "$comment": "Where the CI-run stages (spec, plan, build, diagnose, review, model-backed evals) send model calls. provider: claude (default; `claude -p`), codex (`codex exec`, OpenAI; tested), gemini (`gemini -p`; wired from its docs, UNTESTED). models: per-stage model names that provider expects (omit for its default; claude defaults per stage in scripts/sdlc/run-stage.mjs). baseUrl/authTokenEnv: an OpenAI- or Anthropic-compatible server (LiteLLM proxy, DGX vLLM) for claude (ANTHROPIC_BASE_URL) or codex (custom model_provider); runners must reach it. Credentials are repository secrets / CI variables: claude CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY; codex OPENAI_API_KEY or CODEX_AUTH_JSON; gemini GEMINI_API_KEY (scripts/sdlc/bootstrap.sh step 1).",
+    "provider": "codex",
     "baseUrl": null,
     "authTokenEnv": null,
-    "models": {}
+    "models": {
+      "$comment": "Left to the codex CLI default unless pinned here; keep build and review on different names when pinning."
+    }
+  },
+  "ci": {
+    "$comment": "Names of the CI check jobs branch protection requires (bootstrap step 3 reads them).",
+    "requiredChecks": [
+      "Analyze (javascript-typescript)",
+      "CodeQL",
+      "Build & Test (macos-latest, Node 22)",
+      "Build & Test (macos-latest, Node 24)",
+      "Build & Test (ubuntu-latest, Node 22)",
+      "Build & Test (ubuntu-latest, Node 24)",
+      "Build & Test (ubuntu-latest, Node 26)",
+      "Build & Test (windows-latest, Node 22)",
+      "Build & Test (windows-latest, Node 24)",
+      "Coverage floor",
+      "Packaged Artifact Smoke Test",
+      "Packaged Dashboard E2E Smoke",
+      "Release Verification Gate",
+      "SDLC verify"
+    ]
   }
 }
