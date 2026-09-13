@@ -202,6 +202,24 @@ export function pushGate(config, cwd = REPO_ROOT) {
   return { ok: true, reason: `receipt matches HEAD tree ${String(headTree).slice(0, 12)}` };
 }
 
+// The public origin from sdlc/config.json is the only value that reaches an
+// outbound request (release smoke, monitor). It is repository configuration
+// a person merged, but it is still parsed and bounded before use: http(s)
+// only, no credentials, no query or fragment; the normalized origin is what
+// the probes build their URLs from. Throws on anything else.
+export function assertPublicOrigin(origin) {
+  let url;
+  try {
+    url = new URL(String(origin));
+  } catch {
+    throw new Error(`sdlc/config.json origin is not a URL: ${JSON.stringify(origin)}`);
+  }
+  if (!/^https?:$/u.test(url.protocol)) throw new Error(`sdlc/config.json origin must be http(s): ${origin}`);
+  if (url.username || url.password) throw new Error("sdlc/config.json origin must not carry credentials");
+  if (url.search || url.hash) throw new Error("sdlc/config.json origin must not carry a query or fragment");
+  return url.origin;
+}
+
 // Minimal YAML frontmatter: flat `key: value` pairs, values kept as strings.
 // Artifacts in this repo need nothing richer, and a parser this small cannot
 // hide a status in a nested key the gate does not read.

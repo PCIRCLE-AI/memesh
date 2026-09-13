@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { headTreeHash, parseFrontmatter, receiptStatus, receiptPath, treeHash, writeJson } from "./lib.mjs";
+import { assertPublicOrigin, headTreeHash, parseFrontmatter, receiptStatus, receiptPath, treeHash, writeJson } from "./lib.mjs";
 
 export function tempRepo() {
   const dir = mkdtempSync(path.join(tmpdir(), "sdlc-lib-"));
@@ -57,5 +57,13 @@ test("receipt status: missing, fresh for the same tree, stale after any edit", (
     assert.equal(receiptStatus(repo.dir).state, "stale");
   } finally {
     repo.cleanup();
+  }
+});
+
+test("a public origin is parsed and bounded before any request is built from it", () => {
+  assert.equal(assertPublicOrigin("https://app.example.com/"), "https://app.example.com");
+  assert.equal(assertPublicOrigin("http://localhost:3000"), "http://localhost:3000");
+  for (const bad of ["ftp://x", "file:///etc/passwd", "https://u:p@x.com", "https://x.com/?a=1", "https://x.com/#f", "not a url", null]) {
+    assert.throws(() => assertPublicOrigin(bad), Error, String(bad));
   }
 });
