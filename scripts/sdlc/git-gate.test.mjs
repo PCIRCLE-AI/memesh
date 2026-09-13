@@ -101,11 +101,14 @@ test("the installed git hooks refuse a real commit without a receipt and allow i
     assert.match(install.stderr, /wrote {4}.*pre-push/u);
     writeFileSync(path.join(s.dir, "src", "a.js"), "export const a = 3;\n");
     s.git("add", "src/a.js");
-    const refused = spawnSync("git", ["commit", "-q", "-m", "x"], { cwd: s.dir, encoding: "utf8" });
+    // The installed hook reads the real environment; on a CI runner it lets
+    // commits through by design, so this test commits as a developer would.
+    const dev = { ...process.env }; delete dev.GITHUB_ACTIONS; delete dev.GITLAB_CI; delete dev.CI;
+    const refused = spawnSync("git", ["commit", "-q", "-m", "x"], { cwd: s.dir, encoding: "utf8", env: dev });
     assert.notEqual(refused.status, 0, "commit must be refused without a receipt");
     assert.match(refused.stderr, /git commit blocked: no green/u);
     receipt(s.dir);
-    const allowed = spawnSync("git", ["commit", "-q", "-m", "x"], { cwd: s.dir, encoding: "utf8" });
+    const allowed = spawnSync("git", ["commit", "-q", "-m", "x"], { cwd: s.dir, encoding: "utf8", env: dev });
     assert.equal(allowed.status, 0, allowed.stderr);
     assert.match(allowed.stdout + allowed.stderr, /sdlc git gate: receipt fresh/u);
     const hooksDir = s.git("rev-parse", "--git-path", "hooks");
