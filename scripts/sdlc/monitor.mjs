@@ -11,7 +11,7 @@
 
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { loadConfig } from "./lib.mjs";
+import { assertPublicOrigin, loadConfig } from "./lib.mjs";
 import { arg, isMain } from "./cli.mjs";
 
 export const TIERS = ["ok", "log", "diagnose", "propose"];
@@ -95,7 +95,7 @@ export function evaluate({ bands, ready, runs, mainSha }) {
 
 if (isMain(import.meta.url)) {
   const config = loadConfig();
-  const origin = config.origin ? config.origin.replace(/\/$/u, "") : null;
+  const origin = config.origin ? assertPublicOrigin(config.origin) : null;
   const ciRunsFile = arg("ci-runs");
   const runs = ciRunsFile ? JSON.parse(readFileSync(ciRunsFile, "utf8")) : hostRuns(config, config.bands.ci_failure_rate_main.window ?? 20);
   const mainSha = process.env.GITHUB_SHA ?? process.env.CI_COMMIT_SHA ?? null;

@@ -17,7 +17,7 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { loadConfig } from "./lib.mjs";
+import { assertPublicOrigin, loadConfig } from "./lib.mjs";
 import { arg, isMain } from "./cli.mjs";
 
 const FETCH_TIMEOUT_MS = 15000;
@@ -49,7 +49,7 @@ export async function smoke({ origin, sha = null, version = null, smokeConfig = 
     if (Array.isArray(smokeConfig.command) && smokeConfig.command.length > 0) return smokeCommand({ command: smokeConfig.command, sha, version, cwd });
     throw new Error("sdlc/config.json has origin: null and no smoke.command; nothing can be smoked, so no receipt can be written.");
   }
-  const base = origin.replace(/\/$/u, "");
+  const base = assertPublicOrigin(origin);
   const { readyPath = "/api/ready", shaField = "releaseSha", pages = [], oauthMetadata = false, mcpChallengePath = null } = smokeConfig;
   const checks = [];
   const add = (name, ok, detail) => checks.push({ name, ok: Boolean(ok), detail });
