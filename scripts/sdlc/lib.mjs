@@ -161,11 +161,27 @@ function planFilesOnBranch(cwd, base) {
   return [...names];
 }
 
+// The tree the index would commit right now. Differs from the working-tree
+// hash whenever something verify saw is not staged (or something staged
+// was edited afterwards): committing that would ship content the receipt
+// never covered, so the commit gate compares both.
+export function indexTreeHash(cwd = REPO_ROOT) {
+  try {
+    return git(["write-tree"], { cwd });
+  } catch {
+    return null;
+  }
+}
+
 export function commitGate(config, cwd = REPO_ROOT) {
   const verify = config.commands?.verify || "node scripts/verify.mjs";
   const status = receiptStatus(cwd);
   if (status.state !== "fresh") {
     return { ok: false, reason: `git commit blocked: no green \`${verify}\` receipt for the current working tree (${status.state}). Run \`${verify}\`; commit only what it verified.` };
+  }
+  const indexTree = indexTreeHash(cwd);
+  if (indexTree !== status.tree) {
+    return { ok: false, reason: `git commit blocked: the index would commit tree ${String(indexTree).slice(0, 12)} but the receipt is for the working tree ${status.tree.slice(0, 12)}. Stage everything \`${verify}\` saw (git add -u, plus new files by name), or unstage, run \`${verify}\` on exactly what you will commit, then commit.` };
   }
   const plan = config.plan ?? { thresholdLines: 20, sourcePrefixes: [] };
   const base = baseRef(cwd, config.defaultBranch ?? "main");

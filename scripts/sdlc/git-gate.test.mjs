@@ -41,6 +41,16 @@ test("commit needs a fresh receipt; push needs a receipt for HEAD's tree", () =>
     assert.equal(blocked.ok, false);
     assert.match(blocked.reason, /no green `npm run verify` receipt/u);
     receipt(s.dir);
+    const partial = decide("commit", { config: s.config, cwd: s.dir, env: {} });
+    assert.equal(partial.ok, false, "the receipt covers the working tree; nothing is staged, so the commit would ship a different tree");
+    assert.match(partial.reason, /index would commit tree/u);
+    s.git("add", "src/a.js");
+    assert.equal(decide("commit", { config: s.config, cwd: s.dir, env: {} }).ok, true);
+    writeFileSync(path.join(s.dir, "src", "b.js"), "export const b = 1;\n");
+    receipt(s.dir);
+    const half = decide("commit", { config: s.config, cwd: s.dir, env: {} });
+    assert.equal(half.ok, false, "b.js was verified but not staged: two interdependent changes, one committed");
+    s.git("add", "src/b.js");
     assert.equal(decide("commit", { config: s.config, cwd: s.dir, env: {} }).ok, true);
     const push = decide("push", { config: s.config, cwd: s.dir, env: {} });
     assert.equal(push.ok, false, "the receipt is for the working tree, HEAD has not got it yet");
