@@ -29,8 +29,17 @@ secrets/
 # and carries only the handful of facts that live nowhere else. Untracking it was
 # what let it drift — it duplicated public docs and no reviewer saw it change.
 # Personal, machine-specific or client-specific notes belong in the user-level
-# ~/.claude/CLAUDE.md, never here.
-.claude/
+# ~/.claude/CLAUDE.md, never here. The SDLC loop's files are the exception:
+# its hooks, settings, prompts and the journey-verifier agent are toolchain,
+# read by CI and by every clone, so those four paths are tracked. Everything
+# else under .claude/ (settings.local.json, other agents, commands) stays local.
+.claude/*
+!.claude/settings.json
+!.claude/hooks/
+!.claude/sdlc/
+!.claude/agents/
+.claude/agents/*
+!.claude/agents/journey-verifier.md
 # Note: .claude-plugin/plugin.json AND .claude-plugin/marketplace.json
 # ARE Claude Code plugin/marketplace manifests for memesh itself — both
 # MUST be committed. Local-dev installs of OTHER plugins land under
@@ -101,7 +110,11 @@ Dockerfile.test
 
 # === Internal docs (not for public repo) ===
 docs/archive/
-docs/plans/
+# docs/plans/<slug>.md is an SDLC loop artifact (the contract for one change,
+# with its Proof section) and is tracked; dated scratch plans and the archive
+# are local notes and stay ignored.
+docs/plans/_archive*/
+docs/plans/????-??-??-*.md
 docs/internal/
 docs/guides/
 
@@ -127,3 +140,7 @@ docs/notes/
 
 # === qa:live-journey receipts (owner-machine evidence, never shipped) ===
 .qa/
+
+# === SDLC loop: machine-local evidence, never source ===
+.verify/
+.sdlc-run/

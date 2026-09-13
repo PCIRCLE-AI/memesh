@@ -30,6 +30,16 @@ Everything below is either non-obvious from the code or specific to working
 with an assistant. If anything here starts duplicating a document above, delete
 it here and link instead.
 
+### Verifying your work (the definition of done)
+
+- Verify: `npm run verify` (about 8 minutes; must end with `[verify] GREEN. Receipt for tree <hash> written to .verify/receipt.json.`)
+- Fast inner loop: `npm run typecheck` then `node scripts/run-tests-isolated.mjs` (ends with `Test Files … passed`), then `npm run verify` before reporting.
+- Journeys only: `npm run verify:journeys` (build + packaged smoke + dashboard e2e; writes no receipt)
+- Receipt state: `npm run verify:receipt` (prints `fresh`, `stale` or `missing` for the current tree)
+- Run the app: `npm run build && node dist/transports/cli/cli.js serve --host 127.0.0.1 --port 3737` (dashboard at http://127.0.0.1:3737)
+
+Run `npm run verify` before reporting any task complete and paste its closing lines. If a test fails, fix the code, not the test. The session cannot end, and `git commit` / `git push` cannot run (git hooks, for every tool), without a green receipt for the exact tree; `.verify/` cannot be written by hand. Non-trivial changes start from `docs/plans/<slug>.md` with a Proof section; the commit gate refuses 20 or more source lines without one. The whole chain — intent → spec → plan → build → review → release → monitor, each stage started by merging the previous artifact — is `docs/sdlc/LOOP.md`; the review policy is `REVIEW.md`.
+
 ### Running the tests
 
 ```bash
@@ -165,11 +175,14 @@ Rules that hold in both modes:
   two writers never touch one file; isolate file-editing agents in
   worktrees; the orchestrator reads every diff before it lands. Do not
   delegate the critical path reflexively — coordination has a cost.
-- **Internal working notes stay local.** Plans, scratch analyses, agent
-  transcripts, private TODOs — never committed, never in commit messages or
-  release notes. The repository carries only what reproduces shipped
-  behaviour: source, tests, schemas, configuration, and the public docs
-  above. (This is also why this file is a pointer.)
+- **Internal working notes stay local.** Scratch analyses, agent
+  transcripts, private TODOs, dated scratch plans — never committed, never in
+  commit messages or release notes. The repository carries only what
+  reproduces shipped behaviour: source, tests, schemas, configuration, the
+  public docs above, and the loop's artifacts (`intent/<slug>.md`,
+  `docs/specs/<slug>.md`, `docs/plans/<slug>.md`): those are contracts a
+  reviewer accepts by merging, not notes. (This is also why this file is a
+  pointer.)
 - **Docs move with the change** — selected source-derived contracts are enforced
   by `check-doc-claims`; the rest still require source-backed review. A
   capability the docs omit or describe wrongly is not done.

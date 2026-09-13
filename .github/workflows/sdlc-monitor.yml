@@ -1,0 +1,117 @@
+name: SDLC monitor
+
+# Stage 6. A deterministic script compares the public origin and the CI
+# history with `bands` in sdlc/config.json. Tier log: recorded here. Tier
+# diagnose or propose: a tracking issue is filed (always), and with the
+# secrets set Claude reads (never writes product code) and files an intent PR,
+# once per open breach, so the loop restarts itself.
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: sdlc-monitor
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect (deterministic)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tier: ${{ steps.eval.outputs.tier }}
+      metric: ${{ steps.eval.outputs.metric }}
+      slug: ${{ steps.eval.outputs.slug }}
+      open_issue: ${{ steps.dedupe.outputs.open_issue }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - id: eval
+        run: |
+          mkdir -p .sdlc-run
+          node scripts/sdlc/monitor.mjs --json > .sdlc-run/breach.json
+          { echo '```'; node scripts/sdlc/monitor.mjs; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          tier="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(".sdlc-run/breach.json","utf8")).tier)')"
+          metric="$(node -e 'const r=JSON.parse(require("fs").readFileSync(".sdlc-run/breach.json","utf8"));const o=["ok","log","diagnose","propose"];const b=[...r.breaches].sort((a,c)=>o.indexOf(c.tier)-o.indexOf(a.tier))[0];console.log(b?b.metric:"")')"
+          echo "tier=$tier" >> "$GITHUB_OUTPUT"
+          echo "metric=$metric" >> "$GITHUB_OUTPUT"
+          echo "slug=$(date -u +%Y-%m-%d)-monitor-${metric:-none}" >> "$GITHUB_OUTPUT"
+      # The breach record is uploaded only when the respond job will read it;
+      # every run's metrics are already in the step summary above.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.eval.outputs.tier == 'diagnose' || steps.eval.outputs.tier == 'propose'
+        with:
+          name: monitor-${{ github.run_id }}
+          path: .sdlc-run/breach.json
+          retention-days: 14
+      - id: dedupe
+        if: steps.eval.outputs.tier == 'diagnose' || steps.eval.outputs.tier == 'propose'
+        env:
+          METRIC: ${{ steps.eval.outputs.metric }}
+        run: |
+          n="$(gh issue list --label sdlc:breach --state open --search "$METRIC in:title" --json number --jq 'length')"
+          echo "open_issue=$n" >> "$GITHUB_OUTPUT"
+          [ "$n" = "0" ] || echo "Breach $METRIC already tracked by an open sdlc:breach issue; not filing again." >> "$GITHUB_STEP_SUMMARY"
+
+  respond:
+    name: File the breach, diagnose, open an intent
+    needs: detect
+    if: (needs.detect.outputs.tier == 'diagnose' || needs.detect.outputs.tier == 'propose') && needs.detect.outputs.open_issue == '0'
+    permissions:
+      contents: read
+      issues: write
+      actions: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ secrets.SDLC_GITHUB_TOKEN || github.token }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      METRIC: ${{ needs.detect.outputs.metric }}
+      TIER: ${{ needs.detect.outputs.tier }}
+      SLUG: ${{ needs.detect.outputs.slug }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SDLC_GITHUB_TOKEN || github.token }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: monitor-${{ github.run_id }}
+          path: .sdlc-run
+      - name: Tracking issue (always, so a breach is never silent)
+        run: |
+          gh issue create --label sdlc:breach --title "Control band breached: $METRIC ($TIER)" --body "$(printf 'Detected by scripts/sdlc/monitor.mjs on run %s.\n\n```json\n%s\n```\n\nThe loop files an intent PR from this issue when the configured provider'"'"'s model credential and SDLC_GITHUB_TOKEN are set; otherwise a person writes intent/%s.md.' "$RUN_URL" "$(cat .sdlc-run/breach.json)" "$SLUG")"
+      - name: Secrets present for the diagnosis
+        id: secrets
+        env:
+          PAT: ${{ secrets.SDLC_GITHUB_TOKEN }}
+        run: |
+          if node scripts/sdlc/agent.mjs --check && [ -n "$PAT" ]; then echo "ok=true" >> "$GITHUB_OUTPUT"; else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::No model credential for the configured provider, or no SDLC_GITHUB_TOKEN; breach recorded as an issue only, no intent PR."
+            echo "Diagnosis skipped: a required secret is missing. The breach is on the issue." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Install the configured provider CLI (sdlc/config.json agent.provider)
+        if: steps.secrets.outputs.ok == 'true'
+        run: node scripts/sdlc/agent.mjs --install
+      - name: Read-only diagnosis into an intent PR
+        if: steps.secrets.outputs.ok == 'true'
+        run: node scripts/sdlc/run-stage.mjs --stage diagnose --slug "$SLUG" --metric "$METRIC" --breach .sdlc-run/breach.json

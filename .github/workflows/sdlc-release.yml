@@ -1,0 +1,106 @@
+name: SDLC release receipt
+
+# Stage 5 production gate. A release is authorized by a named person through
+# this dispatch; the deploy itself follows the project's deploy runbook
+# on the host. This workflow proves the deployment afterwards: the configured
+# public origin (sdlc/config.json) runs exactly the authorized SHA and the
+# smoke journey is green, then it files the receipt as a PR to docs/releases/.
+# The origin is not an input: a receipt only ever describes the real origin.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: Full 40-character SHA on main that was deployed
+        required: true
+      note:
+        description: Optional note for the receipt (ticket, change record). The authorizer is the account that dispatches this run.
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  receipt:
+    name: Verify ${{ inputs.release_sha }} on the configured origin
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.SDLC_GITHUB_TOKEN }}
+      RELEASE_SHA: ${{ inputs.release_sha }}
+      AUTHORIZED_BY: ${{ github.actor }}
+      NOTE: ${{ inputs.note }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SDLC_GITHUB_TOKEN }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - name: Inputs must be well formed and the SHA on main
+        run: |
+          case "$RELEASE_SHA" in
+            *[!0-9a-f]*|"") echo "::error::release_sha must be 40 lowercase hex characters"; exit 1;;
+          esac
+          [ "${#RELEASE_SHA}" -eq 40 ] || { echo "::error::release_sha must be 40 characters"; exit 1; }
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main || { echo "::error::$RELEASE_SHA is not an ancestor of origin/main"; exit 1; }
+          case "$NOTE" in *$'\n'*|*$'\r'*|*'"'*) echo "::error::note must be a single line without quotes"; exit 1;; esac
+          [ -n "$GH_TOKEN" ] || { echo "::error::SDLC_GITHUB_TOKEN secret is not set; the receipt PR cannot be opened."; exit 1; }
+      - name: Smoke journey (probed once; the same result is gated, summarized and filed)
+        id: smoke
+        run: |
+          set -o pipefail
+          mkdir -p .sdlc-run
+          version="$(git show "$RELEASE_SHA:package.json" 2>/dev/null | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{console.log(JSON.parse(s).version??"")}catch{console.log("")}})')"
+          if node scripts/sdlc/smoke-public.mjs --sha "$RELEASE_SHA" --version "$version" --json > .sdlc-run/smoke.json; then echo "red=false" >> "$GITHUB_OUTPUT"; else echo "red=true" >> "$GITHUB_OUTPUT"; fi
+          { echo '```'; node scripts/sdlc/smoke-public.mjs --render .sdlc-run/smoke.json || true; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: release-smoke-${{ inputs.release_sha }}
+          path: .sdlc-run/smoke.json
+      - name: File the receipt
+        if: steps.smoke.outputs.red == 'false'
+        run: |
+          branch="sdlc/release/$RELEASE_SHA"
+          file="docs/releases/$RELEASE_SHA.md"
+          origin="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(".sdlc-run/smoke.json","utf8")).origin)')"
+          git checkout -B "$branch" origin/main
+          mkdir -p docs/releases
+          {
+            echo "---"
+            echo "sha: $RELEASE_SHA"
+            echo "origin: $origin"
+            echo "authorized_by: $AUTHORIZED_BY"
+            echo "note: $NOTE"
+            echo "verified_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "workflow_run: $RUN_URL"
+            echo "---"
+            echo
+            echo "# Release receipt $RELEASE_SHA"
+            echo
+            echo '```'
+            node scripts/sdlc/smoke-public.mjs --render .sdlc-run/smoke.json
+            echo '```'
+          } > "$file"
+          git -c user.name=sdlc-loop -c user.email=sdlc-loop@users.noreply.github.com add "$file"
+          git -c user.name=sdlc-loop -c user.email=sdlc-loop@users.noreply.github.com commit -m "release: receipt for $RELEASE_SHA" -m "Smoke journey green on $origin; authorized by $AUTHORIZED_BY."
+          git push --force-with-lease -u origin "$branch"
+          {
+            echo "Post-deploy smoke journey green on $origin. Authorized by $AUTHORIZED_BY (the account that dispatched run $RUN_URL). Merging records the receipt; docs/PROJECT-STATUS.md should cite it."
+            echo
+            echo "## Coverage"
+            echo
+            echo "| Surface | QA | Review | Simplification |"
+            echo "|---|---|---|---|"
+            echo "| \`$file\` | scripts/sdlc/smoke-public.mjs exit=0 against $origin, all checks ok, same result rendered into the file | generated by the release workflow from the smoke JSON (no model); the merging code owner reviews it; claude-opus-5 review passes apply on this PR too | not applicable: a receipt that mirrors the smoke output verbatim |"
+          } > .sdlc-run/pr-body.md
+          gh pr create --base main --head "$branch" --title "release: receipt for $RELEASE_SHA" --body-file .sdlc-run/pr-body.md --label sdlc:release
+      - name: Red smoke fails the release
+        if: steps.smoke.outputs.red != 'false'
+        run: |
+          echo "::error::Smoke journey RED for $RELEASE_SHA. Roll back per the project's deploy runbook and re-run."
+          exit 1

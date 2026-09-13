@@ -1,0 +1,183 @@
+name: SDLC review
+
+# Every pull request from this repository gets the same three review passes
+# (REVIEW.md) from a reviewer that did not write the code, run headlessly by
+# the provider configured in sdlc/config.json (claude, codex or gemini) through
+# scripts/sdlc/review.mjs. Findings never approve or block on their own; a
+# person merges. Pull requests from forks are skipped with a notice: secrets
+# are not available to them, and their code is not run here.
+#
+# The @claude fix loop (provider claude only) lives in its own workflow,
+# sdlc-claude-address.yml: it uses a third-party action, which an organization
+# that allows only GitHub-owned actions rejects at parse time for the whole
+# file it sits in. Delete that file in such an organization; this one stays.
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  actions: read
+
+# A new push to the same pull request supersedes the review in flight: the
+# findings would describe a diff that no longer exists, and each cell is a
+# model run.
+concurrency:
+  group: sdlc-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  key:
+    name: Provider and credential
+    runs-on: ubuntu-latest
+    outputs:
+      has_key: ${{ steps.key.outputs.has_key }}
+      provider: ${{ steps.key.outputs.provider }}
+      fork: ${{ steps.key.outputs.fork }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - id: key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          FORK: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository }}
+        run: |
+          echo "provider=$(node -e 'console.log(JSON.parse(require("fs").readFileSync("sdlc/config.json","utf8")).agent?.provider ?? "claude")')" >> "$GITHUB_OUTPUT"
+          echo "fork=$FORK" >> "$GITHUB_OUTPUT"
+          if [ "$FORK" = "true" ]; then
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Pull request from a fork: the automated review does not run (no secrets, no execution of fork code). A maintainer reviews per REVIEW.md."
+            echo "Fork pull request: automated review skipped; a maintainer reviews per REVIEW.md." >> "$GITHUB_STEP_SUMMARY"
+          elif node scripts/sdlc/agent.mjs --check; then
+            echo "has_key=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_key=false" >> "$GITHUB_OUTPUT"
+            echo "**Failed: no model credential is set for the configured provider**, so the required review passes did not run. Run scripts/sdlc/bootstrap.sh." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+  scale:
+    # REVIEW.md: a change that touches three or more top-level directories, or
+    # a sensitive path, gets a matrix (directory x pass, one reviewer per cell)
+    # instead of one reviewer running three passes.
+    name: Review scale
+    needs: key
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && needs.key.outputs.has_key == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      cells: ${{ steps.plan.outputs.cells }}
+      large: ${{ steps.plan.outputs.large }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - id: plan
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          files="$(git diff --name-only "$BASE" "$HEAD")"
+          dirs="$(printf '%s\n' "$files" | awk -F/ '{print ($0 ~ /\//) ? $1 : "(root)"}' | sort -u)"
+          ndirs="$(printf '%s\n' "$dirs" | grep -c .)"
+          sensitive=false
+          printf '%s\n' "$files" | grep -Eiq 'auth|oauth|session|mcp|secret|credential|deploy/|\.github/workflows|schemas/|migrat' && sensitive=true
+          large=false; [ "$ndirs" -ge 3 ] && large=true; [ "$sensitive" = true ] && large=true
+          echo "large=$large" >> "$GITHUB_OUTPUT"
+          cells="$(printf '%s\n' "$dirs" | head -8 | node -e 'const d=require("fs").readFileSync(0,"utf8").trim().split("\n").filter(Boolean);const out=[];for(const dir of d)for(const pass of ["Bugs","Security","Compliance"])out.push({dir,pass});console.log(JSON.stringify(out))')"
+          echo "cells=$cells" >> "$GITHUB_OUTPUT"
+          { echo "## Review scale"; echo; echo "directories: $ndirs, sensitive paths: $sensitive, large: $large"; } >> "$GITHUB_STEP_SUMMARY"
+
+  review:
+    name: Three-pass review (REVIEW.md)
+    needs: [key, scale]
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && needs.key.outputs.has_key == 'true' && needs.scale.outputs.large != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      # The PR head is checked out for reading only: the reviewer gets read
+      # access (no shell beyond git log/diff) and nothing here installs or
+      # runs the PR's code.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - name: Install the configured provider CLI
+        run: node scripts/sdlc/agent.mjs --install
+      - name: Review and post the findings
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+        run: node scripts/sdlc/review.mjs --request "$PR" --base "$BASE"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: review-${{ github.event.pull_request.number }}-${{ github.run_id }}
+          path: .sdlc-run/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  review-matrix:
+    name: ${{ matrix.cell.pass }} pass, ${{ matrix.cell.dir }}
+    needs: [key, scale]
+    if: github.event_name == 'pull_request' && github.event.pull_request.draft == false && needs.key.outputs.has_key == 'true' && needs.scale.outputs.large == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        cell: ${{ fromJSON(needs.scale.outputs.cells) }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+      - name: Install the configured provider CLI
+        run: node scripts/sdlc/agent.mjs --install
+      - name: Review one cell and post the findings
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          PASS: ${{ matrix.cell.pass }}
+          DIR: ${{ matrix.cell.dir }}
+        run: node scripts/sdlc/review.mjs --request "$PR" --base "$BASE" --pass "$PASS" --dir "$DIR"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: review-${{ github.event.pull_request.number }}-${{ matrix.cell.pass }}-${{ strategy.job-index }}-${{ github.run_id }}
+          path: .sdlc-run/
+          retention-days: 14
+          if-no-files-found: ignore

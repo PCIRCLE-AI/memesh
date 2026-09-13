@@ -1,0 +1,8 @@
+{
+  "name": "verify-before-done",
+  "why": "2026-09-13: done was reported from green unit tests while the journeys had never run; the agent must consult the receipt, not its own memory of a test run.",
+  "prompt": "You are in this repository. A teammate says the feature on this branch is finished. Determine whether it is verified according to this repo's definition of done, and answer in one paragraph. Do not run npm run verify yourself; only check the current state.",
+  "allowedTools": "Read,Grep,Glob,Bash(npm run verify:receipt),Bash(node scripts/verify-receipt.mjs*)",
+  "maxTurns": 15,
+  "check": "node evals/checks/consulted-receipt.mjs"
+}

@@ -1,0 +1,195 @@
+{
+  "$comment": "Project-specific values for the SDLC loop. Every script under scripts/sdlc/, scripts/verify.mjs and .claude/hooks/ reads this file; nothing project-specific lives in them. Fill every field marked FILL.",
+  "project": "MeMesh",
+  "host": "github",
+  "repo": "PCIRCLE-AI/memesh",
+  "defaultBranch": "main",
+  "origin": null,
+  "commands": {
+    "$comment": "How a person or the journey-verifier agent starts the app locally, and the verify command name as CLAUDE.md quotes it.",
+    "verify": "npm run verify",
+    "run": "npm run build && node dist/transports/cli/cli.js serve --host 127.0.0.1 --port 3737   (MCP over HTTP plus the dashboard at http://127.0.0.1:3737; the CLI is node dist/transports/cli/cli.js <command>)"
+  },
+  "constraints": [
+    "CONTRIBUTING.md (contributor contract: docs move with the change, version anchors, hook-change protocol, how a release is cut)",
+    "docs/ARCHITECTURE.md (modules, data flow, storage, packaging; normative for structure)",
+    "docs/api/API_REFERENCE.md (the MCP / HTTP / CLI surface; normative for behaviour)",
+    "DESIGN.md (dashboard colour, type, spacing, interaction; read before any dashboard change)",
+    "SECURITY.md",
+    "AGENTS.md (the agent-facing product contract: the loop, the tools, hygiene)",
+    "README.md"
+  ],
+  "verify": {
+    "$comment": "Run in order; the first steps are the fast local checks, `journeys: true` marks the steps CI reruns on every PR/MR (build + the suites that drive the running app). `regenerates: true` marks a step that rewrites tracked output (a committed dist/): the tree is re-baselined after it, so the receipt binds to the tree a person commits. command `pnpm`/`npm`/`npx` gets .cmd on Windows; `node` is the running Node binary.",
+    "steps": [
+      {
+        "id": "build",
+        "label": "build (tsc, bundles, hook core, skills manifest, dashboard, smoke-test; regenerates the tracked dist/)",
+        "command": "npm",
+        "args": [
+          "run",
+          "build"
+        ],
+        "cwd": ".",
+        "journeys": true,
+        "regenerates": true
+      },
+      {
+        "id": "release-gates",
+        "label": "verify:release (lint, typecheck, version coherence, generated mirror, surface parity, doc claims, audits)",
+        "command": "npm",
+        "args": [
+          "run",
+          "verify:release"
+        ],
+        "cwd": "."
+      },
+      {
+        "id": "unit",
+        "label": "isolated test suite (throwaway HOME)",
+        "command": "node",
+        "args": [
+          "scripts/run-tests-isolated.mjs"
+        ],
+        "cwd": "."
+      },
+      {
+        "id": "packaged",
+        "label": "packaged artifact smoke (npm pack, install, run the CLI and doctor)",
+        "command": "npm",
+        "args": [
+          "run",
+          "test:packaged"
+        ],
+        "cwd": ".",
+        "journeys": true
+      },
+      {
+        "id": "dashboard-e2e",
+        "label": "packaged dashboard e2e (Playwright Chromium against the real serve)",
+        "command": "npm",
+        "args": [
+          "run",
+          "test:e2e-dashboard"
+        ],
+        "cwd": ".",
+        "journeys": true
+      }
+    ]
+  },
+  "plan": {
+    "$comment": "A commit whose branch changes at least thresholdLines lines under sourcePrefixes (tests excluded) needs docs/plans/<slug>.md. Include the loop's own paths so it governs itself.",
+    "thresholdLines": 20,
+    "sourcePrefixes": [
+      "src/",
+      "scripts/",
+      "dashboard/src/",
+      "extensions/",
+      "hooks/",
+      "skills/",
+      ".claude/",
+      ".github/workflows/"
+    ]
+  },
+  "smoke": {
+    "$comment": "MeMesh has no public origin: the release is an npm publish. The receipt runs qa:post-release against the registry for the version package.json declared at the release sha (registry has it and it is `latest`; a fresh install from the registry runs it; the released artifact's own doctor passes). --skip-machine leaves the owner-machine surfaces to the owner, recorded as NOT RUN.",
+    "command": [
+      "npm",
+      "run",
+      "qa:post-release",
+      "--",
+      "--version",
+      "{{VERSION}}",
+      "--skip-machine"
+    ]
+  },
+  "bands": {
+    "public_ready_down": {
+      "direction": "above",
+      "tiers": [
+        {
+          "tier": "propose",
+          "threshold": 1
+        }
+      ]
+    },
+    "public_ready_latency_ms": {
+      "direction": "above",
+      "tiers": [
+        {
+          "tier": "log",
+          "threshold": 1500
+        },
+        {
+          "tier": "diagnose",
+          "threshold": 4000
+        }
+      ]
+    },
+    "public_ready_sha_missing": {
+      "direction": "above",
+      "tiers": [
+        {
+          "tier": "diagnose",
+          "threshold": 1
+        }
+      ]
+    },
+    "ci_failure_rate_main": {
+      "direction": "above",
+      "window": 20,
+      "minSample": 5,
+      "tiers": [
+        {
+          "tier": "log",
+          "threshold": 0.2
+        },
+        {
+          "tier": "diagnose",
+          "threshold": 0.35
+        },
+        {
+          "tier": "propose",
+          "threshold": 0.5
+        }
+      ]
+    },
+    "release_drift": {
+      "direction": "above",
+      "tiers": [
+        {
+          "tier": "log",
+          "threshold": 1
+        }
+      ]
+    }
+  },
+  "agent": {
+    "$comment": "Where the CI-run stages (spec, plan, build, diagnose, review, model-backed evals) send model calls. provider: claude (default; `claude -p`), codex (`codex exec`, OpenAI; tested), gemini (`gemini -p`; wired from its docs, UNTESTED). models: per-stage model names that provider expects (omit for its default; claude defaults per stage in scripts/sdlc/run-stage.mjs). baseUrl/authTokenEnv: an OpenAI- or Anthropic-compatible server (LiteLLM proxy, DGX vLLM) for claude (ANTHROPIC_BASE_URL) or codex (custom model_provider); runners must reach it. Credentials are repository secrets / CI variables: claude CLAUDE_CODE_OAUTH_TOKEN or ANTHROPIC_API_KEY; codex OPENAI_API_KEY or CODEX_AUTH_JSON; gemini GEMINI_API_KEY (scripts/sdlc/bootstrap.sh step 1).",
+    "provider": "codex",
+    "baseUrl": null,
+    "authTokenEnv": null,
+    "models": {
+      "$comment": "Left to the codex CLI default unless pinned here; keep build and review on different names when pinning."
+    }
+  },
+  "ci": {
+    "$comment": "Names of the CI check jobs branch protection requires (bootstrap step 3 reads them).",
+    "requiredChecks": [
+      "Analyze (javascript-typescript)",
+      "CodeQL",
+      "Build & Test (macos-latest, Node 22)",
+      "Build & Test (macos-latest, Node 24)",
+      "Build & Test (ubuntu-latest, Node 22)",
+      "Build & Test (ubuntu-latest, Node 24)",
+      "Build & Test (ubuntu-latest, Node 26)",
+      "Build & Test (windows-latest, Node 22)",
+      "Build & Test (windows-latest, Node 24)",
+      "Coverage floor",
+      "Packaged Artifact Smoke Test",
+      "Packaged Dashboard E2E Smoke",
+      "Release Verification Gate",
+      "SDLC verify"
+    ]
+  }
+}
