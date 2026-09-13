@@ -659,6 +659,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       USERPROFILE: 'C:\\ambient\\maintainer-home-sentinel',
       MEMESH_DIR: '/ambient/maintainer-memesh-sentinel',
       MEMESH_DB_PATH: '/ambient/maintainer-db-sentinel.db',
+      NPM_CONFIG_CACHE: '/ambient/maintainer-npm-cache-sentinel',
       OLLAMA_HOST: 'http://ambient-ollama.invalid',
       OPENAI_API_KEY: 'ambient-openai-sentinel',
       ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
@@ -725,6 +726,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     // both still be resolved ahead of HOME.
     expect('MEMESH_DIR' in env).toBe(false);
     expect('MEMESH_DB_PATH' in env).toBe(false);
+    expect(env.npm_config_cache).toBe(path.join(runtimeHome, 'npm-cache'));
+    expect('NPM_CONFIG_CACHE' in env).toBe(false);
     for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST']) {
       expect(env[key]).toBeUndefined();
     }

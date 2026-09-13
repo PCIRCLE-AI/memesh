@@ -6,6 +6,21 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **The isolated release suite now owns its npm cache.** The release runner
+  no longer inherits a maintainer's `~/.npm` cache when nested tests execute
+  `npm pack`, so local ownership damage cannot turn an otherwise isolated
+  release check into an `EPERM` failure. A source contract pins the private
+  cache wiring. See
+  `docs/postmortems/2026-09-13-isolated-suite-npm-cache.md`.
+- **Dashboard auto-repair permission failures now explain the next action.**
+  Config and plugin-cache repairs that cannot create their required local
+  files return a stable `operation.permission-denied` error with fixed,
+  path-free guidance. The Dashboard translates it in every supported locale
+  and tells the user to restart `memesh serve` from their own terminal and
+  retry, instead of replacing the cause with “unexpected server error.” The
+  regression gate covers direct filesystem errors, the plugin upgrade-lock
+  failure, unrelated failures, path redaction, and retry availability. See
+  `docs/postmortems/2026-09-13-dashboard-auto-repair-permission.md`.
 - **A later Stop in the same session updates its session insights instead of
   freezing them (#322).** `session-summary.js` runs on `Stop`, which fires at
   the end of every turn, not once per session; a guard added for #240 froze a

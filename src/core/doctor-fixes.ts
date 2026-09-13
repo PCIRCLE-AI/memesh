@@ -74,6 +74,39 @@ export interface PluginRefreshResult {
   restartRequired: true;
 }
 
+/**
+ * Whether a doctor repair failed because the current process cannot write the
+ * required local file. This deliberately returns only a category: exception
+ * messages and child-process stderr can contain usernames, paths, or command
+ * details and must never become the Dashboard response.
+ */
+export function isDoctorFixPermissionError(error: unknown): boolean {
+  const record = error && typeof error === 'object'
+    ? error as { code?: unknown; message?: unknown; stderr?: unknown; cause?: unknown }
+    : null;
+  if (record && typeof record.code === 'string' && ['EACCES', 'EPERM', 'EROFS'].includes(record.code)) {
+    return true;
+  }
+
+  const detail = [
+    record?.message,
+    typeof record?.stderr === 'string' || Buffer.isBuffer(record?.stderr) ? String(record.stderr) : undefined,
+  ].filter((value): value is string => typeof value === 'string').join('\n');
+  if (/\b(?:EACCES|EPERM|EROFS)\b|permission denied|operation not permitted|read-only file system/i.test(detail)) {
+    return true;
+  }
+  // upgrade-plugin.sh emits this only when the lock parent is absent or not
+  // writable. A pre-existing lock has the distinct "could not acquire" text
+  // and must remain an ordinary operation failure, not be misclassified.
+  if (
+    /could not create the upgrade lock at [^\n]+/i.test(detail)
+    && /its parent must exist and be writable:/i.test(detail)
+  ) return true;
+  return record?.cause !== undefined && record.cause !== error
+    ? isDoctorFixPermissionError(record.cause)
+    : false;
+}
+
 function safeOutput(value: string): string {
   return value.replace(/(?:\/Users\/[^\s'"`]+|\/home\/[^\s'"`]+|[A-Za-z]:\\[^\s'"`]+)/g, '<local-path>')
     .replace(/(Bearer\s+|sk-|ghp_)[A-Za-z0-9._-]+/gi, '$1<redacted>')
