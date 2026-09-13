@@ -98,7 +98,10 @@ export function isDoctorFixPermissionError(error: unknown): boolean {
   // upgrade-plugin.sh emits this only when the lock parent is absent or not
   // writable. A pre-existing lock has the distinct "could not acquire" text
   // and must remain an ordinary operation failure, not be misclassified.
-  if (/could not create (?:the )?upgrade lock/i.test(detail)) return true;
+  if (
+    /could not create the upgrade lock at [^\n]+/i.test(detail)
+    && /its parent must exist and be writable:/i.test(detail)
+  ) return true;
   return record?.cause !== undefined && record.cause !== error
     ? isDoctorFixPermissionError(record.cause)
     : false;

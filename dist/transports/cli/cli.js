@@ -7117,7 +7117,7 @@ function isDoctorFixPermissionError(error51) {
   if (/\b(?:EACCES|EPERM|EROFS)\b|permission denied|operation not permitted|read-only file system/i.test(detail)) {
     return true;
   }
-  if (/could not create (?:the )?upgrade lock/i.test(detail))
+  if (/could not create the upgrade lock at [^\n]+/i.test(detail) && /its parent must exist and be writable:/i.test(detail))
     return true;
   return record2?.cause !== void 0 && record2.cause !== error51 ? isDoctorFixPermissionError(record2.cause) : false;
 }

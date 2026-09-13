@@ -731,4 +731,10 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(env.PATH).toBe(pollutedBaseEnv.PATH);
   });
 
+  it('runs the isolated suite with a test-owned npm cache', () => {
+    const runner = fs.readFileSync(path.join(repoRoot, 'scripts', 'run-tests-isolated.mjs'), 'utf8');
+    expect(runner).toContain("import { envWithNpmCache, npxSync } from './lib/npm-bin.mjs';");
+    expect(runner).toMatch(/envWithNpmCache\(\s*path\.join\(home, 'npm-cache'\),/);
+  });
+
 });

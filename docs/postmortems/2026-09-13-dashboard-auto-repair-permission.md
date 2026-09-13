@@ -1,7 +1,7 @@
 # Dashboard auto-repair hid permission failures
 
-**Date:** 2026-09-13  
-**Affected release:** 4.9.4; reproduced against the pre-release candidate  
+**Date:** 2026-09-13
+**Affected release:** 4.9.4; reproduced against the pre-release candidate
 **Surface:** Dashboard `POST /v1/doctor/fix`
 
 ## Symptom

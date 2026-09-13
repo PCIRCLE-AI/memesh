@@ -6,6 +6,12 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **The isolated release suite now owns its npm cache.** The release runner
+  no longer inherits a maintainer's `~/.npm` cache when nested tests execute
+  `npm pack`, so local ownership damage cannot turn an otherwise isolated
+  release check into an `EPERM` failure. A source contract pins the private
+  cache wiring. See
+  `docs/postmortems/2026-09-13-isolated-suite-npm-cache.md`.
 - **Dashboard auto-repair permission failures now explain the next action.**
   Config and plugin-cache repairs that cannot create their required local
   files return a stable `operation.permission-denied` error with fixed,

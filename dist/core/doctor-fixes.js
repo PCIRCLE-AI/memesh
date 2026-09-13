@@ -70,7 +70,8 @@ export function isDoctorFixPermissionError(error) {
     if (/\b(?:EACCES|EPERM|EROFS)\b|permission denied|operation not permitted|read-only file system/i.test(detail)) {
         return true;
     }
-    if (/could not create (?:the )?upgrade lock/i.test(detail))
+    if (/could not create the upgrade lock at [^\n]+/i.test(detail)
+        && /its parent must exist and be writable:/i.test(detail))
         return true;
     return record?.cause !== undefined && record.cause !== error
         ? isDoctorFixPermissionError(record.cause)

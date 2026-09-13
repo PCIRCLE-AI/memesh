@@ -9,7 +9,7 @@ describe('doctor repair permission failure classification', () => {
   it('recognizes the owned plugin script failure when its lock parent is not writable', () => {
     const error = Object.assign(new Error('Command failed'), {
       code: 1,
-      stderr: 'ERROR: could not create the upgrade lock at /fixture/private/cache.lock.\nIts parent must exist and be writable.',
+      stderr: 'ERROR: could not create the upgrade lock at /fixture/private/cache.lock.\nIts parent must exist and be writable: /fixture/private',
     });
     expect(isDoctorFixPermissionError(error)).toBe(true);
   });
@@ -18,6 +18,10 @@ describe('doctor repair permission failure classification', () => {
     expect(isDoctorFixPermissionError(Object.assign(new Error('Command failed'), {
       code: 1,
       stderr: 'ERROR: could not acquire the upgrade lock — another upgrade may be running.',
+    }))).toBe(false);
+    expect(isDoctorFixPermissionError(Object.assign(new Error('Command failed'), {
+      code: 1,
+      stderr: 'ERROR: could not create the upgrade lock while parsing unrelated input.',
     }))).toBe(false);
     expect(isDoctorFixPermissionError(new Error('unexpected parser failure'))).toBe(false);
   });

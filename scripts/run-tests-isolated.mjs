@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { npxSync } from './lib/npm-bin.mjs';
+import { envWithNpmCache, npxSync } from './lib/npm-bin.mjs';
 import { buildIsolatedSuiteEnv } from './lib/isolated-env.mjs';
 
 /**
@@ -32,7 +32,10 @@ try {
   // Both deletions now live in `lib/isolated-env.mjs`, with the audit scripts
   // that need the identical guarantee. Three copies is how two of them ended
   // up pinning only HOME.
-  const env = buildIsolatedSuiteEnv(process.env, { runtimeHome: home });
+  const env = envWithNpmCache(
+    path.join(home, 'npm-cache'),
+    buildIsolatedSuiteEnv(process.env, { runtimeHome: home }),
+  );
 
   npxSync(['vitest', 'run', ...process.argv.slice(2)], {
     stdio: 'inherit',
