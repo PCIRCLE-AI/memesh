@@ -23,7 +23,7 @@ import {
   readConfig,
   updateConfig,
 } from '../../core/config.js';
-import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
+import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -85,6 +85,7 @@ type ErrorCode =
   | 'resource.not-found'    // 404 — route exists, the named entity/proposal does not
   | 'payload.too-large'     // 413 — body exceeds the 1 MB limit
   | 'operation.failed'      // 400 — valid request, but the operation itself rejected it
+  | 'operation.permission-denied' // 500 — explicit local mutation lacked filesystem permission
   | 'rate.limited'          // 429 — too many requests in the window (non-loopback only)
   | 'server.internal';      // 500/503 — unexpected server-side failure
 
@@ -565,15 +566,27 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
   }
 
   let action: unknown;
-  switch (check.fixId) {
-    case 'config-retired-settings':
-      action = removeRetiredConfigKeys();
-      break;
-    case 'plugin-cache-refresh':
-      action = refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check));
-      break;
-    default:
-      throw new HttpError(400, 'operation.failed', 'This diagnostic must be repaired from the command line.');
+  try {
+    switch (check.fixId) {
+      case 'config-retired-settings':
+        action = removeRetiredConfigKeys();
+        break;
+      case 'plugin-cache-refresh':
+        action = refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check));
+        break;
+      default:
+        throw new HttpError(400, 'operation.failed', 'This diagnostic must be repaired from the command line.');
+    }
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    if (isDoctorFixPermissionError(error)) {
+      throw new HttpError(
+        500,
+        'operation.permission-denied',
+        'MeMesh cannot modify the local files required for this repair. Close this dashboard, start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.',
+      );
+    }
+    throw error;
   }
 
   const after = await runDoctor({ packageRoot, packageVersion });

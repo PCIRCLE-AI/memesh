@@ -864,6 +864,7 @@ Every `success: false` envelope carries a machine-readable `errorCode` **alongsi
 | `resource.not-found` | 404 | Route exists, but the named entity / proposal does not |
 | `payload.too-large` | 413 | Body exceeds the 1 MB limit (the legacy `code: "PAYLOAD_TOO_LARGE"` field is also kept) |
 | `operation.failed` | 400 | The request was well-formed but the operation itself rejected it |
+| `operation.permission-denied` | 500 | An explicit local repair could not write its required config or plugin files; the response contains fixed, path-free recovery guidance |
 | `server.internal` | 500/503 | Unexpected server-side failure |
 
 ### The origin boundary

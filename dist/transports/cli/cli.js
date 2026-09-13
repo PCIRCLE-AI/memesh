@@ -7105,6 +7105,22 @@ function removeRetiredConfigKeys() {
   }
   return { changed: true, removed, backupPath, configPath };
 }
+function isDoctorFixPermissionError(error51) {
+  const record2 = error51 && typeof error51 === "object" ? error51 : null;
+  if (record2 && typeof record2.code === "string" && ["EACCES", "EPERM", "EROFS"].includes(record2.code)) {
+    return true;
+  }
+  const detail = [
+    record2?.message,
+    typeof record2?.stderr === "string" || Buffer.isBuffer(record2?.stderr) ? String(record2.stderr) : void 0
+  ].filter((value) => typeof value === "string").join("\n");
+  if (/\b(?:EACCES|EPERM|EROFS)\b|permission denied|operation not permitted|read-only file system/i.test(detail)) {
+    return true;
+  }
+  if (/could not create (?:the )?upgrade lock/i.test(detail))
+    return true;
+  return record2?.cause !== void 0 && record2.cause !== error51 ? isDoctorFixPermissionError(record2.cause) : false;
+}
 function safeOutput(value) {
   return value.replace(/(?:\/Users\/[^\s'"`]+|\/home\/[^\s'"`]+|[A-Za-z]:\\[^\s'"`]+)/g, "<local-path>").replace(/(Bearer\s+|sk-|ghp_)[A-Za-z0-9._-]+/gi, "$1<redacted>").slice(-4e3);
 }
@@ -58425,15 +58441,24 @@ var init_server = __esm({
         throw new HttpError(400, "operation.failed", "This diagnostic has no automatic repair.");
       }
       let action;
-      switch (check2.fixId) {
-        case "config-retired-settings":
-          action = removeRetiredConfigKeys();
-          break;
-        case "plugin-cache-refresh":
-          action = refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check2));
-          break;
-        default:
-          throw new HttpError(400, "operation.failed", "This diagnostic must be repaired from the command line.");
+      try {
+        switch (check2.fixId) {
+          case "config-retired-settings":
+            action = removeRetiredConfigKeys();
+            break;
+          case "plugin-cache-refresh":
+            action = refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check2));
+            break;
+          default:
+            throw new HttpError(400, "operation.failed", "This diagnostic must be repaired from the command line.");
+        }
+      } catch (error51) {
+        if (error51 instanceof HttpError)
+          throw error51;
+        if (isDoctorFixPermissionError(error51)) {
+          throw new HttpError(500, "operation.permission-denied", "MeMesh cannot modify the local files required for this repair. Close this dashboard, start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.");
+        }
+        throw error51;
       }
       const after = await runDoctor2({ packageRoot, packageVersion });
       const safe = (value) => JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(value))));
