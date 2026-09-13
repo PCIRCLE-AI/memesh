@@ -26,6 +26,13 @@ permissions:
   issues: write
   actions: read
 
+# A new push to the same pull request supersedes the review in flight: the
+# findings would describe a diff that no longer exists, and each cell is a
+# model run.
+concurrency:
+  group: sdlc-review-${{ github.event.pull_request.number || github.event.issue.number || github.run_id }}
+  cancel-in-progress: true
+
 jobs:
   key:
     name: Provider and credential

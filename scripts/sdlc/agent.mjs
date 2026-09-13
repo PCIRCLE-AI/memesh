@@ -207,6 +207,17 @@ export function install(config, env = process.env, log = console.log) {
   log(`agent: installing ${provider.install.join(" ")}`);
   runSync(provider.install[0], provider.install.slice(1));
   if (provider.name === "codex") {
+    // codex's Linux sandbox (bubblewrap) needs a user namespace that keeps
+    // its capabilities. Ubuntu 24.04 runners restrict that through AppArmor,
+    // and every sandboxed command then fails before running with
+    // "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted" (seen on
+    // memesh PR #350: 24 review cells, 0 files read). Relax it on CI Linux;
+    // say so either way.
+    if (process.platform === "linux" && (env.CI || env.GITHUB_ACTIONS || env.GITLAB_CI)) {
+      log("agent: allowing unprivileged user namespaces for codex's sandbox (sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0)");
+      const relax = spawnSync("sudo", ["-n", "sysctl", "-w", "kernel.apparmor_restrict_unprivileged_userns=0"], { stdio: "inherit" });
+      if (relax.status !== 0) log(`agent: could not relax the restriction (exit ${relax.status ?? relax.error?.message}); sandboxed codex commands may fail with bwrap ... Operation not permitted`);
+    }
     const home = env.CODEX_HOME || path.join(homedir(), ".codex");
     if (env.OPENAI_API_KEY) {
       log("agent: codex login --with-api-key (OPENAI_API_KEY from the environment)");
@@ -233,7 +244,7 @@ if (isMain(import.meta.url)) {
     if (status.present) {
       console.log(`agent: provider ${status.provider}, credential present (${status.found.join(", ")})`);
     } else {
-      console.log(`::error::No model credential for provider ${status.provider}: set ${status.help}. Run scripts/sdlc/bootstrap.sh.`);
+      console.log(`::error::No model credential for provider ${status.provider}. Set ${status.help}. Run scripts/sdlc/bootstrap.sh.`);
       process.exitCode = 1;
     }
   } else if (process.argv.includes("--install")) {

@@ -41,6 +41,29 @@ EOF
 esac
 echo "Local work (hooks, the verify command, receipts) needs none of these."
 secret_for() { case "$provider:$1" in claude:oauth) echo CLAUDE_CODE_OAUTH_TOKEN;; claude:api) echo ANTHROPIC_API_KEY;; codex:api) echo OPENAI_API_KEY;; codex:auth) echo CODEX_AUTH_JSON;; gemini:api) echo GEMINI_API_KEY;; *) echo "";; esac; }
+# Turn whatever was typed into one of $options: its keyword, its 1-based
+# number, or plain words ("ChatGPT subscription" -> auth, "api key" -> api).
+choose_option() {
+  local typed; typed="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  local i=0 o
+  for o in $options; do i=$((i+1)); [ "$typed" = "$o" ] || [ "$typed" = "$i" ] && { echo "$o"; return; }; done
+  case "$typed" in
+    *skip*|"") echo skip;;
+    *chatgpt*|*subscription*|*訂閱*|*auth*|*login*) for o in $options; do [ "$o" = auth ] && { echo auth; return; }; [ "$o" = oauth ] && { echo oauth; return; }; done; echo "";;
+    *api*|*key*|*billing*) echo api;;
+    *) echo "";;
+  esac
+}
+ask_option() { # prints the chosen option or "skip"; re-asks on input it cannot map
+  local n=0 o menu="" which choice
+  for o in $options; do n=$((n+1)); menu="$menu  $n) $o"; done
+  while :; do
+    read -r -p "Set which? [$menu  or skip] " which
+    choice="$(choose_option "$which")"
+    if [ -n "$choice" ]; then echo "$choice"; return; fi
+    echo "  did not understand '$which'; type a number, one of: $options, or skip" >&2
+  done
+}
 set_secret() {
   local name; name="$(secret_for "$1")"; [ -n "$name" ] || { echo "skipped"; return; }
   if [ "$name" = CODEX_AUTH_JSON ]; then
@@ -53,11 +76,11 @@ set_secret() {
 present=""; for o in $options; do have_secret "$(secret_for "$o")" && present="$present $(secret_for "$o")"; done
 if [ -n "$present" ]; then
   echo "present:$present"
-  ask "Rotate or add one now?" && { read -r -p "Which? [$options] " which; set_secret "$which"; }
+  ask "Rotate or add one now?" && { which="$(ask_option)"; [ "$which" = skip ] && echo "skipped" || set_secret "$which"; }
 else
   echo "missing. gh will prompt for the value; nothing is echoed."
-  read -r -p "Set which? [$options/skip] " which
-  set_secret "$which"
+  which="$(ask_option)"
+  [ "$which" = skip ] && echo "skipped" || set_secret "$which"
 fi
 present=""; for o in $options; do have_secret "$(secret_for "$o")" && present="$present $(secret_for "$o")"; done
 [ -n "$present" ] && echo "check: a model credential is present ($present )" || echo "check: STILL MISSING"
@@ -98,11 +121,7 @@ EOF
 machine=false; ask "Is SDLC_GITHUB_TOKEN owned by a separate machine account (not the maintainer)?" && machine=true
 if [ "$machine" = true ]; then approvals=1; owners=true; else approvals=0; owners=false; echo "WARNING: 0 approvals; the loop's token can merge. See above."; fi
 contexts="$(node -e 'const c=JSON.parse(require("fs").readFileSync("sdlc/config.json","utf8")).ci?.requiredChecks; console.log(JSON.stringify(Array.isArray(c)&&c.length?c:["FILL: exact names of the required CI check jobs (sdlc/config.json ci.requiredChecks)"]))')"
-if gh api "repos/$repo/branches/main/protection" >/dev/null 2>&1; then
-  echo "present:"; gh api "repos/$repo/branches/main/protection" -q '{checks: .required_status_checks.contexts, reviews: .required_pull_request_reviews.required_approving_review_count, admins: .enforce_admins.enabled}'
-else
-  echo "missing. This is what makes 'agents act up to the gate and not past it' a property of the repo."
-  if ask "Apply now (requires admin on the repo)?"; then
+apply_protection() {
     gh api -X PUT "repos/$repo/branches/main/protection" --input - <<JSON
 {
   "required_status_checks": { "strict": true, "contexts": $contexts },
@@ -114,7 +133,21 @@ else
 }
 JSON
     echo "check:"; gh api "repos/$repo/branches/main/protection" -q '{checks: .required_status_checks.contexts, reviews: .required_pull_request_reviews.required_approving_review_count, admins: .enforce_admins.enabled}'
+}
+if gh api "repos/$repo/branches/main/protection" > /tmp/sdlc-protection.json 2>/dev/null; then
+  echo "present:"; jq '{checks: .required_status_checks.contexts, reviews: .required_pull_request_reviews.required_approving_review_count, admins: .enforce_admins.enabled}' /tmp/sdlc-protection.json
+  missing="$(node -e 'const have=new Set(JSON.parse(require("fs").readFileSync("/tmp/sdlc-protection.json","utf8")).required_status_checks?.contexts??[]);const want=JSON.parse(process.argv[1]);console.log(want.filter(c=>!have.has(c)).join(", "))' "$contexts")"
+  admins="$(jq -r '.enforce_admins.enabled' /tmp/sdlc-protection.json)"
+  if [ -n "$missing" ] || [ "$admins" != true ]; then
+    echo "differs from sdlc/config.json: missing required checks [${missing:-none}]; enforce_admins=$admins (wanted true)"
+    if ask "Update main's protection to the config (required checks, admins included, $approvals approval(s))?"; then apply_protection; fi
+  else
+    echo "check: matches sdlc/config.json (all required checks present, admins included)"
   fi
+  rm -f /tmp/sdlc-protection.json
+else
+  echo "missing. This is what makes 'agents act up to the gate and not past it' a property of the repo."
+  if ask "Apply now (requires admin on the repo)?"; then apply_protection; fi
 fi
 
 step "4/5 Labels the loop uses"
@@ -131,6 +164,6 @@ done
 step "5/5 Try the loop without spending anything"
 echo "  node scripts/sdlc/next-stage.mjs --human        # what is accepted and waiting"
 echo "  node scripts/sdlc/run-stage.mjs --stage spec --slug <slug> --artifact intent/<slug>.md --dry-run"
-echo "  npm run verify                                     # the definition of done (commands.verify in sdlc/config.json)"
+echo "  pnpm verify                                     # the definition of done (commands.verify in sdlc/config.json)"
 echo
 echo "Then write intent/<slug>.md from intent/TEMPLATE.md, merge it with status: accepted, and watch Actions → SDLC loop."
