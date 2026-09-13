@@ -115,6 +115,77 @@ export function receiptStatus(cwd = REPO_ROOT) {
   return { state: "stale", tree, receipt, lastRun };
 }
 
+// The commit and push decisions, shared by the Claude Code hook
+// (.claude/hooks/pre-bash-gate.mjs) and the git hooks (scripts/sdlc/git-gate.mjs)
+// so every tool and every person meets the same rule. Each returns
+// { ok, reason }; the reason is the complete message to show.
+
+function baseRef(cwd, defaultBranch) {
+  for (const ref of [`origin/${defaultBranch}`, defaultBranch]) {
+    try {
+      git(["rev-parse", "--verify", `${ref}^{commit}`], { cwd });
+      return git(["merge-base", "HEAD", ref], { cwd });
+    } catch {
+      // try the next candidate
+    }
+  }
+  return null;
+}
+
+function changedLinesOnSource(cwd, plan, base) {
+  const ranges = base ? [[base, "HEAD"], null] : [null];
+  let lines = 0;
+  const files = new Set();
+  for (const range of ranges) {
+    const args = range ? ["diff", "--numstat", `${range[0]}..${range[1]}`] : ["diff", "--numstat", "--cached"];
+    for (const row of git(args, { cwd }).split("\n").filter(Boolean)) {
+      const [added, removed, file] = row.split("\t");
+      if (!file || !plan.sourcePrefixes.some((prefix) => file.startsWith(prefix))) continue;
+      if (/\.(test|spec)\.[cm]?[jt]sx?$/u.test(file) || /(^|\/)tests?\//u.test(file)) continue;
+      files.add(file);
+      lines += (Number(added) || 0) + (Number(removed) || 0);
+    }
+  }
+  return { lines, files: [...files] };
+}
+
+function planFilesOnBranch(cwd, base) {
+  const names = new Set();
+  const listings = [git(["diff", "--name-only", "--cached"], { cwd })];
+  if (base) listings.push(git(["diff", "--name-only", `${base}..HEAD`], { cwd }));
+  for (const listing of listings) {
+    for (const file of listing.split("\n")) {
+      if (/^docs\/plans\/[^/]+\.md$/u.test(file) && !/(README|TEMPLATE)\.md$/u.test(file) && existsSync(path.join(cwd, file))) names.add(file);
+    }
+  }
+  return [...names];
+}
+
+export function commitGate(config, cwd = REPO_ROOT) {
+  const verify = config.commands?.verify || "node scripts/verify.mjs";
+  const status = receiptStatus(cwd);
+  if (status.state !== "fresh") {
+    return { ok: false, reason: `git commit blocked: no green \`${verify}\` receipt for the current working tree (${status.state}). Run \`${verify}\`; commit only what it verified.` };
+  }
+  const plan = config.plan ?? { thresholdLines: 20, sourcePrefixes: [] };
+  const base = baseRef(cwd, config.defaultBranch ?? "main");
+  const change = changedLinesOnSource(cwd, plan, base);
+  if (change.lines >= plan.thresholdLines && planFilesOnBranch(cwd, base).length === 0) {
+    return { ok: false, reason: `git commit blocked: ${change.lines} source lines changed on this branch (${change.files.slice(0, 5).join(", ")}${change.files.length > 5 ? ", …" : ""}) and no plan is committed under docs/plans/. Write docs/plans/<slug>.md from docs/plans/TEMPLATE.md (files, order, risks, Proof) and commit it with, or before, the code.` };
+  }
+  return { ok: true, reason: `receipt fresh for tree ${status.tree.slice(0, 12)}; ${change.lines} source lines on this branch` };
+}
+
+export function pushGate(config, cwd = REPO_ROOT) {
+  const verify = config.commands?.verify || "node scripts/verify.mjs";
+  const status = receiptStatus(cwd);
+  const headTree = headTreeHash(cwd);
+  if (!(status.receipt && status.receipt.tree === headTree)) {
+    return { ok: false, reason: `git push blocked: the last green \`${verify}\` receipt is not for HEAD's tree (receipt ${status.receipt ? status.receipt.tree.slice(0, 12) : "missing"}, HEAD tree ${String(headTree).slice(0, 12)}). Run \`${verify}\` on a clean tree at HEAD, then push.` };
+  }
+  return { ok: true, reason: `receipt matches HEAD tree ${String(headTree).slice(0, 12)}` };
+}
+
 // Minimal YAML frontmatter: flat `key: value` pairs, values kept as strings.
 // Artifacts in this repo need nothing richer, and a parser this small cannot
 // hide a status in a nested key the gate does not read.

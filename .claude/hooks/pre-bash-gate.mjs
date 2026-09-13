@@ -12,8 +12,6 @@
 // command position. Anything that still slips past this parser is caught at
 // the pull request, where CI reruns the same verification.
 
-import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PROJECT_DIR, loadSdlc, readPayload, allow, block, verifyCommand } from "./lib.mjs";
@@ -85,51 +83,6 @@ export function writesVerifyDir(command) {
   return true;
 }
 
-function git(args) {
-  return execFileSync("git", args, { cwd: PROJECT_DIR, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trimEnd();
-}
-
-function baseRef(defaultBranch) {
-  for (const ref of [`origin/${defaultBranch}`, defaultBranch]) {
-    try {
-      git(["rev-parse", "--verify", `${ref}^{commit}`]);
-      return git(["merge-base", "HEAD", ref]);
-    } catch {
-      // try the next candidate
-    }
-  }
-  return null;
-}
-
-function changedLinesOnSource(plan, base) {
-  const ranges = base ? [[base, "HEAD"], null] : [null];
-  let lines = 0;
-  const files = new Set();
-  for (const range of ranges) {
-    const args = range ? ["diff", "--numstat", `${range[0]}..${range[1]}`] : ["diff", "--numstat", "--cached"];
-    for (const row of git(args).split("\n").filter(Boolean)) {
-      const [added, removed, file] = row.split("\t");
-      if (!file || !plan.sourcePrefixes.some((prefix) => file.startsWith(prefix))) continue;
-      if (/\.(test|spec)\.[cm]?[jt]sx?$/u.test(file) || /(^|\/)tests?\//u.test(file)) continue;
-      files.add(file);
-      lines += (Number(added) || 0) + (Number(removed) || 0);
-    }
-  }
-  return { lines, files: [...files] };
-}
-
-function planFilesOnBranch(base) {
-  const names = new Set();
-  const listings = [git(["diff", "--name-only", "--cached"])];
-  if (base) listings.push(git(["diff", "--name-only", `${base}..HEAD`]));
-  for (const listing of listings) {
-    for (const file of listing.split("\n")) {
-      if (/^docs\/plans\/[^/]+\.md$/u.test(file) && !/(README|TEMPLATE)\.md$/u.test(file) && existsSync(path.join(PROJECT_DIR, file))) names.add(file);
-    }
-  }
-  return [...names];
-}
-
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const payload = readPayload();
   if (payload.__parseError) block(`verify gate: could not parse the hook payload (${payload.__parseError}); refusing the command rather than guessing.`);
@@ -151,28 +104,15 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     block(`verify gate cannot load scripts/sdlc/lib.mjs or sdlc/config.json (${error.message}).`);
   }
 
+  // The same decisions the git hooks make (scripts/sdlc/git-gate.mjs), so
+  // Claude Code, codex and a person at a shell all meet one rule.
   if (subs.has("commit")) {
-    const status = sdlc.receiptStatus(PROJECT_DIR);
-    if (status.state !== "fresh") {
-      block(`git commit blocked: no green \`${VERIFY}\` receipt for the current working tree (${status.state}). Run \`${VERIFY}\`; commit only what it verified.`);
-    }
-    const base = baseRef(config.defaultBranch ?? "main");
-    const change = changedLinesOnSource(config.plan, base);
-    if (change.lines >= config.plan.thresholdLines) {
-      const plans = planFilesOnBranch(base);
-      if (plans.length === 0) {
-        block(`git commit blocked: ${change.lines} source lines changed on this branch (${change.files.slice(0, 5).join(", ")}${change.files.length > 5 ? ", …" : ""}) and no plan is committed under docs/plans/. Write docs/plans/<slug>.md from docs/plans/TEMPLATE.md (files, order, risks, Proof) and commit it with, or before, the code.`);
-      }
-    }
+    const gate = sdlc.commitGate(config, PROJECT_DIR);
+    if (!gate.ok) block(gate.reason);
   }
-
   if (subs.has("push")) {
-    const status = sdlc.receiptStatus(PROJECT_DIR);
-    const headTree = sdlc.headTreeHash(PROJECT_DIR);
-    const receiptForHead = status.receipt && status.receipt.tree === headTree;
-    if (!receiptForHead) {
-      block(`git push blocked: the last green \`${VERIFY}\` receipt is not for HEAD's tree (receipt ${status.receipt ? status.receipt.tree.slice(0, 12) : "missing"}, HEAD tree ${String(headTree).slice(0, 12)}). Run \`${VERIFY}\` on a clean tree at HEAD, then push.`);
-    }
+    const gate = sdlc.pushGate(config, PROJECT_DIR);
+    if (!gate.ok) block(gate.reason);
   }
 
   allow();

@@ -38,7 +38,7 @@ it here and link instead.
 - Receipt state: `npm run verify:receipt` (prints `fresh`, `stale` or `missing` for the current tree)
 - Run the app: `npm run build && node dist/transports/cli/cli.js serve --host 127.0.0.1 --port 3737` (dashboard at http://127.0.0.1:3737)
 
-Run `npm run verify` before reporting any task complete and paste its closing lines. If a test fails, fix the code, not the test. The session cannot end, and `git commit` cannot run, without a green receipt for the exact tree; `.verify/` cannot be written by hand. Non-trivial changes start from `docs/plans/<slug>.md` with a Proof section; the commit gate refuses 20 or more source lines without one. The whole chain — intent → spec → plan → build → review → release → monitor, each stage started by merging the previous artifact — is `docs/sdlc/LOOP.md`; the review policy is `REVIEW.md`.
+Run `npm run verify` before reporting any task complete and paste its closing lines. If a test fails, fix the code, not the test. The session cannot end, and `git commit` / `git push` cannot run (git hooks, for every tool), without a green receipt for the exact tree; `.verify/` cannot be written by hand. Non-trivial changes start from `docs/plans/<slug>.md` with a Proof section; the commit gate refuses 20 or more source lines without one. The whole chain — intent → spec → plan → build → review → release → monitor, each stage started by merging the previous artifact — is `docs/sdlc/LOOP.md`; the review policy is `REVIEW.md`.
 
 ### Running the tests
 
