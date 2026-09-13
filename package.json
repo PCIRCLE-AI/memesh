@@ -68,7 +68,14 @@
     "qa:ui-review": "node scripts/qa/ui-review.mjs",
     "qa:post-release": "node scripts/qa/post-release.mjs",
     "test:isolated": "node scripts/run-tests-isolated.mjs",
-    "test:coverage": "node scripts/run-tests-isolated.mjs --coverage"
+    "test:coverage": "node scripts/run-tests-isolated.mjs --coverage",
+    "verify": "node scripts/verify.mjs",
+    "verify:journeys": "node scripts/verify.mjs --journeys",
+    "verify:receipt": "node scripts/verify-receipt.mjs",
+    "sdlc:next": "node scripts/sdlc/next-stage.mjs --human",
+    "sdlc:test": "node --test scripts/sdlc/lib.test.mjs scripts/sdlc/monitor.test.mjs scripts/sdlc/next-stage.test.mjs scripts/sdlc/run-stage.test.mjs scripts/sdlc/smoke-public.test.mjs scripts/verify.test.mjs .claude/hooks/hooks.test.mjs",
+    "sdlc:smoke": "node scripts/sdlc/smoke-public.mjs",
+    "sdlc:monitor": "node scripts/sdlc/monitor.mjs"
   },
   "author": "PCIRCLE-AI",
   "license": "MIT",

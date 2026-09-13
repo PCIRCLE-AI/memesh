@@ -342,6 +342,10 @@ function freshConsumerInstall(version, root, registry) {
 async function main() {
   const args = process.argv.slice(2);
   const flagIndex = args.indexOf('--version');
+  // --skip-machine: the caller is not an owner machine (a CI runner filing a
+  // release receipt), so the installed-surfaces question has no subject
+  // there. It is reported as NOT RUN below, never as a pass.
+  const skipMachine = args.includes('--skip-machine');
   const repoRoot = process.cwd();
   const version = flagIndex >= 0
     ? args[flagIndex + 1]
@@ -376,7 +380,7 @@ async function main() {
         });
       }
 
-      results.push({ id: 'machine-surfaces', ...evaluateSurfaces(shellSurfaces(version), version) });
+      if (!skipMachine) results.push({ id: 'machine-surfaces', ...evaluateSurfaces(shellSurfaces(version), version) });
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -387,8 +391,12 @@ async function main() {
   for (const line of verdict.lines) console.log(line);
   const skipped = ['registry', 'consumer', 'artifact-doctor', 'machine-surfaces', 'capture']
     .filter((id) => !results.some((result) => result.id === id));
-  if (skipped.length > 0) {
-    console.log(`  NOT RUN — nothing was installed to check them: ${skipped.join(', ')}`);
+  if (skipMachine) {
+    console.log('  NOT RUN — machine-surfaces: --skip-machine; this is not an owner machine. Run `npm run qa:post-release` on each machine that has memesh installed.');
+  }
+  const notInstalled = skipped.filter((id) => !(skipMachine && id === 'machine-surfaces'));
+  if (notInstalled.length > 0) {
+    console.log(`  NOT RUN — nothing was installed to check them: ${notInstalled.join(', ')}`);
   }
   console.log('\nnot checked here:');
   console.log("  - Each host's plugin cache beyond what the doctor above reports — `memesh doctor` run on that host is the owner-side check.");
