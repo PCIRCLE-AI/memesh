@@ -374,12 +374,19 @@ jobs:
     timeout-minutes: 40
 
     steps:
+      # The PR head, not the merge commit GitHub builds for pull_request
+      # events: the tree hash this job logs must be comparable with the
+      # receipt a person produced locally, and the two differ whenever main
+      # moved since the branch was cut (first run of #350: 326d37dc vs
+      # 6a80cc14). Strict status checks still require the branch to be up to
+      # date before merging, so what merges is what was verified.
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           persist-credentials: false
           fetch-tags: true
           fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

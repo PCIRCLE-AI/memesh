@@ -16,7 +16,7 @@ Reserve **Important** for a finding that would break a user flow, leak data, bre
 
 ## Verification is part of the review
 
-Read the PR's Verification section. If it does not carry a `npm run verify` result for the head commit, or the receipt tree it quotes differs from the `[verify] tree <hash>` line in the CI job's "Golden journeys" step for the same commit, that is an Important compliance finding on its own. Do not take "tests pass" from the description; take it from the check run.
+Read the PR's Verification section. If it does not carry a `pnpm verify` result for the head commit, or the receipt tree it quotes differs from the `[verify] tree <hash>` line in the CI job's "Golden journeys" step for the same head commit (the CI job checks out the PR head, not GitHub's merge commit, so the two hashes are comparable), that is an Important compliance finding on its own. Do not take "tests pass" from the description; take it from the check run.
 
 ## Cap the nits
 
