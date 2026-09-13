@@ -1,6 +1,6 @@
 ---
 title: A forgotten observation on a session snapshot entity stays forgotten after the next Stop
-status: draft
+status: accepted
 origin: person
 author: KT
 date: 2026-09-14
