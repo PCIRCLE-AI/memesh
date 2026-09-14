@@ -39,6 +39,14 @@ Failed commands, a missing repository, the initial baseline, and an unchanged
 `HEAD` each leave a queryable outcome record and one bounded diagnostic where
 the operator needs it.
 
+Release validation also exposed a race in the candidate's stale-lock recovery:
+two recoverers could both inspect a dead owner, then one could rename a new
+owner's lock using its stale observation. Token comparison happened too late.
+The hook now uses the existing SQLite driver to lock one stable private file
+per repository. It never renames or deletes that file; process termination
+releases the OS lock, and contention still records an error within the hook's
+deadline. The knowledge graph and marker format are unchanged.
+
 ## Gate added
 
 The hook regression suite now creates real temporary repositories and proves:
@@ -49,6 +57,10 @@ The hook regression suite now creates real temporary repositories and proves:
 - linked worktrees share the marker while retaining independent positions;
 - real merge, cherry-pick, and revert operations are captured; and
 - a failed commit-like command writes no entity and records an unchanged head.
+
+Lock regressions hold a real SQLite write lock, verify the hook's bounded error,
+kill a lock owner, and run concurrent captures while checking the lock file
+was not replaced. Earlier dead-PID fixtures did not exercise that interleaving.
 
 The release live-journey runner also executes the quiet commit path from the
 candidate checkout as an isolated process. A separate packed-upgrade journey

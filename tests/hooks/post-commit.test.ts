@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawn, spawnSync } from 'child_process';
+import { once } from 'node:events';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -174,8 +175,9 @@ describe('Feature: Post-Commit Hook', () => {
     });
     const markerDir = path.join(testDir, 'post-commit-heads');
     const marker = fs.readdirSync(markerDir).find(name => name.endsWith('.json'))!;
-    const lock = path.join(markerDir, `${marker}.lock`);
-    fs.writeFileSync(lock, 'external test owner', { mode: 0o600, flag: 'wx' });
+    const lock = path.join(markerDir, `${marker}.lock.sqlite`);
+    const holder = new Database(lock);
+    holder.exec('BEGIN IMMEDIATE');
     const next = commit('fix: serialize state selection');
     const running = spawnHook({
       tool_name: 'Bash', cwd: repoDir,
@@ -186,8 +188,8 @@ describe('Feature: Post-Commit Hook', () => {
     const blockedDb = openDb();
     const beforeRelease = blockedDb.prepare('SELECT * FROM entities WHERE name = ?').get(`commit-${next.hash}`);
     blockedDb.close();
+    holder.close();
     expect(beforeRelease, 'capture ran before it owned the marker lock').toBeUndefined();
-    fs.unlinkSync(lock);
     await running;
     const capturedDb = openDb();
     const afterRelease = capturedDb.prepare('SELECT * FROM entities WHERE name = ?').get(`commit-${next.hash}`);
@@ -205,9 +207,9 @@ describe('Feature: Post-Commit Hook', () => {
     runHook(input);
     const markerDir = path.join(testDir, 'post-commit-heads');
     const marker = fs.readdirSync(markerDir).find(name => name.endsWith('.json'))!;
-    const lock = path.join(markerDir, `${marker}.lock`);
-    const owner = JSON.stringify({ pid: process.pid, token: 'live-test-owner' });
-    fs.writeFileSync(lock, owner, { mode: 0o600, flag: 'wx' });
+    const lock = path.join(markerDir, `${marker}.lock.sqlite`);
+    const holder = new Database(lock);
+    holder.exec('BEGIN IMMEDIATE');
     const before = outcomes().length;
     const configured = JSON.parse(fs.readFileSync('hooks/hooks.json', 'utf8'));
     const installed = configured.hooks.PostToolUse.flatMap((entry: any) => entry.hooks)
@@ -217,15 +219,16 @@ describe('Feature: Post-Commit Hook', () => {
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       timeout: installed.timeout * 1000,
     });
+    holder.close();
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(0);
     expect(result.stderr).toContain('timed out waiting for post-commit state lock');
     expect(outcomes()).toHaveLength(before + 1);
     expect(outcomes().at(-1)?.outcome).toBe('error');
-    expect(fs.readFileSync(lock, 'utf8')).toBe(owner);
+    expect(fs.existsSync(lock)).toBe(true);
   });
 
-  it('Scenario: an abandoned marker lock is recovered by process identity without age-based stealing', () => {
+  it('Scenario: concurrent captures recover after a lock owner dies without replacing the lock file', async () => {
     commit('chore: establish recoverable baseline');
     runHook({
       tool_name: 'Bash', cwd: repoDir,
@@ -234,19 +237,39 @@ describe('Feature: Post-Commit Hook', () => {
     });
     const markerDir = path.join(testDir, 'post-commit-heads');
     const marker = fs.readdirSync(markerDir).find(name => name.endsWith('.json'))!;
-    const lock = path.join(markerDir, `${marker}.lock`);
-    fs.writeFileSync(lock, JSON.stringify({ pid: 2_147_483_647, token: 'abandoned-test-owner' }), { mode: 0o600, flag: 'wx' });
+    const lock = path.join(markerDir, `${marker}.lock.sqlite`);
+    const stat = fs.statSync(lock);
+    const owner = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { DatabaseSync } from 'node:sqlite';
+      const db = new DatabaseSync(process.argv[1]);
+      db.exec('BEGIN IMMEDIATE');
+      process.stdout.write('locked');
+      setInterval(() => {}, 1000);
+    `, lock], { stdio: ['ignore', 'pipe', 'pipe'] });
+    try {
+      await once(owner.stdout, 'data', { signal: AbortSignal.timeout(3000) });
+    } finally {
+      if (owner.exitCode === null && owner.signalCode === null) {
+        const exited = once(owner, 'exit');
+        owner.kill('SIGKILL');
+        await exited;
+      }
+    }
     const next = commit('fix: recover abandoned owner');
-    runHook({
+    const input = {
       tool_name: 'Bash', cwd: repoDir,
       tool_input: { command: 'git commit -q -m recover' },
       tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
-    });
+    };
+    const before = outcomes().length;
+    await Promise.all([spawnHook(input), spawnHook(input)]);
     const db = openDb();
     const captured = db.prepare('SELECT * FROM entities WHERE name = ?').get(`commit-${next.hash}`);
     db.close();
     expect(captured).toBeTruthy();
-    expect(fs.existsSync(lock), 'recovered lock was left behind').toBe(false);
+    expect(fs.statSync(lock).ino, 'a recoverer replaced the stable lock file').toBe(stat.ino);
+    expect(outcomes().slice(before).filter(row => row.outcome === 'wrote')).toHaveLength(1);
+    expect(outcomes().slice(before).filter(row => row.outcome === 'skipped')).toHaveLength(1);
   });
 
   it('Scenario: failed commit with stale commit-shaped output cannot override an unchanged HEAD', () => {
@@ -282,12 +305,13 @@ describe('Feature: Post-Commit Hook', () => {
       tool_input: { command: 'git commit -q -m baseline' },
       tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
     });
-    const fakeBin = path.join(testDir, 'fake-bin');
-    fs.mkdirSync(fakeBin);
-    const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
-    const fakeGit = path.join(fakeBin, 'git');
-    fs.writeFileSync(fakeGit, `#!/usr/bin/env node\nconst { spawnSync } = require('child_process');\nconst args = process.argv.slice(2);\nif (args.includes('--verify') && args.at(-1) === 'HEAD') process.exit(1);\nconst r = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });\nprocess.exit(r.status ?? 1);\n`);
-    fs.chmodSync(fakeGit, 0o755);
+    // Keep repository discovery valid but leave HEAD unresolved. A real Git
+    // fault also exercises Windows, where execFile ignores a shebang shim.
+    git(['update-ref', '-d', 'refs/heads/main']);
+    expect(git(['rev-parse', '--git-common-dir']).trim()).not.toBe('');
+    const unresolved = spawnSync('git', ['-C', repoDir, 'rev-parse', '--verify', 'HEAD']);
+    expect(unresolved.error).toBeUndefined();
+    expect(unresolved.status).not.toBe(0);
     const before = outcomes().length;
     runHook({
       tool_name: 'Bash', cwd: repoDir,
@@ -298,7 +322,7 @@ describe('Feature: Post-Commit Hook', () => {
         interrupted: false,
         isError: true,
       },
-    }, { PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}` });
+    });
     const rows = outcomes();
     expect(rows).toHaveLength(before + 1);
     expect(rows.at(-1)).toMatchObject({
@@ -372,9 +396,11 @@ describe('Feature: Post-Commit Hook', () => {
     const entity = db.prepare('SELECT id FROM entities WHERE name = ?').get(`commit-${hash}`);
     db.close();
     expect(entity).toBeTruthy();
-    const markers = fs.readdirSync(path.join(testDir, 'post-commit-heads'));
+    const files = fs.readdirSync(path.join(testDir, 'post-commit-heads'));
+    const markers = files.filter(name => name.endsWith('.json'));
     expect(markers).toHaveLength(1);
     expect(markers[0]).toMatch(/^[a-f0-9]{64}\.json$/);
+    expect(files.sort()).toEqual([markers[0], `${markers[0]}.lock.sqlite`].sort());
     const marker = JSON.parse(fs.readFileSync(path.join(testDir, 'post-commit-heads', markers[0]), 'utf8'));
     expect(Object.keys(marker.heads)).toHaveLength(2);
   });

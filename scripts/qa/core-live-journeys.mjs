@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { buildCredentialFreeBaseEnv } from '../lib/isolated-env.mjs';
 
 const OUTCOMES = 'hook-outcomes.jsonl';
@@ -57,7 +58,7 @@ function git(repo, args, env) {
 }
 
 function commit(repo, message, env, quiet = false) {
-  const file = path.join(repo, `${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
+  const file = path.join(repo, `${Date.now()}-${randomBytes(16).toString('hex')}.txt`);
   fs.writeFileSync(file, `${message}\n`);
   git(repo, ['add', '-A'], env);
   git(repo, ['commit', ...(quiet ? ['-q'] : []), '-m', message], env);
@@ -126,7 +127,7 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
   }
 
   evidence.push(await step('memory-round-trip', () => isolatedJourney('memory-round-trip', async ({ invokeCli }) => {
-    const sentinel = `core-live-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const sentinel = `core-live-${Date.now()}-${randomBytes(16).toString('hex')}`;
     const remembered = mustSucceed(invokeCli(['remember', sentinel, '--tags', `project:${project}`, '--json']), 'remember');
     const rememberedResult = json(remembered, 'remember');
     const replacement = `${sentinel}-corrected`;
@@ -165,7 +166,7 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
     if (invalid.status === 0) throw new Error('invalid remember unexpectedly succeeded');
     const missingForget = invokeCli(['forget', '--name', `missing-${sentinel}`, '--json']);
     if (missingForget.status === 0) throw new Error('forget of a missing memory unexpectedly succeeded');
-    const absent = mustSucceed(invokeCli(['recall', `no-match-${Math.random().toString(36).slice(2)}`, '--json']), 'absent recall');
+    const absent = mustSucceed(invokeCli(['recall', `no-match-${randomBytes(16).toString('hex')}`, '--json']), 'absent recall');
     if (json(absent, 'absent recall').entities?.length !== 0) throw new Error('absent recall returned an entity');
     return result(
       'memory-round-trip',
@@ -176,7 +177,7 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
   })));
 
   evidence.push(await step('session-start-briefing', () => isolatedJourney('session-start-briefing', async ({ journeyDir, isolatedEnv, invokeCli }) => {
-    const sentinel = `session-start-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const sentinel = `session-start-${Date.now()}-${randomBytes(16).toString('hex')}`;
     const goal = `goal-${sentinel}`;
     const next = `next-${sentinel}`;
     mustSucceed(invokeCli(['remember', sentinel, '--tags', `project:${project}`, '--json']), 'session-start seed');
@@ -235,7 +236,7 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
   })));
 
   evidence.push(await step('stop-session-insight', () => isolatedJourney('stop-session-insight', async ({ journeyDir, memeshDir, isolatedEnv, invokeCli }) => {
-    const sentinel = `stop-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const sentinel = `stop-${Date.now()}-${randomBytes(16).toString('hex')}`;
     const transcript = assertInside(journeyDir, path.join(journeyDir, 'transcript.jsonl'));
     fs.writeFileSync(transcript, [
       JSON.stringify({ type: 'assistant', message: { content: [

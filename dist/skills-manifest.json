@@ -133,8 +133,8 @@
     },
     {
       "path": "scripts/hooks/post-commit.js",
-      "sha256": "eb1d30dbbe0de59a34db28f5f31a034d991657fbc34cde0a4edf1f864449bb87",
-      "bytes": 20489
+      "sha256": "886673eb0b2d5fe563f1b9db419771e2dd036d0c266f6c35e7bdb7da8bfdbf2d",
+      "bytes": 18611
     },
     {
       "path": "scripts/hooks/pre-compact.js",

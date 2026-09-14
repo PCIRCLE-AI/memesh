@@ -2,7 +2,8 @@
 
 import { execFileSync } from 'child_process';
 import { createHash, randomBytes } from 'crypto';
-import { chmodSync, closeSync, openSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { chmodSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { MemeshDatabase } from './_generated/sqlite.js';
 import { isAbsolute, join, resolve } from 'path';
 import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, ensurePrivateDir, getMemeshDirFromDbPath, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
 
@@ -11,7 +12,6 @@ const FULL_SHA = /^[a-f0-9]{40,64}$/;
 const MAX_COMMITS_PER_RUN = 20;
 // Leave time to record an error before the host's five-second hook deadline.
 const MARKER_LOCK_TIMEOUT_MS = 1000;
-const markerLockWait = new Int32Array(new SharedArrayBuffer(4));
 
 function gitText(cwd, args) {
   return execFileSync('git', ['-C', cwd, ...args], {
@@ -92,66 +92,21 @@ function resolveHeadState(cwd, location) {
 }
 
 function acquireMarkerLock(markerPath) {
-  const lockPath = `${markerPath}.lock`;
-  const deadline = Date.now() + MARKER_LOCK_TIMEOUT_MS;
-  while (true) {
-    const token = randomBytes(16).toString('hex');
-    try {
-      const fd = openSync(lockPath, 'wx', 0o600);
-      try {
-        writeFileSync(fd, JSON.stringify({ pid: process.pid, token }));
-      } catch (writeError) {
-        try { closeSync(fd); } catch {}
-        try { unlinkSync(lockPath); } catch {}
-        throw writeError;
-      }
-      return () => {
-        try { closeSync(fd); } catch {}
-        try {
-          const current = JSON.parse(readFileSync(lockPath, 'utf8'));
-          if (current?.token === token) unlinkSync(lockPath);
-        } catch {}
-      };
-    } catch (err) {
-      if (err?.code !== 'EEXIST') throw err;
-      // Recover only a lock whose recorded process is definitely gone.  Age
-      // alone cannot establish ownership and allowed two stale-lock cleaners
-      // to unlink each other's newly acquired lock.  Renaming is the one
-      // atomic claimant operation; a second recoverer sees ENOENT and retries.
-      try {
-        const owner = JSON.parse(readFileSync(lockPath, 'utf8'));
-        if (Number.isSafeInteger(owner?.pid) && owner.pid > 0 && typeof owner?.token === 'string') {
-          let alive = true;
-          try { process.kill(owner.pid, 0); } catch (signalError) {
-            if (signalError?.code === 'ESRCH') alive = false;
-          }
-          if (!alive) {
-            const abandoned = `${lockPath}.${token}.abandoned`;
-            try {
-              renameSync(lockPath, abandoned);
-              const claimed = JSON.parse(readFileSync(abandoned, 'utf8'));
-              if (claimed?.token !== owner.token) {
-                throw new Error('marker lock changed during abandoned-lock recovery', {
-                  cause: err,
-                });
-              }
-              unlinkSync(abandoned);
-              continue;
-            } catch (claimError) {
-              if (claimError?.code === 'ENOENT') continue;
-              throw claimError;
-            }
-          }
-        }
-      } catch (ownerError) {
-        if (ownerError?.code === 'ENOENT') continue;
-        // Malformed or unreadable locks are not safe to steal. The bounded
-        // timeout below makes the failure visible without guessing ownership.
-      }
-      if (Date.now() >= deadline) throw new Error('timed out waiting for post-commit state lock', { cause: err });
-      Atomics.wait(markerLockWait, 0, 0, 25);
+  // Keep one stable file: SQLite releases its OS lock on close or process death.
+  // Never unlink/rename it; pathname-based stale recovery can steal a new owner.
+  // This is separate from the graph so a baseline need not create user memories.
+  const db = new MemeshDatabase(`${markerPath}.lock.sqlite`);
+  try {
+    db.pragma(`busy_timeout = ${MARKER_LOCK_TIMEOUT_MS}`);
+    db.exec('BEGIN IMMEDIATE');
+  } catch (err) {
+    db.close();
+    if (err?.errcode === 5 || err?.code === 'SQLITE_BUSY') {
+      throw new Error('timed out waiting for post-commit state lock', { cause: err });
     }
+    throw err;
   }
+  return () => db.close();
 }
 
 /** Advance only this worktree's position. The caller holds the repository marker lock. */
