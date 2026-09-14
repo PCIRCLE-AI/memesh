@@ -6,6 +6,11 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **The implementation-plan evaluation now starts after intent and spec
+  acceptance.** The original question asked for the first feature artifact,
+  so an answer naming intent could fail a checker expecting plan and Proof.
+  The checker is unchanged. See
+  `docs/postmortems/2026-09-14-sdlc-plan-eval.md`.
 - **SDLC pending stages stay in one Actions job.** The first accepted intent
   could not reach its spec stage when Actions suppressed the JSON job output.
   A runner-local file now feeds stages sequentially; malformed input and failed

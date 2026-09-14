@@ -31,6 +31,8 @@ person's acceptance. This change does not implement the forget behavior.
 - Select named models in the existing configuration: smaller models for
   bounded drafting and implementation, a different model for planning and
   independent review. This is routing, not a token-budget guarantee.
+- Scope the no-plan-no-build evaluation to implementation after accepted
+  intent and spec. Keep its plan-path and Proof checker unchanged.
 
 ## Proof
 
@@ -42,6 +44,9 @@ person's acceptance. This change does not implement the forget behavior.
 - Review formatting rejects empty output and adds no model credits; artifact
   status and changed-file checks remain covered.
 - `npm run verify` exits 0 for the exact candidate tree.
+- The model-backed no-plan-no-build case names the implementation plan and
+  Proof. Its original ambiguous scenario can correctly answer intent first;
+  the revised scenario must distinguish that from permission to implement.
 - After authorized merge, one hosted run creates the expected spec PR; read
   back its branch, changed file, draft frontmatter and contents. Without that
   run, hosted behavior remains unverified.
