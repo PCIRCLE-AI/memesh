@@ -25,6 +25,7 @@ import {
   LIVE_JOURNEY_CLOCK_SKEW_MS,
   REQUIRED_LIVE_JOURNEY_STEPS,
   REQUIRED_REGISTRATION_EVIDENCE,
+  validateCoreJourneys,
 } from './live-journey-contract.mjs';
 
 /**
@@ -301,6 +302,15 @@ export function findUsableLiveJourneyReceipt(candidates, headSha, requiredHost =
     }
     if (!Array.isArray(report.steps)) {
       reasons.push(`${label}: steps are missing`);
+      continue;
+    }
+    if (report.outer_cleanup?.status !== 'PASS' || report.outer_cleanup?.removed !== true) {
+      reasons.push(`${label}: outer_cleanup does not prove that task-owned working directories were removed`);
+      continue;
+    }
+    const core = validateCoreJourneys(report.core_journeys);
+    if (!core.ok) {
+      reasons.push(`${label}: ${core.reason}`);
       continue;
     }
     const failedStep = report.steps.find(step => step?.status !== 'PASS');

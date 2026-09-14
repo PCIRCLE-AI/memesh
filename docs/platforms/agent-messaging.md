@@ -245,11 +245,27 @@ close that gap by requiring evidence that could only have come out of a running
 model.
 
 ```bash
+TMPDIR=/private/tmp npm run qa:live-journey -- --core-only --out .qa/core-report.json
 MEMESH_CODEX_QA_HOME="$(mktemp -d /private/tmp/memesh-codex-qa.XXXXXX)"
 CODEX_HOME="$MEMESH_CODEX_QA_HOME" codex login
 TMPDIR=/private/tmp npm run qa:live-journey -- --host codex --codex-home "$MEMESH_CODEX_QA_HOME" --out .qa/codex-report.json
 TMPDIR=/private/tmp npm run qa:live-journey -- --host claude --out .qa/claude-report.json
 ```
+
+The v4 report begins with five common product journeys before it reaches the
+host-specific delivery path:
+
+| Journey | Exercised boundary | Required readback and failure |
+|---|---|---|
+| memory round trip | built CLI in a fresh process | the exact observation is recalled; an invalid write is rejected and an absent query stays empty |
+| SessionStart briefing | shipped SessionStart hook | seeded memory appears in `hookSpecificOutput`; an unusable database produces the visible failure banner |
+| quiet commit capture | real temporary Git repository plus shipped PostToolUse hook | `git commit -q` becomes a recallable commit entity; unchanged `HEAD` records a named skip |
+| Stop session insight | realistic JSONL transcript plus shipped Stop hook | the insight is recallable; a missing transcript records a named skip without a false entity |
+| packed upgrade | npm-packed candidate installed over public baseline versions | version and pre-existing memory survive success; a forced installer failure reports failure and preserves both package and data |
+
+Every row must also prove its temporary state was removed. `--core-only` is the
+credential-free entry point for this catalogue. It does not create a Codex or
+Claude registration and therefore cannot satisfy either host's release claim.
 
 `.qa/` is where `npm run release:finish` looks for release receipts. Codex and
 Claude are separate delivery claims, so **both** must PASS within 24 hours
@@ -267,9 +283,10 @@ database inside the temporary directory, and `AF_UNIX` caps a socket path at
 the check adds anything. The script measures its own socket path and refuses
 with this hint rather than starting a router that cannot bind.
 
-`scripts/qa/live-journey.mjs` is owner-run and refuses to start when `CI` is
-set, because neither check can run unattended: one needs the owner's Codex
-login, the other needs a person at an interactive Claude session. Its argument
+`scripts/qa/live-journey.mjs` refuses real-host modes when `CI` is set, because
+one needs the owner's Codex login and the other needs a person at an
+interactive Claude session. The isolated `--core-only` catalogue is designed
+to run unattended. Its argument
 parsing, its refusals, and every **pure** assertion it makes are unit-tested in
 `tests/qa/live-journey.test.ts`, which does run in CI against recorded
 fixtures; the orchestration around them is exercised only by a live run.
@@ -303,10 +320,10 @@ The proof rejects other command/tool activity except the narrowly allowed
 installed-skill read and failed work-package prepare probe; neither may contain
 proof identifiers. After SessionEnd retirement, the next send must return
 `recipient_unavailable` while the durable payload remains fetchable.
-Its v3 report requires registration from `codex_plugin_session_start` with
+Its v4 report requires registration from `codex_plugin_session_start` with
 `plugin_loader_verified: true`, including a renewed lease after resume supersedes
 the startup generation. `release:finish` requires separate current-candidate
-v3 receipts for both Codex and Claude; an old harness-injected v2 report does not
+v4 receipts for both Codex and Claude; an old harness-injected report does not
 prove automatic installed-plugin registration and is rejected.
 
 **`--host claude`** starts the router, runs `memesh agent setup claude`, writes

@@ -6,6 +6,28 @@ import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 
 useTestDatabase('memesh-export-');
 
+it.each(['append', 'overwrite'] as const)('#346 %s imports preserve local forgotten observations against bundled metadata', (merge_strategy) => {
+  const name = 'session-import-exclusion-files';
+  const removed = 'Session edited 1 file(s): removed.ts';
+  remember({ name, type: 'session-insight', observations: [removed] });
+  forget({ name, observation: removed });
+  const data = {
+    version: '3.1.0', exported_at: '2026-09-14T00:00:00.000Z', entity_count: 1,
+    entities: [{ name, type: 'session-insight', namespace: 'personal', relations: [], observations: [removed, 'new imported observation'], tags: [], metadata: { forgotten_observation_hashes: [] } }],
+  };
+  const kg = new KnowledgeGraph(getDatabase());
+  for (let attempt = 0; attempt < 2; attempt++) {
+    importMemories({ data, merge_strategy });
+    const entity = kg.getEntity(name)!;
+    expect(entity.observations).not.toContain(removed);
+    expect(entity.observations).toContain('new imported observation');
+    expect(entity.metadata?.forgotten_observation_hashes).toHaveLength(1);
+  }
+  remember({ name, type: 'session-insight', observations: [removed] });
+  expect(kg.getEntity(name)!.observations).toContain(removed);
+  expect(kg.getEntity(name)!.metadata?.forgotten_observation_hashes).toEqual([]);
+});
+
 // ── Export ───────────────────────────────────────────────────────────────────
 
 describe('exportMemories', () => {

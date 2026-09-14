@@ -128,7 +128,7 @@ binding. It cannot judge language quality, authenticate authorship, or prove
 that observations are true. The release owner must inspect the evidence and
 have the independent reviewer replay the claims. It grants no release authority.
 
-`release:finish` requires separate v3 live receipts for both hosts on the exact
+`release:finish` requires separate v4 live receipts for both hosts on the exact
 clean commit, produced within the previous 24 hours. The Claude receipt comes
 from `npm run qa:live-journey -- --host claude --out
 .qa/claude-report.json`. The Codex receipt must come from an installed-plugin

@@ -24858,6 +24858,9 @@ var MemeshDatabase = class extends DatabaseSync {
 import path2 from "path";
 import fs2 from "fs";
 
+// dist/knowledge-graph.js
+import { createHash } from "node:crypto";
+
 // dist/storage/conflicts.js
 function findConflicts(db2, entityNames) {
   if (entityNames.length < 2)
@@ -25184,16 +25187,30 @@ var KnowledgeGraph = class {
     }
     const prevObsText = isNewEntity ? void 0 : joinIndexedObservations(prevObs.map((o) => o.content));
     if (opts?.observations?.length) {
+      let observations = opts.observations;
+      if (row.type === "session-insight" && /^session-.+-(files|fixes|summary)$/.test(name)) {
+        this.updateEntityMetadata(name, (meta3) => {
+          if (!Array.isArray(meta3.forgotten_observation_hashes))
+            return meta3;
+          const hashes = new Set(meta3.forgotten_observation_hashes);
+          if ((opts.trustOverride ?? opts.metadata?.trust ?? "trusted") !== "trusted") {
+            observations = observations.filter((obs) => !hashes.has(createHash("sha256").update(obs).digest("hex")));
+            return meta3;
+          }
+          const restored = new Set(observations.map((obs) => createHash("sha256").update(obs).digest("hex")));
+          return { ...meta3, forgotten_observation_hashes: meta3.forgotten_observation_hashes.filter((hash2) => !restored.has(hash2)) };
+        });
+      }
       const insertObs = this.db.prepare("INSERT INTO observations (entity_id, content) VALUES (?, ?)");
       const effectiveType = isNewEntity ? type : row.type;
       const isLessonFamily = effectiveType === "lesson_learned" || effectiveType === "lesson" || effectiveType === "mistake";
       if (isLessonFamily) {
-        for (const obs of opts.observations) {
+        for (const obs of observations) {
           insertObs.run(entityId, obs);
         }
       } else {
         const existingObsContent = new Set(isNewEntity ? [] : this.db.prepare("SELECT content FROM observations WHERE entity_id = ?").all(entityId).map((o) => o.content));
-        for (const obs of opts.observations) {
+        for (const obs of observations) {
           if (existingObsContent.has(obs))
             continue;
           existingObsContent.add(obs);
@@ -25512,7 +25529,7 @@ var KnowledgeGraph = class {
   }
   removeObservation(entityName, observationContent) {
     return this.db.transaction(() => {
-      const row = this.db.prepare("SELECT id, title, status FROM entities WHERE name = ?").get(entityName);
+      const row = this.db.prepare("SELECT id, title, status, type, metadata FROM entities WHERE name = ?").get(entityName);
       if (!row)
         return { removed: false, remainingObservations: 0, entityFound: false };
       const prevObs = this.db.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(row.id);
@@ -25526,6 +25543,12 @@ var KnowledgeGraph = class {
           )`).run(row.id, observationContent);
       if (deleteResult.changes === 0) {
         return { removed: false, remainingObservations: prevObs.length, entityFound: true };
+      }
+      if (row.type === "session-insight" && /^session-.+-(files|fixes|summary)$/.test(entityName)) {
+        const meta3 = this.parseMetadata(row.metadata);
+        const hashes = Array.isArray(meta3.forgotten_observation_hashes) ? meta3.forgotten_observation_hashes : [];
+        const hash2 = createHash("sha256").update(observationContent).digest("hex");
+        this.db.prepare("UPDATE entities SET metadata = ? WHERE id = ?").run(JSON.stringify({ ...meta3, forgotten_observation_hashes: [.../* @__PURE__ */ new Set([...hashes, hash2])] }), row.id);
       }
       if (row.status !== "archived") {
         this.rebuildFts(row.id, entityName, prevObsText, row.title);
@@ -25598,7 +25621,7 @@ var COMPRESS_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { createHash } from "crypto";
+import { createHash as createHash2 } from "crypto";
 import { execFileSync } from "child_process";
 var AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
 function homeDir() {
@@ -25658,7 +25681,7 @@ var PROJECT_ID_MAX_LENGTH = 200;
 var PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
 function projectIdentity(label, locator) {
   const readable = label.normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
-  const suffix = createHash("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
+  const suffix = createHash2("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
   return `${readable}~${suffix}`;
 }
 function tryGit(cwd, args) {
@@ -26297,12 +26320,12 @@ function ensureFtsSegmentation(db2) {
 }
 
 // dist/core/lesson-slug.js
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 function lessonSlug(error51) {
   const normalized = error51.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
   const words = normalized.replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ").trim().split(/\s+/).filter((w) => w.length > 1).slice(0, 8);
   const readable = words.join("-") || "unspecified";
-  const digest = createHash2("sha256").update(normalized).digest("hex").slice(0, 8);
+  const digest = createHash3("sha256").update(normalized).digest("hex").slice(0, 8);
   return `${readable.slice(0, 71)}-${digest}`;
 }
 
@@ -26972,7 +26995,7 @@ function inferErrorPattern(error51) {
 }
 
 // dist/core/note-derive.js
-import { createHash as createHash3 } from "crypto";
+import { createHash as createHash4 } from "crypto";
 var NOTE_OBSERVATION_MAX_CHARS = 1e4;
 var NOTE_MAX_OBSERVATIONS = 100;
 var NOTE_MAX_CHARS = 2e4;
@@ -27022,7 +27045,7 @@ function deriveNote(raw) {
   const title = truncateTitle(titleSource) || "note";
   const body = splitObservations(rest);
   const observations = title === firstLine && body.length > 0 ? body : [...splitObservations(firstLine), ...body];
-  const digest = createHash3("sha256").update(text).digest("hex").slice(0, 8);
+  const digest = createHash4("sha256").update(text).digest("hex").slice(0, 8);
   const name = `${slugify2(title) || NOTE_DEFAULT_TYPE}-${digest}`;
   return { text, title, observations, name };
 }
@@ -27037,6 +27060,7 @@ function buildImportedMetadata(existingMetadata, args) {
   return {
     ...existingMetadata ?? {},
     ...bundledSafe,
+    ...Array.isArray(existingMetadata?.forgotten_observation_hashes) ? { forgotten_observation_hashes: existingMetadata.forgotten_observation_hashes } : {},
     trust: "untrusted",
     provenance: {
       ...existingMetadata?.provenance ?? {},
@@ -27469,11 +27493,11 @@ function forget(args) {
 }
 
 // dist/core/dreamer.js
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 
 // dist/core/transcript-source.js
 import fs3 from "fs";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import path3 from "path";
 var MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
 var MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
@@ -27516,7 +27540,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash4("sha256").update(bytes).digest("hex");
+    const contentHash = createHash5("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -27706,7 +27730,7 @@ function parseVisibleConversation(transcript) {
 }
 
 // dist/core/product-improvements.js
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 var PRODUCT_IMPROVEMENT_KIND = "product_improvement";
 function clean(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -27816,7 +27840,7 @@ function stageProductImprovement(db2, input) {
       success_criteria: successCriteria,
       priority
     };
-    const digest = createHash5("sha256").update(JSON.stringify(canonical)).digest("hex");
+    const digest = createHash6("sha256").update(JSON.stringify(canonical)).digest("hex");
     const clusterKey = `product-improvement:${digest}`;
     const existing = db2.prepare(`SELECT id, project, source_ids, proposed_digest, status, reason, created_at, reviewed_at
        FROM dream_proposals
@@ -28022,7 +28046,7 @@ function executeWorkPackage(db2, input, context = {}) {
   const execute = () => {
     const project = input.action === "prepare" ? input.project : input.ref.project;
     const kind = input.action === "prepare" ? input.kind : input.ref.kind;
-    const hash2 = (value) => createHash6("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash7("sha256").update(JSON.stringify(value)).digest("hex");
     if (input.action !== "prepare") {
       const submitted = input.action === "submit" ? input.result : void 0;
       if (submitted && [submitted.name, ...submitted.observations, ...submitted.tags].some((s) => redactSecrets(s) !== s)) {
@@ -29026,10 +29050,10 @@ function assembleBriefing(project, recipient) {
 import { randomUUID as randomUUID4 } from "node:crypto";
 
 // dist/core/agent-messaging.js
-import { createHash as createHash8, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash9, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash7, randomUUID } from "node:crypto";
+import { createHash as createHash8, randomUUID } from "node:crypto";
 import fs5 from "node:fs";
 var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
@@ -29677,7 +29701,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash8("sha256").update(stableStringify(value)).digest("hex");
+  return createHash9("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)

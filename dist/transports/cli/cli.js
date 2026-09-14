@@ -3760,6 +3760,7 @@ var knowledge_graph_exports = {};
 __export(knowledge_graph_exports, {
   KnowledgeGraph: () => KnowledgeGraph
 });
+import { createHash } from "node:crypto";
 function buildMatchExpression(db2, query) {
   const terms = tokenizeQuery(query);
   if (terms.length === 0)
@@ -3899,16 +3900,30 @@ var init_knowledge_graph = __esm({
         }
         const prevObsText = isNewEntity ? void 0 : joinIndexedObservations(prevObs.map((o) => o.content));
         if (opts?.observations?.length) {
+          let observations = opts.observations;
+          if (row.type === "session-insight" && /^session-.+-(files|fixes|summary)$/.test(name)) {
+            this.updateEntityMetadata(name, (meta3) => {
+              if (!Array.isArray(meta3.forgotten_observation_hashes))
+                return meta3;
+              const hashes = new Set(meta3.forgotten_observation_hashes);
+              if ((opts.trustOverride ?? opts.metadata?.trust ?? "trusted") !== "trusted") {
+                observations = observations.filter((obs) => !hashes.has(createHash("sha256").update(obs).digest("hex")));
+                return meta3;
+              }
+              const restored = new Set(observations.map((obs) => createHash("sha256").update(obs).digest("hex")));
+              return { ...meta3, forgotten_observation_hashes: meta3.forgotten_observation_hashes.filter((hash2) => !restored.has(hash2)) };
+            });
+          }
           const insertObs = this.db.prepare("INSERT INTO observations (entity_id, content) VALUES (?, ?)");
           const effectiveType = isNewEntity ? type : row.type;
           const isLessonFamily = effectiveType === "lesson_learned" || effectiveType === "lesson" || effectiveType === "mistake";
           if (isLessonFamily) {
-            for (const obs of opts.observations) {
+            for (const obs of observations) {
               insertObs.run(entityId, obs);
             }
           } else {
             const existingObsContent = new Set(isNewEntity ? [] : this.db.prepare("SELECT content FROM observations WHERE entity_id = ?").all(entityId).map((o) => o.content));
-            for (const obs of opts.observations) {
+            for (const obs of observations) {
               if (existingObsContent.has(obs))
                 continue;
               existingObsContent.add(obs);
@@ -4227,7 +4242,7 @@ var init_knowledge_graph = __esm({
       }
       removeObservation(entityName, observationContent) {
         return this.db.transaction(() => {
-          const row = this.db.prepare("SELECT id, title, status FROM entities WHERE name = ?").get(entityName);
+          const row = this.db.prepare("SELECT id, title, status, type, metadata FROM entities WHERE name = ?").get(entityName);
           if (!row)
             return { removed: false, remainingObservations: 0, entityFound: false };
           const prevObs = this.db.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(row.id);
@@ -4241,6 +4256,12 @@ var init_knowledge_graph = __esm({
           )`).run(row.id, observationContent);
           if (deleteResult.changes === 0) {
             return { removed: false, remainingObservations: prevObs.length, entityFound: true };
+          }
+          if (row.type === "session-insight" && /^session-.+-(files|fixes|summary)$/.test(entityName)) {
+            const meta3 = this.parseMetadata(row.metadata);
+            const hashes = Array.isArray(meta3.forgotten_observation_hashes) ? meta3.forgotten_observation_hashes : [];
+            const hash2 = createHash("sha256").update(observationContent).digest("hex");
+            this.db.prepare("UPDATE entities SET metadata = ? WHERE id = ?").run(JSON.stringify({ ...meta3, forgotten_observation_hashes: [.../* @__PURE__ */ new Set([...hashes, hash2])] }), row.id);
           }
           if (row.status !== "archived") {
             this.rebuildFts(row.id, entityName, prevObsText, row.title);
@@ -4323,7 +4344,7 @@ var init_lifecycle = __esm({
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { createHash } from "crypto";
+import { createHash as createHash2 } from "crypto";
 import { execFileSync } from "child_process";
 function homeDir() {
   const home = process.env.HOME;
@@ -4378,7 +4399,7 @@ function resolveProjectIdentity(cwd) {
 }
 function projectIdentity(label, locator) {
   const readable = label.normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
-  const suffix = createHash("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
+  const suffix = createHash2("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
   return `${readable}~${suffix}`;
 }
 function tryGit(cwd, args) {
@@ -5041,12 +5062,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_vocab USING fts5vocab(entities_fts, 'row'
 });
 
 // dist/core/lesson-slug.js
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 function lessonSlug(error51) {
   const normalized = error51.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
   const words = normalized.replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ").trim().split(/\s+/).filter((w) => w.length > 1).slice(0, 8);
   const readable = words.join("-") || "unspecified";
-  const digest = createHash2("sha256").update(normalized).digest("hex").slice(0, 8);
+  const digest = createHash3("sha256").update(normalized).digest("hex").slice(0, 8);
   return `${readable.slice(0, 71)}-${digest}`;
 }
 var init_lesson_slug = __esm({
@@ -5795,7 +5816,7 @@ var init_lesson_engine = __esm({
 });
 
 // dist/core/note-derive.js
-import { createHash as createHash3 } from "crypto";
+import { createHash as createHash4 } from "crypto";
 function sanitizeNoteText(raw) {
   const normalized = raw.replace(/\r\n?/g, "\n");
   const stripped = normalized.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "");
@@ -5841,7 +5862,7 @@ function deriveNote(raw) {
   const title = truncateTitle(titleSource) || "note";
   const body = splitObservations(rest);
   const observations = title === firstLine && body.length > 0 ? body : [...splitObservations(firstLine), ...body];
-  const digest = createHash3("sha256").update(text).digest("hex").slice(0, 8);
+  const digest = createHash4("sha256").update(text).digest("hex").slice(0, 8);
   const name = `${slugify(title) || NOTE_DEFAULT_TYPE}-${digest}`;
   return { text, title, observations, name };
 }
@@ -5875,6 +5896,7 @@ function buildImportedMetadata(existingMetadata, args) {
   return {
     ...existingMetadata ?? {},
     ...bundledSafe,
+    ...Array.isArray(existingMetadata?.forgotten_observation_hashes) ? { forgotten_observation_hashes: existingMetadata.forgotten_observation_hashes } : {},
     trust: "untrusted",
     provenance: {
       ...existingMetadata?.provenance ?? {},
@@ -22307,7 +22329,7 @@ var init_zod = __esm({
 });
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash4, randomUUID } from "node:crypto";
+import { createHash as createHash5, randomUUID } from "node:crypto";
 import fs9 from "node:fs";
 function getAgentMessageStorageReport(db2, options) {
   const cutoff = normalizeCutoff(options.cutoff);
@@ -22551,7 +22573,7 @@ function toCandidate(row) {
   return {
     message_id: row.message_id,
     payload_bytes: row.payload_bytes,
-    payload_sha256: createHash4("sha256").update(row.payload_json, "utf8").digest("hex")
+    payload_sha256: createHash5("sha256").update(row.payload_json, "utf8").digest("hex")
   };
 }
 function resultForCandidates(dryRun, candidates) {
@@ -22578,7 +22600,7 @@ function insertRetentionFact(db2, candidate, actor, tombstone) {
     payload_sha256: candidate.payload_sha256,
     tombstone_payload_bytes: Buffer.byteLength(tombstone, "utf8")
   });
-  const requestHash = createHash4("sha256").update(detailJson, "utf8").digest("hex");
+  const requestHash = createHash5("sha256").update(detailJson, "utf8").digest("hex");
   db2.prepare(`
     INSERT INTO agent_retention_facts (
       retention_fact_id, message_id, actor, retention_state, idempotency_key, request_hash, detail_json
@@ -22672,7 +22694,7 @@ var init_agent_message_storage = __esm({
 });
 
 // dist/core/agent-messaging.js
-import { createHash as createHash5, randomBytes as randomBytes2, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash6, randomBytes as randomBytes2, randomUUID as randomUUID2 } from "node:crypto";
 function sendAgentMessage(db2, input, options = {}) {
   const normalized = normalizeSendInput(input);
   const requestHash = hashCanonical({
@@ -23247,7 +23269,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash5("sha256").update(stableStringify(value)).digest("hex");
+  return createHash6("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)
@@ -51992,7 +52014,7 @@ var require_ip_address = __commonJS({
 import { isIPv6 } from "node:net";
 import { isIPv6 as isIPv62 } from "node:net";
 import { Buffer as Buffer2 } from "node:buffer";
-import { createHash as createHash9 } from "node:crypto";
+import { createHash as createHash10 } from "node:crypto";
 import { isIP } from "node:net";
 function ipKeyGenerator(ip, ipv6Subnet = 56) {
   if (isIPv6(ip)) {
@@ -52180,7 +52202,7 @@ var init_dist = __esm({
       return resetSeconds;
     };
     getPartitionKey = (key) => {
-      const hash2 = createHash9("sha256");
+      const hash2 = createHash10("sha256");
       hash2.update(key);
       const partitionKey = hash2.digest("hex").slice(0, 12);
       return Buffer2.from(partitionKey).toString("base64");
@@ -55302,6 +55324,9 @@ var init_capture_liveness = __esm({
       notBash: "not a Bash tool call",
       notGitCommit: "not a git commit command",
       commitLineMissing: "a git commit ran but printed no commit line",
+      commitHeadBaseline: "recorded the repository HEAD baseline; no history was backfilled",
+      commitHeadUnchanged: "a commit-like command completed but repository HEAD did not change",
+      commitHeadUnresolvable: "a commit-like command ran but repository HEAD could not be resolved",
       alreadyCaptured: "this session was already captured",
       payloadTooLarge: "payload exceeded the stdin byte cap",
       toolNameAbsent: "tool_name absent in payload",
@@ -55453,7 +55478,7 @@ import fs18 from "fs";
 import os2 from "os";
 import path16 from "path";
 import net2 from "node:net";
-import { createHash as createHash10 } from "crypto";
+import { createHash as createHash11 } from "crypto";
 import { createRequire as createRequire2 } from "module";
 import { execFileSync as execFileSync7 } from "child_process";
 function countH2Headings(content) {
@@ -56518,7 +56543,7 @@ function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, in
     let actualHash;
     try {
       const buf = readFileSyncImpl(full);
-      actualHash = createHash10("sha256").update(buf).digest("hex");
+      actualHash = createHash11("sha256").update(buf).digest("hex");
     } catch (err) {
       mismatches.push(`${entry.path} (read error: ${err instanceof Error ? err.message : "unknown"})`);
       continue;
@@ -56892,7 +56917,7 @@ var init_doctor = __esm({
 
 // dist/core/transcript-source.js
 import fs19 from "fs";
-import { createHash as createHash11 } from "node:crypto";
+import { createHash as createHash12 } from "node:crypto";
 import path17 from "path";
 function readTranscriptSnapshot(transcriptPath, expected) {
   return readTranscriptSnapshotWithin(transcriptPath, expected, MAX_TRANSCRIPT_SOURCE_BYTES).snapshot;
@@ -56932,7 +56957,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash11("sha256").update(bytes).digest("hex");
+    const contentHash = createHash12("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -57138,7 +57163,7 @@ var init_transcript_extractor = __esm({
 });
 
 // dist/core/product-improvements.js
-import { createHash as createHash12 } from "node:crypto";
+import { createHash as createHash13 } from "node:crypto";
 function clean2(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (!normalized)
@@ -57207,7 +57232,7 @@ __export(dreamer_exports, {
   listProposals: () => listProposals,
   rejectProposal: () => rejectProposal
 });
-import { createHash as createHash13 } from "node:crypto";
+import { createHash as createHash14 } from "node:crypto";
 function collisionSafeName(db2, proposed, kind, proposalId2) {
   const taken = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(proposed) !== void 0;
   return taken ? `${proposed} (${kind} #${proposalId2})` : proposed;
@@ -57325,7 +57350,7 @@ function executeWorkPackage(db2, input, context = {}) {
   const execute = () => {
     const project = input.action === "prepare" ? input.project : input.ref.project;
     const kind = input.action === "prepare" ? input.kind : input.ref.kind;
-    const hash2 = (value) => createHash13("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash14("sha256").update(JSON.stringify(value)).digest("hex");
     if (input.action !== "prepare") {
       const submitted = input.action === "submit" ? input.result : void 0;
       if (submitted && [submitted.name, ...submitted.observations, ...submitted.tags].some((s) => redactSecrets(s) !== s)) {
@@ -59497,7 +59522,7 @@ var {
 init_db();
 init_operations();
 init_config();
-import { createHash as createHash14 } from "crypto";
+import { createHash as createHash15 } from "crypto";
 import fs21 from "fs";
 import path19 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
@@ -59897,7 +59922,7 @@ init_note_derive();
 init_title();
 import fs10 from "fs";
 import path9 from "path";
-import { createHash as createHash6 } from "crypto";
+import { createHash as createHash7 } from "crypto";
 var NOTE_FILE_TAG = "source:note-file";
 var NOTE_FILE_MISSING_TAG = "source:note-file:missing";
 var NOTE_FILE_MAX_BYTES = 256 * 1024;
@@ -59994,7 +60019,7 @@ function ingestNoteDirectory(opts) {
   const realDir = fs10.realpathSync(opts.dir);
   if (!fs10.statSync(realDir).isDirectory())
     throw new Error(`not a directory: ${opts.dir}`);
-  const dirId = createHash6("sha256").update(realDir).digest("hex").slice(0, 16);
+  const dirId = createHash7("sha256").update(realDir).digest("hex").slice(0, 16);
   const { files, symlinks } = discover(realDir);
   const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
   const result = {
@@ -60172,7 +60197,7 @@ function ingestNoteDirectory(opts) {
       name,
       stat,
       unchanged: false,
-      contentHash: createHash6("sha256").update(raw).digest("hex"),
+      contentHash: createHash7("sha256").update(raw).digest("hex"),
       type,
       title: truncateTitle(cleanDescription || observations[0]),
       observations
@@ -60540,7 +60565,7 @@ function captureChatSession(input) {
 // dist/core/turn-signal.js
 init_paths();
 init_operations();
-import { createHash as createHash7 } from "crypto";
+import { createHash as createHash8 } from "crypto";
 var DECISION_CUES = [
   /\b(?:we|i)(?:'ve| have|'ll| will)?\s+(?:decided|settled on|opted)\b/gi,
   /\bdecision\s*:/gi,
@@ -60607,7 +60632,7 @@ function captureChatTurn(input) {
   const signal = classifyTurn(input.userText, input.assistantText);
   if (!signal)
     return { outcome: "skipped", reason: "no decision- or lesson-shaped move in this turn" };
-  const digest = createHash7("sha256").update(input.userText).update("\0").update(input.assistantText).digest("hex").slice(0, 12);
+  const digest = createHash8("sha256").update(input.userText).update("\0").update(input.assistantText).digest("hex").slice(0, 12);
   const name = `${input.namePrefix}-${input.sessionId}-${digest}`;
   remember({
     name,
@@ -60626,7 +60651,7 @@ function captureChatTurn(input) {
 init_db();
 init_operations();
 init_paths();
-import { createHash as createHash8 } from "crypto";
+import { createHash as createHash9 } from "crypto";
 var DELEGATION_TYPE = "delegation";
 var DELEGATION_SOURCE = "deepseek-worker";
 var DELEGATION_VERDICTS = ["unreviewed", "accepted", "rejected"];
@@ -60708,7 +60733,7 @@ function recordDelegation(input) {
   const summary = summarizeEnvelope(parsed);
   const verdict = input.verdict ?? "unreviewed";
   const trust = trustFor(verdict);
-  const envelopeSha256 = createHash8("sha256").update(input.envelopeText).digest("hex");
+  const envelopeSha256 = createHash9("sha256").update(input.envelopeText).digest("hex");
   const name = `delegation-${input.promptSha256.slice(0, 12)}-${envelopeSha256.slice(0, 8)}`;
   const existing = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
   if (existing) {
@@ -62694,7 +62719,7 @@ delegationCmd.command("record").description("Turn a worker JSON envelope into on
   }
   requireOneOf(opts.verdict, DELEGATION_VERDICTS, "--verdict");
   const envelopeText = readLocalFile("--envelope", opts.envelope, ENVELOPE_MAX_BYTES).toString("utf8");
-  const promptSha256 = createHash14("sha256").update(readLocalFile("--prompt-file", opts.promptFile, 64 * 1024 * 1024)).digest("hex");
+  const promptSha256 = createHash15("sha256").update(readLocalFile("--prompt-file", opts.promptFile, 64 * 1024 * 1024)).digest("hex");
   await withDatabase(() => {
     let result;
     try {

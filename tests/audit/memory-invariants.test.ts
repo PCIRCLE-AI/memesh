@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -62,6 +63,34 @@ function seedDelivery(db: DatabaseSync, messageId: string, project: string, reci
 }
 
 describe('memory-invariants: read-only detector over a real graph', () => {
+  it('#346 detects a restored excluded observation, and accepts an explicit restoration', () => {
+    const { dir, dbPath } = freshGraph();
+    const name = 'session-forget-audit-files';
+    const content = 'Session edited 1 file(s): fixture.ts';
+    try {
+      withRawDb(dbPath, (db) => {
+        insertEntity(db, name, 'session-insight', {
+          metadata: JSON.stringify({ forgotten_observation_hashes: [createHash('sha256').update(content).digest('hex')] }),
+        });
+      });
+      expect(run(dbPath).status).toBe(0);
+      withRawDb(dbPath, (db) => {
+        db.prepare('INSERT INTO observations (entity_id, content) SELECT id, ? FROM entities WHERE name = ?').run(content, name);
+      });
+      const broken = run(dbPath);
+      expect(broken.status, broken.stdout + broken.stderr).toBe(1);
+      expect(broken.stdout).toContain('FAIL forgotten-session-observations-stay-removed');
+      expect(broken.stdout).toContain(name);
+      expect(broken.stdout).not.toContain(content);
+      withRawDb(dbPath, (db) => {
+        db.prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{"forgotten_observation_hashes":[]}', name);
+      });
+      expect(run(dbPath).status).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('mirrors lessonSlug from src/core/lesson-slug.ts exactly (a comment is not a gate)', () => {
     const body = (src: string): string => {
       const m = /function lessonSlug\([^)]*\)[^{]*\{([\s\S]*?)\n\}/.exec(src);

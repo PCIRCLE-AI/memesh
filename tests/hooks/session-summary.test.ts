@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
+import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { createRequire } from 'module';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { HOOK_OUTCOMES_FILENAME, parseHookOutcomes, SKIP_REASONS } from '../../src/core/capture-liveness.js';
@@ -914,6 +915,51 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     expect(last, 'session-summary must still record something').toBeDefined();
     expect(last!.outcome, 'zero entities written is not "wrote"').toBe('skipped');
     expect(last!.reason).toBe(SKIP_REASONS.noRuleMatched);
+  });
+
+  it.each(['files', 'fixes', 'summary'])('Scenario: observation forget survives Stop for the %s snapshot while later updates remain possible', (suffix) => {
+    const entries = [
+      ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
+      ...Array.from({ length: 20 }, (_, i) => ({ type: 'assistant', message: { content: [
+        { type: 'tool_use', name: 'Bash', input: { command: `printf controlled-${i}` } },
+      ] } })),
+      { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: 'controlled missing-module error' }] } },
+    ];
+    writeTranscript(entries);
+    const sessionId = `forget-${suffix}`;
+    const payload = { session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' };
+    runHook(payload);
+    const name = `session-${sessionId}-${suffix}`;
+    const db = new Database(dbPath);
+    try {
+      const kg = new KnowledgeGraph(db);
+      const entity = kg.getEntity(name)!;
+      expect(entity).toBeDefined();
+      const removed = entity.observations[0];
+      expect(kg.removeObservation(name, removed).removed).toBe(true);
+      expect(kg.getEntity(name)!.observations).not.toContain(removed);
+      for (let stop = 0; stop < 2; stop++) runHook(payload);
+      expect(kg.getEntity(name)!.observations).not.toContain(removed);
+      const phrase = `"${removed.replaceAll('"', '""')}"`;
+      expect(db.prepare('SELECT rowid FROM entities_fts WHERE rowid = ? AND entities_fts MATCH ?')
+        .all(entity.id, phrase)).toHaveLength(0);
+      const hashes = kg.getEntity(name)!.metadata?.forgotten_observation_hashes;
+      expect(hashes).toHaveLength(1);
+      expect((hashes as string[])[0]).toMatch(/^[a-f0-9]{64}$/);
+
+      writeTranscript([...entries, ...edits(['new-after-forget.ts'])]);
+      runHook(payload);
+      const updated = kg.getEntity(name)!;
+      expect(updated.observations).not.toContain(removed);
+      expect(updated.observations.some(o => o.includes('new-after-forget.ts') || o.includes('25 tool calls'))).toBe(true);
+
+      // Explicit user re-remember is allowed; only automatic restoration is forbidden.
+      kg.createEntity(name, 'session-insight', { observations: [removed] });
+      expect(kg.getEntity(name)!.metadata?.forgotten_observation_hashes).toEqual([]);
+      writeTranscript(entries);
+      runHook(payload);
+      expect(kg.getEntity(name)!.observations).toContain(removed);
+    } finally { db.close(); }
   });
 
   it('Scenario: a Stop whose only matching rule targets a forget-archived entity records "skipped", not a false "wrote"', () => {

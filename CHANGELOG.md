@@ -2,10 +2,41 @@
 
 All notable changes to MeMesh are documented here.
 
-## [Unreleased]
+## [4.10.1] — 2026-09-14
+
+Includes the changes documented under 4.10.0 below; 4.10.0 was not published
+to npm. The previous public release is 4.9.4.
+
+### Added
+
+- **`qa:live-journey` now carries one v4 receipt for core memory and live-host
+  delivery.** Every real Codex or Claude run first exercises five shared
+  journeys: remember/recall, SessionStart briefing injection, quiet commit
+  capture, Stop insight capture, and a packed upgrade from public baselines.
+  Each row records its successful path, a representative failure, persisted
+  effect readback, the exercised boundary, and cleanup. `--core-only` runs the
+  non-interactive catalogue without host credentials; release receipts still
+  require the separate real Codex and Claude model-visible paths.
 
 ### Fixed
 
+- **An observation removed with `forget` stays removed from later Stop snapshots
+  (#346).** Files, fixes, and summary snapshots exclude the exact removed text
+  while continuing to accept new content. Explicit `remember` can restore it.
+  Stop replay tests and a memory invariant detect resurrection. See
+  `docs/postmortems/2026-09-14-observation-forget.md`.
+- **Quiet and redirected Git commits are captured from repository state
+  (#321).** The PostToolUse hook keeps the existing Git-output parser as a
+  optional output signal, but commit-producing commands now reconcile the repository's
+  current `HEAD` with a private marker keyed by the shared Git common
+  directory. This covers `git commit -q`, redirected output, merge,
+  cherry-pick, revert, and linked worktrees. A first observation records a
+  baseline without importing old history; later ranges capture at most the
+  newest 20 commits, tag multi-commit ranges `origin:batch`, and record how
+  many older commits were skipped. Failed commands and unresolvable or
+  unchanged heads leave explicit hook outcome records instead of silently
+  looking like a broken hook. See
+  `docs/postmortems/2026-09-14-quiet-commit-capture.md`.
 - **The isolated release suite now owns its npm cache.** The release runner
   no longer inherits a maintainer's `~/.npm` cache when nested tests execute
   `npm pack`, so local ownership damage cannot turn an otherwise isolated
