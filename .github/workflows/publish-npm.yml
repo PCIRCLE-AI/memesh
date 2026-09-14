@@ -91,6 +91,7 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag "$MEMESH_NPM_DIST_TAG"
         env:
+          MEMESH_NPM_DIST_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

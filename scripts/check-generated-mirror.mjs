@@ -121,7 +121,10 @@ export function main() {
 
   let diff;
   try {
-    diff = execFileSync('git', ['--no-pager', 'diff', '--stat', 'HEAD', '--', ...BUILD_OUTPUTS], {
+    // Compare the rebuild with the candidate in the index. Before commit it
+    // contains staged output; on clean CI/release checkouts it equals HEAD.
+    // Comparing HEAD here deadlocks a pre-commit verify after any source edit.
+    diff = execFileSync('git', ['--no-pager', 'diff', '--stat', '--', ...BUILD_OUTPUTS], {
       encoding: 'utf8',
     });
   } catch (err) {

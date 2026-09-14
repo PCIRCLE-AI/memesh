@@ -512,6 +512,48 @@ describe('doctor', () => {
     expect(updateCheck?.status, `a fresh install should not warn: ${updateCheck?.summary}`).toBe('pass');
   });
 
+  it.each([
+    { name: 'fresh failed attempt', latestVersion: null, failed: true },
+    { name: 'unpublished version ahead of npm', latestVersion: '4.9.4', failed: false },
+  ])('reports truthful update status for $name', async ({ latestVersion, failed }) => {
+    const packageRoot = createPackageRoot();
+    const memeshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-update-'));
+    tempRoots.push(packageRoot, memeshDir);
+    const originalMemeshDir = process.env.MEMESH_DIR;
+    process.env.MEMESH_DIR = memeshDir;
+    try {
+      const result = await runDoctor({
+        packageRoot,
+        packageVersion: '4.10.1',
+        openDatabaseImpl: () => makeDatabase() as never,
+        closeDatabaseImpl: () => undefined,
+        getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+        getUpdateCheckImpl: async () => makeUpdateCheck({
+          currentVersion: '4.10.1', latestVersion, updateAvailable: false,
+          lastAttemptAt: new Date().toISOString(),
+          lastSuccessfulCheckAt: failed ? null : new Date().toISOString(),
+          checkSucceeded: !failed, freshness: failed ? 'unavailable' : 'cached',
+          lastError: failed ? 'ECONNREFUSED' : null,
+        }),
+        getCurrentInstallChannelImpl: () => 'source-checkout',
+        nativeBindingProbeImpl: () => ({ ok: true }),
+      });
+      const check = result.checks.find((row) => row.id === 'update-status');
+      if (failed) {
+        expect(check?.status).toBe('warn');
+        expect(check?.summary).not.toContain('has not had a chance');
+        expect(check?.fix).toContain('memesh status');
+      } else {
+        expect(check?.summary).toContain('npm latest is 4.9.4');
+        expect(check?.summary).not.toContain('4.10.1 was the latest');
+        expect(check?.fix).toBeUndefined();
+      }
+    } finally {
+      if (originalMemeshDir === undefined) delete process.env.MEMESH_DIR;
+      else process.env.MEMESH_DIR = originalMemeshDir;
+    }
+  });
+
   it('reports a count for an unsegmented index and leaks no memory text', async () => {
     // Only the MESSAGE. Whether the check FINDS anything is pinned against a
     // real FTS5 index in `tests/fts-segmentation-doctor.test.ts` — see the
@@ -3657,6 +3699,7 @@ describe('Claude Channel registration diagnostic', () => {
     const result = await runChannelCase({ mcpServers: {} });
     const row = channelRow(result)!;
     expect(row.status).toBe('warn');
+    expect(row.code).toBe('claude-channel.unregistered');
     expect(row.informational).not.toBe(true);
     expect(row.summary).toMatch(/durable MCP\/inbox.*inactive/i);
     expect(row.summary).not.toMatch(/\/private\/|\/Users\/|memesh-claude-channel-/);

@@ -76,3 +76,15 @@ export function buildIsolatedSuiteEnv(baseEnv, { runtimeHome }) {
 }
 import path from 'node:path';
 import { envWithNpmCache } from './npm-bin.mjs';
+/**
+ * Keep only process-launch plumbing needed by local release children.  The
+ * caller supplies all product and npm paths explicitly; credentials, proxies,
+ * agents, user config and model/provider settings do not cross this boundary.
+ */
+export function buildCredentialFreeBaseEnv(baseEnv) {
+  const allowed = new Set([
+    'PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'COMSPEC',
+    'TMPDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+  ]);
+  return Object.fromEntries(Object.entries(baseEnv).filter(([key]) => allowed.has(key)));
+}

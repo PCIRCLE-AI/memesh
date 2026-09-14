@@ -305,6 +305,12 @@ export const SKIP_REASONS = {
   notGitCommit: 'not a git commit command',
   /** post-commit: a git commit DID run and no commit line came back — #321. */
   commitLineMissing: 'a git commit ran but printed no commit line',
+  /** post-commit #321: state-only detection never backfills on its first observation. */
+  commitHeadBaseline: 'recorded the repository HEAD baseline; no history was backfilled',
+  /** post-commit #321: a commit-like command completed without moving HEAD. */
+  commitHeadUnchanged: 'a commit-like command completed but repository HEAD did not change',
+  /** post-commit #321: repository state could not identify a commit safely. */
+  commitHeadUnresolvable: 'a commit-like command ran but repository HEAD could not be resolved',
   /** LEGACY (#322), no longer written — see NOT_TRIGGERED_SKIP_REASONS below. */
   alreadyCaptured: 'this session was already captured',
   // Every other skip reason a hook records. They live HERE, not as literals
@@ -389,7 +395,7 @@ export function renderableSkipReason(reason: string | undefined): string {
 }
 
 /**
- * Does this Bash command run `git commit`? post-commit's trigger test.
+ * Does this Bash command run a git subcommand that can create a commit?
  *
  * `commit` must be git's SUBCOMMAND: after `git`, only global options may
  * come first (`-C <dir>`, `-c <key=value>`, `--git-dir <dir>`,
@@ -407,9 +413,10 @@ export function renderableSkipReason(reason: string | undefined): string {
  *   - text that merely CONTAINS the shape classifies as a commit: a heredoc
  *     or a quoted string (`echo 'run git commit -m x'`), and `git -C commit
  *     log` (a directory named `commit`);
- *   - cherry-pick, revert, merge and `commit-tree` create commits but are not
- *     counted. That is a product decision outside #327; #321 revisits which
- *     commit-creating commands post-commit should capture.
+ * `commit-tree` is plumbing that prints an unattached object id rather than
+ * moving HEAD, so it remains outside this hook. #321 deliberately includes
+ * commit, merge, cherry-pick and revert and lets the HEAD comparison decide
+ * whether the invocation actually produced anything.
  */
 export function isGitCommitCommand(command: string): boolean {
   // A token walk, not one regular expression: the command text is whatever
@@ -433,14 +440,17 @@ const VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namesp
 const COMMIT_END = /[\s;&|)`]/;
 
 /** From just after `git`: skip global options, then is the subcommand `commit`? */
+const COMMIT_SUBCOMMANDS = ['commit', 'merge', 'cherry-pick', 'revert'] as const;
+
 function commitFollowsGit(s: string, i: number): { commit: boolean; end: number } {
   for (;;) {
     const afterSpace = skipSpace(s, i);
     if (afterSpace === i) return { commit: false, end: i };
     i = afterSpace;
-    if (s.startsWith('commit', i)) {
-      const next = s[i + 6];
-      return { commit: next === undefined || COMMIT_END.test(next), end: i + 6 };
+    const subcommand = COMMIT_SUBCOMMANDS.find((candidate) => s.startsWith(candidate, i));
+    if (subcommand) {
+      const next = s[i + subcommand.length];
+      return { commit: next === undefined || COMMIT_END.test(next), end: i + subcommand.length };
     }
     if (s[i] !== '-') return { commit: false, end: i };
     const optionEnd = tokenEnd(s, i);

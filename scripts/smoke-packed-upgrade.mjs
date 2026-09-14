@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { npmSync } from './lib/npm-bin.mjs';
+import { buildCredentialFreeBaseEnv } from './lib/isolated-env.mjs';
 import { assertEveryPathProven, fetchPackument, selectUpgradePaths } from './lib/upgrade-matrix.mjs';
 
 // This is deliberately a narrow upgrade proof, not a second copy of
@@ -65,7 +66,7 @@ function isolatedNpmEnv({ home, memeshDir, prefix, cache, userconfig }) {
   // HOME alone is insufficient: an exported MEMESH_DB_PATH would otherwise
   // route this acceptance test back to a maintainer's real database.
   const env = {
-    ...process.env,
+    ...buildCredentialFreeBaseEnv(process.env),
     HOME: home,
     MEMESH_DIR: memeshDir,
     MEMESH_AUTO_CAPTURE: 'false',
@@ -427,12 +428,7 @@ try {
   // `npm config get registry` while every install was pinned to
   // registry.npmjs.org, so on a machine behind a mirror the matrix could name
   // versions the installs could not fetch — or worse, agree by accident.
-  const registry = String(npmSync(['config', 'get', 'registry'], {
-    cwd: repoRoot,
-    encoding: 'utf8',
-    timeout: processTimeoutMs,
-    killSignal: 'SIGTERM',
-  })).trim();
+  const registry = 'https://registry.npmjs.org/';
   fs.writeFileSync(userconfig, [
     `registry=${registry}`,
     'audit=false',
