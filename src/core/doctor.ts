@@ -2314,6 +2314,7 @@ function inspectClaudeChannelRegistration(
       'warn',
       'No user-scoped memesh-channel registration was found. Durable MCP/inbox messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.',
       'If you want the opt-in channel, run `memesh agent setup claude` and then register the printed user-scoped MCP command.',
+      { code: 'claude-channel.unregistered' },
     );
   }
 
@@ -2500,7 +2501,7 @@ async function inspectUpdateStatus(
   // is the right answer for users who haven't completed a successful
   // check yet (and have no security advisory waiting).
   if (update.freshness === 'unavailable') {
-    if (isFreshInstall()) {
+    if (isFreshInstall() && !update.lastAttemptAt && !update.lastError) {
       return createCheck(
         'update-status',
         'Update status',
@@ -2551,7 +2552,7 @@ async function inspectUpdateStatus(
     });
   }
 
-  if (update.updateAvailable && update.latestVersion) {
+  if (update.latestVersion && update.latestVersion !== packageVersion) {
     // F14: User sees confusing "4.1.4 -> 4.1.3" on release branches — the
     // local version (unreleased) is ahead of npm latest. Don't warn unless
     // the update is actually an upgrade.

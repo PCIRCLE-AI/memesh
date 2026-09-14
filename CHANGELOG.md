@@ -20,6 +20,12 @@ to npm. The previous public release is 4.9.4.
 
 ### Fixed
 
+- **Update-check failures explain how to retry.** Dashboard Settings keeps
+  technical errors collapsed and shows connection and npm registry guidance.
+  Doctor no longer treats a failed first check as unattempted or an unpublished
+  local version as npm's latest release.
+- The optional Claude Channel registration reminder now uses the selected
+  dashboard language, including its setup instructions.
 - **An observation removed with `forget` stays removed from later Stop snapshots
   (#346).** Files, fixes, and summary snapshots exclude the exact removed text
   while continuing to accept new content. Explicit `remember` can restore it.

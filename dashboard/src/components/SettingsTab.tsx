@@ -209,7 +209,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
             ? t('settings.updateDeprecatedNoTarget')
             : t('settings.updateDeprecatedTargetUnknown')
         : updateStatus.freshness === 'unavailable'
-          ? t('settings.updateNoSuccessfulChecks')
+          ? t(updateStatus.lastError ? 'settings.updateUnavailable' : 'settings.updateNoSuccessfulChecks')
           : !updateStatus.checkSucceeded && updateStatus.freshness === 'stale'
             ? t('settings.updateStale')
             : !updateStatus.checkSucceeded && updateStatus.freshness === 'cached'
@@ -290,7 +290,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
           >
             <strong style={{ color: 'var(--warning)' }}>{t('settings.updatePartialTitle')}</strong>
             <div style={{ marginTop: 4, opacity: 0.9 }}>
-              {t('settings.updatePartialDescription', { message: updateStatus.lastError ?? '' })}
+              {t('settings.updatePartialDescription')}
             </div>
           </div>
         )}
@@ -339,7 +339,13 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
           )}
           {showLastError && (
             <div style={{ color: 'var(--warning)', fontSize: 14, lineHeight: 1.5 }}>
-              {t('settings.updateLastError', { message: updateStatus?.lastError || '' })}
+              <div role="alert">{t('settings.updateRetryGuidance')}</div>
+              <details style={{ marginTop: 6 }}>
+                <summary style={{ cursor: 'pointer' }}>{t('settings.technicalDetails')}</summary>
+                <div style={{ overflowWrap: 'anywhere', marginTop: 6 }}>
+                  {t('settings.updateLastError', { message: updateStatus?.lastError || '' })}
+                </div>
+              </details>
             </div>
           )}
           {updateStatus?.updateAvailable && updateStatus.recommendedCommand && (

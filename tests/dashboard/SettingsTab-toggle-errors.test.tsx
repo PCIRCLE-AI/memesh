@@ -5,7 +5,7 @@
 // the user thought the setting saved. Guard that a failed write is surfaced.
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { render, fireEvent, waitFor } from '@testing-library/preact';
+import { render, fireEvent, waitFor, within } from '@testing-library/preact';
 import { SettingsTab } from '../../dashboard/src/components/SettingsTab';
 
 function jsonResponse(body: unknown): Response {
@@ -53,6 +53,43 @@ describe('SettingsTab behaviour toggles surface POST failures', () => {
     const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
     await waitFor(() => expect(container.textContent).toContain('4.9.0'));
     expect(container.textContent?.includes('test-upgrade-command')).toBe(updateAvailable);
+  });
+
+  it.each([false, true])('keeps update failure details collapsed and supports recovery (partial=%s)', async (partial) => {
+    let recovered = false;
+    const requests: string[] = [];
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/v1/update-status')) {
+        requests.push(url);
+        return jsonResponse({ success: true, data: {
+          currentVersion: '4.10.1', latestVersion: partial || recovered ? '4.9.4' : null,
+          checkSucceeded: partial || recovered, freshness: partial || recovered ? 'fresh' : 'unavailable',
+          updateAvailable: false, lastAttemptAt: new Date().toISOString(),
+          lastError: recovered ? null : 'npm error ECONNREFUSED diagnostic-fixture',
+          installChannel: 'source-checkout', canSelfUpdate: false,
+        } });
+      }
+      return jsonResponse({ success: true, data: { config: { autoUpdate: 'off' }, capabilities: { searchLevel: 0 } } });
+    });
+    const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
+    await waitFor(() => expect(container.textContent).toContain('Check your connection and npm registry settings'));
+    const details = Array.from(container.querySelectorAll('details')).find((el) => el.textContent?.includes('diagnostic-fixture'));
+    expect(details).toBeDefined();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector('summary')?.textContent).toBe('Technical details');
+    const visibleCopy = container.cloneNode(true) as HTMLElement;
+    visibleCopy.querySelectorAll('details').forEach((el) => el.remove());
+    expect(visibleCopy.textContent).not.toContain('diagnostic-fixture');
+    if (partial) expect(visibleCopy.textContent).toContain('Deprecation status is unknown');
+    recovered = true;
+    const requestsBeforeRetry = requests.length;
+    fireEvent.click(within(container as HTMLElement).getByRole('button', { name: 'Check now' }));
+    await waitFor(() => expect(container.textContent).not.toContain('diagnostic-fixture'));
+    expect(requests.length).toBe(requestsBeforeRetry + 1);
+    expect(requests[requests.length - 1]).toBe('/v1/update-status');
+    expect(container.textContent).toContain('No newer release available');
+    expect(container.textContent).not.toContain('Check your connection and npm registry settings');
   });
 
   it('shows the error instead of silently swallowing a failed autoUpdate write', async () => {

@@ -56400,7 +56400,7 @@ function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
   const servers = parsed?.mcpServers;
   const server = servers && typeof servers === "object" && !Array.isArray(servers) ? servers["memesh-channel"] : void 0;
   if (server === void 0) {
-    return createCheck("claude-channel", "Claude Channel registration", "warn", "No user-scoped memesh-channel registration was found. Durable MCP/inbox messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.", "If you want the opt-in channel, run `memesh agent setup claude` and then register the printed user-scoped MCP command.");
+    return createCheck("claude-channel", "Claude Channel registration", "warn", "No user-scoped memesh-channel registration was found. Durable MCP/inbox messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.", "If you want the opt-in channel, run `memesh agent setup claude` and then register the printed user-scoped MCP command.", { code: "claude-channel.unregistered" });
   }
   const record2 = server && typeof server === "object" && !Array.isArray(server) ? server : null;
   const command = record2?.command;
@@ -56468,7 +56468,7 @@ async function inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installS
     return createCheck("update-status", "Update status", "fail", `Installed version ${packageVersion2} is DEPRECATED by maintainers: ${update.deprecationMessage}`, fix, { code: "update-status.deprecated", params: { version: packageVersion2, detail: update.deprecationMessage ?? "" } });
   }
   if (update.freshness === "unavailable") {
-    if (isFreshInstall()) {
+    if (isFreshInstall() && !update.lastAttemptAt && !update.lastError) {
       return createCheck("update-status", "Update status", "pass", "Installed recently \u2014 memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.");
     }
     return createCheck("update-status", "Update status", "warn", "memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.", "Run `memesh status` once while connected to the internet \u2014 that stores the answer and this notice goes away.", { code: "update-status.no-cache" });
@@ -56494,7 +56494,7 @@ async function inspectUpdateStatus(packageVersion2, getUpdateCheckImpl, installS
       params: { version: packageVersion2, detail: update.lastError ?? "" }
     });
   }
-  if (update.updateAvailable && update.latestVersion) {
+  if (update.latestVersion && update.latestVersion !== packageVersion2) {
     if (classifyBump(packageVersion2, update.latestVersion)) {
       return createCheck("update-status", "Update status", "warn", `Update available: ${update.latestVersion} (current: ${packageVersion2})`, `Run 'memesh update' to upgrade`, { code: "update-status.update-available", params: { latest: update.latestVersion, current: packageVersion2 } });
     } else {
