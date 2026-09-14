@@ -1,5 +1,7 @@
 # Using MeMesh — for AI agents
 
+Contributing to this repository? Read [CLAUDE.md](https://github.com/PCIRCLE-AI/memesh/blob/main/CLAUDE.md) before making changes; it defines the required plan, Proof, and verification receipt. In a source checkout, use that checkout's `CLAUDE.md`.
+
 MeMesh is persistent memory shared by every MCP host on this machine — one
 SQLite database at `~/.memesh/knowledge-graph.db`. A memory stored from one
 host is recallable from all of them. Not installed yet? Follow
