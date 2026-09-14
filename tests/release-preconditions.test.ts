@@ -183,10 +183,8 @@ describe('release preconditions', () => {
   });
 
   it('refuses a prerelease version rather than mis-publishing it', () => {
-    // Deliberate, not an oversight in the regex: `gh release create` would
-    // mark 4.7.0-rc.1 as latest without `--prerelease`, and publish-npm.yml
-    // runs `npm publish` with no `--tag`, so it would take npm's `latest`
-    // dist-tag too. A prerelease flow is its own change.
+    // Trials promote one final X.Y.Z artifact from next to latest; the
+    // prerelease channel flag does not allow suffixed package versions.
     expect(checkReleasePreconditions(ready({ pkgVersion: '4.7.0-rc.1' })).ok).toBe(false);
   });
 
@@ -569,6 +567,17 @@ describe('finish-release cuts the release in one call', () => {
   it('creates the tag through `gh release create --target`', () => {
     expect(code).toMatch(/'release',\s*'create'/);
     expect(code).toMatch(/'--target'/);
+  });
+
+  it('keeps trial selection, registry polling, and publisher tags aligned', () => {
+    expect(code).toContain('let prerelease = false;');
+    expect(code).toContain("const distTag = prerelease ? 'next' : 'latest';");
+    expect(code).toContain("...(prerelease ? ['--prerelease'] : [])");
+    expect(code).toContain('`@pcircle/memesh@${distTag}`');
+    expect(code).toContain('stableVersionAfter !== stableVersionBefore');
+    const publisher = fs.readFileSync(path.join(repoRoot, '.github/workflows/publish-npm.yml'), 'utf8');
+    expect(publisher).toContain('npm publish --access public --provenance --tag "$MEMESH_NPM_DIST_TAG"');
+    expect(publisher).toContain("github.event.release.prerelease && 'next' || 'latest'");
   });
 
   it('never pushes a tag by hand', () => {

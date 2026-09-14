@@ -12,7 +12,8 @@
  * So this one runs AFTER the release, against the published version, and asks
  * the questions those incidents answer badly:
  *
- *   registry  — is the version actually on the registry, and is it `latest`?
+ *   registry  — is the version published at the selected tag (default latest,
+ *               or next for a trial with a separate stable version)?
  *   consumer  — does a fresh install FROM THE REGISTRY run that version?
  *   artifact  — does the released artifact's own doctor find its tree intact?
  *   machine   — is that version what this machine has installed?
@@ -77,7 +78,10 @@ export const REQUIRED_DOCTOR_CHECKS = [
  * @param {string} version
  * @returns {{ok: boolean, detail: string, fix?: string}}
  */
-export function evaluateRegistry(packument, version) {
+export function evaluateRegistry(packument, version, distTag = 'latest') {
+  if (distTag !== 'latest' && distTag !== 'next') {
+    return { ok: false, detail: `Unsupported dist-tag: ${distTag}. Use latest or next.` };
+  }
   const published = Object.keys(packument?.versions ?? {});
   if (!published.includes(version)) {
     return {
@@ -86,15 +90,21 @@ export function evaluateRegistry(packument, version) {
       fix: 'The tag and the GitHub Release exist without a publish — this is the v4.7.0 shape. Check the publish-npm workflow run for the release.',
     };
   }
-  const latest = packument?.['dist-tags']?.latest;
-  if (latest !== version) {
+  const taggedVersion = packument?.['dist-tags']?.[distTag];
+  if (taggedVersion !== version) {
     return {
       ok: false,
-      detail: `${packageName}@${version} is published but the latest dist-tag is ${latest ?? 'missing'}, so a plain \`npm install\` does not get it`,
-      fix: `Move the tag deliberately: \`npm dist-tag add ${packageName}@${version} latest\`.`,
+      detail: `${packageName}@${version} is published but the ${distTag} dist-tag is ${taggedVersion ?? 'missing'}, so \`npm install ${packageName}@${distTag}\` does not get it`,
+      fix: `Move the tag deliberately: \`npm dist-tag add ${packageName}@${version} ${distTag}\`.`,
     };
   }
-  return { ok: true, detail: `${packageName}@${version} is published and is the latest dist-tag` };
+  if (distTag === 'next' && packument?.['dist-tags']?.latest === version) {
+    return { ok: false, detail: `${packageName}@${version} is already latest; a next-only trial cannot be claimed.` };
+  }
+  if (distTag === 'next' && !packument?.['dist-tags']?.latest) {
+    return { ok: false, detail: 'The latest dist-tag is missing; restore the stable channel before continuing the trial.' };
+  }
+  return { ok: true, detail: `${packageName}@${version} is published and is the ${distTag} dist-tag` };
 }
 
 /**
@@ -342,6 +352,13 @@ function freshConsumerInstall(version, root, registry) {
 async function main() {
   const args = process.argv.slice(2);
   const flagIndex = args.indexOf('--version');
+  const distTagIndex = args.indexOf('--dist-tag');
+  const distTag = distTagIndex < 0 ? 'latest' : args[distTagIndex + 1];
+  if (distTag !== 'latest' && distTag !== 'next') {
+    console.error('--dist-tag must be latest or next');
+    process.exitCode = 1;
+    return;
+  }
   // --skip-machine: the caller is not an owner machine (a CI runner filing a
   // release receipt), so the installed-surfaces question has no subject
   // there. It is reported as NOT RUN below, never as a pass.
@@ -357,10 +374,10 @@ async function main() {
     const registry = String(npmSync(['config', 'get', 'registry'], {
       cwd: repoRoot, encoding: 'utf8', timeout: processTimeoutMs,
     })).trim();
-    console.log(`post-release check: version=${version} registry=${registry}\n`);
+    console.log(`post-release check: version=${version} dist-tag=${distTag} registry=${registry}\n`);
 
     const packument = await fetchPackument(packageName, registry);
-    results.push({ id: 'registry', ...evaluateRegistry(packument, version) });
+    results.push({ id: 'registry', ...evaluateRegistry(packument, version, distTag) });
 
     // Everything below installs the version under test. There is nothing to
     // install when the registry does not have it, and running the rest would

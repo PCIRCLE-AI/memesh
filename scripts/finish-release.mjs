@@ -63,10 +63,12 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 
 const args = process.argv.slice(2);
 let dryRun = false;
+let prerelease = false;
 let notesFile = null;
 for (let i = 0; i < args.length; i++) {
   const a = args[i];
   if (a === '--dry-run') dryRun = true;
+  else if (a === '--prerelease') prerelease = true;
   else if (a === '--notes-file') {
     notesFile = args[++i];
     if (!notesFile) {
@@ -75,13 +77,15 @@ for (let i = 0; i < args.length; i++) {
     }
   }
   else if (a === '-h' || a === '--help') {
-    console.log('Usage: node scripts/finish-release.mjs [--dry-run] [--notes-file <path>]');
+    console.log('Usage: node scripts/finish-release.mjs [--dry-run] [--prerelease] [--notes-file <path>]');
     process.exit(0);
   } else {
     console.error(`unknown flag: ${a}`);
     process.exit(1);
   }
 }
+
+const distTag = prerelease ? 'next' : 'latest';
 
 /** Run a command and return trimmed stdout, or null if it failed for any reason. */
 function capture(cmd, cmdArgs) {
@@ -266,7 +270,14 @@ if (notes) {
   if (notes.trim().split('\n').length > 6) console.log('    │ …');
 }
 
-if (!ok) {
+const stableVersionBefore = prerelease
+  ? capture('npm', ['view', '@pcircle/memesh@latest', 'version', '--prefer-online'])
+  : null;
+if (prerelease && !stableVersionBefore) {
+  blockers.push('Cannot read npm latest before the prerelease; restore registry access and retry.');
+}
+
+if (!ok || blockers.length > 0) {
   console.error(`\n✗ refusing to cut ${tag}:`);
   for (const b of blockers) console.error(`  - ${b}`);
   process.exit(1);
@@ -274,8 +285,9 @@ if (!ok) {
 
 if (dryRun) {
   console.log(`\n✓ preconditions pass. Would run:`);
-  console.log(`    gh release create ${tag} --target ${headSha} --title ${tag} --notes-file <changelog section>`);
+  console.log(`    gh release create ${tag} --target ${headSha} --title ${tag} --notes-file <changelog section>${prerelease ? ' --prerelease' : ''}`);
   console.log(`  …which creates the tag, publishes the release, and triggers publish-npm.yml.`);
+  console.log(`  npm target: ${distTag}${prerelease ? `; latest must remain ${stableVersionBefore}` : ''}.`);
   process.exit(0);
 }
 
@@ -289,7 +301,7 @@ let releaseUrl;
 try {
   releaseUrl = execFileSync(
     'gh',
-    ['release', 'create', tag, '--target', headSha, '--title', tag, '--notes-file', notesPath],
+    ['release', 'create', tag, '--target', headSha, '--title', tag, '--notes-file', notesPath, ...(prerelease ? ['--prerelease'] : [])],
     { cwd: repoRoot, encoding: 'utf8' }
   ).trim();
 } catch (e) {
@@ -394,11 +406,11 @@ const NPM_POLL_ATTEMPTS = 20;
 const NPM_POLL_INTERVAL_MS = 15_000;
 
 function publishedVersion() {
-  return capture('npm', ['view', '@pcircle/memesh', 'version', '--prefer-online']);
+  return capture('npm', ['view', `@pcircle/memesh@${distTag}`, 'version', '--prefer-online']);
 }
 
 {
-  process.stdout.write(`\n  waiting for npm to serve ${pkgVersion} `);
+  process.stdout.write(`\n  waiting for npm ${distTag} to serve ${pkgVersion} `);
   let seen = null;
   for (let attempt = 0; attempt < NPM_POLL_ATTEMPTS; attempt++) {
     seen = publishedVersion();
@@ -415,15 +427,23 @@ function publishedVersion() {
   }
   process.stdout.write('\n');
   if (seen === pkgVersion) {
-    console.log(`  npm serves ${pkgVersion} — the release is live.`);
+    console.log(`  npm ${distTag} serves ${pkgVersion}; consumer and post-release checks remain required.`);
+    if (prerelease) {
+      const stableVersionAfter = capture('npm', ['view', '@pcircle/memesh@latest', 'version', '--prefer-online']);
+      if (stableVersionAfter !== stableVersionBefore) {
+        console.error(`  UNCONFIRMED: npm latest changed from ${stableVersionBefore} to ${stableVersionAfter ?? 'an unreadable answer'}. Reconcile the dist-tags before continuing.`);
+        process.exit(1);
+      }
+      console.log(`  npm latest remains ${stableVersionAfter}.`);
+    }
   } else {
     const waited = Math.round((NPM_POLL_ATTEMPTS * NPM_POLL_INTERVAL_MS) / 60_000);
     console.error(
-      `  UNCONFIRMED: after ~${waited} minutes npm still serves ` +
+      `  UNCONFIRMED: after ~${waited} minutes npm ${distTag} still serves ` +
       `${seen ?? 'an unreadable answer'}, not ${pkgVersion}.`,
     );
     console.error(`  The tag and the GitHub Release exist. Check the publish run above,`);
-    console.error(`  then re-check with: npm view @pcircle/memesh version --prefer-online`);
+    console.error(`  then re-check with: npm view @pcircle/memesh@${distTag} version --prefer-online`);
     process.exit(1);
   }
 }

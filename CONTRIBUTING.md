@@ -49,10 +49,27 @@ A release is one operation, not three commands:
 git checkout main && git pull        # the release PR is already merged
 npm run qa:pre-release               # the enumerable gates, in one door
 # Produce fresh .qa/codex-report.json and .qa/claude-report.json receipts.
-npm run release:finish -- --dry-run  # what it would do, or every reason it refuses
-npm run release:finish
-npm run qa:post-release              # after the publish workflow is green
+npm run release:finish -- --prerelease --dry-run
+# After owner authorization, publish the trial through the existing workflow:
+npm run release:finish -- --prerelease
+npm run qa:post-release -- --dist-tag next
 ```
+
+The prerelease publishes the exact version to npm `next` and verifies that
+`latest` stays unchanged. Explicit `@next` or version installs opt into the trial;
+ordinary npm installs continue using `latest`. The plugin marketplace follows
+`main`, so this npm tag separation does not isolate plugin users after the merge.
+
+Retain green post-release and core/live-host journey evidence for the same
+candidate, then observe at least one working day with the capture-liveness
+check passing. After owner authorization to promote, move the existing npm
+artifact with `npm dist-tag add @pcircle/memesh@<version> latest`, clear the
+GitHub prerelease flag with `gh release edit v<version> --prerelease=false`,
+read back both states, and rerun `npm run qa:post-release` in its default
+`latest` mode. Promotion does not publish the package again.
+
+Without `--prerelease`, `release:finish` retains the stable `latest` behavior;
+do not use that mode to skip trial observation for a new candidate.
 
 `npm run qa:pre-release` runs the build, requires the independent UI review below against that build, then runs the `verify:artifact` sequence and
 `audit:memory`, prints each step's real exit code, and ends with the list of
@@ -141,7 +158,8 @@ lifecycle; the narrower account-free harness mode cannot satisfy that gate. See
 [`docs/platforms/agent-messaging.md`](docs/platforms/agent-messaging.md#repeatable-owner-run-live-checks).
 
 `npm run qa:post-release` is the half a fresh-clone gate cannot do: it asks the
-registry whether the version is really published and really `latest`, installs
+registry whether the version is published at the selected tag (`latest` by
+default, or `next` during the trial), installs
 it from the registry into a throwaway prefix and runs it, runs the shipped
 capture hooks against a throwaway graph (the `capture` receipt: post-commit must
 store one commit and session-summary one session insight), and then asks whether

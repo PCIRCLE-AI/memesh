@@ -116,11 +116,9 @@ export function checkReleasePreconditions({
     );
   }
 
-  // No prerelease suffix on purpose. Nothing here handles one: `gh release
-  // create` would mark `4.7.0-rc.1` as latest without `--prerelease`, and
-  // publish-npm.yml runs `npm publish` with no `--tag`, so it would take npm's
-  // `latest` dist-tag too. This project has never shipped a prerelease; when
-  // it does, that is its own change, not a regex that quietly permits it.
+  // Trials use the final X.Y.Z artifact on npm next, then promote that same
+  // artifact to latest. The GitHub prerelease flag selects the channel;
+  // it does not enable suffixed package versions such as X.Y.Z-rc.N.
   if (!/^\d+\.\d+\.\d+$/.test(String(pkgVersion))) {
     blockers.push(`package.json version \`${pkgVersion}\` is not a version this can tag`);
   }
