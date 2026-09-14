@@ -20,6 +20,8 @@ to npm. The previous public release is 4.9.4.
 
 ### Fixed
 
+- Settings that cannot be read show an unknown policy and reload guidance
+  instead of appearing to have automatic updates turned off.
 - **Update-check failures explain how to retry.** Dashboard Settings keeps
   technical errors collapsed and shows connection and npm registry guidance.
   Doctor no longer treats a failed first check as unattempted or an unpublished

@@ -247,6 +247,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
   const lastSuccessfulLabel = isCheckingUpdates ? t('common.loading') : formatTimestamp(locale, updateStatus?.lastSuccessfulCheckAt || null);
   const showLastSuccessful = Boolean(updateStatus?.lastSuccessfulCheckAt);
   const showLastError = Boolean(updateStatus?.lastError) && !isCheckingUpdates;
+  const configLoadFailed = !configLoading && !config;
 
   return (
     <div style={{ display: 'grid', gap: 12 }}>
@@ -371,11 +372,12 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
           </label>
           <select
             aria-labelledby="settings-autoupdate-label"
-            value={config?.config.autoUpdate ?? 'off'}
+            value={config ? (config.config.autoUpdate ?? 'off') : ''}
             disabled={!config || configSaving}
             onChange={(e) => { void saveAutoUpdate((e.target as HTMLSelectElement).value as AutoUpdatePolicy); }}
             style={{ fontSize: 16, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
           >
+            {!config && <option value="" disabled>{t(configLoading ? 'common.loading' : 'common.unknown')}</option>}
             <option value="off">{t('settings.autoUpdateOff')}</option>
             <option value="patch">{t('settings.autoUpdatePatch')}</option>
             <option value="minor">{t('settings.autoUpdateMinor')}</option>
@@ -384,9 +386,9 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
           <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 4 }}>
             {t('settings.autoUpdateHint')}
           </div>
-          {configMessage && (
-            <div role={configMessage.startsWith(t('common.error')) ? 'alert' : 'status'} style={{ marginTop: 8, fontSize: 14 }}>
-              {configMessage}
+          {(configLoadFailed || configMessage) && (
+            <div role={configLoadFailed || configMessage.startsWith(t('common.error')) ? 'alert' : 'status'} style={{ marginTop: 8, fontSize: 14 }}>
+              {configLoadFailed ? t('common.error') + ': ' + t('settings.configLoadFailed') : configMessage}
             </div>
           )}
         </div>
