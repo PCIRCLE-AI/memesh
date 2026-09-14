@@ -5,7 +5,7 @@ Spec: read `{{ARTIFACT}}` in full, then the intent it names. Read `AGENTS.md` (i
 
 Explore the source with Read, Grep and Glob until you can name every file that changes.
 
-Write `docs/plans/{{SLUG}}.md` using `docs/plans/TEMPLATE.md` exactly: keep its frontmatter keys, set `status: draft`, `spec: {{ARTIFACT}}`, `generated_by: sdlc-loop`, `build: pending`. Sections:
+Write `docs/plans/{{SLUG}}.md` using `docs/plans/TEMPLATE.md` exactly: keep its frontmatter keys, set `status: draft`, `spec: {{ARTIFACT}}`, `build: pending`. Do not add author or generator attribution. Sections:
 
 - Files that change: every path, marked new / modified / deleted, one line each on what changes there. Tests count as files.
 - Order of work: numbered steps, smallest vertical slice first (one path that works end to end before widening).

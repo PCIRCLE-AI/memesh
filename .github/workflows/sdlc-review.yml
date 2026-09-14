@@ -131,13 +131,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           BASE: ${{ github.event.pull_request.base.ref }}
         run: node scripts/sdlc/review.mjs --request "$PR" --base "$BASE"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: review-${{ github.event.pull_request.number }}-${{ github.run_id }}
-          path: .sdlc-run/
-          retention-days: 14
-          if-no-files-found: ignore
+      # Publish findings through the PR note, not the raw model transcript.
 
   review-matrix:
     name: ${{ matrix.cell.pass }} pass, ${{ matrix.cell.dir }}
@@ -174,10 +168,4 @@ jobs:
           PASS: ${{ matrix.cell.pass }}
           DIR: ${{ matrix.cell.dir }}
         run: node scripts/sdlc/review.mjs --request "$PR" --base "$BASE" --pass "$PASS" --dir "$DIR"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: always()
-        with:
-          name: review-${{ github.event.pull_request.number }}-${{ matrix.cell.pass }}-${{ strategy.job-index }}-${{ github.run_id }}
-          path: .sdlc-run/
-          retention-days: 14
-          if-no-files-found: ignore
+      # Publish findings through the PR note, not the raw model transcript.

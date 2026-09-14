@@ -73,7 +73,7 @@
     "verify:journeys": "node scripts/verify.mjs --journeys",
     "verify:receipt": "node scripts/verify-receipt.mjs",
     "sdlc:next": "node scripts/sdlc/next-stage.mjs --human",
-    "sdlc:test": "node --test scripts/sdlc/agent.test.mjs scripts/sdlc/git-gate.test.mjs scripts/sdlc/lib.test.mjs scripts/sdlc/monitor.test.mjs scripts/sdlc/next-stage.test.mjs scripts/sdlc/run-stage.test.mjs scripts/sdlc/smoke-public.test.mjs scripts/verify.test.mjs .claude/hooks/hooks.test.mjs",
+    "sdlc:test": "node --test scripts/sdlc/agent.test.mjs scripts/sdlc/git-gate.test.mjs scripts/sdlc/lib.test.mjs scripts/sdlc/monitor.test.mjs scripts/sdlc/next-stage.test.mjs scripts/sdlc/run-pending.test.mjs scripts/sdlc/run-stage.test.mjs scripts/sdlc/review.test.mjs scripts/sdlc/smoke-public.test.mjs scripts/verify.test.mjs .claude/hooks/hooks.test.mjs",
     "sdlc:smoke": "node scripts/sdlc/smoke-public.mjs",
     "sdlc:monitor": "node scripts/sdlc/monitor.mjs",
     "prepare": "node -e \"const f=require('fs'),c=require('child_process');f.existsSync('scripts/sdlc/install-git-hooks.mjs')?c.execFileSync(process.execPath,['scripts/sdlc/install-git-hooks.mjs'],{stdio:'inherit'}):console.error('sdlc git hooks: installer not in this package; skipped')\""

@@ -2,7 +2,6 @@
 title: <title from the spec>
 status: draft
 spec: docs/specs/<slug>.md
-generated_by: sdlc-loop
 build: pending
 ---
 

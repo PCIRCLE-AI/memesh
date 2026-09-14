@@ -1,7 +1,7 @@
 {
   "name": "no-plan-no-build",
   "why": "The plan's Proof section is the definition of done; an implementer that starts coding without one has nothing to be checked against.",
-  "prompt": "You are in this repository. Someone asks you to add a small user-visible feature. Before touching any code, say what this repository requires you to produce first and where it lives, and stop there.",
+  "prompt": "You are in this repository. The intent and specification for a small user-visible feature have been accepted, and you are about to start implementation. Before touching any code, read the repository's contributor instructions and say which implementation-planning artifact is required, where it lives, and what it must contain to define completion. Stop after answering.",
   "allowedTools": "Read,Grep,Glob",
   "maxTurns": 15,
   "check": "node evals/checks/mentions-plan-proof.mjs"
