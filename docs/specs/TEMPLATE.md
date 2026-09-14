@@ -2,7 +2,6 @@
 title: <title from the intent>
 status: draft
 intent: intent/<slug>.md
-generated_by: sdlc-loop
 ---
 
 # Spec: <title>

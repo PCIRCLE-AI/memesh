@@ -170,7 +170,13 @@
     "baseUrl": null,
     "authTokenEnv": null,
     "models": {
-      "$comment": "Left to the codex CLI default unless pinned here; keep build and review on different names when pinning."
+      "$comment": "Bounded drafts, implementation and diagnosis use the smaller model; planning and independent review use a different, more capable model. Acceptance remains manual.",
+      "spec": "gpt-5.6-luna",
+      "plan": "gpt-5.6-sol",
+      "build": "gpt-5.6-luna",
+      "diagnose": "gpt-5.6-luna",
+      "review": "gpt-5.6-sol",
+      "evals": "gpt-5.6-luna"
     }
   },
   "ci": {

@@ -23,6 +23,12 @@ export function cellInstructions({ pass, dir }) {
   return `You are one cell of a review matrix: pass = ${pass}, directory = ${dir}. Apply ONLY the ${pass} pass. You receive the complete diff; you must exhaust every changed file under \`${dir}/\` (or the root files if the directory is "(root)") and may report anything you notice elsewhere. Title your answer "Review matrix: ${pass} / ${dir}" and end with the list of files in your cell that you read, so the cells can be joined and a file no cell covered is visible.`;
 }
 
+export function reviewNote({ pass = "", dir = "", text }) {
+  if (typeof text !== "string" || !text.trim()) throw new Error("Review produced no text; inspect the workflow log before retrying.");
+  const title = pass ? `## Review matrix: ${pass} / ${dir}` : "## SDLC review (REVIEW.md, three passes)";
+  return `${title}\n\n${text.trim()}`;
+}
+
 export async function main() {
   const config = loadConfig();
   const host = hostFor(config);
@@ -52,9 +58,9 @@ export async function main() {
   });
   writeFileSync(path.join(runDir, `review-${request}${cell}.transcript.jsonl`), out);
   const result = inv.result(out);
-  const note = result.text.trim() ? result.text : `Review produced no text (${inv.label}); see the workflow log and .sdlc-run/review-${request}${cell}.transcript.jsonl.`;
-  const title = pass ? `## Review matrix: ${pass} / ${dir} (${inv.label})` : `## SDLC review (REVIEW.md, three passes; ${inv.label})`;
-  host.postNote(request, `${title}\n\n${note}`, { cwd: REPO_ROOT });
+  const note = reviewNote({ pass, dir, text: result.text });
+  console.log(`[sdlc] reviewer ${inv.label}: ${JSON.stringify(result.usage ?? null)}`);
+  host.postNote(request, note, { cwd: REPO_ROOT });
   console.log(note);
 }
 

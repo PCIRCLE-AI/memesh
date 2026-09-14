@@ -1,11 +1,57 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { PROVIDERS, credentialPresent, finalText, invocationFor, modelFor, providerOf, toolCalls } from "./agent.mjs";
+import { PROVIDERS, credentialPresent, finalText, install, invocationFor, modelFor, providerOf, toolCalls } from "./agent.mjs";
 
 const base = { agent: {} };
+
+test("model subprocesses receive selected provider credentials and host tokens only for build", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sdlc-runtime-env-"));
+  try {
+    const hostKeys = ["GH_TOKEN", "GITHUB_TOKEN", "SDLC_GITHUB_TOKEN", "GITLAB_TOKEN", "GLAB_TOKEN", "SDLC_GITLAB_TOKEN", "CI_JOB_TOKEN", "CI_REPOSITORY_URL"];
+    const env = { PATH: process.env.PATH, ...Object.fromEntries(hostKeys.map((key) => [key, "fixture-host"])), CODEX_AUTH_JSON: "fixture-login", OPENAI_API_KEY: "fixture-openai", ANTHROPIC_API_KEY: "fixture-anthropic", ANTHROPIC_AUTH_TOKEN: "fixture-bearer", GEMINI_API_KEY: "fixture-gemini", CUSTOM_AUTH: "fixture-custom" };
+    for (const provider of Object.keys(PROVIDERS)) {
+      for (const access of ["read", "artifact", "build"]) {
+        const inv = invocationFor({ agent: { provider } }, { stage: "spec", access, prompt: "P", runDir: dir, env });
+        for (const key of hostKeys) assert.equal(key in inv.env, access === "build", `${provider}/${access}/${key}`);
+        assert.equal("CODEX_AUTH_JSON" in inv.env, false);
+        assert.equal("ANTHROPIC_AUTH_TOKEN" in inv.env, provider === "claude");
+        for (const [name, entry] of Object.entries(PROVIDERS)) {
+          for (const key of entry.credentials.filter((key) => key !== "CODEX_AUTH_JSON" && key in env)) assert.equal(key in inv.env, name === provider, `${provider}/${access}/${key}`);
+        }
+      }
+    }
+    const custom = invocationFor({ agent: { provider: "codex", baseUrl: "https://example.test/v1", authTokenEnv: "CUSTOM_AUTH" } }, { stage: "spec", access: "artifact", prompt: "P", runDir: dir, env });
+    assert.equal(custom.env.CUSTOM_AUTH, env.CUSTOM_AUTH);
+    assert.equal(env.GH_TOKEN, "fixture-host", "the parent retains its host credential");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("package installation gets no provider or host credentials while Codex subscription login is persisted", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "sdlc-install-env-"));
+  try {
+    const bin = path.join(dir, "bin");
+    mkdirSync(bin);
+    const probe = path.join(dir, "probe.json");
+    const keys = [...Object.values(PROVIDERS).flatMap((entry) => entry.credentials), "ANTHROPIC_AUTH_TOKEN", "GH_TOKEN", "GITHUB_TOKEN", "SDLC_GITHUB_TOKEN", "GITLAB_TOKEN", "GLAB_TOKEN", "SDLC_GITLAB_TOKEN", "CI_JOB_TOKEN", "CI_REPOSITORY_URL", "CUSTOM_AUTH"];
+    const npm = path.join(bin, "npm");
+    writeFileSync(npm, `#!${process.execPath}\nimport { writeFileSync } from 'node:fs';\nwriteFileSync(process.env.INSTALL_PROBE, JSON.stringify(${JSON.stringify(keys)}.filter(key => key in process.env)));\n`);
+    chmodSync(npm, 0o700);
+    const login = JSON.stringify({ fixture: "non-secret-login" });
+    const home = path.join(dir, "codex");
+    const env = { ...Object.fromEntries(keys.filter((key) => key !== "OPENAI_API_KEY").map((key) => [key, "fixture"])), PATH: `${bin}${path.delimiter}${process.env.PATH}`, CODEX_HOME: home, INSTALL_PROBE: probe, CODEX_AUTH_JSON: login };
+    install({ agent: { provider: "codex", authTokenEnv: "CUSTOM_AUTH" } }, env, () => {});
+    assert.deepEqual(JSON.parse(readFileSync(probe, "utf8")), []);
+    assert.equal(readFileSync(path.join(home, "auth.json"), "utf8"), login);
+    assert.equal(env.CODEX_AUTH_JSON, login, "setup does not mutate its caller's environment");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("provider defaults to claude; an unknown provider is refused by name", () => {
   assert.equal(providerOf({}).name, "claude");

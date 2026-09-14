@@ -60,6 +60,9 @@ export const PROVIDERS = {
 // (the build stage; the CI runner is the sandbox).
 export const ACCESS = ["artifact", "read", "build"];
 
+const HOST_CREDENTIAL_ENV = ["GH_TOKEN", "GITHUB_TOKEN", "SDLC_GITHUB_TOKEN", "GITLAB_TOKEN", "GLAB_TOKEN", "SDLC_GITLAB_TOKEN", "CI_JOB_TOKEN", "CI_REPOSITORY_URL"];
+const MODEL_CREDENTIAL_ENV = [...Object.values(PROVIDERS).flatMap((entry) => entry.credentials), "ANTHROPIC_AUTH_TOKEN"];
+
 export function providerOf(config) {
   const name = config.agent?.provider ?? "claude";
   if (!PROVIDERS[name]) throw new Error(`sdlc/config.json agent.provider "${name}" is not one of ${Object.keys(PROVIDERS).join(", ")}`);
@@ -88,9 +91,15 @@ export function invocationFor(config, { stage, access, prompt, tools = CLAUDE_RE
   const model = modelFor(config, stage, claudeDefault);
   const agent = config.agent ?? {};
   const label = `${provider.name}:${model ?? "default"}`;
+  const runEnv = { ...env };
+  const allowedCredentials = new Set([...provider.credentials, ...(provider.name === "claude" ? ["ANTHROPIC_AUTH_TOKEN"] : []), agent.authTokenEnv]);
+  allowedCredentials.delete("CODEX_AUTH_JSON");
+  for (const key of MODEL_CREDENTIAL_ENV) if (!allowedCredentials.has(key)) delete runEnv[key];
+  if (access !== "build") {
+    for (const key of HOST_CREDENTIAL_ENV) delete runEnv[key];
+  }
 
   if (provider.name === "claude") {
-    const runEnv = { ...env };
     if (agent.baseUrl) runEnv.ANTHROPIC_BASE_URL = agent.baseUrl;
     if (agent.authTokenEnv && env[agent.authTokenEnv]) runEnv.ANTHROPIC_AUTH_TOKEN = env[agent.authTokenEnv];
     const args = ["-p", prompt, "--output-format", stream ? "stream-json" : "json", ...(stream ? ["--verbose"] : []), ...(model ? ["--model", model] : []), "--max-turns", String(maxTurns), "--allowedTools", tools.join(",")];
@@ -123,7 +132,7 @@ export function invocationFor(config, { stage, access, prompt, tools = CLAUDE_RE
       : [];
     const args = ["exec", "--ephemeral", "--color", "never", "--json", "--ignore-user-config", "-o", lastFile, ...(model ? ["-m", model] : []), ...endpoint, ...sandbox, prompt];
     return {
-      provider: provider.name, model, label, command: "codex", args, env: { ...env },
+      provider: provider.name, model, label, command: "codex", args, env: runEnv,
       result: (stdout) => {
         const events = parseJsonLines(stdout);
         const usage = events.filter((e) => e?.type === "turn.completed").pop()?.usage ?? null;
@@ -137,7 +146,7 @@ export function invocationFor(config, { stage, access, prompt, tools = CLAUDE_RE
   const approval = access === "read" ? "plan" : access === "artifact" ? "auto_edit" : "yolo";
   const args = ["-p", prompt, "--output-format", "json", ...(model ? ["-m", model] : []), "--approval-mode", approval];
   return {
-    provider: provider.name, model, label, command: "gemini", args, env: { ...env },
+    provider: provider.name, model, label, command: "gemini", args, env: runEnv,
     result: (stdout) => {
       let parsed = null;
       try { parsed = JSON.parse(stdout); } catch { /* not json: reported below */ }
@@ -194,8 +203,8 @@ export function finalText(provider, transcript) {
   return typeof parsed?.response === "string" ? parsed.response : "";
 }
 
-function runSync(command, args, { input } = {}) {
-  const result = spawnSync(command, args, { encoding: "utf8", stdio: [input === undefined ? "ignore" : "pipe", "inherit", "inherit"], input });
+function runSync(command, args, { input, env = process.env } = {}) {
+  const result = spawnSync(command, args, { encoding: "utf8", stdio: [input === undefined ? "ignore" : "pipe", "inherit", "inherit"], input, env });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${command} ${args.join(" ")} exited ${result.status}`);
 }
@@ -204,8 +213,10 @@ function runSync(command, args, { input } = {}) {
 // from the environment. Every action is printed; nothing is skipped quietly.
 export function install(config, env = process.env, log = console.log) {
   const provider = providerOf(config);
+  const installEnv = { ...env };
+  for (const key of [...MODEL_CREDENTIAL_ENV, ...HOST_CREDENTIAL_ENV, config.agent?.authTokenEnv].filter(Boolean)) delete installEnv[key];
   log(`agent: installing ${provider.install.join(" ")}`);
-  runSync(provider.install[0], provider.install.slice(1));
+  runSync(provider.install[0], provider.install.slice(1), { env: installEnv });
   if (provider.name === "codex") {
     // codex's Linux sandbox (bubblewrap) needs a user namespace that keeps
     // its capabilities. Ubuntu 24.04 runners restrict that through AppArmor,
@@ -215,13 +226,13 @@ export function install(config, env = process.env, log = console.log) {
     // say so either way.
     if (process.platform === "linux" && (env.CI || env.GITHUB_ACTIONS || env.GITLAB_CI)) {
       log("agent: allowing unprivileged user namespaces for codex's sandbox (sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0)");
-      const relax = spawnSync("sudo", ["-n", "sysctl", "-w", "kernel.apparmor_restrict_unprivileged_userns=0"], { stdio: "inherit" });
+      const relax = spawnSync("sudo", ["-n", "sysctl", "-w", "kernel.apparmor_restrict_unprivileged_userns=0"], { stdio: "inherit", env: installEnv });
       if (relax.status !== 0) log(`agent: could not relax the restriction (exit ${relax.status ?? relax.error?.message}); sandboxed codex commands may fail with bwrap ... Operation not permitted`);
     }
     const home = env.CODEX_HOME || path.join(homedir(), ".codex");
     if (env.OPENAI_API_KEY) {
       log("agent: codex login --with-api-key (OPENAI_API_KEY from the environment)");
-      runSync("codex", ["login", "--with-api-key"], { input: env.OPENAI_API_KEY });
+      runSync("codex", ["login", "--with-api-key"], { input: env.OPENAI_API_KEY, env: installEnv });
     } else if (env.CODEX_AUTH_JSON) {
       mkdirSync(home, { recursive: true });
       writeFileSync(path.join(home, "auth.json"), env.CODEX_AUTH_JSON, { mode: 0o600 });

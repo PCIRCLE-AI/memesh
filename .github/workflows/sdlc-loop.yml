@@ -24,23 +24,52 @@ permissions:
   contents: read
 
 jobs:
-  pending:
-    name: Which artifacts are accepted and waiting
+  sdlc:
+    name: Run pending stages in order
     runs-on: ubuntu-latest
-    outputs:
-      items: ${{ steps.scan.outputs.items }}
-      ready: ${{ steps.secrets.outputs.ready }}
-    env:
-      GH_TOKEN: ${{ secrets.SDLC_GITHUB_TOKEN }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          token: ${{ secrets.SDLC_GITHUB_TOKEN || github.token }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
-      - id: secrets
+          cache: npm
+      - id: scan
         env:
+          GH_TOKEN: ${{ secrets.SDLC_GITHUB_TOKEN || github.token }}
+          SDLC_GITHUB_TOKEN: ${{ secrets.SDLC_GITHUB_TOKEN }}
+        run: |
+          pending_file="$RUNNER_TEMP/sdlc-pending.json"
+          if ! node scripts/sdlc/next-stage.mjs > "$pending_file"; then
+            if [ -z "$SDLC_GITHUB_TOKEN" ]; then
+              echo "::error::SDLC_GITHUB_TOKEN is not set; the accepted-stage scan could not read GitHub state."
+            fi
+            exit 1
+          fi
+          node --input-type=module - "$pending_file" <<'NODE'
+          import { appendFileSync, readFileSync } from "node:fs";
+          const items = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          if (!Array.isArray(items)) throw new Error("next-stage did not produce a JSON array");
+          const hasPending = items.length > 0;
+          const hasBuild = items.some((item) => item?.stage === "build");
+          appendFileSync(process.env.GITHUB_OUTPUT, `has_pending=${hasPending}\nhas_build=${hasBuild}\n`);
+          const summary = [
+            "## Pending stages",
+            "",
+            ...(hasPending
+              ? items.map((item) => `- \`${item.stage}\` \`${item.slug}\` — \`${item.artifact}\``)
+              : ["Nothing pending: every accepted artifact already has its next stage. No provider install or model call was run."]),
+            "",
+          ].join("\n");
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+          NODE
+      - id: secrets
+        if: steps.scan.outputs.has_pending == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.SDLC_GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -51,73 +80,32 @@ jobs:
           node scripts/sdlc/agent.mjs --check || ready=false
           if [ -z "$GH_TOKEN" ]; then ready=false; echo "::error::SDLC_GITHUB_TOKEN secret is not set (PRs opened with github.token get no CI)."; fi
           echo "ready=$ready" >> "$GITHUB_OUTPUT"
-          [ "$ready" = true ] || echo "**Blocked: a required secret is missing.** Run scripts/sdlc/bootstrap.sh. See docs/sdlc/LOOP.md." >> "$GITHUB_STEP_SUMMARY"
-      - id: scan
-        run: |
-          items="$(node scripts/sdlc/next-stage.mjs)"
-          echo "items=$items" >> "$GITHUB_OUTPUT"
-          {
-            echo "## Pending stages"
-            echo
-            if [ "$items" = "[]" ]; then echo "Nothing pending: every accepted artifact already has its next stage."; else echo '```'; node scripts/sdlc/next-stage.mjs --human; echo '```'; fi
-          } >> "$GITHUB_STEP_SUMMARY"
-      - name: Refuse to run stages without the secrets
-        if: steps.secrets.outputs.ready != 'true' && steps.scan.outputs.items != '[]'
-        run: exit 1
-
-  stage:
-    name: ${{ matrix.item.stage }} ${{ matrix.item.slug }}
-    needs: pending
-    if: needs.pending.outputs.items != '[]' && needs.pending.outputs.ready == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 90
-    strategy:
-      max-parallel: 1
-      fail-fast: false
-      matrix:
-        item: ${{ fromJSON(needs.pending.outputs.items) }}
-    env:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-      CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      GH_TOKEN: ${{ secrets.SDLC_GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          fetch-depth: 0
-          token: ${{ secrets.SDLC_GITHUB_TOKEN }}
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version-file: .nvmrc
-          cache: npm
+          if [ "$ready" != true ]; then
+            echo "**Blocked: a required secret is missing.** Run scripts/sdlc/bootstrap.sh. See docs/sdlc/LOOP.md." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
       - name: Install the configured provider CLI (sdlc/config.json agent.provider)
+        if: steps.scan.outputs.has_pending == 'true' && steps.secrets.outputs.ready == 'true'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
         run: node scripts/sdlc/agent.mjs --install
       # PROJECT TOOLCHAIN for the build stage: everything `npm run verify` needs
       # (dependencies, browsers, language runtimes). Edit for the repository.
       - name: Toolchain for the build stage
-        if: matrix.item.stage == 'build'
+        if: steps.scan.outputs.has_build == 'true' && steps.secrets.outputs.ready == 'true'
         run: |
           npm ci
           npx playwright install --with-deps chromium
       - name: Run the stage
+        if: steps.scan.outputs.has_pending == 'true' && steps.secrets.outputs.ready == 'true'
         env:
-          STAGE: ${{ matrix.item.stage }}
-          SLUG: ${{ matrix.item.slug }}
-          ARTIFACT: ${{ matrix.item.artifact }}
-        run: node scripts/sdlc/run-stage.mjs --stage "$STAGE" --slug "$SLUG" --artifact "$ARTIFACT"
-      # The run record is the model's full transcript (it quotes repository
-      # content it read). Anyone who can read this repository's Actions can
-      # download it (on a public repository: everyone); it is what you read
-      # when a stage fails. Kept 14 days.
-      - name: Keep the run record
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: sdlc-run-${{ matrix.item.stage }}-${{ matrix.item.slug }}
-          path: |
-            .sdlc-run/
-            .verify/
-          retention-days: 14
-          if-no-files-found: ignore
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CODEX_AUTH_JSON: ${{ secrets.CODEX_AUTH_JSON }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GH_TOKEN: ${{ secrets.SDLC_GITHUB_TOKEN }}
+        run: node scripts/sdlc/run-pending.mjs "$RUNNER_TEMP/sdlc-pending.json"
+      # Raw model records stay on the disposable runner. Public diagnostics
+      # are the step log, pending-stage summary and resulting pull request.

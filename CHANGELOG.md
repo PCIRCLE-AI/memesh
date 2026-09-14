@@ -6,6 +6,14 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **SDLC pending stages stay in one Actions job.** The first accepted intent
+  could not reach its spec stage when Actions suppressed the JSON job output.
+  A runner-local file now feeds stages sequentially; malformed input and failed
+  stages stop explicitly. Artifact publication preserves conflicting branches.
+  Loop/review jobs no longer upload raw model records; spec/plan templates
+  omit generator credits.
+  See `docs/postmortems/2026-09-14-sdlc-pending-output.md` for the missing hosted
+  seam coverage and the required spec-PR readback.
 - **The isolated release suite now owns its npm cache.** The release runner
   no longer inherits a maintainer's `~/.npm` cache when nested tests execute
   `npm pack`, so local ownership damage cannot turn an otherwise isolated
