@@ -1,11 +1,10 @@
-// Reports whether a green `pnpm verify` receipt matches the current working
-// tree. Used by the Claude Code hooks and the commit gate; usable by hand:
+// Reports whether a green `npm run verify` receipt matches the current
+// working tree. Usable by hand:
 //
 //   node scripts/verify-receipt.mjs           human-readable, exit 0 fresh / 1 not
 //   node scripts/verify-receipt.mjs --json    machine-readable
 
-import { REPO_ROOT, receiptStatus, verifyCommand } from "./sdlc/lib.mjs";
-import { isMain } from "./sdlc/cli.mjs";
+import { REPO_ROOT, isMain, receiptStatus, verifyCommand } from "./lib/verify-core.mjs";
 
 export function describe(status) {
   const short = status.tree.slice(0, 12);

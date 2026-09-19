@@ -2,6 +2,44 @@
 
 All notable changes to MeMesh are documented here.
 
+## [Unreleased]
+
+### Removed
+
+- **The maintainer's local development-process tooling**, committed on
+  2026-09-13, is no longer tracked in this repository; it now lives only on
+  the maintainer's machine. Gone: the git commit/push gates and the
+  `prepare` script that installed them into every clone; the AI stage
+  workflows, including the pull-request review workflow, the hourly
+  CI/release monitor, and the post-release smoke-receipt workflow; the
+  `intent`/`docs/specs`/`docs/plans` artifact chain; and the Claude Code
+  project hooks and settings that drove it all. The in-repo record of which
+  CI checks are required (`ci.requiredChecks` in the departed
+  `sdlc/config.json`) left with it; the requirement itself is unchanged —
+  it lives in GitHub branch protection, not in the repository.
+- `npm run verify` remains the definition of done. The required `SDLC
+  verify` check keeps its job id, display name and golden-journey step
+  (`node scripts/verify.mjs`); only its preceding test step changed — from
+  the SDLC loop's own suite to `node --test scripts/verify.test.mjs
+  scripts/lib/verify-core.test.mjs` — because the tests it dropped covered
+  code that left, and it now reads its step list from the public
+  `scripts/verify.config.json`.
+- The published npm file list is unchanged (402 files, before and after);
+  two shipped files changed content with no behaviour change for users —
+  `package.json` (five maintainer-only dev scripts removed) and
+  `scripts/upgrade-plugin.sh` (one cleanup line, no longer removing a
+  directory that isn't tracked here anymore).
+
+### Fixed
+
+- `scripts/audit/verification-audit.mjs` now scans only what git does not
+  ignore, so its verdict depends on the tree and the machine's own git
+  ignore rules, rather than on whatever untracked local files with no
+  ignore rule at all happen to be sitting on the machine that runs it. A
+  path that is part of the repository (in the index) is never dropped by
+  this, so a machine-local exclude can only make one developer's own run
+  scan less than CI, never CI less.
+
 ## [4.10.1] — 2026-09-14
 
 Includes the changes documented under 4.10.0 below; 4.10.0 was not published

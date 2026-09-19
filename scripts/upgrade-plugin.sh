@@ -497,14 +497,13 @@ fi
 # that never contained them. `git archive` extracts exactly the tree at
 # $MARKETPLACE_SHA; nothing untracked or uncommitted can reach the cache.
 # node_modules and .git are never tracked, so they never appear in the
-# archive; tests/benchmarks/docs/plans are tracked (real source) and are
-# removed after extraction to keep the shipped cache the same shape as
-# before.
+# archive; tests/benchmarks are tracked (real source) and are removed after
+# extraction to keep the shipped cache the same shape as before.
 git -C "$MARKETPLACE_DIR" archive "$MARKETPLACE_SHA" | tar -x -C "$STAGE_PATH" || {
   echo "ERROR: git archive failed — the live cache at $NEW_INSTALL_PATH was not touched" >&2
   exit 1
 }
-if ! rm -rf "$STAGE_PATH/tests" "$STAGE_PATH/benchmarks" "$STAGE_PATH/docs/plans"; then
+if ! rm -rf "$STAGE_PATH/tests" "$STAGE_PATH/benchmarks"; then
   echo "ERROR: could not remove development-only files from the staging copy — the live cache was not touched." >&2
   exit 1
 fi

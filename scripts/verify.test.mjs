@@ -2,15 +2,15 @@ import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { tempRepo } from "./sdlc/lib.test.mjs";
-import { lastRunPath, loadConfig, readJson, receiptPath, treeHash } from "./sdlc/lib.mjs";
+import { tempRepo } from "./lib/verify-test-helpers.mjs";
+import { lastRunPath, loadConfig, readJson, receiptPath, treeHash } from "./lib/verify-core.mjs";
 import { verify, verifySteps } from "./verify.mjs";
 
 const config = loadConfig();
 const quiet = { log() {}, error() {} };
 const ok = async () => ({ exit: 0, seconds: 0.1 });
 
-test("verify steps come from sdlc/config.json in order; journeys-only keeps the steps marked journeys", () => {
+test("verify steps come from scripts/verify.config.json in order; journeys-only keeps the steps marked journeys", () => {
   const ids = config.verify.steps.map((s) => s.id);
   assert.ok(ids.length >= 2, "a verify with fewer than two steps proves nothing about the running app");
   assert.deepEqual(verifySteps({ config }).map((s) => s.id), ids);

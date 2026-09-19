@@ -1,10 +1,10 @@
-// `pnpm verify`: the one command that says whether the working tree is done.
+// `npm run verify`: the one command that says whether the working tree is
+// done.
 //
-// The steps come from sdlc/config.json (`verify.steps`), in order: for this
-// repo that is the local CI (security baseline, typecheck, lint, unit,
-// Python), one Web build, then both Playwright suites against that build.
-// Green writes a receipt bound to the exact working-tree hash to .verify/;
-// the Claude Code hooks and the commit gate accept nothing else.
+// The steps come from scripts/verify.config.json (`verify.steps`), in order:
+// for this repo that is the release gates, the isolated unit suite, then the
+// packaged and dashboard e2e journeys against a fresh build. Green writes a
+// receipt bound to the exact working-tree hash to .verify/.
 //
 // Every run records .verify/last-run.json, green, red, or crashed, so a run
 // that did not finish is never mistaken for "not run".
@@ -16,8 +16,7 @@
 
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { REPO_ROOT, headSha, lastRunPath, loadConfig, receiptPath, treeHash, verifyCommand, writeJson } from "./sdlc/lib.mjs";
-import { isMain } from "./sdlc/cli.mjs";
+import { REPO_ROOT, headSha, isMain, lastRunPath, loadConfig, receiptPath, treeHash, verifyCommand, writeJson } from "./lib/verify-core.mjs";
 
 function resolveCommand(command) {
   if (["pnpm", "npm", "npx", "yarn"].includes(command)) return process.platform === "win32" ? `${command}.cmd` : command;

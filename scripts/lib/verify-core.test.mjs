@@ -1,36 +1,24 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { headTreeHash, parseFrontmatter, receiptStatus, receiptPath, treeHash, writeJson } from "./lib.mjs";
+import { tempRepo } from "./verify-test-helpers.mjs";
+import { receiptPath, receiptStatus, treeHash, writeJson } from "./verify-core.mjs";
 
-export function tempRepo() {
-  const dir = mkdtempSync(path.join(tmpdir(), "sdlc-lib-"));
-  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
-  git("init", "-q", "-b", "main");
-  git("config", "user.email", "t@example.com");
-  git("config", "user.name", "t");
-  writeFileSync(path.join(dir, ".gitignore"), ".verify/\n");
-  writeFileSync(path.join(dir, "a.txt"), "one\n");
-  git("add", "-A");
-  git("commit", "-q", "-m", "init");
-  return { dir, git, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+// git rev-parse HEAD^{tree} directly, rather than importing headTreeHash:
+// that function stays with the maintainer-local git gates (scripts/sdlc/),
+// since nothing public needs it — this test only wants a known-good tree to
+// compare treeHash's clean-state answer against.
+function headTree(cwd) {
+  return execFileSync("git", ["rev-parse", "HEAD^{tree}"], { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
-
-test("frontmatter: flat keys, quotes stripped, body preserved", () => {
-  const { data, body } = parseFrontmatter('---\ntitle: "Hello"\nstatus: accepted\n---\n# Body\n');
-  assert.deepEqual(data, { title: "Hello", status: "accepted" });
-  assert.equal(body, "# Body\n");
-  assert.deepEqual(parseFrontmatter("no frontmatter").data, {});
-});
 
 test("tree hash: equals HEAD when clean, changes on edit, ignores .verify/, restores on revert", () => {
   const repo = tempRepo();
   try {
     const clean = treeHash(repo.dir);
-    assert.equal(clean, headTreeHash(repo.dir));
+    assert.equal(clean, headTree(repo.dir));
     mkdirSync(path.join(repo.dir, ".verify"), { recursive: true });
     writeFileSync(path.join(repo.dir, ".verify", "receipt.json"), "{}");
     assert.equal(treeHash(repo.dir), clean, ".verify/ is ignored by the hash");

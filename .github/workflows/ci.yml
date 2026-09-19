@@ -360,14 +360,13 @@ jobs:
       - name: Run release verification
         run: bash scripts/release-verify.sh
 
-  # The SDLC loop's own check (docs/sdlc/LOOP.md). `node scripts/verify.mjs`
-  # runs the same steps a person runs locally as `npm run verify` — build,
-  # verify:release, the isolated suite, the packaged smoke, the dashboard e2e
-  # — and logs the git tree hash it verified. A receipt quoted in a PR
-  # (.verify/receipt.json, bound to that hash) can therefore be compared with
-  # what CI saw for the same tree; a receipt for a different tree is a
-  # finding, per REVIEW.md. The harness tests before it keep the receipt,
-  # the hooks and the state machine honest about themselves.
+  # `node scripts/verify.mjs` runs the same steps a person runs locally as
+  # `npm run verify` — build, verify:release, the isolated suite, the
+  # packaged smoke, the dashboard e2e — and logs the git tree hash it
+  # verified. A receipt quoted in a PR (.verify/receipt.json, bound to that
+  # hash) can therefore be compared with what CI saw for the same tree; a
+  # receipt for a different tree is a finding. The test step before it keeps
+  # scripts/verify.mjs and scripts/verify-receipt.mjs honest about themselves.
   sdlc-verify:
     name: SDLC verify
     runs-on: ubuntu-latest
@@ -400,8 +399,8 @@ jobs:
       - name: Install Playwright Chromium
         run: npx playwright install --with-deps chromium
 
-      - name: Harness tests (receipt, hooks, state machine, smoke command)
-        run: npm run sdlc:test
+      - name: Verify module tests (tree hash, receipt, verify runner)
+        run: node --test scripts/verify.test.mjs scripts/lib/verify-core.test.mjs
 
       - name: Golden journeys (node scripts/verify.mjs, logs the tree hash)
         run: node scripts/verify.mjs
