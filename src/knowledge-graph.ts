@@ -1,4 +1,5 @@
 import type { MemeshDatabase } from './storage/sqlite.js';
+import { createHash } from 'node:crypto';
 export type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/types.js';
 import type { Entity, Relation, CreateEntityInput, SearchOptions, EntityRow } from './core/types.js';
 import { findConflicts, trackAccess } from './storage/conflicts.js';
@@ -569,13 +570,28 @@ export class KnowledgeGraph {
     // exempted specifically to keep. `isNewEntity` still uses the incoming
     // `type` because there is no stored type yet to read.
     if (opts?.observations?.length) {
+      let observations = opts.observations;
+      // Only a trusted explicit write can restore forgotten text. Imports
+      // and other untrusted writers retain the same exclusion as Stop.
+      if (row.type === 'session-insight' && /^session-.+-(files|fixes|summary)$/.test(name)) {
+        this.updateEntityMetadata(name, (meta) => {
+          if (!Array.isArray(meta.forgotten_observation_hashes)) return meta;
+          const hashes = new Set(meta.forgotten_observation_hashes);
+          if ((opts.trustOverride ?? opts.metadata?.trust ?? 'trusted') !== 'trusted') {
+            observations = observations.filter(obs => !hashes.has(createHash('sha256').update(obs).digest('hex')));
+            return meta;
+          }
+          const restored = new Set(observations.map(obs => createHash('sha256').update(obs).digest('hex')));
+          return { ...meta, forgotten_observation_hashes: meta.forgotten_observation_hashes.filter(hash => !restored.has(hash)) };
+        });
+      }
       const insertObs = this.db.prepare(
         'INSERT INTO observations (entity_id, content) VALUES (?, ?)'
       );
       const effectiveType = isNewEntity ? type : row.type;
       const isLessonFamily = effectiveType === 'lesson_learned' || effectiveType === 'lesson' || effectiveType === 'mistake';
       if (isLessonFamily) {
-        for (const obs of opts.observations) {
+        for (const obs of observations) {
           insertObs.run(entityId, obs);
         }
       } else {
@@ -587,7 +603,7 @@ export class KnowledgeGraph {
                 .all(entityId) as { content: string }[]
               ).map((o) => o.content)
         );
-        for (const obs of opts.observations) {
+        for (const obs of observations) {
           if (existingObsContent.has(obs)) continue;
           existingObsContent.add(obs);
           insertObs.run(entityId, obs);
@@ -1157,8 +1173,8 @@ export class KnowledgeGraph {
     // observation deletion back if either half of the FTS replacement fails.
     return this.db.transaction(() => {
       const row = this.db
-        .prepare('SELECT id, title, status FROM entities WHERE name = ?')
-        .get(entityName) as { id: number; title: string | null; status: string } | undefined;
+        .prepare('SELECT id, title, status, type, metadata FROM entities WHERE name = ?')
+        .get(entityName) as { id: number; title: string | null; status: string; type: string; metadata: string | null } | undefined;
 
       // `entityFound` exists because "no such entity" and "that text does not
       // match any observation" are different problems with opposite next steps,
@@ -1187,6 +1203,17 @@ export class KnowledgeGraph {
 
       if (deleteResult.changes === 0) {
         return { removed: false, remainingObservations: prevObs.length, entityFound: true };
+      }
+
+      // Stop replaces these snapshots. Persist only a digest of the exact
+      // correction in the same transaction, so auto-capture cannot undo it.
+      if (row.type === 'session-insight' && /^session-.+-(files|fixes|summary)$/.test(entityName)) {
+        const meta = this.parseMetadata(row.metadata);
+        const hashes = Array.isArray(meta.forgotten_observation_hashes) ? meta.forgotten_observation_hashes : [];
+        const hash = createHash('sha256').update(observationContent).digest('hex');
+        this.db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(
+          JSON.stringify({ ...meta, forgotten_observation_hashes: [...new Set([...hashes, hash])] }), row.id,
+        );
       }
 
       // archiveEntity deliberately removes this row from FTS. Observation-

@@ -26,6 +26,9 @@ export declare const SKIP_REASONS: {
     readonly notBash: "not a Bash tool call";
     readonly notGitCommit: "not a git commit command";
     readonly commitLineMissing: "a git commit ran but printed no commit line";
+    readonly commitHeadBaseline: "recorded the repository HEAD baseline; no history was backfilled";
+    readonly commitHeadUnchanged: "a commit-like command completed but repository HEAD did not change";
+    readonly commitHeadUnresolvable: "a commit-like command ran but repository HEAD could not be resolved";
     readonly alreadyCaptured: "this session was already captured";
     readonly payloadTooLarge: "payload exceeded the stdin byte cap";
     readonly toolNameAbsent: "tool_name absent in payload";

@@ -795,7 +795,7 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
     .prepare('INSERT OR IGNORE INTO entities (name, type, metadata, title) VALUES (?, ?, ?, ?)')
     .run(name, type, JSON.stringify(insertMetadata), title ?? null);
   const isNew = insertResult.changes > 0;
-  const row = db.prepare('SELECT id, title, status FROM entities WHERE name = ?').get(name);
+  const row = db.prepare('SELECT id, title, status, metadata FROM entities WHERE name = ?').get(name);
   if (!row) return null;
   const id = row.id;
 
@@ -819,10 +819,8 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // a safe no-op either way — this check is about not losing the user's
   // forgotten content, not about a contentless-FTS5 delete failure.
   //
-  // Out of scope here: an OBSERVATION-level `forget` leaves the entity's
-  // status 'active', so this check does not see it and cannot protect it —
-  // `replace` still re-derives and restores whatever the transcript says,
-  // undoing that kind of forget too. Unaddressed, not fixed by this check.
+  // Observation-level corrections remain active and are filtered below;
+  // this branch preserves the separate whole-entity archive contract.
   if (replace && !isNew && row.status === 'archived') {
     return { id, isNew: false, archived: true };
   }
@@ -940,7 +938,10 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
       : db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(id).map((r) => r.content),
   );
   const freshObservations = [];
+  const forgotten = parseEntityMetadata(row.metadata)?.forgotten_observation_hashes;
+  const excluded = new Set(replace && Array.isArray(forgotten) ? forgotten : []);
   for (const obs of observations) {
+    if (excluded.has(createHash('sha256').update(obs).digest('hex'))) continue;
     if (seen.has(obs)) continue;
     seen.add(obs);
     freshObservations.push(obs);

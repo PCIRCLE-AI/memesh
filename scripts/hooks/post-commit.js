@@ -1,12 +1,190 @@
 #!/usr/bin/env node
 
 import { execFileSync } from 'child_process';
-import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { createHash, randomBytes } from 'crypto';
+import { chmodSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { MemeshDatabase } from './_generated/sqlite.js';
+import { isAbsolute, join, resolve } from 'path';
+import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, ensurePrivateDir, getMemeshDirFromDbPath, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+
+const HEAD_MARKER_DIR = 'post-commit-heads';
+const FULL_SHA = /^[a-f0-9]{40,64}$/;
+const MAX_COMMITS_PER_RUN = 20;
+// Leave time to record an error before the host's five-second hook deadline.
+const MARKER_LOCK_TIMEOUT_MS = 1000;
+
+function gitText(cwd, args) {
+  return execFileSync('git', ['-C', cwd, ...args], {
+    encoding: 'utf8',
+    timeout: 5000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim();
+}
+
+function validStoredHeads(parsed) {
+  const heads = {};
+  if (parsed?.heads && typeof parsed.heads === 'object') {
+    for (const [key, head] of Object.entries(parsed.heads)) {
+      if (/^[a-f0-9]{64}$/.test(key) && typeof head === 'string' && FULL_SHA.test(head)) heads[key] = head;
+    }
+  }
+  return heads;
+}
+
+function closestKnownAncestor(cwd, head, candidates) {
+  let closest = null;
+  let distance = Number.POSITIVE_INFINITY;
+  for (const candidate of new Set(candidates)) {
+    if (!FULL_SHA.test(candidate)) continue;
+    try {
+      execFileSync('git', ['-C', cwd, 'merge-base', '--is-ancestor', candidate, head], {
+        timeout: 5000,
+        stdio: ['ignore', 'ignore', 'ignore'],
+      });
+      const count = Number.parseInt(gitText(cwd, ['rev-list', '--count', `${candidate}..${head}`]), 10);
+      if (Number.isFinite(count) && count < distance) {
+        closest = candidate;
+        distance = count;
+      }
+    } catch {}
+  }
+  return closest;
+}
+
+/** Resolve one repository's current HEAD and its privacy-preserving per-worktree state. */
+function resolveHeadLocation(cwd) {
+  const rawCommonDir = gitText(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  const commonDir = realpathSync(isAbsolute(rawCommonDir) ? rawCommonDir : resolve(cwd, rawCommonDir));
+  const rawGitDir = gitText(cwd, ['rev-parse', '--path-format=absolute', '--git-dir']);
+  const gitDir = realpathSync(isAbsolute(rawGitDir) ? rawGitDir : resolve(cwd, rawGitDir));
+  const key = createHash('sha256').update(commonDir).digest('hex');
+  const worktreeKey = createHash('sha256').update(gitDir).digest('hex');
+  const markerDir = join(getMemeshDirFromDbPath(), HEAD_MARKER_DIR);
+  const markerPath = join(markerDir, `${key}.json`);
+  return { markerDir, markerPath, worktreeKey };
+}
+
+function resolveHeadState(cwd, location) {
+  const head = gitText(cwd, ['rev-parse', '--verify', 'HEAD']);
+  if (!FULL_SHA.test(head)) throw new Error('git returned an invalid HEAD');
+  let parsed = null;
+  try {
+    parsed = JSON.parse(readFileSync(location.markerPath, 'utf8'));
+  } catch {
+    // Missing or malformed state is the same safe boundary: establish a
+    // baseline and never guess which existing commits belonged to this run.
+  }
+  const heads = validStoredHeads(parsed);
+  const legacyHead = typeof parsed?.head === 'string' && FULL_SHA.test(parsed.head) ? parsed.head : null;
+  // A stored worktree position can stop being an ancestor after reset or
+  // rebase. Re-prove ancestry every time, then fall back only to another
+  // known position Git proves is on the current history.
+  const previous = closestKnownAncestor(cwd, head, [
+    ...(heads[location.worktreeKey] ? [heads[location.worktreeKey]] : []),
+    ...Object.values(heads),
+    ...(legacyHead ? [legacyHead] : []),
+  ]);
+  const short = gitText(cwd, ['rev-parse', '--short', head]);
+  const subject = gitText(cwd, ['show', '-s', '--format=%s', head]);
+  let branch = 'unknown';
+  try { branch = gitText(cwd, ['branch', '--show-current']) || 'detached'; } catch {}
+  return { head, previous, short, subject, branch, ...location };
+}
+
+function acquireMarkerLock(markerPath) {
+  // Keep one stable file: SQLite releases its OS lock on close or process death.
+  // Never unlink/rename it; pathname-based stale recovery can steal a new owner.
+  // This is separate from the graph so a baseline need not create user memories.
+  const db = new MemeshDatabase(`${markerPath}.lock.sqlite`);
+  try {
+    db.pragma(`busy_timeout = ${MARKER_LOCK_TIMEOUT_MS}`);
+    db.exec('BEGIN IMMEDIATE');
+  } catch (err) {
+    db.close();
+    if (err?.errcode === 5 || err?.code === 'SQLITE_BUSY') {
+      throw new Error('timed out waiting for post-commit state lock', { cause: err });
+    }
+    throw err;
+  }
+  return () => db.close();
+}
+
+/** Advance only this worktree's position. The caller holds the repository marker lock. */
+function writeHeadState(state) {
+  ensurePrivateDir(state.markerDir);
+  const tmp = `${state.markerPath}.${randomBytes(8).toString('hex')}.tmp`;
+  try {
+    let heads = {};
+    try { heads = validStoredHeads(JSON.parse(readFileSync(state.markerPath, 'utf8'))); } catch {}
+    heads[state.worktreeKey] = state.head;
+    writeFileSync(tmp, JSON.stringify({ version: 2, heads }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    renameSync(tmp, state.markerPath);
+    try { chmodSync(state.markerPath, 0o600); } catch {}
+  } catch (err) {
+    try { unlinkSync(tmp); } catch {}
+    throw err;
+  }
+}
+
+function commitsFromState(cwd, state) {
+  const raw = gitText(cwd, [
+    'rev-list', '--reverse', `--max-count=${MAX_COMMITS_PER_RUN}`, `${state.previous}..${state.head}`,
+  ]);
+  const hashes = raw.split('\n').map((line) => line.trim()).filter((line) => FULL_SHA.test(line));
+  const total = Number.parseInt(gitText(cwd, ['rev-list', '--count', `${state.previous}..${state.head}`]), 10);
+  return {
+    commits: hashes.map((hash) => ({
+      hash: gitText(cwd, ['rev-parse', '--short', hash]),
+      message: gitText(cwd, ['show', '-s', '--format=%s', hash]),
+      branch: state.branch,
+      batch: hashes.length > 1 || total > 1,
+    })),
+    skipped: Number.isFinite(total) ? Math.max(0, total - hashes.length) : 0,
+  };
+}
+
+function captureCommit(db, data, projectName, commit) {
+  const entityName = `commit-${commit.hash}`;
+  const observations = [commit.message, `Branch: ${commit.branch}`];
+  try {
+    const stat = gitText(data.cwd, ['show', '--stat', '--format=', commit.hash]);
+    if (stat) {
+      const statLines = stat.split('\n').filter((line) => line.trim());
+      const summary = statLines[statLines.length - 1]?.trim() || '';
+      if (summary) observations.push(`Diff stats: ${summary}`);
+    }
+  } catch {
+    // Diff stats are best-effort and never decide whether the commit exists.
+  }
+
+  const whyMetadata = {};
+  if (typeof data.session_id === 'string' && data.session_id) whyMetadata.session_id = data.session_id;
+  try {
+    const nameOnly = gitText(data.cwd, ['show', '--name-only', '--format=', commit.hash]);
+    if (nameOnly) {
+      const files = nameOnly.split('\n').map((line) => line.trim()).filter(Boolean);
+      if (files.length > 0) whyMetadata.files = files.slice(0, 50);
+    }
+  } catch {
+    // File names are best-effort metadata, like diff stats.
+  }
+
+  const written = captureEntity(db, {
+    name: entityName,
+    type: 'commit',
+    observations,
+    tags: [AUTO_CAPTURE_TAG, `project:${projectName}`, ...(commit.batch ? ['origin:batch'] : [])],
+    title: truncateTitle(commit.message),
+    metadata: whyMetadata,
+  });
+  return { entityName, written };
+}
 
 // The parsed payload, hoisted so the outcome recorder below can read
 // session_id and the host signal from ANY exit path — including the ones
 // that fire before or instead of a capture.
 let payload = null;
+let releaseStateLock = null;
 
 /**
  * Leave a record on this exit path (issue #327).
@@ -74,57 +252,88 @@ process.stdin.on('end', () => {
       return exit0();
     }
 
-    // Claude Code's PostToolUse hook payload has had two field-name shapes:
-    // legacy `tool_output: <string>` and current
-    // `tool_response: { stdout, stderr, interrupted, isError }`. Prefer the
-    // current shape; fall back to legacy so unit-test fixtures (which use
-    // tool_output) keep working. This block existed only as the legacy
-    // branch — once Claude Code unified on tool_response the hook silently
-    // stopped seeing any output and never wrote commit entities again.
-    const tr = data.tool_response;
-    let toolOutput = '';
-    if (typeof tr === 'string') {
-      toolOutput = tr;
-    } else if (tr && typeof tr === 'object') {
-      const stdout = typeof tr.stdout === 'string' ? tr.stdout : '';
-      const stderr = typeof tr.stderr === 'string' ? tr.stderr : '';
-      toolOutput = stdout + (stderr ? '\n' + stderr : '');
-    } else if (typeof data.tool_output === 'string') {
-      toolOutput = data.tool_output;
-    } else if (data.tool_output != null) {
-      toolOutput = JSON.stringify(data.tool_output);
-    }
-
-    // Detect git commit in output
-    // Pattern: [branch hash] commit message — with an optional parenthesised
-    // note between branch and hash: git prints `[master (root-commit) 32e98b8]`
-    // for a repo's FIRST commit, and the old pattern silently skipped exactly
-    // that one, so no repository's first commit was ever remembered.
-    const commitMatch = toolOutput.match(/\[[\w/.-]+(?: \([\w -]+\))? ([a-f0-9]{7,})\] (.+)/);
-    if (!commitMatch) {
-      // The #321 reason, spelled out for doctor: this is what `git commit -q`
-      // looks like from here, and it is also what a genuinely broken capture
-      // looks like (a failed commit prints no line either). The COUNT is
-      // what tells them apart.
-      record('skipped', SKIP_REASONS.commitLineMissing);
+    if (!data.cwd) {
+      try { process.stderr.write('[memesh post-commit] data.cwd absent — cannot resolve project / repo; skipping\n'); } catch {}
+      record('skipped', SKIP_REASONS.commitCwdAbsent);
       return exit0();
     }
 
-    const branchMatch = commitMatch[0].match(/^\[([^\s]+)\s/);
-    const branch = branchMatch ? branchMatch[1] : 'unknown';
+    // Current PostToolUse payloads explicitly say whether the command failed.
+    // Legacy payloads expose only terminal text. That text may corroborate a
+    // successfully resolved HEAD, but it is never commit authority by itself:
+    // wrappers can replay buffered output, while `-q` can hide a real commit.
+    const tr = data.tool_response;
+    let toolOutput = '';
+    if (typeof tr === 'string') toolOutput = tr;
+    else if (tr && typeof tr === 'object') {
+      const stdout = typeof tr.stdout === 'string' ? tr.stdout : '';
+      const stderr = typeof tr.stderr === 'string' ? tr.stderr : '';
+      toolOutput = stdout + (stderr ? `\n${stderr}` : '');
+    } else if (typeof data.tool_output === 'string') toolOutput = data.tool_output;
+    else if (data.tool_output != null) toolOutput = JSON.stringify(data.tool_output);
+    const commitMatch = toolOutput.match(/\[[\w/.-]+(?: \([\w -]+\))? ([a-f0-9]{7,})\] (.+)/);
+    let state = null;
+    let location = null;
+    try { location = resolveHeadLocation(data.cwd); } catch {}
+    if (location) {
+      ensurePrivateDir(location.markerDir);
+      releaseStateLock = acquireMarkerLock(location.markerPath);
+      try { state = resolveHeadState(data.cwd, location); } catch {}
+    }
 
-    const commitHash = commitMatch[1];
-    const commitMsg = commitMatch[2];
-
-    // `data.cwd` MUST be present for project-tag and `git show` below
-    // to be correct. If absent, falling through to process.cwd() (the
-    // hook process's launch dir, unspecified for PostToolUse Bash)
-    // would either run git show against a different repo (silent
-    // corruption) or write the wrong project tag. Skip + trace
-    // instead — better to miss one commit than to tag it wrong.
-    if (!data.cwd) {
-      try { process.stderr.write(`[memesh post-commit] data.cwd absent — cannot resolve project / repo; skipping commit ${commitHash}\n`); } catch {}
-      record('skipped', SKIP_REASONS.commitCwdAbsent);
+    let branch;
+    let commitHash;
+    let commitMsg;
+    let stateBatch = [];
+    let batchSkipped = 0;
+    if (state?.previous && state.previous !== state.head) {
+      const resolved = commitsFromState(data.cwd, state);
+      stateBatch = resolved.commits;
+      batchSkipped = resolved.skipped;
+      const newest = stateBatch.at(-1);
+      if (!newest) {
+        try { process.stderr.write('[memesh post-commit] repository HEAD changed, but no reachable commit could be enumerated\n'); } catch {}
+        record('skipped', SKIP_REASONS.commitHeadUnresolvable);
+        return exit0();
+      }
+      branch = newest.branch;
+      commitHash = newest.hash;
+      commitMsg = newest.message;
+    } else if (state && state.previous === state.head) {
+      // When Git state is available it is stronger evidence than terminal
+      // text. A failed command can return buffered or wrapper-produced text
+      // that looks like an earlier commit; unchanged HEAD must never turn
+      // that stale text into a write or a false liveness heartbeat.
+      try { process.stderr.write('[memesh post-commit] commit-like command completed, but repository HEAD did not change\n'); } catch {}
+      record('skipped', SKIP_REASONS.commitHeadUnchanged);
+      return exit0();
+    } else if (!state) {
+      try { process.stderr.write('[memesh post-commit] commit-like command ran, but repository HEAD could not be resolved\n'); } catch {}
+      record('skipped', SKIP_REASONS.commitHeadUnresolvable);
+      return exit0();
+    } else if (state.previous === null
+      && tr?.isError !== true && tr?.interrupted !== true
+      && commitMatch
+      && state.head.startsWith(commitMatch[1])) {
+      // Success flags are optional across hosts. Accept the commit line only
+      // after Git independently proves that exact hash is HEAD, and never
+      // when the host explicitly reports failure or interruption.
+      branch = state.branch;
+      commitHash = state.short;
+      commitMsg = state.subject;
+    } else if (state.previous === null && tr && typeof tr === 'object' && tr.isError === false && tr.interrupted !== true) {
+      // A current Claude Code PostToolUse payload tells us the command
+      // completed successfully.  In that one case HEAD itself is the newly
+      // created commit, even when `-q` or redirection removed every output
+      // line.  Capture only HEAD: older repository history remains outside
+      // this event and is never backfilled.
+      branch = state.branch;
+      commitHash = state.short;
+      commitMsg = state.subject;
+    } else if (state.previous === null) {
+      writeHeadState(state);
+      try { process.stderr.write('[memesh post-commit] recorded repository HEAD baseline; existing history was not backfilled\n'); } catch {}
+      record('skipped', SKIP_REASONS.commitHeadBaseline);
       return exit0();
     }
     // And the commit has to actually be in THIS repository.
@@ -151,97 +360,28 @@ process.stdin.on('end', () => {
     // Pass fts:true so the FTS5 entity-search index is also available.
     const { db } = openHookDb(process.env, { fts: true });
     try {
-      const entityName = `commit-${commitHash}`;
-
-      // Build the observation set: commit message, branch, and — best-effort —
-      // richer diff stats (git failures are silently ignored, unchanged behavior).
-      const observations = [commitMsg, `Branch: ${branch}`];
-      try {
-        const stat = execFileSync('git', ['show', '--stat', '--format=', commitHash], {
-          cwd: data.cwd || process.cwd(),
-          encoding: 'utf8',
-          timeout: 5000,
-          // stderr captured, not inherited: outside a repo this used to leak
-          // a raw `fatal: not a git repository` into the hook's own stderr.
-          stdio: ['ignore', 'pipe', 'pipe'],
-        }).trim();
-        if (stat) {
-          // Last non-empty line is the summary, e.g. "3 files changed, 45 insertions(+), 12 deletions(-)"
-          const statLines = stat.split('\n').filter(l => l.trim());
-          const summary = statLines[statLines.length - 1]?.trim() || '';
-          if (summary) observations.push(`Diff stats: ${summary}`);
+      const commits = stateBatch.length > 0
+        ? stateBatch
+        : [{ hash: commitHash, message: commitMsg, branch, batch: false }];
+      const captured = [];
+      for (const commit of commits) {
+        const result = captureCommit(db, data, projectName, commit);
+        if (!result.written) {
+          record('error', 'captureEntity did not land the write', result.entityName);
+          return exit0();
         }
-      } catch {
-        // git show failed — no diff stats recorded, existing behavior unchanged
+        captured.push(result.entityName);
       }
 
-      // Commit → session linkage, the hop `memesh why` walks. The payload has
-      // carried session_id all along; this hook just never recorded it, so
-      // every commit entity was an island (no file list, no session, no
-      // relations). Recorded as METADATA, not tags, on purpose: a `file:*`
-      // tag here would make pre-edit-recall inject commit noise into every
-      // edit of a touched file (Strategy 1 joins on exactly that tag).
-      const whyMetadata = {};
-      if (typeof data.session_id === 'string' && data.session_id) {
-        whyMetadata.session_id = data.session_id;
-      }
-      try {
-        const nameOnly = execFileSync('git', ['-C', data.cwd, 'show', '--name-only', '--format=', commitHash], {
-          encoding: 'utf8',
-          timeout: 5000,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        }).trim();
-        if (nameOnly) {
-          // Repo-relative paths, capped: a lockfile-churn commit can touch
-          // thousands of files and metadata rides every entity read.
-          const files = nameOnly.split('\n').map(l => l.trim()).filter(Boolean);
-          if (files.length > 0) whyMetadata.files = files.slice(0, 50);
-        }
-      } catch {
-        // Best-effort like the diff stats above — no file list recorded.
-      }
-
-      // Shared write dance — upsert entity + observations + tags AND reindex FTS.
-      //
-      // `source:auto-capture` is the provenance marker every capture hook
-      // writes (session-summary, pre-compact and the extractor already did;
-      // this one did not). `memesh doctor` counts it to answer "is the
-      // auto-capture loop alive" — a question it used to answer from entity
-      // TYPE, which a hand-typed `memesh learn` satisfied all by itself.
-      // The commit subject IS the title — git authors already wrote a
-      // one-line human summary; nothing to synthesize.
-      //
-      // Re-capture of an already-stored commit is expected and harmless: this
-      // hook runs on PostToolUse, so any later Bash call while HEAD is
-      // unchanged rebuilds the same `commit-<sha>` payload. It used to APPEND
-      // it — three commit entities on the maintainer's graph reached 6
-      // observations / 3 distinct, one triple re-written 107 seconds after the
-      // first. captureEntity now refuses to store an observation whose exact
-      // content is already on the entity (#240, widened), which is the right
-      // guard here rather than "skip if the entity exists": a sha is immutable,
-      // so any line that DOES differ on a later run (diff stats that failed the
-      // first time and succeeded now) is new information and must still land.
-      const written = captureEntity(db, {
-        name: entityName,
-        type: 'commit',
-        observations,
-        tags: [AUTO_CAPTURE_TAG, `project:${projectName}`],
-        title: truncateTitle(commitMsg),
-        metadata: whyMetadata,
-      });
-
-      // Heartbeat AFTER capture, so the stamp certifies "the capture loop
-      // completed", not "a database handle existed". A throw above skips it,
-      // and so does a null return (the write did not land).
-      if (written) {
-        recordHookRun(db, 'post-commit');
-        record('wrote', undefined, entityName);
-      } else {
-        // captureEntity's null means the write did not land. Recording this
-        // as an ERROR, not a skip: a skip is a decision, this is a failure,
-        // and a run of these must not be summarised as "nothing worth saving".
-        record('error', 'captureEntity did not land the write', entityName);
-      }
+      // One hook invocation is one heartbeat even when a merge exposes a
+      // bounded batch. Advance the state only after every selected commit
+      // landed, so a partial database failure is retried instead of forgotten.
+      recordHookRun(db, 'post-commit');
+      if (state) writeHeadState(state);
+      const reason = captured.length > 1 || batchSkipped > 0
+        ? `captured ${captured.length} commits as a batch; skipped ${batchSkipped} older commits`
+        : undefined;
+      record('wrote', reason, captured.at(-1));
     } finally {
       db.close();
     }
@@ -267,5 +407,10 @@ process.stdin.on('end', () => {
 });
 
 function exit0() {
+  if (releaseStateLock) {
+    const release = releaseStateLock;
+    releaseStateLock = null;
+    try { release(); } catch {}
+  }
   process.exit(0);
 }

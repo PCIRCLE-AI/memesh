@@ -31,6 +31,24 @@ const published = {
 };
 
 describe('registry acceptance', () => {
+  const trial = {
+    'dist-tags': { latest: '4.9.4', next: '4.10.1' },
+    versions: { '4.9.4': {}, '4.10.1': {} },
+  };
+
+  it('accepts the next trial while preserving the default latest boundary', () => {
+    expect(evaluateRegistry(trial, '4.10.1', 'next').ok).toBe(true);
+    expect(evaluateRegistry(trial, '4.10.1').ok).toBe(false);
+    expect(evaluateRegistry(trial, '4.9.4').ok).toBe(true);
+  });
+
+  it('rejects a wrong trial tag, premature promotion, and a missing stable tag', () => {
+    expect(evaluateRegistry(trial, '4.9.4', 'next').ok).toBe(false);
+    expect(evaluateRegistry({ ...trial, 'dist-tags': { latest: '4.10.1', next: '4.10.1' } }, '4.10.1', 'next').ok).toBe(false);
+    expect(evaluateRegistry({ ...trial, 'dist-tags': { next: '4.10.1' } }, '4.10.1', 'next').ok).toBe(false);
+    expect(evaluateRegistry(trial, '4.10.1', 'beta').ok).toBe(false);
+  });
+
   it('passes when the version is published and is what npm install gives', () => {
     expect(evaluateRegistry(published, '4.8.3')).toMatchObject({ ok: true });
   });

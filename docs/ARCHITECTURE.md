@@ -1,6 +1,6 @@
 # MeMesh Plugin Architecture
 
-**Version**: 4.10.0
+**Version**: 4.10.1
 
 > Looking for "which file do I change for X?" — see [CODEMAP.md](../CODEMAP.md).
 
@@ -483,6 +483,12 @@ exit in a capture hook has no outcome record before it, or when session-start
 writes to stdout anywhere but its single `output()` funnel. `npm run
 qa:post-release` runs the shipped hooks against a throwaway graph after a
 release and requires one captured commit and one captured session insight.
+The broader `npm run qa:live-journey -- --core-only` composes the daily memory,
+SessionStart, quiet-commit, Stop, and packed-upgrade paths into a v4 receipt.
+Real Codex and Claude release receipts run the same five rows before their
+separate host-native, model-visible delivery journey. A row is usable only when
+it includes success, a representative failure, persisted effect readback, its
+actual process or consumer boundary, and completed cleanup.
 
 ---
 

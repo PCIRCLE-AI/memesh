@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { findConflicts, trackAccess } from './storage/conflicts.js';
 import { indexedObservationText, insertFtsRow, joinIndexedObservations, removeFromFts, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
@@ -162,11 +163,25 @@ export class KnowledgeGraph {
             ? undefined
             : joinIndexedObservations(prevObs.map((o) => o.content));
         if (opts?.observations?.length) {
+            let observations = opts.observations;
+            if (row.type === 'session-insight' && /^session-.+-(files|fixes|summary)$/.test(name)) {
+                this.updateEntityMetadata(name, (meta) => {
+                    if (!Array.isArray(meta.forgotten_observation_hashes))
+                        return meta;
+                    const hashes = new Set(meta.forgotten_observation_hashes);
+                    if ((opts.trustOverride ?? opts.metadata?.trust ?? 'trusted') !== 'trusted') {
+                        observations = observations.filter(obs => !hashes.has(createHash('sha256').update(obs).digest('hex')));
+                        return meta;
+                    }
+                    const restored = new Set(observations.map(obs => createHash('sha256').update(obs).digest('hex')));
+                    return { ...meta, forgotten_observation_hashes: meta.forgotten_observation_hashes.filter(hash => !restored.has(hash)) };
+                });
+            }
             const insertObs = this.db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
             const effectiveType = isNewEntity ? type : row.type;
             const isLessonFamily = effectiveType === 'lesson_learned' || effectiveType === 'lesson' || effectiveType === 'mistake';
             if (isLessonFamily) {
-                for (const obs of opts.observations) {
+                for (const obs of observations) {
                     insertObs.run(entityId, obs);
                 }
             }
@@ -176,7 +191,7 @@ export class KnowledgeGraph {
                     : this.db
                         .prepare('SELECT content FROM observations WHERE entity_id = ?')
                         .all(entityId).map((o) => o.content));
-                for (const obs of opts.observations) {
+                for (const obs of observations) {
                     if (existingObsContent.has(obs))
                         continue;
                     existingObsContent.add(obs);
@@ -544,7 +559,7 @@ export class KnowledgeGraph {
     removeObservation(entityName, observationContent) {
         return this.db.transaction(() => {
             const row = this.db
-                .prepare('SELECT id, title, status FROM entities WHERE name = ?')
+                .prepare('SELECT id, title, status, type, metadata FROM entities WHERE name = ?')
                 .get(entityName);
             if (!row)
                 return { removed: false, remainingObservations: 0, entityFound: false };
@@ -563,6 +578,12 @@ export class KnowledgeGraph {
                 .run(row.id, observationContent);
             if (deleteResult.changes === 0) {
                 return { removed: false, remainingObservations: prevObs.length, entityFound: true };
+            }
+            if (row.type === 'session-insight' && /^session-.+-(files|fixes|summary)$/.test(entityName)) {
+                const meta = this.parseMetadata(row.metadata);
+                const hashes = Array.isArray(meta.forgotten_observation_hashes) ? meta.forgotten_observation_hashes : [];
+                const hash = createHash('sha256').update(observationContent).digest('hex');
+                this.db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify({ ...meta, forgotten_observation_hashes: [...new Set([...hashes, hash])] }), row.id);
             }
             if (row.status !== 'archived') {
                 this.rebuildFts(row.id, entityName, prevObsText, row.title);

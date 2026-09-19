@@ -46,6 +46,11 @@ function buildImportedMetadata(
   return {
     ...(existingMetadata ?? {}),
     ...bundledSafe,
+    // A bundle cannot undo local forget decisions. A fresh backup import
+    // still carries its own exclusions when no local record exists.
+    ...(Array.isArray(existingMetadata?.forgotten_observation_hashes)
+      ? { forgotten_observation_hashes: existingMetadata.forgotten_observation_hashes }
+      : {}),
     trust: 'untrusted',
     provenance: {
       ...(existingMetadata?.provenance ?? {}),

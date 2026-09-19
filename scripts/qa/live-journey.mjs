@@ -79,6 +79,8 @@ import { isDeepStrictEqual } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { getProjectName } from '../../dist/core/paths.js';
+import { runCoreLiveJourneys } from './core-live-journeys.mjs';
+import { buildCredentialFreeBaseEnv } from '../lib/isolated-env.mjs';
 import {
   CLAUDE_MODEL_INTAKE_ARMING_CONFIRMATION,
   CLAUDE_PLUGIN_ISOLATION_CONFIRMATION,
@@ -182,12 +184,18 @@ export const ALLOWED_CODEX_EVENT_TYPES = new Set([
 
 /** dist artefacts this check runs. Missing any of them is a refusal, not a skip. */
 export const REQUIRED_DIST = [
+  'dist/core/paths.js',
   'dist/host-runtime/router.js',
   'dist/transports/cli/cli.js',
   'dist/host-runtime/codex-session.js',
   'dist/host-runtime/claude.js',
   'dist/mcp/server.js',
+  'scripts/hooks/session-start.js',
+  'scripts/hooks/post-commit.js',
+  'scripts/hooks/session-summary.js',
+  'scripts/qa/core-live-journeys.mjs',
 ];
+export const REQUIRED_BUILD_ARTIFACTS = REQUIRED_DIST.filter((relative) => relative.startsWith('dist/'));
 
 export function helpText() {
   return [
@@ -197,6 +205,7 @@ export function helpText() {
     '  npm run qa:live-journey -- --host codex --codex-home <isolated-home> [--out report.json] [--keep] [--wait-ms N]',
     '  npm run qa:live-journey -- --host claude [--out report.json] [--keep] [--wait-ms N]',
     '  npm run qa:live-journey -- --codex-session-auto-registration [--out report.json] [--keep]',
+    '  npm run qa:live-journey -- --core-only [--out report.json] [--keep]',
     '',
     'Verified invocation on macOS (the socket path must fit AF_UNIX sun_path):',
     '  TMPDIR=/private/tmp npm run qa:live-journey -- --host codex --codex-home <isolated-home> --out report.json',
@@ -206,6 +215,9 @@ export function helpText() {
     '                         --codex-session-auto-registration mode.',
     '  --codex-session-auto-registration  Exercise automatic Codex SessionStart registration',
     '                         with a fresh HOME and a task-owned fake `codex queue` executable.',
+    '  --core-only           Run the isolated golden journeys without host credentials:',
+    '                         remember/recall, SessionStart briefing, quiet commit capture,',
+    '                         Stop insight capture, and packed upgrade with data readback.',
     '  --codex-home <path>   Required with --host codex. An already-authenticated, task-owned',
     '                         CODEX_HOME beneath the OS temporary directory. The runner installs this',
     '                         candidate plugin there; it never copies credentials or uses ~/.codex.',
@@ -277,6 +289,7 @@ export function parseArgs(argv) {
     if (flag === '--help' || flag === '-h') parsed.help = true;
     else if (flag === '--keep') parsed.keep = true;
     else if (flag === '--codex-session-auto-registration') parsed.mode = 'codex-session-auto-registration';
+    else if (flag === '--core-only') parsed.mode = 'core-only';
     else if (flag === '--host') parsed.host = value();
     else if (flag === '--codex-home') parsed.codexHome = value();
     else if (flag === '--out') parsed.out = value();
@@ -290,7 +303,7 @@ export function parseArgs(argv) {
   }
   if (parsed.help) return parsed;
   if (parsed.mode !== null && parsed.host !== null) {
-    throw new Error('--codex-session-auto-registration cannot be combined with --host. Run with --help.');
+    throw new Error(`${parsed.mode === 'core-only' ? '--core-only' : '--codex-session-auto-registration'} cannot be combined with --host. Run with --help.`);
   }
   if (parsed.host === null && parsed.mode === null) {
     throw new Error('--host is required (codex | claude), or use --codex-session-auto-registration. Run with --help.');
@@ -306,6 +319,32 @@ export function parseArgs(argv) {
     throw new Error('--host codex requires --codex-home <isolated authenticated CODEX_HOME>. Run with --help.');
   }
   return parsed;
+}
+
+/** Turn the existing packed-upgrade smoke output into one strict receipt row. */
+export function buildPackedUpgradeReceipt({ status, stdout, stderr, leftovers }) {
+  if (status !== 0) throw new Error(`packed upgrade exit ${status}: ${(stderr || stdout).trim().slice(0, 600)}`);
+  if (!Array.isArray(leftovers)) throw new Error('packed upgrade cleanup readback is missing');
+  if (leftovers.length > 0) {
+    throw new Error(`packed upgrade cleanup left ${leftovers.length} item(s) behind: ${leftovers.join(', ')}`);
+  }
+  const digest = stdout.match(/candidate:.*sha256=([a-f0-9]{64})/)?.[1];
+  const success = /Packaged upgrade smoke passed/.test(stdout);
+  const failure = /failure-path:.*failure was reported without SUCCESS/.test(stdout);
+  const effect = /failure-path:.*pre-existing data remain readable/.test(stdout);
+  if (!digest || !success || !failure || !effect) {
+    throw new Error('packed upgrade output was incomplete: digest, success, failure, or persisted-data readback was missing');
+  }
+  return {
+    id: 'packed-upgrade',
+    status: 'PASS',
+    boundary: 'packed-consumer',
+    artifact_sha256: digest,
+    success: { observed: true, check: 'registry baseline upgraded to the exact packed candidate' },
+    failure: { observed: true, check: 'forced installer failure returned no false success' },
+    effect_readback: { observed: true, check: 'pre-upgrade memory remained readable after success and forced failure' },
+    cleanup: { status: 'PASS', removed: true, leftovers: 0 },
+  };
 }
 
 /**
@@ -1007,6 +1046,28 @@ export function shouldRemoveWorkingDirectories(input) {
   return !input.keep && !input.keptForSafety;
 }
 
+/**
+ * @param {{keep: boolean, keptForSafety: boolean, attempted: boolean, leftovers?: string[], errors?: string[]}} input
+ */
+export function workingDirectoryCleanupReceipt({ keep, keptForSafety, attempted, leftovers = [], errors = [] }) {
+  if (keep || keptForSafety) {
+    return {
+      status: 'FAIL',
+      removed: false,
+      reason: keep ? 'working directories retained by --keep' : 'working directories retained because a host session was still connected',
+    };
+  }
+  if (!attempted || leftovers.length > 0 || errors.length > 0) {
+    return {
+      status: 'FAIL',
+      removed: false,
+      reason: errors[0] ?? `cleanup left ${leftovers.length} working director${leftovers.length === 1 ? 'y' : 'ies'} behind`,
+      leftovers,
+    };
+  }
+  return { status: 'PASS', removed: true, leftovers: 0 };
+}
+
 // ---------------------------------------------------------------------------
 // Everything below performs I/O. The live run exercises it; the tests do not.
 // ---------------------------------------------------------------------------
@@ -1032,6 +1093,36 @@ function run(command, args, options = {}) {
     stdout: result.stdout ?? '',
     stderr: result.stderr ?? (result.error ? String(result.error.message) : ''),
   };
+}
+
+function runPackedUpgradeJourney(journey) {
+  const tempRoot = path.join(journey.dir, 'packed-upgrade-tmp');
+  fs.mkdirSync(tempRoot, { recursive: true, mode: 0o700 });
+  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  let outcome;
+  try {
+    outcome = run(npm, ['run', 'test:packaged:upgrade'], {
+      cwd: repoRoot,
+      env: {
+        ...buildCredentialFreeBaseEnv(journey.env),
+        HOME: journey.env.HOME,
+        USERPROFILE: journey.env.USERPROFILE,
+        MEMESH_DIR: journey.env.MEMESH_DIR,
+        MEMESH_DB_PATH: journey.env.MEMESH_DB_PATH,
+        MEMESH_ROUTER_SOCKET: journey.env.MEMESH_ROUTER_SOCKET,
+        MEMESH_ROUTER_TOKEN_FILE: journey.env.MEMESH_ROUTER_TOKEN_FILE,
+        TMPDIR: tempRoot,
+        TEMP: tempRoot,
+        TMP: tempRoot,
+        NODE_DISABLE_COMPILE_CACHE: '1',
+      },
+      timeout: 15 * 60_000,
+    });
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+  if (fs.existsSync(tempRoot)) throw new Error('packed upgrade cleanup root still exists after removal');
+  return buildPackedUpgradeReceipt({ ...outcome, leftovers: [] });
 }
 
 /** Run a real Codex resume while the journey observes its live SessionStart. */
@@ -1178,7 +1269,9 @@ class Journey {
     // Measure the socket path BEFORE creating anything, on the real temp root
     // (os.tmpdir() may be a symlink to a longer path), so a refusal leaves no
     // empty directory behind. mkdtemp appends six characters.
-    assertSocketPathFits(path.join(realpathAsFarAsPossible(tmpRoot), 'memesh-lj-XXXXXX', 'memesh', 'agent-router-v2.sock'));
+    if (options.mode !== 'core-only') {
+      assertSocketPathFits(path.join(realpathAsFarAsPossible(tmpRoot), 'memesh-lj-XXXXXX', 'memesh', 'agent-router-v2.sock'));
+    }
     this.dir = fs.realpathSync(fs.mkdtempSync(path.join(tmpRoot, 'memesh-lj-')));
     this.memeshDir = path.join(this.dir, 'memesh');
     this.dbPath = path.join(this.memeshDir, 'knowledge-graph.db');
@@ -1654,16 +1747,32 @@ fs.appendFileSync(process.env.MEMESH_FAKE_CODEX_QUEUE_LOG, JSON.stringify(record
     if (!shouldRemoveWorkingDirectories({ keep: this.options.keep, keptForSafety: this.keptForSafety })) {
       process.stdout.write(`\nKept working directory: ${this.dir}\n`);
       if (this.workspace) process.stdout.write(`Kept Codex workspace:   ${this.workspace}\n`);
-      return;
+      return workingDirectoryCleanupReceipt({
+        keep: this.options.keep,
+        keptForSafety: this.keptForSafety,
+        attempted: false,
+      });
     }
-    for (const directory of [this.dir, this.workspace]) {
+    const directories = [this.dir, this.workspace].filter(Boolean);
+    const errors = [];
+    for (const directory of directories) {
       if (!directory) continue;
       try {
         fs.rmSync(directory, { recursive: true, force: true });
       } catch (error) {
-        process.stderr.write(`Could not remove ${directory}: ${error.message}\n`);
+        const detail = `Could not remove ${directory}: ${error.message}`;
+        errors.push(detail);
+        process.stderr.write(`${detail}\n`);
       }
     }
+    const leftovers = directories.filter((directory) => fs.existsSync(directory));
+    return workingDirectoryCleanupReceipt({
+      keep: false,
+      keptForSafety: false,
+      attempted: true,
+      leftovers,
+      errors,
+    });
   }
 }
 
@@ -2359,19 +2468,25 @@ async function main() {
     return;
   }
 
-  assertSupportedPlatform(process.platform);
-  assertNotCi(process.env);
+  if (options.mode !== 'core-only') {
+    assertSupportedPlatform(process.platform);
+    assertNotCi(process.env);
+  }
   assertDistPresent(repoRoot);
   const revision = run('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).stdout.trim();
   if (revision.length === 0) throw new Error('Could not read the repository revision; the report would name no code.');
   const dirty = run('git', ['status', '--porcelain'], { cwd: repoRoot }).stdout.trim() !== '';
   const newestSrcMs = newestMtimeMs(path.join(repoRoot, 'src'));
-  const oldestDistMs = Math.min(...REQUIRED_DIST.map((relative) => fs.statSync(dist(relative)).mtimeMs));
+  // Hook and QA source files are required runtime inputs, but `npm run build`
+  // does not regenerate them. Only compiled/bundled dist files can prove that
+  // build output is at least as new as src/.
+  const oldestDistMs = Math.min(...REQUIRED_BUILD_ARTIFACTS.map((relative) => fs.statSync(dist(relative)).mtimeMs));
   const distStale = isDistStale({ newestSrcMs, oldestDistMs });
 
   const journey = new Journey(options);
   const startedAt = new Date().toISOString();
   let failure = null;
+  let coreJourneys = [];
 
   process.stdout.write(`memesh live journey — host=${options.host} revision=${revision}${dirty ? ' (DIRTY TREE)' : ''}\n`);
   process.stdout.write(`  MEMESH_DIR=${journey.memeshDir}\n`);
@@ -2385,7 +2500,7 @@ async function main() {
   }
   process.stdout.write('\n');
 
-  const emitReport = (failureText) => {
+  const emitReport = (failureText, outerCleanup) => {
     const report = {
       schema_version: LIVE_JOURNEY_SCHEMA_VERSION,
       revision,
@@ -2395,6 +2510,8 @@ async function main() {
       mode: options.mode,
       project: journey.project,
       registration_evidence: journey.registrationEvidence,
+      core_journeys: coreJourneys,
+      outer_cleanup: outerCleanup,
       started_at: startedAt,
       finished_at: new Date().toISOString(),
       verdict: failureText === null ? 'PASS' : 'FAIL',
@@ -2412,21 +2529,58 @@ async function main() {
       process.stdout.write(`\n${JSON.stringify(report, null, 2)}\n`);
     }
   };
-  const finish = async (code) => {
-    await journey.shutdown();
-    process.exit(code);
+  let finishPromise = null;
+  const finish = (failureText, code) => {
+    finishPromise ??= (async () => {
+      let outerCleanup;
+      try {
+        outerCleanup = await journey.shutdown();
+      } catch (error) {
+        outerCleanup = {
+          status: 'FAIL',
+          removed: false,
+          reason: `outer cleanup threw: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+      const finalFailure = outerCleanup?.status === 'PASS'
+        ? failureText
+        : [failureText, outerCleanup?.reason ?? 'outer cleanup did not return a PASS receipt'].filter(Boolean).join('; ');
+      emitReport(finalFailure, outerCleanup);
+      process.exit(finalFailure === null ? code : (code === 0 ? 1 : code));
+    })();
+    return finishPromise;
   };
   const onSignal = (signal, code) => {
     process.stderr.write(`\nReceived ${signal}; shutting down cleanly.\n`);
-    // The partial report is evidence too: which steps passed before the interrupt.
-    try { emitReport(`interrupted by ${signal}`); } catch { /* the report is best effort here */ }
-    void finish(code);
+    void finish(`interrupted by ${signal}`, code);
   };
   process.once('SIGINT', () => onSignal('SIGINT', 130));
   process.once('SIGTERM', () => onSignal('SIGTERM', 143));
 
   try {
-    if (options.mode === 'codex-session-auto-registration') await runCodexSessionAutoRegistration(journey);
+    const coreRoot = path.join(journey.dir, 'core-journeys');
+    fs.mkdirSync(coreRoot, { recursive: true, mode: 0o700 });
+    journey.say('core product journeys');
+    const core = await runCoreLiveJourneys({
+      repoRoot,
+      runDir: coreRoot,
+      env: journey.env,
+      step: async (name, execute) => {
+        const row = await execute();
+        journey.say(`  ok   ${name}`);
+        return row;
+      },
+    });
+    coreJourneys = core.journeys;
+    fs.rmSync(coreRoot, { recursive: true, force: true });
+    if (fs.existsSync(coreRoot)) throw new Error('core journey cleanup root still exists after removal');
+    journey.say('  run  packed-upgrade');
+    coreJourneys.push(runPackedUpgradeJourney(journey));
+    journey.say('  ok   packed-upgrade');
+
+    if (options.mode === 'core-only') {
+      journey.note('Core-only mode exercises isolated process and packed-consumer boundaries; it does not claim host-native registration or model-visible delivery.');
+    } else if (options.mode === 'codex-session-auto-registration') await runCodexSessionAutoRegistration(journey);
     else if (options.host === 'codex') await runCodex(journey);
     else await runClaude(journey, options.waitMs);
   } catch (error) {
@@ -2441,8 +2595,7 @@ async function main() {
     process.stderr.write(`  FAIL ${failure}\n`);
   }
 
-  emitReport(failure);
-  await finish(failure === null ? 0 : 1);
+  await finish(failure, failure === null ? 0 : 1);
 }
 
 if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

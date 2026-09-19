@@ -146,6 +146,23 @@ const PATH_SHAPED = (col) =>
 /** One invariant: a SQL query whose rows are violations. Zero rows = holds. */
 const INVARIANTS = [
   {
+    id: 'forgotten-session-observations-stay-removed',
+    refs: '#346',
+    says: 'session snapshots do not contain observations explicitly excluded by forget',
+    sql: `SELECT e.name, e.metadata, o.content FROM entities e
+      JOIN observations o ON o.entity_id = e.id
+      WHERE e.type = 'session-insight' AND e.name GLOB 'session-*-*'
+      ORDER BY e.id`,
+    rows: (_db, rows) => rows.filter((r) => {
+      if (!/^session-.+-(files|fixes|summary)$/.test(r.name)) return false;
+      let metadata;
+      try { metadata = JSON.parse(r.metadata || '{}'); } catch { return false; } // Invalid metadata is not an observation exclusion.
+      const hashes = metadata?.forgotten_observation_hashes;
+      return Array.isArray(hashes) && hashes.includes(createHash('sha256').update(r.content).digest('hex'));
+    }),
+    row: (r) => r.name,
+  },
+  {
     id: 'no-entity-carries-the-same-observation-twice',
     refs: '#240',
     says: 'no entity carries the same observation content more than once',

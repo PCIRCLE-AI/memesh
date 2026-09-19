@@ -25,6 +25,7 @@ import {
   LIVE_JOURNEY_CLOCK_SKEW_MS,
   REQUIRED_LIVE_JOURNEY_STEPS,
   REQUIRED_REGISTRATION_EVIDENCE,
+  validateCoreJourneys,
 } from './live-journey-contract.mjs';
 
 /**
@@ -115,11 +116,9 @@ export function checkReleasePreconditions({
     );
   }
 
-  // No prerelease suffix on purpose. Nothing here handles one: `gh release
-  // create` would mark `4.7.0-rc.1` as latest without `--prerelease`, and
-  // publish-npm.yml runs `npm publish` with no `--tag`, so it would take npm's
-  // `latest` dist-tag too. This project has never shipped a prerelease; when
-  // it does, that is its own change, not a regex that quietly permits it.
+  // Trials use the final X.Y.Z artifact on npm next, then promote that same
+  // artifact to latest. The GitHub prerelease flag selects the channel;
+  // it does not enable suffixed package versions such as X.Y.Z-rc.N.
   if (!/^\d+\.\d+\.\d+$/.test(String(pkgVersion))) {
     blockers.push(`package.json version \`${pkgVersion}\` is not a version this can tag`);
   }
@@ -301,6 +300,15 @@ export function findUsableLiveJourneyReceipt(candidates, headSha, requiredHost =
     }
     if (!Array.isArray(report.steps)) {
       reasons.push(`${label}: steps are missing`);
+      continue;
+    }
+    if (report.outer_cleanup?.status !== 'PASS' || report.outer_cleanup?.removed !== true) {
+      reasons.push(`${label}: outer_cleanup does not prove that task-owned working directories were removed`);
+      continue;
+    }
+    const core = validateCoreJourneys(report.core_journeys);
+    if (!core.ok) {
+      reasons.push(`${label}: ${core.reason}`);
       continue;
     }
     const failedStep = report.steps.find(step => step?.status !== 'PASS');

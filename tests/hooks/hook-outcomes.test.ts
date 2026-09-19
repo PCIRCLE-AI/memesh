@@ -125,9 +125,10 @@ describe('hook outcome records', () => {
     expect(fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8')).not.toContain('sess-1');
   });
 
-  it('post-commit records a SKIPPED naming the #321 reason when the output has no commit line', () => {
-    // Exactly what `git commit -q` looks like from inside this hook: the
-    // command IS a commit, and the output says nothing about it.
+  it('post-commit records a SKIPPED reason when a commit-like command has no resolvable HEAD', () => {
+    // The command claims to be a commit, but this empty repository has no
+    // HEAD. That is now distinct from a successful quiet commit, which the
+    // state fallback captures after its baseline exists.
     runHook('post-commit', {
       tool_name: 'Bash',
       cwd: repoDir,
@@ -137,7 +138,7 @@ describe('hook outcome records', () => {
     const rows = records('post-commit');
     expect(rows.length, 'post-commit left no record on its most common skip path').toBe(1);
     expect(rows[0].outcome).toBe('skipped');
-    expect(rows[0].reason).toBe(SKIP_REASONS.commitLineMissing);
+    expect(rows[0].reason).toBe(SKIP_REASONS.commitHeadUnresolvable);
   });
 
   it('post-commit records a SKIPPED with a reason on every other bail', () => {
@@ -524,7 +525,10 @@ describe('hook outcome records', () => {
     ['git show HEAD -- src/commit.ts', false],
     ['git rev-parse --verify commit', false],
     ['git commit-tree HEAD^{tree}', false],
-    ['git merge feature', false],
+    ['git merge feature', true],
+    ['git cherry-pick abc1234', true],
+    ['git revert --no-edit abc1234', true],
+    ['git merge-base main feature', false],
     ['legit commit', false],
     ['xgit commit', false],
     ['npm run release:finish', false],

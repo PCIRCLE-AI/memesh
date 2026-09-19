@@ -26,6 +26,7 @@ import {
   LIVE_JOURNEY_RECEIPT_PATHS,
 } from '../scripts/lib/release-preconditions.mjs';
 import {
+  CORE_JOURNEY_IDS,
   LIVE_JOURNEY_SCHEMA_VERSION,
   REQUIRED_LIVE_JOURNEY_STEPS,
   REQUIRED_REGISTRATION_EVIDENCE,
@@ -46,6 +47,16 @@ function liveReport(host: 'codex' | 'claude') {
     started_at: new Date(Date.now() - 1_000).toISOString(),
     finished_at: new Date().toISOString(),
     registration_evidence: REQUIRED_REGISTRATION_EVIDENCE[host],
+    core_journeys: CORE_JOURNEY_IDS.map(id => ({
+      id,
+      status: 'PASS',
+      boundary: id === 'packed-upgrade' ? 'packed-consumer' : 'isolated-process',
+      success: { observed: true },
+      failure: { observed: true },
+      effect_readback: { observed: true },
+      cleanup: { status: 'PASS', removed: true },
+    })),
+    outer_cleanup: { status: 'PASS', removed: true, leftovers: 0 },
     steps: REQUIRED_LIVE_JOURNEY_STEPS[host].map(name => ({ name, status: 'PASS' })),
   };
 }
@@ -87,6 +98,33 @@ describe('release preconditions', () => {
     const r = checkReleasePreconditions(ready());
     expect(r.blockers).toEqual([]);
     expect(r.ok).toBe(true);
+  });
+
+  it('refuses a core journey receipt bound to the wrong execution boundary', () => {
+    const reports = readyLiveJourney();
+    reports[0].report.core_journeys[0].boundary = 'fixture';
+    const r = checkReleasePreconditions(ready({ liveJourneyCandidates: reports }));
+    expect(r.ok).toBe(false);
+    expect(r.blockers.join('\n')).toContain('wrong exercised boundary');
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['failed', { status: 'FAIL', removed: false, reason: 'retained by --keep' }],
+  ])('refuses %s outer cleanup evidence', (_label, outerCleanup) => {
+    const reports = readyLiveJourney();
+    (reports[0].report as any).outer_cleanup = outerCleanup;
+    const r = checkReleasePreconditions(ready({ liveJourneyCandidates: reports }));
+    expect(r.ok).toBe(false);
+    expect(r.blockers.join('\n')).toContain('outer_cleanup does not prove');
+  });
+
+  it.each([undefined, false, 'true'])('refuses core cleanup without proven removal (%s)', removed => {
+    const reports = readyLiveJourney();
+    (reports[0].report.core_journeys[0].cleanup as Record<string, unknown>).removed = removed;
+    const r = checkReleasePreconditions(ready({ liveJourneyCandidates: reports }));
+    expect(r.ok).toBe(false);
+    expect(r.blockers.join('\n')).toContain('successful cleanup receipt');
   });
 
   it('refuses off main', () => {
@@ -145,10 +183,8 @@ describe('release preconditions', () => {
   });
 
   it('refuses a prerelease version rather than mis-publishing it', () => {
-    // Deliberate, not an oversight in the regex: `gh release create` would
-    // mark 4.7.0-rc.1 as latest without `--prerelease`, and publish-npm.yml
-    // runs `npm publish` with no `--tag`, so it would take npm's `latest`
-    // dist-tag too. A prerelease flow is its own change.
+    // Trials promote one final X.Y.Z artifact from next to latest; the
+    // prerelease channel flag does not allow suffixed package versions.
     expect(checkReleasePreconditions(ready({ pkgVersion: '4.7.0-rc.1' })).ok).toBe(false);
   });
 
@@ -233,6 +269,28 @@ describe('release preconditions', () => {
 
 describe('findUsableLiveJourneyReceipt', () => {
   const pass = liveReport('codex');
+
+  it('refuses a host receipt that omits a core product journey', () => {
+    const incomplete = {
+      ...pass,
+      core_journeys: pass.core_journeys.slice(0, -1),
+    };
+    const result = findUsableLiveJourneyReceipt([
+      { host: 'codex', path: '.qa/codex-report.json', report: incomplete, readError: null },
+    ], HEAD, 'codex');
+    expect(result.ok).toBe(false);
+    expect(result.reasons.join('\n')).toContain('packed-upgrade');
+  });
+
+  it('refuses a core journey without success, failure, effect, and cleanup receipts', () => {
+    const malformed = structuredClone(pass);
+    malformed.core_journeys[0].failure = null as never;
+    const result = findUsableLiveJourneyReceipt([
+      { host: 'codex', path: '.qa/codex-report.json', report: malformed, readError: null },
+    ], HEAD, 'codex');
+    expect(result.ok).toBe(false);
+    expect(result.reasons.join('\n')).toContain('memory-round-trip');
+  });
 
   it('accepts a PASS receipt for the exact HEAD revision', () => {
     const r = findUsableLiveJourneyReceipt([{ host: 'codex', path: '.qa/codex-report.json', report: pass, readError: null }], HEAD);
@@ -509,6 +567,17 @@ describe('finish-release cuts the release in one call', () => {
   it('creates the tag through `gh release create --target`', () => {
     expect(code).toMatch(/'release',\s*'create'/);
     expect(code).toMatch(/'--target'/);
+  });
+
+  it('keeps trial selection, registry polling, and publisher tags aligned', () => {
+    expect(code).toContain('let prerelease = false;');
+    expect(code).toContain("const distTag = prerelease ? 'next' : 'latest';");
+    expect(code).toContain("...(prerelease ? ['--prerelease'] : [])");
+    expect(code).toContain('`@pcircle/memesh@${distTag}`');
+    expect(code).toContain('stableVersionAfter !== stableVersionBefore');
+    const publisher = fs.readFileSync(path.join(repoRoot, '.github/workflows/publish-npm.yml'), 'utf8');
+    expect(publisher).toContain('npm publish --access public --provenance --tag "$MEMESH_NPM_DIST_TAG"');
+    expect(publisher).toContain("github.event.release.prerelease && 'next' || 'latest'");
   });
 
   it('never pushes a tag by hand', () => {

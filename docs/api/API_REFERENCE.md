@@ -1,7 +1,7 @@
 # MeMesh Plugin -- API Reference
 
 **Protocol**: Model Context Protocol (MCP) over stdio
-**Version**: 4.10.0
+**Version**: 4.10.1
 **Compatibility**: Works with Claude Code plugins, Claude Managed Agents (via MCP connector), and any MCP-compatible client.
 
 **Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
@@ -272,6 +272,13 @@ Archive an entity (soft-delete) or remove a specific observation.
 **Modes:**
 - **Entity archive** (no observation): Archives the entire entity. Hidden from recall by default.
 - **Observation removal** (with observation): Removes one specific observation. Entity stays active.
+
+For Stop-generated `session-<id>-files`, `session-<id>-fixes`, and
+`session-<id>-summary` snapshots, subsequent Stops exclude that exact observation
+text. Other newly derived observations can still update the snapshot. Explicitly
+adding the removed text with `remember` clears its exclusion and restores it.
+Imports preserve locally recorded exclusions, including when a bundle supplies
+conflicting metadata.
 
 ---
 

@@ -8,7 +8,7 @@
  * interpolation, or the catalogue entries turns these red.
  */
 import { describe, it, expect, afterEach } from 'vitest';
-import { setLocale, t } from '../../dashboard/src/lib/i18n';
+import { setLocale, t, type Locale } from '../../dashboard/src/lib/i18n';
 import { trSummary, trFix, trLabel, isBannerWorthy } from '../../dashboard/src/components/DoctorBanner';
 
 afterEach(() => setLocale('en'));
@@ -23,6 +23,22 @@ const codedCheck = {
 };
 
 describe('doctor banner i18n', () => {
+  it.each<Locale>(['en', 'zh-TW', 'zh-CN', 'ja', 'ko', 'pt', 'fr', 'de', 'vi', 'es', 'th'])('translates the optional channel warning in %s and preserves the setup command', (locale) => {
+    setLocale(locale);
+    const check = {
+      id: 'claude-channel', label: 'untranslated label', status: 'warn' as const,
+      summary: 'untranslated summary', fix: 'untranslated fix', code: 'claude-channel.unregistered',
+    };
+    expect(trLabel(check)).not.toContain('untranslated');
+    expect(trSummary(check)).not.toContain('untranslated');
+    expect(trFix(check)).not.toContain('untranslated');
+    expect(trFix(check)).toContain('`memesh agent setup claude`');
+    if (locale === 'zh-TW') {
+      expect(trLabel(check)).toContain('註冊');
+      expect(trSummary(check)).toContain('選用');
+    }
+  });
+
   it('renders a coded check in the active locale, not the server English', () => {
     setLocale('zh-TW');
     expect(trSummary(codedCheck)).toBe(t('doctor.msg.hook-activity.stale.summary'));

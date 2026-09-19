@@ -9,6 +9,9 @@ function buildImportedMetadata(existingMetadata, args) {
     return {
         ...(existingMetadata ?? {}),
         ...bundledSafe,
+        ...(Array.isArray(existingMetadata?.forgotten_observation_hashes)
+            ? { forgotten_observation_hashes: existingMetadata.forgotten_observation_hashes }
+            : {}),
         trust: 'untrusted',
         provenance: {
             ...(existingMetadata?.provenance ?? {}),
