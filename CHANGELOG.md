@@ -4,6 +4,61 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`briefing` setting — three levels for how much the SessionStart hook and
+  the `briefing` MCP tool/CLI inject** (#360): `minimal` — only this
+  project: live repository state, its decisions, lessons, known facts and
+  recent activity; no task state, no durable index, nothing from outside the
+  project. `standard` (**the new default**) — `minimal` + the task state
+  when fresh + the capped index of this project's durable memories. `full`
+  — `standard` + memories from your other projects + global memory
+  (byte-identical, on every surface, to every prior release's only
+  behaviour — EXCEPT when the task state is stale or of unknown age, where
+  the one-line replacement below applies at `full` too, the same as it
+  does at `standard`). The SessionStart hook additionally appends the work-package
+  notice at `full`, as it always has — that notice is a host-agent
+  instruction, not memory, and the `briefing` MCP tool/CLI never included it,
+  before or after this change. Set it with `memesh config set briefing
+  <minimal|standard|full>`; `MEMESH_BRIEFING` overrides the configured value.
+  One policy (`src/core/briefing-level.ts`) decides what each level includes,
+  shared by the hook and the tool so they cannot disagree.
+- **A stated task state (goal/next/blocked/done) older than 72 hours is no
+  longer injected as current, at any level including `full`.** It collapses
+  to one line naming its age and pointing at `memesh task` to see or update
+  it — `memesh task` itself is unaffected and always shows the real value.
+- **A task state whose age cannot be established is now also flagged, not
+  injected as current:** a missing or
+  unparseable `updated_at`, or one more than 5 minutes in the future
+  (`CLOCK_SKEW_ALLOWANCE_MINUTES`), used to be treated as fresh — a future
+  timestamp meant the state was fresh FOREVER. All three now render a
+  distinct one-line flag ("age could not be established") instead.
+- **A timezone-less or date-only `updated_at` is also treated as an
+  unestablished age, not silently parsed with the reader's local clock:**
+  the SAME stored value used to read as
+  fresh under `TZ=UTC` and stale under `TZ=Asia/Taipei` — an age that
+  depends on the READER's timezone was never a real age. Only a full instant
+  with an explicit offset or `Z` (what MeMesh itself writes into
+  `updated_at`) is accepted; everything else — date-only, no offset, or the
+  zone-less `YYYY-MM-DD HH:MM:SS` shape — gets the same "age could not be
+  established" flag.
+
+### Changed
+
+- **The default injected briefing is smaller.** Measured on one real session
+  (plugin 4.10.0, 2026-09-19) the previous, only behaviour (now `full`) was
+  2,545 characters, of which global-namespace memory, other projects' recent
+  memory, and the work-package notice (identical boilerplate every session)
+  made up the majority and are dropped from the new default. `minimal <
+  standard < full`, and `standard` is at most 60% of `full`'s size, is
+  enforced by `tests/hooks/session-start.test.ts`'s size-relation test on its
+  own reference fixture — exact character counts are not a maintained
+  contract and are not quoted here, since they move with the fixture, not
+  with the product. Hosts that run MeMesh (Claude Code, Codex) now carry
+  their own memory, so the default now injects what they do not already
+  have: live repository state and this project's own recent activity. To
+  get the previous behaviour back: `memesh config set briefing full`.
+
 ### Removed
 
 - **The maintainer's local development-process tooling**, committed on
@@ -244,6 +299,38 @@ All notable changes to MeMesh are documented here.
   a symlinked plugin cache or npm prefix, never reminded the agent to store a
   "remember this". Started on a directory (`node <dir>`), a gate script now
   stops with an error naming the path rather than deciding it was imported.
+
+- **`GET /v1/config` no longer 500s when the stored `briefing` level is
+  unrecognised** — a hand-edited config.json,
+  or a value from a different memesh version, made the read itself throw
+  and left a user unable to even see the config to fix it. `briefing` is
+  validated on write (`POST` still answers 400 for an unknown level); a read
+  now always returns the stored value as-is.
+- **`minimal` no longer injects an empty preamble and fence when a project
+  has nothing yet** — an initialised,
+  memory-free project used to get an empty-fence preamble wrapped around
+  nothing at `minimal` (the only level with no task state or durable index
+  to fall back to; no character count is quoted here — see the note above
+  on exact counts not being a maintained contract). Nothing is injected in
+  that case now, and the SessionStart hook records why
+  (`hook-outcomes.jsonl`); `standard`/`full` are unaffected — they still
+  show the durable-memory index's own empty-state line on the same project,
+  which is content, not framing. This qualifies the #323 entry recorded
+  under `[4.10.0]` below: "`briefing.text` is never empty" was true when written and
+  stays true at `standard`/`full` (the index's own empty-state line always
+  renders there), but `minimal` never includes the index at all — since
+  #360, `text` can be `''` (`empty: true`) at `minimal` on a project with no
+  memories yet.
+- **The same "nothing to show" decision now has a single owner shared by
+  the SessionStart hook and the `briefing` MCP tool/CLI** — the hook skipped the
+  empty fence correctly; `assembleBriefing()` (and therefore `memesh
+  briefing --json`, the plain-text CLI, and the MCP tool) did not, and still
+  wrapped nothing in a preamble plus an empty fence on the exact same empty
+  `minimal` project. `BriefingResult` now carries `empty: boolean` (`text`
+  is `''` when true); the CLI prints `Nothing to brief at level minimal —
+  no project memories yet.` instead of the fence and exits `0`; the MCP tool
+  needed no change (it only serialises the result object). Both surfaces
+  now call the same `hasBriefingContent` rule (`src/core/work-topology.ts`).
 
 ## [4.10.1] — 2026-09-14
 

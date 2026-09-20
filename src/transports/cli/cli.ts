@@ -19,6 +19,7 @@ import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS
 import { RememberSchema } from '../schemas.js';
 import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
 import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
+import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { buildReferenceContext } from '../../core/work-topology.js';
 import { captureChatSession } from '../../core/session-insight.js';
 import { captureChatTurn } from '../../core/turn-signal.js';
@@ -1230,7 +1231,7 @@ agentCmd
 // gets it here. Same assembly, same fence, one owner (core/briefing.ts).
 program
   .command('briefing')
-  .description('The assembled work topology for a project — task state, decisions, lessons, knowledge, recent activity')
+  .description('The assembled work topology for a project — decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full (the `briefing` setting)')
   .option('--project <name>', 'Project name (default: the current directory’s project)')
   .option('--recipient <id>', 'Exact recipient; enables recipient-scoped unread message guidance')
   .option('--index', 'Only the index of durable memories (decisions, lessons, patterns, references), newest first')
@@ -1238,8 +1239,11 @@ program
   .action(async (opts) => {
     await withDatabase(() => {
       if (opts.index) {
-        // The same section the full briefing closes with (#323), alone: what
-        // is known here, one line each, without the ranked sections.
+        // The same section a `standard`/`full`-level briefing closes with
+        // (#323), alone: what is known here, one line each, without the
+        // ranked sections. `minimal` never includes it in the assembled
+        // block (#360), but this flag returns it regardless of the
+        // configured level, same as `memesh briefing --json`'s `index` field.
         const project = opts.project ?? getProjectName();
         const index = readBriefingIndex(getDatabase(), project);
         if (opts.json) {
@@ -1254,9 +1258,22 @@ program
         console.log(JSON.stringify(result));
         return;
       }
+      // #360 round 3, item 1: `result.empty` means there was nothing to
+      // show at this level at all (only reachable at `minimal` — see
+      // `BriefingResult.empty`'s doc comment) — a preamble wrapped around
+      // an empty fence is not a briefing, so print one short line instead
+      // of `result.text` (which is `''` here) and exit 0, same as every
+      // other branch of this command.
+      if (result.empty) {
+        console.log(`Nothing to brief at level ${result.level} — no project memories yet.`);
+        return;
+      }
       console.log(result.text);
       if (result.entityCount === 0 && !result.hasTaskState && result.index.shown === 0 && result.index.older === 0) {
-        // Outside the fence: a hint to the human, not memory content.
+        // Outside the fence: a hint to the human, not memory content. Still
+        // reachable here (unlike the branch above) — e.g. `standard`/`full`
+        // on an empty graph, where the index's own empty-state line keeps
+        // `result.empty` false but there is still nothing ranked to hint at.
         console.log(`\nCapture happens automatically as you work; or set the task state:  memesh task --goal "…"`);
       }
     });
@@ -1553,25 +1570,42 @@ configCmd
     }
   });
 
-const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck']);
+const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck', 'briefing']);
 
 const KEY_VALIDATORS: Record<string, (value: string) => string | null> = {
   autoUpdate: (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : 'must be one of: off, patch, minor, major',
   autoCapture: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
   // "Never ask again" sets this to false from a hook; this is the way back.
   updateCheck: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
+  // #360 — reject here so a typo'd level is a loud CLI error, not a value
+  // that only surfaces later as a traced-and-defaulted "invalid" reason.
+  briefing: (v) => (BRIEFING_LEVELS as readonly string[]).includes(v)
+    ? null
+    : `must be one of: ${BRIEFING_LEVELS.join(', ')}`,
 };
 
 /**
  * Build the `config list` rows from ALLOWED_KEYS — the single source of truth
  * for settable keys — so `list` shows every key `set` accepts and the two can't
  * drift. Only keys that are actually present are listed.
+ *
+ * `undefined` alone means "not present" — skipped, same as any other absent
+ * key. `null` used to be skipped too, which made sense while it could only
+ * ever reach this function as the leftover of the sessionLimit-NaN bug
+ * described above `wholeNumber()` (now impossible — that coercion refuses
+ * bad input before it is ever stored). `briefing` is a different case: its
+ * config type is `unknown` on purpose (config.ts), so a hand-written
+ * `"briefing": null` DOES reach this function, and round 5 (Codex round 4
+ * re-review, item 2) found it was hidden here — the one place in the
+ * product that made an explicit invalid value invisible instead of showing
+ * it, unlike `42`, `"banana"`, or any other invalid value, which this
+ * function already prints via `String(raw)` same as a valid one.
  */
 function buildConfigListing(config: Record<string, unknown>): Array<{ key: string; value: string }> {
   const rows: Array<{ key: string; value: string }> = [];
   for (const key of Array.from(ALLOWED_KEYS).sort()) {
     const raw = config[key];
-    if (raw === undefined || raw === null) continue;
+    if (raw === undefined) continue;
     rows.push({ key, value: String(raw) });
   }
   return rows;
@@ -1579,7 +1613,7 @@ function buildConfigListing(config: Record<string, unknown>): Array<{ key: strin
 
 configCmd
   .command('set')
-  .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck)')
+  .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck, briefing)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .argument('<value>', 'Config value')
   .action((key, value) => {

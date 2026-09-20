@@ -37,6 +37,11 @@
       "bytes": 6049
     },
     {
+      "path": "scripts/hooks/_generated/briefing-level.js",
+      "sha256": "44b02c7ddd9532e1a873a8036a9906e969a86452ad46880c07d5d8516a056982",
+      "bytes": 3688
+    },
+    {
       "path": "scripts/hooks/_generated/capture-flag.js",
       "sha256": "926c85a60b4ff4ac391666dad392f16358e875a14f2dda66edf99b1d636a0a38",
       "bytes": 901
@@ -83,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_generated/task-state.js",
-      "sha256": "68e5cdfa1a8c0f76a5a65d0353e942f69aab7247e73b54e5cf7e79c39188b4f5",
-      "bytes": 3560
+      "sha256": "e52a1198a8f1aa035b4befa5a69ca67408a27071ee2a1bd0b392dfae26873931",
+      "bytes": 6693
     },
     {
       "path": "scripts/hooks/_generated/time-utils.js",
@@ -103,13 +108,13 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "3196a80c0d039d77ef5fef4911be54ec600035595e69e6915cfe237447fca526",
-      "bytes": 7891
+      "sha256": "13a6368d567260af54f761d87c5456d15c2ca5bee09e29fd70df3a19ab005bb8",
+      "bytes": 7966
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "1f01b18332e9500b22fd113d5b785e93d95662e558528340c2464b9391f151b8",
-      "bytes": 87890
+      "sha256": "557b3b4d740edccfaef50a789d7da740b7ad3eb3eeb12252644f70a532b31d25",
+      "bytes": 94278
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -148,8 +153,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "23593f2d4d1efc9a84c2c49e1cb7ef36674e9d376fe3b34d2175e6d3299d666c",
-      "bytes": 83059
+      "sha256": "0cb8b4a50ccf768589ddd7bf4fed5ecdb0e1bbd5f2f11725e91aa8d96b643270",
+      "bytes": 93493
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -168,8 +173,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "c34a9740a5c6531dd4b600ae28cae9061497e126849f53c679827c8c60a69f73",
-      "bytes": 20669
+      "sha256": "e545e7fb3aaec4c28d7df02aeb05d81a6e3154f1aa2dea3e73f3de543d86115e",
+      "bytes": 21331
     }
   ]
 }

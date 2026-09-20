@@ -36,7 +36,7 @@ import {
   gitRepoRoot,
 } from './_generated/core-paths.js';
 import { autoCaptureDecision } from './_generated/capture-flag.js';
-export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP } from './_generated/work-topology.js';
+export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, hasBriefingContent, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP } from './_generated/work-topology.js';
 export { readRepoState, repoStateLines } from './_generated/repo-state.js';
 export { matchingGuards, guardFromMetadata } from './_generated/guards.js';
 export { writeCitationRule, citationRulePath, CITATION_RULE_BODY } from './_generated/citation-rule.js';
@@ -158,7 +158,23 @@ export function recordGuardFires(dbPath, lessonIds) {
   }
 }
 import { isAutoInjectable } from './_generated/work-topology.js';
-export { parseTaskState, taskStateLines, taskStateName } from './_generated/task-state.js';
+export { parseTaskState, taskStateLines, taskStateName, briefingTaskStateLines, STALE_TASK_STATE_HOURS } from './_generated/task-state.js';
+// #360 — the one briefing-level policy, shared with the `briefing` tool via
+// src/core/briefing-level.ts (this is the generated mirror; see that file).
+export {
+  isBriefingLevel,
+  DEFAULT_BRIEFING_LEVEL,
+  briefingLevelPolicy,
+  sessionStartAppendsWorkPackageNotice,
+} from './_generated/briefing-level.js';
+import { resolveBriefingLevel as resolveBriefingLevelValue } from './_generated/briefing-level.js';
+
+// The hook-only work-package notice's literal text — ONE declaration,
+// exported so both `session-start.js` (which appends it) and the test
+// suite (which needs to assert the hook's `full`-level remainder is
+// EXACTLY this string, not a hardcoded second copy of it — Codex round 4)
+// read the same constant.
+export const WORK_PACKAGE_NOTICE = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
 import {
   indexedObservationText,
   insertFtsRow,
@@ -223,10 +239,26 @@ export function importFromPluginRoot(pluginRoot, relativePath) {
   return import(pathToFileURL(join(pluginRoot, relativePath)).href);
 }
 
+// #360 round 6 (Codex round 5 re-review, item 2): a bounded, generic
+// classification for "the config document itself could not be used" —
+// deliberately NOT the raw file path, the JSON.parse error text, or any
+// fragment of the file's own content (a parse error message can echo a
+// slice of the source in some engines; this string never does). One
+// constant, so the wording cannot drift between the outcome-record reason
+// below and whatever a future second reader of this state might print.
+// Kept here rather than reusing `src/core/config.ts`'s own message: that
+// file's `warnUnreadable()` prints the real path and the parse-error
+// detail, is stateful (dedupes repeated warnings), and is not a zero-import
+// leaf this hook could import (the A1a/F5 boundary) — the wording below is
+// independently chosen to describe the SAME state, not literally shared.
+export const HOOK_CONFIG_UNREADABLE_REASON =
+  'config: config.json exists but could not be read as a settings object — using defaults until the file is fixed';
+
 /**
- * Read ~/.memesh/config.json directly. Hooks must not depend on dist/
- * (F5 boundary), so this reads the JSON as a plain file rather than
- * importing readConfig from src/core/config.ts.
+ * Read ~/.memesh/config.json directly, with a classification of whether the
+ * document itself could be used at all. Hooks must not depend on dist/ (F5
+ * boundary), so this reads the JSON as a plain file rather than importing
+ * readConfig from src/core/config.ts.
  *
  * Always reads `~/.memesh/config.json` to stay consistent with
  * `src/core/config.ts`, which is the single writer. Earlier versions
@@ -235,23 +267,47 @@ export function importFromPluginRoot(pluginRoot, relativePath) {
  * would ignore `memesh config set autoCapture …` and friends. Fixed
  * by treating the homedir path as the canonical source.
  *
- * Returns an empty object on missing/unreadable/malformed file —
- * callers must always be defensive about which fields are set.
+ * `state` mirrors `src/core/config.ts`'s own `ConfigReadState` — same three
+ * values, same meaning — so a caller recording an outcome for one matches
+ * the wording a CLI/MCP caller would report for the other, without this
+ * file importing that one (see `HOOK_CONFIG_UNREADABLE_REASON`'s comment).
+ * `readHookConfig()` below is the pre-existing plain wrapper every current
+ * caller uses; this file's five internal readers were left untouched on
+ * purpose — only `session-start.js`'s malformed-config check needs `state`.
  *
  * @param {NodeJS.ProcessEnv} [_env=process.env] - kept for signature
  *   compatibility (env was the prior MEMESH_DB_PATH source); ignored.
- * @returns {Record<string, any>}
+ * @returns {{ config: Record<string, any>, state: 'ok' | 'absent' | 'unreadable' }}
  */
-export function readHookConfig(_env = process.env) {
+export function readHookConfigResult(_env = process.env) {
   const path = join(memeshDir(), 'config.json');
-  if (!existsSync(path)) return {};
+  if (!existsSync(path)) return { config: {}, state: 'absent' };
   try {
     const raw = readFileSync(path, 'utf8');
     const parsed = JSON.parse(raw);
-    return (parsed && typeof parsed === 'object') ? parsed : {};
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return { config: parsed, state: 'ok' };
+    }
+    return { config: {}, state: 'unreadable' };
   } catch {
-    return {};
+    return { config: {}, state: 'unreadable' };
   }
+}
+
+/**
+ * The plain, backward-compatible reader every existing caller in this file
+ * uses (`isAutoCaptureEnabled`, `resolveSessionLimit`, `resolveAutoUpdatePolicy`,
+ * `resolveBriefingLevel`, `isUpdateCheckEnabled`) — returns an empty object
+ * on missing/unreadable/malformed file, same as before this round; callers
+ * must always be defensive about which fields are set. `readHookConfigResult()`
+ * above is the state-aware version for a caller that needs to know WHY the
+ * config came back empty, not just that it did.
+ *
+ * @param {NodeJS.ProcessEnv} [env=process.env]
+ * @returns {Record<string, any>}
+ */
+export function readHookConfig(env = process.env) {
+  return readHookConfigResult(env).config;
 }
 
 /**
@@ -294,6 +350,21 @@ export function resolveSessionLimit(env = process.env) {
     return cfg.sessionLimit;
   }
   return 10;
+}
+
+/**
+ * Resolve the briefing level (#360). Precedence: env `MEMESH_BRIEFING` >
+ * config `briefing` > default (same shape as `resolveSessionLimit` above).
+ * The validation and default live in the shared leaf (`resolveBriefingLevel`
+ * in `_generated/briefing-level.js`); this only supplies the two raw values —
+ * an unknown value on EITHER source is reported via `.invalid`, so the
+ * caller can record why the default was used instead of silently falling
+ * back (this repo treats a silent fallback as a defect).
+ * @param {NodeJS.ProcessEnv} [env=process.env]
+ * @returns {{level: 'minimal'|'standard'|'full', invalid: {source: 'env'|'config', value: string}|null}}
+ */
+export function resolveBriefingLevel(env = process.env) {
+  return resolveBriefingLevelValue(env.MEMESH_BRIEFING, readHookConfig(env).briefing);
 }
 
 /**
@@ -545,6 +616,39 @@ const APPEND_NOFOLLOW_FLAGS = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsCo
 const READ_NOFOLLOW_FLAGS = fsConstants.O_RDONLY | NOFOLLOW;
 
 /**
+ * #360 round 8 (Codex round 7 re-review, item 1, second part): a plain
+ * `.slice(0, maxUnits)` on a string cuts by raw UTF-16 CODE UNIT, which can
+ * land between the two halves of a surrogate pair (an astral character —
+ * any emoji, for one) and leave a lone, unpaired surrogate at the very end
+ * — `"…".isWellFormed()` false, confirmed against a real cut landing on a
+ * pair straddling unit 200. `recordHookOutcome` below truncates every
+ * `reason`/`entity` this way, for every hook, on every call — most never
+ * hit this in practice (ASCII diagnostics), but nothing stops a future
+ * caller from passing through attacker- or import-controlled text that
+ * does. This is a MINIMAL, targeted fix: it only ever trims one
+ * ADDITIONAL character, only when the raw cut would otherwise split a
+ * pair, and never changes the ~200-unit cap other callers already rely on
+ * for anything else.
+ */
+export function sliceUtf16UnitsSurrogateSafe(s, maxUnits) {
+  if (s.length <= maxUnits) return s;
+  let end = maxUnits;
+  // Only back off when the last kept unit is a HIGH surrogate AND the very
+  // next unit (the one about to be cut off) is its matching LOW surrogate
+  // — i.e. only when the cut would split a REAL pair. A lone high
+  // surrogate that was already unpaired in the source string (no low
+  // surrogate follows it) is left exactly as it was; this function does
+  // not repair a source string that was already malformed, only avoid
+  // CREATING a new instance of that problem.
+  const lastKept = s.charCodeAt(end - 1);
+  const nextUnit = s.charCodeAt(end);
+  const lastKeptIsHighSurrogate = lastKept >= 0xd800 && lastKept <= 0xdbff;
+  const nextUnitIsLowSurrogate = nextUnit >= 0xdc00 && nextUnit <= 0xdfff;
+  if (lastKeptIsHighSurrogate && nextUnitIsLowSurrogate) end -= 1;
+  return s.slice(0, end);
+}
+
+/**
  * Record what `hook` DID, on every exit path (issue #327).
  *
  * `recordHookRun` answers "did the hook execute"; this answers "and did it
@@ -601,8 +705,8 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     // reasons are hard-coded literals and pass through unchanged, but the
     // error ones are redacted before they persist: stderr is transient, this
     // JSONL file is a permanent, exportable copy.
-    if (reason) record.reason = redactSecrets(String(reason)).slice(0, 200);
-    if (entity) record.entity = redactSecrets(String(entity)).slice(0, 200);
+    if (reason) record.reason = sliceUtf16UnitsSurrogateSafe(redactSecrets(String(reason)), 200);
+    if (entity) record.entity = sliceUtf16UnitsSurrogateSafe(redactSecrets(String(entity)), 200);
     // One O_APPEND write of one line. `mode` applies only when the file is
     // being created, which is the only moment the permission can be set
     // without a second syscall on the hot path. O_NOFOLLOW: the directory

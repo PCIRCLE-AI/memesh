@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path10) {
-      let input = path10;
+    function removeDotSegments(path11) {
+      let input = path11;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path10, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path10 && path10 !== "/" ? path10 : void 0;
+        const [path11, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6670,7 +6670,7 @@ var require_formats = __commonJS({
       email: /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i
     };
     exports.formatNames = Object.keys(exports.fullFormats);
-    function isLeapYear(year) {
+    function isLeapYear2(year) {
       return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
     }
     var DATE = /^(\d\d\d\d)-(\d\d)-(\d\d)$/;
@@ -6682,7 +6682,7 @@ var require_formats = __commonJS({
       const year = +matches[1];
       const month = +matches[2];
       const day = +matches[3];
-      return month >= 1 && month <= 12 && day >= 1 && day <= (month === 2 && isLeapYear(year) ? 29 : DAYS[month]);
+      return month >= 1 && month <= 12 && day >= 1 && day <= (month === 2 && isLeapYear2(year) ? 29 : DAYS[month]);
     }
     function compareDate(d1, d2) {
       if (!(d1 && d2))
@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs12, exportName) {
+    function addFormats(ajv, list, fs13, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs12[f]);
+        ajv.addFormat(f, fs13[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,8 +6916,8 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs11 from "fs";
-import path9 from "path";
+import fs12 from "fs";
+import path10 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7442,10 +7442,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path10) {
-  if (!path10)
+function getElementAtPath(obj, path11) {
+  if (!path11)
     return obj;
-  return path10.reduce((acc, key) => acc?.[key], obj);
+  return path11.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7854,11 +7854,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path10, issues) {
+function prefixIssues(path11, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path10);
+    iss.path.unshift(path11);
     return iss;
   });
 }
@@ -8005,16 +8005,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path10 = []) => {
+  const processError = (error52, path11 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8041,17 +8041,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path10 = []) => {
+  const processError = (error52, path11 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8083,8 +8083,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path10 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path10) {
+  const path11 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path11) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -21082,13 +21082,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path10 = ref.slice(1).split("/").filter(Boolean);
-  if (path10.length === 0) {
+  const path11 = ref.slice(1).split("/").filter(Boolean);
+  if (path11.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path10[0] === defsKey) {
-    const key = path10[1];
+  if (path11[0] === defsKey) {
+    const key = path11[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -24819,8 +24819,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path10, options = {}) {
-    super(path10, options);
+  constructor(path11, options = {}) {
+    super(path11, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -26903,7 +26903,7 @@ function getDatabase() {
 }
 
 // dist/transports/mcp/handlers.js
-import fs10 from "node:fs";
+import fs11 from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/core/scoring.js
@@ -28358,10 +28358,72 @@ function computePatterns(db2, categories) {
   };
 }
 
-// dist/core/repo-state.js
-import { execFileSync as execFileSync2 } from "child_process";
+// dist/core/config.js
 import fs4 from "fs";
 import path4 from "path";
+function configDir() {
+  return memeshDir();
+}
+function configFilePath() {
+  return path4.join(configDir(), "config.json");
+}
+var lastConfigReadWarning = null;
+function warnUnreadable(p, detail) {
+  const key = `${p}::${detail}`;
+  if (key === lastConfigReadWarning)
+    return;
+  lastConfigReadWarning = key;
+  try {
+    process.stderr.write(`[memesh config] ${p} exists but could not be read as a settings object (${detail}). Existing settings are ignored and will not be overwritten until the file is fixed.
+`);
+  } catch {
+  }
+}
+function readRawConfigResult() {
+  const p = configFilePath();
+  if (!fs4.existsSync(p))
+    return { raw: {}, state: "absent" };
+  try {
+    const parsed = JSON.parse(fs4.readFileSync(p, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("top-level JSON value is not an object");
+    }
+    return { raw: parsed, state: "ok" };
+  } catch (error51) {
+    warnUnreadable(p, error51 instanceof Error ? error51.message : String(error51));
+    return { raw: {}, state: "unreadable" };
+  }
+}
+function selectConfig(raw) {
+  const config2 = {};
+  if (typeof raw.autoCapture === "boolean")
+    config2.autoCapture = raw.autoCapture;
+  if (typeof raw.sessionLimit === "number" && Number.isFinite(raw.sessionLimit)) {
+    config2.sessionLimit = raw.sessionLimit;
+  }
+  if (raw.autoUpdate === "off" || raw.autoUpdate === "patch" || raw.autoUpdate === "minor" || raw.autoUpdate === "major") {
+    config2.autoUpdate = raw.autoUpdate;
+  }
+  if (typeof raw.updateCheck === "boolean")
+    config2.updateCheck = raw.updateCheck;
+  if (typeof raw.setupCompleted === "boolean")
+    config2.setupCompleted = raw.setupCompleted;
+  if (raw.briefing !== void 0)
+    config2.briefing = raw.briefing;
+  return config2;
+}
+function readConfigResult() {
+  const result = readRawConfigResult();
+  return { config: selectConfig(result.raw), state: result.state };
+}
+function readConfig() {
+  return readConfigResult().config;
+}
+
+// dist/core/repo-state.js
+import { execFileSync as execFileSync2 } from "child_process";
+import fs5 from "fs";
+import path5 from "path";
 var GIT_TIMEOUT_MS = 5e3;
 function tryGit2(cwd, args) {
   try {
@@ -28376,7 +28438,7 @@ function tryGit2(cwd, args) {
 }
 function declaredVersionOf(repoRoot) {
   try {
-    const raw = fs4.readFileSync(path4.join(repoRoot, "package.json"), "utf8");
+    const raw = fs5.readFileSync(path5.join(repoRoot, "package.json"), "utf8");
     const version2 = JSON.parse(raw).version;
     return typeof version2 === "string" && version2.length > 0 ? version2 : null;
   } catch {
@@ -28514,6 +28576,76 @@ function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
       lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
   }
   return lines;
+}
+var STALE_TASK_STATE_HOURS = 72;
+var CLOCK_SKEW_ALLOWANCE_MINUTES = 5;
+var ZONED_INSTANT = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt](?<hour>\d{2}):(?<minute>\d{2})(?::(?<second>\d{2})(?:\.\d+)?)?(?:(?<zulu>[Zz])|(?<offSign>[+-])(?<offHour>\d{2}):?(?<offMinute>\d{2}))$/;
+function isLeapYear(year) {
+  return year % 4 === 0 && year % 100 !== 0 || year % 400 === 0;
+}
+var DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+function daysInMonth(year, month) {
+  return month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+}
+function isRealInstant(groups) {
+  const year = Number(groups.year);
+  const month = Number(groups.month);
+  const day = Number(groups.day);
+  const hour = Number(groups.hour);
+  const minute = Number(groups.minute);
+  const second = groups.second === void 0 ? 0 : Number(groups.second);
+  if (month < 1 || month > 12)
+    return false;
+  if (day < 1 || day > daysInMonth(year, month))
+    return false;
+  if (hour > 23)
+    return false;
+  if (minute > 59)
+    return false;
+  if (second > 59)
+    return false;
+  if (groups.zulu === void 0) {
+    const offHour = Number(groups.offHour);
+    const offMinute = Number(groups.offMinute);
+    if (offHour > 23 || offMinute > 59)
+      return false;
+    if (groups.offSign === "-" && offHour === 0 && offMinute === 0)
+      return false;
+  }
+  return true;
+}
+function resolveTaskStateAge(updatedAt, now) {
+  if (!updatedAt)
+    return { known: false };
+  const match = ZONED_INSTANT.exec(updatedAt);
+  if (!match?.groups || !isRealInstant(match.groups))
+    return { known: false };
+  const then = Date.parse(updatedAt);
+  if (Number.isNaN(then))
+    return { known: false };
+  const hours = (now.getTime() - then) / 36e5;
+  if (hours < -(CLOCK_SKEW_ALLOWANCE_MINUTES / 60))
+    return { known: false };
+  return { known: true, hours: Math.max(0, hours) };
+}
+function staleTaskStateLine(project, hours) {
+  const days = Math.floor(hours / 24);
+  const age = days >= 1 ? `${days} day${days === 1 ? "" : "s"} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? "" : "s"} ago`;
+  return `Task state for "${project}" was last stated ${age} \u2014 older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
+}
+function taskStateAgeUnknownLine(project) {
+  return `Task state for "${project}" has a missing, unreadable, or future-dated timestamp, so its age could not be established \u2014 not shown as current. Run \`memesh task\` to see or update it.`;
+}
+function briefingTaskStateLines(state, project, now = /* @__PURE__ */ new Date(), { includeFresh = true } = {}) {
+  if (isEmptyTaskState(state))
+    return [];
+  const age = resolveTaskStateAge(state.updated_at, now);
+  if (!age.known)
+    return [taskStateAgeUnknownLine(project)];
+  if (age.hours > STALE_TASK_STATE_HOURS) {
+    return [staleTaskStateLine(project, age.hours)];
+  }
+  return includeFresh ? taskStateLines(state, project, now) : [];
 }
 
 // dist/core/task-state-store.js
@@ -28841,6 +28973,9 @@ function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_
   lines.push(...globalLines);
   return lines;
 }
+function hasBriefingContent(lines) {
+  return lines.length > 0;
+}
 function buildReferenceContext(memoryLines) {
   const safeLines = memoryLines.map((line) => String(line ?? "").replace(/[\s\u0085\u001c-\u001e]+/g, " ").trim());
   let longestRun = 0;
@@ -28995,6 +29130,79 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
   return { ...closed, shown: rendered.length, more, older, truncated, ids };
 }
 
+// dist/core/briefing-level.js
+var BRIEFING_LEVELS = ["minimal", "standard", "full"];
+var DEFAULT_BRIEFING_LEVEL = "standard";
+function isBriefingLevel(value) {
+  return typeof value === "string" && BRIEFING_LEVELS.includes(value);
+}
+var INVALID_VALUE_SERIALIZED_MAX = 100;
+var PRE_SLICE_RAW_MAX = 256;
+function safeRawPreSlice(value, maxUnits) {
+  if (value.length <= maxUnits)
+    return value;
+  let end = maxUnits;
+  const lastKept = value.charCodeAt(end - 1);
+  const nextUnit = value.charCodeAt(end);
+  const lastKeptIsHighSurrogate = lastKept >= 55296 && lastKept <= 56319;
+  const nextUnitIsLowSurrogate = nextUnit >= 56320 && nextUnit <= 57343;
+  if (lastKeptIsHighSurrogate && nextUnitIsLowSurrogate)
+    end -= 1;
+  return value.slice(0, end);
+}
+function truncateToSerializedBound(codePoints) {
+  let kept = 0;
+  for (; kept < codePoints.length; kept++) {
+    const candidate = JSON.stringify(`${codePoints.slice(0, kept + 1).join("")}\u2026`);
+    if (candidate.length > INVALID_VALUE_SERIALIZED_MAX)
+      break;
+  }
+  return JSON.stringify(`${codePoints.slice(0, kept).join("")}\u2026`);
+}
+function describeInvalidValue(value) {
+  if (typeof value === "string") {
+    if (value.length <= INVALID_VALUE_SERIALIZED_MAX) {
+      const whole = JSON.stringify(value);
+      if (whole.length <= INVALID_VALUE_SERIALIZED_MAX)
+        return whole;
+      return truncateToSerializedBound(Array.from(value));
+    }
+    return truncateToSerializedBound(Array.from(safeRawPreSlice(value, PRE_SLICE_RAW_MAX)));
+  }
+  if (Array.isArray(value))
+    return "[array]";
+  if (value !== null && typeof value === "object")
+    return "[object]";
+  if (typeof value === "bigint")
+    return "[bigint]";
+  if (typeof value === "symbol")
+    return "[symbol]";
+  if (typeof value === "function")
+    return "[function]";
+  return JSON.stringify(value) ?? String(value);
+}
+function resolveBriefingLevel(envValue, configValue) {
+  if (envValue !== void 0) {
+    if (isBriefingLevel(envValue))
+      return { level: envValue, invalid: null };
+    return { level: DEFAULT_BRIEFING_LEVEL, invalid: { source: "env", value: describeInvalidValue(envValue) } };
+  }
+  if (configValue !== void 0) {
+    if (isBriefingLevel(configValue))
+      return { level: configValue, invalid: null };
+    return { level: DEFAULT_BRIEFING_LEVEL, invalid: { source: "config", value: describeInvalidValue(configValue) } };
+  }
+  return { level: DEFAULT_BRIEFING_LEVEL, invalid: null };
+}
+var POLICIES = {
+  minimal: { global: false, foreign: false, taskState: false, index: false, workPackageNotice: false },
+  standard: { global: false, foreign: false, taskState: true, index: true, workPackageNotice: false },
+  full: { global: true, foreign: true, taskState: true, index: true, workPackageNotice: true }
+};
+function briefingLevelPolicy(level) {
+  return POLICIES[level];
+}
+
 // dist/core/briefing.js
 var PROJECT_LIMIT = 30;
 var RECENT_LIMIT = 5;
@@ -29063,10 +29271,23 @@ function readBriefingIndex(db2, projectName, now = Date.now()) {
 function assembleBriefing(project, recipient) {
   const projectName = project ?? getProjectName();
   const db2 = getDatabase();
+  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
+  if (resolvedLevel.invalid) {
+    const { source, value } = resolvedLevel.invalid;
+    try {
+      process.stderr.write(`[memesh briefing] invalid ${source} briefing level "${value}" \u2014 using "${resolvedLevel.level}"
+`);
+    } catch {
+    }
+  }
+  const level = resolvedLevel.level;
+  const policy = briefingLevelPolicy(level);
   const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
   let taskLines;
   try {
-    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
+    taskLines = briefingTaskStateLines(getTaskState(projectName).state, projectName, /* @__PURE__ */ new Date(), {
+      includeFresh: policy.taskState
+    });
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError))
       throw err;
@@ -29087,17 +29308,17 @@ function assembleBriefing(project, recipient) {
      ORDER BY e.id DESC
      LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
   const projectPool = selectPool(projectRows, PROJECT_LIMIT);
-  const globalRows = hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+  const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
        WHERE e.namespace = 'global' AND e.status = 'active'
        ORDER BY e.id DESC
        LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
   const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
-  const recentRows = db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
-     FROM entities e
-     WHERE e.status = 'active'${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP);
+  const recentRows = policy.foreign ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+       FROM entities e
+       WHERE e.status = 'active'${nonGlobal}
+       ORDER BY e.id DESC
+       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
   const recentPool = selectPool(recentRows, RECENT_LIMIT);
   const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
   const snippets = /* @__PURE__ */ new Map();
@@ -29122,13 +29343,17 @@ function assembleBriefing(project, recipient) {
   ], projectName);
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
   const index = readBriefingIndex(db2, projectName);
-  const block = withRepo.length > 0 ? [...withRepo, "", ...index.lines] : index.lines;
+  const indexLines = policy.index ? index.lines : [];
+  const block = withRepo.length > 0 && indexLines.length > 0 ? [...withRepo, "", ...indexLines] : [...withRepo, ...indexLines];
+  const empty = !hasBriefingContent(block);
   return {
     project: projectName,
-    text: buildReferenceContext(block),
+    text: empty ? "" : buildReferenceContext(block),
     entityCount: lines.filter((l) => l.startsWith("- [")).length,
     hasTaskState: stateLines.length > 0,
-    index
+    index,
+    level,
+    empty
   };
 }
 
@@ -29140,7 +29365,7 @@ import { createHash as createHash9, randomBytes, randomUUID as randomUUID2 } fro
 
 // dist/core/agent-message-storage.js
 import { createHash as createHash8, randomUUID } from "node:crypto";
-import fs5 from "node:fs";
+import fs6 from "node:fs";
 var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
   code;
@@ -30130,9 +30355,9 @@ var MessageSchema = external_exports.discriminatedUnion("action", [
 
 // dist/core/agent-router.js
 import { randomUUID as randomUUID3 } from "node:crypto";
-import fs6 from "node:fs";
+import fs7 from "node:fs";
 import net from "node:net";
-import path5 from "node:path";
+import path6 from "node:path";
 var AGENT_ROUTER_PROTOCOL_VERSION = 2;
 var AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
 var MAX_LEASE_MS = 5 * 6e4;
@@ -30292,7 +30517,7 @@ function isSelectionCard(value, project) {
   return typeof value.session_id === "string" && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
 }
 function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path5.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > 103) {
+  if (typeof socketPath !== "string" || !path6.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > 103) {
     throw new AgentRouterProtocolError("invalid_socket_path", "Router socket path must be absolute and at most 103 bytes.");
   }
   return socketPath;
@@ -30650,14 +30875,14 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
 }
 
 // dist/core/update-entrypoint.js
-import fs9 from "fs";
-import path8 from "path";
+import fs10 from "fs";
+import path9 from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 // dist/core/version-check.js
-import fs7 from "fs";
-import path6 from "path";
+import fs8 from "fs";
+import path7 from "path";
 
 // dist/core/semver.js
 var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -30726,7 +30951,7 @@ function getUpdateCheckPath(updateCheckPath, currentVersion) {
   if (process.env.MEMESH_UPDATE_CHECK_PATH)
     return process.env.MEMESH_UPDATE_CHECK_PATH;
   const versionTag = currentVersion && /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  return path6.join(memeshDir(), `update-check.${versionTag}.json`);
+  return path7.join(memeshDir(), `update-check.${versionTag}.json`);
 }
 function parseIsoDate(value) {
   if (!value)
@@ -30801,9 +31026,9 @@ function parseStoredUpdateCheck(raw) {
 function readStoredUpdateCheck(updateCheckPath, currentVersion) {
   try {
     const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
-    if (!fs7.existsSync(targetPath))
+    if (!fs8.existsSync(targetPath))
       return null;
-    return parseStoredUpdateCheck(JSON.parse(fs7.readFileSync(targetPath, "utf8")));
+    return parseStoredUpdateCheck(JSON.parse(fs8.readFileSync(targetPath, "utf8")));
   } catch {
     return null;
   }
@@ -30816,8 +31041,8 @@ function getLastUpdateCheck(currentVersion, options = {}) {
 }
 
 // dist/core/update-notice.js
-import fs8 from "fs";
-import path7 from "path";
+import fs9 from "fs";
+import path8 from "path";
 var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
 var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
 var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
@@ -30853,16 +31078,16 @@ function parseIso(value) {
 }
 function readJson(file2) {
   try {
-    if (!fs8.existsSync(file2))
+    if (!fs9.existsSync(file2))
       return null;
-    const parsed = JSON.parse(fs8.readFileSync(file2, "utf8"));
+    const parsed = JSON.parse(fs9.readFileSync(file2, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 function readSnooze(dir) {
-  const raw = readJson(path7.join(dir, SNOOZE_FILE));
+  const raw = readJson(path8.join(dir, SNOOZE_FILE));
   if (!raw)
     return null;
   const { target, level, since } = raw;
@@ -30880,7 +31105,7 @@ function snoozeExpiresAt(state) {
   return since + duration3;
 }
 function readJustUpgradedMarker(dir) {
-  const raw = readJson(path7.join(dir, JUST_UPGRADED_FILE));
+  const raw = readJson(path8.join(dir, JUST_UPGRADED_FILE));
   if (!raw)
     return null;
   const { from, to, at } = raw;
@@ -30890,21 +31115,21 @@ function readJustUpgradedMarker(dir) {
 }
 function clearJustUpgradedMarker(dir) {
   try {
-    fs8.unlinkSync(path7.join(dir, JUST_UPGRADED_FILE));
+    fs9.unlinkSync(path8.join(dir, JUST_UPGRADED_FILE));
   } catch {
   }
 }
 function claimJustUpgradedMarker(dir) {
-  const file2 = path7.join(dir, JUST_UPGRADED_FILE);
+  const file2 = path8.join(dir, JUST_UPGRADED_FILE);
   const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    fs8.renameSync(file2, taken);
+    fs9.renameSync(file2, taken);
   } catch {
     return null;
   }
   const raw = readJson(taken);
   try {
-    fs8.unlinkSync(taken);
+    fs9.unlinkSync(taken);
   } catch {
   }
   if (!raw)
@@ -30991,31 +31216,31 @@ function formatUpdateNoticeLine(notice) {
   }
 }
 function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__PURE__ */ new Date()) {
-  const claims = path8.join(dir, "update-prompt-claims");
+  const claims = path9.join(dir, "update-prompt-claims");
   let names;
   try {
-    names = fs9.readdirSync(claims);
+    names = fs10.readdirSync(claims);
   } catch {
     return false;
   }
   for (const name of names) {
     if (!name.endsWith(".json"))
       continue;
-    const file2 = path8.join(claims, name);
+    const file2 = path9.join(claims, name);
     let fd = null;
     try {
-      fd = fs9.openSync(file2, "r");
-      const stat = fs9.fstatSync(fd);
+      fd = fs10.openSync(file2, "r");
+      const stat = fs10.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
-      const value = JSON.parse(fs9.readFileSync(fd, "utf8"));
+      const value = JSON.parse(fs10.readFileSync(fd, "utf8"));
       if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
       if (fd !== null)
         try {
-          fs9.closeSync(fd);
+          fs10.closeSync(fd);
         } catch {
         }
     }
@@ -31024,7 +31249,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
 }
 function updateCheckEnabledIn(dir) {
   try {
-    const raw = JSON.parse(fs9.readFileSync(path8.join(dir, "config.json"), "utf8"));
+    const raw = JSON.parse(fs10.readFileSync(path9.join(dir, "config.json"), "utf8"));
     return raw.updateCheck !== false;
   } catch {
     return true;
@@ -31032,34 +31257,34 @@ function updateCheckEnabledIn(dir) {
 }
 function cliThrottled(dir, currentVersion, now) {
   const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  const marker = path8.join(dir, `last-cli-update-notice.${tag}.lock`);
+  const marker = path9.join(dir, `last-cli-update-notice.${tag}.lock`);
   let fd = null;
   try {
     try {
-      fd = fs9.openSync(marker, "r+");
+      fd = fs10.openSync(marker, "r+");
     } catch (err) {
       const code = err.code;
       if (code !== "ENOENT") {
         return true;
       }
-      fs9.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs10.mkdirSync(dir, { recursive: true, mode: 448 });
       try {
-        fd = fs9.openSync(marker, "wx", 384);
+        fd = fs10.openSync(marker, "wx", 384);
       } catch (raceErr) {
         if (raceErr.code === "EEXIST")
           return true;
         throw raceErr;
       }
-      fs9.writeSync(fd, String(now.getTime()));
+      fs10.writeSync(fd, String(now.getTime()));
       return false;
     }
-    const stat = fs9.fstatSync(fd);
+    const stat = fs10.fstatSync(fd);
     if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
       return true;
-    fs9.ftruncateSync(fd, 0);
-    fs9.writeSync(fd, String(now.getTime()), 0);
+    fs10.ftruncateSync(fd, 0);
+    fs10.writeSync(fd, String(now.getTime()), 0);
     try {
-      fs9.fchmodSync(fd, 384);
+      fs10.fchmodSync(fd, 384);
     } catch {
     }
     return false;
@@ -31068,7 +31293,7 @@ function cliThrottled(dir, currentVersion, now) {
   } finally {
     if (fd !== null)
       try {
-        fs9.closeSync(fd);
+        fs10.closeSync(fd);
       } catch {
       }
   }
@@ -31076,23 +31301,23 @@ function cliThrottled(dir, currentVersion, now) {
 function spawnCacheRefresh(dir, currentVersion, now) {
   try {
     const cliPath = fileURLToPath(new URL("../transports/cli/cli.js", import.meta.url));
-    if (!fs9.existsSync(cliPath))
+    if (!fs10.existsSync(cliPath))
       return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-    const marker = path8.join(dir, `last-fresh-refresh.${tag}.lock`);
+    const marker = path9.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
-      if (now.getTime() - fs9.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+      if (now.getTime() - fs10.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
         return false;
-      fs9.unlinkSync(marker);
+      fs10.unlinkSync(marker);
     } catch {
     }
-    fs9.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs10.mkdirSync(dir, { recursive: true, mode: 448 });
     try {
-      const fd = fs9.openSync(marker, "wx", 384);
+      const fd = fs10.openSync(marker, "wx", 384);
       try {
-        fs9.writeSync(fd, `${process.pid}-${now.getTime()}`);
+        fs10.writeSync(fd, `${process.pid}-${now.getTime()}`);
       } finally {
-        fs9.closeSync(fd);
+        fs10.closeSync(fd);
       }
     } catch {
       return false;
@@ -31157,7 +31382,7 @@ function updateNoticeForEntryPoint(input) {
     const dir = input.dir ?? memeshDir();
     const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : "unknown";
-    const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path8.join(dir, `update-check.${tag}.json`) });
+    const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path9.join(dir, `update-check.${tag}.json`) });
     if (updateCheckEnabled && shouldRefreshUpdateCache(input.currentVersion, cache, now)) {
       (input.refresh ?? spawnCacheRefresh)(dir, input.currentVersion, now);
     }
@@ -31196,8 +31421,8 @@ function resolveTranscriptWorkspace(project, rootUris) {
       const parsed = new URL(uri);
       if (parsed.protocol !== "file:")
         continue;
-      const root = fs10.realpathSync(fileURLToPath2(parsed));
-      if (!fs10.statSync(root).isDirectory() || getProjectName(root) !== project)
+      const root = fs11.realpathSync(fileURLToPath2(parsed));
+      if (!fs11.statSync(root).isDirectory() || getProjectName(root) !== project)
         continue;
       matches.add(root);
     } catch {
@@ -31385,7 +31610,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "task_state",
-    description: 'Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Injected at the start of the next session, so record ONLY what the user actually stated \u2014 never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: "" once a blocker is resolved).',
+    description: `Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Included in the next session's briefing at the default level, so record ONLY what the user actually stated \u2014 never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: "" once a blocker is resolved).`,
     inputSchema: {
       type: "object",
       properties: {
@@ -31403,7 +31628,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "briefing",
-    description: "The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, recent activity, and a capped index of the project\u2019s durable memories (one line each, newest first, with [mem:id] handles; structured counts and token cost in `index`) \u2014 the same block Claude Code receives at session start. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.",
+    description: "The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, recent activity, and a capped index of the project\u2019s durable memories (one line each, newest first, with [mem:id] handles; structured counts and token cost in `index`) \u2014 the same memory block Claude Code receives at session start (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool\u2019s output). How much of this is assembled follows the `briefing` setting (`minimal`, `standard` \u2014 the default, described above \u2014 or `full`, which additionally includes memories from other projects and global memory); at `minimal` it is only this project\u2019s live repository state, decisions, lessons, known facts and recent activity, with no task state and no index, and may be empty. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.",
     inputSchema: {
       type: "object",
       properties: {
@@ -31522,8 +31747,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path10 = issue2.path.join(".");
-  return path10 ? `${path10}: ${issue2.message}` : issue2.message;
+  const path11 = issue2.path.join(".");
+  return path11 ? `${path11}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (Array.isArray(value))
@@ -31564,7 +31789,7 @@ function normalizeClientHost(name) {
 }
 var packageVersion = (() => {
   try {
-    return JSON.parse(fs10.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
+    return JSON.parse(fs11.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
   } catch {
     return "0.0.0";
   }
@@ -31741,8 +31966,8 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
 }
 
 // dist/mcp/server.js
-var packageJsonPath = path9.resolve(path9.dirname(fileURLToPath3(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs11.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
+var packageJsonPath = path10.resolve(path10.dirname(fileURLToPath3(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs12.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOL_DEFINITIONS.map((t) => ({

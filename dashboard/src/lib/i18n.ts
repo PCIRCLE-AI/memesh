@@ -649,7 +649,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': 'Nothing in this project is injected automatically yet. Imported memories, memories marked untrusted, and anything saved without a `project:` tag are not counted here — the number on the project chip can be higher. Decisions, lessons, patterns and references saved with `remember` appear here.',
     'project.index.more': '{n} more — `memesh recall --tag "project:…"`',
     'project.index.older': '{n} older (no change in {days} days) — recall to see them',
-    'project.index.cost': 'The same index an agent receives at session start · ≈ {tokens} tokens ({bytes} bytes)',
+    'project.index.cost': 'The same index an agent receives at session start by default · ≈ {tokens} tokens ({bytes} bytes)',
   },
   'zh-TW': {
     'auth.title': '需要驗證',
@@ -1299,7 +1299,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': '這個專案目前還沒有任何記憶會被自動注入。匯入的記憶、標記為不可信的記憶，以及沒有 `project:` 標籤的記憶都不算在這裡 — 上面專案標籤上的數字可能比較大。用 `remember` 存下的決策、教訓、模式和參考資料會出現在這裡。',
     'project.index.more': '還有 {n} 筆 — `memesh recall --tag "project:…"`',
     'project.index.older': '{n} 筆較舊（{days} 天沒有變動）— 用 recall 查看',
-    'project.index.cost': '和 agent 在 session 開始時收到的索引相同 · 約 {tokens} tokens（{bytes} bytes）',
+    'project.index.cost': '和 agent 在 session 開始時預設會收到的索引相同 · 約 {tokens} tokens（{bytes} bytes）',
   },
   'zh-CN': {
     'auth.title': '需要验证',
@@ -1948,7 +1948,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': '这个项目目前还没有任何记忆会被自动注入。导入的记忆、标记为不可信的记忆，以及没有 `project:` 标签的记忆都不计入这里 — 上面项目标签上的数字可能更大。用 `remember` 保存的决策、教训、模式和参考资料会出现在这里。',
     'project.index.more': '还有 {n} 条 — `memesh recall --tag "project:…"`',
     'project.index.older': '{n} 条较旧（{days} 天没有变动）— 用 recall 查看',
-    'project.index.cost': '与 agent 在会话开始时收到的索引相同 · 约 {tokens} tokens（{bytes} bytes）',
+    'project.index.cost': '与 agent 在会话开始时默认会收到的索引相同 · 约 {tokens} tokens（{bytes} bytes）',
   },
   ja: {
     'auth.title': '認証が必要です',
@@ -2597,7 +2597,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': 'このプロジェクトには自動的に注入される記憶がまだありません。インポートされた記憶、untrusted と記録された記憶、`project:` タグのない記憶はここには数えられません — 上のプロジェクトチップの数はこれより大きいことがあります。`remember` で保存した決定・教訓・パターン・参考情報がここに表示されます。',
     'project.index.more': 'ほか {n} 件 — `memesh recall --tag "project:…"`',
     'project.index.older': '古い記憶 {n} 件（{days} 日間変更なし）— recall で確認できます',
-    'project.index.cost': 'エージェントがセッション開始時に受け取る索引と同じ · 約 {tokens} トークン（{bytes} バイト）',
+    'project.index.cost': 'エージェントがセッション開始時にデフォルトで受け取る索引と同じ · 約 {tokens} トークン（{bytes} バイト）',
   },
   ko: {
     'auth.title': '인증 필요',
@@ -3246,7 +3246,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': '이 프로젝트에는 아직 자동으로 주입되는 기억이 없습니다. 가져온 기억, untrusted로 표시된 기억, `project:` 태그가 없는 기억은 여기에 포함되지 않습니다 — 위의 프로젝트 칩에 표시된 수가 더 클 수 있습니다. `remember`로 저장한 결정, 교훈, 패턴, 참고 자료가 여기에 표시됩니다.',
     'project.index.more': '{n}개 더 — `memesh recall --tag "project:…"`',
     'project.index.older': '오래된 기억 {n}개({days}일 동안 변경 없음) — recall로 확인하세요',
-    'project.index.cost': '에이전트가 세션 시작 시 받는 색인과 같습니다 · 약 {tokens} 토큰({bytes} 바이트)',
+    'project.index.cost': '에이전트가 세션 시작 시 기본적으로 받는 색인과 같습니다 · 약 {tokens} 토큰({bytes} 바이트)',
   },
   pt: {
     'auth.title': 'Autenticação necessária',
@@ -3895,7 +3895,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': 'Nada neste projeto é injetado automaticamente ainda. Memórias importadas, memórias marcadas como não confiáveis e qualquer uma salva sem a tag `project:` não são contadas aqui — o número no chip do projeto pode ser maior. Decisões, lições, padrões e referências salvos com `remember` aparecem aqui.',
     'project.index.more': 'Mais {n} — `memesh recall --tag "project:…"`',
     'project.index.older': '{n} mais antigas (sem alterações há {days} dias) — use recall para vê-las',
-    'project.index.cost': 'O mesmo índice que um agente recebe no início da sessão · ≈ {tokens} tokens ({bytes} bytes)',
+    'project.index.cost': 'O mesmo índice que um agente recebe por padrão no início da sessão · ≈ {tokens} tokens ({bytes} bytes)',
   },
   fr: {
     'auth.title': 'Authentification requise',
@@ -4544,7 +4544,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': 'Rien n’est encore injecté automatiquement dans ce projet. Les mémoires importées, celles marquées comme non fiables et toute mémoire enregistrée sans étiquette `project:` ne sont pas comptées ici — le nombre affiché sur la puce du projet peut être plus élevé. Les décisions, leçons, modèles et références enregistrés avec `remember` apparaissent ici.',
     'project.index.more': '{n} de plus — `memesh recall --tag "project:…"`',
     'project.index.older': '{n} plus anciennes (aucun changement depuis {days} jours) — utilisez recall pour les voir',
-    'project.index.cost': 'Le même index qu’un agent reçoit au début de la session · ≈ {tokens} jetons ({bytes} octets)',
+    'project.index.cost': 'Le même index qu’un agent reçoit par défaut au début de la session · ≈ {tokens} jetons ({bytes} octets)',
   },
   de: {
     'auth.title': 'Authentifizierung erforderlich',
@@ -5193,7 +5193,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': 'In diesem Projekt wird noch nichts automatisch eingespielt. Importierte Erinnerungen, als nicht vertrauenswürdig markierte Erinnerungen und alles ohne `project:`-Tag zählen hier nicht mit — die Zahl auf dem Projekt-Chip kann höher sein. Entscheidungen, Lektionen, Muster und Referenzen, die mit `remember` gespeichert wurden, erscheinen hier.',
     'project.index.more': '{n} weitere — `memesh recall --tag "project:…"`',
     'project.index.older': '{n} ältere (seit {days} Tagen unverändert) — mit recall ansehen',
-    'project.index.cost': 'Derselbe Index, den ein Agent zu Sitzungsbeginn erhält · ≈ {tokens} Tokens ({bytes} Bytes)',
+    'project.index.cost': 'Derselbe Index, den ein Agent standardmäßig zu Sitzungsbeginn erhält · ≈ {tokens} Tokens ({bytes} Bytes)',
   },
   vi: {
     'auth.title': 'Yêu cầu xác thực',
@@ -5842,7 +5842,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': 'Dự án này chưa có ký ức nào được tự động đưa vào. Ký ức đã nhập, ký ức bị đánh dấu không đáng tin, và bất kỳ ký ức nào lưu mà không có thẻ `project:` đều không được tính ở đây — con số trên chip dự án phía trên có thể lớn hơn. Quyết định, bài học, mẫu và tài liệu tham khảo lưu bằng `remember` sẽ xuất hiện ở đây.',
     'project.index.more': 'Còn {n} mục — `memesh recall --tag "project:…"`',
     'project.index.older': '{n} mục cũ hơn (không thay đổi trong {days} ngày) — dùng recall để xem',
-    'project.index.cost': 'Cùng chỉ mục mà agent nhận khi bắt đầu phiên · ≈ {tokens} token ({bytes} byte)',
+    'project.index.cost': 'Cùng chỉ mục mà agent nhận theo mặc định khi bắt đầu phiên · ≈ {tokens} token ({bytes} byte)',
   },
   es: {
     'auth.title': 'Autenticación requerida',
@@ -6491,7 +6491,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': 'En este proyecto todavía no se inyecta nada automáticamente. Las memorias importadas, las marcadas como no confiables y cualquiera guardada sin la etiqueta `project:` no se cuentan aquí — el número del chip del proyecto puede ser mayor. Las decisiones, lecciones, patrones y referencias guardados con `remember` aparecen aquí.',
     'project.index.more': '{n} más — `memesh recall --tag "project:…"`',
     'project.index.older': '{n} más antiguas (sin cambios en {days} días) — usa recall para verlas',
-    'project.index.cost': 'El mismo índice que recibe un agente al iniciar la sesión · ≈ {tokens} tokens ({bytes} bytes)',
+    'project.index.cost': 'El mismo índice que recibe un agente de forma predeterminada al iniciar la sesión · ≈ {tokens} tokens ({bytes} bytes)',
   },
   th: {
     'auth.title': 'ต้องมีการยืนยันตัวตน',
@@ -7140,7 +7140,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'project.index.empty': 'โปรเจกต์นี้ยังไม่มีความจำที่ถูกใส่ให้อัตโนมัติ ความจำที่นำเข้ามา ความจำที่ถูกทำเครื่องหมายว่าไม่น่าเชื่อถือ และความจำที่บันทึกโดยไม่มีแท็ก `project:` จะไม่ถูกนับที่นี่ — ตัวเลขบนชิปโปรเจกต์ด้านบนอาจมากกว่า การตัดสินใจ บทเรียน รูปแบบ และข้อมูลอ้างอิงที่บันทึกด้วย `remember` จะแสดงที่นี่',
     'project.index.more': 'อีก {n} รายการ — `memesh recall --tag "project:…"`',
     'project.index.older': '{n} รายการที่เก่ากว่า (ไม่มีการเปลี่ยนแปลงใน {days} วัน) — ใช้ recall เพื่อดู',
-    'project.index.cost': 'ดัชนีเดียวกับที่เอเจนต์ได้รับเมื่อเริ่มเซสชัน · ประมาณ {tokens} โทเค็น ({bytes} ไบต์)',
+    'project.index.cost': 'ดัชนีเดียวกับที่เอเจนต์ได้รับตามค่าเริ่มต้นเมื่อเริ่มเซสชัน · ประมาณ {tokens} โทเค็น ({bytes} ไบต์)',
   },
 };
 

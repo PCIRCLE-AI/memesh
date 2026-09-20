@@ -398,6 +398,27 @@ export function assembleTopologyBlock(
 }
 
 /**
+ * Whether an assembled block has anything in it at all — the ONE rule both
+ * injection surfaces (the SessionStart hook, `assembleBriefing`/the
+ * `briefing` MCP tool/CLI) use to decide whether to wrap `lines` in the
+ * fence or inject nothing (#360 round 3, item 1).
+ *
+ * Trivial on its own (an empty array), and named here — not reimplemented
+ * inline at each call site — for the same reason `buildReferenceContext`
+ * below is: this repository has shipped the "one rule, two owners" defect
+ * shape before (the P0 FTS omission the whole `_generated/` mirror exists to
+ * prevent), and #360's own round-1 review caught it again in this exact
+ * pair — the hook skipped the fence on a wholly empty block, `briefing.ts`
+ * did not, so an empty `minimal` project got a real preamble wrapped around
+ * an empty ` ```text``` ` from the tool while the hook correctly emitted
+ * nothing. Both sides now call this instead of writing `.length === 0`
+ * themselves.
+ */
+export function hasBriefingContent(lines: readonly string[]): boolean {
+  return lines.length > 0;
+}
+
+/**
  * Wrap assembled memory lines in a fenced block for injection into agent
  * context. Moved here verbatim from the hooks' `_shared.js` (which now
  * re-exports the generated copy) so the MCP briefing surface and the

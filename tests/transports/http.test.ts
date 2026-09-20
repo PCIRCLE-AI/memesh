@@ -978,4 +978,78 @@ describe('HTTP Transport: agent-only workflows', () => {
     }
     expect((await req('GET', '/v1/config')).body.data).not.toHaveProperty('capabilities');
   });
+
+  // Codex review round 1, item 2: GET /v1/config used to re-validate the
+  // read through the same strict `z.enum` POST validates against, so a
+  // stored value outside the known levels (hand-edited config.json, or an
+  // older/newer memesh version's value) made the read itself throw and
+  // answer 500 — a user with a bad value on disk could not even see it to
+  // fix it. `briefing` is validated on WRITE only; GET returns it as-is.
+  it('#360: GET /v1/config survives an invalid stored briefing level (200, raw value) — POST still rejects it (400)', async () => {
+    // Simulate a value already on disk that predates (or postdates) this
+    // version's known levels — written directly, bypassing POST validation,
+    // the same way an older memesh or a hand edit would leave it.
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ briefing: 'banana' }));
+
+    const got = await req('GET', '/v1/config');
+    expect(got.status).toBe(200);
+    expect(got.body.data.config.briefing).toBe('banana');
+
+    const posted = await req('POST', '/v1/config', { briefing: 'banana' });
+    expect(posted.status).toBe(400);
+    expect(posted.body.errorCode).toBe('validation.bad-body');
+    // The invalid POST must not have overwritten the stored value with
+    // something else, and GET must still answer 200 afterward.
+    expect((await req('GET', '/v1/config')).body.data.config.briefing).toBe('banana');
+
+    // A valid POST still works and GET reflects it — the write path is not
+    // broken, only the read path's over-validation was.
+    const fixed = await req('POST', '/v1/config', { briefing: 'minimal' });
+    expect(fixed.status).toBe(200);
+    expect((await req('GET', '/v1/config')).body.data.config.briefing).toBe('minimal');
+  });
+
+  // #360 round 4 (Codex round 3 re-review, item 2): the case above only
+  // covers a string that is not a known level. `readConfig()`'s old
+  // `typeof === 'string'` gate discarded every OTHER JSON type before
+  // `ConfigReadBody` ever saw it, so this exact 500-avoidance fix was never
+  // exercised for a number, boolean, null, array or object — the real shape
+  // a hand-edited config.json or an older/newer memesh can leave behind.
+  // GET must answer 200 with the raw value for every one of them; POST must
+  // still reject every one with 400 (the enum belongs on write only).
+  it.each([42, true, [], { nested: 'object' }])(
+    '#360: GET /v1/config survives a non-string stored briefing (%j) — POST still rejects it (400)',
+    async (value) => {
+      fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ briefing: value }));
+
+      const got = await req('GET', '/v1/config');
+      expect(got.status).toBe(200);
+      expect(got.body.data.config.briefing).toEqual(value);
+
+      const posted = await req('POST', '/v1/config', { briefing: value });
+      expect(posted.status).toBe(400);
+      expect(posted.body.errorCode).toBe('validation.bad-body');
+      expect((await req('GET', '/v1/config')).body.data.config.briefing).toEqual(value);
+    },
+  );
+
+  // `null` is its own case: round 5 (Codex round 4 re-review, item 2) made
+  // `resolveBriefingLevel` classify an explicit stored `null` as an INVALID
+  // value (default level + a recorded reason on hook/CLI/MCP) — the SAME
+  // treatment as `42` or `"banana"`, not "not set" (only the key being
+  // genuinely absent means that). GET surviving it without a 500 is a
+  // DIFFERENT, narrower thing — all THIS schema is responsible for is not
+  // re-validating the raw stored value on read. POST still rejects `null`
+  // (the write-side enum has no null member).
+  it('#360: GET /v1/config survives an explicit null stored briefing — POST still rejects it (400)', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ briefing: null }));
+
+    const got = await req('GET', '/v1/config');
+    expect(got.status).toBe(200);
+    expect(got.body.data.config.briefing).toBeNull();
+
+    const posted = await req('POST', '/v1/config', { briefing: null });
+    expect(posted.status).toBe(400);
+    expect(posted.body.errorCode).toBe('validation.bad-body');
+  });
 });

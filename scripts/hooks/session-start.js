@@ -7,6 +7,7 @@ import { pathToFileURL } from 'url';
 import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, constants as fsConstants } from 'fs';
 import {
   buildReferenceContext,
+  hasBriefingContent,
   ensurePrivateDir,
   getDbPath,
   getMemeshDirFromDbPath,
@@ -50,7 +51,13 @@ import {
   repoStateLines,
   resolvePluginRoot,
   resolveSessionLimit,
-  taskStateLines,
+  briefingTaskStateLines,
+  resolveBriefingLevel,
+  briefingLevelPolicy,
+  sessionStartAppendsWorkPackageNotice,
+  WORK_PACKAGE_NOTICE,
+  readHookConfigResult,
+  HOOK_CONFIG_UNREADABLE_REASON,
   homeDir,
   taskStateName,
   writeCitationRule,
@@ -799,6 +806,21 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
   return [...lines.filter((l) => l.length > 0), '', baseMessage].join('\n');
 }
 
+// #360 round 6 (Codex round 5 re-review, item 1): the ONE reason string for
+// "this session's memory injection resolved to nothing" — every exit path
+// that ends up with a falsy `memoryContext` should pass this through
+// `output()`'s `recorded` argument, not fall through to the generic
+// `session-start-banner` outcome marker that carries no `reason` at all.
+// Before this fix only the schema-present empty path (further down) did —
+// the no-database and no-entities-table early exits called `output()` with
+// just two arguments, so a genuinely silent `minimal` session on either of
+// those two states left no trace of WHY nothing was injected. One helper,
+// not three copies of the template string, so the wording cannot drift
+// between call sites the way the missing-reason bug itself proves it can.
+function nothingToInjectReason(level, detail) {
+  return `briefing-level: nothing to inject at "${level}" — ${detail}`;
+}
+
 let input = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
@@ -809,12 +831,70 @@ process.stdin.on('end', async () => {
   let captureWarning = null;
   const withCaptureWarning = (msg) => {
     if (!captureWarning) return msg;
-    return `${captureWarning}\n${msg.replace(/^◉ MeMesh ready · /, '◉ MeMesh · ')}`;
+    // Found by running the full suite (not just this round's touched
+    // files): the populated-database path prepends an update banner ahead
+    // of the "◉ MeMesh ready · ..." summary line (`finalMessage =
+    // [...bannerLines, '', summary].join('\n')`), so that line is no
+    // longer at the START of `msg` whenever a banner is present — an
+    // un-flagged `^` only anchors to the whole string's start, so the
+    // demotion below silently did nothing and "MeMesh ready" leaked
+    // through even while a write failure was being reported in the very
+    // same message. `m` anchors `^` to the start of ANY line instead.
+    return `${captureWarning}\n${msg.replace(/^◉ MeMesh ready · /m, '◉ MeMesh · ')}`;
   };
   try {
     try {
     const data = JSON.parse(input);
     const projectName = getProjectName(data.cwd);
+
+    // #360 — resolve the briefing level ONCE, before any exit path, so every
+    // emit below (including the no-database and empty-database early
+    // returns) agrees on what to include. env > config > default; an
+    // unknown value on either source is not a silent fallback — it is
+    // traced AND recorded on the hook's outcome channel, the same
+    // discipline every other silent-skip path in this file follows.
+    const briefingResolution = resolveBriefingLevel(process.env);
+    const briefingLevel = briefingResolution.level;
+    const briefingPolicy = briefingLevelPolicy(briefingLevel);
+    if (briefingResolution.invalid) {
+      const { source, value } = briefingResolution.invalid;
+      try {
+        process.stderr.write(
+          `[memesh session-start] invalid ${source} briefing level "${value}" — using "${briefingLevel}"\n`,
+        );
+      } catch { /* stderr gone */ }
+      recordHookOutcome(process.env, {
+        hook: 'session-start',
+        outcome: 'notified',
+        reason: `briefing-level: invalid ${source} value "${value}", using ${briefingLevel}`,
+      });
+    }
+    // #360 round 6 (Codex round 5 re-review, item 2): the check above only
+    // catches an unusable VALUE for one known key (`briefing`) inside an
+    // otherwise-parseable config object. A config.json that is not even
+    // that — truncated JSON, a bare array/string/number/null at the top
+    // level — used to be silently swallowed by `readHookConfig()` into an
+    // empty `{}`, so every setting in it (not just `briefing`) silently
+    // read as "not set" with no trace anywhere, while the CLI/MCP side
+    // (`core/config.ts`'s `warnUnreadable()`) already reported this exact
+    // state. `readHookConfigResult()`'s `state` is what makes it visible
+    // here too — recorded once, regardless of which settings would have
+    // been affected, since the whole document was unusable, not one field.
+    if (readHookConfigResult(process.env).state === 'unreadable') {
+      recordHookOutcome(process.env, {
+        hook: 'session-start',
+        outcome: 'notified',
+        reason: HOOK_CONFIG_UNREADABLE_REASON,
+      });
+    }
+    // The work-package notice is identical boilerplate every session (#360)
+    // — only `full` still carries it. `undefined`, not a conditional string
+    // literal at each call site: output()'s memoryContext parameter treats
+    // undefined as "nothing to add" the same way it always has.
+    // Codex round 4: read through the named predicate, not `.workPackageNotice`
+    // off the policy object directly — this file is the ONLY caller that
+    // should ever decide this (see the field comment in briefing-level.ts).
+    const workPackageNotice = sessionStartAppendsWorkPackageNotice(briefingLevel) ? WORK_PACKAGE_NOTICE : undefined;
 
     // Self-heal the citation contract.
     //
@@ -911,8 +991,23 @@ process.stdin.on('end', async () => {
         captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work',
         { skipUpdateBanner: alreadyNoticed },
       );
-      output(consent ? `${consent.system}\n${emptySummary}` : emptySummary,
-        consent ? `${consent.context}\n\n${workPackageGuidance}` : workPackageGuidance);
+      const noDbContext = consent
+        ? [consent.context, workPackageNotice].filter(Boolean).join('\n\n')
+        : workPackageNotice;
+      output(
+        consent ? `${consent.system}\n${emptySummary}` : emptySummary,
+        noDbContext,
+        // Codex round 5 re-review, item 1: nothing was injected (no notice
+        // at this level, no database to read from) — record why, the same
+        // as the schema-present empty path further down. `standard`/`full`
+        // reach this exact same branch: at `full` `noDbContext` is always
+        // truthy (the notice), so this never overrides anything for that
+        // level; at `standard` it can also be falsy here, which correctly
+        // gets the same reason (there is equally nothing to explain a
+        // silent session about, level-agnostic — matching the schema-present
+        // path's own `!memoryContext` predicate, not a `minimal`-only check).
+        !noDbContext ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'no database yet') } : null,
+      );
       if (consent) finalizeUpdatePromptClaim(data.session_id, consentVersion, consentCache?.latestVersion);
       return;
     }
@@ -939,7 +1034,15 @@ process.stdin.on('end', async () => {
         "SELECT name FROM sqlite_master WHERE type='table' AND name='entities'"
       ).get();
       if (!tableCheck) {
-        output(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet'));
+        output(
+          combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet'),
+          workPackageNotice,
+          // Codex round 5 re-review, item 1: same reason mechanism as the
+          // no-database exit above and the schema-present exit below — see
+          // `nothingToInjectReason`'s own comment for why this is not
+          // `minimal`-gated explicitly.
+          !workPackageNotice ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'database has no entities table yet') } : null,
+        );
         return;
       }
 
@@ -1074,8 +1177,11 @@ process.stdin.on('end', async () => {
       // gives them a separate render budget. The project keeps `sessionLimit`
       // slots and its full character budget. The column is absent on
       // pre-namespace schemas; then this branch is simply empty.
+      // #360: minimal/standard skip these two queries outright rather than
+      // fetch-then-not-render — the whole point of the level is to stop
+      // paying for what is not the current project.
       let globalEntities = [];
-      if (colNames.has('namespace')) {
+      if (briefingPolicy.global && colNames.has('namespace')) {
         const globalQuery = buildScoringQuery('', `WHERE e.namespace = 'global' ${statusFilter}`);
         globalEntities = db.prepare(globalQuery).all(CANDIDATE_CAP)
           .filter(entity => isTrustedForAutoContext(entity.metadata))
@@ -1086,15 +1192,18 @@ process.stdin.on('end', async () => {
       // recentStatusFilter is "WHERE status = 'active'" or "" — the bare-column
       // form is fine when there's no JOIN, but we now alias the table as `e`,
       // so rewrite to e.status for consistency.
-      const recentConditions = [
-        hasStatus ? "e.status = 'active'" : '',
-        colNames.has('namespace') ? "(e.namespace IS NULL OR e.namespace <> 'global')" : '',
-      ].filter(Boolean);
-      const recentWhere = recentConditions.length > 0 ? `WHERE ${recentConditions.join(' AND ')}` : '';
-      const recentQuery = buildScoringQuery('', recentWhere);
-      const recentEntities = db.prepare(recentQuery).all(CANDIDATE_CAP)
-        .filter(entity => isTrustedForAutoContext(entity.metadata))
-        .slice(0, 5);
+      let recentEntities = [];
+      if (briefingPolicy.foreign) {
+        const recentConditions = [
+          hasStatus ? "e.status = 'active'" : '',
+          colNames.has('namespace') ? "(e.namespace IS NULL OR e.namespace <> 'global')" : '',
+        ].filter(Boolean);
+        const recentWhere = recentConditions.length > 0 ? `WHERE ${recentConditions.join(' AND ')}` : '';
+        const recentQuery = buildScoringQuery('', recentWhere);
+        recentEntities = db.prepare(recentQuery).all(CANDIDATE_CAP)
+          .filter(entity => isTrustedForAutoContext(entity.metadata))
+          .slice(0, 5);
+      }
 
       // Lesson count (queried for summary, not listed individually).
       // Status-column gate matches the project/recent queries above —
@@ -1221,10 +1330,18 @@ process.stdin.on('end', async () => {
           .get(taskStateName(projectName));
         // SessionStart has no exact recipient identity. The shared leaf fails
         // closed before querying, so hook and briefing cannot diverge here.
+        // #360: briefingTaskStateLines downgrades a stale record to one line
+        // at EVERY level, and only consults `briefingPolicy.taskState` for a
+        // fresh one — `minimal` omits a fresh state entirely, never a stale
+        // flag. The unread-inbox line below is unconditional at every level:
+        // a message waiting for this agent is not "another project's
+        // memory", it is addressed to it.
         const stateLines = [
-          ...taskStateLines(
+          ...briefingTaskStateLines(
             parseTaskState(parseEntityMetadata(taskRow?.metadata)),
             projectName,
+            new Date(),
+            { includeFresh: briefingPolicy.taskState },
           ),
           ...unreadInboxLines(unreadDeliveryCount(db, projectName), projectName),
         ];
@@ -1284,7 +1401,14 @@ process.stdin.on('end', async () => {
       // credits a ranked one — the line carries a `[mem:id]` handle, it was
       // shown, and a cite of it must not earn nothing.
       const indexEntities = [];
-      try {
+      // #360: `minimal` skips the index query outright — unlike the durable
+      // index EXPOSED by the `briefing` tool/CLI (a separately-requestable
+      // fact about the project), nothing else in this hook reads it, so
+      // there is no reason to pay for a read whose only consumer is a
+      // section this level does not render.
+      if (!briefingPolicy.index) {
+        indexLines = [];
+      } else try {
         const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
         const indexRows = db.prepare(
           `SELECT e.id, e.name, e.type,${hasTitle ? ' e.title,' : ''} e.metadata,
@@ -1355,7 +1479,10 @@ process.stdin.on('end', async () => {
       if (memoryLines.length > 0) {
         const repoLines = repoStateLines(readRepoState(data.cwd));
         if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
-        memoryLines.push('');
+        // #360: only spacer-then-index when the index actually has lines to
+        // show (`minimal` sets indexLines = [] above) — otherwise this would
+        // leave a dangling blank line with nothing after it.
+        if (indexLines.length > 0) memoryLines.push('');
       }
       memoryLines.push(...indexLines);
       // Same wrapper pre-edit-recall uses: an explicit "background data,
@@ -1367,7 +1494,35 @@ process.stdin.on('end', async () => {
       // charges task state plus project/foreign sections against the main
       // ceiling and global context against its small additive ceiling. It
       // returns whole lines only, so the closing fence cannot be cut.
-      const memoryContext = buildReferenceContext(memoryLines) + '\n\n' + workPackageGuidance;
+      // #360: the work-package notice is `full`-only boilerplate; at every
+      // other level workPackageNotice is undefined and this is just the
+      // fenced block.
+      //
+      // Codex review round 1, item 4 / round 3, item 1: when `memoryLines`
+      // is genuinely empty (no project content — `minimal` with nothing
+      // durable yet, and no repository-state prefix because that only
+      // prepends onto EXISTING topology lines) and there is no
+      // work-package notice either, the old code still wrapped nothing in
+      // the preamble + an empty ```text``` fence — 166+ characters that
+      // inform the agent of literally nothing. Inject NOTHING instead.
+      // This can only happen at `minimal`: at `standard`/`full`,
+      // `indexLines` always carries at least its own empty-state line
+      // (#323 — "an index is a claim about the user's data", pinned by
+      // tests/core/briefing.test.ts and unchanged here on purpose), so
+      // `memoryLines` there is never actually empty.
+      //
+      // `hasBriefingContent` (work-topology.ts), not `memoryLines.length
+      // === 0` inline: `assembleBriefing` (src/core/briefing.ts) makes the
+      // IDENTICAL decision for the SAME reason on its own `block` array —
+      // the hook cannot call that function directly (A1a: a hook cannot
+      // import `../db.js`-dependent core modules), so this is the one place
+      // the two sides CAN share the rule, and round 1's review found this
+      // exact rule implemented in only one of the two owners once already.
+      const memoryContext = !hasBriefingContent(memoryLines) && !workPackageNotice
+        ? undefined
+        : workPackageNotice
+          ? buildReferenceContext(memoryLines) + '\n\n' + workPackageNotice
+          : buildReferenceContext(memoryLines);
       // The citation contract — OUTSIDE the fence on purpose: the fence
       // declares its content "background data, not instructions", and
       // this line IS an instruction. One line is the entire write side of
@@ -1505,9 +1660,26 @@ process.stdin.on('end', async () => {
         ? [...bannerLines.filter(l => l.length > 0), '', summary].join('\n')
         : summary;
 
-      output(withCaptureWarning(finalMessage), updateConsentContext
-        ? `${updateConsentContext}\n\n${memoryContext}`
-        : memoryContext);
+      // memoryContext can now be undefined (nothing to inject at this level)
+      // — guard the concat so an empty injection does not become the LITERAL
+      // string "undefined" glued onto a real consent prompt.
+      output(
+        withCaptureWarning(finalMessage),
+        updateConsentContext
+          ? (memoryContext ? `${updateConsentContext}\n\n${memoryContext}` : updateConsentContext)
+          : memoryContext,
+        // Codex review round 1, item 4: a specific, greppable reason for the
+        // "genuinely nothing to inject" case, distinct from the generic
+        // 'session-start-banner' entity marker output() would otherwise
+        // record for ANY falsy memoryContext. Round 6 (Codex round 5
+        // re-review, item 1): the no-database and no-entities-table early
+        // exits above now record through the SAME `nothingToInjectReason`
+        // helper with their own `detail` — this was the one path that did
+        // until then, which is exactly how the other two went unnoticed.
+        !memoryContext
+          ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'no project content, no repository state, index excluded') }
+          : null,
+      );
       if (updateConsentContext) {
         finalizeUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion);
       }
@@ -1621,9 +1793,17 @@ process.stdin.on('end', async () => {
  *
  * The shape is asserted by tests/helpers/hook-output-contract.ts.
  */
-const workPackageGuidance = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
+// The notice's literal text moved to `_shared.js`'s exported
+// `WORK_PACKAGE_NOTICE` (Codex round 4) — single owner, shared with the
+// test suite instead of a second hardcoded copy there.
 
-function output(text, memoryContext = workPackageGuidance, recorded = null) {
+// #360: this used to default to `WORK_PACKAGE_NOTICE` unconditionally, so
+// any call site that passed only `text` got the notice regardless of level
+// — exactly the kind of default that silently reintroduces what a level was
+// supposed to drop. Every call site now passes its memoryContext (or
+// `workPackageNotice`, already gated) explicitly; `undefined` here means
+// "this exit has nothing to add", not "fall back to the notice".
+function output(text, memoryContext = undefined, recorded = null) {
   // session-start's only effect is the context it injects, so it records
   // `notified`, not `wrote`: doctor's `writes` answers "is memory capture
   // still alive", and injected context is something this hook READ, not

@@ -6503,6 +6503,8 @@ function selectConfig(raw) {
     config2.updateCheck = raw.updateCheck;
   if (typeof raw.setupCompleted === "boolean")
     config2.setupCompleted = raw.setupCompleted;
+  if (raw.briefing !== void 0)
+    config2.briefing = raw.briefing;
   return config2;
 }
 function findRetiredConfigKeys(raw) {
@@ -6555,7 +6557,7 @@ var init_config = __esm({
   "dist/core/config.js"() {
     "use strict";
     init_paths();
-    CONFIG_KEYS = ["autoCapture", "sessionLimit", "autoUpdate", "updateCheck", "setupCompleted"];
+    CONFIG_KEYS = ["autoCapture", "sessionLimit", "autoUpdate", "updateCheck", "setupCompleted", "briefing"];
     RETIRED_CONFIG_KEYS = [
       "llm",
       "llmFallbacks",
@@ -23894,7 +23896,73 @@ function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
   }
   return lines;
 }
-var TASK_STATE_TYPE, TASK_STATE_FIELDS, MAX_FIELD_CHARS, FIELD_LABELS;
+function isLeapYear(year) {
+  return year % 4 === 0 && year % 100 !== 0 || year % 400 === 0;
+}
+function daysInMonth(year, month) {
+  return month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+}
+function isRealInstant(groups) {
+  const year = Number(groups.year);
+  const month = Number(groups.month);
+  const day = Number(groups.day);
+  const hour = Number(groups.hour);
+  const minute = Number(groups.minute);
+  const second = groups.second === void 0 ? 0 : Number(groups.second);
+  if (month < 1 || month > 12)
+    return false;
+  if (day < 1 || day > daysInMonth(year, month))
+    return false;
+  if (hour > 23)
+    return false;
+  if (minute > 59)
+    return false;
+  if (second > 59)
+    return false;
+  if (groups.zulu === void 0) {
+    const offHour = Number(groups.offHour);
+    const offMinute = Number(groups.offMinute);
+    if (offHour > 23 || offMinute > 59)
+      return false;
+    if (groups.offSign === "-" && offHour === 0 && offMinute === 0)
+      return false;
+  }
+  return true;
+}
+function resolveTaskStateAge(updatedAt, now) {
+  if (!updatedAt)
+    return { known: false };
+  const match = ZONED_INSTANT.exec(updatedAt);
+  if (!match?.groups || !isRealInstant(match.groups))
+    return { known: false };
+  const then = Date.parse(updatedAt);
+  if (Number.isNaN(then))
+    return { known: false };
+  const hours = (now.getTime() - then) / 36e5;
+  if (hours < -(CLOCK_SKEW_ALLOWANCE_MINUTES / 60))
+    return { known: false };
+  return { known: true, hours: Math.max(0, hours) };
+}
+function staleTaskStateLine(project, hours) {
+  const days = Math.floor(hours / 24);
+  const age = days >= 1 ? `${days} day${days === 1 ? "" : "s"} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? "" : "s"} ago`;
+  return `Task state for "${project}" was last stated ${age} \u2014 older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
+}
+function taskStateAgeUnknownLine(project) {
+  return `Task state for "${project}" has a missing, unreadable, or future-dated timestamp, so its age could not be established \u2014 not shown as current. Run \`memesh task\` to see or update it.`;
+}
+function briefingTaskStateLines(state, project, now = /* @__PURE__ */ new Date(), { includeFresh = true } = {}) {
+  if (isEmptyTaskState(state))
+    return [];
+  const age = resolveTaskStateAge(state.updated_at, now);
+  if (!age.known)
+    return [taskStateAgeUnknownLine(project)];
+  if (age.hours > STALE_TASK_STATE_HOURS) {
+    return [staleTaskStateLine(project, age.hours)];
+  }
+  return includeFresh ? taskStateLines(state, project, now) : [];
+}
+var TASK_STATE_TYPE, TASK_STATE_FIELDS, MAX_FIELD_CHARS, FIELD_LABELS, STALE_TASK_STATE_HOURS, CLOCK_SKEW_ALLOWANCE_MINUTES, ZONED_INSTANT, DAYS_IN_MONTH;
 var init_task_state = __esm({
   "dist/core/task-state.js"() {
     "use strict";
@@ -23907,6 +23975,10 @@ var init_task_state = __esm({
       blocked: "Blocked",
       done: "Had just finished"
     };
+    STALE_TASK_STATE_HOURS = 72;
+    CLOCK_SKEW_ALLOWANCE_MINUTES = 5;
+    ZONED_INSTANT = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt](?<hour>\d{2}):(?<minute>\d{2})(?::(?<second>\d{2})(?:\.\d+)?)?(?:(?<zulu>[Zz])|(?<offSign>[+-])(?<offHour>\d{2}):?(?<offMinute>\d{2}))$/;
+    DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   }
 });
 
@@ -24176,6 +24248,9 @@ function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_
   lines.push(...globalLines);
   return lines;
 }
+function hasBriefingContent(lines) {
+  return lines.length > 0;
+}
 function buildReferenceContext(memoryLines) {
   const safeLines = memoryLines.map((line) => String(line ?? "").replace(/[\s\u0085\u001c-\u001e]+/g, " ").trim());
   let longestRun = 0;
@@ -24379,6 +24454,85 @@ var init_briefing_index = __esm({
   }
 });
 
+// dist/core/briefing-level.js
+function isBriefingLevel(value) {
+  return typeof value === "string" && BRIEFING_LEVELS.includes(value);
+}
+function safeRawPreSlice(value, maxUnits) {
+  if (value.length <= maxUnits)
+    return value;
+  let end = maxUnits;
+  const lastKept = value.charCodeAt(end - 1);
+  const nextUnit = value.charCodeAt(end);
+  const lastKeptIsHighSurrogate = lastKept >= 55296 && lastKept <= 56319;
+  const nextUnitIsLowSurrogate = nextUnit >= 56320 && nextUnit <= 57343;
+  if (lastKeptIsHighSurrogate && nextUnitIsLowSurrogate)
+    end -= 1;
+  return value.slice(0, end);
+}
+function truncateToSerializedBound(codePoints) {
+  let kept = 0;
+  for (; kept < codePoints.length; kept++) {
+    const candidate = JSON.stringify(`${codePoints.slice(0, kept + 1).join("")}\u2026`);
+    if (candidate.length > INVALID_VALUE_SERIALIZED_MAX)
+      break;
+  }
+  return JSON.stringify(`${codePoints.slice(0, kept).join("")}\u2026`);
+}
+function describeInvalidValue(value) {
+  if (typeof value === "string") {
+    if (value.length <= INVALID_VALUE_SERIALIZED_MAX) {
+      const whole = JSON.stringify(value);
+      if (whole.length <= INVALID_VALUE_SERIALIZED_MAX)
+        return whole;
+      return truncateToSerializedBound(Array.from(value));
+    }
+    return truncateToSerializedBound(Array.from(safeRawPreSlice(value, PRE_SLICE_RAW_MAX)));
+  }
+  if (Array.isArray(value))
+    return "[array]";
+  if (value !== null && typeof value === "object")
+    return "[object]";
+  if (typeof value === "bigint")
+    return "[bigint]";
+  if (typeof value === "symbol")
+    return "[symbol]";
+  if (typeof value === "function")
+    return "[function]";
+  return JSON.stringify(value) ?? String(value);
+}
+function resolveBriefingLevel(envValue, configValue) {
+  if (envValue !== void 0) {
+    if (isBriefingLevel(envValue))
+      return { level: envValue, invalid: null };
+    return { level: DEFAULT_BRIEFING_LEVEL, invalid: { source: "env", value: describeInvalidValue(envValue) } };
+  }
+  if (configValue !== void 0) {
+    if (isBriefingLevel(configValue))
+      return { level: configValue, invalid: null };
+    return { level: DEFAULT_BRIEFING_LEVEL, invalid: { source: "config", value: describeInvalidValue(configValue) } };
+  }
+  return { level: DEFAULT_BRIEFING_LEVEL, invalid: null };
+}
+function briefingLevelPolicy(level) {
+  return POLICIES[level];
+}
+var BRIEFING_LEVELS, DEFAULT_BRIEFING_LEVEL, INVALID_VALUE_SERIALIZED_MAX, PRE_SLICE_RAW_MAX, POLICIES;
+var init_briefing_level = __esm({
+  "dist/core/briefing-level.js"() {
+    "use strict";
+    BRIEFING_LEVELS = ["minimal", "standard", "full"];
+    DEFAULT_BRIEFING_LEVEL = "standard";
+    INVALID_VALUE_SERIALIZED_MAX = 100;
+    PRE_SLICE_RAW_MAX = 256;
+    POLICIES = {
+      minimal: { global: false, foreign: false, taskState: false, index: false, workPackageNotice: false },
+      standard: { global: false, foreign: false, taskState: true, index: true, workPackageNotice: false },
+      full: { global: true, foreign: true, taskState: true, index: true, workPackageNotice: true }
+    };
+  }
+});
+
 // dist/core/briefing.js
 function parseMetadata(raw) {
   if (!raw)
@@ -24444,10 +24598,23 @@ function readBriefingIndex(db2, projectName, now = Date.now()) {
 function assembleBriefing(project, recipient) {
   const projectName = project ?? getProjectName();
   const db2 = getDatabase();
+  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
+  if (resolvedLevel.invalid) {
+    const { source, value } = resolvedLevel.invalid;
+    try {
+      process.stderr.write(`[memesh briefing] invalid ${source} briefing level "${value}" \u2014 using "${resolvedLevel.level}"
+`);
+    } catch {
+    }
+  }
+  const level = resolvedLevel.level;
+  const policy = briefingLevelPolicy(level);
   const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
   let taskLines;
   try {
-    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
+    taskLines = briefingTaskStateLines(getTaskState(projectName).state, projectName, /* @__PURE__ */ new Date(), {
+      includeFresh: policy.taskState
+    });
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError))
       throw err;
@@ -24468,17 +24635,17 @@ function assembleBriefing(project, recipient) {
      ORDER BY e.id DESC
      LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
   const projectPool = selectPool(projectRows, PROJECT_LIMIT);
-  const globalRows = hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+  const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
        WHERE e.namespace = 'global' AND e.status = 'active'
        ORDER BY e.id DESC
        LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
   const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
-  const recentRows = db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
-     FROM entities e
-     WHERE e.status = 'active'${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP);
+  const recentRows = policy.foreign ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+       FROM entities e
+       WHERE e.status = 'active'${nonGlobal}
+       ORDER BY e.id DESC
+       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
   const recentPool = selectPool(recentRows, RECENT_LIMIT);
   const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
   const snippets = /* @__PURE__ */ new Map();
@@ -24503,13 +24670,17 @@ function assembleBriefing(project, recipient) {
   ], projectName);
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
   const index = readBriefingIndex(db2, projectName);
-  const block = withRepo.length > 0 ? [...withRepo, "", ...index.lines] : index.lines;
+  const indexLines = policy.index ? index.lines : [];
+  const block = withRepo.length > 0 && indexLines.length > 0 ? [...withRepo, "", ...indexLines] : [...withRepo, ...indexLines];
+  const empty = !hasBriefingContent(block);
   return {
     project: projectName,
-    text: buildReferenceContext(block),
+    text: empty ? "" : buildReferenceContext(block),
     entityCount: lines.filter((l) => l.startsWith("- [")).length,
     hasTaskState: stateLines.length > 0,
-    index
+    index,
+    level,
+    empty
   };
 }
 var PROJECT_LIMIT, RECENT_LIMIT, CANDIDATE_COLUMNS;
@@ -24518,6 +24689,7 @@ var init_briefing = __esm({
     "use strict";
     init_db();
     init_paths();
+    init_config();
     init_repo_state();
     init_scoring();
     init_task_state_store();
@@ -24526,6 +24698,7 @@ var init_briefing = __esm({
     init_task_state();
     init_briefing_index();
     init_work_topology();
+    init_briefing_level();
     PROJECT_LIMIT = 30;
     RECENT_LIMIT = 5;
     CANDIDATE_COLUMNS = "e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses";
@@ -25841,7 +26014,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_briefing",
-        description: "The assembled work topology for a project: where the work was left off, decisions, lessons, knowledge, recent activity. Call once at the start of a session to load project context.",
+        description: "The assembled work topology for a project: where the work was left off (by default), decisions, lessons, knowledge, recent activity. Call once at the start of a session to load project context.",
         parameters: {
           type: "object",
           properties: {
@@ -58430,7 +58603,7 @@ MeMesh HTTP: bearer token generated for remote access.
 function __setRemoteTokenForTest(value) {
   remoteToken = value;
 }
-var import_express, packageJsonPath, packageRoot, packageVersion, app, apiLimiter, remoteToken, serverAuthRequired, CROSS_SITE_REFUSAL, DoctorFixBody, HttpError, ConfigBody, TaskStateQuerySchema, DreamProposalsQuerySchema, RejectBodySchema, EntitiesQuerySchema, HOST, PORT, ALLOW_REMOTE_BY_ENV, isMain, shutdown;
+var import_express, packageJsonPath, packageRoot, packageVersion, app, apiLimiter, remoteToken, serverAuthRequired, CROSS_SITE_REFUSAL, DoctorFixBody, HttpError, ConfigReadBody, ConfigBody, TaskStateQuerySchema, DreamProposalsQuerySchema, RejectBodySchema, EntitiesQuerySchema, HOST, PORT, ALLOW_REMOTE_BY_ENV, isMain, shutdown;
 var init_server = __esm({
   "dist/transports/http/server.js"() {
     "use strict";
@@ -58441,6 +58614,7 @@ var init_server = __esm({
     init_operations();
     init_knowledge_graph();
     init_config();
+    init_briefing_level();
     init_doctor_fixes();
     init_patterns();
     init_analytics();
@@ -58640,14 +58814,22 @@ var init_server = __esm({
         limit: data.limit
       });
     }));
+    ConfigReadBody = external_exports.object({
+      autoCapture: external_exports.boolean().optional(),
+      sessionLimit: external_exports.number().int().min(1).max(100).optional(),
+      autoUpdate: external_exports.enum(["off", "patch", "minor", "major"]).optional(),
+      setupCompleted: external_exports.boolean().optional(),
+      briefing: external_exports.unknown().optional()
+    }).strip();
     app.get("/v1/config", (_req, res) => handleGet(res, () => ({
-      config: ConfigBody.strip().parse(readConfig())
+      config: ConfigReadBody.parse(readConfig())
     })));
     ConfigBody = external_exports.object({
       autoCapture: external_exports.boolean().optional(),
       sessionLimit: external_exports.number().int().min(1).max(100).optional(),
       autoUpdate: external_exports.enum(["off", "patch", "minor", "major"]).optional(),
-      setupCompleted: external_exports.boolean().optional()
+      setupCompleted: external_exports.boolean().optional(),
+      briefing: external_exports.enum(BRIEFING_LEVELS).optional()
     }).strict();
     app.post("/v1/config", (req, res) => handlePost(ConfigBody, req, res, (data) => ConfigBody.strip().parse(updateConfig(data))));
     app.get("/v1/update-status", (req, res) => handleGet(res, async () => {
@@ -60431,6 +60613,7 @@ function summarizeNoteIngest(r) {
 
 // dist/transports/cli/cli.js
 init_briefing();
+init_briefing_level();
 init_work_topology();
 
 // dist/core/session-insight.js
@@ -61750,7 +61933,7 @@ agentCmd.command("setup").argument("<host>", "codex-session | codex | claude | g
     ]
   ].join("\n"));
 });
-program2.command("briefing").description("The assembled work topology for a project \u2014 task state, decisions, lessons, knowledge, recent activity").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--index", "Only the index of durable memories (decisions, lessons, patterns, references), newest first").option("--json", "Output as JSON").action(async (opts) => {
+program2.command("briefing").description("The assembled work topology for a project \u2014 decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full (the `briefing` setting)").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--index", "Only the index of durable memories (decisions, lessons, patterns, references), newest first").option("--json", "Output as JSON").action(async (opts) => {
   await withDatabase(() => {
     if (opts.index) {
       const project = opts.project ?? getProjectName();
@@ -61765,6 +61948,10 @@ program2.command("briefing").description("The assembled work topology for a proj
     const result = assembleBriefing(opts.project, opts.recipient);
     if (opts.json) {
       console.log(JSON.stringify(result));
+      return;
+    }
+    if (result.empty) {
+      console.log(`Nothing to brief at level ${result.level} \u2014 no project memories yet.`);
       return;
     }
     console.log(result.text);
@@ -61992,23 +62179,24 @@ configCmd.command("list").description("Show current configuration").action(() =>
       console.log(`  ${key}: ${value}`);
   }
 });
-var ALLOWED_KEYS = /* @__PURE__ */ new Set(["autoUpdate", "sessionLimit", "autoCapture", "updateCheck"]);
+var ALLOWED_KEYS = /* @__PURE__ */ new Set(["autoUpdate", "sessionLimit", "autoCapture", "updateCheck", "briefing"]);
 var KEY_VALIDATORS = {
   autoUpdate: (v) => ["off", "patch", "minor", "major"].includes(v) ? null : "must be one of: off, patch, minor, major",
   autoCapture: (v) => ["true", "false", "1", "0"].includes(v) ? null : "must be one of: true, false, 1, 0",
-  updateCheck: (v) => ["true", "false", "1", "0"].includes(v) ? null : "must be one of: true, false, 1, 0"
+  updateCheck: (v) => ["true", "false", "1", "0"].includes(v) ? null : "must be one of: true, false, 1, 0",
+  briefing: (v) => BRIEFING_LEVELS.includes(v) ? null : `must be one of: ${BRIEFING_LEVELS.join(", ")}`
 };
 function buildConfigListing(config2) {
   const rows = [];
   for (const key of Array.from(ALLOWED_KEYS).sort()) {
     const raw = config2[key];
-    if (raw === void 0 || raw === null)
+    if (raw === void 0)
       continue;
     rows.push({ key, value: String(raw) });
   }
   return rows;
 }
-configCmd.command("set").description("Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value").action((key, value) => {
+configCmd.command("set").description("Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck, briefing)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value").action((key, value) => {
   const canonical = key;
   if (!ALLOWED_KEYS.has(canonical)) {
     console.error(`Unknown key: ${key}`);

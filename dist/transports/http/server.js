@@ -7,6 +7,7 @@ import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
+import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
@@ -444,14 +445,22 @@ app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => 
         limit: data.limit,
     });
 }));
+const ConfigReadBody = z.object({
+    autoCapture: z.boolean().optional(),
+    sessionLimit: z.number().int().min(1).max(100).optional(),
+    autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
+    setupCompleted: z.boolean().optional(),
+    briefing: z.unknown().optional(),
+}).strip();
 app.get('/v1/config', (_req, res) => handleGet(res, () => ({
-    config: ConfigBody.strip().parse(readConfig()),
+    config: ConfigReadBody.parse(readConfig()),
 })));
 const ConfigBody = z.object({
     autoCapture: z.boolean().optional(),
     sessionLimit: z.number().int().min(1).max(100).optional(),
     autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
     setupCompleted: z.boolean().optional(),
+    briefing: z.enum(BRIEFING_LEVELS).optional(),
 }).strict();
 app.post('/v1/config', (req, res) => handlePost(ConfigBody, req, res, (data) => ConfigBody.strip().parse(updateConfig(data))));
 app.get('/v1/update-status', (req, res) => handleGet(res, async () => {

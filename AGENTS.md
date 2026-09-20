@@ -9,10 +9,29 @@ host is recallable from all of them. Not installed yet? Follow
 
 1. **Session start — load, don't re-explore.** Call the `briefing` tool once
    (CLI: `memesh briefing`). It returns the assembled work topology for the
-   current project: goal / next / blocked / done, decisions, lessons,
-   knowledge, recent activity, and — closing the block — a capped index of
-   recent durable memories, one line each with its `[mem:id]` handle
-   (`memesh briefing --index` prints just that). The index is a recent
+   current project: decisions, lessons, knowledge and recent activity are
+   always included; the stated goal / next / blocked / done and the capped
+   durable-memory index (`memesh briefing --index` prints just that, one
+   line each with its `[mem:id]` handle) are added at `standard` (the
+   default) and up. How much is assembled depends on the `briefing` setting
+   — `minimal` (this project only: repository state, decisions, lessons,
+   knowledge, recent activity — nothing else), `standard` (+ the task state
+   when fresh, + the durable-memory index — **default**), `full` (+ global
+   memory + other projects' recent activity, the pre-#360 memory-block
+   behaviour — except when the task state itself is stale or of unknown
+   age, where the one-line replacement below applies at `full` too) — set
+   with `memesh config set briefing <level>`. The SessionStart hook
+   additionally appends a work-package notice at `full` (see below); that
+   notice is a host-agent instruction, not memory, and this tool never
+   includes it, at any level. A
+   goal/next/blocked/done stated more than 72 hours ago, or whose timestamp
+   is missing/unreadable/implausibly future-dated, is not injected as
+   current at any level — only one line saying so and how to see it
+   (`memesh task`). Only `minimal` can be fully silent on a project with
+   nothing yet (no task state, no index to fall back to, so nothing
+   injected at all — no empty framing); `standard`/`full` still show the
+   index's own "no durable memories yet" line even then, because that line
+   is itself informative. The index is a recent
    window, not everything: it holds at most 40 lines / 3072 bytes, memories
    untouched for 180 days collapse into a single count line with no
    `[mem:id]`, and whatever else is cut past those caps becomes an
@@ -21,8 +40,12 @@ host is recallable from all of them. Not installed yet? Follow
    more, call `recall` rather than assuming the index already covers it.
    Read the index instead of re-reading the repo to reconstruct context.
 2. **When the user states a goal, a next step, or a blocker — record it.**
-   Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`). It
-   is injected at the start of the next session and acted on as fact.
+   Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`).
+   Fresh state is injected at the start of the next session at
+   `standard`/`full` (the default and above) and acted on as fact;
+   `minimal` never shows a fresh state, but a stale or unknown-age one
+   still gets a one-line flag at every level — `memesh task` always shows
+   the complete stored state.
    - An empty string **clears** a field: pass `blocked: ""` (CLI:
      `memesh task --blocked ""`) once a blocker is resolved.
    - **Record only what the user actually said.** Never infer goal / next /
@@ -66,7 +89,7 @@ host is recallable from all of them. Not installed yet? Follow
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
 | `learn` | Record a structured lesson: error, root cause, fix, prevention |
 | `task_state` | Read or update where the work stands: goal / next / blocked / done |
-| `briefing` | The assembled work topology, closing with a capped index of the project's durable memories; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology, closing, by default, with a capped index of the project's durable memories (the `briefing` setting — `minimal` / `standard` / `full` — controls how much is assembled); exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition |
@@ -118,8 +141,10 @@ host is recallable from all of them. Not installed yet? Follow
 
 Under Claude Code with the MeMesh plugin, hooks capture automatically:
 
-- **SessionStart** injects the work topology (the same block `briefing`
-  returns) at the top of the session.
+- **SessionStart** injects the work topology (the same memory block
+  `briefing` returns, plus a work-package notice at `full` that `briefing`
+  never includes) at the top of the session, whenever the configured level
+  has something to show; an empty project at `minimal` injects nothing.
 - **PreToolUse (Edit|Write)** surfaces memories related to the file being
   edited.
 - **PostToolUse (Bash)** records git commits with diff stats.
