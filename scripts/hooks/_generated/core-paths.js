@@ -100,6 +100,10 @@ function tryGit(cwd, args) {
         return null;
     }
 }
+export function gitRepoRoot(cwdInput) {
+    const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+    return tryGit(cwd, ['rev-parse', '--show-toplevel']);
+}
 export function canonicalRemoteLocator(remote) {
     const value = remote.trim();
     if (!value)

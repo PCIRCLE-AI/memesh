@@ -43,8 +43,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "57b5bd9aae216fb5cf9e74e2c1222f1600fbf63a815f90a34f0ced1eced7d8cc",
-      "bytes": 17386
+      "sha256": "2c7a6a5e0a6f7543cf9ef9a0d953f927a2dac46a1699c6571f7a596ae381c6b0",
+      "bytes": 17477
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -53,13 +53,13 @@
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "db8c6f99c2782448021f395dd5819426fdbd6db6859452b35fa40661b540f0e5",
-      "bytes": 8342
+      "sha256": "5650b621485e0b2b0900fc2dd62eb9035f38aaab13fd16e66a0bdae278c76a97",
+      "bytes": 8518
     },
     {
       "path": "scripts/hooks/_generated/fts-index.js",
-      "sha256": "c6134e5cff944b86903859b789a3f1273df36d232ed219288fe4648a72e2b63f",
-      "bytes": 4094
+      "sha256": "16f7539aab5974da7bc88c585d4e8fc1f40a07843ea2cf63c56bcf15bf46cf02",
+      "bytes": 4268
     },
     {
       "path": "scripts/hooks/_generated/guards.js",
@@ -108,8 +108,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "4879bc2a2369a67bd555b85b1d85e88398063733bdcbc37e9eca69b1a6db1c5a",
-      "bytes": 63711
+      "sha256": "58605729fee4bd4537b197c271b6e9268c4ebee709aeffb3aedd7be9008efb2b",
+      "bytes": 87433
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -143,8 +143,8 @@
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "9ce324a1f5c9db42b1299fd28ac8b2fff53fdc290c8fe2feb2178d33203855dc",
-      "bytes": 15388
+      "sha256": "9fe616c2004f476e33577870eeb2dba706af4a995f490614768609b42935d74b",
+      "bytes": 34584
     },
     {
       "path": "scripts/hooks/session-start.js",

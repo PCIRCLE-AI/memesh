@@ -54,6 +54,11 @@ const LONE_UNSPACED_CHAR = new RegExp(`[${UNSPACED_SCRIPT_CLASS}]`, 'u');
 export function isLoneUnspacedChar(term) {
     return [...term].length === 1 && LONE_UNSPACED_CHAR.test(term);
 }
+export function renderPhraseExpression(terms) {
+    if (terms.length === 0)
+        return null;
+    return `"${terms.map((term) => term.replace(/"/g, '""')).join(' ')}"`;
+}
 function foldTitleIntoObservations(title, observationsText) {
     return title ? `${title} ${observationsText}` : observationsText;
 }

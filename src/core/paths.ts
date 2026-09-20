@@ -215,6 +215,23 @@ function tryGit(cwd: string, args: string[]): string | null {
 }
 
 /**
+ * The git repository root containing `cwd`, or `null` when there is none —
+ * a missing git binary, a non-repo directory, or a path that does not exist
+ * all answer `null` here, same as everywhere else in this file.
+ *
+ * `scripts/hooks/pre-edit-recall.js` uses this for two things that both need
+ * the ACTUAL root path, not just a yes/no: deciding whether to scope memory
+ * recall by the edited file's own project or fall back to the session's cwd
+ * (#358), and computing the edited file's path relative to its repo root for
+ * the literal-confirmation path-suffix check (#358 round 3 item 3). One git
+ * call serves both.
+ */
+export function gitRepoRoot(cwdInput?: string | null): string | null {
+  const cwd = cwdInput && cwdInput.length > 0 ? cwdInput : process.cwd();
+  return tryGit(cwd, ['rev-parse', '--show-toplevel']);
+}
+
+/**
  * Canonicalize a network git remote without retaining a password.
  *
  * Only standard GitHub HTTPS and `git@github.com` SSH spellings are known to

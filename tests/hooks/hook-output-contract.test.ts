@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'child_process';
+import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -24,6 +25,24 @@ import {
   HOOK_SPECIFIC_OUTPUT_EVENTS,
 } from '../helpers/hook-output-contract.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+
+const require = createRequire(import.meta.url);
+const { getProjectName } = require('../../scripts/hooks/_shared.js');
+
+// pre-edit-recall derives its project tag from the EDITED FILE's own
+// directory when that is inside a git repo, falling back to `cwd` otherwise
+// (#358 AC3). `/tmp/contract-project/src` is not a repo, so the fallback
+// applies — but the fallback tag is `getProjectName(cwd)`, which ALWAYS
+// carries a content hash suffix (see `projectIdentity` in src/core/paths.ts);
+// it is never the bare directory name. A literal seed tag of
+// `project:contract-project` therefore never actually matched, Strategy 1
+// found nothing, Strategy 2 found nothing (same project filter), the hook
+// emitted empty output, and the contract check passed VACUOUSLY on it — this
+// hookCase never once exercised the `additionalContext` shape it exists to
+// validate (#358 round 3 item 5, reported and reproduced). Computed through
+// the hook's own helper so the seed and the hook cannot independently drift.
+const CONTRACT_CWD = '/tmp/contract-project';
+const CONTRACT_PROJECT_TAG = `project:${getProjectName(CONTRACT_CWD)}`;
 
 interface HookCase {
   /** Filename under scripts/hooks/ */
@@ -64,18 +83,22 @@ const HOOK_CASES: HookCase[] = [
     boundEvent: 'PreToolUse',
     input: {
       session_id: 'contract-1',
-      cwd: '/tmp/contract-project',
+      cwd: CONTRACT_CWD,
       hook_event_name: 'PreToolUse',
       tool_name: 'Edit',
-      tool_input: { file_path: '/tmp/contract-project/src/auth.ts' },
+      tool_input: { file_path: `${CONTRACT_CWD}/src/auth.ts` },
     },
     // Without a matching memory the hook emits nothing and the contract check
-    // is vacuous. This entity (file:auth tag + the cwd's project tag) makes
-    // Strategy 1 fire so the real additionalContext payload is validated.
+    // is vacuous. This entity (file:auth.ts tag + the REAL project tag the
+    // hook derives, see CONTRACT_PROJECT_TAG above) makes Strategy 1 fire so
+    // the real additionalContext payload is validated. Must be the FULL
+    // basename, not the stem: pre-edit-recall's Strategy 1 matches the exact
+    // `file:<basename>` tag only (#358 round 2) — a bare `file:auth` tag
+    // would not match editing `auth.ts`.
     seed: [{
       name: 'auth-decision',
       type: 'decision',
-      tags: ['file:auth', 'project:contract-project'],
+      tags: ['file:auth.ts', CONTRACT_PROJECT_TAG],
       obs: 'Use OAuth PKCE for the auth flow',
     }],
   },
@@ -304,6 +327,25 @@ describe('Feature: Claude Code hook-output contract', () => {
       expect(hso.hookEventName).toBe(hookCase.boundEvent);
     });
   }
+
+  it('Scenario: pre-edit-recall.js actually injects the seeded memory, not a vacuous empty pass (#358 round 3 item 5)', () => {
+    // The two tests in the loop above only check SHAPE — an empty payload is
+    // shape-valid (a hook is allowed to say nothing), so a mis-tagged seed
+    // that makes the hook find nothing passes them without ever exercising
+    // the `additionalContext` branch this whole file exists to validate.
+    // This test checks CONTENT specifically for the one hookCase whose seed
+    // already broke that way once (CONTRACT_PROJECT_TAG above).
+    const hookCase = HOOK_CASES.find((c) => c.file === 'pre-edit-recall.js');
+    if (!hookCase) throw new Error('pre-edit-recall.js hookCase not found');
+    const { stdout, status, stderr } = runHook(hookCase);
+    expect(status, `pre-edit-recall.js exited ${status}\n${stderr}`).toBe(0);
+    const result = validateHookOutput(stdout);
+    expect(result.valid, `stdout was not contract-valid: ${JSON.stringify(result.errors)}`).toBe(true);
+    const additionalContext = (result.parsed as any)?.hookSpecificOutput?.additionalContext;
+    expect(additionalContext, 'pre-edit-recall.js emitted no additionalContext — the seed likely does not match its real project tag').toBeTruthy();
+    expect(additionalContext).toContain('auth-decision');
+    expect(additionalContext).toContain('Use OAuth PKCE for the auth flow');
+  });
 
   it('Scenario: PreCompact has no hookSpecificOutput variant (regression guard for #53)', () => {
     expect(HOOK_SPECIFIC_OUTPUT_EVENTS).not.toHaveProperty('PreCompact');
