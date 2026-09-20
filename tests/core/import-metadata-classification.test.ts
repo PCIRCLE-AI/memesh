@@ -372,7 +372,11 @@ function scrapeMetadataKeys(root: string = repoRoot): Map<string, Set<string>> {
   }
 
   for (const abs of sourceFiles(root)) {
-    const rel = path.relative(root, abs);
+    // Repo-relative with `/` on every platform: SCRAPE_NOISE and the
+    // assertions below name files that way, and `path.relative` answers with
+    // `\` on Windows — where every (key, file) exclusion silently stopped
+    // matching and the walk looked as if it never reached its directories.
+    const rel = path.relative(root, abs).split(path.sep).join('/');
     const src = fs.readFileSync(abs, 'utf8');
 
     for (const m of src.matchAll(sqlPattern)) add(m[1], rel);
