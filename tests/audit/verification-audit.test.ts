@@ -44,7 +44,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { devNull, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REPO_ROUTING_GIT_VARS, _resetWarningsForTest, filterIgnored } from '../../scripts/lib/git-ignored-paths.mjs';
@@ -71,8 +71,11 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
  * "gpg failed to sign the data" and ran the hook's own marker line on
  * stderr, before this env was applied. `GIT_CONFIG_NOSYSTEM` alone does not
  * cover a `GIT_CONFIG_GLOBAL` override some shells already export, so both
- * `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are also pointed at the
- * platform's null device.
+ * `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` are also pointed at a real,
+ * EMPTY file this test file creates (`EMPTY_GIT_CONFIG`). Not the null
+ * device: git for Windows refuses it as a config path (`fatal: unable to
+ * access '\\.\nul': Invalid argument` — seen on the windows-latest CI leg),
+ * while an empty regular file means the same thing on every platform.
  *
  * Config FILES are not the only way in. `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`/
  * `GIT_CONFIG_VALUE_n` inject config from the environment with a priority
@@ -83,6 +86,13 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
  * count is pinned to 0, the template variable is removed, and `git init`
  * is given an explicit empty `--template=`.
  */
+const EMPTY_GIT_CONFIG_DIR = mkdtempSync(path.join(tmpdir(), 'verification-audit-gitconfig-'));
+const EMPTY_GIT_CONFIG = path.join(EMPTY_GIT_CONFIG_DIR, 'empty.gitconfig');
+writeFileSync(EMPTY_GIT_CONFIG, '');
+afterAll(() => {
+  rmSync(EMPTY_GIT_CONFIG_DIR, { recursive: true, force: true });
+});
+
 function buildTempRepoGitEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   // Start from NO inherited git variable at all, rather than chasing them one
   // at a time: besides the two above, `GIT_CONFIG_PARAMETERS` injects config
@@ -96,8 +106,8 @@ function buildTempRepoGitEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     if (!key.toUpperCase().startsWith('GIT_')) env[key] = value;
   }
   env.GIT_CONFIG_NOSYSTEM = '1';
-  env.GIT_CONFIG_GLOBAL = devNull;
-  env.GIT_CONFIG_SYSTEM = devNull;
+  env.GIT_CONFIG_GLOBAL = EMPTY_GIT_CONFIG;
+  env.GIT_CONFIG_SYSTEM = EMPTY_GIT_CONFIG;
   env.GIT_CONFIG_COUNT = '0';
   return env;
 }
@@ -147,8 +157,9 @@ describe('Feature: git variables inherited from the caller cannot re-route or re
     const gitKeys = Object.keys(env).filter((key) => key.toUpperCase().startsWith('GIT_')).sort();
     expect(gitKeys).toEqual(['GIT_CONFIG_COUNT', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM', 'GIT_CONFIG_SYSTEM']);
     expect(env.GIT_CONFIG_COUNT).toBe('0');
-    expect(env.GIT_CONFIG_GLOBAL).toBe(devNull);
-    expect(env.GIT_CONFIG_SYSTEM).toBe(devNull);
+    expect(env.GIT_CONFIG_GLOBAL).toBe(EMPTY_GIT_CONFIG);
+    expect(env.GIT_CONFIG_SYSTEM).toBe(EMPTY_GIT_CONFIG);
+    expect(readFileSync(EMPTY_GIT_CONFIG, 'utf8')).toBe(''); // a real file, and really empty
     expect(env.PATH).toBe('/usr/bin'); // everything that is not git's is kept
     expect(env.HOME).toBe('/home/someone');
   });
@@ -542,6 +553,11 @@ function runAudit(cwd: string): { code: number | null; stdout: string; stderr: s
  * register `it.skip` instead of a test that would fail for a reason
  * unrelated to what it is checking.
  */
+/** Repo-relative with `/` on every platform — `path.relative` yields `\\` on Windows. */
+function repoRelativePosix(file: string): string {
+  return path.relative(repoRoot, file).split(path.sep).join('/');
+}
+
 function symlinksSupported(): boolean {
   const dir = mkdtempSync(path.join(tmpdir(), 'symlink-probe-'));
   try {
@@ -793,7 +809,7 @@ describe('Feature: no *.test.{ts,tsx,mjs} file contains the literal HEAD-colon s
   }
 
   it("includes scripts/verify.test.mjs and scripts/lib/verify-core.test.mjs — the required 'SDLC verify' job's own test files, not just tests/", () => {
-    const relPaths = listTestFilesInRepo().map((f) => path.relative(repoRoot, f));
+    const relPaths = listTestFilesInRepo().map(repoRelativePosix);
     expect(relPaths).toContain('scripts/verify.test.mjs');
     expect(relPaths).toContain('scripts/lib/verify-core.test.mjs');
   });
@@ -802,7 +818,7 @@ describe('Feature: no *.test.{ts,tsx,mjs} file contains the literal HEAD-colon s
     const offenders: string[] = [];
     for (const file of listTestFilesInRepo()) {
       const stripped = stripComments(readFileSync(file, 'utf8'), file);
-      if (stripped.includes(HEAD_REF_NEEDLE)) offenders.push(path.relative(repoRoot, file));
+      if (stripped.includes(HEAD_REF_NEEDLE)) offenders.push(repoRelativePosix(file));
     }
     expect(offenders).toEqual([]);
   });
