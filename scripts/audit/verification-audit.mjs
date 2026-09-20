@@ -22,6 +22,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { stripComments } from '../lib/reference-corpus.mjs';
+import { filterIgnored } from '../lib/git-ignored-paths.mjs';
 import { fileURLToPath } from 'node:url';
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -34,16 +35,36 @@ if (unknownArgs.length) {
 }
 const pruneStale = args.includes('--prune-stale');
 
-function walk(dir, exts, out = []) {
+function walkRaw(dir, exts, out = []) {
   const full = path.join(REPO, dir);
   if (!fs.existsSync(full)) return out;
   for (const e of fs.readdirSync(full, { withFileTypes: true })) {
     if (e.name === 'node_modules' || e.name === 'dist' || e.name === '.git' || e.name === 'coverage') continue;
     const rel = path.posix.join(dir, e.name);
-    if (e.isDirectory()) walk(rel, exts, out);
+    if (e.isDirectory()) walkRaw(rel, exts, out);
     else if (exts.some(x => e.name.endsWith(x))) out.push(rel);
   }
   return out;
+}
+
+// The tree, not the working copy. `walkRaw` is a plain filesystem crawl with
+// no git awareness, so on a machine that keeps the departed SDLC-loop files
+// on disk as maintainer-local, git-ignored tooling (scripts/sdlc/, evals/,
+// intent/, docs/sdlc/, docs/specs/, docs/plans/, the sdlc-*.yml workflows,
+// REVIEW.md — none of it tracked here any more, all of it still on disk),
+// every detector below would still see those files, find no baseline entry
+// for them (correctly — they are not in the repository), and fail
+// permanently on that one machine while staying green on every fresh clone
+// and in CI. Filtering here makes the verdict depend on the tree and the
+// machine's own git ignore rules, not on whatever untracked local files
+// happen to be sitting in the working copy — the same guarantee treeHash()
+// (scripts/lib/verify-core.mjs) gives receipts. A path that is actually in
+// the repository (the index) is never dropped by this filter regardless of
+// any exclude rule, so a machine-local exclude can only make one developer's
+// own run scan less than CI, never CI less (scripts/lib/git-ignored-paths.mjs
+// has the full reasoning).
+function walk(dir, exts) {
+  return filterIgnored(walkRaw(dir, exts), { cwd: REPO });
 }
 
 /**
@@ -240,8 +261,14 @@ function record(cls, denominator, hits, note) {
 
 /* ---- C7: numeric claims in English living prose ---------------------------- */
 {
-  const files = ['README.md', ...walk('docs', ['.md'])]
-    .filter(f => !f.startsWith('docs/internal/') && !f.startsWith('docs/plans/'));
+  // No `docs/internal/`/`docs/plans/` filter here any more: both are
+  // git-ignored (.gitignore), so `walk()` already drops every path under
+  // them before this block runs — confirmed with
+  // `git check-ignore -q --no-index docs/internal/x.md` and
+  // `docs/plans/x.md`, both exit 0. A hand-written prefix filter duplicating
+  // what `walk()` now does unconditionally would just be one more place for
+  // the two lists to drift apart.
+  const files = ['README.md', ...walk('docs', ['.md'])];
   const GATED = [/\d+ endpoints/, /\d+ tools via MCP/, /\d+ hooks/, /\d+ tools\)/, /\d+ languages?:/, /\d+ tabs, \d+ languages/, /\(\d+%\)/, /\b\d+% \+/];
   const EXTERNAL = /paper|Vendor|self-report|estimate/i;
   const hits = [];

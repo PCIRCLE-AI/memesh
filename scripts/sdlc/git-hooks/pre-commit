@@ -1,8 +1,0 @@
-#!/bin/sh
-# sdlc-loop git gate (pre-commit): installed by scripts/sdlc/install-git-hooks.mjs
-root="$(git rev-parse --show-toplevel)"
-if [ ! -f "$root/scripts/sdlc/git-gate.mjs" ]; then
-  echo "sdlc git gate: scripts/sdlc/git-gate.mjs is not on this branch; commit allowed" >&2
-  exit 0
-fi
-exec node "$root/scripts/sdlc/git-gate.mjs" commit

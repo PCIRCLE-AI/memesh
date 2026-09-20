@@ -93,3 +93,69 @@ describe('Feature: .gitignore keeps secrets out of the benchmark subtree', () =>
     expect(gitignore).not.toMatch(/^!benchmarks\/.*\*\*/m);
   });
 });
+
+describe('Feature: maintainer-local development-tooling patterns are anchored to the repository root', () => {
+  // `intent/`, `evals/`, `sdlc/`, `.claude/`, `REVIEW.md` and `CLAUDE.local.md`
+  // (no leading `/`, no internal `/`) match a name at ANY depth, not just at
+  // the repo root. `intent` is already a product term
+  // (scripts/hooks/user-prompt-intent.js), `benchmarks/longmemeval/` shows
+  // nested data directories are a real shape this repo grows, and the
+  // product installs hooks into `.claude/` (a `tests/fixtures/.claude/`
+  // fixture would silently vanish from `git status` and from the tree
+  // `.verify/receipt.json` binds to — the required `SDLC verify` check would
+  // stay green over a tree missing the very file the change added).
+  //
+  // NOT included here: `benchmarks/evals/...`. That path IS ignored, but by
+  // the separate, pre-existing, deliberately-designed `benchmarks/*` +
+  // `!benchmarks/<name>/` allow-list two blocks above (verified: it ignores
+  // `benchmarks/anything/` identically, with or without this describe block's
+  // patterns). Asserting it here would test that unrelated rule, not this one.
+  it.each([
+    'src/intent/foo.ts',
+    'src/memory/intent/classifier.ts',
+    'skills/intent/SKILL.md',
+    'tests/evals/foo.test.ts',
+    'src/sdlc/mod.ts',
+    'dashboard/src/sdlc/x.tsx',
+    'packages/core/REVIEW.md',
+    'src/REVIEW.md',
+    'src/hooks/CLAUDE.local.md',
+    'tests/fixtures/.claude/settings.json',
+    // The five departed workflow files are now named explicitly in
+    // .gitignore, not matched by a `sdlc-*.yml` glob — a future PUBLIC
+    // workflow that happens to start with `sdlc-` must stay trackable.
+    '.github/workflows/sdlc-verify.yml',
+    '.github/workflows/sdlc-anything-new.yml',
+  ])('does not ignore the ordinary source path %s', (candidate) => {
+    expect(isIgnored(candidate)).toBe(false);
+  });
+
+  it('still ignores the maintainer-local paths at the repository root', () => {
+    // The other direction, same reason as the benchmarks pair above: a fix
+    // that un-ignores everything named `intent` or `sdlc` anywhere is not a
+    // fix — the root-level maintainer-local tree must stay ignored.
+    for (const p of [
+      '.claude/settings.json',
+      'CLAUDE.local.md',
+      'scripts/sdlc/lib.mjs',
+      'sdlc/config.json',
+      'evals/README.md',
+      'intent/README.md',
+      'docs/sdlc/LOOP.md',
+      'docs/specs/README.md',
+      'docs/plans/README.md',
+      'REVIEW.md',
+      // The five workflow files .gitignore now names explicitly — see the
+      // comment above them for why this replaced a `sdlc-*.yml` glob.
+      '.github/workflows/sdlc-evals.yml',
+      '.github/workflows/sdlc-loop.yml',
+      '.github/workflows/sdlc-monitor.yml',
+      '.github/workflows/sdlc-release.yml',
+      '.github/workflows/sdlc-review.yml',
+      '.verify/receipt.json',
+      '.sdlc-run/foo.json',
+    ]) {
+      expect(isIgnored(p)).toBe(true);
+    }
+  });
+});

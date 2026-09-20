@@ -599,47 +599,12 @@
     "C3 npm:verify:journeys": {
       "class": "NOT-A-GATE",
       "reason": "Developer subset of `verify` (build + packaged smoke + dashboard e2e, writes no receipt), quoted by CLAUDE.md for a person; the gate is scripts/verify.mjs, which ci.yml's SDLC verify job runs.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
+      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-triaged 2026-09-20 (SDLC loop removal: scripts/verify.mjs and the SDLC verify CI job stayed public, only the git gates/artifact chain around them left; same statement, unchanged)"
     },
     "C3 npm:verify:receipt": {
       "class": "NOT-A-GATE",
-      "reason": "Read-only status of .verify/receipt.json (fresh / stale / missing) for a person; the hooks call node scripts/verify-receipt.mjs directly and gate on it, so it has automated callers under its file name, not its npm name.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
-    },
-    "C4 .github/workflows/sdlc-release.yml:59": {
-      "class": "SAFE-CAPTURED-EXIT",
-      "reason": "The smoke verdict is captured on the line above (`if node scripts/sdlc/smoke-public.mjs --json …; then red=false; else red=true`) and gates the receipt step; this line only renders the saved JSON into the job summary.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
-    },
-    "C4 scripts/sdlc/bootstrap.sh:13": {
-      "class": "SAFE-PIPEFAIL",
-      "reason": "`set -euo pipefail` at the top of the file; a failing `gh secret list` therefore reads as \"secret missing\" and the script prompts to set it, never as present.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop)"
-    },
-    "C4 .github/workflows/sdlc-review.yml:93": {
-      "class": "DATA-EXTRACTION",
-      "reason": "awk derives the top-level directory list from the changed-files list to size the review matrix; the list itself came from `git diff --name-only` on the line above and no verdict flows through this pipe.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 (line moved)"
-    },
-    "C4 .github/workflows/sdlc-review.yml:94": {
-      "class": "DATA-EXTRACTION",
-      "reason": "grep -c counts the directories from the previous line; a count, not a verdict.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 (line moved)"
-    },
-    "C4 .github/workflows/sdlc-review.yml:96": {
-      "class": "DATA-EXTRACTION",
-      "reason": "grep's exit code is the intended signal here (does any changed path match a sensitive pattern) and sets `sensitive=true`; a no-match is the ordinary case, not a swallowed failure.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 (line moved)"
-    },
-    "C4 .github/workflows/sdlc-review.yml:99": {
-      "class": "DATA-EXTRACTION",
-      "reason": "head caps the directory list at 8 rows before node builds the matrix JSON; the workflow only parses it with fromJSON, and a malformed list fails that parse loudly.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 (line moved)"
-    },
-    "C4 scripts/sdlc/bootstrap.sh:161": {
-      "class": "SAFE-PIPEFAIL",
-      "reason": "`set -euo pipefail` at the top of the file; a failing `gh label list` reads as \"label missing\" and the script tries to create it, whose own exit code is checked with &&.",
-      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-keyed 2026-09-14 (line moved)"
+      "reason": "Read-only status of the verify receipt (fresh / stale / missing) for a person to run by hand. Before 2026-09-20 its automated caller was the maintainer's local git commit/push hook shims in .git/hooks/ (never tracked — .git/ itself is never version-controlled), installed by scripts/sdlc/install-git-hooks.mjs; those shims exec'd scripts/sdlc/git-gate.mjs, which WAS tracked here (one of this change's deletions) and read the receipt via receiptStatus() in-process rather than by spawning this file. Those hooks left with the rest of the SDLC loop, so nothing in this repository invokes it under either name now — the classification is unchanged.",
+      "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-triaged 2026-09-20 (SDLC loop removal: reason updated to name the caller as local-only, not in-repo); corrected 2026-09-20 (git-gate.mjs was tracked and just deleted, not never-tracked; the never-tracked part is the .git/hooks/ shim)"
     }
   }
 }

@@ -432,8 +432,8 @@ else ok(`${livingDocs.length} living documents, no dangling repo paths`);
 // locales, because European locales write it "95,40" and no gate scanned
 // UI strings. User-facing surfaces (dashboard catalogue + every README)
 // may not state it as a current claim in any decimal convention.
-// Historical explanations in docs/ARCHITECTURE.md, docs/plans/ and source
-// comments are exempt: they describe the figure as disproven.
+// Historical explanations in docs/ARCHITECTURE.md and source comments are
+// exempt: they describe the figure as disproven.
 const BANNED_CLAIMS = [/95[.,]\s?40\s?%?\s?R@5/i, /95[.,]40/];
 const userFacing = [
   'dashboard/src/lib/i18n.ts',

@@ -48,7 +48,7 @@
 
 <!-- What's intentionally NOT in this PR. Skipped tests, deferred refactors, etc. Better to surface than to hide. -->
 
-## Coverage (one row per changed file — `REVIEW.md`)
+## Coverage (one row per changed file)
 
 <!-- Every file in `git diff --name-status origin/main` gets a row. QA: a command run in this session, with its exit code. Review: who read it and on which model. Simplification: what was cut or `—` only when nothing of that kind applies (a generated file). An empty cell means the unit is not done; say so. Paste `npm run verify`'s closing lines and the receipt tree under Verification above. -->
 
