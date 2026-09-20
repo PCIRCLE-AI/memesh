@@ -39,6 +39,55 @@ All notable changes to MeMesh are documented here.
   path that is part of the repository (in the index) is never dropped by
   this, so a machine-local exclude can only make one developer's own run
   scan less than CI, never CI less.
+- **`release:finish`'s post-publish registry check is now behavior-tested
+  (#359).** The poll, post-poll `latest` cross-check, decision, raw progress
+  output, per-line stdout/stderr routing, and all eight outcome rows run under
+  fakes — no network, no real npm publish. Stable-release output matches the
+  pre-#359 script byte-for-byte; a prerelease additionally verifies `latest` did
+  not move, which is new output the pre-#359 script never printed. The
+  executable glue in `scripts/finish-release.mjs` is source-text pinned for
+  delegation, caller flags, the registry reader, exit-code handling, and the
+  required `await`. It also contains a fail-closed runtime guard that refuses to
+  treat a missing or malformed result as success. Three failure paths are
+  handled deliberately, and differently: a `readVersion` failure remains an
+  ordinary UNKNOWN/UNCONFIRMED outcome, never treated as a crash; a failure of
+  `sleep`, `write`, or one of the normal-result output calls (an ordinary throw,
+  a rejected `sleep`, or a hostile `Error` — a throwing `message` getter, a
+  non-string `message`, a Proxy, a thrown `Symbol`) is caught and reported
+  through the error sink as one bounded single-line crash diagnostic, its
+  interpolated exception-message portion capped at 200 UTF-16 code units
+  including the ellipsis (the surrounding diagnostic text is additional),
+  truncated by Unicode code point so a surrogate pair straddling the cut is
+  never split into a corrupting unpaired half; a failure of the error sink
+  itself is deliberately allowed to propagate rather than being caught a second
+  time.
+- **A bundle imported through `memesh import <file>` can no longer grant itself
+  behavioral authority on an EXISTING entity, and four specific fields can no
+  longer be granted on ANY entity without independent validation (#359).**
+  `guard`, `demo`, `task_state`, `consolidation_depth`, `compacted_into`,
+  `proposal_id`, `session_id`, and `evidence_for` are refused for both an
+  existing entity and one the import creates. Four fields get a narrow,
+  validated, fresh-entity-only exception instead, because each DOES change
+  behavior once accepted: `forgotten_observation_hashes` (deduplicated 64-hex
+  SHA-256 hashes, capped at 1000), `pin` (only the literal `true`),
+  `signal_score` (a number in `[0, 1]`), and `replaced_history` (an array of at
+  most 50 entries, each shaped exactly like `--replace`'s own history entries,
+  with the WHOLE array's own serialized JSON bounded to 256 KiB — a budget over
+  the entire array together, not per entry — closing a read-modify-write path
+  that let a bundle's forged history survive an import and then have a genuine
+  later local replace silently append onto it). None of the four can be set,
+  changed, or cleared on a memory you already have. Separately, a restored
+  backup now keeps a moved entity's namespace-move breadcrumb. Not covered by
+  this fix, and unchanged from HEAD (verified, not assumed): an `append` or
+  `overwrite` import naming an archived entity reactivates it, the same way
+  re-`remember`-ing an archived memory always has — a separate product question
+  tracked in #363, deliberately left open.
+- **A bundle can no longer set, change, or clear the `demo` marker on either an
+  existing or import-created memory (#361).** `memesh demo --reset` hard-deletes
+  every entity carrying that marker; before this fix, a crafted import bundle
+  could tag an arbitrary real memory with it and have the next `--reset` delete
+  it. Demo seeding remains a product-owned operation through `seedDemo`/`memesh
+  demo`; an imported memory can never become eligible for `--reset` on its own.
 
 ## [4.10.1] — 2026-09-14
 

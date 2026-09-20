@@ -58,6 +58,7 @@ import {
   findUsableLiveJourneyReceipt,
   LIVE_JOURNEY_RECEIPT_PATHS,
 } from './lib/release-preconditions.mjs';
+import { runPostPublishFlow } from './lib/publish-flow.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -390,60 +391,52 @@ console.log(
 // tag exists, which is precisely the state that makes main look released while
 // npm does not have it.
 //
-// It POLLS rather than asking once, because the two ways this looked like a
-// failure when it was not are both timing:
-//   - the registry lags a green publish by minutes, so one `npm view` right
-//     after the workflow starts answers with the OLD version;
-//   - npm's LOCAL metadata cache answers stale, which `--prefer-online` gets
-//     past.
-// Both were measured on earlier releases and both were mistaken for a broken
-// publish.
-//
-// A miss is reported as UNCONFIRMED and exits non-zero. Not "failed": the
-// publish may still land after this window. What it must not do is report
-// success for something it did not see.
-const NPM_POLL_ATTEMPTS = 20;
-const NPM_POLL_INTERVAL_MS = 15_000;
-
-function publishedVersion() {
-  return capture('npm', ['view', `@pcircle/memesh@${distTag}`, 'version', '--prefer-online']);
+// #359 round 4 (independent review): the poll, the `latest` read, the
+// decision and the exit code all used to live HERE — a script, not a
+// function, so no test could exercise the WIRING between "ask the registry"
+// and "decide the outcome" without a real npm publish. Two reviewers
+// mutated the wiring the same way twice (hard-code `seen`, hard-code
+// `prerelease`) and 117 tests stayed green. `runPostPublishFlow`
+// (scripts/lib/publish-flow.mjs) now owns the whole thing — poll loop,
+// `latest` read, decision, printing, exit code — behind injected
+// dependencies, so `tests/publish-flow.test.ts` exercises it with fakes:
+// no network, no real npm publish. This script's job is exactly what is
+// below: gather the real dependencies, call it, act on the exit code.
+// `runPostPublishFlow` is `async` (round 7: it `await`s `sleep`, so a
+// rejected fake in a test is caught inside the function's own try/catch
+// instead of surfacing later as an unhandled rejection) — `await`ed here via
+// top-level await, valid in this file's ESM module context. The real `sleep`
+// below stays the same blocking `Atomics.wait` it always was: `await`ing a
+// synchronous return value resolves immediately, so this call is still a
+// genuinely blocking wait in wall-clock terms, not a yield to the event loop.
+const result = await runPostPublishFlow({
+  prerelease,
+  distTag,
+  pkgVersion,
+  stableBefore: stableVersionBefore,
+  deps: {
+    readVersion: (tag) => capture('npm', ['view', `@pcircle/memesh@${tag}`, 'version', '--prefer-online']),
+    sleep: (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms),
+    log: (line) => console.log(line),
+    error: (line) => console.error(line),
+    write: (text) => process.stdout.write(text),
+  },
+});
+// Round 8 (independent review): removing the `await` above left every one of
+// 148 release tests green — `result` became a Promise, `result.exitCode` was
+// `undefined`, `undefined !== 0` is `true`... which happened to still call
+// `process.exit(undefined)` (exit code 0, since Node treats a non-numeric
+// argument as "no code"/0) WITHOUT ever having waited for the registry check
+// at all. No existing test caught it because nothing exercised this GLUE
+// file itself — every other mutation the reviewer tried was covered by a
+// source-text pin, but a missing `await` produces syntactically valid code a
+// text pin does not distinguish from present. Fail CLOSED on anything other
+// than a real, present, integer exit code — never assume a malformed result
+// means success:
+if (!result || !Number.isInteger(result.exitCode)) {
+  console.error('UNCONFIRMED: post-publish check returned no verdict; verify npm dist-tags by hand.');
+  process.exit(1);
 }
-
-{
-  process.stdout.write(`\n  waiting for npm ${distTag} to serve ${pkgVersion} `);
-  let seen = null;
-  for (let attempt = 0; attempt < NPM_POLL_ATTEMPTS; attempt++) {
-    seen = publishedVersion();
-    if (seen === pkgVersion) break;
-    process.stdout.write('.');
-    // Not after the LAST attempt — the loop is about to end and report, and a
-    // quarter-minute of dead wait on the failure path is the one place a
-    // release script must not add.
-    if (attempt < NPM_POLL_ATTEMPTS - 1) {
-      // Synchronous sleep: this script is a sequence of blocking commands and
-      // a timer would need the whole file to become async for no benefit.
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, NPM_POLL_INTERVAL_MS);
-    }
-  }
-  process.stdout.write('\n');
-  if (seen === pkgVersion) {
-    console.log(`  npm ${distTag} serves ${pkgVersion}; consumer and post-release checks remain required.`);
-    if (prerelease) {
-      const stableVersionAfter = capture('npm', ['view', '@pcircle/memesh@latest', 'version', '--prefer-online']);
-      if (stableVersionAfter !== stableVersionBefore) {
-        console.error(`  UNCONFIRMED: npm latest changed from ${stableVersionBefore} to ${stableVersionAfter ?? 'an unreadable answer'}. Reconcile the dist-tags before continuing.`);
-        process.exit(1);
-      }
-      console.log(`  npm latest remains ${stableVersionAfter}.`);
-    }
-  } else {
-    const waited = Math.round((NPM_POLL_ATTEMPTS * NPM_POLL_INTERVAL_MS) / 60_000);
-    console.error(
-      `  UNCONFIRMED: after ~${waited} minutes npm ${distTag} still serves ` +
-      `${seen ?? 'an unreadable answer'}, not ${pkgVersion}.`,
-    );
-    console.error(`  The tag and the GitHub Release exist. Check the publish run above,`);
-    console.error(`  then re-check with: npm view @pcircle/memesh@${distTag} version --prefer-online`);
-    process.exit(1);
-  }
+if (result.exitCode !== 0) {
+  process.exit(result.exitCode);
 }

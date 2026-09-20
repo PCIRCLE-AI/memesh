@@ -158,4 +158,85 @@ describe('seedDemo', () => {
       expect(count, `expected at least one ${type}`).toBeGreaterThan(0);
     }
   });
+
+  // #361: `metadata.demo = 1` is what `seedDemo({reset: true})` selects for
+  // HARD deletion (`json_extract(metadata, '$.demo') = 1` -> deleteEntity,
+  // not archiveEntity). A bundle that could set this on a memory the user
+  // already has would be handing an import file the power to mark that
+  // memory for permanent deletion the next time `demo --reset` runs.
+  // Reachable only through `memesh import <file>` (the CLI) — MCP/HTTP
+  // import strip bundle metadata entirely via ExportResultSchema.
+  describe('#361 a bundle can never set, change, or clear metadata.demo', () => {
+    it.each(['append', 'overwrite'] as const)(
+      'an existing real entity is never marked demo data by a bundle (%s) — it survives demo --reset',
+      async (merge_strategy) => {
+        const { remember, importMemories } = await import('../../src/core/operations.js');
+        const { seedDemo } = await import('../../src/core/demo.js');
+        const name = 'real-memory-targeted-by-demo-bundle';
+        remember({ name, type: 'decision', observations: ['mine'] });
+        const data = {
+          version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+          entities: [{
+            name, type: 'decision', namespace: 'personal', relations: [], tags: [],
+            observations: ['mine', 'from bundle'],
+            metadata: { demo: 1 },
+          }],
+        };
+        importMemories({ data, merge_strategy });
+
+        const afterImport = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(name) as { metadata: string | null };
+        expect(
+          afterImport.metadata ? JSON.parse(afterImport.metadata).demo : undefined,
+          'a bundle marked a real memory as demo data',
+        ).not.toBe(1);
+
+        seedDemo(db, { reset: true });
+        const survivor = db.prepare('SELECT name FROM entities WHERE name = ?').get(name);
+        expect(survivor, 'demo --reset deleted a real memory a bundle had mislabelled as demo data').toBeDefined();
+      },
+    );
+
+    it('a FRESH entity created by import never gets metadata.demo from the bundle', async () => {
+      const { importMemories } = await import('../../src/core/operations.js');
+      const name = 'fresh-entity-demo-flag-attempt';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { demo: 1 },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const row = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(name) as { metadata: string | null };
+      expect(row.metadata ? JSON.parse(row.metadata).demo : undefined).not.toBe(1);
+    });
+
+    it.each([
+      ['omits demo entirely', {}],
+      ['explicitly sends demo: 0', { demo: 0 }],
+    ])('an entity that GENUINELY has demo:1 locally keeps it when a bundle (%s)', async (_label, bundledMetadata) => {
+      const { remember, importMemories } = await import('../../src/core/operations.js');
+      const { KnowledgeGraph } = await import('../../src/knowledge-graph.js');
+      const name = 'genuinely-demo-entity';
+      remember({ name, type: 'decision', observations: ['seed text'] });
+      new KnowledgeGraph(db).updateEntityMetadata(name, (meta) => ({ ...meta, demo: 1 }));
+
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'decision', namespace: 'personal', relations: [], tags: [],
+          observations: ['seed text', 'from bundle'],
+          metadata: bundledMetadata,
+        }],
+      };
+      importMemories({ data, merge_strategy: 'append' });
+
+      const row = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(name) as { metadata: string | null };
+      expect(
+        row.metadata ? JSON.parse(row.metadata).demo : undefined,
+        'import cleared a genuine local demo flag',
+      ).toBe(1);
+    });
+  });
 });
