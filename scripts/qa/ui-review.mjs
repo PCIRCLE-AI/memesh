@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { isMain } from '../lib/verify-core.mjs';
 
 export const REQUIRED_CHECKS = [
   'plain-language', 'localized-backend-messages', 'actionable-diagnostics',
@@ -103,4 +103,4 @@ export function main(root = process.cwd()) {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) process.exitCode = main();
+if (isMain(import.meta.url)) process.exitCode = main();

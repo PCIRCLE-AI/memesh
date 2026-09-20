@@ -78,16 +78,71 @@ function hitId(cls, key) {
   return `${cls} ${key}`;
 }
 
-const report = {};
-const allHits = [];
+// The classes this audit is expected to report on. A fixed list, on purpose:
+// an inventory built from the detectors that happen to be declared shrinks
+// together with them, so a detector that is deleted, or whose declaration
+// sits behind a condition that stays false, would lower the expectation and
+// pass. The list cannot drift quietly either — `detector()` refuses a class
+// that is not on it or is declared twice, and the gate at the bottom fails,
+// by name, for a class on the list that never reached its own recorder. A
+// detector that never ran is not a class with zero hits; it looks identical
+// to "nothing wrong here" until asked for by name.
+const EXPECTED_DETECTORS = ['C1', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8'];
 
-function record(cls, denominator, hits, note) {
-  report[cls] = { denominator, hits, note };
-  for (const h of hits) allHits.push(hitId(cls, h));
+/**
+ * `report`, `allHits`, and the recorder live only inside this closure, not
+ * at module scope — a detector body shares this module's scope chain, so
+ * a name reachable from a body must not exist at module scope at all.
+ * `detector(cls, run)` binds each body's recorder to `cls` by capture,
+ * throws on a second call, and refuses a declaration made from inside
+ * another body. The recorder stores a copy of `hits`, and `getReport()`/
+ * `getAllHits()` return snapshots, so nothing a body keeps a reference to
+ * can change a result after it was recorded.
+ */
+function createDetectorRegistry() {
+  const report = {};
+  const allHits = [];
+  const declaredDetectors = new Set();
+  let running = null;
+
+  function detector(cls, run) {
+    if (running) {
+      throw new Error(`detector ${cls} declared inside ${running}'s body — a body cannot declare another class`);
+    }
+    if (!EXPECTED_DETECTORS.includes(cls)) {
+      throw new Error(`detector ${cls} is not in EXPECTED_DETECTORS — add it there, so its absence can be noticed later`);
+    }
+    if (declaredDetectors.has(cls)) {
+      throw new Error(`detector ${cls} is declared twice — the second result would replace the first`);
+    }
+    declaredDetectors.add(cls);
+    let recorded = false;
+    running = cls;
+    try {
+      run((denominator, hits, note) => {
+        if (recorded) {
+          throw new Error(`detector ${cls} called its recorder twice — the second call would silently replace the first result`);
+        }
+        recorded = true;
+        report[cls] = { denominator, hits: [...hits], note };
+        for (const h of report[cls].hits) allHits.push(hitId(cls, h));
+      });
+    } finally {
+      running = null;
+    }
+  }
+
+  return {
+    detector,
+    getReport: () => Object.fromEntries(Object.entries(report).map(([cls, r]) => [cls, { ...r, hits: [...r.hits] }])),
+    getAllHits: () => [...allHits],
+  };
 }
 
+const { detector, getReport, getAllHits } = createDetectorRegistry();
+
 /* ---- C1: emptiness assertions with no anti-vacuity pin -------------------- */
-{
+detector('C1', (record) => {
   const files = walk('tests', ['.ts', '.tsx']);
   const hits = [];
   let withEmptiness = 0;
@@ -104,12 +159,12 @@ function record(cls, denominator, hits, note) {
     const pins = (src.match(/GreaterThan|toBeGreaterThanOrEqual|\.has\(|length\)\.toBe\([1-9]|toHaveLength\([1-9]/g) ?? []).length;
     if (pins === 0) hits.push(f);
   }
-  record('C1', withEmptiness, hits,
+  record(withEmptiness, hits,
     'test files asserting emptiness with zero size pins anywhere in the file (heuristic; triage each)');
-}
+});
 
 /* ---- C3: gate-like scripts with no automated caller ----------------------- */
-{
+detector('C3', (record) => {
   const pkg = JSON.parse(read('package.json'));
   const gateScripts = Object.keys(pkg.scripts).filter(k =>
     /^(test|verify|check|audit|lint|typecheck)/.test(k));
@@ -137,12 +192,12 @@ function record(cls, denominator, hits, note) {
       .reduce((n, [, txt]) => n + (txt.split(needle).length - 1), 0);
     if (refs === 0) hits.push(c);
   }
-  record('C3', candidates.length, hits,
+  record(candidates.length, hits,
     'zero references from workflows / scripts / tests / package.json');
-}
+});
 
 /* ---- C4: verdict eaten by || true or a pipe into a filter ----------------- */
-{
+detector('C4', (record) => {
   const files = [...walk('.github/workflows', ['.yml']), ...walk('scripts', ['.sh'])];
   const hits = [];
   let lines = 0;
@@ -156,12 +211,12 @@ function record(cls, denominator, hits, note) {
       }
     });
   }
-  record('C4', lines, hits,
+  record(lines, hits,
     'each needs an answer to "does anything read the real exit code" — pipefail at file top counts');
-}
+});
 
 /* ---- C5: optimistic defaults ---------------------------------------------- */
-{
+detector('C5', (record) => {
   const files = [...walk('src', ['.ts']), ...walk('dashboard/src', ['.ts', '.tsx'])];
   const hits = [];
   for (const f of files) {
@@ -180,12 +235,12 @@ function record(cls, denominator, hits, note) {
       }
     });
   }
-  record('C5', files.length, hits,
+  record(files.length, hits,
     'each hit answers: does this default make missing input read as success?');
-}
+});
 
 /* ---- C6: tests reading source files and text-matching --------------------- */
-{
+detector('C6', (record) => {
   const files = walk('tests', ['.ts', '.tsx']);
   const hits = [];
   for (const f of files) {
@@ -194,12 +249,12 @@ function record(cls, denominator, hits, note) {
       .map(m => m[1]).filter(p => !p.includes('fixture'));
     if (readsSource.length && /\.toMatch\(|\.toContain\(/.test(src)) hits.push(f);
   }
-  record('C6', files.length, hits,
+  record(files.length, hits,
     'triage: data-extraction (ok) vs asserting-the-text-is-the-behavior (defect)');
-}
+});
 
 /* ---- C8: doctor rows nothing asserts --------------------------------------- */
-{
+detector('C8', (record) => {
   // The class this catches: a defect is fixed, the fix gets a test, and the
   // DIAGNOSTIC that tells a user the defect is present gets none. `doctor`'s
   // `vector-generation.open` row shipped that way — `reindex
@@ -255,12 +310,12 @@ function record(cls, denominator, hits, note) {
       testCode.includes(`'${n}'`) || testCode.includes(`"${n}"`) || testCode.includes(`\`${n}\``));
     if (!named) hits.push(`src/core/doctor.ts:${id}`);
   }
-  record('C8', rows.size, hits,
+  record(rows.size, hits,
     'doctor rows whose id and i18n codes appear in no test; triage: pin it, or record why the row cannot be asserted');
-}
+});
 
 /* ---- C7: numeric claims in English living prose ---------------------------- */
-{
+detector('C7', (record) => {
   // No `docs/internal/`/`docs/plans/` filter here any more: both are
   // git-ignored (.gitignore), so `walk()` already drops every path under
   // them before this block runs — confirmed with
@@ -282,9 +337,9 @@ function record(cls, denominator, hits, note) {
       hits.push(`${f}:${i + 1}`);
     });
   }
-  record('C7', files.length, hits,
+  record(files.length, hits,
     'a number in prose needs a measuring command, a gate in check-doc-claims, or deletion; GATED patterns are the shapes check-doc-claims covers');
-}
+});
 
 /* ---- gate ------------------------------------------------------------------ */
 
@@ -300,9 +355,28 @@ const known = new Set(Object.keys(baseline.hits));
 
 let failed = false;
 console.log('Verification audit:');
+
+const report = getReport();
+
+// Checked BEFORE the loop below: that loop only sees classes that made it
+// into `report`, so a class on the fixed list with no entry — its detector
+// deleted, skipped by a condition, or returning before its recorder ran —
+// would otherwise not be printed at all.
+for (const cls of EXPECTED_DETECTORS) {
+  if (!(cls in report)) {
+    console.log(`  ✗ ${cls}: detector never ran — record() was never called for it (a broken/skipped detector, not a clean class)`);
+    failed = true;
+  }
+}
+
 for (const [cls, r] of Object.entries(report)) {
-  if (typeof r.denominator === 'number' && r.denominator === 0) {
-    console.log(`  ✗ ${cls}: denominator 0 — the detector found nothing to examine; that is a broken detector, not a clean class`);
+  // A finite number greater than 0, not merely "not literally 0": NaN and
+  // undefined both fail `x === 0`, so a broken denominator expression would
+  // otherwise sail through with no candidate set examined. The zero-case
+  // message still contains the literal substring "denominator 0" — two
+  // other tests in this file's own test suite key off exactly that text.
+  if (typeof r.denominator !== 'number' || !Number.isFinite(r.denominator) || r.denominator <= 0) {
+    console.log(`  ✗ ${cls}: denominator ${r.denominator} is not a finite number greater than 0 — the detector found nothing to examine (or is broken); that is not a clean class`);
     failed = true;
     continue;
   }
@@ -316,12 +390,14 @@ for (const [cls, r] of Object.entries(report)) {
 
 // Stale baseline entries: the hit no longer exists. Reported, not fatal —
 // pruning them is cleanup, but they must be visible so the file cannot rot.
-const current = new Set(allHits);
+const current = new Set(getAllHits());
 const stale = [...known].filter(id => !current.has(id));
 if (stale.length) {
   console.log(`  ! ${stale.length} baseline entries no longer hit (prune them):`);
   for (const id of stale) console.log(`      ${id}`);
-  if (pruneStale) {
+  if (pruneStale && failed) {
+    console.log('  ! --prune-stale skipped: the gate failed, and pruning after a partial run would erase entries for detectors that did not report');
+  } else if (pruneStale) {
     for (const id of stale) delete baseline.hits[id];
     fs.writeFileSync(baselinePath, `${JSON.stringify(baseline, null, 2)}\n`, { mode: 0o600 });
     console.log(`  ✓ pruned ${stale.length} stale baseline entries; no new hit was classified`);

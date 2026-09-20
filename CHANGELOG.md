@@ -219,6 +219,31 @@ All notable changes to MeMesh are documented here.
   withheld for another that merely shares that stem, and the existing CJK
   reachability fixtures were updated to name the full file (extension
   included) rather than the stem alone.
+- Gates that could report success having checked nothing (#372).
+  `scripts/audit/verification-audit.mjs` now holds a fixed list of the
+  detector classes it expects and fails, naming the class, when one of them
+  never reports — its declaration deleted or skipped by a condition, or its
+  block returning early; before, only classes that did report were looked at.
+  A class declared twice or not on the list, a detector that records twice,
+  and a denominator that is not a positive number all stop the script; a
+  detector can record only under its own class, and cannot change a result
+  after recording it. `--prune-stale` no longer rewrites `baseline.json`
+  after a run that failed. `npm run
+  lint` now lints the files git tracks or would track under `src/`,
+  `scripts/`, `tests/` and `dashboard/src/`, so a git-ignored local file can
+  no longer change its verdict; it fails, naming the directory, when any one
+  of the four contributes no file — or none that `eslint.config.js` does not
+  ignore — and when a file matches no config block in `eslint.config.js`, so
+  ESLint would never lint it; it prints how many files the config ignores,
+  skips a tracked file already deleted on
+  disk (count on stderr), and passes the list to ESLint in batches that stay
+  clear of Windows' command-line ceiling. Entry points reached through a
+  symlink now run instead of exiting 0 having done nothing: the gate scripts
+  (`npm run verify`, `verify:receipt` and eight others), the two token
+  benchmark scripts, and the `UserPromptSubmit` hook — which, installed under
+  a symlinked plugin cache or npm prefix, never reminded the agent to store a
+  "remember this". Started on a directory (`node <dir>`), a gate script now
+  stops with an error naming the path rather than deciding it was imported.
 
 ## [4.10.1] — 2026-09-14
 

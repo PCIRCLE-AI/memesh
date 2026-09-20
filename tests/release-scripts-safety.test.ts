@@ -146,7 +146,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       fs.mkdirSync(path.join(fixture, 'scripts/lib'), { recursive: true });
       fs.mkdirSync(path.join(fixture, 'src/core'), { recursive: true });
       fs.mkdirSync(path.join(fixture, 'dist/core'), { recursive: true });
-      for (const script of ['check-generated-mirror.mjs', 'lib/npm-bin.mjs']) {
+      for (const script of ['check-generated-mirror.mjs', 'lib/npm-bin.mjs', 'lib/verify-core.mjs']) {
         fs.copyFileSync(path.join(repoRoot, 'scripts', script), path.join(fixture, 'scripts', script));
       }
       fs.writeFileSync(path.join(fixture, 'package.json'), JSON.stringify({

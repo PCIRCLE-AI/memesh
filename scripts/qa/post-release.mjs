@@ -29,10 +29,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
 import { binTargets, hookCommands } from '../lib/executable-targets.mjs';
 import { npmSync } from '../lib/npm-bin.mjs';
 import { fetchPackument } from '../lib/upgrade-matrix.mjs';
+import { isMain } from '../lib/verify-core.mjs';
 import { redactSecrets } from '../../dist/core/paths.js';
 
 const packageName = '@pcircle/memesh';
@@ -593,4 +593,4 @@ export function captureReceipt(install, spawnHook = spawnSync) {
   return { id: 'capture', ok: true, detail: `commit-${hash} and ${sessionName.name} captured on the shipped code` };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) await main();
+if (isMain(import.meta.url)) await main();
