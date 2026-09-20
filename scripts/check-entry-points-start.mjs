@@ -27,6 +27,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { binTargets, hookCommands } from './lib/executable-targets.mjs';
+import { isMain } from './lib/verify-core.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const rootOption = process.argv.indexOf('--root');
@@ -644,17 +645,11 @@ async function main() {
 // `computeSkipList`/`findUnresolvedPlaceholders` can be imported directly by
 // tests (tests/entry-points-start.test.ts) without running the whole gate,
 // spawning 17 processes, and calling `process.exit()`, as an import side
-// effect inside the vitest worker.
-function isMainModule() {
-  const entrypoint = process.argv[1];
-  if (!entrypoint) return false;
-  try {
-    return fs.realpathSync(entrypoint) === fs.realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (isMainModule()) {
+// effect inside the vitest worker. Delegated to the shared `isMain()`
+// (scripts/lib/verify-core.mjs): it throws on a realpath failure rather than
+// answering "not the entry point", so an unreadable or deleted argv[1] — the
+// one failure mode that should be loudest — cannot exit 0 having checked
+// nothing.
+if (isMain(import.meta.url)) {
   main();
 }

@@ -10,6 +10,7 @@ import { pathToFileURL } from 'node:url';
 import { chromium } from 'playwright';
 import { buildIsolatedRuntimeEnv } from './lib/isolated-env.mjs';
 import { npmSync } from './lib/npm-bin.mjs';
+import { isMain } from './lib/verify-core.mjs';
 
 const repoRoot = process.cwd();
 const smokeDir = path.join(repoRoot, 'tmp', 'dashboard-e2e-smoke');
@@ -496,15 +497,9 @@ async function onceExit(child) {
 }
 
 // Guard so importing this module never fires npm pack / install / a browser
-// launch as a side effect. Matches the idiom already used in
-// scripts/hooks/auto-update-runner.mjs — realpathSync + pathToFileURL rather
-// than `new URL(import.meta.url).pathname`, which
-// tests/release-scripts-safety.test.ts's "resolves module paths with
-// fileURLToPath" gate forbids repo-wide (it breaks on Windows drive paths).
-const invokedPath = process.argv[1]
-  ? pathToFileURL(fs.realpathSync(process.argv[1])).href
-  : null;
-if (invokedPath === import.meta.url) {
+// launch as a side effect. Delegated to the shared `isMain()` (scripts/lib/
+// verify-core.mjs) rather than a private realpath comparison.
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     console.error(error.stack || error.message);
     process.exit(1);

@@ -36,7 +36,7 @@ import {
   writeSnooze,
 } from './_shared.js';
 import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 
 let installChannelMod = null;
 try {
@@ -217,7 +217,29 @@ function logError(scope, msg) {
 // `file://${process.argv[1]}` produces an invalid URL because the path uses
 // backslashes; pathToFileURL() correctly normalizes to a file:// URL on
 // every platform, so the comparison is portable.
-const isMainModule = import.meta.url === pathToFileURL(process.argv[1]).href;
+//
+// `import.meta.url` is the REAL path of this file; `process.argv[1]` is the
+// path as the host typed it. Through a symlink (plugin cache, global npm
+// prefix) the two differ, so compare the typed path first — under
+// `--preserve-symlinks-main` Node leaves `import.meta.url` unresolved too, and
+// resolving the typed side unconditionally would make them diverge — and only
+// then the resolved path. A realpath failure on that fallback is left to
+// throw: a crash is visible, "not the entry point" is not.
+//
+// Also reads "not main" for `node -` (`argv[1]` is the literal `-`;
+// `realpathSync('-')` would throw) and `node -e`/`-p` (the eval flag is in
+// `process.execArgv`; `argv[1]` is just the caller's first argument). That
+// is `isMain()`'s (scripts/lib/verify-core.mjs) `-`/eval handling and its
+// typed-path-then-realpath order, without its directory case: `node <dir>`
+// reads as "not main" here, where `isMain()` throws. The hook cannot import
+// `isMain()`: it ships standalone (package.json `files`).
+const EVAL_FLAG = /^(-e|-p|-pe|--eval|--print)(=|$)/;
+const entryPath = process.argv[1];
+const isMainModule = Boolean(entryPath)
+  && entryPath !== '-'
+  && !process.execArgv.some((arg) => EVAL_FLAG.test(arg))
+  && (import.meta.url === pathToFileURL(entryPath).href
+    || import.meta.url === pathToFileURL(realpathSync(entryPath)).href);
 if (isMainModule) {
   // See post-commit.js for why every exit path leaves a record (#327). This
   // hook's only effect is the additionalContext it injects, so its outcome is

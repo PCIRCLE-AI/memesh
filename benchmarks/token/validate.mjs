@@ -25,6 +25,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { isMain } from '../../scripts/lib/verify-core.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -168,4 +169,4 @@ function main(argv) {
   console.log(`✓ token benchmark contract: ${cases.cases.length} cases cover ${contract.required_case_categories.length} categories; verdict ${contract.measurability.verdict}; statistics ${contract.statistics.status}; corpus ${corpusDigest(cases).slice(0, 12)}…${runIdx >= 0 ? '; run manifest bound' : ''}`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main(process.argv);
+if (isMain(import.meta.url)) main(process.argv);

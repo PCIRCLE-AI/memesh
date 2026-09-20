@@ -14,7 +14,7 @@
 // by producing the artifact it asks for.
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, existsSync, mkdirSync, writeFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,6 +123,42 @@ export function receiptStatus(cwd = REPO_ROOT) {
 // imported. Moved from scripts/sdlc/cli.mjs (maintainer-local) because
 // scripts/verify.mjs and scripts/verify-receipt.mjs are public and both use
 // it as their `if (isMain(...))` entry-point guard.
+//
+// Node resolves `moduleUrl` (from `import.meta.url`) to its real path,
+// following any symlink; `process.argv[1]` is the path as typed. Realpath
+// the typed side before comparing, so a symlinked invocation still matches.
+//
+// Under `node -e` / `-p` there is no entry-point file: `argv[1]` is the first
+// argument the caller passed, and a caller that passes this module's path in
+// order to `import()` it must not start its `main()`.
+//
+// A realpath failure is left to throw. Answering "not the entry point" would
+// be exit 0 with nothing checked, the failure this guard exists to prevent.
+const EVAL_FLAG = /^(-e|-p|-pe|--eval|--print)(=|$)/;
 export function isMain(moduleUrl) {
-  return Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(moduleUrl);
+  if (!process.argv[1]) return false;
+  // `node - < file`: reading the entry script from stdin. `argv[1]` is the
+  // literal string `-`, not a path — there is no entry-point FILE to
+  // realpath, so `path.resolve('-')` would resolve to `<cwd>/-` and
+  // `realpathSync` would throw ENOENT on it. Same shape as the eval flags
+  // below: no file means "not the entry point", not a crash.
+  if (process.argv[1] === '-') return false;
+  if (process.execArgv.some((arg) => EVAL_FLAG.test(arg))) return false;
+  const modulePath = fileURLToPath(moduleUrl);
+  const typed = path.resolve(process.argv[1]);
+  if (typed === modulePath) return true;
+  const resolved = realpathSync(typed);
+  if (resolved === modulePath) return true;
+  // `node <directory>` loads that directory's package.json `main`, but
+  // `process.argv[1]` stays the DIRECTORY path, never rewritten to the file
+  // Node actually loaded — falling through to `return false` would silently
+  // answer "not main" for a process that genuinely is the entry point.
+  // There is no way to recover the real entry file from argv[1] alone.
+  if (statSync(resolved).isDirectory()) {
+    throw new Error(
+      `isMain: process.argv[1] (${process.argv[1]}) resolves to a directory (${resolved}), not the module Node ` +
+        'actually loaded via that directory\'s package.json "main" — invoke the entry file directly (node <dir>/<entry>.mjs) rather than the directory.',
+    );
+  }
+  return false;
 }

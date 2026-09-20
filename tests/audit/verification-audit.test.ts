@@ -33,6 +33,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   lstatSync,
@@ -89,7 +90,27 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../
 const EMPTY_GIT_CONFIG_DIR = mkdtempSync(path.join(tmpdir(), 'verification-audit-gitconfig-'));
 const EMPTY_GIT_CONFIG = path.join(EMPTY_GIT_CONFIG_DIR, 'empty.gitconfig');
 writeFileSync(EMPTY_GIT_CONFIG, '');
+// Read-only after creation: this file is shared as GIT_CONFIG_GLOBAL/
+// GIT_CONFIG_SYSTEM across every temp-repo git call this whole file makes
+// (initGitRepo runs once per fixture, many times per test run), and nothing
+// in this file is meant to write to it — every `git config` call
+// initGitRepo issues is a plain LOCAL write (`git config user.email …`, no
+// `--global`/`--system` flag), which lands in the throwaway repo's own
+// `.git/config`, never here. Making it 0o444 turns "something wrote to the
+// shared file and every git call after that one silently inherited it" from
+// a possible cross-test leak into an immediate, loud EACCES at the write
+// site.
+chmodSync(EMPTY_GIT_CONFIG, 0o444);
 afterAll(() => {
+  // Windows refuses to unlink a read-only file (EPERM) until the read-only
+  // attribute is cleared — chmod back to writable before rmSync, on every
+  // platform, rather than relying on rmSync's own best-effort Windows retry.
+  try {
+    chmodSync(EMPTY_GIT_CONFIG, 0o644);
+  } catch {
+    // Already gone, or a platform where chmod cannot fail this way — rmSync
+    // below still removes the directory either way.
+  }
   rmSync(EMPTY_GIT_CONFIG_DIR, { recursive: true, force: true });
 });
 
@@ -505,11 +526,15 @@ function populateRepoCopy(dir: string, sourceRoot: string): void {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: TEMP_REPO_GIT_ENV,
   });
-  git('commit', '-q', '-m', 'snapshot of the working tree for verification-audit.mjs', '--no-gpg-sign', '--no-verify');
   if (skippedNonRegular.length > 0) {
-    // Skipping is deliberate; doing it without a trace is not.
+    // Skipping is deliberate; doing it without a trace is not. Printed
+    // BEFORE the commit below: if the commit itself throws (a `git` failure
+    // partway through building the throwaway copy), this notice must still
+    // have been seen — it is the trace that a caller reading only stderr
+    // needs, not a footnote that a failed commit could suppress entirely.
     console.warn(`buildRepoCopy: skipped ${skippedNonRegular.length} non-regular entr${skippedNonRegular.length === 1 ? 'y' : 'ies'} (never followed): ${skippedNonRegular.join(', ')}`);
   }
+  git('commit', '-q', '-m', 'snapshot of the working tree for verification-audit.mjs', '--no-gpg-sign', '--no-verify');
 }
 
 /**
@@ -531,9 +556,9 @@ function isIgnoredAt(cwd: string, rel: string): boolean {
   }
 }
 
-function runAudit(cwd: string): { code: number | null; stdout: string; stderr: string } {
+function runAudit(cwd: string, args: string[] = []): { code: number | null; stdout: string; stderr: string } {
   try {
-    const stdout = execFileSync('node', ['scripts/audit/verification-audit.mjs'], {
+    const stdout = execFileSync('node', ['scripts/audit/verification-audit.mjs', ...args], {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -733,6 +758,322 @@ describe("Feature: verification-audit.mjs does not go red because of the maintai
     expect(result.stdout).not.toContain('denominator 0');
     expect(result.stdout).toContain(NEGATIVE_CONTROL_PATH);
   }, 60_000);
+});
+
+/**
+ * The audit script's source with ONE detector's own `record(...)` call
+ * statement replaced by a comment: the detector's `walk`/`read` work still
+ * runs, but that class never reaches `report`, as if the block had thrown
+ * before recording or been edited by accident. A declaration skipped by a
+ * condition and a second declaration of another class are covered by their
+ * own tests below. The call is located by the class's "---- <cls>:" section
+ * marker, not by line number.
+ */
+function suppressRecordCall(source: string, cls: string): string {
+  const startMarker = `/* ---- ${cls}:`;
+  const start = source.indexOf(startMarker);
+  if (start === -1) throw new Error(`fixture is stale: no section marker for ${cls} in verification-audit.mjs`);
+  const recordIdx = source.indexOf('record(', start);
+  if (recordIdx === -1) throw new Error(`fixture is stale: no record( call found after the ${cls} marker`);
+  // None of the seven detectors' `record(...)` call arguments contain the
+  // literal two-character substring `");"` (checked by hand against every
+  // call site when this fixture was written — each ends `...');` with no
+  // earlier `)` immediately followed by `;`), so the first `);` after
+  // `record(` is reliably that call's own closing paren and statement
+  // terminator, not a `)` embedded inside one of its string arguments.
+  const callEnd = source.indexOf(');', recordIdx);
+  if (callEnd === -1) throw new Error(`fixture is stale: unterminated record( call after the ${cls} marker`);
+  return `${source.slice(0, recordIdx)}/* record() suppressed by test fixture (tests/audit/verification-audit.test.ts) */${source.slice(callEnd + 2)}`;
+}
+
+describe('Feature: the audit fails when an EXPECTED detector never calls record() — not only when its candidate set is empty', () => {
+  // A dedicated copy, not the shared `tempDir` above: this suite overwrites
+  // scripts/audit/verification-audit.mjs itself, which the other describe
+  // block's tests must not see.
+  let mutantDir: string;
+  let scriptPath: string;
+  // The unmodified script. Every test below writes its own mutation of THIS,
+  // so a test that fails part-way cannot hand its mutant to the next one.
+  let original: string;
+
+  beforeAll(() => {
+    mutantDir = buildRepoCopy();
+    scriptPath = path.join(mutantDir, 'scripts/audit/verification-audit.mjs');
+    original = readFileSync(scriptPath, 'utf8');
+  }, 120_000);
+
+  afterAll(() => {
+    if (mutantDir) rmSync(mutantDir, { recursive: true, force: true });
+  });
+
+  it('a detector prevented from calling record() makes the audit exit 1 and name that detector', () => {
+    const mutated = suppressRecordCall(original, 'C6');
+    // Precondition: the mutation actually changed something. Without this, a
+    // stale marker that silently matched nothing would make the rest of this
+    // test pass for the wrong reason (an unmodified script that happens to
+    // audit clean), the same shape of false-positive the negative-control
+    // test above guards against for filterIgnored.
+    expect(mutated).not.toBe(original);
+    expect(mutated).toContain('record() suppressed by test fixture');
+    writeInTemp(mutantDir, scriptPath, mutated);
+
+    const result = runAudit(mutantDir);
+    if (result.code !== 1) {
+      console.error(result.stdout, result.stderr);
+    }
+    expect(result.code).toBe(1);
+    // Discriminates "failed because C6 never called record()" from any other
+    // reason exit 1 could happen (a real untriaged hit, a broken-detector
+    // denominator-0, a crash) — the same discipline the other describe
+    // block's negative control uses.
+    expect(result.stdout).toContain('C6: detector never ran');
+    expect(result.stdout).toContain('record() was never called for it');
+    // The other six detectors must still have run normally — this proves
+    // the mutation is scoped to C6 alone, not an accident that broke the
+    // whole script into some other failure shape.
+    for (const cls of ['C1', 'C3', 'C4', 'C5', 'C8', 'C7']) {
+      expect(result.stdout).toContain(`${cls}: denominator=`);
+    }
+  }, 60_000);
+
+  it('a detector whose declaration is skipped by a condition is still expected, and is named', () => {
+    const declaration = "detector('C6', (record) => {";
+    expect(original.split(declaration).length - 1).toBe(1);
+    writeInTemp(mutantDir, scriptPath, original.replace(declaration, `false && ${declaration}`));
+
+    const result = runAudit(mutantDir);
+    if (result.code !== 1) console.error(result.stdout, result.stderr);
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain('C6: detector never ran');
+    expect(result.stdout).toContain('C7: denominator=');
+  }, 60_000);
+
+  it('two detectors declared under one class do not pass as one: the script refuses to run', () => {
+    const declaration = "detector('C7', (record) => {";
+    expect(original.split(declaration).length - 1).toBe(1);
+    writeInTemp(mutantDir, scriptPath, original.replace(declaration, "detector('C6', (record) => {"));
+
+    const result = runAudit(mutantDir);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('detector C6 is declared twice');
+    expect(result.stdout).not.toContain('Every hit is triaged');
+  }, 60_000);
+});
+
+describe('Feature: EXPECTED_DETECTORS names exactly these seven classes, by name', () => {
+  it('deleting a class from BOTH its declaration and this list at once must still be visible', () => {
+    // Path kept in its own variable, not inlined into readFileSync(: C6
+    // below flags exactly that inline shape as "reads source and
+    // text-matches it", and cannot tell this legitimate read apart from it.
+    const realScriptPath = path.join(repoRoot, 'scripts/audit/verification-audit.mjs');
+    const realSource = readFileSync(realScriptPath, 'utf8');
+    const m = realSource.match(/const EXPECTED_DETECTORS = \[([^\]]*)\];/);
+    expect(m).not.toBeNull();
+    const listed = m![1].split(',').map((s) => s.trim().replace(/['"]/g, '')).filter(Boolean);
+    expect(listed).toEqual(['C1', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8']);
+  });
+});
+
+/**
+ * `report`/`allHits`/the recorder are private to `createDetectorRegistry()`'s
+ * closure — no module-scope name exists for a body to alias or call twice.
+ * Proved BEHAVIOURALLY, against a mutated copy of the real script run for
+ * real, not by reading the source as text: a source-text check only
+ * recognises shapes it was written to look for.
+ */
+describe("Feature: a detector's result belongs only to the recorder its own wrapper handed it — no alias, no double call, no non-finite denominator survives", () => {
+  let mutantDir: string;
+  let scriptPath: string;
+  let original: string;
+
+  beforeAll(() => {
+    mutantDir = buildRepoCopy();
+    scriptPath = path.join(mutantDir, 'scripts/audit/verification-audit.mjs');
+    original = readFileSync(scriptPath, 'utf8');
+  }, 120_000);
+
+  afterAll(() => {
+    if (mutantDir) rmSync(mutantDir, { recursive: true, force: true });
+  });
+
+  /** Locates `cls`'s own `record(...)` call statement (start, end of `);`). */
+  function locateRecordCall(source: string, cls: string): { start: number; end: number } {
+    const startMarker = `/* ---- ${cls}:`;
+    const sectionStart = source.indexOf(startMarker);
+    if (sectionStart === -1) throw new Error(`fixture is stale: no section marker for ${cls} in verification-audit.mjs`);
+    const recordIdx = source.indexOf('record(', sectionStart);
+    if (recordIdx === -1) throw new Error(`fixture is stale: no record( call found after the ${cls} marker`);
+    const callEnd = source.indexOf(');', recordIdx);
+    if (callEnd === -1) throw new Error(`fixture is stale: unterminated record( call after the ${cls} marker`);
+    return { start: recordIdx, end: callEnd + 2 };
+  }
+
+  /**
+   * Alias the module-scope `record` before any detector runs, make one
+   * normal bound call, then use the alias to overwrite a DIFFERENT class's
+   * result. There is no module-scope `record` binding to alias — the line
+   * throws a ReferenceError at load, before any detector runs.
+   */
+  function aliasAndOverwriteMutant(source: string, cls: string, victimCls: string): string {
+    const firstMarker = '/* ---- C1:';
+    const firstIdx = source.indexOf(firstMarker);
+    if (firstIdx === -1) throw new Error('fixture is stale: no C1 section marker found');
+    const withAlias = `${source.slice(0, firstIdx)}const rawRecord = record;\n\n${source.slice(firstIdx)}`;
+
+    const { end } = locateRecordCall(withAlias, cls);
+    const overwrite = `\n  rawRecord('${victimCls}', 1, [], 'overwrite ${victimCls}');`;
+    return `${withAlias.slice(0, end)}${overwrite}${withAlias.slice(end)}`;
+  }
+
+  /** A body calling its own bound recorder a second time, same arguments. */
+  function duplicateRecordCall(source: string, cls: string): string {
+    const { start, end } = locateRecordCall(source, cls);
+    const call = source.slice(start, end);
+    return `${source.slice(0, end)}\n  ${call} // duplicate call planted by test${source.slice(end)}`;
+  }
+
+  /** Replaces `cls`'s own denominator ARGUMENT (whatever expression it was) with `literal`. */
+  function forceDenominatorLiteral(source: string, cls: string, literal: string): string {
+    const { start } = locateRecordCall(source, cls);
+    const afterParen = start + 'record('.length;
+    const firstComma = source.indexOf(',', afterParen);
+    if (firstComma === -1) throw new Error(`fixture is stale: no comma after record( for ${cls}`);
+    return `${source.slice(0, afterParen)}${literal}${source.slice(firstComma)}`;
+  }
+
+  /**
+   * A body reaching `getReport()` — reachable by the same ordinary
+   * module-scope lookup that reaches `detector` — to overwrite a different
+   * class's entry after its own legitimate call. Must have no effect: the
+   * gate reads its OWN `getReport()` call, and every call hands back a fresh
+   * snapshot, never the live store this body's snapshot is a copy of.
+   */
+  function externalReportWriteMutant(source: string, cls: string, victimCls: string): string {
+    const { end } = locateRecordCall(source, cls);
+    const injected = `\n  getReport()['${victimCls}'] = { denominator: 1, hits: [], note: 'external write via getReport()' };`;
+    return `${source.slice(0, end)}${injected}${source.slice(end)}`;
+  }
+
+  it('aliasing the module-scope recorder before any detector runs, then overwriting a different class after a valid bound call, does not exit clean', () => {
+    const mutated = aliasAndOverwriteMutant(original, 'C7', 'C8');
+    expect(mutated).not.toBe(original);
+    expect(mutated).toContain('const rawRecord = record;');
+    writeInTemp(mutantDir, scriptPath, mutated);
+
+    const result = runAudit(mutantDir);
+    expect(result.code).not.toBe(0);
+    // Discriminates "crashed because `record` has no module-scope binding to
+    // alias" from any other reason exit 1 could happen.
+    expect(result.stderr).toContain('record is not defined');
+    // A fabricated C8 report must never reach the gate's own printed output.
+    expect(result.stdout).not.toContain('C8: denominator=1');
+  }, 60_000);
+
+  it('a detector body that calls its bound recorder twice does not exit clean, naming the class', () => {
+    const mutated = duplicateRecordCall(original, 'C7');
+    expect(mutated).not.toBe(original);
+    writeInTemp(mutantDir, scriptPath, mutated);
+
+    const result = runAudit(mutantDir);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('C7');
+    expect(result.stderr).toContain('called its recorder twice');
+  }, 60_000);
+
+  it('a NaN denominator does not exit clean', () => {
+    const mutated = forceDenominatorLiteral(original, 'C7', 'NaN');
+    expect(mutated).not.toBe(original);
+    writeInTemp(mutantDir, scriptPath, mutated);
+
+    const result = runAudit(mutantDir);
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toContain('C7: denominator NaN is not a finite number greater than 0');
+  }, 60_000);
+
+  it('a zero denominator still exits non-clean, and the message still contains the literal substring "denominator 0" that two other tests in this file key off of', () => {
+    const mutated = forceDenominatorLiteral(original, 'C7', '0');
+    expect(mutated).not.toBe(original);
+    writeInTemp(mutantDir, scriptPath, mutated);
+
+    const result = runAudit(mutantDir);
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).toContain('denominator 0');
+  }, 60_000);
+
+  it("a detector body reaching getReport() to overwrite another class's entry has no effect — getReport() hands back a snapshot, not the live store", () => {
+    const mutated = externalReportWriteMutant(original, 'C7', 'C8');
+    expect(mutated).not.toBe(original);
+    writeInTemp(mutantDir, scriptPath, mutated);
+
+    const result = runAudit(mutantDir);
+    // The write itself does not crash anything (getReport IS reachable —
+    // unlike the alias mutant above) — it just writes into a copy nothing
+    // else reads. C8's real denominator/hits are unaffected, so this is a
+    // normal clean run.
+    expect(result.code).toBe(0);
+    expect(result.stdout).not.toContain('C8: denominator=1 hits=0');
+  }, 60_000);
+
+  it('a body that empties its hits array after recording cannot change the recorded result', () => {
+    const resultLine = (out: string) => out.split('\n').find((line) => line.includes(' C1: denominator='));
+    writeInTemp(mutantDir, scriptPath, original);
+    const baseline = runAudit(mutantDir);
+    expect(baseline.code).toBe(0);
+    // Precondition: C1 has hits to lose, or clearing the array proves nothing.
+    expect(resultLine(baseline.stdout)).not.toContain('hits=0');
+
+    const { end } = locateRecordCall(original, 'C1');
+    writeInTemp(mutantDir, scriptPath, `${original.slice(0, end)}\n  hits.length = 0;${original.slice(end)}`);
+    const result = runAudit(mutantDir);
+    expect(result.code).toBe(0);
+    expect(resultLine(result.stdout)).toBe(resultLine(baseline.stdout));
+  }, 60_000);
+
+  it('a body that declares another detector fails, naming both classes', () => {
+    const declaration = "detector('C1', (record) => {";
+    expect(original.split(declaration).length - 1).toBe(1);
+    writeInTemp(mutantDir, scriptPath, original.replace(declaration, `${declaration}\n  detector('C3', (other) => other(1, [], 'nested'));`));
+
+    const result = runAudit(mutantDir);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain("detector C3 declared inside C1's body");
+  }, 60_000);
+
+  describe('--prune-stale', () => {
+    const baselineFile = () => path.join(mutantDir, 'scripts/audit/baseline.json');
+
+    it('leaves baseline.json alone when the gate failed', () => {
+      const declaration = "detector('C6', (record) => {";
+      expect(original.split(declaration).length - 1).toBe(1);
+      writeInTemp(mutantDir, scriptPath, original.replace(declaration, `false && ${declaration}`));
+      const before = readFileSync(baselineFile(), 'utf8');
+      try {
+        const result = runAudit(mutantDir, ['--prune-stale']);
+        expect(result.code).toBe(1);
+        expect(result.stdout).toContain('C6: detector never ran');
+        expect(result.stdout).toContain('--prune-stale skipped');
+        expect(readFileSync(baselineFile(), 'utf8')).toBe(before);
+      } finally {
+        writeFileSync(baselineFile(), before);
+      }
+    }, 60_000);
+
+    it('still removes a stale entry when the gate passed', () => {
+      writeInTemp(mutantDir, scriptPath, original);
+      const before = readFileSync(baselineFile(), 'utf8');
+      const baseline = JSON.parse(before);
+      baseline.hits['C4 scripts/no-such-script.sh:1'] = { class: 'x', reason: 'stale on purpose', triaged: '2026-01-01' };
+      writeFileSync(baselineFile(), JSON.stringify(baseline, null, 2));
+      try {
+        const result = runAudit(mutantDir, ['--prune-stale']);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('pruned 1 stale baseline entries');
+        expect(Object.keys(JSON.parse(readFileSync(baselineFile(), 'utf8')).hits)).not.toContain('C4 scripts/no-such-script.sh:1');
+      } finally {
+        writeFileSync(baselineFile(), before);
+      }
+    }, 60_000);
+  });
 });
 
 describe('Feature: no *.test.{ts,tsx,mjs} file contains the literal HEAD-colon substring in code', () => {

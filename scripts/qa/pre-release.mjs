@@ -20,7 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMain } from '../lib/verify-core.mjs';
 
 /** The steps, in order. Each `id` must be an npm script in package.json. */
 export const STEPS = [
@@ -111,4 +111,4 @@ function main() {
   process.exit(verdict.ok ? 0 : 1);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main();
+if (isMain(import.meta.url)) main();

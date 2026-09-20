@@ -81,6 +81,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { getProjectName } from '../../dist/core/paths.js';
 import { runCoreLiveJourneys } from './core-live-journeys.mjs';
 import { buildCredentialFreeBaseEnv } from '../lib/isolated-env.mjs';
+import { isMain } from '../lib/verify-core.mjs';
 import {
   CLAUDE_MODEL_INTAKE_ARMING_CONFIRMATION,
   CLAUDE_PLUGIN_ISOLATION_CONFIRMATION,
@@ -2598,7 +2599,7 @@ async function main() {
   await finish(failure, failure === null ? 0 : 1);
 }
 
-if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta.url)) {
   main().catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     process.exit(1);
