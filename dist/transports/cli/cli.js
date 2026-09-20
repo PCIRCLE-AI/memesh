@@ -5890,13 +5890,66 @@ var init_types = __esm({
 });
 
 // dist/core/serializer.js
+function validateFreshForgottenHashes(value) {
+  if (!Array.isArray(value) || value.length === 0)
+    return null;
+  const deduped = [...new Set(value)];
+  if (!deduped.every((h) => typeof h === "string" && FORGOTTEN_HASH_RE.test(h)))
+    return null;
+  return deduped.length <= MAX_IMPORTED_FORGOTTEN_HASHES ? deduped : null;
+}
+function validateFreshSignalScore(value) {
+  return typeof value === "number" && value >= 0 && value <= 1 ? value : null;
+}
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isValidReplacedHistoryEntry(entry) {
+  if (!isPlainObject(entry))
+    return false;
+  for (const key of Object.keys(entry)) {
+    if (!REPLACED_HISTORY_ENTRY_KEYS.has(key))
+      return false;
+  }
+  if (typeof entry.replaced_at !== "string" || entry.replaced_at.length > 64)
+    return false;
+  if (!(entry.title === null || typeof entry.title === "string" && entry.title.length <= 500))
+    return false;
+  if (!Array.isArray(entry.observations) || !entry.observations.every((o) => typeof o === "string"))
+    return false;
+  if (!Array.isArray(entry.tags) || !entry.tags.every((t) => typeof t === "string"))
+    return false;
+  if ("truncated" in entry && typeof entry.truncated !== "boolean")
+    return false;
+  return true;
+}
+function validateFreshReplacedHistory(value) {
+  if (!Array.isArray(value) || value.length === 0)
+    return null;
+  if (value.length > MAX_IMPORTED_REPLACED_HISTORY_ENTRIES)
+    return null;
+  if (!value.every(isValidReplacedHistoryEntry))
+    return null;
+  return jsonBytesOf(value) <= MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES ? value : null;
+}
 function buildImportedMetadata(existingMetadata, args) {
-  const { guard: _guard, ...bundledSafe } = args.bundled ?? {};
-  void _guard;
+  const bundled = args.bundled ?? {};
+  const bundledSafe = {};
+  for (const [key, value] of Object.entries(bundled)) {
+    if (IMPORTABLE_METADATA_KEYS.has(key))
+      bundledSafe[key] = value;
+  }
+  const freshForgottenHashes = args.isNewEntity ? validateFreshForgottenHashes(bundled.forgotten_observation_hashes) : null;
+  const freshPin = args.isNewEntity && bundled.pin === true;
+  const freshSignalScore = args.isNewEntity ? validateFreshSignalScore(bundled.signal_score) : null;
+  const freshReplacedHistory = args.isNewEntity ? validateFreshReplacedHistory(bundled.replaced_history) : null;
   return {
     ...existingMetadata ?? {},
     ...bundledSafe,
-    ...Array.isArray(existingMetadata?.forgotten_observation_hashes) ? { forgotten_observation_hashes: existingMetadata.forgotten_observation_hashes } : {},
+    ...freshForgottenHashes ? { forgotten_observation_hashes: freshForgottenHashes } : {},
+    ...freshSignalScore !== null ? { signal_score: freshSignalScore } : {},
+    ...freshPin ? { pin: true } : {},
+    ...freshReplacedHistory ? { replaced_history: freshReplacedHistory } : {},
     trust: "untrusted",
     provenance: {
       ...existingMetadata?.provenance ?? {},
@@ -5999,7 +6052,8 @@ function importMemories(args) {
           bundled: entity.metadata,
           exportedAt: args.data.exported_at,
           importVersion: args.data.version,
-          mergeStrategy: args.merge_strategy
+          mergeStrategy: args.merge_strategy,
+          isNewEntity: !existing
         });
         if (existing) {
           if (args.merge_strategy === "skip")
@@ -6077,7 +6131,7 @@ function importMemories(args) {
   }
   return { imported, overwritten, skipped, appended, errors, skipped_relations: skippedRelations };
 }
-var MERGE_STRATEGIES;
+var IMPORTABLE_METADATA_KEYS, FORGOTTEN_HASH_RE, MAX_IMPORTED_FORGOTTEN_HASHES, MAX_IMPORTED_REPLACED_HISTORY_ENTRIES, MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES, REPLACED_HISTORY_ENTRY_KEYS, jsonBytesOf, MERGE_STRATEGIES;
 var init_serializer = __esm({
   "dist/core/serializer.js"() {
     "use strict";
@@ -6086,6 +6140,38 @@ var init_serializer = __esm({
     init_title();
     init_time_utils();
     init_types();
+    IMPORTABLE_METADATA_KEYS = /* @__PURE__ */ new Set([
+      "title_source",
+      "source_kind",
+      "source",
+      "cluster_key",
+      "dreamed_at",
+      "kind",
+      "project",
+      "previous_namespace",
+      "namespace_moved_at",
+      "split_from",
+      "retired_recall",
+      "priority",
+      "success_criteria",
+      "verification_scenario",
+      "implementation_state",
+      "outcome_state",
+      "accepted_at",
+      "source_ids"
+    ]);
+    FORGOTTEN_HASH_RE = /^[a-f0-9]{64}$/;
+    MAX_IMPORTED_FORGOTTEN_HASHES = 1e3;
+    MAX_IMPORTED_REPLACED_HISTORY_ENTRIES = 50;
+    MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES = 4 * 64 * 1024;
+    REPLACED_HISTORY_ENTRY_KEYS = /* @__PURE__ */ new Set([
+      "replaced_at",
+      "title",
+      "observations",
+      "tags",
+      "truncated"
+    ]);
+    jsonBytesOf = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
     MERGE_STRATEGIES = ["skip", "overwrite", "append"];
   }
 });
@@ -7365,7 +7451,7 @@ __export(util_exports, {
   getSizableOrigin: () => getSizableOrigin,
   hexToUint8Array: () => hexToUint8Array,
   isObject: () => isObject,
-  isPlainObject: () => isPlainObject,
+  isPlainObject: () => isPlainObject2,
   issue: () => issue,
   joinValues: () => joinValues,
   jsonStringifyReplacer: () => jsonStringifyReplacer,
@@ -7527,7 +7613,7 @@ function slugify2(input) {
 function isObject(data) {
   return typeof data === "object" && data !== null && !Array.isArray(data);
 }
-function isPlainObject(o) {
+function isPlainObject2(o) {
   if (isObject(o) === false)
     return false;
   const ctor = o.constructor;
@@ -7544,7 +7630,7 @@ function isPlainObject(o) {
   return true;
 }
 function shallowClone(o) {
-  if (isPlainObject(o))
+  if (isPlainObject2(o))
     return { ...o };
   if (Array.isArray(o))
     return [...o];
@@ -7684,7 +7770,7 @@ function omit(schema, mask) {
   return clone(schema, def);
 }
 function extend(schema, shape) {
-  if (!isPlainObject(shape)) {
+  if (!isPlainObject2(shape)) {
     throw new Error("Invalid input to extend: expected a plain object");
   }
   const checks = schema._zod.def.checks;
@@ -7707,7 +7793,7 @@ function extend(schema, shape) {
   return clone(schema, def);
 }
 function safeExtend(schema, shape) {
-  if (!isPlainObject(shape)) {
+  if (!isPlainObject2(shape)) {
     throw new Error("Invalid input to safeExtend: expected a plain object");
   }
   const def = mergeDefs(schema._zod.def, {
@@ -9225,7 +9311,7 @@ function mergeValues(a, b) {
   if (a instanceof Date && b instanceof Date && +a === +b) {
     return { valid: true, data: a };
   }
-  if (isPlainObject(a) && isPlainObject(b)) {
+  if (isPlainObject2(a) && isPlainObject2(b)) {
     const bKeys = Object.keys(b);
     const sharedKeys = Object.keys(a).filter((key) => bKeys.indexOf(key) !== -1);
     const newObj = { ...a, ...b };
@@ -10492,7 +10578,7 @@ var init_schemas = __esm({
       $ZodType.init(inst, def);
       inst._zod.parse = (payload, ctx) => {
         const input = payload.value;
-        if (!isPlainObject(input)) {
+        if (!isPlainObject2(input)) {
           payload.issues.push({
             expected: "record",
             code: "invalid_type",
@@ -23254,7 +23340,7 @@ function parseTargetKind(value) {
 }
 function parseJsonObject(json2, label) {
   const parsed = parseJsonObjectOrValue(json2);
-  if (!isPlainObject2(parsed))
+  if (!isPlainObject3(parsed))
     throw new AgentMessagingError(`${label} must contain a JSON object.`);
   return parsed;
 }
@@ -23304,7 +23390,7 @@ function assertJsonValue(value, label) {
     value.forEach((entry, index) => assertJsonValue(entry, `${label}[${index}]`));
     return;
   }
-  if (isPlainObject2(value)) {
+  if (isPlainObject3(value)) {
     for (const [key, entry] of Object.entries(value)) {
       assertJsonValue(entry, `${label}.${key}`);
     }
@@ -23316,7 +23402,7 @@ function normalizeObject(value) {
   assertJsonValue(value, "object");
   return value;
 }
-function isPlainObject2(value) {
+function isPlainObject3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function requireText(label, value, maxLength) {
@@ -24791,9 +24877,9 @@ import fs15 from "node:fs";
 import net from "node:net";
 import path14 from "node:path";
 function isLegacyAgentRouterVersionMismatchResponse(value) {
-  if (!isPlainObject3(value) || value.version !== 1 || value.request_id !== "" || value.ok !== false)
+  if (!isPlainObject4(value) || value.version !== 1 || value.request_id !== "" || value.ok !== false)
     return false;
-  if (!isPlainObject3(value.error))
+  if (!isPlainObject4(value.error))
     return false;
   return value.error.code === "unsupported_type" || value.error.code === "unsupported_version";
 }
@@ -24852,7 +24938,7 @@ async function sendAgentRouterRequest(socketPath, request, timeoutMs = DEFAULT_C
         if (isLegacyAgentRouterVersionMismatchResponse(response)) {
           throw new AgentRouterProtocolError("router_version_mismatch", "router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.");
         }
-        const uncorrelatedError = response.request_id === "" && response.ok === false && isPlainObject3(response.error) && typeof response.error.code === "string" && typeof response.error.message === "string";
+        const uncorrelatedError = response.request_id === "" && response.ok === false && isPlainObject4(response.error) && typeof response.error.code === "string" && typeof response.error.message === "string";
         if (response.version !== AGENT_ROUTER_PROTOCOL_VERSION || response.request_id !== request.request_id && !uncorrelatedError) {
           throw new AgentRouterProtocolError("invalid_response", "Router response identity does not match.");
         }
@@ -24871,7 +24957,7 @@ async function sendAgentRouterRequest(socketPath, request, timeoutMs = DEFAULT_C
   });
 }
 function validateRouterSuccessResult(request, value) {
-  if (!isPlainObject3(value)) {
+  if (!isPlainObject4(value)) {
     throw new AgentRouterProtocolError("invalid_response", "Router response result must be an object.");
   }
   const requireResultString = (field) => {
@@ -24929,7 +25015,7 @@ function validateRouterSuccessResult(request, value) {
   return value;
 }
 function isSelectionCard(value, project) {
-  if (!isPlainObject3(value))
+  if (!isPlainObject4(value))
     return false;
   return typeof value.session_id === "string" && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
 }
@@ -24939,7 +25025,7 @@ function validateSocketPath(socketPath) {
   }
   return socketPath;
 }
-function isPlainObject3(value) {
+function isPlainObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var AGENT_ROUTER_PROTOCOL_VERSION, AGENT_ROUTER_MAX_FRAME_BYTES, MAX_LEASE_MS, DEFAULT_CLIENT_TIMEOUT_MS, MAX_FIELD_LENGTH, MAX_ADAPTER_RECEIPT_BYTES, AgentRouterError, AgentRouterProtocolError;
@@ -42232,10 +42318,10 @@ var require_object_inspect = __commonJS({
       }
       if (!isDate(obj) && !isRegExp(obj)) {
         var ys = arrObjKeys(obj, inspect);
-        var isPlainObject4 = gPO ? gPO(obj) === Object.prototype : obj instanceof Object || obj.constructor === Object;
+        var isPlainObject5 = gPO ? gPO(obj) === Object.prototype : obj instanceof Object || obj.constructor === Object;
         var protoTag = obj instanceof Object ? "" : "null prototype";
-        var stringTag = !isPlainObject4 && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? "Object" : "";
-        var constructorTag = isPlainObject4 || typeof obj.constructor !== "function" ? "" : obj.constructor.name ? obj.constructor.name + " " : "";
+        var stringTag = !isPlainObject5 && toStringTag && Object(obj) === obj && toStringTag in obj ? $slice.call(toStr(obj), 8, -1) : protoTag ? "Object" : "";
+        var constructorTag = isPlainObject5 || typeof obj.constructor !== "function" ? "" : obj.constructor.name ? obj.constructor.name + " " : "";
         var tag = constructorTag + (stringTag || protoTag ? "[" + $join.call($concat.call([], stringTag || [], protoTag || []), ": ") + "] " : "");
         if (ys.length === 0) {
           return tag + "{}";

@@ -246,15 +246,15 @@
       "reason": "The source files are data inputs to the same shared contract predicate used by check-doc-claims, and mutation cases prove it rejects missing, relocated, negated, or source-drifted documentation. It verifies documentation synchronization, not runtime behavior.",
       "triaged": "2026-09-07 v4.9.0 documentation contract audit"
     },
-    "C5 src/core/serializer.ts:47": {
+    "C5 src/core/serializer.ts:513": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "provenance spread identity; trust written unconditionally",
-      "triaged": "2026-08-04; re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged)"
+      "triaged": "2026-08-04; re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-20 47→513 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged)"
     },
-    "C5 src/core/serializer.ts:56": {
+    "C5 src/core/serializer.ts:521": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "provenance spread identity; trust written unconditionally",
-      "triaged": "2026-08-04; re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged)"
+      "triaged": "2026-08-04; re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-20 56→521 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged)"
     },
     "C6 tests/verify-retired.test.ts": {
       "class": "WIRING-PIN",
@@ -326,10 +326,10 @@
       "reason": "the empty-result assertions ARE the contract under test (archived pointer readmits nothing), and every scenario pairs them with positive name-list assertions",
       "triaged": "2026-08-16 (UX-3 readmission rule)"
     },
-    "C5 src/core/serializer.ts:139": {
+    "C5 src/core/serializer.ts:604": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "`relations` is optional on Entity; empty means the entity has none, which is what the export should record. Newly visible after the C5 `||` regex fix.",
-      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged)"
+      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-20 139→604 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged)"
     },
     "C3 scripts/wait-for-checks.mjs": {
       "class": "NOT-A-GATE",
@@ -386,10 +386,10 @@
       "reason": "`opts?.countAsAccess ?? true` in search(): the default is the CONSERVATIVE direction, not the convenient one. Absent means 'this is an ordinary recall, count it' — the behaviour every caller had before the option existed. Only the one read that must NOT count (exportMemories: a backup is not a use) says so explicitly, and tests/core/reads-that-were-writes.test.ts pins both directions.",
       "triaged": "2026-08-24 (full-codebase review, R9-a); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-09-04 732→803 (rebase onto main after createEntity dedup-guard scope widened to any entity; same statement — verified against actual C5 regex hit); re-keyed 2026-09-04 803→818 (fix/lesson-dedup-guard-trusts-stored-type added a comment block above explaining the security-review fix; same statement — verified against actual C5 regex hit)"
     },
-    "C5 src/core/serializer.ts:44": {
+    "C5 src/core/serializer.ts:450": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "`args.bundled ?? {}` in buildImportedMetadata: an absent `metadata` in the bundle genuinely means the bundle says nothing about it, and the empty object is the correct reading — the entity's own metadata (and the import's rebuilt trust/provenance) still apply. A bundle predating the field must not clear metadata the importer already had. Pinned by tests/core/export-import.test.ts 'carries metadata, but never a guard'.",
-      "triaged": "2026-08-24 (full-codebase review, R3-c); re-triaged 2026-08-24 — the destructure collapsed from three excluded keys to one (`guard`), so the line text changed while the `?? {}` and its reading did not. Same classification, same reason, same test."
+      "triaged": "2026-08-24 (full-codebase review, R3-c); re-triaged 2026-08-24 — the destructure collapsed from three excluded keys to one (`guard`), so the line text changed while the `?? {}` and its reading did not. Same classification, same reason, same test.; re-keyed 2026-09-20 44→450 (#359/#361: the `guard` destructure was replaced by the import metadata allow-list, so the statement is now `const bundled = (args.bundled ?? {}) as Record<string, unknown>;` — different text, the same `?? {}` and the same reading; classification unchanged)"
     },
     "C1 tests/cli/a-partial-backup-says-so.test.ts": {
       "class": "SAFE",
@@ -411,15 +411,15 @@
       "reason": "`input.commits ?? []` — WhySchema documents commits as optional (a caller without a working tree resolves none); the result carries commits: [] visibly, and every real gap in the chain is a typed abstention, never a default.",
       "triaged": "2026-08-16 (UX-3 memesh why); re-keyed 2026-08-24 (M-07: file_not_found abstention + why.ts imports added above; statements byte-identical, classification unchanged)"
     },
-    "C5 src/core/serializer.ts:392": {
+    "C5 src/core/serializer.ts:884": {
       "class": "SAFE-ACCUMULATOR",
       "reason": "`relations` is optional on the imported bundle entry; empty means none to re-create. Newly visible after the C5 `||` regex fix.",
-      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-08-24 (M-05/M-06/M-18 batch: --obs validation, zero-hit retrieval-mode message, import overwritten-counter/dedupe added above; statements byte-identical, classification unchanged); re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement"
+      "triaged": "2026-08-17 (surfaced by the C5 || regex fix); re-keyed 2026-08-24 (dead toolPreferences/avgSessionMinutes fields removed; export gained countAsAccess — statements byte-identical, classification unchanged); re-keyed 2026-08-24 (R3 export/import batch shifted lines; statements byte-identical, classification unchanged); re-keyed 2026-08-24 (cleanup pass; statement re-located in file order, classification unchanged); re-keyed 2026-08-24 (M-05/M-06/M-18 batch: --obs validation, zero-hit retrieval-mode message, import overwritten-counter/dedupe added above; statements byte-identical, classification unchanged); re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement; re-keyed 2026-09-20 392→884 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged)"
     },
-    "C5 src/core/serializer.ts:318": {
+    "C5 src/core/serializer.ts:784": {
       "class": "SAFE-GUARDED",
       "reason": "entity.observations can be genuinely undefined for a raw import bundle — describeInvalidEntity (this file) explicitly permits the field to be absent, only rejecting it if present-and-not-an-array. The ?? [] covers that documented-optional case, not a hidden failure.",
-      "triaged": "2026-08-24; re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement"
+      "triaged": "2026-08-24; re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement; re-keyed 2026-09-20 318→784 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged)"
     },
     "C5 src/core/agent-router.ts:843": {
       "class": "SAFE-BY-CONSTRUCTION",

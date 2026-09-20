@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { remember, forget, recall, exportMemories, importMemories } from '../../src/core/operations.js';
+import { createHash } from 'node:crypto';
+import { remember, forget, recall, exportMemories, importMemories, setPinned } from '../../src/core/operations.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
@@ -26,6 +27,863 @@ it.each(['append', 'overwrite'] as const)('#346 %s imports preserve local forgot
   remember({ name, type: 'session-insight', observations: [removed] });
   expect(kg.getEntity(name)!.observations).toContain(removed);
   expect(kg.getEntity(name)!.metadata?.forgotten_observation_hashes).toEqual([]);
+});
+
+// #359: the missing direction. #346 only ever preserved a LOCAL exclusion
+// list against a bundle that also carried one — the fix above still let a
+// bundle SET `forgotten_observation_hashes` on a local entity that had none,
+// because the spread order (`...existingMetadata, ...bundledSafe`) puts the
+// bundle's value into the gap and nothing put it back. A bundle is content;
+// it must never be able to introduce a forget-exclusion the importer never
+// recorded.
+it.each(['append', 'overwrite'] as const)(
+  '#359 %s never lets a bundle SET forgotten_observation_hashes where the local entity has none',
+  (merge_strategy) => {
+    const name = 'session-import-no-local-exclusion-files';
+    remember({ name, type: 'session-insight', observations: ['kept'] });
+    const data = {
+      version: '3.1.0', exported_at: '2026-09-14T00:00:00.000Z', entity_count: 1,
+      entities: [{
+        name, type: 'session-insight', namespace: 'personal', relations: [], tags: [],
+        observations: ['kept', 'new imported observation'],
+        metadata: { forgotten_observation_hashes: ['a'.repeat(64)] },
+      }],
+    };
+    importMemories({ data, merge_strategy });
+    const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    expect(
+      entity.metadata?.forgotten_observation_hashes,
+      'a bundle introduced an exclusion the local entity never recorded',
+    ).toBeUndefined();
+  },
+);
+
+// #359 MUST-FIX-2 (review round 2): a DENY-ALWAYS fix regressed a promise
+// 4.10.1 already published — CHANGELOG [4.10.1] says an observation removed
+// with `forget` "stays removed from later Stop snapshots" with no caveat,
+// and 4.10.1's own (buggy, unvalidated) behaviour let a user's OWN backup
+// restore its OWN exclusions onto a fresh machine. The fix is validate, not
+// deny: a FRESH entity (no local row) accepts the bundle's
+// `forgotten_observation_hashes` ONLY when every element is a real SHA-256
+// hex digest, de-duplicated, and under the cap — never the raw value, and
+// never a partially-filtered one.
+//
+// (1) fresh entity + a VALID list → present after import, for both
+// merge strategies (both take the same "create fresh" path in importMemories
+// when the entity does not exist yet, so this also guards that path staying
+// shared).
+it.each(['append', 'overwrite'] as const)(
+  '#359 MUST-FIX-2 a fresh entity accepts a VALID bundled forgotten_observation_hashes list (%s)',
+  (merge_strategy) => {
+    const name = 'session-fresh-valid-exclusion-files';
+    const hash = 'a'.repeat(64);
+    const data = {
+      version: '3.1.0', exported_at: '2026-09-14T00:00:00.000Z', entity_count: 1,
+      entities: [{
+        name, type: 'session-insight', namespace: 'personal', relations: [], tags: [],
+        observations: ['brand new text'],
+        metadata: { forgotten_observation_hashes: [hash] },
+      }],
+    };
+    importMemories({ data, merge_strategy });
+    const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    expect(entity.metadata?.forgotten_observation_hashes).toEqual([hash]);
+  },
+);
+
+// (2) THE TWO-IMPORT SCENARIO this whole fix is FOR: restoring a backup that
+// already reflects a `forget` decision (creates the entity, carries the
+// exclusion hash, has no occurrence of the removed text), then later
+// append-importing an OLDER backup that still has the removed text. The
+// downstream mechanism that makes this work is `createEntityInner`'s
+// untrusted-write filter (knowledge-graph.ts ~576): it reads
+// `forgotten_observation_hashes` off the row CURRENTLY in the database on
+// every untrusted write to a `session-*-(files|fixes|summary)` entity and
+// strips re-appearing forgotten text. That filter only has something to read
+// if the FIRST import actually persisted the hash — which a deny-always fix
+// does not do. This is RED against a deny-always fix and GREEN once a fresh
+// entity can accept a validated list (also true of 4.10.1's original,
+// unvalidated pass-through — this is the regression MUST-FIX-2 closes).
+it('#359 MUST-FIX-2 a later append-import cannot re-add text a first restore already excluded', () => {
+  const name = 'session-two-import-exclusion-files';
+  const removedText = 'Session edited 1 file(s): removed.ts';
+  const removedHash = createHash('sha256').update(removedText).digest('hex');
+
+  // Bundle B: the newer backup, already reflecting the forget — carries the
+  // exclusion, not the excluded text.
+  const bundleB = {
+    version: '3.1.0', exported_at: '2026-09-14T00:00:00.000Z', entity_count: 1,
+    entities: [{
+      name, type: 'session-insight', namespace: 'personal', relations: [], tags: [],
+      observations: ['Session edited 1 file(s): kept.ts'],
+      metadata: { forgotten_observation_hashes: [removedHash] },
+    }],
+  };
+  importMemories({ data: bundleB, merge_strategy: 'skip' });
+
+  // Bundle A: an OLDER backup that still has the removed text.
+  const bundleA = {
+    version: '3.0.0', exported_at: '2026-09-01T00:00:00.000Z', entity_count: 1,
+    entities: [{
+      name, type: 'session-insight', namespace: 'personal', relations: [], tags: [],
+      observations: [removedText],
+    }],
+  };
+  importMemories({ data: bundleA, merge_strategy: 'append' });
+
+  const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+  expect(
+    entity.observations,
+    'an older, append-imported backup put back text a newer restore had already excluded',
+  ).not.toContain(removedText);
+});
+
+// (3) malformed bundles on a FRESH entity: never partially trusted. One
+// invalid element (or an oversized list — decided to drop whole rather than
+// truncate; see the comment on MAX_IMPORTED_FORGOTTEN_HASHES in
+// serializer.ts) drops the WHOLE list, same as non-array or empty.
+it.each([
+  ['not an array', 'not-an-array'],
+  ['one non-hex element among otherwise-valid ones', ['a'.repeat(64), 'not-a-hash']],
+  ['wrong-length hex', ['a'.repeat(63)]],
+  ['oversize: 10,000 distinct valid hashes', Array.from({ length: 10_000 }, (_, i) => createHash('sha256').update(String(i)).digest('hex'))],
+  // Round-3 independent review, item 5: `Array.prototype.every` SKIPS holes,
+  // so validating before de-duplicating let a sparse array pass the
+  // element-shape check vacuously (no element for the callback to reject),
+  // and spreading it through `new Set(...)` then materialised the holes as
+  // literal `undefined` — stored as `[null]` after the JSON round trip.
+  // Unreachable from a real JSON bundle (JSON has no sparse arrays), but it
+  // broke the "never a partially-honoured exclusion list" invariant the
+  // function's own comment states.
+  ['sparse array (holes)', new Array(3)],
+])(
+  '#359 MUST-FIX-2 a malformed bundled forgotten_observation_hashes (%s) on a FRESH entity leaves the field absent',
+  (_label, malformed) => {
+    const name = 'session-fresh-malformed-exclusion-files';
+    const data = {
+      version: '3.1.0', exported_at: '2026-09-14T00:00:00.000Z', entity_count: 1,
+      entities: [{
+        name, type: 'session-insight', namespace: 'personal', relations: [], tags: [],
+        observations: ['brand new text'],
+        metadata: { forgotten_observation_hashes: malformed },
+      }],
+    };
+    importMemories({ data, merge_strategy: 'skip' });
+    const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    expect(entity.metadata?.forgotten_observation_hashes).toBeUndefined();
+    expect(entity.observations).toContain('brand new text');
+  },
+);
+
+// #359 round 4 (independent review, item A): the deny-list named `guard`,
+// `demo`, `forgotten_observation_hashes` — and missed `task_state`, `pin`,
+// `signal_score`, `consolidation_depth`, `compacted_into`, `proposal_id`,
+// `session_id`. A bundle could write `task_state.goal`, which SessionStart
+// and `memesh briefing` inject verbatim into the agent's context — a file
+// someone sends you could put text in front of the agent. `buildImportedMetadata`
+// is now an ALLOW-list (`IMPORTABLE_METADATA_KEYS`): only a named descriptive
+// key ever reaches the merge; everything else — every authority key AND any
+// future/unknown key — is absent by construction, the same one mechanism.
+describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () => {
+  it("the reviewer's task_state probe: a bundle cannot inject text a SessionStart briefing would show", () => {
+    const name = 'task-state:authority-project';
+    const data = {
+      version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+      entities: [{
+        name, type: 'task-state', namespace: 'personal', relations: [], tags: [],
+        observations: ['goal: HOSTILE BUNDLE GOAL'],
+        metadata: { task_state: { goal: 'HOSTILE BUNDLE GOAL' } },
+      }],
+    };
+    importMemories({ data, merge_strategy: 'skip' });
+    const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    expect(entity.metadata?.task_state, 'a bundle set task_state on a fresh entity').toBeUndefined();
+  });
+
+  it.each(['append', 'overwrite'] as const)(
+    'a bundle cannot set task_state on an EXISTING task-state entity either (%s)',
+    (merge_strategy) => {
+      const name = 'task-state:existing-authority-project';
+      remember({ name, type: 'task-state', observations: ['goal: real goal'] });
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'task-state', namespace: 'personal', relations: [], tags: [],
+          observations: ['goal: real goal', 'goal: HOSTILE BUNDLE GOAL'],
+          metadata: { task_state: { goal: 'HOSTILE BUNDLE GOAL' } },
+        }],
+      };
+      importMemories({ data, merge_strategy });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.task_state, 'a bundle set task_state on an existing entity').toBeUndefined();
+    },
+  );
+
+  // #359 round 6 (independent review): `args.isNewEntity &&` guarding
+  // `freshPin` had no test that would go RED if it were removed — mutating
+  // it away left 90/90 green. These two pairs are that mutation-sensitive
+  // regression guard, for BOTH directions and BOTH merge strategies: a
+  // bundle must be able to neither GRANT nor REVOKE a pin on an entity you
+  // already have.
+  it.each(['append', 'overwrite'] as const)(
+    "pin:false from a bundle cannot unpin an existing pinned entity (%s)",
+    (merge_strategy) => {
+      const name = 'pinned-real-memory';
+      remember({ name, type: 'decision', observations: ['mine'] });
+      setPinned(name, true);
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'decision', namespace: 'personal', relations: [], tags: [],
+          observations: ['mine', 'from bundle'],
+          metadata: { pin: false },
+        }],
+      };
+      importMemories({ data, merge_strategy });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.pin, "a bundle's pin:false cleared the user's protection").toBe(true);
+    },
+  );
+
+  it.each(['append', 'overwrite'] as const)(
+    "pin:true from a bundle cannot pin an existing UNPINNED entity (%s)",
+    (merge_strategy) => {
+      const name = 'unpinned-real-memory';
+      remember({ name, type: 'decision', observations: ['mine'] });
+      expect(new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.pin, 'fixture: entity must start unpinned').toBeUndefined();
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'decision', namespace: 'personal', relations: [], tags: [],
+          observations: ['mine', 'from bundle'],
+          metadata: { pin: true },
+        }],
+      };
+      importMemories({ data, merge_strategy });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.pin, "a bundle's pin:true granted protection to an entity that never asked for it").toBeUndefined();
+    },
+  );
+
+  it('pin:true from a bundle DOES protect a fresh entity it creates', () => {
+    const name = 'fresh-entity-pin-grant';
+    const data = {
+      version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+      entities: [{
+        name, type: 'decision', namespace: 'personal', relations: [], tags: [],
+        observations: ['brand new'],
+        metadata: { pin: true },
+      }],
+    };
+    importMemories({ data, merge_strategy: 'skip' });
+    const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    expect(entity.metadata?.pin).toBe(true);
+  });
+
+  it.each([['1' as unknown as boolean, 1], ['the string "true"', 'true'], ['omitted entirely', undefined]])(
+    'pin is refused on a fresh entity unless the bundle sends the literal boolean true (%s)',
+    (_label, value) => {
+      const name = 'fresh-entity-pin-non-strict';
+      const metadata = value === undefined ? {} : { pin: value };
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'decision', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'], metadata,
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.pin).not.toBe(true);
+    },
+  );
+
+  it.each(['consolidation_depth', 'compacted_into', 'proposal_id', 'session_id'])(
+    'ranking/routing authority key %s is dropped on a fresh entity, not restored from the bundle',
+    (key) => {
+      const name = `fresh-entity-authority-${key}`;
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { [key]: key === 'session_id' ? 'sess-hostile' : 7 },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.[key]).toBeUndefined();
+    },
+  );
+
+  it('an unknown/future metadata key is dropped, not admitted by default', () => {
+    const name = 'fresh-entity-unknown-key';
+    const data = {
+      version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+      entities: [{
+        name, type: 'note', namespace: 'personal', relations: [], tags: [],
+        observations: ['brand new'],
+        metadata: { evil_new_key: 1 },
+      }],
+    };
+    importMemories({ data, merge_strategy: 'skip' });
+    const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    expect(entity.metadata?.evil_new_key).toBeUndefined();
+  });
+
+  it('a genuinely DESCRIPTIVE key is kept — the allow-list is not a synonym for "deny everything"', () => {
+    const name = 'fresh-entity-descriptive-key';
+    const data = {
+      version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+      entities: [{
+        name, type: 'note', namespace: 'personal', relations: [], tags: [],
+        observations: ['brand new'],
+        metadata: { title_source: 'heuristic', retired_recall: { hits: 3, misses: 1 } },
+      }],
+    };
+    importMemories({ data, merge_strategy: 'skip' });
+    const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    expect(entity.metadata?.title_source).toBe('heuristic');
+    expect(entity.metadata?.retired_recall).toEqual({ hits: 3, misses: 1 });
+  });
+
+  // #359 round 6 (independent review): `evidence_for` was classified
+  // DESCRIPTIVE through round 5 ("read only by its own writer"), but that
+  // writer's read GATES a decision (dreamer.ts ~810: `if (!evidenceFor.
+  // includes(digestId)) evidenceFor.push(digestId)`) — a genuine conditional,
+  // not display. Reclassified AUTHORITY: denied always, fresh or existing,
+  // same as every other authority key with no restore exception.
+  it.each(['append', 'overwrite'] as const)(
+    'evidence_for is refused on an EXISTING entity (%s) — it is a dreamer idempotency gate, not display',
+    (merge_strategy) => {
+      const name = 'existing-entity-evidence-for';
+      remember({ name, type: 'note', observations: ['mine'] });
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['mine', 'from bundle'],
+          metadata: { evidence_for: [999] },
+        }],
+      };
+      importMemories({ data, merge_strategy });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.evidence_for).toBeUndefined();
+    },
+  );
+
+  it('evidence_for is refused on a FRESH entity too — no restore exception, unlike forgotten_observation_hashes/pin/signal_score', () => {
+    const name = 'fresh-entity-evidence-for';
+    const data = {
+      version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+      entities: [{
+        name, type: 'note', namespace: 'personal', relations: [], tags: [],
+        observations: ['brand new'],
+        metadata: { evidence_for: [999] },
+      }],
+    };
+    importMemories({ data, merge_strategy: 'skip' });
+    const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    expect(entity.metadata?.evidence_for).toBeUndefined();
+  });
+
+  // #359 round 7 (independent review): an EXISTING entity's metadata keeps
+  // its own values against a bundle's authority fields (proven all through
+  // this file) — but its STATUS is a different story. `import` reuses
+  // `kg.createEntity()` to write the merged/replaced observations for BOTH
+  // `append` and `overwrite`, and `createEntity()` unconditionally
+  // reactivates any ARCHIVED row sharing the new entity's name (the same
+  // "re-remember reactivates" behaviour `remember()` has always had —
+  // knowledge-graph.ts ~436-442). A comment here used to claim the opposite
+  // ("keeps its own archived-or-not state") — false, and now corrected
+  // above.
+  //
+  // Measured directly against `HEAD` (git archive of this commit, run
+  // through an isolated child process against a throwaway HOME/MEMESH_DIR —
+  // never this branch's own build) as well as against this branch: BOTH
+  // reactivate an archived entity on BOTH strategies, identically. This is
+  // therefore NOT a regression #359's rounds introduced — it predates all of
+  // them. Whether `import` specifically SHOULD defer to a memory's archived
+  // state (the way it now defers to `pin`/`signal_score`/
+  // `forgotten_observation_hashes`) is a real, separate product question,
+  // deliberately left open here (outside #359's scope) and tracked in a new
+  // issue. These two tests pin what happens TODAY — current, pre-existing
+  // behaviour, pending that owner decision — so a future change to it is a
+  // deliberate edit against a red test, not an accidental regression nobody
+  // was watching for.
+  describe("#359 round 7: an existing entity's ARCHIVED status — today's PRE-EXISTING behaviour, pending an owner decision (not a #359 regression)", () => {
+    it.each(['append', 'overwrite'] as const)(
+      'import (%s) of a bundle naming an ARCHIVED existing entity reactivates it — matches HEAD, not a regression',
+      (merge_strategy) => {
+        const name = `archived-existing-${merge_strategy}`;
+        remember({ name, type: 'note', observations: ['original text'] });
+        getDatabase().prepare("UPDATE entities SET status = 'archived' WHERE name = ?").run(name);
+        const kg = new KnowledgeGraph(getDatabase());
+        // `getEntity` filters by name only, with no status clause — it
+        // returns an archived row same as an active one. The TS-level
+        // `Entity` shape has no `status` field; it has `archived: true`
+        // ONLY when the row is archived (absent/undefined when active).
+        expect(kg.getEntity(name)!.archived, 'fixture: entity must start archived').toBe(true);
+
+        const data = {
+          version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+          entities: [{
+            name, type: 'note', namespace: 'personal', relations: [], tags: [],
+            observations: ['bundle text'],
+            metadata: {
+              pin: true, signal_score: 0.9, forgotten_observation_hashes: ['a'.repeat(64)],
+              replaced_history: [{ replaced_at: '1900-01-01', title: 'forged', observations: ['forged'], tags: [] }],
+            },
+          }],
+        };
+        importMemories({ data, merge_strategy });
+
+        const entity = kg.getEntity(name)!;
+        // Today's behaviour: reactivated — `archived` is absent, not `true`.
+        // If this ever goes RED because `archived` stayed `true`, that is
+        // the owner decision above having been made — update this test's
+        // name and comment, do not just flip the assertion.
+        expect(entity.archived).toBeUndefined();
+        // The FOUR fresh-only authority exceptions stay ABSENT/UNCHANGED
+        // regardless — reactivation does not make `buildImportedMetadata`
+        // treat this as a FRESH entity; `isNewEntity` is `!existing`, and
+        // `existing` was resolved (and was truthy) BEFORE any of this ran.
+        expect(entity.metadata?.pin, 'pin leaked onto a reactivated EXISTING entity').toBeUndefined();
+        expect(entity.metadata?.signal_score, "the bundle's signal_score overwrote the local one on a reactivated EXISTING entity").toBe(0.55);
+        expect(entity.metadata?.forgotten_observation_hashes, 'forgotten_observation_hashes leaked onto a reactivated EXISTING entity').toBeUndefined();
+        expect(entity.metadata?.replaced_history, 'a forged replaced_history leaked onto a reactivated EXISTING entity with no local history').toBeUndefined();
+      },
+    );
+  });
+
+  // #359 round 8 (independent review): `replaced_history` was classified
+  // DESCRIPTIVE through rounds 4-7 — "read back only to compute a display
+  // count" — which was true of ONE reader and false of a SECOND:
+  // `rememberInTransaction`'s `replace` path reads the CURRENT value,
+  // appends the version it just replaced, and writes the result back
+  // (operations.ts ~334-335). Letting a bundle's value through the plain
+  // allow-list meant an append import could REPLACE a real local history
+  // entry with a forged one, and the NEXT genuine local `--replace` would
+  // then append onto the forged list. Now the FOURTH narrow, validated
+  // fresh-entity-only exception, same pattern as the other three.
+  describe('#359 round 8: replaced_history — the fourth narrow fresh-entity exception', () => {
+    const forged = [{ replaced_at: '1900-01-01', title: 'forged', observations: ['forged'], tags: [] }];
+
+    it.each(['append', 'overwrite'] as const)(
+      "an EXISTING entity's local replaced_history is never overwritten by a bundle's forged one (%s)",
+      (merge_strategy) => {
+        const name = 'existing-entity-real-replaced-history';
+        remember({ name, type: 'note', title: 'v1', observations: ['real-old'] });
+        remember({ name, type: 'note', observations: ['real-new'], replace: true });
+        const before = new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.replaced_history;
+        expect(before, 'fixture: a real local replace must have happened').toHaveLength(1);
+
+        const data = {
+          version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+          entities: [{
+            name, type: 'note', namespace: 'personal', relations: [], tags: [],
+            observations: ['real-new'],
+            metadata: { replaced_history: forged },
+          }],
+        };
+        importMemories({ data, merge_strategy });
+
+        const after = new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.replaced_history;
+        expect(after, "a bundle's forged replaced_history overwrote the real local one").toEqual(before);
+      },
+    );
+
+    it.each(['append', 'overwrite'] as const)(
+      "an EXISTING entity with NO local replaced_history stays absent, whatever the bundle sends (%s)",
+      (merge_strategy) => {
+        const name = 'existing-entity-no-replaced-history';
+        remember({ name, type: 'note', observations: ['never replaced'] });
+        expect(
+          new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.replaced_history,
+          'fixture: entity must start with no replaced_history',
+        ).toBeUndefined();
+
+        const data = {
+          version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+          entities: [{
+            name, type: 'note', namespace: 'personal', relations: [], tags: [],
+            observations: ['never replaced'],
+            metadata: { replaced_history: forged },
+          }],
+        };
+        importMemories({ data, merge_strategy });
+
+        expect(
+          new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.replaced_history,
+          "a bundle granted replaced_history where none existed locally",
+        ).toBeUndefined();
+      },
+    );
+
+    it('a FRESH entity keeps a VALID bundled replaced_history, and a LATER local replace appends to it', () => {
+      const name = 'fresh-entity-valid-replaced-history';
+      const valid = [{ replaced_at: '2026-01-01T00:00:00.000Z', title: 'v1', observations: ['old text'], tags: ['t1'] }];
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { replaced_history: valid },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const kg = new KnowledgeGraph(getDatabase());
+      expect(kg.getEntity(name)!.metadata?.replaced_history).toEqual(valid);
+
+      // A later LOCAL replace appends to the restored history, proving it is
+      // genuinely stored in the shape `rememberInTransaction` expects, not
+      // merely round-tripped as opaque JSON.
+      remember({ name, type: 'note', observations: ['newer text'], replace: true });
+      const grown = kg.getEntity(name)!.metadata?.replaced_history as Array<{ title: string | null }>;
+      expect(grown).toHaveLength(2);
+      expect(grown[0].title, 'the restored entry must still be first').toBe('v1');
+    });
+
+    // #359 round 10: re-checked after the byte cap moved from per-entry
+    // (round 8, 128 KiB) to the whole array (round 9, 256 KiB) — this is the
+    // exact real-writer shape (a probe of `rememberInTransaction`'s own
+    // `replace` path) that proved a COUNT-based cap would have rejected
+    // legitimate data. The exact byte count has been mis-cited twice before
+    // this round (3474, then 4978) — round 10 re-measured it with Codex's
+    // own one-liner (`Buffer.byteLength(JSON.stringify(fixture), 'utf8')`)
+    // and asserts the EXACT number below, not merely "under the cap", so a
+    // future accidental change to this fixture's shape is caught by an
+    // exact-value mismatch instead of silently still passing a loose bound.
+    it('a FRESH entity keeps a VALID bundled replaced_history with 500 tiny observations in one entry — the real shape a COUNT cap would have rejected', () => {
+      const name = 'fresh-entity-replaced-history-500-observations';
+      const manyObs = Array.from({ length: 500 }, (_, i) => `obs-${i}`);
+      const valid = [{ replaced_at: '2026-01-01T00:00:00.000Z', title: null, observations: manyObs, tags: [] }];
+      expect(Buffer.byteLength(JSON.stringify(valid), 'utf8'), 'fixture: the exact measured real-writer size — re-measure with Buffer.byteLength(JSON.stringify(...), \'utf8\') if this ever goes red').toBe(4974);
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { replaced_history: valid },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.replaced_history).toEqual(valid);
+    });
+
+    it.each([
+      ['not an array', { replaced_at: '2026-01-01T00:00:00.000Z', title: null, observations: [], tags: [] }],
+      ['empty array', []],
+      ['entry not an object', ['just a string']],
+      ['entry is an array', [[1, 2, 3]]],
+      ['entry missing replaced_at', [{ title: 'x', observations: [], tags: [] }]],
+      ['entry replaced_at not a string', [{ replaced_at: 123, title: null, observations: [], tags: [] }]],
+      ['entry title is a number (must be string or null)', [{ replaced_at: 'x', title: 5, observations: [], tags: [] }]],
+      ['entry observations not an array', [{ replaced_at: 'x', title: null, observations: 'nope', tags: [] }]],
+      ['entry observations contains a non-string', [{ replaced_at: 'x', title: null, observations: [1], tags: [] }]],
+      ['entry tags not an array', [{ replaced_at: 'x', title: null, observations: [], tags: 'nope' }]],
+      ['entry truncated is not a boolean', [{ replaced_at: 'x', title: null, observations: [], tags: [], truncated: 'yes' }]],
+      ['entry has an unknown key', [{ replaced_at: 'x', title: null, observations: [], tags: [], extra: true }]],
+      ['entry has a __proto__ key', [JSON.parse('{"replaced_at":"x","title":null,"observations":[],"tags":[],"__proto__":{"polluted":true}}')]],
+      ['51 entries (over the 50-entry cap)', Array.from({ length: 51 }, () => ({ replaced_at: 'x', title: null, observations: [], tags: [] }))],
+      // #359 round 9: the byte cap moved from PER-ENTRY (128 KiB, round 8) to
+      // the WHOLE ARRAY (256 KiB) — see src/core/serializer.ts's comment on
+      // `MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES`. 200,000 bytes (round 8's
+      // value) is now comfortably UNDER 256 KiB and would no longer be
+      // rejected; 300,000 is clearly over.
+      ['one entry over the whole-array byte cap', [{ replaced_at: 'x', title: null, observations: ['y'.repeat(300_000)], tags: [] }]],
+    ])('a FRESH entity with a malformed bundled replaced_history (%s) gets no replaced_history at all', (_label, malformed) => {
+      const name = 'fresh-entity-malformed-replaced-history';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { replaced_history: malformed },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.replaced_history).toBeUndefined();
+      // Confirms prototype pollution specifically did not happen — a
+      // regression here would show up on ANY plain object, not just this
+      // entity's own metadata.
+      expect(({} as Record<string, unknown>).polluted, 'a __proto__ key polluted Object.prototype').toBeUndefined();
+    });
+
+    // #359 round 9: the byte cap is checked over the SERIALIZED WHOLE ARRAY
+    // (`jsonBytesOf(value) <= MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES`,
+    // 256 KiB = 4x the real writer's whole-array cap). These two tests pin
+    // the boundary itself — MEASURED with the same `Buffer.byteLength(
+    // JSON.stringify(...), 'utf8')` the validator uses, not hand-calculated,
+    // so a future change to JSON's own escaping rules cannot silently drift
+    // this fixture out from under the assertion.
+    const TOTAL_BYTE_CAP = 256 * 1024;
+    /** Builds a one-entry `replaced_history` array whose OWN serialized byte
+     *  size is exactly `targetBytes`, by padding a single ASCII observation
+     *  string and measuring after every adjustment. */
+    function replacedHistoryAtBytes(targetBytes: number): Array<Record<string, unknown>> {
+      const build = (padLength: number) => [{ replaced_at: 'x', title: null, observations: ['y'.repeat(padLength)], tags: [] }];
+      const overhead = Buffer.byteLength(JSON.stringify(build(0)), 'utf8');
+      let padLength = Math.max(0, targetBytes - overhead);
+      let entry = build(padLength);
+      // `'y'` is one ASCII byte and needs no JSON escaping, so the estimate
+      // above is normally exact on the first try; adjust defensively rather
+      // than assume.
+      while (Buffer.byteLength(JSON.stringify(entry), 'utf8') < targetBytes) { padLength++; entry = build(padLength); }
+      while (Buffer.byteLength(JSON.stringify(entry), 'utf8') > targetBytes) { padLength--; entry = build(padLength); }
+      return entry;
+    }
+
+    it('a FRESH entity replaced_history measuring EXACTLY the 256 KiB whole-array cap is ACCEPTED', () => {
+      const atCap = replacedHistoryAtBytes(TOTAL_BYTE_CAP);
+      expect(Buffer.byteLength(JSON.stringify(atCap), 'utf8'), 'fixture: must measure exactly at the cap').toBe(TOTAL_BYTE_CAP);
+      const name = 'fresh-entity-replaced-history-at-byte-cap';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { replaced_history: atCap },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.replaced_history).toEqual(atCap);
+    });
+
+    it('a FRESH entity replaced_history measuring ONE BYTE OVER the 256 KiB whole-array cap is REJECTED', () => {
+      const overCap = replacedHistoryAtBytes(TOTAL_BYTE_CAP + 1);
+      expect(Buffer.byteLength(JSON.stringify(overCap), 'utf8'), 'fixture: must measure exactly one byte over the cap').toBe(TOTAL_BYTE_CAP + 1);
+      const name = 'fresh-entity-replaced-history-over-byte-cap';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { replaced_history: overCap },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.replaced_history).toBeUndefined();
+    });
+
+    // #359 round 10 (independent review): documentation and prose had
+    // drifted back to describing a PER-ENTRY byte bound, which is not what
+    // the code does or has done since round 9. These two tests are Codex's
+    // own counter-examples, made permanent — proof that the bound is over
+    // the WHOLE ARRAY, not per entry, because a per-entry reading predicts
+    // the OPPOSITE verdict on both.
+    it("two entries, each individually under any per-entry reading of the cap, are REJECTED once their aggregate exceeds the 256 KiB WHOLE-ARRAY cap (Codex's counter-example)", () => {
+      const oneEntryAt = (targetBytes: number): Record<string, unknown> => {
+        const build = (padLength: number) => ({ replaced_at: 'x', title: null, observations: ['y'.repeat(padLength)], tags: [] });
+        const overhead = Buffer.byteLength(JSON.stringify([build(0)]), 'utf8');
+        let padLength = Math.max(0, targetBytes - overhead);
+        let candidate = build(padLength);
+        while (Buffer.byteLength(JSON.stringify([candidate]), 'utf8') < targetBytes) { padLength++; candidate = build(padLength); }
+        while (Buffer.byteLength(JSON.stringify([candidate]), 'utf8') > targetBytes) { padLength--; candidate = build(padLength); }
+        return candidate;
+      };
+      const entryBytes = 140 * 1024;
+      const e1 = oneEntryAt(entryBytes);
+      const e2 = oneEntryAt(entryBytes);
+      // Each entry ALONE measures 140 KiB — comfortably under 256 KiB, so a
+      // (wrong) per-entry reading of the cap would accept both.
+      expect(Buffer.byteLength(JSON.stringify([e1]), 'utf8'), 'fixture: entry 1 alone must be under the whole-array cap').toBeLessThan(TOTAL_BYTE_CAP);
+      expect(Buffer.byteLength(JSON.stringify([e2]), 'utf8'), 'fixture: entry 2 alone must be under the whole-array cap').toBeLessThan(TOTAL_BYTE_CAP);
+      const combined = [e1, e2];
+      const combinedBytes = Buffer.byteLength(JSON.stringify(combined), 'utf8');
+      expect(combinedBytes, 'fixture: the two together must exceed the whole-array cap — that is the whole point of this test').toBeGreaterThan(TOTAL_BYTE_CAP);
+      const name = 'fresh-entity-replaced-history-two-140kib-entries';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { replaced_history: combined },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.replaced_history, 'two individually-small entries must still be rejected once their aggregate exceeds 256 KiB').toBeUndefined();
+    });
+
+    it("one 200 KiB entry is ACCEPTED under the real 256 KiB WHOLE-ARRAY cap, even though a (wrong) per-entry 128 KiB reading would reject it (Codex's counter-example)", () => {
+      const build = (padLength: number) => [{ replaced_at: 'x', title: null, observations: ['y'.repeat(padLength)], tags: [] }];
+      const targetBytes = 200 * 1024;
+      const overhead = Buffer.byteLength(JSON.stringify(build(0)), 'utf8');
+      let padLength = Math.max(0, targetBytes - overhead);
+      let entry = build(padLength);
+      while (Buffer.byteLength(JSON.stringify(entry), 'utf8') < targetBytes) { padLength++; entry = build(padLength); }
+      while (Buffer.byteLength(JSON.stringify(entry), 'utf8') > targetBytes) { padLength--; entry = build(padLength); }
+      const measured = Buffer.byteLength(JSON.stringify(entry), 'utf8');
+      expect(measured, 'fixture: must measure ~200 KiB — over the retired 128 KiB per-entry figure, under the real 256 KiB whole-array cap').toBe(targetBytes);
+      expect(measured, 'fixture: must be over the retired per-entry 128 KiB figure — that is the whole point of this test').toBeGreaterThan(128 * 1024);
+      const name = 'fresh-entity-replaced-history-one-200kib-entry';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { replaced_history: entry },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const importedEntity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(importedEntity.metadata?.replaced_history, 'a 200 KiB single entry must be accepted under the real whole-array cap').toEqual(entry);
+    });
+  });
+
+  // #359 round 5 (owner decision on the round-4 conflict): `signal_score` is
+  // AUTHORITY, but the existing round-trip promise for a FRESH entity stays
+  // — bounded to a value `computeSignalScore` itself could produce. An
+  // EXISTING entity's own score always wins, same as every other authority
+  // key; the bundle's value never even reaches the merge.
+  describe('#359 round 5: signal_score — the third narrow fresh-entity exception', () => {
+    it.each(['append', 'overwrite'] as const)(
+      "an EXISTING entity's local signal_score is never overwritten by a bundle's (%s)",
+      (merge_strategy) => {
+        const name = 'existing-entity-local-signal-score';
+        remember({ name, type: 'note', observations: ['mine'] });
+        new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (meta) => ({ ...meta, signal_score: 0.2 }));
+        const data = {
+          version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+          entities: [{
+            name, type: 'note', namespace: 'personal', relations: [], tags: [],
+            observations: ['mine', 'from bundle'],
+            metadata: { signal_score: 0.99 },
+          }],
+        };
+        importMemories({ data, merge_strategy });
+        const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+        expect(entity.metadata?.signal_score, "a bundle's signal_score overwrote the local one").toBe(0.2);
+      },
+    );
+
+    it('an EXISTING entity with NO local signal_score stays absent, whatever the bundle sends', () => {
+      const name = 'existing-entity-no-local-signal-score';
+      remember({ name, type: 'note', observations: ['mine'] });
+      new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (meta) => {
+        const { signal_score: _drop, ...rest } = meta;
+        return rest;
+      });
+      expect(new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.signal_score, 'fixture: entity must start with no signal_score').toBeUndefined();
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['mine', 'from bundle'],
+          metadata: { signal_score: 0.99 },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'append' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.signal_score, "a bundle's signal_score was granted where none existed locally").toBeUndefined();
+    });
+
+    it('a FRESH entity keeps a VALID bundled signal_score', () => {
+      const name = 'fresh-entity-valid-signal-score';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { signal_score: 0.73 },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.signal_score).toBe(0.73);
+    });
+
+    // #359 round 7 (independent review): the round-6 rewrite of this matrix
+    // dropped two ACCEPTED boundary cases the validator's own range check
+    // (`value >= 0 && value <= 1`) makes true, not obviously so. Restored
+    // explicitly, asserting what is actually STORED, not just that the
+    // import did not throw.
+    it('a FRESH entity keeps a bundled signal_score of -0 — it passes `-0 >= 0`, and JSON storage normalizes it to plain 0', () => {
+      const name = 'fresh-entity-signal-score-negative-zero';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { signal_score: -0 },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      // Accepted (not replaced by the locally computed score): the stored
+      // value is numerically 0, and `Object.is` confirms it is PLAIN 0, not
+      // -0 — JSON has no negative-zero literal, so `JSON.stringify(-0)` is
+      // `"0"`, and reading the metadata column back through `JSON.parse`
+      // yields ordinary positive zero. This is a property of the STORAGE
+      // layer, not of `validateFreshSignalScore` clamping anything.
+      expect(entity.metadata?.signal_score).toBe(0);
+      expect(Object.is(entity.metadata?.signal_score, -0), 'expected plain 0 after JSON storage, not -0').toBe(false);
+    });
+
+    it('a FRESH entity keeps a bundled signal_score of 1e-400 — it underflows to the double 0 before validation ever sees it', () => {
+      // `1e-400` is smaller than the smallest representable positive double
+      // (~5e-324): the JS engine parses the LITERAL itself as exactly `0`,
+      // whether it arrives as a source literal (here) or as JSON text
+      // (`JSON.parse('1e-400')` underflows identically) — by the time
+      // `validateFreshSignalScore` runs, the value it sees is plain `0`,
+      // already numerically indistinguishable from the `-0` case above.
+      expect(1e-400).toBe(0);
+      const name = 'fresh-entity-signal-score-subnormal-underflow';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { signal_score: 1e-400 },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      expect(entity.metadata?.signal_score).toBe(0);
+    });
+
+    it.each([
+      ['string', '0.9'],
+      ['string "0.5"', '0.5'],
+      ['NaN', NaN],
+      ['Infinity', Infinity],
+      ['-Infinity', -Infinity],
+      ['negative', -0.1],
+      ['greater than 1', 1.1],
+      ['null', null],
+      ['object', { value: 0.9 }],
+      ['boolean true', true],
+      ['array', [0.5]],
+    ])('a FRESH entity with a malformed bundled signal_score (%s) gets its own LOCALLY COMPUTED score, not "absent"', (_label, malformed) => {
+      const name = 'fresh-entity-malformed-signal-score';
+      const data = {
+        version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+        entities: [{
+          name, type: 'note', namespace: 'personal', relations: [], tags: [],
+          observations: ['brand new'],
+          metadata: { signal_score: malformed },
+        }],
+      };
+      importMemories({ data, merge_strategy: 'skip' });
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      // Dropped, not clamped, and NOT left absent: `createEntityInner` always
+      // stamps a signal_score at creation when none survived the merge
+      // (knowledge-graph.ts ~356), so a rejected bundle value is replaced by
+      // `computeSignalScore`'s own content-derived number — here `0.1`,
+      // because 'note' bases at 0.5 (signal-scorer.ts) and the 9-character
+      // observation "brand new" is under the 10-char floor that clamps any
+      // type down to `Math.min(base, 0.1)`. Asserted exactly, not just
+      // `typeof === 'number'`, per the round-6 review's correction: the
+      // field is never "absent" here, only ever "not the bundle's value".
+      expect(entity.metadata?.signal_score).not.toBe(malformed);
+      expect(entity.metadata?.signal_score).toBe(0.1);
+    });
+  });
 });
 
 // ── Export ───────────────────────────────────────────────────────────────────
@@ -576,6 +1434,32 @@ describe('importMemories', () => {
       // rather than one clobber traded for another.
       expect((meta.provenance as Record<string, unknown>).source).toBe('import');
       expect(meta.trust).toBe('untrusted');
+    });
+
+    // #359 round 6 (independent review): `namespace_moved_at` is written
+    // alongside `previous_namespace` (knowledge-graph.ts ~420-432, the SAME
+    // namespace-move code) but was missing from `IMPORTABLE_METADATA_KEYS`
+    // through round 5 — a REAL export -> import round trip silently dropped
+    // it while its sibling survived. This test goes through the ACTUAL
+    // `exportMemories()`/`importMemories()` pair, not hand-written metadata,
+    // to prove the fix the way the defect was found.
+    it("a moved entity's namespace-move breadcrumb pair survives a real export -> import round trip", () => {
+      remember({ name: 'moved-note', type: 'note', observations: ['x'], namespace: 'personal' });
+      // Re-remembering under a DIFFERENT namespace is what stamps
+      // previous_namespace + namespace_moved_at (knowledge-graph.ts's own
+      // namespace-move code, not the import path).
+      remember({ name: 'moved-note', type: 'note', observations: ['x'], namespace: 'team' });
+      const before = new KnowledgeGraph(getDatabase()).getEntity('moved-note')!.metadata as Record<string, unknown>;
+      expect(before.previous_namespace, 'fixture: the move must have happened').toBe('personal');
+      expect(typeof before.namespace_moved_at, 'fixture: the move must have stamped a timestamp').toBe('string');
+
+      const bundle = exportMemories({});
+      getDatabase().prepare("DELETE FROM entities WHERE name = 'moved-note'").run();
+      importMemories({ data: bundle, merge_strategy: 'skip' });
+
+      const after = new KnowledgeGraph(getDatabase()).getEntity('moved-note')!.metadata as Record<string, unknown>;
+      expect(after.previous_namespace, 'previous_namespace did not survive the round trip').toBe('personal');
+      expect(after.namespace_moved_at, 'namespace_moved_at did not survive the round trip').toBe(before.namespace_moved_at);
     });
 
     it('refuses a per-entity namespace outside the three, without losing the rest', () => {

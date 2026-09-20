@@ -333,8 +333,12 @@ export interface ExportResult {
     /**
      * Everything memesh knows about the memory that is not its text:
      * provenance, `signal_score`, `task_state`, the demo marker. Import
-     * rebuilds trust and provenance for itself and drops `guard` — see
-     * `buildImportedMetadata`.
+     * filters this through an ALLOW-list — only a purely descriptive key
+     * ever comes from the bundle; `trust`/`provenance` are always rebuilt,
+     * and every behaviour-changing key (`guard`, `demo`, `task_state`,
+     * `pin`, ranking/dreamer state) is refused by default — see
+     * `IMPORTABLE_METADATA_KEYS`/`AUTHORITY_METADATA_KEYS` in
+     * `buildImportedMetadata` (serializer.ts).
      */
     metadata?: Record<string, unknown>;
     observations: string[];

@@ -277,8 +277,97 @@ For Stop-generated `session-<id>-files`, `session-<id>-fixes`, and
 `session-<id>-summary` snapshots, subsequent Stops exclude that exact observation
 text. Other newly derived observations can still update the snapshot. Explicitly
 adding the removed text with `remember` clears its exclusion and restores it.
-Imports preserve locally recorded exclusions, including when a bundle supplies
-conflicting metadata.
+
+Among the CLI, MCP and HTTP transport entrypoints, only CLI JSON import
+(`memesh import <file>`) retains bundle metadata at all. The MCP `import`
+tool and `POST /v1/import` both validate the bundle against
+`ExportResultSchema`, which does not declare a `metadata` field on each
+entity — Zod strips unknown keys by default, so no bundle metadata
+(exclusions, `guard`, `demo`, `task_state`, or anything else) ever reaches
+`buildImportedMetadata` through those two transports; the CLI reads the raw
+file with `JSON.parse` and passes it straight through. (The underlying
+`importMemories()` function itself has no such restriction — called directly,
+not through a transport, as `tests/core/export-import.test.ts` does, it
+accepts whatever metadata it is given, same as the CLI path.)
+
+Within a path that reaches it, a bundle's metadata is filtered by an
+ALLOW-list (`IMPORTABLE_METADATA_KEYS` in `serializer.ts`): a key on it purely
+describes the memory — display or provenance — and nothing IN
+`IMPORTABLE_METADATA_KEYS` is ever read back to change what MeMesh does.
+Everything that changes what MeMesh DOES
+(`AUTHORITY_METADATA_KEYS`: `guard`, `demo`, `task_state`, `pin`,
+`signal_score`, `forgotten_observation_hashes`, `replaced_history`,
+`evidence_for`, `consolidation_depth`, `compacted_into`, `proposal_id`,
+`session_id`, and `trust`/`provenance`, which are separately rebuilt) is
+refused by default, whether the entity already exists or the import is
+creating it — with four narrow, explicit, VALIDATED exceptions,
+each accepted on a FRESH entity only. Unlike every other name on the
+allow-list, these four DO change behaviour once accepted (compaction
+eligibility, ranking, what `forget` excludes stays removed, or what
+`--replace` appends future history onto) — which is exactly why each one
+gets its own validator below instead of the blanket admission an allow-list
+entry gets:
+
+- `forgotten_observation_hashes` — the exclusion list behind observation-level
+  `forget` — is never set, changed, or cleared by a bundle on an entity you
+  already have (your own local list always wins, including when the two
+  conflict). For an entity the import CREATES, the bundle's own list is
+  accepted only after validation: every element must be a real SHA-256 hex
+  digest (`/^[a-f0-9]{64}$/`), the list is de-duplicated, and it must not
+  exceed 1000 entries. One invalid element, or too many, drops the whole list
+  — never a partially-filtered one — and the entity is created with no
+  exclusions instead. This is what makes restoring your own backup onto a new
+  machine with `memesh import`, then later append-importing an older backup
+  the same way, not put a removed observation back: the newer restore's
+  exclusion list has to actually land on the entity for the append path's
+  forget-filter to have anything to check against.
+- `pin` — protects a memory from the dreamer's auto-compaction. A bundle can
+  never unpin an entity you already have (a bundle sending `pin: false`, or
+  omitting it, does nothing). A FRESH entity accepts the pin only when the
+  bundle's value is the literal boolean `true` — any other value is refused.
+- `signal_score` — the ranking/default-hide weight. An entity you already
+  have keeps its own score exactly; the bundle's value never reaches the
+  merge, so it can neither raise nor lower it. For an entity the import
+  CREATES, the bundle's score is accepted only when it is a finite number
+  with `0 <= x <= 1` — the exact range `computeSignalScore` itself always
+  produces. No partial trust: a string, `NaN`, `Infinity`, a negative number,
+  anything above `1`, `null`, or an object is refused whole, and the entity
+  gets its own content-derived score instead.
+  This preserves a genuine backup's own scores for entities it recreates from
+  nothing, without letting an untrusted bundle inflate or deflate a memory's
+  ranking with an out-of-range value.
+- `replaced_history` — the versions `--replace` kept, appended to by every
+  LATER local `--replace` on the same memory (`rememberInTransaction`, a
+  read-modify-write, not a display-only field — a forged history in a
+  bundle could otherwise survive an import and then have a genuine later
+  replace silently appended onto it). An entity you already have keeps
+  its own history (or its absence) exactly; the bundle's value never reaches
+  the merge, for `append` and `overwrite` alike. For an entity the import
+  CREATES, the bundle's value is accepted only when it is an array of AT
+  MOST 50 ENTRIES, each one shaped exactly like a real entry (`replaced_at`:
+  a string; `title`: a string or `null`; `observations`: an array of
+  strings; `tags`: an array of strings; optional `truncated`: a boolean,
+  marking a version whose observations were pared down to fit the writer's
+  own 64 KiB cap; no other key), AND the WHOLE array's own serialized JSON
+  is AT MOST 256 KiB — a budget over the entire array together, not per
+  entry (two 140 KiB entries are refused together even though each alone is
+  under 256 KiB). One violation anywhere — shape, count, or the aggregate
+  byte budget — drops the WHOLE list, never a partially-filtered one, and
+  the entity is created with no history instead.
+
+A restored backup therefore does NOT carry a memory's task state (goal, next
+step, blocker), or its `guard`/`demo`/`consolidation_depth`/`compacted_into`/
+`proposal_id`/`session_id`/`evidence_for` markers on ANY entity — those are
+always refused, recomputed, or left absent on the machine doing the
+restoring, never taken from the file, with no exception for either an
+existing or a freshly-created entity. All FOUR fresh-only exceptions —
+`forgotten_observation_hashes`, `pin`, `signal_score`, and
+`replaced_history` — have a live effect once accepted (observation
+suppression, compaction protection, ranking, and future `--replace`
+behaviour, respectively); none of the four is "merely descriptive" the way
+an ordinary `IMPORTABLE_METADATA_KEYS` member is. What makes them safe is
+not that they are inert, but that each is validated, and each restores
+ONLY onto an entity the import creates — never onto one you already have.
 
 ---
 
@@ -338,7 +427,7 @@ Export memories to a portable JSON bundle. Use for personal backup, migrating be
 |---|---|---|
 | `created_at` | always | restored for entities the import CREATES, and only when `parseSqliteUtcMs` can read the value. An entity you already had keeps its own creation time. |
 | `status` | present only for archived entities | the entity is archived after it is created. Archived memories are part of a backup: without them, `forget` then export then restore brought the memory back. |
-| `metadata` | present when the entity has any | merged, minus `guard`, `trust` and `provenance`. The last two are rebuilt by the import. `guard` is refused: it controls what memesh WARNS about on your tool calls, and a file you were sent must not be able to install one. |
+| `metadata` | present when the entity has any | **among the CLI, MCP and HTTP entrypoints, only CLI JSON import retains bundle metadata at all** — `ExportResultSchema` does not declare `metadata`, so the MCP `import` tool and `POST /v1/import` have Zod strip it before it exists to merge (the bare `importMemories()` function has no such restriction). Filtered by an ALLOW-list: only a purely descriptive key (display/provenance) is ever taken from the bundle. `trust` and `provenance` are always rebuilt by the import, never read from the bundle. Every behaviour-changing key is refused by default — `guard` (installs a Bash-command warning), `demo` (`demo --reset` HARD-DELETES every entity carrying it, #361), `task_state` (injected verbatim into SessionStart/`memesh briefing` context — a bundle must not be able to put text in front of the agent), `evidence_for` (a `dream accept` idempotency gate — refused and rebuilt by the real `dream accept` path instead), `consolidation_depth`, `compacted_into`, `proposal_id`, `session_id` — for an entity you already have AND for one the import creates, no exception. Four keys get a narrow FRESH-entity-only, VALIDATED exception: `forgotten_observation_hashes` (64-hex SHA-256, de-duplicated, capped at 1000, or the whole list is dropped), `pin` (only the literal boolean `true`; anything else is refused), `signal_score` (only a finite number with `0 <= x <= 1` — `computeSignalScore`'s own documented range; anything else is dropped and the entity gets its own content-derived score), and `replaced_history` (only an array of at most 50 entries shaped exactly like `--replace`'s own history entries — `replaced_at`/`title`/`observations`/`tags`, optional `truncated` (a boolean), no other key, the WHOLE array's own serialized JSON at most 256 KiB — a budget over the entire array together, not per entry — or the whole list is dropped). An EXISTING entity's own value for any of these four always wins regardless of what the bundle says, same as every other authority key. |
 | `relations` | always | created in a SECOND pass, after every entity in the bundle exists. A relation that still cannot be created points outside the bundle, and is named in `skipped_relations` rather than dropped — reported, but not an error, because every narrowed bundle has them. |
 
 Bundles written by earlier versions (`3.0.0`) import unchanged — every added field is optional.
