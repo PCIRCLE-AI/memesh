@@ -4,8 +4,6 @@
  * the SessionStart hook and the `briefing` tool/CLI resolve through.
  */
 import { describe, it, expect } from 'vitest';
-import { execFileSync } from 'child_process';
-import path from 'path';
 import {
   BRIEFING_LEVELS,
   DEFAULT_BRIEFING_LEVEL,
@@ -503,7 +501,10 @@ describe('briefing-level', () => {
     // `briefing` string (built via JSON.parse, the same way the real
     // config reader produces one — see the round-9 report for why a
     // `.repeat()`-built string is not representative): ~91 MB RSS for one
-    // `describeInvalidValue` call, before this fix; ~0 MB after.
+    // `describeInvalidValue` call, before this fix; ~0 MB after. That number
+    // is a one-off measurement, not asserted here: the last test of this
+    // block guards the mechanism instead (how much of the string the
+    // per-code-point work is allowed to see).
     //
     // Fixed by pre-slicing the RAW input to `PRE_SLICE_RAW_MAX` (256)
     // UTF-16 units before any per-code-point work — this describe block
@@ -550,80 +551,25 @@ describe('briefing-level', () => {
         expect('\ud83d'.repeat(30).length).toBeLessThanOrEqual(256);
         expect('\n\t"\\'.repeat(38).length).toBeLessThanOrEqual(256);
       });
-    });
 
-    // #360 round 9 (Codex round 8 re-review): the RSS probe itself, as a
-    // real gate — a child process (own V8 heap, `--expose-gc` for a clean
-    // baseline) builds each adversarial value via JSON.parse (NOT
-    // `String.prototype.repeat()` — measured that a `.repeat()`-built
-    // string forces V8 to flatten its internal lazy representation on the
-    // first `.slice()`, costing ~10 MB RSS on its own; a JSON.parse'd
-    // string does not have this artifact, and JSON.parse is the ONLY way
-    // this module's real callers ever produce `configValue`), then
-    // measures RSS immediately before and after the `resolveBriefingLevel`
-    // call alone. Before the round-9 fix (measured against a
-    // temporarily-reverted copy of `describeInvalidValue`, same
-    // JSON.parse-based construction): ~91 MB for the 10 MB string. The
-    // string threshold below sits strictly between that OLD cost and the
-    // ~0 MB the fix actually measures — proven to discriminate, not just
-    // generous, by reverting the fix and confirming the test goes RED.
-    //
-    // Round 10 (Codex round 9 re-review, Z1): the container-side RSS
-    // check this block used to carry (a tight, per-shape threshold on a
-    // 1,000,000-element array) was replaced — see the `describe` above
-    // this one for why (round 9's count guard was itself
-    // input-proportional) and the deterministic Proxy-trap tests for the
-    // primary proof. The one RSS check this block keeps for containers is
-    // now supplemental only, with a loose threshold.
-    describe('RSS probe: describeInvalidValue does not do input-proportional work (real child process)', () => {
-      const distModulePath = path.resolve('dist/core/briefing-level.js');
-
-      function measureRssDeltaMb(buildValueSnippet: string): number {
-        // `buildValueSnippet` is a JS expression string that evaluates to
-        // the value under test — kept as a snippet (not a JSON literal)
-        // because building a 10 MB string or a 1,000,000-element array as
-        // a literal JSON.parse ARGUMENT in the child process's source is
-        // the simplest way to construct it while still round-tripping
-        // through JSON.parse, matching the real calling context exactly.
-        const script = `
-          const { resolveBriefingLevel } = await import(${JSON.stringify(distModulePath)});
-          const value = ${buildValueSnippet};
-          if (global.gc) global.gc();
-          const before = process.memoryUsage().rss;
-          resolveBriefingLevel(undefined, value);
-          const after = process.memoryUsage().rss;
-          console.log(Math.round((after - before) / (1024 * 1024) * 10) / 10);
-        `;
-        const out = execFileSync(process.execPath, ['--expose-gc', '--input-type=module', '-e', script], {
-          encoding: 'utf8',
-          timeout: 30_000,
-        });
-        return Number(out.trim());
-      }
-
-      it('a 10 MB invalid string (built via JSON.parse) costs well under 20 MB RSS for one resolveBriefingLevel call', () => {
-        // OLD algorithm measured ~91 MB here — 20 MB is generous relative
-        // to the ~0 MB this fix measures, decisive relative to the OLD cost.
-        const deltaMb = measureRssDeltaMb(
-          "JSON.parse(JSON.stringify('x'.repeat(10 * 1024 * 1024)))",
-        );
-        expect(deltaMb, `measured delta: ${deltaMb} MB`).toBeLessThan(20);
-      });
-
-      // #360 round 10 (Codex round 9 re-review, Z1): round 9's per-shape
-      // array threshold (4 MB) was flagged platform-sensitive. The
-      // deterministic proof for containers is now the Proxy-trap and
-      // large-container tests above (zero traversal, any size, any
-      // shape) — this RSS check is supplemental only, with a loose
-      // threshold: Codex's own measurement of `Object.keys()` ALONE on a
-      // 1,000,000-key object under round 9's guard was ~15.6 MiB, so 10
-      // MB here still discriminates a regression back to full traversal
-      // without pinning a tight, platform-sensitive number.
-      it('a 1,000,000-key invalid object (built via JSON.parse) costs well under 10 MB RSS for one resolveBriefingLevel call (supplemental)', () => {
-        const deltaMb = measureRssDeltaMb(
-          "JSON.parse(JSON.stringify(Object.fromEntries(Array.from({ length: 1_000_000 }, (_, i) => [`k${i}`, i]))))",
-        );
-        expect(deltaMb, `measured delta: ${deltaMb} MB`).toBeLessThan(10);
+      // A regression that removes PRE_SLICE_RAW_MAX changes no RESULT (the
+      // tests above compare results), only the work: the whole string gets
+      // materialised first. Watch the one call that does per-code-point
+      // work and require it never sees more than the bounded prefix.
+      it('the raw pre-slice is in force — Array.from never sees more than 256 units of an invalid string', () => {
+        const realArrayFrom = Array.from;
+        let maxSeen = 0;
+        (Array as unknown as { from: unknown }).from = function (arg: unknown, ...rest: unknown[]) {
+          if (typeof arg === 'string') maxSeen = Math.max(maxSeen, arg.length);
+          return (realArrayFrom as (...a: unknown[]) => unknown[])(arg, ...rest);
+        };
+        try {
+          resolveBriefingLevel(undefined, 'x'.repeat(10 * 1024 * 1024));
+        } finally {
+          (Array as unknown as { from: unknown }).from = realArrayFrom;
+        }
+        expect(maxSeen, 'the string branch never ran').toBeGreaterThan(0);
+        expect(maxSeen, 'Array.from saw an unbounded input').toBeLessThanOrEqual(256);
       });
     });
   });
