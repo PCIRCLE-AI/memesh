@@ -403,9 +403,13 @@ describe('Feature: Session Summary (Stop Hook)', () => {
   it('Scenario: producer writes file: tags that pre-edit-recall Strategy 1 queries', () => {
     // The capture is the PRODUCER for pre-edit-recall's `file:<name>` lookup.
     // Before this, nothing wrote those tags, so Strategy 1 returned zero rows
-    // on every real DB. Assert both forms are emitted: full basename and the
-    // extension-less form, since the read path queries `file:auth.ts` OR
-    // `file:auth`.
+    // on every real DB. Assert both forms are still emitted — full basename
+    // and the extension-less stem — even though pre-edit-recall's Strategy 1
+    // now reads ONLY the full-basename form (`file:auth.ts`, never the bare
+    // `file:auth` stem, #358 round 2: the stem is not unique to one file, so
+    // matching it let an unrelated `auth.py` memory fire on `auth.ts`
+    // edits). The stem tag is not dead: `memesh why`'s `explainCommits`
+    // (src/core/why.ts) still reads both forms.
     writeTranscript([
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/tmp/proj/src/config.ts' } }] } },

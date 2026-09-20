@@ -6,6 +6,7 @@ export declare function getMemeshDirFromDbPath(): string;
 export declare function getAgentRouterSocketPath(): string;
 export declare function normalizeAgentRouterSocketPath(socketPath: string): string;
 export declare function getProjectName(cwdInput?: string | null): string;
+export declare function gitRepoRoot(cwdInput?: string | null): string | null;
 export declare function canonicalRemoteLocator(remote: string): string | null;
 export declare function _clearProjectNameCache(): void;
 export declare const SECRET_PATTERN_SOURCES: readonly string[];

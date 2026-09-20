@@ -55438,6 +55438,7 @@ var init_capture_liveness = __esm({
       noFilePath: "no file_path in the tool input",
       noDatabaseForRecall: "no database yet \u2014 nothing to recall",
       nothingToRecall: "no guard matched and nothing to recall for this file",
+      candidateWindowTruncated: "more candidates may exist than the search window examined",
       noPromptIntent: "the prompt carried no remember intent and no update decision",
       noMemoryDir: "no Claude Code memory directory for this project",
       noNoteChanged: "no note file changed since the last ingestion",

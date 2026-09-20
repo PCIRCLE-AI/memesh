@@ -33,6 +33,7 @@ import {
   getProjectName,
   redactSecrets,
   canonicalRemoteLocator,
+  gitRepoRoot,
 } from './_generated/core-paths.js';
 import { autoCaptureDecision } from './_generated/capture-flag.js';
 export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP } from './_generated/work-topology.js';
@@ -126,6 +127,13 @@ export function recordGuardFires(dbPath, lessonIds) {
   try {
     const db = new MemeshDatabase(dbPath);
     try {
+      // The hook's own budget, not the database's default 30 s: a wait that
+      // outlives the hook's timeout has one ending — the host kills the
+      // process, the count is lost anyway, and the failure line below never
+      // runs (see `openHookDb`). The cost is the band in between: a lock
+      // held for 2-5 s used to be waited out and counted, and is now
+      // reported as not counted.
+      db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
       const stmt = db.prepare(
         `UPDATE entities
          SET metadata = json_set(metadata,
@@ -157,10 +165,11 @@ import {
   joinIndexedObservations,
   removeFromFts,
   renderMatchExpression,
+  renderPhraseExpression,
   tokenizeQuery,
 } from './_generated/fts-index.js';
 
-export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectName, redactSecrets, canonicalRemoteLocator };
+export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectName, redactSecrets, canonicalRemoteLocator, gitRepoRoot };
 
 /**
  * Resolve the package root from a hook file's `import.meta.url`.
@@ -299,6 +308,26 @@ export function resolveSessionLimit(env = process.env) {
  * if a capture hook stops writing it.
  */
 export const AUTO_CAPTURE_TAG = 'source:auto-capture';
+
+/**
+ * Auto-captured SESSION-SNAPSHOT types — the transient rollups `pre-compact.js`
+ * and `session-summary.js` restate on every PreCompact / Stop, purely as
+ * session bookkeeping ("N tool calls", "compaction reason: auto"). Not the
+ * same set as `AUTO_CAPTURE_TAG`: that tag also marks `commit` entities,
+ * which can genuinely be about the file being edited, so it is too broad for
+ * this exclusion.
+ *
+ * `pre-edit-recall.js`'s Strategy 1 matches a `session-insight` entity for
+ * ANY file a session touched — `session-<id>-files`/`-fixes` carry a
+ * `file:<name>` tag per file, unconditionally — so without this exclusion it
+ * injects lines like "Session edited 1 file(s): X" for every edit of a file
+ * that session ever touched (#358). No list already in the codebase matches
+ * this pair alone: `EVIDENCE_LAYER_TYPES` (work-topology.ts), `NOISE_TYPES`
+ * (analytics.ts, lifecycle.ts) and `COMPACTABLE_TYPES` (dreamer.ts) all also
+ * include `commit` (and some include `session_keypoint`, `workflow_checkpoint`
+ * etc.), which this exclusion must NOT touch.
+ */
+export const SESSION_SNAPSHOT_TYPES = new Set(['session-insight', 'session-summary']);
 
 const VALID_AUTO_UPDATE_POLICIES = new Set(['off', 'patch', 'minor', 'major']);
 
@@ -715,6 +744,381 @@ const HOOK_MAX_QUERY_TERMS = 32;
  */
 export function hookMatchExpression(text) {
   return renderMatchExpression(tokenizeQuery(text).slice(0, HOOK_MAX_QUERY_TERMS));
+}
+
+/**
+ * Build an FTS5 PHRASE expression the way `renderPhraseExpression()` does —
+ * the terms of `text`, adjacent and in order, instead of `hookMatchExpression`'s
+ * OR. `pre-edit-recall.js` uses this for an ASCII basename (extension
+ * included, e.g. "CLAUDE.md" → `"CLAUDE md"`) so a row that merely mentions
+ * ONE of a multi-word filename's words does not qualify as a match (#358).
+ *
+ * Not used for a non-ASCII basename: `text` there is bigram-segmented before
+ * this runs, and this function's caller keeps those on `hookMatchExpression`
+ * instead — see the comment at that call site.
+ *
+ * @returns the PHRASE expression, or null if there is nothing searchable
+ */
+export function hookPhraseExpression(text) {
+  return renderPhraseExpression(tokenizeQuery(text).slice(0, HOOK_MAX_QUERY_TERMS));
+}
+
+// Embedded in a longer identifier on the BEFORE side — "xCLAUDE.md" (a
+// letter/digit/underscore/hyphen right before) or "foo.CLAUDE.md" (a dot
+// right before, i.e. a different extension chain) are not a mention of
+// THIS file.
+//
+// Deliberately ASCII-only, unchanged since round 3 (#358 round 4 finding 3
+// asked this to be made an explicit, tested decision rather than an
+// incidental one): a non-ASCII letter directly before an ASCII basename —
+// "設定CLAUDE.md" — is NOT treated as embedding, because this class does not
+// match it, so that case falls through to the bare-mention return below and
+// IS accepted. Widening this to `\p{L}` would reject it instead; that is a
+// real, defensible alternative rule, just not the one shipped, and this
+// comment plus its test are what make the choice a decision instead of an
+// accident.
+const FILENAME_EMBED_BEFORE = /[A-Za-z0-9_.-]/;
+// A letter/digit/underscore/hyphen right after extends the same token
+// ("CLAUDE.mdx", "CLAUDE.md_backup") — unchanged since round 2.
+const FILENAME_EMBED_AFTER = /[A-Za-z0-9_-]/;
+// What makes a `.` after the basename an appended extension rather than a
+// sentence end: a letter or digit in ANY script ("CLAUDE.md.bak",
+// "CLAUDE.md.備份"). Not ASCII-only like the two classes above: those
+// protect CJK prose, which is written with no space around a filename, while
+// a sentence that carries on with no space after its full stop is rare in
+// any script and misreading one costs a missed recall, never a wrong line.
+// Marks and invisible format characters (`\p{M}`, `\p{Cf}`: a combining
+// accent, ZWJ, ZWSP) count too — "CLAUDE.md.\u200Dx" still names another
+// file. Anything else after the dot (an emoji, a symbol) is read as the end
+// of a sentence, and a fullwidth full stop "．" is not a dot at all: both
+// stay bare mentions, deliberately.
+const FILENAME_EXTENSION_START = /[\p{L}\p{N}\p{M}\p{Cf}]/u;
+// The same marks and format characters directly after the basename, with no
+// dot ("CLAUDE.md\u200Bbak" reads as "CLAUDE.mdbak"): invisible or attached
+// to the name, so part of a different name. Letters stay out of this class
+// on purpose — CJK prose follows a filename with no space.
+const FILENAME_EMBED_AFTER_INVISIBLE = /[\p{M}\p{Cf}]/u;
+// Bidi marks, embeddings and isolates (LRM, RLM, ALM, LRE/RLE/PDF, LRI/RLI/
+// FSI/PDI) are TRANSPARENT to the boundary check: right-to-left prose puts
+// them around an embedded Latin filename, so they must not count as part of
+// a longer name — but they are not delimiters either. They are skipped, and
+// the character after them decides, exactly as if they were not there:
+// "CLAUDE.md\u200Fقبل" confirms, "CLAUDE.md\u200Ebak" does not. The two
+// OVERRIDES (LRO U+202D, RLO U+202E) are not skipped: they reorder the text
+// that follows, which is how a name is spoofed, so they reject. This is the
+// AFTER side only; the BEFORE class is ASCII-only by its own decision above.
+const BIDI_TRANSPARENT = /[\u061C\u200E\u200F\u202A-\u202C\u2066-\u2069]/;
+/** Index of the first UTF-16 unit at or after `i` that is not a transparent bidi control (all of them are BMP). */
+function skipBidiTransparent(text, i) {
+  while (i < text.length && BIDI_TRANSPARENT.test(text[i])) i++;
+  return i;
+}
+/** The whole code point at `i`, or '' past the end. */
+function codePointAt(text, i) {
+  return i < text.length ? String.fromCodePoint(text.codePointAt(i)) : '';
+}
+// A path token: what a backward walk from a `/` or `\` before the match
+// consumes as "part of the same path mention" (#358 round 3 item 3b).
+//
+// Unicode-aware (`\p{L}\p{M}\p{N}`, the `u` flag) since #358 round 4 finding
+// 3 — the ASCII-only class this used to be stopped a backward walk through
+// `文件/CLAUDE.md` right at the slash, producing the bare token `/CLAUDE.md`
+// and losing the directory name entirely. Still excludes `:` — see
+// `pathMentionMatches`'s drive-letter handling below for why that is a
+// narrower, deliberate special case rather than a blanket inclusion (a bare
+// `:` in the token class would swallow a `CLAUDE.md:12` line-number suffix
+// that sits AFTER a match, a completely different position, into what looks
+// like a path BEFORE the next one).
+//
+// `~` is in: it is an ordinary character inside a directory name, and
+// Windows' 8.3 short names put one mid-component (`C:\Users\RUNNER~1\...`,
+// the usual spelling of `%TEMP%`). Stopping the walk there cut such a mention
+// down to `1/.../CLAUDE.md`, a suffix of nothing, so a memory naming the exact
+// file was never recalled. A home-relative `~/docs/CLAUDE.md` is unaffected:
+// it was not a suffix of the edited path before and is not one now.
+const PATH_TOKEN_CHAR = /[\p{L}\p{M}\p{N}_.~\-/\\]/u;
+// A single ASCII drive letter immediately followed by `:` — the two
+// characters `pathMentionMatches` splices onto the front of a walked-back
+// token when they precede it exactly, so "C:\repo\...\CLAUDE.md" is not
+// truncated to "\repo\...\CLAUDE.md" (#358 round 4 finding 4).
+const DRIVE_LETTER = /[A-Za-z]/;
+
+/**
+ * Confirm a candidate: does `text` literally contain `needle` as a whole
+ * filename-shaped token?
+ *
+ * The FTS prefilter (`hookPhraseExpression`/`hookMatchExpression`) only
+ * proves the text contains a TOKEN SEQUENCE shaped like the basename —
+ * "05-CLAUDE-md.md" tokenizes to a "claude" token immediately followed by an
+ * "md" token too, and prose like "claude-md", "CLAUDE_MD" or "the Claude MD
+ * file" can pass a token-adjacency check while never containing the literal
+ * string "CLAUDE.md" (#358). This is the confirmation step: does the ACTUAL
+ * text contain that literal string, called on the small set of rows the
+ * prefilter already narrowed down to (`entities_fts` is contentless — it can
+ * only be MATCHed, never read from — so this runs over `entities.name` and
+ * `observations.content`, fetched separately).
+ *
+ * Both sides are NFC-normalised — the same normalisation
+ * `registerNfcFunction`/`memesh_nfc` (src/storage/fts-index.ts,
+ * src/knowledge-graph.ts's archived-search branch) applies in SQL. This
+ * reuses that same `String.prototype.normalize('NFC')` call in JS rather
+ * than inventing a second normaliser; SQL is not an option here because the
+ * confirmation runs over rows already fetched into JS, not a query.
+ *
+ * The contract this pins (#358 round 5, "by design" — see docs/ARCHITECTURE.md
+ * and CHANGELOG.md [Unreleased]): two spellings are the SAME name after NFC
+ * exactly when they are CANONICALLY equivalent under Unicode — that covers
+ * composed vs. decomposed accents ("café" vs. "café") AND the handful
+ * of singleton canonical mappings, such as KELVIN SIGN U+212A → LATIN CAPITAL
+ * LETTER K (U+004B) and ANGSTROM SIGN U+212B → LATIN CAPITAL LETTER A WITH
+ * RING ABOVE (U+00C5, itself canonically "Å" = A + combining ring above).
+ * `K.ts` (U+212A) confirming a mention of `K.ts` (ASCII) is this rule working
+ * as designed, not a false positive — U+212A IS the letter K under canonical
+ * equivalence, the same relationship that makes composed/decomposed "é" one
+ * name. It is NOT special-cased away: a carve-out for one singleton mapping
+ * would need a per-character exception table on this hot path and would
+ * break the simplicity the "é" guarantee depends on. COMPATIBILITY
+ * equivalents are deliberately NOT folded together — fullwidth "Ａ" (U+FF21)
+ * stays distinct from ASCII "A", and ligatures stay distinct from their
+ * expansions — because this function normalises with NFC, not NFKC; NFKC
+ * would additionally erase exactly those distinctions. Case folding (below)
+ * runs AFTER normalisation and is ASCII `A-Z` only, so it does not reach
+ * Turkish İ (U+0130) / ı (U+0131) or German ß (U+00DF) — none of those fold
+ * to their naive ASCII lookalikes at any stage of this function.
+ *
+ * Case folding is ASCII-only and PER-CHARACTER (#358 round 4 finding 2),
+ * applied to both sides unconditionally — never a locale/Unicode
+ * `.toLowerCase()`, and never gated on the needle being ENTIRELY ASCII.
+ * Round 3 folded only when `/^[\x00-\x7f]+$/` matched the whole needle, so a
+ * mixed-script basename (a non-ASCII stem with an ASCII extension, the
+ * common case for any non-English filename) skipped folding altogether and
+ * "設定配置.TS" failed to confirm "設定配置.ts". An ASCII-only per-character
+ * fold has no such all-or-nothing gate and is a no-op on non-ASCII text
+ * (nothing in `\p{L}` outside `A-Za-z` has an ASCII-fold mapping), so
+ * applying it unconditionally changes nothing for a pure-CJK needle while
+ * fixing the mixed-script one. `text.indexOf`, never a RegExp built from
+ * `needle` — a basename with regex metacharacters (`a+b(1).ts`, `[id].tsx`,
+ * `$types.d.ts`, `c++.md`) is matched literally, not interpreted.
+ *
+ * A hit must also sit on a filename boundary (#358 round 3 item 3):
+ *   - AFTER: rejected when the next character is `~` (a common backup-file
+ *     suffix, "CLAUDE.md~"), is `.` immediately followed by a letter or
+ *     digit in any script, a mark or a format character
+ *     ("CLAUDE.md.bak", "CLAUDE.md.備份"), or is `/` or `\` (#358 round 8 finding 1 —
+ *     "docs/CLAUDE.md/" and "docs/CLAUDE.md/subfile" name a DIRECTORY
+ *     called CLAUDE.md, or a file inside it, never the edited file itself,
+ *     the same way `pathMentionMatches` below already treats a `/`-prefixed
+ *     mention as a path rather than a bare basename) — a bare trailing `.`,
+ *     `)`, `,`, `#`, `?`, backtick or end-of-text is a sentence ending (or a
+ *     URL fragment/query string, which still names the SAME file — a
+ *     fragment/query does not change which file a path points at), not more
+ *     of the filename, and still passes. A letter/digit/underscore/hyphen
+ *     immediately after also rejects, unchanged from round 2 ("CLAUDE.mdx").
+ *   - BEFORE: a letter/digit/underscore/dot/hyphen immediately before
+ *     rejects (embedded in a longer identifier or extension chain) —
+ *     ASCII-only, deliberately: a non-ASCII letter directly before an ASCII
+ *     basename ("設定CLAUDE.md") is NOT a boundary-breaker and IS accepted
+ *     as a bare mention (#358 round 4 finding 3, made explicit and tested;
+ *     see `FILENAME_EMBED_BEFORE`'s own comment for why this is a stated
+ *     decision, not an oversight). Start-of-text/whitespace/punctuation
+ *     before it also passes as a bare mention. When the character
+ *     immediately before is `/` or `\`, the mention is a PATH, not a bare
+ *     basename ("docs/CLAUDE.md" while editing a DIFFERENT file must not
+ *     count just because the basename matches) — see `pathMentionMatches`.
+ *     A DIFFERENT stated decision, same shape (#358 round 6 finding 3): the
+ *     character that must precede a PATH-style mention is any non-path-token
+ *     character — a delimiter, not a script boundary. CJK prose with no
+ *     delimiter directly before a path ("請看文件/CLAUDE.md", "please see
+ *     文件/CLAUDE.md" with no space) is consumed into the path token by the
+ *     same Unicode-aware walk that correctly keeps a real CJK directory name
+ *     intact (round 4 finding 3), and the resulting token is not a suffix of
+ *     the edited path — a per-mention false negative, not a per-memory one:
+ *     the same text is still reachable through any other bare or delimited
+ *     mention it contains. An emoji (or any other non-path-token character)
+ *     immediately before the same prose DOES delimit it correctly
+ *     ("📁文件/CLAUDE.md" matches). No heuristic script-boundary splitting is
+ *     applied — that would need per-script tables on this hot path, the same
+ *     reasoning that keeps the NFC-vs-NFKC boundary above a flat rule.
+ *
+ * @param {string} text
+ * @param {string} needle - the full basename to confirm, every script,
+ *   ASCII or not (#358 round 3 item 1 — never the extension-less stem).
+ * @param {{relPath: string | null, absPath: string, absPathAsGiven?: string} | null} [editedPath] -
+ *   the edited file's own path(s), forward-slash-normalised, for the PATH
+ *   branch above. `relPath` is relative to the file's repo root, or `null`
+ *   when there is no repo root (or resolving it escaped the root — see the
+ *   hook's own comment). `absPath` is the CANONICAL (realpath'd) absolute
+ *   path; `absPathAsGiven`, when different, is the absolute path built from
+ *   the directory AS THE PAYLOAD NAMED IT, before resolving any symlink —
+ *   both are checked, so a memory can name either form of a symlinked
+ *   location THE EDIT PAYLOAD ITSELF USED and both match (#358 round 4
+ *   finding 5, e.g. macOS `/var/...` vs its canonical `/private/var/...`).
+ *   This is ONE-WAY, stated precisely, not the symmetric claim it might read
+ *   as (#358 round 6 finding 2): `absPathAsGiven` only exists when the
+ *   PAYLOAD's own as-given form differs from canonical — when the payload
+ *   is already canonical, there is no alias candidate at all, so a memory
+ *   naming an alias the payload never used does NOT match. Resolving an
+ *   alias mentioned only in memory text would need a filesystem call per
+ *   mention, which this hot path deliberately does not make; such a memory
+ *   remains reachable through a relative or bare mention instead. Omit only
+ *   when no reliable path info exists at all; a PATH-style mention then
+ *   cannot be verified and is rejected, while a bare mention is unaffected.
+ */
+export function containsFileNameLiterally(text, needle, editedPath = null) {
+  if (!text || !needle) return false;
+  const normalizedNeedle = needle.normalize('NFC');
+  if (normalizedNeedle.length === 0) return false;
+  const normalizedText = text.normalize('NFC');
+  const haystack = foldAsciiCase(normalizedText);
+  const target = foldAsciiCase(normalizedNeedle);
+  let from = 0;
+  for (;;) {
+    const idx = haystack.indexOf(target, from);
+    if (idx === -1) return false;
+    const matchEnd = idx + target.length;
+    const before = idx > 0 ? haystack[idx - 1] : '';
+    // Whole code points, not UTF-16 units: half of a surrogate pair is never
+    // `\p{L}`/`\p{Cf}`, so an astral letter or format character would slip
+    // through. Transparent bidi controls are stepped over first.
+    const afterAt = skipBidiTransparent(haystack, matchEnd);
+    const after = codePointAt(haystack, afterAt);
+    const afterNext = after === '.'
+      ? codePointAt(haystack, skipBidiTransparent(haystack, afterAt + 1)) : '';
+
+    const afterRejects = FILENAME_EMBED_AFTER.test(after) ||
+      FILENAME_EMBED_AFTER_INVISIBLE.test(after) || after === '~' ||
+      after === '/' || after === '\\' ||
+      (after === '.' && FILENAME_EXTENSION_START.test(afterNext));
+    if (afterRejects) { from = idx + 1; continue; }
+
+    if (before === '/' || before === '\\') {
+      // NOT `haystack` (that copy is ASCII-folded in its ENTIRETY, which
+      // would fold every directory component too — #358 round 6 finding 1).
+      // `normalizedText` is NFC-normalised but un-folded, so the directory
+      // portion of whatever token gets walked out of it keeps its real
+      // case; `pathMentionMatches` folds only the final path segment (and a
+      // Windows drive letter) itself. `foldAsciiCase` is a 1:1, length- and
+      // position-preserving per-character map, so `idx`/`matchEnd` (computed
+      // against the folded `haystack`) are valid indices into `normalizedText`
+      // too — same positions, just the original casing at each one.
+      if (pathMentionMatches(normalizedText, idx, matchEnd, editedPath)) return true;
+      from = idx + 1;
+      continue;
+    }
+    if (FILENAME_EMBED_BEFORE.test(before)) { from = idx + 1; continue; }
+
+    return true; // bare mention: start of text, whitespace, quote, paren, ...
+  }
+}
+
+/**
+ * Fold ONLY the ASCII letters `A-Z` to `a-z`; every other character —
+ * digits, punctuation, separators, and every non-ASCII script — passes
+ * through unchanged (#358 round 4 finding 2). This is the literal reading of
+ * "ASCII case-insensitive": per character, not "only when the whole string
+ * happens to be pure ASCII". `String.prototype.toLowerCase()` is
+ * deliberately not used here — it is locale/Unicode-aware and can fold (or,
+ * for some scripts under some engines, even change the length of) text this
+ * function has no business touching; an explicit ASCII-only replace cannot.
+ */
+function foldAsciiCase(s) {
+  return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+}
+
+/**
+ * Fold ONLY the final path segment (the basename) of a forward-slash path,
+ * plus a leading single-letter Windows drive (`C:` → `c:`) when present —
+ * every directory component in between is returned UNCHANGED (#358 round 6
+ * finding 1). The case-insensitivity rule this whole file documents is
+ * scoped to "the full basename", not "every directory component of a path
+ * mention" — a directory's case sensitivity depends on the volume, which
+ * this function has no filesystem call to ask (and does not make one: an
+ * empty result beats a wrong one on this hot path). So `docs/CLAUDE.md` and
+ * `DOCS/CLAUDE.md` are DIFFERENT tokens here on purpose, while
+ * `docs/CLAUDE.md` and `docs/claude.MD` are the same one.
+ */
+function foldFinalPathSegment(p) {
+  // A single ASCII letter + `:` at the start is a drive, whether or not a
+  // `/` immediately follows — `C:/repo/CLAUDE.md` (absolute) and
+  // `a:docs/CLAUDE.md` (drive-relative) both qualify; requiring the `/`
+  // used to leave the drive-relative form's own drive letter un-folded
+  // (it still compared unequal either way, since nothing else about a
+  // drive-relative token matches an absolute candidate, but the gap was
+  // unexplained rather than a real boundary — #358 round 6).
+  const drive = /^([A-Za-z]):(.*)$/.exec(p);
+  const prefix = drive ? `${foldAsciiCase(drive[1])}:` : '';
+  const rest = drive ? drive[2] : p;
+  const lastSlash = rest.lastIndexOf('/');
+  if (lastSlash === -1) return prefix + foldAsciiCase(rest);
+  return prefix + rest.slice(0, lastSlash + 1) + foldAsciiCase(rest.slice(lastSlash + 1));
+}
+
+/**
+ * Is the PATH mentioned right before this match (idx-1 is `/` or `\`) a
+ * reference to the SAME file being edited?
+ *
+ * Walks back from the match through the whole path-shaped token (Unicode
+ * letters/marks/digits included — #358 round 4 finding 3, `文件/CLAUDE.md`
+ * must not lose `文件` to an ASCII-only scan), and, when a single ASCII
+ * drive letter and `:` sit immediately before where the walk stopped,
+ * splices them onto the front too (#358 round 4 finding 4 — `:` itself
+ * stays OUT of `PATH_TOKEN_CHAR`, or the walk would swallow a
+ * `CLAUDE.md:12` line-number suffix that sits AFTER a match into what looks
+ * like a path BEFORE the next one; this is a narrow, position-specific
+ * splice, not a general inclusion). Normalises the token (backslash to
+ * forward slash, THEN strip a leading `./` — in that order, or a
+ * Windows-style `.\CLAUDE.md` mention would keep its `.\` un-stripped and
+ * never compare equal), and accepts it only if it equals, or is a
+ * path-segment-aligned suffix of, the edited file's own relative path,
+ * canonical absolute path, or as-given absolute path (checked in that
+ * order — an ABSOLUTE mention naturally cannot suffix-match a relative
+ * path but can equal or suffix one of the absolute ones; no separate
+ * branch needed, and the drive-letter case above falls out of the same
+ * absolute-path comparison once the token carries its own drive letter).
+ *
+ * `text` is NFC-normalised but NOT ASCII-folded — the caller passes the
+ * un-folded copy on purpose (#358 round 6 finding 1). Only the basename
+ * (the full filename, extension included) is documented as ASCII
+ * case-insensitive; a directory component is not, because its actual case
+ * sensitivity depends on the volume, which this function cannot ask
+ * without a filesystem call. `foldFinalPathSegment` (above) folds only the
+ * final path segment and any Windows drive letter on BOTH the extracted
+ * token and each `editedPath` candidate, leaving every directory component
+ * as originally written on both sides — so `docs/CLAUDE.md` vs
+ * `DOCS/CLAUDE.md` compares unequal (a deliberate false negative — the
+ * memory is still reachable by a relative or bare mention), while
+ * `docs/CLAUDE.md` vs `docs/claude.MD` still compares equal.
+ *
+ * A token containing a `..` segment is rejected outright — this function has
+ * no way to resolve it without knowing the mention's OWN base directory,
+ * and guessing which file it would resolve to is worse than declining.
+ */
+function pathMentionMatches(text, matchStart, matchEnd, editedPath) {
+  if (!editedPath) return false;
+  let start = matchStart;
+  while (start > 0 && PATH_TOKEN_CHAR.test(text[start - 1])) start--;
+  // Windows drive letter: "C:" immediately precedes where the walk stopped.
+  if (
+    start >= 2 &&
+    text[start - 1] === ':' &&
+    DRIVE_LETTER.test(text[start - 2]) &&
+    (start < 3 || !PATH_TOKEN_CHAR.test(text[start - 3]))
+  ) {
+    start -= 2;
+  }
+  let token = text.slice(start, matchEnd).replace(/\\/g, '/');
+  if (token.split('/').includes('..')) return false;
+  while (token.startsWith('./')) token = token.slice(2);
+  if (token.length === 0) return false;
+  token = foldFinalPathSegment(token);
+
+  const candidates = [editedPath.relPath, editedPath.absPath, editedPath.absPathAsGiven];
+  for (let candidate of candidates) {
+    if (candidate == null) continue;
+    candidate = foldFinalPathSegment(candidate);
+    if (candidate === token || candidate.endsWith(`/${token}`)) return true;
+  }
+  return false;
 }
 
 

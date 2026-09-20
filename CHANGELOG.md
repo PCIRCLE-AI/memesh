@@ -88,6 +88,137 @@ All notable changes to MeMesh are documented here.
   could tag an arbitrary real memory with it and have the next `--reset` delete
   it. Demo seeding remains a product-owned operation through `seedDemo`/`memesh
   demo`; an imported memory can never become eligible for `--reset` on its own.
+- **Pre-edit recall no longer injects auto-captured session bookkeeping, or
+  memories about a different file, in place of what is actually relevant
+  (#358).** The final rule, verified against the real hook: a memory is
+  injected for the edited file only if it carries
+  the exact tag `file:<full basename>`, or its `entities.name`/one of its
+  `observations.content` literally names the file — for every script, ASCII
+  or not — and it is not an auto-captured session snapshot.
+  - Excludes `session-insight`/`session-summary` rows from both match
+    strategies (they carry a `file:<name>` tag for every file a session
+    touched, not evidence a memory is about the file being edited).
+  - Matches only the exact full-basename `file:<name>` tag, never also the
+    extension-less stem (the stem is written for every file sharing it —
+    `file:auth` is not unique to `auth.ts` — so it previously matched an
+    unrelated file, e.g. `auth.py`, sharing the same stem).
+  - Uses FTS as a CANDIDATE GENERATOR only (an ASCII basename's words
+    adjacent and in order; a non-ASCII basename's stem, bigram-OR'd), then
+    LITERALLY CONFIRMS the full basename — extension included, for every
+    script, never only the stem — actually appears in the candidate's text,
+    NFC-normalised, ASCII case-folded PER CHARACTER (not only when the whole
+    basename happens to be pure ASCII — a mixed-script basename, the common
+    case for any non-English filename, used to skip folding entirely and
+    miss its own uppercase extension), on a filename boundary. A
+    token-adjacency hit is not proof: text about `05-CLAUDE-md.md` used to
+    satisfy a search for `CLAUDE.md`, and a memory naming `設定配置.py`,
+    bare `設定配置`, or `設定配置.TS` (uppercase) used to satisfy a search
+    for `設定配置.ts`.
+  - **NFC-normalised means CANONICALLY equivalent, pinned by design:**
+    composed/decomposed accents ("café" vs. "cafe" + combining acute)
+    and singleton canonical mappings — KELVIN SIGN U+212A → ASCII "K",
+    ANGSTROM SIGN U+212B → "Å" (U+00C5) — confirm as the same name; a memory
+    naming a file with the Kelvin sign matching an edit to the ASCII-K file
+    is this rule, not a false positive, and is deliberately not
+    special-cased (a per-character exception table on this hot path would
+    break the simplicity the "é" guarantee relies on). COMPATIBILITY
+    equivalents stay distinct — fullwidth "Ａ" (U+FF21) never confirms
+    ASCII "A", and ligatures never confirm their expansions — because this
+    uses NFC, not NFKC. The ASCII-only per-character case fold runs after
+    normalisation and only touches `A-Z`, so Turkish İ (U+0130) / ı (U+0131)
+    and German ß (U+00DF) never fold to their ASCII lookalikes either.
+  - The boundary rejects a mention embedded in a longer identifier or
+    extension chain (`xCLAUDE.md`, `CLAUDE.mdx`, `CLAUDE.md~`, or a `.`
+    followed by a letter, digit, combining mark or invisible format
+    character in any script — `CLAUDE.md.bak`, `CLAUDE.md.備份`; a mark or
+    format character directly after the name counts too, except that bidi
+    marks, embeddings and isolates are skipped — directly after the name
+    and again after a `.` — and the character after them decides; the two
+    bidi overrides are never skipped and reject) or immediately followed by another path separator
+    (`notes/CLAUDE.md/`, `notes/CLAUDE.md/subfile` — that names a
+    DIRECTORY called CLAUDE.md, or a file inside it, not the edited file
+    itself) and, for a path-style mention (`notes/CLAUDE.md`,
+    `文件/CLAUDE.md`, `C:\repo\docs\CLAUDE.md`), accepts it only when it
+    equals, or is a suffix of, the edited file's own path — checked against
+    its path relative to its repository root, its canonical (symlink-
+    resolved) absolute path, AND the absolute path as the edit payload
+    itself named it — editing root `CLAUDE.md`, a `notes/CLAUDE.md`
+    mention does not count. A directory that does not exist yet stays part
+    of that path: a Write into `notes/new/` is checked as
+    `notes/new/CLAUDE.md`, not as `notes/CLAUDE.md`. A trailing sentence period, or a URL fragment
+    or query string after the basename (`notes/CLAUDE.md#section`,
+    `notes/CLAUDE.md?x=1`), still confirms — a fragment/query does not
+    change which file a path points at. The path-token scan is
+    Unicode-aware (a directory name like `文件` is not lost), keeps a `~`
+    inside a directory name (a Windows short name such as `RUNNER~1`), and
+    recognises a Windows drive letter (`C:\...`) as the start of a path.
+  - **Only the basename and a Windows drive letter are ASCII case-folded in
+    a path-style mention; every directory component in between is compared
+    exactly, on every platform, by design:** a directory's real case
+    sensitivity depends on the volume, which this check has no filesystem
+    call to ask, and this is a hot path that makes none. `DOCS/CLAUDE.md`
+    in a memory does NOT match an edit to `docs/CLAUDE.md` (a deliberate
+    false negative — the memory is still reachable by a relative or bare
+    mention), while `docs/claude.MD` still does.
+  - **A memory can name either the symlinked or canonical spelling of a
+    file's path — but only whichever form the EDIT PAYLOAD ITSELF used, not
+    any spelling invented only in the memory text.** Editing through a
+    `/var/...` alias, a memory naming the canonical `/private/var/...` form
+    still matches; editing the canonical path directly, a memory naming
+    only the `/var/...` alias does not — resolving an alias mentioned only
+    in text would need a filesystem call per mention, which this hot path
+    does not make. The memory remains reachable through a relative or bare
+    mention either way.
+  - **A path-style mention needs a delimiter immediately before it** — any
+    character that is not a letter/mark/digit/`_.-/\`, including start of
+    text, whitespace, punctuation, or an emoji. CJK prose with no delimiter
+    directly before a path is consumed into the path token itself and does
+    not match (`請看文件/CLAUDE.md` misses an edit to `文件/CLAUDE.md`;
+    `📁文件/CLAUDE.md` matches) — a deliberate decision, not an oversight;
+    the same memory remains reachable through any other bare or delimited
+    mention it also contains.
+  - Fetches a bounded window of up to 50 FTS candidates before confirming,
+    not a small multiple of the remaining result slots — the tighter window
+    could let 9+ candidates that all fail confirmation hide a 10th,
+    genuinely-matching one, and then report "nothing to recall" when the
+    search had in fact been cut short. That case now records a distinct,
+    honest reason instead — including when the window filled but 1 or 2
+    memories (not a full 3) were still confirmed and injected: the reason
+    now travels with the actual outcome, not only with an empty one.
+  - No longer requires the basename's stem to be 4+ characters to search at
+    all — `設定.ts`, `c++.md` and similarly short or symbol-heavy names are
+    reachable again, with literal confirmation (not query length) as the
+    safeguard.
+  - Scopes the search by the edited file's own project instead of the
+    session's `cwd`; it still falls back to the `cwd` project when the
+    file is not in a repository or git reports none for its directory.
+    Where git itself stalls, the (at most four, 2-second-capped) git calls
+    can use up the hook's 5 seconds before that fallback is reached (#366).
+  - A fault while reading `observations` (confirming a candidate, or
+    building a snippet) is now recorded as an `error` on every run instead
+    of `skipped / nothing to recall`, the file is not marked as recalled,
+    and a lesson guard that matched the same edit is still injected. The
+    guard warning is also written before the guard's fire counter, and the
+    counter now waits for the database's write lock for the hook's own 2
+    seconds instead of the database's default 30 (in both guard hooks), so
+    another process holding that lock no longer gets the hook killed at
+    its timeout with the warning unprinted. The price: a lock held for
+    between 2 and 5 seconds now costs that one fire count, reported on
+    stderr, where the longer wait used to land it.
+
+  **Recall is now narrower, by design, not by accident.** A memory that
+  refers to a file only by its stem ("the `auth` module handles hashing",
+  or, for a non-ASCII file, its stem alone) or only loosely in prose ("the
+  Claude MD file", "claude-md", "CLAUDE_MD") no longer matches — only an
+  exact `file:<basename>` tag or the literal file name (on a filename
+  boundary, respecting the path-suffix rule for a path-style mention) does.
+  A non-ASCII letter directly adjacent to an ASCII basename with no
+  separator (`設定CLAUDE.md`) is deliberately NOT treated as embedding —
+  that remains a bare, accepted mention. `tests/hooks/pre-edit-recall.test.ts`
+  pins this: a memory tagged only with the stem is injected for one file and
+  withheld for another that merely shares that stem, and the existing CJK
+  reachability fixtures were updated to name the full file (extension
+  included) rather than the stem alone.
 
 ## [4.10.1] — 2026-09-14
 

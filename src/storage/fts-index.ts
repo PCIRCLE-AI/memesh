@@ -297,6 +297,27 @@ export function isLoneUnspacedChar(term: string): boolean {
 }
 
 /**
+ * Render terms into a single FTS5 PHRASE — every term adjacent and in order —
+ * rather than `renderMatchExpression`'s OR.
+ *
+ * For "does the text actually name this thing" (a filename, not a topic),
+ * ORing risks a row that only shares one word with an unrelated subject:
+ * editing `knowledge-graph.ts` OR-matched a row that merely said "graph"
+ * (#358). A phrase requires the terms to appear together, in order.
+ *
+ * Not a drop-in replacement for `renderMatchExpression` — callers whose terms
+ * may include a lone unspaced-script character (CJK/Thai/etc., see
+ * `isLoneUnspacedChar`) should keep using that function instead. A phrase has
+ * no equivalent of its trailing `*` prefix query, and bigram-segmented
+ * unspaced-script text is reachable through the OR path already; this
+ * function is for the ASCII case that path was never precise for.
+ */
+export function renderPhraseExpression(terms: string[]): string | null {
+  if (terms.length === 0) return null;
+  return `"${terms.map((term) => term.replace(/"/g, '""')).join(' ')}"`;
+}
+
+/**
  * `entities_fts` has no `title` column — it is contentless with exactly
  * two indexed columns (name, observations), and adding a third would
  * ripple into check-schema-drift.mjs's string comparison and every

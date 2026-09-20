@@ -359,6 +359,17 @@ export const SKIP_REASONS = {
   noFilePath: 'no file_path in the tool input',
   noDatabaseForRecall: 'no database yet — nothing to recall',
   nothingToRecall: 'no guard matched and nothing to recall for this file',
+  /**
+   * pre-edit-recall #358 round 3 item 2: distinct from `nothingToRecall`.
+   * Strategy 2 fetches a BOUNDED candidate window before literal
+   * confirmation narrows it (confirmation cannot run inside SQL — it reads
+   * `entities.name`/`observations.content`, fetched into JS). When that
+   * fetch returns exactly as many rows as the window allows, there may be
+   * MORE candidates past it that were never examined — so "nothing to
+   * recall" would be a claim this run cannot actually back. This reason
+   * says the honest, narrower thing: the search was cut off, not exhausted.
+   */
+  candidateWindowTruncated: 'more candidates may exist than the search window examined',
   noPromptIntent: 'the prompt carried no remember intent and no update decision',
   // note-ingest (#324)
   noMemoryDir: 'no Claude Code memory directory for this project',
