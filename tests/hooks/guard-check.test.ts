@@ -136,6 +136,10 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
     expect(last.outcome).toBe('error');
   });
 
+  // Well above what one contended 2 s wait really costs on a slow runner,
+  // well below the 30 s a connection waits when the hook budget is not applied.
+  const LOCKED_RUN_TIMEOUT_MS = 12000;
+
   it.each([
     ['a healthy database', false],
     ['observations unreadable', true],
@@ -151,6 +155,14 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
     // waits on it — for the hook's own short budget, not the database's
     // default 30 s, so the process ends by itself instead of being killed by
     // its host, and says on stderr that the fire was not counted.
+    //
+    // The spawn timeout below separates those two waits and nothing finer.
+    // What a contended 2 s busy_timeout wait costs in wall-clock time is not
+    // portable: the macOS CI runners start this hook in about 0.1 s and then
+    // spend close to 4 s in the wait (tests/hooks/hook-time-budgets.test.ts
+    // records the same premium), so a limit near the nominal figure fails on
+    // the machine, not on the code. With the 30 s default the run is still
+    // killed here, and is red.
     db.exec('BEGIN IMMEDIATE');
     let result;
     try {
@@ -162,7 +174,7 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
         }),
         env: { ...process.env, MEMESH_DB_PATH: dbPath },
         encoding: 'utf8',
-        timeout: 4000,
+        timeout: LOCKED_RUN_TIMEOUT_MS,
       });
     } finally {
       db.exec('ROLLBACK');
@@ -171,7 +183,7 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
     expect(result.signal, 'the hook was killed at the timeout instead of finishing').toBeNull();
     expect(result.status).toBe(0);
     expect(result.stderr).toContain('[memesh guard-fires] not counted');
-  }, 15000);
+  }, 20000);
 
   it('the Bash guard warning survives a held write lock too: the counter gives up within the hook budget', () => {
     seedGuardedLesson(bashGuard);
@@ -182,7 +194,7 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
         input: JSON.stringify({ cwd: tmpHome, tool_name: 'Bash', tool_input: { command: 'git checkout -- src/app.ts' } }),
         env: { ...process.env, MEMESH_DB_PATH: dbPath },
         encoding: 'utf8',
-        timeout: 4000,
+        timeout: LOCKED_RUN_TIMEOUT_MS,
       });
     } finally {
       db.exec('ROLLBACK');
@@ -195,7 +207,7 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
     // is the counter's bounded wait, shared with pre-edit-recall.
     const lines = fs.readFileSync(path.join(tmpHome, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n');
     expect(JSON.parse(lines[lines.length - 1]).outcome).toBe('notified');
-  }, 15000);
+  }, 20000);
 
   // POSIX only: there a pipe write is asynchronous, so whatever does not fit
   // the pipe waits for the event loop — which the counter's lock wait blocks.

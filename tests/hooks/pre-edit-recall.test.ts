@@ -1148,6 +1148,27 @@ describe('Feature: Pre-Edit Recall Hook', () => {
         expect(containsFileNameLiterally('See c:\\repo\\docs\\CLAUDE.md before editing', 'CLAUDE.md', editedPath)).toBe(true);
       });
 
+      // `~` is an ordinary character in a directory name. Windows' 8.3 short
+      // names put one in the middle of a component (`RUNNER~1`), and `%TEMP%`
+      // is commonly spelled that way. A backward walk that stops at `~` cuts
+      // the mention down to `1/AppData/.../CLAUDE.md`, which is a suffix of
+      // nothing, and the memory naming the exact file is never recalled.
+      it('accepts a path whose directory component contains a tilde (a Windows 8.3 short name)', () => {
+        const { containsFileNameLiterally } = require('../../scripts/hooks/_shared.js');
+        const editedPath = { relPath: 'docs/CLAUDE.md', absPath: 'C:/Users/RUNNER~1/repo/docs/CLAUDE.md' };
+        expect(containsFileNameLiterally('See C:\\Users\\RUNNER~1\\repo\\docs\\CLAUDE.md before editing', 'CLAUDE.md', editedPath)).toBe(true);
+        expect(containsFileNameLiterally('See /home/kt/work~old/repo/docs/CLAUDE.md first', 'CLAUDE.md', { relPath: 'docs/CLAUDE.md', absPath: '/home/kt/work~old/repo/docs/CLAUDE.md' })).toBe(true);
+      });
+
+      it('still rejects a different tilde component, and a home-relative ~/ mention stays unresolved', () => {
+        const { containsFileNameLiterally } = require('../../scripts/hooks/_shared.js');
+        const editedPath = { relPath: 'docs/CLAUDE.md', absPath: 'C:/Users/RUNNER~1/repo/docs/CLAUDE.md' };
+        expect(containsFileNameLiterally('See C:\\Users\\OTHERU~1\\repo\\docs\\CLAUDE.md before editing', 'CLAUDE.md', editedPath)).toBe(false);
+        // `~/` means a home directory this function cannot expand; it is not
+        // a suffix of the edited path and is declined, as it was before.
+        expect(containsFileNameLiterally('See ~/repo/docs/CLAUDE.md first', 'CLAUDE.md', { relPath: 'docs/CLAUDE.md', absPath: '/home/kt/repo/docs/CLAUDE.md' })).toBe(false);
+      });
+
       it('still accepts a line-number suffix — a different position, unaffected by the drive-letter fix', () => {
         const { containsFileNameLiterally } = require('../../scripts/hooks/_shared.js');
         const editedPath = { relPath: null, absPath: 'C:/repo/docs/CLAUDE.md' };

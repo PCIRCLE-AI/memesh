@@ -829,7 +829,14 @@ function codePointAt(text, i) {
 // `:` in the token class would swallow a `CLAUDE.md:12` line-number suffix
 // that sits AFTER a match, a completely different position, into what looks
 // like a path BEFORE the next one).
-const PATH_TOKEN_CHAR = /[\p{L}\p{M}\p{N}_.\-/\\]/u;
+//
+// `~` is in: it is an ordinary character inside a directory name, and
+// Windows' 8.3 short names put one mid-component (`C:\Users\RUNNER~1\...`,
+// the usual spelling of `%TEMP%`). Stopping the walk there cut such a mention
+// down to `1/.../CLAUDE.md`, a suffix of nothing, so a memory naming the exact
+// file was never recalled. A home-relative `~/docs/CLAUDE.md` is unaffected:
+// it was not a suffix of the edited path before and is not one now.
+const PATH_TOKEN_CHAR = /[\p{L}\p{M}\p{N}_.~\-/\\]/u;
 // A single ASCII drive letter immediately followed by `:` — the two
 // characters `pathMentionMatches` splices onto the front of a walked-back
 // token when they precede it exactly, so "C:\repo\...\CLAUDE.md" is not
