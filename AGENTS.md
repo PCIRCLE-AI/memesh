@@ -72,10 +72,13 @@ host is recallable from all of them. Not installed yet? Follow
    declarations remain unknown. Then send a `message`. The host's own push tool (Claude
    Code's `SendMessage`, a Codex queue) delivers a wakeup; it is not the
    record, and it cannot reach an agent on a different host or one that is
-   not running. Generic `briefing` and SessionStart context has no recipient
-   identity and stays quiet. Check an inbox with the exact `project` and
-   `recipient`; poll first, then fetch each returned `message_id`. Fetching
-   does not acknowledge.
+   not running. Generic `briefing` has no recipient identity and stays quiet;
+   so do the SessionStart and prompt hooks, unless the session declared who it
+   is by starting with `MEMESH_RECIPIENT=<id>`, in which case they say how many
+   messages wait for that recipient and in which project. Check an inbox with
+   the exact `project` and `recipient`; poll first, then fetch each returned
+   `message_id`, then record `intake` for it: fetching alone does not
+   acknowledge and does not end the reminder.
 
 ## All 12 MCP tools
 
