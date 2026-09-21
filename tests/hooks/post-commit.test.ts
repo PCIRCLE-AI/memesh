@@ -49,7 +49,7 @@ describe('Feature: Post-Commit Hook', () => {
   });
 
   function git(args: string[]): string {
-    return execFileSync('git', ['-C', repoDir, ...args], { encoding: 'utf8', timeout: 15000 });
+    return execFileSync('git', ['-C', repoDir, ...args], { encoding: 'utf8', timeout: 60000 });
   }
 
   /**
@@ -82,7 +82,7 @@ describe('Feature: Post-Commit Hook', () => {
       input: jsonInput,
       env: { ...process.env, ...env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
   }
 
@@ -798,7 +798,7 @@ describe('Feature: Post-Commit Hook', () => {
       input: JSON.stringify(input),
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
     expect(result.trim(), 'stdout must stay empty — see tests/hooks/cross-host-output-contract.test.ts').toBe('');
   });
@@ -810,7 +810,7 @@ describe('Feature: Post-Commit Hook', () => {
       input: 'not-json',
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
   });
 
@@ -951,7 +951,7 @@ describe('Feature: Post-Commit Hook', () => {
       }),
       env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'false' },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
 
     expect(fs.existsSync(dbPath), 'a disabled hook must not even create the database').toBe(false);

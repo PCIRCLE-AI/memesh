@@ -31,9 +31,12 @@ export default defineConfig({
     maxWorkers: 1,
     fileParallelism: false,
 
-    // Force test timeout to prevent hanging
-    testTimeout: 30000, // 30 seconds max per test
-    // 30s, not 10s. Every DB test's afterEach closes SQLite and recursively
+    // Force test timeout to prevent hanging. 90 s, a ceiling and not an
+    // expectation: a healthy test takes a second or two, and the Windows CI
+    // runners are 3-4x slower and occasionally stall for tens of seconds, which
+    // at 30 s failed the graph-repair and memory-invariant tests at random.
+    testTimeout: 90000,
+    // 90s, not 10s. Every DB test's afterEach closes SQLite and recursively
     // removes a temp directory, and on Windows that is routinely slower than
     // on POSIX — SQLite leaves -wal/-shm beside the database, and the OS (plus
     // whatever scans files on a CI runner) can hold a handle open for a moment
@@ -44,7 +47,7 @@ export default defineConfig({
     // on an unrelated change. The retries added alongside this (maxRetries /
     // retryDelay on every recursive rmSync in tests/) handle the other half —
     // a handle that is briefly still open.
-    hookTimeout: 30000,
+    hookTimeout: 90000,
 
     // Environment configuration
     environment: 'node',

@@ -124,7 +124,7 @@ describe('the read-only hooks apply the same cap they cannot get from openHookDb
       input: JSON.stringify(input),
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
-      timeout: 25_000,
+      timeout: 60_000,
     });
     const elapsedMs = Date.now() - startedAt;
     if (result.error) throw result.error;
@@ -174,13 +174,12 @@ describe('the read-only hooks apply the same cap they cannot get from openHookDb
   ])('$script does not inherit the 30s default meant for long-lived writers', ({ script, makeInput }) => {
     // The regression this rules out is coarse — a pragma never applied at
     // all — so it does not need fine calibration against a live reference:
-    // any number this large only happens by inheriting the 30s default (or
-    // hitting spawnSync's own 25s timeout on the way there), never by
-    // paying a correctly-capped 2s wait plus runner noise.
+    // any number this large only happens by inheriting the 30s default, never
+    // by paying a correctly-capped 2s wait plus runner noise.
     const waitedMs = withTempDb((dbPath) => measureWaitedMs(script, makeInput, dbPath));
     expect(waitedMs, `${script} paid ${waitedMs}ms above its own unlocked floor — looks like the busy_timeout pragma never reached the handle`)
       .toBeLessThan(15_000);
-  }, 60_000);
+  }, 180_000);
 
   it("pre-edit-recall.js pays at most one busy_timeout wait, calibrated against guard-check.js's own wait measured in this same run", () => {
     // `loadActiveGuards` swallows the guard query's own failure, so a
@@ -215,7 +214,7 @@ describe('the read-only hooks apply the same cap they cannot get from openHookDb
       targetWaitedMs,
       `pre-edit-recall.js paid ${targetWaitedMs}ms vs guard-check.js's own ${referenceWaitedMs}ms single-wait reference (measured in this same run) — looks like more than one busy_timeout wait`,
     ).toBeLessThan(referenceWaitedMs * 1.6);
-  }, 60_000);
+  }, 180_000);
 });
 
 describe('the PreCompact budget is the external one', () => {
