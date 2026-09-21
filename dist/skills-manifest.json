@@ -113,8 +113,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "42857e1cab877f04a38bc55dcfae99793061d4b726906d4d121090c038c3164d",
-      "bytes": 97800
+      "sha256": "444bca68f7c92be9f7139992932a40f2887813cfa40100a4608a36d2cb61108c",
+      "bytes": 98528
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -153,8 +153,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "ab468186f85379e3a9e2bf027f266eaab484232302a319d287c0a10a73899611",
-      "bytes": 93057
+      "sha256": "b12da97c02e7caf33aa57cdb59a0c11aaf54e284146cb03840be89dab1b62159",
+      "bytes": 93439
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -163,8 +163,8 @@
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "5a7e9effea75949b74f0fe78ca3505a0cb06336c4bd4bbcd26e921ecac35389b",
-      "bytes": 15398
+      "sha256": "c3d47a4d21658d666170caa9c18c2156031d644d788f8e841c6ff2ef91b2a40f",
+      "bytes": 15694
     },
     {
       "path": "skills/memesh-review/SKILL.md",

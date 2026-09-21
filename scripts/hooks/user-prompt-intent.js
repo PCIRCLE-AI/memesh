@@ -282,8 +282,11 @@ if (isMainModule) {
       const rememberIntent = detectRememberIntent(prompt);
       // Messages waiting for the recipient this session declared in
       // MEMESH_RECIPIENT. Read-only and not memory capture, so it is not
-      // gated by autoCapture. Empty when the variable is unset.
-      const inboxLines = unreadMessageLines(process.env);
+      // gated by autoCapture. Empty when the variable is unset. An inbox that
+      // cannot be read is recorded as an `error` of its own (a label, never
+      // the message), next to whatever this prompt's outcome turns out to be,
+      // so a skip below cannot be read as "nothing was waiting".
+      const inboxLines = unreadMessageLines(process.env, (err) => record('error', `inbox: ${hookErrorReason(err)}`));
       if (!rememberIntent && !updateDecision && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.noPromptIntent);
         return process.exit(0);
