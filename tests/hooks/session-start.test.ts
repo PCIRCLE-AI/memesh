@@ -1044,6 +1044,63 @@ describe('Feature: Session Start Hook', () => {
     });
   });
 
+  // #401: equal scores resolve newest-first. Auto-captured memories carry one
+  // confidence value and have never been accessed, so they score EXACTLY alike,
+  // and SQLite returns equal scores in ascending id order (measured): the cut used
+  // to keep the OLDEST of such a tie, and the lesson query had no ORDER BY at all,
+  // so a new session never saw the newest memories.
+  describe('Scenario: equal scores resolve newest-first (#401)', () => {
+    const seedTied = (db: Database, count: number, type = 'commit', prefix = 'tied') => {
+      for (let i = 1; i <= count; i++) {
+        db.prepare("INSERT INTO entities (name, type, confidence, status) VALUES (?, ?, 0.9, 'active')").run(`${prefix}-${i}`, type);
+        db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(i, `observation ${i}`);
+        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(i, projTag('ties'));
+      }
+    };
+    const BOTH_FORMS: Array<[string, Record<string, string>]> = [
+      ['exp/log ranking', {}],
+      ['legacy ranking (no SQLite math functions)', { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' }],
+    ];
+
+    it.each(BOTH_FORMS)('with a limit of 3 the injected memories are the newest three — %s', (_label, env) => {
+      const db = createScoringDb();
+      seedTied(db, 12);
+      db.close();
+
+      runHook({ cwd: '/tmp/ties' }, { MEMESH_SESSION_LIMIT: '3', MEMESH_BRIEFING: 'minimal', ...env });
+      const session = readLatestSessionFile();
+      expect(session).not.toBeNull();
+      expect([...rankedNames(session!)].sort()).toEqual(['tied-10', 'tied-11', 'tied-12']);
+    });
+
+    it.each(BOTH_FORMS)('a higher score still beats a newer id: the tie-break orders only equal scores — %s', (_label, env) => {
+      const db = createScoringDb();
+      seedTied(db, 6);
+      // The OLDEST row is the only one ever accessed, and just now: under a limit
+      // of 1 it must still win against every newer, tied row.
+      db.prepare("UPDATE entities SET access_count = 40, last_accessed_at = datetime('now') WHERE name = 'tied-1'").run();
+      db.close();
+
+      runHook({ cwd: '/tmp/ties' }, { MEMESH_SESSION_LIMIT: '1', MEMESH_BRIEFING: 'minimal', ...env });
+      const session = readLatestSessionFile();
+      expect(session).not.toBeNull();
+      expect(rankedNames(session!)).toEqual(['tied-1']);
+    });
+
+    it('the lesson section keeps the newest lessons, not the oldest', () => {
+      const db = createScoringDb();
+      seedTied(db, 12, 'lesson_learned', 'lesson');
+      db.close();
+
+      // The project pool is cut to the newest one (12); the five lessons of the
+      // lesson pool are 12..8. Before #401 that pool had no ORDER BY and kept 1..5.
+      runHook({ cwd: '/tmp/ties' }, { MEMESH_SESSION_LIMIT: '1', MEMESH_BRIEFING: 'minimal' });
+      const session = readLatestSessionFile();
+      expect(session).not.toBeNull();
+      expect([...rankedNames(session!)].sort()).toEqual(['lesson-10', 'lesson-11', 'lesson-12', 'lesson-8', 'lesson-9']);
+    });
+  });
+
   // ── #360: briefing levels ──────────────────────────────────────────────
   describe('Feature: Briefing levels (#360)', () => {
     const PROJECT_CWD = '/tmp/everysection';

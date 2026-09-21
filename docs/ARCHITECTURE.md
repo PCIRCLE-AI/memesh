@@ -587,6 +587,7 @@ For release safety, `npm run test:packaged` creates a real npm tarball, extracts
 - Session-start hook loads top-N entities by weighted score
 - Score = recency (~42%) + frequency (30%) + confidence (~28%) — the `SESSION_START_WEIGHT_RATIO` constants in `src/core/scoring.ts`, derived from `DEFAULT_WEIGHTS`; this line previously said 40/30/30 with confidence first, which matched no version of the code
 - Default N=10, configurable via MEMESH_SESSION_LIMIT
+- Equal scores resolve newest first (`id DESC`, the last ORDER BY key of every scored query; "newest" is creation order, the key `src/core/briefing.ts` sorts by too) and the lesson query orders newest first too. The daily decay multiplies the confidence of never-accessed memories by 0.9, so the memories captured since its last run all score alike, and without this the oldest of them would fill the window (#401); `src/core/briefing.ts` reaches the same order through a stable sort over a newest-first window
 - Concise format: "• name (type): first observation"
 
 ---

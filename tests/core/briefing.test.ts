@@ -683,6 +683,75 @@ describe('assembleBriefing', () => {
     expect(injected, 'hook and CLI/MCP must be byte-equal at standard (no notice to strip)').toBe(briefing);
   });
 
+  // #401: on a real graph almost every memory is auto-captured with one
+  // confidence value and has never been accessed, so every score TIES. The hook
+  // used to keep the OLDEST of a tie (SQLite returns equal scores in ascending
+  // id, and its lesson query had no ORDER BY at all) while this assembler,
+  // sorting a newest-first window, kept the newest — so a new session was shown
+  // old commits and old lessons and never the decision made minutes ago. Every
+  // fixture above gives its memories distinct confidences, which is exactly why
+  // nothing caught it.
+  it.each([
+    ['exp/log ranking', {}],
+    ['legacy ranking (no SQLite math functions)', { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' }],
+  ])('parity holds when every memory ties on score: both sides keep the newest — %s', (_label, hookEnv) => {
+    const cwd = path.join(tmpDir, 'proj-ties');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+
+    // More commits than a section renders (8), then twelve lessons, then the
+    // decision: the newest row is last, as it is in life. The hook's limit is
+    // raised to the briefing's window (30) because their defaults differ (10 and
+    // 30) and this test is about ORDER, not window size.
+    for (let i = 1; i <= 40; i++) {
+      remember({
+        name: `tied-commit-${i}`, type: 'commit', title: `Tied commit ${i}`,
+        observations: [`Detail ${i}`], tags: [`project:${project}`],
+      });
+    }
+    for (let i = 1; i <= 12; i++) {
+      remember({
+        name: `tied-lesson-${i}`, type: 'lesson_learned', title: `Tied lesson ${i}`,
+        observations: [`Lesson detail ${i}`], tags: [`project:${project}`],
+      });
+    }
+    remember({
+      name: 'newest-decision', type: 'decision', title: 'Ship the newest decision',
+      observations: ['Made last.'], tags: [`project:${project}`],
+    });
+    closeDatabase();
+
+    const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'minimal', MEMESH_SESSION_LIMIT: '30', ...hookEnv },
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    const injected: string =
+      JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
+        .hookSpecificOutput.additionalContext;
+
+    openDatabase(dbPath);
+    const previousBriefingEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'minimal';
+    let briefing: string;
+    try {
+      briefing = assembleBriefing(project).text;
+    } finally {
+      if (previousBriefingEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousBriefingEnv;
+    }
+
+    for (const block of [injected, briefing]) {
+      expect(block).toContain('Ship the newest decision');
+      expect(block).toContain('Tied commit 40');
+      expect(block).toContain('Tied lesson 12');
+      // The oldest lesson only appears if a lesson pool keeps the OLDEST.
+      expect(block).not.toMatch(/Tied lesson 1\b/);
+    }
+    expect(injected, 'hook and CLI/MCP must be byte-equal at minimal (no notice to strip)').toBe(briefing);
+  });
+
   // An empty-`minimal` parity case across all THREE real consumers — the
   // real hook subprocess, the real built CLI (`dist/transports/cli/cli.js`,
   // not the TS source — this is what a user actually runs), and the MCP tool

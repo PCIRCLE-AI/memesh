@@ -1093,6 +1093,18 @@ process.stdin.on('end', async () => {
         ? `, e.confidence, e.access_count, e.last_accessed_at`
         : '';
 
+      // Equal scores resolve newest-first: `id DESC` is the last ORDER BY key of
+      // both scored forms, and the schema without scoring columns already orders
+      // by it alone. The daily decay multiplies the confidence of never-accessed
+      // rows by 0.9, so the rows captured since its last run carry one confidence
+      // value and, never accessed, score EXACTLY alike (so do old rows that have
+      // sunk to the decay floor), and SQLite hands equal scores back in ascending
+      // id order (measured, not promised): before #401 the cut kept the OLDEST of
+      // such a tie, so a decision made minutes ago could not be injected. "Newest"
+      // is creation order (id), the key core's briefing sorts by too (briefing.ts:
+      // a stable sort over `ORDER BY e.id DESC`); tests/core/briefing.test.ts pins
+      // the two together with a fixture in which every memory ties. The lesson
+      // query below is not scored at all and orders by the same key.
       const buildScoringQuery = (joinClause, whereClause) => {
         const poolSelect = `SELECT DISTINCT ${baseCols}${scoringCols} FROM entities e ${joinClause}`;
         if (!hasScoringCols) {
@@ -1113,7 +1125,8 @@ process.stdin.on('end', async () => {
                       ELSE log(COALESCE(p.access_count, 0) + 1) / log(max(s.max_access, 1) + 1) END) * 0.3000
               + (CASE WHEN p.last_accessed_at IS NULL THEN 0.5
                       ELSE exp(-(julianday('now') - julianday(p.last_accessed_at)) / 30.0) END) * 0.4167
-              DESC
+              DESC,
+              p.id DESC
             LIMIT ?`;
         }
         // Legacy fallback (SQLite without math functions): linear cap + rational decay.
@@ -1125,7 +1138,8 @@ process.stdin.on('end', async () => {
                    ELSE MIN(CAST(e.access_count AS REAL) / 50.0, 1.0) END * 0.3000
             + CASE WHEN e.last_accessed_at IS NULL THEN 0.5
                    ELSE MIN(1.0, 1.0 / (1.0 + (julianday('now') - julianday(e.last_accessed_at)) / 30.0)) END * 0.4167
-            DESC
+            DESC,
+            e.id DESC
           LIMIT ?`;
       };
 
@@ -1206,6 +1220,7 @@ process.stdin.on('end', async () => {
             ${hasStatus ? "AND e.status = 'active'" : ''}
             ${colNames.has('namespace') ? "AND (e.namespace IS NULL OR e.namespace <> 'global')" : ''}
             AND t.tag = ?
+          ORDER BY e.id DESC
           LIMIT 50
         `).all(projectTag).filter(entity => isTrustedForAutoContext(entity.metadata));
         lessonCount = lessonRows.length;

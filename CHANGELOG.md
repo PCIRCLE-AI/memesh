@@ -4,6 +4,27 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A new session is no longer shown the oldest of a group of equally scored
+  memories (#401).** The SessionStart hook ranks a project's memories by
+  confidence, use and recency and keeps the top few (`sessionLimit`). The daily
+  decay multiplies the confidence of never-accessed memories by 0.9, so the
+  memories captured since its last run carry one confidence value and, never
+  accessed, score exactly alike (so do old ones that have sunk to the decay
+  floor), and SQLite hands equal scores back in ascending id order (measured):
+  the cut kept the OLDEST of them. The lesson query, whose pool is claimed
+  first, had no ORDER BY at all and kept the five oldest lessons. On a real
+  graph, in the hours after a decay run, a new session was given the same two
+  old commit lines every time and never the decision made an hour earlier,
+  while `memesh briefing` on the same data (which reads a newest-first window)
+  showed the right memories. Equal scores now resolve newest first ("newest" is
+  creation order, the key the briefing sorts by too), in both the exp/log and
+  the legacy ranking forms and in the global and recent pools that `full` adds,
+  and the lesson query orders newest first; a higher score still beats a newer
+  memory. `tests/core/briefing.test.ts` pins the hook and the briefing together
+  on a graph in which every memory ties, lessons included.
+
 ## [4.10.2] — 2026-09-21
 
 ### Added
