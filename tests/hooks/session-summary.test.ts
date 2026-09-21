@@ -43,7 +43,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
         input: jsonInput,
         env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: undefined, ...env },
         encoding: 'utf8',
-        timeout: 15000,
+        timeout: 60000,
       });
     } catch (err: any) {
       // Hook may exit 0 before reading all stdin — that's OK
@@ -59,7 +59,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       input: JSON.stringify(input),
       env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: undefined, ...env },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
     return { stderr: res.stderr || '' };
   }

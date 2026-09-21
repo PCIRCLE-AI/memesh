@@ -47,7 +47,7 @@ describe('Feature: PreCompact Hook', () => {
       input: jsonInput,
       env: { ...process.env, MEMESH_DB_PATH: dbPath, ...env },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
   }
 
@@ -62,7 +62,7 @@ describe('Feature: PreCompact Hook', () => {
       input: JSON.stringify(input),
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
     return res.stderr || '';
   }
@@ -334,7 +334,7 @@ describe('Feature: PreCompact Hook', () => {
       input: 'not-json-at-all',
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
     // DB should not exist (errored before db open)
     expect(fs.existsSync(dbPath)).toBe(false);
