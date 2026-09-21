@@ -1169,6 +1169,19 @@ describe('Feature: Pre-Edit Recall Hook', () => {
         expect(containsFileNameLiterally('See ~/repo/docs/CLAUDE.md first', 'CLAUDE.md', { relPath: 'docs/CLAUDE.md', absPath: '/home/kt/repo/docs/CLAUDE.md' })).toBe(false);
       });
 
+      it('a tilde glued to the front of a mention belongs to it: the shorter path behind it is no longer read out', () => {
+        const { containsFileNameLiterally } = require('../../scripts/hooks/_shared.js');
+        // Before `~` was a path-token character, the first confirmed because
+        // the walk stopped at it and read `docs/CLAUDE.md`; the second because
+        // the drive-letter splice fired and read `C:/repo/docs/CLAUDE.md` — a
+        // right answer for a wrong reason. Neither string names the file.
+        expect(containsFileNameLiterally('See x~docs/CLAUDE.md first', 'CLAUDE.md', { relPath: 'docs/CLAUDE.md', absPath: '/repo/docs/CLAUDE.md' })).toBe(false);
+        expect(containsFileNameLiterally('See x~C:\\repo\\docs\\CLAUDE.md now', 'CLAUDE.md', { relPath: null, absPath: 'C:/repo/docs/CLAUDE.md' })).toBe(false);
+        // Control: the same two mentions without the glued prefix confirm.
+        expect(containsFileNameLiterally('See docs/CLAUDE.md first', 'CLAUDE.md', { relPath: 'docs/CLAUDE.md', absPath: '/repo/docs/CLAUDE.md' })).toBe(true);
+        expect(containsFileNameLiterally('See C:\\repo\\docs\\CLAUDE.md now', 'CLAUDE.md', { relPath: null, absPath: 'C:/repo/docs/CLAUDE.md' })).toBe(true);
+      });
+
       it('still accepts a line-number suffix — a different position, unaffected by the drive-letter fix', () => {
         const { containsFileNameLiterally } = require('../../scripts/hooks/_shared.js');
         const editedPath = { relPath: null, absPath: 'C:/repo/docs/CLAUDE.md' };
