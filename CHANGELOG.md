@@ -115,6 +115,17 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **A hook that cannot read the inbox now records an `error` instead of
+  looking like a clean run (#394).** When a session declares
+  `MEMESH_RECIPIENT` and the SessionStart or prompt hook cannot read the
+  durable inbox (its receipts table will not load, for example), the hook
+  already said so on stderr and went on without the reminder.
+  `hook-outcomes.jsonl` now also gets one `error` (`inbox: uncaught <code>`, a
+  label, never the message). Before, a prompt with no other intent was
+  recorded as `skipped` and a session start as `notified`, with no trace of
+  the failure, so nothing afterwards could tell "no message was waiting" from
+  "the inbox could not be read". Prompts and session starts are not blocked
+  and their output is unchanged.
 - **The guard fire counter waits at most 200 ms for a locked database
   (#366).** When another process holds the database's write lock, the two
   guard hooks (`guard-check.js` and `pre-edit-recall.js`) wait up to 200 ms

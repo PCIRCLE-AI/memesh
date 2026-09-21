@@ -1323,7 +1323,9 @@ process.stdin.on('end', async () => {
         // fresh one — `minimal` omits a fresh state entirely, never a stale
         // flag. The unread-inbox line below is unconditional at every level:
         // a message waiting for this agent is not "another project's
-        // memory", it is addressed to it.
+        // memory", it is addressed to it. An inbox that cannot be read is
+        // recorded as its own `error` (a label, like the two below), and is
+        // not a failed memory assembly: the rest of the context still ships.
         const stateLines = [
           ...briefingTaskStateLines(
             parseTaskState(parseEntityMetadata(taskRow?.metadata)),
@@ -1331,7 +1333,12 @@ process.stdin.on('end', async () => {
             new Date(),
             { includeFresh: briefingPolicy.taskState },
           ),
-          ...waitingMessageLines(db, resolveMessageRecipient(process.env)),
+          ...waitingMessageLines(db, resolveMessageRecipient(process.env), (err) =>
+            recordHookOutcome(process.env, {
+              hook: 'session-start',
+              outcome: 'error',
+              reason: `inbox: ${hookErrorReason(err)}`,
+            })),
         ];
 
         // The pools overlap by construction (a lesson tagged to this project

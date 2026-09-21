@@ -55,6 +55,13 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
   const context = (stdout: string): string =>
     (JSON.parse(stdout) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput.additionalContext;
 
+  // The outcome ledger sits beside the database (MEMESH_DB_PATH's directory).
+  const ledgerText = (): string => fs.readFileSync(path.join(tmp, 'hook-outcomes.jsonl'), 'utf8');
+  const ledger = (hook: string) =>
+    ledgerText().trim().split('\n')
+      .map((line) => JSON.parse(line) as { hook: string; outcome: string; reason?: string })
+      .filter((record) => record.hook === hook);
+
   it('tells the session at its next prompt, naming the project to poll with', async () => {
     await send('claude-implementer');
 
@@ -62,6 +69,8 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
 
     expect(context(result.stdout)).toContain('1 message waiting for "claude-implementer" in project "team-room"');
     expect(context(result.stdout)).toContain('poll the message tool');
+    // A readable inbox leaves exactly one record and no error.
+    expect(ledger('user-prompt-intent').map((record) => record.outcome)).toEqual(['notified']);
   });
 
   it('says nothing when the session has not declared who it is', async () => {
@@ -132,7 +141,7 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
     expect(text).not.toContain(buildHint());
   });
 
-  it('says so on stderr when the inbox cannot be read, and still lets the prompt and the session start through', async () => {
+  it('says so on stderr and in the ledger when the inbox cannot be read, and still lets the prompt and the session start through', async () => {
     await send('claude-implementer');
     getDatabase().exec('ALTER TABLE agent_message_receipts RENAME TO agent_message_receipts_gone');
 
@@ -142,6 +151,34 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
     expect(promptRun.stdout).toBe('');
     expect(promptRun.stderr).toContain('could not check for waiting messages');
     expect(start.stderr).toContain('could not check for waiting messages');
+
+    // Without a record of its own, the prompt's `skipped` line reads as "nothing
+    // was waiting". The failure is its own `error`, a label and not the message.
+    expect(ledger('user-prompt-intent')).toEqual([
+      expect.objectContaining({ outcome: 'error', reason: expect.stringMatching(/^inbox: uncaught \w+$/) }),
+      expect.objectContaining({ outcome: 'skipped' }),
+    ]);
+    expect(ledger('session-start').filter((record) => record.outcome === 'error')).toEqual([
+      expect.objectContaining({ reason: expect.stringMatching(/^inbox: uncaught \w+$/) }),
+    ]);
+    expect(ledgerText()).not.toContain('agent_message_receipts');
+  });
+
+  // The other way the read can fail: the database cannot be opened at all
+  // (here the path is a directory). That is the helper's own catch, not the
+  // query's: a file that opens but holds no database only fails at the query.
+  it('records the same error when the database cannot be opened at all', () => {
+    const unopenable = path.join(tmp, 'db-is-a-directory');
+    fs.mkdirSync(unopenable);
+
+    const promptRun = prompt({ MEMESH_RECIPIENT: 'claude-implementer', MEMESH_DB_PATH: unopenable });
+
+    expect(promptRun.stdout).toBe('');
+    expect(promptRun.stderr).toContain('could not check for waiting messages');
+    expect(ledger('user-prompt-intent')).toEqual([
+      expect.objectContaining({ outcome: 'error', reason: expect.stringMatching(/^inbox: uncaught \w+$/) }),
+      expect.objectContaining({ outcome: 'skipped' }),
+    ]);
   });
 
   it('SessionStart names the waiting message too, with nothing else remembered', async () => {
