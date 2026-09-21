@@ -78,7 +78,7 @@ export interface BriefingResult {
   index: BriefingIndex;
   /** #360 — the resolved level this result was assembled at. */
   level: BriefingLevel;
-  /** #360 round 3, item 1: true when there was NOTHING to show at this
+  /** #360: true when there was NOTHING to show at this
    *  level — `text` is `''` in that case, not a preamble wrapped around an
    *  empty fence. Callers that render for a human (the CLI) must check this
    *  and print a short line instead of `text`; callers that just forward
@@ -239,7 +239,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     const { source, value } = resolvedLevel.invalid;
     try {
       process.stderr.write(
-        `[memesh briefing] invalid ${source} briefing level "${value}" — using "${resolvedLevel.level}"\n`,
+        `[memesh briefing] invalid ${source} briefing level ${value} — using "${resolvedLevel.level}"\n`,
       );
     } catch { /* stderr gone */ }
   }
@@ -249,9 +249,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // field comment in briefing-level.ts. This function's result is the
   // MEMORY block only; the notice is a SessionStart-hook-only host-agent
   // instruction, appended by `session-start.js`, never by this function —
-  // verified against a real HEAD build (this was already true before
-  // #360) and enforced by the parity tests in tests/core/briefing.test.ts
-  // (Codex round 4).
+  // enforced by the parity tests in tests/core/briefing.test.ts.
 
   // Derived first, stated second, and in that order on purpose. Both blocks
   // used to be one: the stated goal was injected under a heading that read as
@@ -424,7 +422,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     ? [...withRepo, '', ...indexLines]
     : [...withRepo, ...indexLines];
 
-  // #360 round 3, item 1: `block` can be genuinely empty — `minimal` on a
+  // #360: `block` can be genuinely empty — `minimal` on a
   // project with nothing yet: no ranked topology, no repo-state prefix
   // (repo lines only prepend onto EXISTING topology lines, unchanged from
   // before #360), and `indexLines` itself empty because `minimal` excludes

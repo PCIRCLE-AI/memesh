@@ -21,10 +21,12 @@ All notable changes to MeMesh are documented here.
   anyone else.
 - **`briefing` setting — three levels for how much the SessionStart hook and
   the `briefing` MCP tool/CLI inject** (#360): `minimal` — only this
-  project: live repository state, its decisions, lessons, known facts and
-  recent activity; no task state, no durable index, nothing from outside the
-  project. `standard` (**the new default**) — `minimal` + the task state
-  when fresh + the capped index of this project's durable memories. `full`
+  project: its decisions, lessons, known facts and recent activity, with the
+  live repository state in front of them whenever anything else is injected
+  (the repository state alone is never injected); no task state, no durable
+  index, nothing from outside the project. `standard` (**the new default**)
+  — `minimal` + the task state when fresh + the capped index of this
+  project's durable memories. `full`
   — `standard` + memories from your other projects + global memory
   (byte-identical, on every surface, to every prior release's only
   behaviour — EXCEPT when the task state is stale or of unknown age, where
@@ -126,6 +128,21 @@ All notable changes to MeMesh are documented here.
   tool calls) lost about a third of their counts, and `memesh doctor`'s guard
   activity reads low. Reading the graph still waits up to 2 seconds for a
   lock.
+- **`minimal` no longer reports a failed memory read as an empty project, and
+  a mistyped briefing level is reported with one pair of quotes (#386).** If
+  the SessionStart hook cannot assemble a project's memories (for example when
+  the database is damaged), `hook-outcomes.jsonl` now records an `error` for
+  that session, at every level. At `minimal` it used to record "nothing to
+  inject" instead, which read like a project with no memories; at `standard`
+  and `full` the new record sits next to the existing `briefing-index` one.
+  An unrecognised `MEMESH_BRIEFING` or stored
+  `briefing` value now reads `invalid env briefing level "banana"` on stderr
+  (hook, `briefing` tool and CLI) and `invalid env value "banana"` in the
+  outcome record; both used to show the value in doubled quotes
+  (`""banana""`). A value that is not a string is shown without quotes (a
+  number as itself, a container as `[object]` or `[array]`). The API reference
+  no longer says `memesh doctor` shows an invalid briefing level, because it
+  does not: the value is visible on stderr and in `hook-outcomes.jsonl`.
 - `scripts/audit/verification-audit.mjs` now scans only what git does not
   ignore, so its verdict depends on the tree and the machine's own git
   ignore rules, rather than on whatever untracked local files with no

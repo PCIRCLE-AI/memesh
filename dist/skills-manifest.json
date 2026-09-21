@@ -113,8 +113,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "aa6190bb1a5ce0fc8e2777c69e1f76e748d9be22f6ce820fe1b75fa32901b80e",
-      "bytes": 98240
+      "sha256": "42857e1cab877f04a38bc55dcfae99793061d4b726906d4d121090c038c3164d",
+      "bytes": 97800
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -153,8 +153,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "2df289616a881c03fdbc7f1697fa09754057ef0dbf29c9638189367b7ee114b7",
-      "bytes": 93550
+      "sha256": "ab468186f85379e3a9e2bf027f266eaab484232302a319d287c0a10a73899611",
+      "bytes": 93057
     },
     {
       "path": "scripts/hooks/session-summary.js",

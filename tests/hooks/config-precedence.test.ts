@@ -159,10 +159,15 @@ describe("resolveBriefingLevel — env > config.briefing > default('standard')",
       .toEqual({ level: 'minimal', invalid: null });
   });
 
-  // #360 round 6 (Codex round 5 re-review, item 3): `value` is the real
-  // `JSON.stringify('banana')` form (quoted) — see
+  it('a config object passed in is the stored config — config.json is not read again', () => {
+    writeConfig({ briefing: 'full' });
+    expect(resolveBriefingLevel(envFor(), { briefing: 'minimal' }))
+      .toEqual({ level: 'minimal', invalid: null });
+  });
+
+  // `value` is the real `JSON.stringify('banana')` form (quoted) — see
   // tests/core/briefing-level.test.ts for the dedicated whitespace-evidence
-  // tests this rendering change was for.
+  // tests behind that rendering.
   it('an invalid env value defaults AND is reported as invalid (source: env) — config is not consulted', () => {
     writeConfig({ briefing: 'full' });
     expect(resolveBriefingLevel(envFor({ MEMESH_BRIEFING: 'banana' })))
@@ -176,15 +181,13 @@ describe("resolveBriefingLevel — env > config.briefing > default('standard')",
   });
 });
 
-// #360 round 6 (Codex round 5 re-review, item 2): `readHookConfig()` used to
-// swallow EVERY way a config document itself could be unusable — malformed
-// JSON, a truncated file, a non-object top-level value — into a plain `{}`,
-// indistinguishable from "file legitimately empty/absent". The hook then
-// silently used every default with no trace, while `core/config.ts` (CLI/MCP)
-// already reported this state. `readHookConfigResult()` is the state-aware
-// reader session-start.js now checks in addition to (not instead of) the
-// plain `readHookConfig()` every existing caller in `_shared.js` still uses
-// unchanged.
+// `readHookConfig()` swallows EVERY way a config document itself could be
+// unusable — malformed JSON, a truncated file, a non-object top-level value —
+// into a plain `{}`, indistinguishable from "file legitimately empty/absent".
+// `core/config.ts` (CLI/MCP) reports this state, so the hook must not
+// silently use every default with no trace. `readHookConfigResult()` is the
+// state-aware reader session-start.js checks in addition to (not instead of)
+// the plain `readHookConfig()` every other caller in `_shared.js` uses.
 describe('readHookConfigResult — malformed/non-object config document classification', () => {
   it('an absent file is "absent", not "unreadable" — no false alarm on first run', () => {
     expect(readHookConfigResult(envFor())).toEqual({ config: {}, state: 'absent' });

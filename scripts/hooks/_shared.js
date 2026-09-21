@@ -185,8 +185,8 @@ import { unreadInboxLinesFor } from './_generated/agent-message-inbox.js';
 // The hook-only work-package notice's literal text — ONE declaration,
 // exported so both `session-start.js` (which appends it) and the test
 // suite (which needs to assert the hook's `full`-level remainder is
-// EXACTLY this string, not a hardcoded second copy of it — Codex round 4)
-// read the same constant.
+// EXACTLY this string, not a hardcoded second copy of it) read the same
+// constant.
 export const WORK_PACKAGE_NOTICE = 'Work packages: check work_package prepare for this project (digest or transcript). When available, offer a concise host-native interactive choice in the user’s conversation language: dispatch an agent task, later (defer not_now), or stop suggesting for this session. Never dispatch without the user choosing it. The Dashboard cannot dispatch agents, and no durable opt-out is implied.';
 import {
   indexedObservationText,
@@ -252,8 +252,8 @@ export function importFromPluginRoot(pluginRoot, relativePath) {
   return import(pathToFileURL(join(pluginRoot, relativePath)).href);
 }
 
-// #360 round 6 (Codex round 5 re-review, item 2): a bounded, generic
-// classification for "the config document itself could not be used" —
+// A bounded, generic classification for "the config document itself could
+// not be used" —
 // deliberately NOT the raw file path, the JSON.parse error text, or any
 // fragment of the file's own content (a parse error message can echo a
 // slice of the source in some engines; this string never does). One
@@ -311,7 +311,7 @@ export function readHookConfigResult(_env = process.env) {
  * The plain, backward-compatible reader every existing caller in this file
  * uses (`isAutoCaptureEnabled`, `resolveSessionLimit`, `resolveAutoUpdatePolicy`,
  * `resolveBriefingLevel`, `isUpdateCheckEnabled`) — returns an empty object
- * on missing/unreadable/malformed file, same as before this round; callers
+ * on missing/unreadable/malformed file; callers
  * must always be defensive about which fields are set. `readHookConfigResult()`
  * above is the state-aware version for a caller that needs to know WHY the
  * config came back empty, not just that it did.
@@ -367,17 +367,22 @@ export function resolveSessionLimit(env = process.env) {
 
 /**
  * Resolve the briefing level (#360). Precedence: env `MEMESH_BRIEFING` >
- * config `briefing` > default (same shape as `resolveSessionLimit` above).
+ * config `briefing` > default. A present-but-invalid env value fails closed to
+ * the default without consulting config (unlike `resolveSessionLimit` above,
+ * which falls through to config).
  * The validation and default live in the shared leaf (`resolveBriefingLevel`
  * in `_generated/briefing-level.js`); this only supplies the two raw values —
  * an unknown value on EITHER source is reported via `.invalid`, so the
  * caller can record why the default was used instead of silently falling
  * back (this repo treats a silent fallback as a defect).
  * @param {NodeJS.ProcessEnv} [env=process.env]
+ * @param {Record<string, any>} [config=readHookConfig(env)] - the settings
+ *   document, when the caller has already read it (and needs the read's
+ *   `state` too), so config.json is read once.
  * @returns {{level: 'minimal'|'standard'|'full', invalid: {source: 'env'|'config', value: string}|null}}
  */
-export function resolveBriefingLevel(env = process.env) {
-  return resolveBriefingLevelValue(env.MEMESH_BRIEFING, readHookConfig(env).briefing);
+export function resolveBriefingLevel(env = process.env, config = readHookConfig(env)) {
+  return resolveBriefingLevelValue(env.MEMESH_BRIEFING, config.briefing);
 }
 
 /**
@@ -691,11 +696,10 @@ const APPEND_NOFOLLOW_FLAGS = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsCo
 const READ_NOFOLLOW_FLAGS = fsConstants.O_RDONLY | NOFOLLOW;
 
 /**
- * #360 round 8 (Codex round 7 re-review, item 1, second part): a plain
- * `.slice(0, maxUnits)` on a string cuts by raw UTF-16 CODE UNIT, which can
- * land between the two halves of a surrogate pair (an astral character —
- * any emoji, for one) and leave a lone, unpaired surrogate at the very end
- * — `"…".isWellFormed()` false, confirmed against a real cut landing on a
+ * A plain `.slice(0, maxUnits)` on a string cuts by raw UTF-16 CODE UNIT,
+ * which can land between the two halves of a surrogate pair (an astral
+ * character — any emoji, for one) and leave a lone, unpaired surrogate at
+ * the very end — `"…".isWellFormed()` false, confirmed against a real cut landing on a
  * pair straddling unit 200. `recordHookOutcome` below truncates every
  * `reason`/`entity` this way, for every hook, on every call — most never
  * hit this in practice (ASCII diagnostics), but nothing stops a future
@@ -947,9 +951,8 @@ export function hookPhraseExpression(text) {
 // right before, i.e. a different extension chain) are not a mention of
 // THIS file.
 //
-// Deliberately ASCII-only, unchanged since round 3 (#358 round 4 finding 3
-// asked this to be made an explicit, tested decision rather than an
-// incidental one): a non-ASCII letter directly before an ASCII basename —
+// Deliberately ASCII-only — an explicit, tested decision rather than an
+// incidental one: a non-ASCII letter directly before an ASCII basename —
 // "設定CLAUDE.md" — is NOT treated as embedding, because this class does not
 // match it, so that case falls through to the bare-mention return below and
 // IS accepted. Widening this to `\p{L}` would reject it instead; that is a
@@ -958,7 +961,7 @@ export function hookPhraseExpression(text) {
 // accident.
 const FILENAME_EMBED_BEFORE = /[A-Za-z0-9_.-]/;
 // A letter/digit/underscore/hyphen right after extends the same token
-// ("CLAUDE.mdx", "CLAUDE.md_backup") — unchanged since round 2.
+// ("CLAUDE.mdx", "CLAUDE.md_backup").
 const FILENAME_EMBED_AFTER = /[A-Za-z0-9_-]/;
 // What makes a `.` after the basename an appended extension rather than a
 // sentence end: a letter or digit in ANY script ("CLAUDE.md.bak",
@@ -997,14 +1000,14 @@ function codePointAt(text, i) {
   return i < text.length ? String.fromCodePoint(text.codePointAt(i)) : '';
 }
 // A path token: what a backward walk from a `/` or `\` before the match
-// consumes as "part of the same path mention" (#358 round 3 item 3b).
+// consumes as "part of the same path mention".
 //
-// Unicode-aware (`\p{L}\p{M}\p{N}`, the `u` flag) since #358 round 4 finding
-// 3 — the ASCII-only class this used to be stopped a backward walk through
-// `文件/CLAUDE.md` right at the slash, producing the bare token `/CLAUDE.md`
-// and losing the directory name entirely. Still excludes `:` — see
-// `pathMentionMatches`'s drive-letter handling below for why that is a
-// narrower, deliberate special case rather than a blanket inclusion (a bare
+// Unicode-aware (`\p{L}\p{M}\p{N}`, the `u` flag): an ASCII-only class would
+// stop a backward walk through `文件/CLAUDE.md` right at the slash, producing
+// the bare token `/CLAUDE.md` and losing the directory name entirely. It
+// excludes `:` — see `pathMentionMatches`'s drive-letter handling below for
+// why that is a narrower, deliberate special case rather than a blanket
+// inclusion (a bare
 // `:` in the token class would swallow a `CLAUDE.md:12` line-number suffix
 // that sits AFTER a match, a completely different position, into what looks
 // like a path BEFORE the next one).
@@ -1027,7 +1030,7 @@ const PATH_TOKEN_CHAR = /[\p{L}\p{M}\p{N}_.~\-/\\]/u;
 // A single ASCII drive letter immediately followed by `:` — the two
 // characters `pathMentionMatches` splices onto the front of a walked-back
 // token when they precede it exactly, so "C:\repo\...\CLAUDE.md" is not
-// truncated to "\repo\...\CLAUDE.md" (#358 round 4 finding 4).
+// truncated to "\repo\...\CLAUDE.md".
 const DRIVE_LETTER = /[A-Za-z]/;
 
 /**
@@ -1052,7 +1055,7 @@ const DRIVE_LETTER = /[A-Za-z]/;
  * than inventing a second normaliser; SQL is not an option here because the
  * confirmation runs over rows already fetched into JS, not a query.
  *
- * The contract this pins (#358 round 5, "by design" — see docs/ARCHITECTURE.md
+ * The contract this pins (by design — see docs/ARCHITECTURE.md
  * and CHANGELOG.md [Unreleased]): two spellings are the SAME name after NFC
  * exactly when they are CANONICALLY equivalent under Unicode — that covers
  * composed vs. decomposed accents ("café" vs. "café") AND the handful
@@ -1073,26 +1076,26 @@ const DRIVE_LETTER = /[A-Za-z]/;
  * Turkish İ (U+0130) / ı (U+0131) or German ß (U+00DF) — none of those fold
  * to their naive ASCII lookalikes at any stage of this function.
  *
- * Case folding is ASCII-only and PER-CHARACTER (#358 round 4 finding 2),
- * applied to both sides unconditionally — never a locale/Unicode
- * `.toLowerCase()`, and never gated on the needle being ENTIRELY ASCII.
- * Round 3 folded only when `/^[\x00-\x7f]+$/` matched the whole needle, so a
+ * Case folding is ASCII-only and PER-CHARACTER, applied to both sides
+ * unconditionally — never a locale/Unicode `.toLowerCase()`, and never gated
+ * on the needle being ENTIRELY ASCII. An all-or-nothing gate (fold only when
+ * `/^[\x00-\x7f]+$/` matches the whole needle) would skip folding for a
  * mixed-script basename (a non-ASCII stem with an ASCII extension, the
- * common case for any non-English filename) skipped folding altogether and
- * "設定配置.TS" failed to confirm "設定配置.ts". An ASCII-only per-character
- * fold has no such all-or-nothing gate and is a no-op on non-ASCII text
- * (nothing in `\p{L}` outside `A-Za-z` has an ASCII-fold mapping), so
- * applying it unconditionally changes nothing for a pure-CJK needle while
- * fixing the mixed-script one. `text.indexOf`, never a RegExp built from
- * `needle` — a basename with regex metacharacters (`a+b(1).ts`, `[id].tsx`,
- * `$types.d.ts`, `c++.md`) is matched literally, not interpreted.
+ * common case for any non-English filename), and "設定配置.TS" would fail to
+ * confirm "設定配置.ts". An ASCII-only per-character fold has no such gate and
+ * is a no-op on non-ASCII text (nothing in `\p{L}` outside `A-Za-z` has an
+ * ASCII-fold mapping), so applying it unconditionally changes nothing for a
+ * pure-CJK needle while handling the mixed-script one. `text.indexOf`, never
+ * a RegExp built from `needle` — a basename with regex metacharacters
+ * (`a+b(1).ts`, `[id].tsx`, `$types.d.ts`, `c++.md`) is matched literally,
+ * not interpreted.
  *
- * A hit must also sit on a filename boundary (#358 round 3 item 3):
+ * A hit must also sit on a filename boundary:
  *   - AFTER: rejected when the next character is `~` (a common backup-file
  *     suffix, "CLAUDE.md~"), is `.` immediately followed by a letter or
  *     digit in any script, a mark or a format character
- *     ("CLAUDE.md.bak", "CLAUDE.md.備份"), or is `/` or `\` (#358 round 8 finding 1 —
- *     "docs/CLAUDE.md/" and "docs/CLAUDE.md/subfile" name a DIRECTORY
+ *     ("CLAUDE.md.bak", "CLAUDE.md.備份"), or is `/` or `\`
+ *     ("docs/CLAUDE.md/" and "docs/CLAUDE.md/subfile" name a DIRECTORY
  *     called CLAUDE.md, or a file inside it, never the edited file itself,
  *     the same way `pathMentionMatches` below already treats a `/`-prefixed
  *     mention as a path rather than a bare basename) — a bare trailing `.`,
@@ -1100,25 +1103,25 @@ const DRIVE_LETTER = /[A-Za-z]/;
  *     URL fragment/query string, which still names the SAME file — a
  *     fragment/query does not change which file a path points at), not more
  *     of the filename, and still passes. A letter/digit/underscore/hyphen
- *     immediately after also rejects, unchanged from round 2 ("CLAUDE.mdx").
+ *     immediately after also rejects ("CLAUDE.mdx").
  *   - BEFORE: a letter/digit/underscore/dot/hyphen immediately before
  *     rejects (embedded in a longer identifier or extension chain) —
  *     ASCII-only, deliberately: a non-ASCII letter directly before an ASCII
  *     basename ("設定CLAUDE.md") is NOT a boundary-breaker and IS accepted
- *     as a bare mention (#358 round 4 finding 3, made explicit and tested;
+ *     as a bare mention (an explicit, tested decision;
  *     see `FILENAME_EMBED_BEFORE`'s own comment for why this is a stated
  *     decision, not an oversight). Start-of-text/whitespace/punctuation
  *     before it also passes as a bare mention. When the character
  *     immediately before is `/` or `\`, the mention is a PATH, not a bare
  *     basename ("docs/CLAUDE.md" while editing a DIFFERENT file must not
  *     count just because the basename matches) — see `pathMentionMatches`.
- *     A DIFFERENT stated decision, same shape (#358 round 6 finding 3): the
+ *     A DIFFERENT stated decision, same shape: the
  *     character that must precede a PATH-style mention is any non-path-token
  *     character — a delimiter, not a script boundary. CJK prose with no
  *     delimiter directly before a path ("請看文件/CLAUDE.md", "please see
  *     文件/CLAUDE.md" with no space) is consumed into the path token by the
  *     same Unicode-aware walk that correctly keeps a real CJK directory name
- *     intact (round 4 finding 3), and the resulting token is not a suffix of
+ *     intact, and the resulting token is not a suffix of
  *     the edited path — a per-mention false negative, not a per-memory one:
  *     the same text is still reachable through any other bare or delimited
  *     mention it contains. An emoji (or any other non-path-token character)
@@ -1129,7 +1132,7 @@ const DRIVE_LETTER = /[A-Za-z]/;
  *
  * @param {string} text
  * @param {string} needle - the full basename to confirm, every script,
- *   ASCII or not (#358 round 3 item 1 — never the extension-less stem).
+ *   ASCII or not (never the extension-less stem).
  * @param {{relPath: string | null, absPath: string, absPathAsGiven?: string} | null} [editedPath] -
  *   the edited file's own path(s), forward-slash-normalised, for the PATH
  *   branch above. `relPath` is relative to the file's repo root, or `null`
@@ -1138,10 +1141,10 @@ const DRIVE_LETTER = /[A-Za-z]/;
  *   path; `absPathAsGiven`, when different, is the absolute path built from
  *   the directory AS THE PAYLOAD NAMED IT, before resolving any symlink —
  *   both are checked, so a memory can name either form of a symlinked
- *   location THE EDIT PAYLOAD ITSELF USED and both match (#358 round 4
- *   finding 5, e.g. macOS `/var/...` vs its canonical `/private/var/...`).
+ *   location THE EDIT PAYLOAD ITSELF USED and both match (e.g. macOS
+ *   `/var/...` vs its canonical `/private/var/...`).
  *   This is ONE-WAY, stated precisely, not the symmetric claim it might read
- *   as (#358 round 6 finding 2): `absPathAsGiven` only exists when the
+ *   as: `absPathAsGiven` only exists when the
  *   PAYLOAD's own as-given form differs from canonical — when the payload
  *   is already canonical, there is no alias candidate at all, so a memory
  *   naming an alias the payload never used does NOT match. Resolving an
@@ -1180,7 +1183,7 @@ export function containsFileNameLiterally(text, needle, editedPath = null) {
 
     if (before === '/' || before === '\\') {
       // NOT `haystack` (that copy is ASCII-folded in its ENTIRETY, which
-      // would fold every directory component too — #358 round 6 finding 1).
+      // would fold every directory component too).
       // `normalizedText` is NFC-normalised but un-folded, so the directory
       // portion of whatever token gets walked out of it keeps its real
       // case; `pathMentionMatches` folds only the final path segment (and a
@@ -1201,7 +1204,7 @@ export function containsFileNameLiterally(text, needle, editedPath = null) {
 /**
  * Fold ONLY the ASCII letters `A-Z` to `a-z`; every other character —
  * digits, punctuation, separators, and every non-ASCII script — passes
- * through unchanged (#358 round 4 finding 2). This is the literal reading of
+ * through unchanged. This is the literal reading of
  * "ASCII case-insensitive": per character, not "only when the whole string
  * happens to be pure ASCII". `String.prototype.toLowerCase()` is
  * deliberately not used here — it is locale/Unicode-aware and can fold (or,
@@ -1215,8 +1218,8 @@ function foldAsciiCase(s) {
 /**
  * Fold ONLY the final path segment (the basename) of a forward-slash path,
  * plus a leading single-letter Windows drive (`C:` → `c:`) when present —
- * every directory component in between is returned UNCHANGED (#358 round 6
- * finding 1). The case-insensitivity rule this whole file documents is
+ * every directory component in between is returned UNCHANGED. The
+ * case-insensitivity rule this whole file documents is
  * scoped to "the full basename", not "every directory component of a path
  * mention" — a directory's case sensitivity depends on the volume, which
  * this function has no filesystem call to ask (and does not make one: an
@@ -1228,10 +1231,10 @@ function foldFinalPathSegment(p) {
   // A single ASCII letter + `:` at the start is a drive, whether or not a
   // `/` immediately follows — `C:/repo/CLAUDE.md` (absolute) and
   // `a:docs/CLAUDE.md` (drive-relative) both qualify; requiring the `/`
-  // used to leave the drive-relative form's own drive letter un-folded
-  // (it still compared unequal either way, since nothing else about a
-  // drive-relative token matches an absolute candidate, but the gap was
-  // unexplained rather than a real boundary — #358 round 6).
+  // would leave the drive-relative form's own drive letter un-folded (it
+  // would still compare unequal either way, since nothing else about a
+  // drive-relative token matches an absolute candidate, but the gap would be
+  // unexplained rather than a real boundary).
   const drive = /^([A-Za-z]):(.*)$/.exec(p);
   const prefix = drive ? `${foldAsciiCase(drive[1])}:` : '';
   const rest = drive ? drive[2] : p;
@@ -1245,11 +1248,10 @@ function foldFinalPathSegment(p) {
  * reference to the SAME file being edited?
  *
  * Walks back from the match through the whole path-shaped token (Unicode
- * letters/marks/digits included — #358 round 4 finding 3, `文件/CLAUDE.md`
- * must not lose `文件` to an ASCII-only scan), and, when a single ASCII
- * drive letter and `:` sit immediately before where the walk stopped,
- * splices them onto the front too (#358 round 4 finding 4 — `:` itself
- * stays OUT of `PATH_TOKEN_CHAR`, or the walk would swallow a
+ * letters/marks/digits included — `文件/CLAUDE.md` must not lose `文件` to
+ * an ASCII-only scan), and, when a single ASCII drive letter and `:` sit
+ * immediately before where the walk stopped, splices them onto the front
+ * too (`:` itself stays OUT of `PATH_TOKEN_CHAR`, or the walk would swallow a
  * `CLAUDE.md:12` line-number suffix that sits AFTER a match into what looks
  * like a path BEFORE the next one; this is a narrow, position-specific
  * splice, not a general inclusion). Normalises the token (backslash to
@@ -1264,7 +1266,7 @@ function foldFinalPathSegment(p) {
  * absolute-path comparison once the token carries its own drive letter).
  *
  * `text` is NFC-normalised but NOT ASCII-folded — the caller passes the
- * un-folded copy on purpose (#358 round 6 finding 1). Only the basename
+ * un-folded copy on purpose. Only the basename
  * (the full filename, extension included) is documented as ASCII
  * case-insensitive; a directory component is not, because its actual case
  * sensitivity depends on the volume, which this function cannot ask

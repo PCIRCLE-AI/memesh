@@ -14,8 +14,9 @@ host is recallable from all of them. Not installed yet? Follow
    durable-memory index (`memesh briefing --index` prints just that, one
    line each with its `[mem:id]` handle) are added at `standard` (the
    default) and up. How much is assembled depends on the `briefing` setting
-   — `minimal` (this project only: repository state, decisions, lessons,
-   knowledge, recent activity — nothing else), `standard` (+ the task state
+   — `minimal` (this project only: decisions, lessons, knowledge, recent
+   activity, with the repository state in front whenever anything else is
+   injected — nothing else), `standard` (+ the task state
    when fresh, + the durable-memory index — **default**), `full` (+ global
    memory + other projects' recent activity, the pre-#360 memory-block
    behaviour — except when the task state itself is stale or of unknown
@@ -27,11 +28,13 @@ host is recallable from all of them. Not installed yet? Follow
    goal/next/blocked/done stated more than 72 hours ago, or whose timestamp
    is missing/unreadable/implausibly future-dated, is not injected as
    current at any level — only one line saying so and how to see it
-   (`memesh task`). Only `minimal` can be fully silent on a project with
-   nothing yet (no task state, no index to fall back to, so nothing
-   injected at all — no empty framing); `standard`/`full` still show the
-   index's own "no durable memories yet" line even then, because that line
-   is itself informative. The index is a recent
+   (`memesh task`). Only `minimal` can be fully silent: when the project has
+   no ranked memories, no stale-state flag and no unread message (a fresh
+   task state may exist — `minimal` does not show it — and there is no
+   index to fall back to), nothing is injected at all, the repository state
+   included — no empty framing; `standard`/`full` still show the index's
+   own "no durable memories yet" line even then, because that line is
+   itself informative. The index is a recent
    window, not everything: it holds at most 40 lines / 3072 bytes, memories
    untouched for 180 days collapse into a single count line with no
    `[mem:id]`, and whatever else is cut past those caps becomes an
