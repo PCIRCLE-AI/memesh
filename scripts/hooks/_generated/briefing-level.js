@@ -7,7 +7,7 @@
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
 export const BRIEFING_LEVELS = ['minimal', 'standard', 'full'];
-export const DEFAULT_BRIEFING_LEVEL = 'standard';
+export const DEFAULT_BRIEFING_LEVEL = 'minimal';
 export function isBriefingLevel(value) {
     return typeof value === 'string' && BRIEFING_LEVELS.includes(value);
 }

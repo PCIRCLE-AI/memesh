@@ -37,6 +37,9 @@ export function buildIsolatedRuntimeEnv(baseEnv, { runtimeHome, memeshDir, dbPat
   delete isolatedEnv.ANTHROPIC_API_KEY;
   delete isolatedEnv.OPENAI_API_KEY;
   delete isolatedEnv.OLLAMA_HOST;
+  // The briefing level decides what a session is told and the default is what
+  // the tests and smokes assume, so an ambient MEMESH_BRIEFING must not move it.
+  delete isolatedEnv.MEMESH_BRIEFING;
   return isolatedEnv;
 }
 
@@ -72,6 +75,7 @@ export function buildIsolatedSuiteEnv(baseEnv, { runtimeHome }) {
   delete isolatedEnv.ANTHROPIC_API_KEY;
   delete isolatedEnv.OPENAI_API_KEY;
   delete isolatedEnv.OLLAMA_HOST;
+  delete isolatedEnv.MEMESH_BRIEFING; // see buildIsolatedRuntimeEnv
   return envWithNpmCache(path.join(runtimeHome, 'npm-cache'), isolatedEnv);
 }
 import path from 'node:path';

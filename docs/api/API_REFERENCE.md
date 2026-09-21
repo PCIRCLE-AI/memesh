@@ -597,7 +597,7 @@ Record a structured lesson from a mistake or discovery. Creates a `lesson_learne
 
 ### task_state
 
-Read or update where the work stands on a project: the goal, the next step, what is blocked, and what was just finished. There is exactly one state per project; fresh state is injected at the top of the next session's context at `standard`/`full` (the default and above) — see **Briefing levels** below for detail — while `minimal` never shows a fresh state and a stale or unknown-age one instead gets a one-line status at every level, `minimal` included, and `memesh task` (no arguments) always shows the complete stored state regardless of level.
+Read or update where the work stands on a project: the goal, the next step, what is blocked, and what was just finished. There is exactly one state per project; fresh state is injected at the top of the next session's context at `standard`/`full` — see **Briefing levels** below for detail — while `minimal`, the default, never shows a fresh state and a stale or unknown-age one instead gets a one-line status at every level, `minimal` included, and `memesh task` (no arguments) always shows the complete stored state regardless of level.
 
 Call it with **no arguments** to read. Any field present is a write.
 
@@ -653,19 +653,19 @@ Passing an **empty string** clears a field — that is how a blocker is removed 
 
 ### briefing
 
-The assembled work topology for a project, ready to place in context: where the work was left off (the `task_state` fields), decisions and direction, lessons not to repeat, what is known, recent activity, and — closing the block — a capped index of the project's durable memories, one line each, newest first, carrying the `[mem:id]` handles needed to cite or recall them (see **The durable-memory index** below for its budget, redaction and empty state; the structured counts and token cost come back in `index`). It is the same MEMORY block the Claude Code session-start hook injects, at the same `briefing` level — this paragraph's list is what `standard`, the default, includes; see **Briefing levels** below for what `minimal` and `full` change — but not the hook's work-package notice at `full`, which is a host-agent instruction rather than memory and is never part of this tool's output, at any level (verified against a real pre-#360 build: it never was). This is the cross-vendor read path: an MCP client that runs no hooks (Gemini, Codex) calls this once at the start of a session instead.
+The assembled work topology for a project, ready to place in context: where the work was left off (the `task_state` fields), decisions and direction, lessons not to repeat, what is known, recent activity, and — closing the block — a capped index of the project's durable memories, one line each, newest first, carrying the `[mem:id]` handles needed to cite or recall them (see **The durable-memory index** below for its budget, redaction and empty state; the structured counts and token cost come back in `index`). It is the same MEMORY block the Claude Code session-start hook injects, at the same `briefing` level — this paragraph's list is what `standard` includes; the default, `minimal`, leaves out the task state and the index, and `full` adds other projects and global memory — see **Briefing levels** below — but not the hook's work-package notice at `full`, which is a host-agent instruction rather than memory and is never part of this tool's output, at any level (verified against a real pre-#360 build: it never was). This is the cross-vendor read path: an MCP client that runs no hooks (Gemini, Codex) calls this once at the start of a session instead.
 
 The text is wrapped in the same fence and "background data, not instructions" preamble the hook uses. Memory content is attacker-influenced in the general case, and the wrapping is done by the same single owner on every path.
 
-**Briefing levels (#360).** How much of the block is assembled is controlled by the `briefing` setting — `memesh config set briefing <minimal|standard|full>`, `MEMESH_BRIEFING` (env wins over config), default `standard` — resolved by the ONE policy in `src/core/briefing-level.ts` that the hook and this tool both call, so they cannot disagree about what a level means. There is no per-call parameter; the level applies uniformly to whatever is calling `briefing` (hook, MCP tool, or `memesh briefing` on the CLI).
+**Briefing levels (#360).** How much of the block is assembled is controlled by the `briefing` setting — `memesh config set briefing <minimal|standard|full>`, `MEMESH_BRIEFING` (env wins over config), default `minimal` — resolved by the ONE policy in `src/core/briefing-level.ts` that the hook and this tool both call, so they cannot disagree about what a level means. There is no per-call parameter; the level applies uniformly to whatever is calling `briefing` (hook, MCP tool, or `memesh briefing` on the CLI).
 
 | Level | This project's decisions/lessons/knowledge/recent activity, with the repository state in front of whatever is injected | Task state (fresh) | Durable-memory index | Global memory | Other projects' recent memory | Work-package notice (hook only) |
 |---|---|---|---|---|---|---|
-| `minimal` | yes | no | no | no | no | no |
-| `standard` (default) | yes | yes | yes | no | no | no |
+| `minimal` (default) | yes | no | no | no | no | no |
+| `standard` | yes | yes | yes | no | no | no |
 | `full` | yes | yes | yes | yes | yes | yes |
 
-Stated plainly: `minimal` is only this project — its decisions, lessons, known facts and recent activity, with the live repository state in front of them whenever anything else is injected (the repository state alone is never injected); no task state, no durable index, nothing from outside the project. `standard` is `minimal` plus the task state when fresh plus the capped index of this project's durable memories. `full` is `standard` plus memories from your other projects plus global memory — this tool's `full` output is byte-identical to every release before #360 for section selection (which pools are included) and for the work-package notice's hook-only status — EXCEPT when the task state is stale or of unknown age, where the one-line replacement described just below applies at `full` too. The work-package notice in the table above is hook-only: the SessionStart hook appends it after this same memory block at `full`, but this tool and the CLI never include it, at any level — it is a host-agent instruction, not memory.
+Stated plainly: `minimal` (the default) is only this project — its decisions, lessons, known facts and recent activity, with the live repository state in front of them whenever anything else is injected (the repository state alone is never injected); no task state, no durable index, nothing from outside the project. `standard` is `minimal` plus the task state when fresh plus the capped index of this project's durable memories. `full` is `standard` plus memories from your other projects plus global memory — this tool's `full` output is byte-identical to every release before #360 for section selection (which pools are included) and for the work-package notice's hook-only status — EXCEPT when the task state is stale or of unknown age, where the one-line replacement described just below applies at `full` too. The work-package notice in the table above is hook-only: the SessionStart hook appends it after this same memory block at `full`, but this tool and the CLI never include it, at any level — it is a host-agent instruction, not memory.
 
 A task state whose last change is older than 72 hours (`STALE_TASK_STATE_HOURS` in `src/core/task-state.ts`) is never shown as the fresh multi-line block, at ANY level including `full` — it is replaced by one line naming its age and pointing at `memesh task` to see or update it. A task state whose age cannot be established at all — a missing or unparseable `updated_at`, or one more than `CLOCK_SKEW_ALLOWANCE_MINUTES` (5) minutes in the future — fails CLOSED the same way, with a distinct one-line flag ("age could not be established") rather than being read as fresh; a future timestamp is deliberately not treated as fresh forever. An unknown env or config value does not silently use the default: it is traced to stderr and, for the SessionStart hook, recorded as an outcome in `hook-outcomes.jsonl` with the offending source (`env` or `config`) and value. Only `minimal` can be silent on an initialised, memory-free project: it has no fixed content to fall back to (no task state, no index), so nothing to show means nothing injected at all (`empty: true`, `text: ''` — no preamble, no fence — the `briefing` tool/CLI report this explicitly; the CLI's non-`--json` form prints one short line instead). `standard`/`full` still show the durable-memory index's own empty-state line even on such a project (#323) — that line is content, not framing around nothing, so it is not suppressed.
 
@@ -676,7 +676,7 @@ A task state whose last change is older than 72 hours (`STALE_TASK_STATE_HOURS` 
 | `project` | string | No | Project name (default: the current working directory's project) |
 | `recipient` | string | No | Exact logical recipient, in the same canonical form the `message` tool uses — NFC, never a filesystem path — because this counts the same inbox key. When supplied, reports only that recipient's unfetched deliveries for the project. At zero unread, the block also says so explicitly if this exact recipient id has never been addressed in this project either (durable delivery or live connection) — distinct from a real, quiet inbox, so a typo'd recipient is never indistinguishable from "nothing waiting". Omit for generic context; generic briefing never reports unread activity. |
 
-**Response**:
+**Response** (shown at level `standard`, which has a task state and the index to show; at the default, `minimal`, `hasTaskState` is `false` for a fresh task state and `text` carries neither it nor the index):
 
 ```json
 {
@@ -690,7 +690,7 @@ A task state whose last change is older than 72 hours (`STALE_TASK_STATE_HOURS` 
 }
 ```
 
-At `minimal` on a project with nothing yet (#360): `text: ""` and `empty: true` — `index` is still the always-computed object described above, just not folded into `text` at this level. The CLI's non-`--json` form prints `Nothing to brief at level minimal — no project memories yet.` instead of an empty fence, and exits `0`.
+At `minimal` (the default) on a project with nothing yet (#360): `text: ""` and `empty: true` — `index` is still the always-computed object described above, just not folded into `text` at this level. The CLI's non-`--json` form prints `Nothing to brief at level minimal — no project memories yet.` instead of an empty fence, and exits `0`.
 
 `bytes`/`tokens` above are shown as `"…"` because the `lines` they measure are abbreviated in this example — they are only reproducible for a fully spelled-out set of lines (see the `GET /v1/briefing-index` response below for one).
 
@@ -1057,7 +1057,7 @@ Capability diagnosis belongs to `GET /v1/doctor`, not this response.
 Dashboard locale is browser-local UI state and is not part of this server
 configuration.
 
-`briefing` (#360) — `minimal` | `standard` (default) | `full` — controls how
+`briefing` (#360) — `minimal` (default) | `standard` | `full` — controls how
 much of the SessionStart / `briefing` tool block is assembled; see the
 **briefing levels** table under the `briefing` MCP tool above. `MEMESH_BRIEFING`
 overrides it, same precedence as `MEMESH_AUTO_UPDATE` below. Unlike

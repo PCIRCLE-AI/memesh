@@ -4,6 +4,28 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **The default briefing level is now `minimal`.** A new session, and a call to
+  the `briefing` tool or `memesh briefing`, gets only what belongs to the
+  project it is in — its decisions, lessons, known facts and recent activity,
+  with the live repository state in front of them — where the default used to
+  be `standard`. Two things a new session no longer receives unless it asks
+  for them: the fresh task state (goal / next / blocked / done) and the capped
+  index of the project's durable memories. To get them back, run `memesh
+  config set briefing standard`, or start the session with
+  `MEMESH_BRIEFING=standard`. `full` is unchanged: it still adds other
+  projects' memory and global memory. Only the default moved. A `briefing`
+  value you already set in `config.json`, or a `MEMESH_BRIEFING` in the
+  environment, is honoured exactly as before, the order is still env >
+  config > default, and an unset value — or an invalid one — now resolves to
+  `minimal` instead of `standard`. A stale or unknown-age task state still
+  gets its one-line flag at every level, `memesh task` and the `task_state`
+  tool still show the whole stored state, and `memesh briefing --index` still
+  prints the index on its own. The dashboard's Project tab no longer says the
+  index is what an agent receives "by default": it names the levels that
+  include it.
+
 ### Fixed
 
 - **A new session is no longer shown the oldest of a group of equally scored

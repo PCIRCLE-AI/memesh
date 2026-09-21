@@ -282,12 +282,13 @@ export const TOOL_DEFINITIONS = [
     name: 'task_state',
     // The description carries the one rule that keeps this honest, in the
     // place the model actually reads it. These four fields are injected at the
-    // top of the next session and acted on as fact, so a value the model
-    // GUESSED — "they edited the parser, the goal must be the parser" — is a
-    // wrong instruction to a future session with nothing to contradict it.
+    // top of the next session (at briefing level `standard` or `full`) and
+    // acted on as fact, so a value the model GUESSED — "they edited the
+    // parser, the goal must be the parser" — is a wrong instruction to a
+    // future session with nothing to contradict it.
     // Only what someone actually said belongs here.
     description:
-      'Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Included in the next session\'s briefing at the default level, so record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: "" once a blocker is resolved).',
+      'Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Included in the next session\'s briefing when the `briefing` level is `standard` or `full` (not at the default, `minimal`), so record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: "" once a blocker is resolved).',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -306,7 +307,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'briefing',
     description:
-      'The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, recent activity, and a capped index of the project’s durable memories (one line each, newest first, with [mem:id] handles; structured counts and token cost in `index`) — the same memory block Claude Code receives at session start (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). How much of this is assembled follows the `briefing` setting (`minimal`, `standard` — the default, described above — or `full`, which additionally includes memories from other projects and global memory); at `minimal` it is only this project’s live repository state, decisions, lessons, known facts and recent activity, with no task state and no index, and may be empty. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.',
+      'The work topology for a project, assembled and ready to use — the same memory block Claude Code receives at session start (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). How much is assembled follows the `briefing` setting: `minimal` (the default) is only this project’s decisions and direction, lessons not to repeat, known facts and recent activity, with the live repository state in front of them, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds where the work was left off (goal / next / blocked / done) when it is fresh, and closes with a capped index of the project’s durable memories (one line each, newest first, with [mem:id] handles); `full` additionally includes memories from other projects and global memory. Whatever the level, the result’s `index` field carries the index’s structured counts and token cost. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.',
     inputSchema: {
       type: 'object' as const,
       properties: {

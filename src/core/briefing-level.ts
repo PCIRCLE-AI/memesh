@@ -27,14 +27,17 @@ export type BriefingLevel = 'minimal' | 'standard' | 'full';
 export const BRIEFING_LEVELS: readonly BriefingLevel[] = ['minimal', 'standard', 'full'];
 
 /**
- * `standard` is the default (#360). `full` — everything — was every session's
- * only behaviour before levels existed, and the owner's own usage did not
- * justify it: `memesh doctor` reported 3 of 137 sessions ever citing an
- * injected memory. `full` keeps that behaviour's section selection and its
- * work-package notice; a stale or unknown-age task state replaces its block
- * with a one-line flag at `full` too, exactly as it does at `standard`.
+ * `minimal` is the default: a new session gets what belongs to the project it
+ * is in — decisions, lessons, known facts, recent activity — and the fresh task
+ * state and the durable-memory index only when asked for (`memesh config set
+ * briefing standard`, or `MEMESH_BRIEFING=standard`). `full` — everything — was
+ * every session's only behaviour before levels existed, and the owner's own
+ * usage did not justify it: `memesh doctor` reported 3 of 137 sessions ever
+ * citing an injected memory. `full` keeps that behaviour's section selection
+ * and its work-package notice; a stale or unknown-age task state replaces its
+ * block with a one-line flag at every level, `full` and the default included.
  */
-export const DEFAULT_BRIEFING_LEVEL: BriefingLevel = 'standard';
+export const DEFAULT_BRIEFING_LEVEL: BriefingLevel = 'minimal';
 
 export function isBriefingLevel(value: unknown): value is BriefingLevel {
   return typeof value === 'string' && (BRIEFING_LEVELS as readonly string[]).includes(value);
@@ -226,13 +229,13 @@ export function resolveBriefingLevel(envValue: string | undefined, configValue: 
  * docs/api/API_REFERENCE.md, docs/ARCHITECTURE.md and AGENTS.md; check every
  * sentence written about levels against this one:
  *
- *   - `minimal`: only this project — its decisions, lessons, known facts and
- *     recent activity, with the live repository state in front of them
- *     whenever anything else is injected (the repository state alone is never
- *     injected). No task state, no durable index, nothing from outside the
- *     project.
- *   - `standard` (default): `minimal` + the task state when fresh + the
- *     capped index of this project's durable memories.
+ *   - `minimal` (default): only this project — its decisions, lessons, known
+ *     facts and recent activity, with the live repository state in front of
+ *     them whenever anything else is injected (the repository state alone is
+ *     never injected). No task state, no durable index, nothing from outside
+ *     the project.
+ *   - `standard`: `minimal` + the task state when fresh + the capped index of
+ *     this project's durable memories.
  *   - `full`: `standard` + memories from your other projects + global
  *     memory. At `full` this MEMORY block is byte-for-byte identical across
  *     every surface (hook, `briefing` MCP tool, CLI) and to the output from

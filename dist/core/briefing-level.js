@@ -1,5 +1,5 @@
 export const BRIEFING_LEVELS = ['minimal', 'standard', 'full'];
-export const DEFAULT_BRIEFING_LEVEL = 'standard';
+export const DEFAULT_BRIEFING_LEVEL = 'minimal';
 export function isBriefingLevel(value) {
     return typeof value === 'string' && BRIEFING_LEVELS.includes(value);
 }

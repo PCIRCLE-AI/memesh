@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-level.js",
-      "sha256": "44b02c7ddd9532e1a873a8036a9906e969a86452ad46880c07d5d8516a056982",
-      "bytes": 3688
+      "sha256": "e06ea5ca2b5a3ad7c4cb292540055d2c9c6c19d48b9a3edb67a93096609b4abe",
+      "bytes": 3687
     },
     {
       "path": "scripts/hooks/_generated/capture-flag.js",
@@ -173,8 +173,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "6090713a4a527af4582bc6c948e839e6396c75ce100575e635353bda5dd37dfe",
-      "bytes": 21665
+      "sha256": "fc6c393d3dcf8f9035b36e4ebbf8a5c133e063c85e2d12c4c715793d7c0b8330",
+      "bytes": 21850
     }
   ]
 }

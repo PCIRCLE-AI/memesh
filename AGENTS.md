@@ -12,12 +12,12 @@ host is recallable from all of them. Not installed yet? Follow
    current project: decisions, lessons, knowledge and recent activity are
    always included; the stated goal / next / blocked / done and the capped
    durable-memory index (`memesh briefing --index` prints just that, one
-   line each with its `[mem:id]` handle) are added at `standard` (the
-   default) and up. How much is assembled depends on the `briefing` setting
-   — `minimal` (this project only: decisions, lessons, knowledge, recent
-   activity, with the repository state in front whenever anything else is
-   injected — nothing else), `standard` (+ the task state
-   when fresh, + the durable-memory index — **default**), `full` (+ global
+   line each with its `[mem:id]` handle) are added at `standard` and up —
+   not at the default, `minimal`. How much is assembled depends on the
+   `briefing` setting — `minimal` (**default**: this project only:
+   decisions, lessons, knowledge, recent activity, with the repository state
+   in front whenever anything else is injected — nothing else), `standard`
+   (+ the task state when fresh, + the durable-memory index), `full` (+ global
    memory + other projects' recent activity, the pre-#360 memory-block
    behaviour — except when the task state itself is stale or of unknown
    age, where the one-line replacement below applies at `full` too) — set
@@ -45,10 +45,10 @@ host is recallable from all of them. Not installed yet? Follow
 2. **When the user states a goal, a next step, or a blocker — record it.**
    Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`).
    Fresh state is injected at the start of the next session at
-   `standard`/`full` (the default and above) and acted on as fact;
-   `minimal` never shows a fresh state, but a stale or unknown-age one
-   still gets a one-line flag at every level — `memesh task` always shows
-   the complete stored state.
+   `standard`/`full` and acted on as fact — not at the default, `minimal`,
+   which never shows a fresh state (`memesh config set briefing standard`
+   turns it on); a stale or unknown-age one still gets a one-line flag at
+   every level — `memesh task` always shows the complete stored state.
    - An empty string **clears** a field: pass `blocked: ""` (CLI:
      `memesh task --blocked ""`) once a blocker is resolved.
    - **Record only what the user actually said.** Never infer goal / next /
@@ -95,7 +95,7 @@ host is recallable from all of them. Not installed yet? Follow
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
 | `learn` | Record a structured lesson: error, root cause, fix, prevention |
 | `task_state` | Read or update where the work stands: goal / next / blocked / done |
-| `briefing` | The assembled work topology, closing, by default, with a capped index of the project's durable memories (the `briefing` setting — `minimal` / `standard` / `full` — controls how much is assembled); exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology — this project's decisions, lessons, knowledge and recent activity by default (`minimal`); `standard` adds the fresh task state and closes with a capped index of the project's durable memories, `full` adds other projects and global memory (the `briefing` setting — `minimal` / `standard` / `full`); exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition |

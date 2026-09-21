@@ -225,7 +225,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   const projectName = project ?? getProjectName();
   const db = getDatabase();
 
-  // #360 — env > config > default('standard'), the same precedence
+  // #360 — env > config > default('minimal'), the same precedence
   // `resolveSessionLimit` uses for the hook. No `--level` parameter exists
   // (or is needed) on this function: `assembleBriefing` has exactly one
   // caller-visible knob for this, the `briefing` config key, so the CLI and

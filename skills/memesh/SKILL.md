@@ -35,7 +35,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 | `import` | Import a JSON export with the required skip, append, or overwrite strategy |
 | `learn` | Record a structured lesson with error, fix, root cause, and prevention |
 | `task_state` | Read or update user-stated goal, next step, blocker, and finished work |
-| `briefing` | Assemble the current project's work topology, closing, by default, with a capped index of its durable memories (the `briefing` setting — `minimal` / `standard` / `full` — controls how much is assembled) |
+| `briefing` | Assemble the current project's work topology — its decisions, lessons, knowledge and recent activity by default (`minimal`); `standard` adds the fresh task state and closes with a capped index of its durable memories, `full` adds other projects and global memory (the `briefing` setting — `minimal` / `standard` / `full`) |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |
@@ -100,8 +100,8 @@ Durable audit does not mean unbounded silent growth. Owners can inspect it with 
 Call the `briefing` MCP tool or run `memesh briefing`. It returns the assembled
 work topology: this project's decisions and direction, lessons not to repeat,
 what is known, and recent activity always; where the work was left off (goal /
-next / blocked / done) too at `standard`/`full` (the `briefing` setting's
-default and above).
+next / blocked / done) too at `standard`/`full` (not at the `briefing`
+setting's default, `minimal`).
 One call is cheaper than re-exploring the repo to reconstruct the same picture.
 `memesh briefing --index` returns only the index of durable memories — what is
 known here, one line each, without the ranked sections.
@@ -128,11 +128,12 @@ memesh task --blocked ""      # blocker resolved — empty string clears the fie
 ```
 Fields: `--goal` `--next` `--blocked` `--done` (MCP tool: `task_state`).
 Record ONLY what the user actually said. Fresh state is injected at the top
-of the next session at `standard`/`full` (default and above) and read as
-fact — a goal you guessed from which files were edited reaches that session
-with nothing to correct it; `minimal` never shows a fresh state, but a
-stale or unknown-age one still gets a one-line flag at every level. If it
-was not said, leave the field out.
+of the next session at `standard`/`full` and read as fact — a goal you
+guessed from which files were edited reaches that session with nothing to
+correct it; the default, `minimal`, never shows a fresh state
+(`memesh config set briefing standard` turns it on), but a stale or
+unknown-age one still gets a one-line flag at every level. If it was not
+said, leave the field out.
 
 **SESSION END or milestone → make the task state match reality.**
 `memesh task` (no flags) always shows the complete stored state — not
@@ -159,7 +160,7 @@ With the Claude Code plugin, the first eight rows happen **without any action fr
 
 | Hook | When | What it does |
 |------|------|-------------|
-| **SessionStart** | Every session begins | Injects the briefing when the configured level has something to show (an empty project at `minimal` injects nothing) — decisions, lessons and recent activity always; task state and the durable-memory index too at `standard`/`full` (default and above) |
+| **SessionStart** | Every session begins | Injects the briefing when the configured level has something to show (an empty project at `minimal` injects nothing) — decisions, lessons and recent activity always; task state and the durable-memory index too at `standard`/`full` (not at the default, `minimal`) |
 | **PreToolUse (Edit/Write)** | Before editing files | Injects memories related to the file or project |
 | **UserPromptSubmit** | When you submit a prompt | Detects "remember this" intent (5 languages) and reminds Claude to use memesh |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
