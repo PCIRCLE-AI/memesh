@@ -76,13 +76,12 @@ import {
 
 const require = createRequire(import.meta.url);
 
-// Codex round 37: dist/core/install-channel.js is emitted as ESM
-// (the project's tsconfig produces NodeNext modules). On Node 20.x
-// `require()` against an ESM file throws ERR_REQUIRE_ESM, which
-// silently downgraded all install-channel detection to 'unknown' on
-// the supported floor. Pre-load the module via dynamic `import()`
-// at hook startup using a top-level await — once at process init,
-// not on every call. Falls back to null if the dist file is
+// dist/core/install-channel.js is emitted as ESM (the project's tsconfig
+// produces NodeNext modules). On Node 20.x `require()` against an ESM file
+// throws ERR_REQUIRE_ESM, which would silently downgrade all install-channel
+// detection to 'unknown' on the supported floor. So the module is pre-loaded
+// via dynamic `import()` at hook startup using a top-level await — once at
+// process init, not on every call. Falls back to null if the dist file is
 // missing (source checkout pre-build) or fails to load.
 let _installChannelMod = null;
 try {
@@ -132,32 +131,26 @@ function buildDeprecationBanner(currentVersion, cache) {
     `⚠️  MeMesh ${currentVersion} is DEPRECATED by maintainers.`,
     `    ${msg}`,
   ];
-  // Codex round 36: emit a remediation line for EVERY deprecation
-  // banner — including the cases where the cached `latestVersion`
-  // is null, equal to current, or stale. The previous gate omitted
-  // the action line whenever the cache didn't yet show a strictly-
-  // newer version, leaving users with a security warning and no
-  // follow-up step. doctor / CLI status / dashboard already point
-  // at `memesh update` (or channel equivalents) in those uncertain
-  // cases, and the session-start banner should match — `npm`
-  // resolves @latest at install time, so the command works even
-  // when our local cache is uncertain.
+  // A remediation line is emitted for EVERY deprecation banner — including
+  // when the cached `latestVersion` is null, equal to current, or stale — so
+  // a security warning always carries a follow-up step. doctor / CLI status /
+  // dashboard point at `memesh update` (or channel equivalents) in those
+  // uncertain cases too, and the session-start banner matches: `npm`
+  // resolves @latest at install time, so the command works even when our
+  // local cache is uncertain.
   const knownUpgradeTarget = Boolean(
     cache.latestVersion && cache.latestVersion !== currentVersion,
   );
-  // Codex round 39: the SessionStart hook reads ONLY cached cache
-  // data — there's no fresh lookup happening on this code path.
-  // That means `freshness === 'fresh'` (the strict rule the
-  // dashboard / `memesh status` use to authoritatively say
-  // "no upgrade target yet") can never apply here. Round 38 used a
-  // 24h-window heuristic to fire the no-target message anyway, but
-  // codex correctly flagged that as suppressing the upgrade hint
-  // exactly when a security-advisory fix could ship within the
-  // window. Conservative remediation: always recommend
-  // `memesh update` (which is a harmless no-op when there's truly
-  // no target, and immediately applies a freshly-published fix
-  // when there is one). The "no target yet" message remains
-  // available in `memesh status` (fresh lookup) and the dashboard
+  // The SessionStart hook reads ONLY cached update data — no fresh lookup
+  // happens on this code path. That means `freshness === 'fresh'` (the strict
+  // rule the dashboard / `memesh status` use to authoritatively say "no
+  // upgrade target yet") can never apply here. A 24h-window heuristic that
+  // fired the no-target message anyway would suppress the upgrade hint
+  // exactly when a security-advisory fix could ship within the window, so
+  // the remediation is conservative: always recommend `memesh update` (a
+  // harmless no-op when there's truly no target, and it immediately applies
+  // a freshly-published fix when there is one). The "no target yet" message
+  // remains available in `memesh status` (fresh lookup) and the dashboard
   // (after a Check now click).
   // Tailor the remediation hint to the install channel. `memesh
   // update` and `autoUpdate` only work for npm-global installs;
@@ -185,9 +178,8 @@ function buildDeprecationBanner(currentVersion, cache) {
   } else if (channel === 'source-checkout') {
     lines.push(`    Source checkout: pull and rebuild (\`git pull && npm install && npm run build\`).`);
   } else if (channel === 'npm-local') {
-    // Codex round 30: the cached `latestVersion` may itself be
-    // stale (cache TTL is 24h and we're already showing a stale
-    // banner). Pinning a specific version risks installing an
+    // The cached `latestVersion` may itself be stale (cache TTL is 24h
+    // and we're already showing a stale banner). Pinning a specific version risks installing an
     // already-superseded build that's part of the same security
     // advisory. `@latest` always resolves to the registry's
     // current dist-tag at install time, which is the right
@@ -505,14 +497,13 @@ function spawnFreshUpdateCheck(installedVersion) {
     // the banner marker above: marker and cache must share a directory.
     const dir = memeshHomeDir();
     try { ensurePrivateDir(dir); } catch { /* best-effort */ }
-    // Codex round 37: scope the throttle marker to the installed
-    // version. The marker was machine-global, so a refresh started
-    // by a global 4.1.3 install would suppress refreshes for a
-    // sibling project-local 4.1.1 for the next 5 minutes — and the
-    // shared cache it wrote would carry version 4.1.3, so the
-    // 4.1.1 session would skip its banner because
-    // `cache.currentVersion !== currentVersion`. Per-version
-    // markers ensure each install gets its own refresh window.
+    // The throttle marker is scoped to the installed version. A
+    // machine-global marker would let a refresh started by a global 4.1.3
+    // install suppress refreshes for a sibling project-local 4.1.1 for the
+    // next 5 minutes — and the shared cache it wrote would carry version
+    // 4.1.3, so the 4.1.1 session would skip its banner because
+    // `cache.currentVersion !== currentVersion`. Per-version markers give
+    // each install its own refresh window.
     // Sanitize version for filesystem (semver chars only, no path
     // separators); fall back to 'unknown' if missing.
     const versionTag = typeof installedVersion === 'string'
@@ -520,13 +511,12 @@ function spawnFreshUpdateCheck(installedVersion) {
       ? installedVersion
       : 'unknown';
     const markerPath = join(dir, `last-fresh-refresh.${versionTag}.lock`);
-    // Single-owner claim: O_EXCL atomic create. Codex round 27
-    // caught that the previous temp+rename+readback pattern was
-    // racy — both peers' renames are destructive, so each could
-    // read its own token back and both would spawn a refresh.
-    // O_EXCL is the standard POSIX/libuv primitive that lets at
-    // most one process succeed. The updater runner uses the same O_EXCL
-    // ownership primitive for its separate update lock.
+    // Single-owner claim: O_EXCL atomic create. A temp+rename+readback
+    // pattern is racy — both peers' renames are destructive, so each could
+    // read its own token back and both would spawn a refresh. O_EXCL is the
+    // standard POSIX/libuv primitive that lets at most one process succeed.
+    // The updater runner uses the same O_EXCL ownership primitive for its
+    // separate update lock.
     const token = `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const claim = () => {
       try {
@@ -807,17 +797,14 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
   return [...lines.filter((l) => l.length > 0), '', baseMessage].join('\n');
 }
 
-// #360 round 6 (Codex round 5 re-review, item 1): the ONE reason string for
-// "this session's memory injection resolved to nothing" — every exit path
-// that ends up with a falsy `memoryContext` should pass this through
-// `output()`'s `recorded` argument, not fall through to the generic
-// `session-start-banner` outcome marker that carries no `reason` at all.
-// Before this fix only the schema-present empty path (further down) did —
-// the no-database and no-entities-table early exits called `output()` with
-// just two arguments, so a genuinely silent `minimal` session on either of
-// those two states left no trace of WHY nothing was injected. One helper,
-// not three copies of the template string, so the wording cannot drift
-// between call sites the way the missing-reason bug itself proves it can.
+// #360: the ONE reason string for "this session's memory injection resolved
+// to nothing" — every exit path that ends up with a falsy `memoryContext`
+// passes this through `output()`'s `recorded` argument, so a genuinely silent
+// session (`minimal` on an empty project, the no-database and
+// no-entities-table early exits) always leaves a trace of WHY nothing was
+// injected, instead of the generic `session-start-banner` outcome marker that
+// carries no `reason`. One helper, not three copies of the template string,
+// so the wording cannot drift between call sites.
 function nothingToInjectReason(level, detail) {
   return `briefing-level: nothing to inject at "${level}" — ${detail}`;
 }
@@ -832,15 +819,14 @@ process.stdin.on('end', async () => {
   let captureWarning = null;
   const withCaptureWarning = (msg) => {
     if (!captureWarning) return msg;
-    // Found by running the full suite (not just this round's touched
-    // files): the populated-database path prepends an update banner ahead
-    // of the "◉ MeMesh ready · ..." summary line (`finalMessage =
-    // [...bannerLines, '', summary].join('\n')`), so that line is no
-    // longer at the START of `msg` whenever a banner is present — an
-    // un-flagged `^` only anchors to the whole string's start, so the
-    // demotion below silently did nothing and "MeMesh ready" leaked
-    // through even while a write failure was being reported in the very
-    // same message. `m` anchors `^` to the start of ANY line instead.
+    // The populated-database path prepends an update banner ahead of the
+    // "◉ MeMesh ready · ..." summary line (`finalMessage = [...bannerLines,
+    // '', summary].join('\n')`), so that line is not at the START of `msg`
+    // whenever a banner is present — an un-flagged `^` only anchors to the
+    // whole string's start, so the demotion below would silently do nothing
+    // and "MeMesh ready" would leak through even while a write failure was
+    // being reported in the very same message. `m` anchors `^` to the start
+    // of ANY line instead.
     return `${captureWarning}\n${msg.replace(/^◉ MeMesh ready · /m, '◉ MeMesh · ')}`;
   };
   try {
@@ -854,34 +840,34 @@ process.stdin.on('end', async () => {
     // unknown value on either source is not a silent fallback — it is
     // traced AND recorded on the hook's outcome channel, the same
     // discipline every other silent-skip path in this file follows.
-    const briefingResolution = resolveBriefingLevel(process.env);
+    const configRead = readHookConfigResult(process.env);
+    const briefingResolution = resolveBriefingLevel(process.env, configRead.config);
     const briefingLevel = briefingResolution.level;
     const briefingPolicy = briefingLevelPolicy(briefingLevel);
     if (briefingResolution.invalid) {
       const { source, value } = briefingResolution.invalid;
       try {
         process.stderr.write(
-          `[memesh session-start] invalid ${source} briefing level "${value}" — using "${briefingLevel}"\n`,
+          `[memesh session-start] invalid ${source} briefing level ${value} — using "${briefingLevel}"\n`,
         );
       } catch { /* stderr gone */ }
       recordHookOutcome(process.env, {
         hook: 'session-start',
         outcome: 'notified',
-        reason: `briefing-level: invalid ${source} value "${value}", using ${briefingLevel}`,
+        reason: `briefing-level: invalid ${source} value ${value}, using ${briefingLevel}`,
       });
     }
-    // #360 round 6 (Codex round 5 re-review, item 2): the check above only
-    // catches an unusable VALUE for one known key (`briefing`) inside an
-    // otherwise-parseable config object. A config.json that is not even
-    // that — truncated JSON, a bare array/string/number/null at the top
-    // level — used to be silently swallowed by `readHookConfig()` into an
-    // empty `{}`, so every setting in it (not just `briefing`) silently
-    // read as "not set" with no trace anywhere, while the CLI/MCP side
-    // (`core/config.ts`'s `warnUnreadable()`) already reported this exact
-    // state. `readHookConfigResult()`'s `state` is what makes it visible
-    // here too — recorded once, regardless of which settings would have
-    // been affected, since the whole document was unusable, not one field.
-    if (readHookConfigResult(process.env).state === 'unreadable') {
+    // The check above only catches an unusable VALUE for one known key
+    // (`briefing`) inside an otherwise-parseable config object. A config.json
+    // that is not even that — truncated JSON, a bare array/string/number/null
+    // at the top level — is swallowed by `readHookConfig()` into an empty
+    // `{}`, so every setting in it (not just `briefing`) reads as "not set"
+    // with no trace anywhere, while the CLI/MCP side (`core/config.ts`'s
+    // `warnUnreadable()`) reports this exact state. `readHookConfigResult()`'s
+    // `state` is what makes it visible here too — recorded once, regardless
+    // of which settings would have been affected, since the whole document
+    // was unusable, not one field.
+    if (configRead.state === 'unreadable') {
       recordHookOutcome(process.env, {
         hook: 'session-start',
         outcome: 'notified',
@@ -892,9 +878,9 @@ process.stdin.on('end', async () => {
     // — only `full` still carries it. `undefined`, not a conditional string
     // literal at each call site: output()'s memoryContext parameter treats
     // undefined as "nothing to add" the same way it always has.
-    // Codex round 4: read through the named predicate, not `.workPackageNotice`
-    // off the policy object directly — this file is the ONLY caller that
-    // should ever decide this (see the field comment in briefing-level.ts).
+    // Read through the named predicate, not `.workPackageNotice` off the
+    // policy object directly — this file is the ONLY caller that should ever
+    // decide this (see the field comment in briefing-level.ts).
     const workPackageNotice = sessionStartAppendsWorkPackageNotice(briefingLevel) ? WORK_PACKAGE_NOTICE : undefined;
 
     // Self-heal the citation contract.
@@ -998,15 +984,14 @@ process.stdin.on('end', async () => {
       output(
         consent ? `${consent.system}\n${emptySummary}` : emptySummary,
         noDbContext,
-        // Codex round 5 re-review, item 1: nothing was injected (no notice
-        // at this level, no database to read from) — record why, the same
-        // as the schema-present empty path further down. `standard`/`full`
-        // reach this exact same branch: at `full` `noDbContext` is always
-        // truthy (the notice), so this never overrides anything for that
-        // level; at `standard` it can also be falsy here, which correctly
-        // gets the same reason (there is equally nothing to explain a
-        // silent session about, level-agnostic — matching the schema-present
-        // path's own `!memoryContext` predicate, not a `minimal`-only check).
+        // Nothing was injected (no notice at this level, no database to read
+        // from) — record why, the same as the schema-present empty path
+        // further down. `standard`/`full` reach this exact same branch: at
+        // `full` `noDbContext` is always truthy (the notice), so this never
+        // overrides anything for that level; at `standard` it can also be
+        // falsy here, which correctly gets the same reason (the record is
+        // level-agnostic, matching the schema-present path's own
+        // `!memoryContext` predicate, not a `minimal`-only check).
         !noDbContext ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'no database yet') } : null,
       );
       if (consent) finalizeUpdatePromptClaim(data.session_id, consentVersion, consentCache?.latestVersion);
@@ -1038,10 +1023,9 @@ process.stdin.on('end', async () => {
         output(
           combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet'),
           workPackageNotice,
-          // Codex round 5 re-review, item 1: same reason mechanism as the
-          // no-database exit above and the schema-present exit below — see
-          // `nothingToInjectReason`'s own comment for why this is not
-          // `minimal`-gated explicitly.
+          // Same reason mechanism as the no-database exit above and the
+          // schema-present exit below — see `nothingToInjectReason`'s own
+          // comment for why this is not `minimal`-gated explicitly.
           !workPackageNotice ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'database has no entities table yet') } : null,
         );
         return;
@@ -1284,6 +1268,7 @@ process.stdin.on('end', async () => {
       const topLessons = lessonEntities.slice(0, 5);
 
       const memoryLines = [];
+      let memoryAssemblyFailed = false;
       try {
         const rankedIds = [
           ...topLessons.map(e => e.id),
@@ -1388,6 +1373,16 @@ process.stdin.on('end', async () => {
         // means memories stop reaching the model again (the exact v4.2.7
         // regression this block was written to fix).
         try { process.stderr.write(`[memesh session-start] memory-context: ${err?.message || err}\n`); } catch {}
+        // Recorded like the index read's failure below (a label, never the
+        // message), so a failed assembly is not later reported as an empty
+        // project: at `minimal` the index read is skipped, and this is the
+        // only place the fault can surface.
+        memoryAssemblyFailed = true;
+        recordHookOutcome(process.env, {
+          hook: 'session-start',
+          outcome: 'error',
+          reason: `memory-context: ${hookErrorReason(err)}`,
+        });
       }
 
       // --- The durable-memory index (#323) -----------------------------
@@ -1501,13 +1496,12 @@ process.stdin.on('end', async () => {
       // other level workPackageNotice is undefined and this is just the
       // fenced block.
       //
-      // Codex review round 1, item 4 / round 3, item 1: when `memoryLines`
-      // is genuinely empty (no project content — `minimal` with nothing
-      // durable yet, and no repository-state prefix because that only
-      // prepends onto EXISTING topology lines) and there is no
-      // work-package notice either, the old code still wrapped nothing in
-      // the preamble + an empty ```text``` fence — 166+ characters that
-      // inform the agent of literally nothing. Inject NOTHING instead.
+      // When `memoryLines` is genuinely empty (no project content —
+      // `minimal` with nothing durable yet, and no repository-state prefix
+      // because that only prepends onto EXISTING topology lines) and there is
+      // no work-package notice either, wrapping nothing in the preamble + an
+      // empty ```text``` fence would spend 166+ characters informing the
+      // agent of literally nothing. Inject NOTHING instead.
       // This can only happen at `minimal`: at `standard`/`full`,
       // `indexLines` always carries at least its own empty-state line
       // (#323 — "an index is a claim about the user's data", pinned by
@@ -1519,8 +1513,7 @@ process.stdin.on('end', async () => {
       // IDENTICAL decision for the SAME reason on its own `block` array —
       // the hook cannot call that function directly (A1a: a hook cannot
       // import `../db.js`-dependent core modules), so this is the one place
-      // the two sides CAN share the rule, and round 1's review found this
-      // exact rule implemented in only one of the two owners once already.
+      // the two sides CAN share the rule.
       const memoryContext = !hasBriefingContent(memoryLines) && !workPackageNotice
         ? undefined
         : workPackageNotice
@@ -1671,15 +1664,15 @@ process.stdin.on('end', async () => {
         updateConsentContext
           ? (memoryContext ? `${updateConsentContext}\n\n${memoryContext}` : updateConsentContext)
           : memoryContext,
-        // Codex review round 1, item 4: a specific, greppable reason for the
-        // "genuinely nothing to inject" case, distinct from the generic
-        // 'session-start-banner' entity marker output() would otherwise
-        // record for ANY falsy memoryContext. Round 6 (Codex round 5
-        // re-review, item 1): the no-database and no-entities-table early
-        // exits above now record through the SAME `nothingToInjectReason`
-        // helper with their own `detail` — this was the one path that did
-        // until then, which is exactly how the other two went unnoticed.
-        !memoryContext
+        // A specific, greppable reason for the "genuinely nothing to inject"
+        // case, distinct from the generic 'session-start-banner' entity
+        // marker output() would otherwise record for ANY falsy
+        // memoryContext. The no-database and no-entities-table early exits
+        // above record through the SAME `nothingToInjectReason` helper with
+        // their own `detail`. Not recorded when the memory assembly threw:
+        // that failure has its own error record, and an empty result it
+        // caused must not also be reported as an empty project.
+        !memoryContext && !memoryAssemblyFailed
           ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'no project content, no repository state, index excluded') }
           : null,
       );
@@ -1796,16 +1789,17 @@ process.stdin.on('end', async () => {
  *
  * The shape is asserted by tests/helpers/hook-output-contract.ts.
  */
-// The notice's literal text moved to `_shared.js`'s exported
-// `WORK_PACKAGE_NOTICE` (Codex round 4) — single owner, shared with the
-// test suite instead of a second hardcoded copy there.
+// The notice's literal text is `_shared.js`'s exported `WORK_PACKAGE_NOTICE`
+// — single owner, shared with the test suite instead of a second hardcoded
+// copy there.
 
-// #360: this used to default to `WORK_PACKAGE_NOTICE` unconditionally, so
-// any call site that passed only `text` got the notice regardless of level
-// — exactly the kind of default that silently reintroduces what a level was
-// supposed to drop. Every call site now passes its memoryContext (or
-// `workPackageNotice`, already gated) explicitly; `undefined` here means
-// "this exit has nothing to add", not "fall back to the notice".
+// #360: `memoryContext` deliberately has no default. A default of
+// `WORK_PACKAGE_NOTICE` would give any call site that passed only `text` the
+// notice regardless of level — exactly the kind of default that silently
+// reintroduces what a level was supposed to drop. Every call site passes its
+// memoryContext (or `workPackageNotice`, already gated) explicitly;
+// `undefined` here means "this exit has nothing to add", not "fall back to
+// the notice".
 function output(text, memoryContext = undefined, recorded = null) {
   // session-start's only effect is the context it injects, so it records
   // `notified`, not `wrote`: doctor's `writes` answers "is memory capture

@@ -21,10 +21,12 @@ All notable changes to MeMesh are documented here.
   anyone else.
 - **`briefing` setting — three levels for how much the SessionStart hook and
   the `briefing` MCP tool/CLI inject** (#360): `minimal` — only this
-  project: live repository state, its decisions, lessons, known facts and
-  recent activity; no task state, no durable index, nothing from outside the
-  project. `standard` (**the new default**) — `minimal` + the task state
-  when fresh + the capped index of this project's durable memories. `full`
+  project: its decisions, lessons, known facts and recent activity, with the
+  live repository state in front of them whenever anything else is injected
+  (the repository state alone is never injected); no task state, no durable
+  index, nothing from outside the project. `standard` (**the new default**)
+  — `minimal` + the task state when fresh + the capped index of this
+  project's durable memories. `full`
   — `standard` + memories from your other projects + global memory
   (byte-identical, on every surface, to every prior release's only
   behaviour — EXCEPT when the task state is stale or of unknown age, where
@@ -113,6 +115,34 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **The guard fire counter waits at most 200 ms for a locked database
+  (#366).** When another process holds the database's write lock, the two
+  guard hooks (`guard-check.js` and `pre-edit-recall.js`) wait up to 200 ms
+  for it and then give up on the count: the guard warning appears without a
+  long delay, that one fire is not counted, and this line goes to stderr:
+  `[memesh guard-fires] not counted: database is locked`. Before, the wait
+  was 2 seconds, which on a slow machine could get a hook killed at its
+  5-second timeout before the warning was printed; a missed count is
+  invisible to the user, a killed warning is not. The wait is short but not
+  zero on purpose: with none, hooks that run at the same instant (parallel
+  tool calls) lost about a third of their counts, and `memesh doctor`'s guard
+  activity reads low. Reading the graph still waits up to 2 seconds for a
+  lock.
+- **`minimal` no longer reports a failed memory read as an empty project, and
+  a mistyped briefing level is reported with one pair of quotes (#386).** If
+  the SessionStart hook cannot assemble a project's memories (for example when
+  the database is damaged), `hook-outcomes.jsonl` now records an `error` for
+  that session, at every level. At `minimal` it used to record "nothing to
+  inject" instead, which read like a project with no memories; at `standard`
+  and `full` the new record sits next to the existing `briefing-index` one.
+  An unrecognised `MEMESH_BRIEFING` or stored
+  `briefing` value now reads `invalid env briefing level "banana"` on stderr
+  (hook, `briefing` tool and CLI) and `invalid env value "banana"` in the
+  outcome record; both used to show the value in doubled quotes
+  (`""banana""`). A value that is not a string is shown without quotes (a
+  number as itself, a container as `[object]` or `[array]`). The API reference
+  no longer says `memesh doctor` shows an invalid briefing level, because it
+  does not: the value is visible on stderr and in `hook-outcomes.jsonl`.
 - `scripts/audit/verification-audit.mjs` now scans only what git does not
   ignore, so its verdict depends on the tree and the machine's own git
   ignore rules, rather than on whatever untracked local files with no
@@ -282,12 +312,10 @@ All notable changes to MeMesh are documented here.
     of `skipped / nothing to recall`, the file is not marked as recalled,
     and a lesson guard that matched the same edit is still injected. The
     guard warning is also written before the guard's fire counter, and the
-    counter now waits for the database's write lock for the hook's own 2
-    seconds instead of the database's default 30 (in both guard hooks), so
-    another process holding that lock no longer gets the hook killed at
-    its timeout with the warning unprinted. The price: a lock held for
-    between 2 and 5 seconds now costs that one fire count, reported on
-    stderr, where the longer wait used to land it.
+    counter waits at most 200 ms for the database's write lock (in both
+    guard hooks), so another process holding that lock cannot get the hook
+    killed at its timeout with the warning unprinted. A lock still held after
+    that costs that one fire count, reported on stderr.
 
   **Recall is now narrower, by design, not by accident.** A memory that
   refers to a file only by its stem ("the `auth` module handles hashing",

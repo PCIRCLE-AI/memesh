@@ -65,10 +65,9 @@ describe('briefing-level', () => {
       // malformed higher-priority value must not uncover a permissive
       // config value (same reasoning resolveAutoUpdatePolicy already uses
       // in scripts/hooks/_shared.js for a security-relevant setting).
-      // #360 round 6 (Codex round 5 re-review, item 3): `value` is the real
-      // `JSON.stringify('banana')` form (quoted), not the old flattened
-      // `'banana'` (no quotes) — see the dedicated whitespace-evidence
-      // tests further down for why that distinction matters.
+      // `value` is the real `JSON.stringify('banana')` form (quoted), not a
+      // flattened `'banana'` — see the dedicated whitespace-evidence tests
+      // further down for why that distinction matters.
       expect(resolveBriefingLevel('banana', 'full')).toEqual({
         level: 'standard',
         invalid: { source: 'env', value: '"banana"' },
@@ -93,14 +92,12 @@ describe('briefing-level', () => {
       expect(resolveBriefingLevel(undefined, undefined)).toEqual({ level: 'standard', invalid: null });
     });
 
-    // #360 round 5 (Codex round 4 re-review, item 2): this test used to
-    // assert `null` was the same as "not set" too — checked against the
-    // real product first: `memesh config unset briefing` DELETES the key
-    // (`updateConfig({ briefing: undefined })`), it never writes `null`,
-    // and nothing else in this codebase writes `null` here either. A
-    // stored `null` can therefore only be a hand edit or a foreign
-    // version's value — exactly the same "unexpected value" case as `42`,
-    // not a legitimate absence. It now gets the SAME invalid treatment.
+    // A stored `null` is not "not set": `memesh config unset briefing`
+    // DELETES the key (`updateConfig({ briefing: undefined })`), it never
+    // writes `null`, and nothing else in this codebase writes `null` here
+    // either. A stored `null` can therefore only be a hand edit or a foreign
+    // version's value — exactly the same "unexpected value" case as `42`, not
+    // a legitimate absence. It gets the SAME invalid treatment.
     it('an explicit stored null is INVALID, not "not set" — same bounded reason as any other bad value', () => {
       expect(resolveBriefingLevel(undefined, null)).toEqual({
         level: 'standard',
@@ -108,13 +105,12 @@ describe('briefing-level', () => {
       });
     });
 
-    // #360 round 4 (Codex round 3 re-review, item 2): `invalid.value` is
-    // untrusted — it lands in a single-line stderr trace AND a JSONL
-    // outcome-record `reason` field. Neither channel survives an embedded
-    // newline (a raw one fragments the log line / the JSONL record into
-    // more than one line) or an unbounded length (a config file is not
-    // size-limited). `describeInvalidValue` (private to this module) is
-    // what bounds it — exercised here only through the public return value.
+    // `invalid.value` is untrusted — it lands in a single-line stderr trace
+    // AND a JSONL outcome-record `reason` field. Neither channel survives an
+    // embedded newline (a raw one fragments the log line / the JSONL record
+    // into more than one line) or an unbounded length (a config file is not
+    // size-limited). `describeInvalidValue` (private to this module) is what
+    // bounds it — exercised here only through the public return value.
     it('a huge stored config value is truncated, not passed through whole (would otherwise blow up the trace)', () => {
       const huge = 'x'.repeat(10_000);
       const result = resolveBriefingLevel(undefined, huge);
@@ -125,34 +121,25 @@ describe('briefing-level', () => {
       // comment) — this pins the actual number so a future change to the
       // cap is a deliberate edit here, not a silent regression.
       //
-      // #360 round 7 (Codex round 6 re-review, item 3): the ellipsis is
-      // now part of the STRING VALUE, so the serialized form ends with
-      // `…"` (the closing quote), not a bare `…` — the round-6 assertion
-      // pinned the old (buggy) shape; see the dedicated truncation-boundary
-      // tests below for why this moved.
+      // The ellipsis is part of the STRING VALUE, so the serialized form
+      // ends with `…"` (the closing quote), not a bare `…`; see the
+      // dedicated truncation-boundary tests below.
       //
-      // #360 round 8 (Codex round 7 re-review, item 1): the bound itself
-      // moved from "120 INPUT code points" to "100 SERIALIZED UTF-16
-      // units" — the round-7 number was measured on the INPUT side, which
-      // is not the same thing for escape-heavy input (see the exhaustive
-      // comment on `describeInvalidValue`). 100 units + quotes cannot
-      // exceed ~102 for plain ASCII; the loose bound below is deliberately
-      // generous (the exact boundary is pinned by the 96-vs-97 pair tests
-      // further down, which is where "wrong by exactly one" would show).
+      // The bound is "100 SERIALIZED UTF-16 units", not a count of INPUT code
+      // points — the two differ for escape-heavy input (see the comment on
+      // `describeInvalidValue`). 100 units + quotes cannot exceed ~102 for
+      // plain ASCII; the loose bound below is deliberately generous (the
+      // exact boundary is pinned by the 96-vs-97 pair tests further down,
+      // which is where "wrong by exactly one" would show).
       expect(result.invalid!.value.length).toBeLessThanOrEqual(105);
       expect(result.invalid!.value.endsWith('…"')).toBe(true);
       expect(result.invalid!.value).not.toContain('x'.repeat(10_000));
     });
 
-    // #360 round 6 (Codex round 5 re-review, item 3): rewritten — the OLD
-    // `.replace(/\s+/g, ' ').trim()` implementation flattened AND trimmed
-    // whitespace, which is exactly what this test used to assert
-    // (`'line one line two line three \`backtick\` "quote"'`, no quotes, no
-    // raw newlines, but ALSO no leading/trailing evidence). The NEW
-    // `JSON.stringify`-based implementation keeps the surrounding quotes and
-    // escapes an embedded newline to the two-CHARACTER sequence `\n` (never
-    // a raw line break) instead of erasing it — verified against a real
-    // `JSON.stringify` call, not assumed.
+    // The value is the `JSON.stringify` form: it keeps the surrounding quotes
+    // and escapes an embedded newline to the two-CHARACTER sequence `\n`
+    // (never a raw line break) instead of flattening or erasing it — so the
+    // rendering has no raw newlines AND keeps the leading/trailing evidence.
     it('backticks and embedded newlines in a stored config value: no raw line break, but the escaped evidence survives', () => {
       const hostile = 'line one\nline two\r\nline three\t`backtick` "quote"';
       const result = resolveBriefingLevel(undefined, hostile);
@@ -173,29 +160,27 @@ describe('briefing-level', () => {
       const huge = 'y'.repeat(10_000);
       const result = resolveBriefingLevel(huge, undefined);
       expect(result.invalid?.source).toBe('env');
-      // #360 round 8: bound is on the SERIALIZED form now (100 UTF-16
-      // units), not input code points — see the dedicated
-      // truncation-boundary tests further down for the exact pinned value.
+      // The bound is on the SERIALIZED form (100 UTF-16 units), not input
+      // code points — see the dedicated truncation-boundary tests further
+      // down for the exact pinned value.
       expect(result.invalid!.value.length).toBeLessThanOrEqual(105);
     });
 
-    // #360 round 6 (Codex round 5 re-review, item 3) — THE regression this
-    // whole finding is about: a near-miss string that differs from a valid
-    // level only by whitespace used to be reported as if it WERE the valid
-    // level, because the old implementation trimmed exactly the evidence
-    // that made it invalid.
+    // A near-miss string that differs from a valid level only by whitespace
+    // must not be reported as if it WERE the valid level: trimming would
+    // erase exactly the evidence that made it invalid.
     it('a whitespace-padded near-miss (" full ") is NOT reported as the bare, valid-looking level "full"', () => {
       const result = resolveBriefingLevel(undefined, ' full ');
       expect(result.level).toBe('standard');
       expect(result.invalid?.source).toBe('config');
-      // The old rendering ('full', no quotes, no spaces) is gone; the new
-      // one shows exactly what made this invalid — quotes AND the spaces.
+      // The rendering shows exactly what made this invalid — quotes AND the
+      // spaces — not a bare, valid-looking 'full'.
       expect(result.invalid!.value).toBe('" full "');
       expect(result.invalid!.value).not.toBe('full');
     });
 
-    // The coordinator's explicit adversarial list for this finding, each
-    // checked against the real `JSON.stringify` shape rather than assumed.
+    // Adversarial near-miss values, each checked against the real
+    // `JSON.stringify` shape rather than assumed.
     it.each([
       ['FULL (wrong case)', 'FULL', '"FULL"'],
       ['a number', 42, '42'],
@@ -208,18 +193,14 @@ describe('briefing-level', () => {
       expect(result.invalid!.value).toBe(expected);
     });
 
-    // #360 round 10 (Codex round 9 re-review, Z1): round 9 kept small
-    // arrays/objects rendering their real JSON form, gated by a count
-    // check (`NON_STRING_SIZE_MAX`, >50 elements/keys → summary). Codex
-    // found the guard itself still input-proportional two ways a count
-    // check cannot cover — `Object.keys()` on a huge-key-count object
-    // materializes every key before the count compares, and a SMALL count
-    // of HUGE elements passes the guard outright. Fixed by summarising
-    // every array/object by TYPE ALONE, unconditionally, before any
-    // inspection — no size check, no `Object.keys`, no `JSON.stringify`,
-    // no iteration. These tests prove that with a Proxy engineered to
-    // throw on every trap, not with a size threshold a differently-shaped
-    // adversarial input could dodge.
+    // Every array/object is summarised by TYPE ALONE, unconditionally, before
+    // any inspection — no size check, no `Object.keys`, no `JSON.stringify`,
+    // no iteration. A count threshold would still be input-proportional:
+    // `Object.keys()` on a huge-key-count object materializes every key before
+    // the count compares, and a SMALL count of HUGE elements passes a count
+    // guard outright. These tests prove zero traversal with a Proxy
+    // engineered to throw on every trap, not with a size threshold a
+    // differently-shaped adversarial input could dodge.
     describe('containers are summarised by TYPE ALONE — zero traversal, any size', () => {
       function throwingTrapHandler(label: string): ProxyHandler<object> {
         return {
@@ -261,22 +242,19 @@ describe('briefing-level', () => {
       });
 
       it('even a tiny (or empty) array/object now gets the type summary, not its real JSON form', () => {
-        // Round 9 kept small-container fidelity ([1,2,3] → "[1,2,3]");
-        // round 10 gives that up in exchange for zero traversal at any
-        // size — these four used to render their real JSON.stringify form
-        // (asserted in the it.each above, before round 9's size-check
-        // tests below it, before this round's rewrite).
+        // Small-container fidelity ([1,2,3] → "[1,2,3]") is deliberately
+        // given up in exchange for zero traversal at any size.
         expect(resolveBriefingLevel(undefined, [1, 2, 3]).invalid!.value).toBe('[array]');
         expect(resolveBriefingLevel(undefined, { a: 1, b: 2 }).invalid!.value).toBe('[object]');
         expect(resolveBriefingLevel(undefined, []).invalid!.value).toBe('[array]');
         expect(resolveBriefingLevel(undefined, {}).invalid!.value).toBe('[object]');
       });
 
-      // The coordinator's exact adversarial shapes: a small COUNT of huge
-      // elements (which passed round 9's >50-count guard outright) and a
-      // huge COUNT (whose Object.keys() alone cost round 9 ~15.6 MiB).
-      // The assertion is the deterministic return value, not RSS/timing —
-      // a real large container returning the summary, immediately.
+      // The adversarial shapes: a small COUNT of huge elements (which a
+      // count guard would pass outright) and a huge COUNT (whose
+      // Object.keys() alone costs ~15.6 MiB). The assertion is the
+      // deterministic return value, not RSS/timing — a real large container
+      // returning the summary, immediately.
       it('a 40-element array of 1 MB strings returns the array summary (round 9\'s count guard let this through at 40 < 50)', () => {
         const value = new Array(40).fill('x'.repeat(1024 * 1024));
         expect(resolveBriefingLevel(undefined, value).invalid!.value).toBe('[array]');
@@ -295,23 +273,20 @@ describe('briefing-level', () => {
       });
     });
 
-    // #360 round 11 (Codex round 10 re-review): round 10 left
-    // `bigint`/`symbol`/`function` going through the scalar
-    // `JSON.stringify(value) ?? String(value)` path, ending in a raw
-    // `.slice(0, 100)` — Codex measured two inputs that come back ending
-    // in a lone (unpaired) high surrogate, `\ud83d`, because the slice cut
-    // landed inside a surrogate pair: `Symbol('a'.repeat(92) + '😀')` and a
-    // `Function` whose source string ends in `😀`. Fixed by summarising
-    // all three by TYPE ALONE, same as containers — no `String()`,
-    // `JSON.stringify()`, or `.description` access at all, so there is no
-    // slice left to bisect anything.
+    // `bigint`/`symbol`/`function` are summarised by TYPE ALONE, same as
+    // containers — no `String()`, `JSON.stringify()`, or `.description`
+    // access at all, so there is no slice left to bisect anything. A raw
+    // `.slice(0, 100)` on `Symbol('a'.repeat(92) + '😀')` or on a `Function`
+    // whose source string ends in `😀` would come back ending in a lone
+    // (unpaired) high surrogate, `\ud83d`, because the cut lands inside a
+    // surrogate pair.
     describe('bigint/symbol/function are summarised by TYPE ALONE — no description/source access, never a split surrogate', () => {
-      // `String.prototype.isWellFormed()` (ES2024) is what Codex's own
-      // probe used, but this repo's `tsconfig.check.json` `lib` target
-      // predates ES2024 — `noLoneSurrogate` (defined below, hoisted within
-      // this same describe block since it is a `function` declaration) is
-      // the equivalent well-formedness check this file already uses for
-      // the exact same reason on the string-truncation tests further down.
+      // `String.prototype.isWellFormed()` (ES2024) would be the natural
+      // check, but this repo's `tsconfig.check.json` `lib` target predates
+      // ES2024 — `noLoneSurrogate` (defined below, hoisted within this same
+      // describe block since it is a `function` declaration) is the
+      // equivalent well-formedness check this file also uses on the
+      // string-truncation tests further down.
       it('Codex\'s Symbol input: a Symbol description ending in an astral emoji no longer splits a surrogate pair', () => {
         const value = Symbol('a'.repeat(92) + '😀');
         const result = resolveBriefingLevel(undefined, value);
@@ -320,7 +295,7 @@ describe('briefing-level', () => {
       });
 
       it('Codex\'s Function input: function source ending in an astral emoji no longer splits a surrogate pair', () => {
-        // eslint-disable-next-line no-new-func -- deliberately building a Function whose .toString() is escape/astral-heavy, exactly Codex's adversarial input; never executed.
+        // eslint-disable-next-line no-new-func -- deliberately building a Function whose .toString() is escape/astral-heavy, an adversarial input; never executed.
         const value = Function('/*' + 'a'.repeat(73) + '😀' + '*/');
         const result = resolveBriefingLevel(undefined, value);
         expect(result.invalid!.value).toBe('[function]');
@@ -348,9 +323,9 @@ describe('briefing-level', () => {
         expect(result.invalid!.value).toBe(expected);
       });
 
-      // `describeInvalidValue(undefined)` — the scalar-`undefined` case the
-      // coordinator asked to cover — is NOT reachable through this file's
-      // public surface, by the resolver's own contract, not an oversight:
+      // `describeInvalidValue(undefined)` — the scalar-`undefined` case — is
+      // NOT reachable through this file's public surface, by the resolver's
+      // own contract, not an oversight:
       // `resolveBriefingLevel` treats `configValue === undefined` (and
       // `envValue === undefined`) as "not set" and returns BEFORE ever
       // calling `describeInvalidValue` (see the "config ABSENT (undefined)
@@ -364,21 +339,17 @@ describe('briefing-level', () => {
       // rather than faked with a call the production code path can't make.
     });
 
-    // #360 round 7 (Codex round 6 re-review, item 3): the round-6 fix
-    // truncated `JSON.stringify`'s OUTPUT at a raw character offset, which
-    // could bisect the two-character `\n` escape or a UTF-16 surrogate
-    // pair. Fixed (that round) by truncating the VALUE at a Unicode CODE
-    // POINT boundary (`Array.from`) before serializing — but bounding the
-    // INPUT's code-point count is not the same as bounding the SERIALIZED
-    // form: an escape-heavy 120-code-point input still serialized past 700
-    // units in a real run (round 8, Codex round 7 re-review, item 1),
-    // which is what actually mattered — `session-start.js` embeds this in
-    // a reason string `recordHookOutcome` then truncates a SECOND time,
-    // and a too-long `describeInvalidValue` output pushed that second,
-    // cruder truncation past its own safe boundary. Fixed by bounding the
-    // SERIALIZED form directly, to `INVALID_VALUE_SERIALIZED_MAX` (100)
-    // UTF-16 units — see the exhaustive comment on `describeInvalidValue`.
-    // Every number below is the REAL measured output, not assumed.
+    // The SERIALIZED form is bounded directly, to `INVALID_VALUE_SERIALIZED_MAX`
+    // (100) UTF-16 units — see the comment on `describeInvalidValue`.
+    // Truncating at a raw character offset could bisect the two-character
+    // `\n` escape or a UTF-16 surrogate pair, and bounding the INPUT's
+    // code-point count is not the same as bounding the SERIALIZED form (an
+    // escape-heavy 120-code-point input serializes past 700 units).
+    // `session-start.js` embeds this in a reason string that
+    // `recordHookOutcome` truncates a SECOND time, so an over-long
+    // `describeInvalidValue` output would push that cruder truncation past
+    // its own safe boundary. Every number below is the REAL measured output,
+    // not assumed.
     function noLoneSurrogate(s: string): boolean {
       // A lone (unpaired) high or low surrogate anywhere in the string.
       return !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
@@ -444,8 +415,7 @@ describe('briefing-level', () => {
       expect(result.invalid!.value).toBe(`"${'x'.repeat(97)}…"`);
     });
 
-    // #360 round 8 (Codex round 7 re-review, item 1): the coordinator's
-    // real-hook regression list, each checked against `describeInvalidValue`
+    // Real-hook regression inputs, each checked against `describeInvalidValue`
     // directly (the real hook / recordHookOutcome cross-surface proof is a
     // separate test in tests/hooks/session-start.test.ts, since it needs a
     // real subprocess).
@@ -463,16 +433,16 @@ describe('briefing-level', () => {
       expect(() => JSON.parse(result.invalid!.value)).not.toThrow();
     });
 
-    // #360 round 8 (Codex round 7 re-review, item 1): the coordinator's
-    // exact requirement — "assert that in a test with the longest prefix
-    // the hook uses, so the second truncation provably never fires for
-    // this diagnostic". `session-start.js`'s reason template is
-    // `` `briefing-level: invalid ${source} value "${value}", using
-    // ${briefingLevel}` `` (see scripts/hooks/session-start.js) — the
-    // longest `source` is `"config"` (6 chars, vs `"env"`'s 3) and the
-    // ONLY `briefingLevel` reachable here is `"standard"` (the resolver's
-    // default: an invalid value can only ever produce the DEFAULT level,
-    // never `"minimal"`/`"full"`, so there is no longer variant to check).
+    // The second truncation (`recordHookOutcome`'s 200 units) provably never
+    // fires for this diagnostic, checked with the longest prefix the hook
+    // uses. `session-start.js`'s reason template is
+    // `` `briefing-level: invalid ${source} value ${value}, using
+    // ${briefingLevel}` `` (see scripts/hooks/session-start.js; `value` is
+    // already quoted) — the longest `source` is `"config"` (6 chars, vs
+    // `"env"`'s 3) and the ONLY `briefingLevel` reachable here is
+    // `"standard"` (the resolver's default: an invalid value can only ever
+    // produce the DEFAULT level, never `"minimal"`/`"full"`, so there is no
+    // longer variant to check).
     // This is a symbolic worst-case proof, not just an empirical one —
     // it fails the instant the template, the source names, or the bound
     // change in a way that erodes the margin, even for an input this
@@ -485,7 +455,7 @@ describe('briefing-level', () => {
       // fixture this file already proved hits the bound.
       const worstCaseValue = resolveBriefingLevel(undefined, 'x'.repeat(10_000)).invalid!.value;
       expect(worstCaseValue.length).toBeLessThanOrEqual(INVALID_VALUE_SERIALIZED_MAX_FOR_TESTS);
-      const reason = `briefing-level: invalid ${longestSource} value "${worstCaseValue}", using ${onlyReachableLevel}`;
+      const reason = `briefing-level: invalid ${longestSource} value ${worstCaseValue}, using ${onlyReachableLevel}`;
       expect(reason.length).toBeLessThan(200);
       // State the margin explicitly, not just the pass/fail: proves this
       // is a real safety margin, not a boundary this test happens to
@@ -493,31 +463,30 @@ describe('briefing-level', () => {
       expect(200 - reason.length).toBeGreaterThanOrEqual(30);
     });
 
-    // #360 round 9 (Codex round 8 re-review): the round-8 fix bounds the
-    // OUTPUT (100 serialized units) but does INPUT-proportional work to
-    // get there — `Array.from(value)` and (for a short-looking value)
-    // `JSON.stringify(value)` both materialize the WHOLE input before the
-    // bound is ever applied. Measured against a real 10 MB invalid
-    // `briefing` string (built via JSON.parse, the same way the real
-    // config reader produces one — see the round-9 report for why a
-    // `.repeat()`-built string is not representative): ~91 MB RSS for one
-    // `describeInvalidValue` call, before this fix; ~0 MB after. That number
-    // is a one-off measurement, not asserted here: the last test of this
-    // block guards the mechanism instead (how much of the string the
-    // per-code-point work is allowed to see).
+    // Bounding the OUTPUT (100 serialized units) is not enough:
+    // `Array.from(value)` and (for a short-looking value)
+    // `JSON.stringify(value)` would materialize the WHOLE input before the
+    // bound is applied. Measured
+    // against a real 10 MB invalid `briefing` string (built via JSON.parse,
+    // the same way the real config reader produces one; a `.repeat()`-built
+    // string is not representative): ~91 MB RSS for one `describeInvalidValue`
+    // call without the pre-slice, ~0 MB with it. That number is a one-off
+    // measurement, not asserted here: the last test of this block guards the
+    // mechanism instead (how much of the string the per-code-point work is
+    // allowed to see).
     //
-    // Fixed by pre-slicing the RAW input to `PRE_SLICE_RAW_MAX` (256)
-    // UTF-16 units before any per-code-point work — this describe block
-    // proves that pre-slice never changes the RESULT for every
-    // adversarial case already covered, by comparing against a REFERENCE
-    // implementation of the OLD (round-8, whole-string) algorithm kept
-    // here ONLY for this comparison (not reachable from production code).
+    // The RAW input is pre-sliced to `PRE_SLICE_RAW_MAX` (256) UTF-16 units
+    // before any per-code-point work — this describe block proves that
+    // pre-slice never changes the RESULT for every adversarial case already
+    // covered, by comparing against a REFERENCE implementation of the
+    // whole-string algorithm kept here ONLY for this comparison (not
+    // reachable from production code).
     describe('input-side bounding (round 9) never changes the result vs the OLD whole-string algorithm', () => {
-      // The round-8 algorithm, verbatim — Array.from(value) on the WHOLE
+      // The whole-string algorithm, verbatim — Array.from(value) on the WHOLE
       // string, no pre-slice. Kept as a local reference only; if this
       // function and the real `describeInvalidValue` ever disagree for a
-      // case below, the round-9 pre-slice bound (256) is not generous
-      // enough and MUST be revisited, not the test.
+      // case below, the pre-slice bound (256) is not generous enough and
+      // MUST be revisited, not the test.
       function describeInvalidValueOldAlgorithm(value: string): string {
         const whole = JSON.stringify(value);
         if (whole.length <= 100) return whole;

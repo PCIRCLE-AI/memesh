@@ -355,11 +355,10 @@ describe('Feature: Session Start Hook', () => {
   });
 
   it('Scenario: No database + flagged installed version -> deprecation banner emits before welcome', () => {
-    // Codex review (2026-05-06) live-test caught this: the no-DB
-    // short-circuit returned BEFORE the deprecation banner logic, so
-    // a fresh install of a deprecated version saw the welcome line
-    // but never the security warning. The banner must fire on the
-    // no-DB path too.
+    // The no-DB short-circuit must not return BEFORE the deprecation banner
+    // logic: otherwise a fresh install of a deprecated version sees the
+    // welcome line but never the security warning. The banner must fire on
+    // the no-DB path too.
     const cachePath = path.join(testDir, 'update-check.json');
     const repoPkg = require(path.resolve('package.json'));
     fs.writeFileSync(cachePath, JSON.stringify({
@@ -391,14 +390,12 @@ describe('Feature: Session Start Hook', () => {
     expect(messages.some((m) => m.includes('DEPRECATED'))).toBe(true);
     expect(messages.some((m) => m.includes('TEST: live-test deprecation banner verification'))).toBe(true);
     expect(messages.some((m) => m.includes('◉ MeMesh ready'))).toBe(true);
-    // Codex round 36: even when latestVersion === currentVersion in
-    // the cache (no upgrade target apparent), the banner must
-    // include a remediation line. Previously the gate was
-    // `latestVersion !== currentVersion`, which left the security
-    // warning without an action — users had to know to run a
-    // command. Channel-specific text varies (memesh update / npm
-    // install / git pull...), but every channel must produce at
-    // least one indented hint line.
+    // Even when latestVersion === currentVersion in the cache (no upgrade
+    // target apparent), the banner must include a remediation line — gating
+    // it on `latestVersion !== currentVersion` would leave the security
+    // warning without an action. Channel-specific text varies (memesh update
+    // / npm install / git pull...), but every channel must produce at least
+    // one indented hint line.
     expect(messages.some((m) => /\n\s{4}(Run|Source checkout|Project-local install|Upgrade)/.test(m))).toBe(true);
   });
 
@@ -1056,12 +1053,13 @@ describe('Feature: Session Start Hook', () => {
      *  project's own decision/lesson/knowledge/evidence, 3 global, 5
      *  foreign (other-project), and a task state whose age is controlled by
      *  `taskUpdatedAt` (an ISO string, or null to omit the task state
-     *  entirely). Deliberately small — a handful of short lines per section —
+     *  entirely; `omitTaskUpdatedAt` keeps the task state but writes no
+     *  `updated_at` at all). Deliberately small — a handful of short lines per section —
      *  so the fixture stays far under the 4000-char topology budget: with
      *  the budget uncontended, dropping the task-state block at `minimal`
      *  cannot let the topology grow to fill the freed room and invert the
      *  minimal < standard size relation. */
-    function seedEverySection(opts: { taskUpdatedAt?: string | null } = {}): void {
+    function seedEverySection(opts: { taskUpdatedAt?: string | null; omitTaskUpdatedAt?: boolean } = {}): void {
       const db = createScoringDb();
       db.exec("ALTER TABLE entities ADD COLUMN namespace TEXT DEFAULT 'personal'");
       db.exec('ALTER TABLE entities ADD COLUMN title TEXT');
@@ -1120,7 +1118,13 @@ describe('Feature: Session Start Hook', () => {
         const taskId = db.prepare("INSERT INTO entities (name, type, namespace, metadata) VALUES (?, 'task-state', 'personal', ?)")
           .run(
             `task-state:${project}`,
-            JSON.stringify({ task_state: { goal: 'Ship #360', next: 'Verify sections', updated_at: updatedAt } }),
+            JSON.stringify({
+              task_state: {
+                goal: 'Ship #360',
+                next: 'Verify sections',
+                ...(opts.omitTaskUpdatedAt ? {} : { updated_at: updatedAt }),
+              },
+            }),
           ).lastInsertRowid as number;
         addObs.run(taskId, 'goal: Ship #360');
         addTag.run(taskId, projectTag);
@@ -1222,21 +1226,33 @@ describe('Feature: Session Start Hook', () => {
       expect(staleInjected).toContain('72h');
     });
 
-    // #360 round 7 (Codex round 6 re-review, item 1): every doc claimed
-    // `full` is byte-identical to the pre-#360 (HEAD) output, unqualified —
-    // false whenever the task state is stale, since staleness handling
-    // (added by THIS branch, not present at HEAD) replaces that block at
-    // EVERY level including `full`. Manually confirmed against a real HEAD
-    // build (`git archive 554e7142`, built, 2026-09-20) on this exact
-    // fixture shape: HEAD showed the multi-line block unconditionally (no
-    // staleness concept at all); current code showed the one-line flag;
-    // `diff` of the two additionalContext bodies touched ONLY those two
-    // lines, nothing else. This test reproduces that structurally so it
-    // does not depend on rebuilding HEAD on every run: HEAD has no
-    // staleness concept, so HEAD's renderer for a FRESH task state is
-    // (by construction) identical to what current code also renders for a
-    // fresh task state — verified once, manually, above — so the FRESH
-    // phase below stands in for "what HEAD would produce" on this fixture.
+    // The age parser itself is pinned in tests/core/task-state.test.ts; this
+    // pins the hook's wiring to it: every stored shape whose age cannot be
+    // established renders the one "age could not be established" line and
+    // never the fresh block.
+    it.each([
+      ['a missing updated_at', { omitTaskUpdatedAt: true }],
+      ['an unparseable updated_at', { taskUpdatedAt: 'not-a-date' }],
+      ['a future-dated updated_at (+2h)', { taskUpdatedAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString() }],
+      ['a timezone-less updated_at', { taskUpdatedAt: '2026-09-20T10:00:00' }],
+      ['a date-only updated_at', { taskUpdatedAt: '2026-09-20' }],
+    ])('B3: %s at standard is one "age could not be established" line, never the fresh block', (_label, seed) => {
+      seedEverySection(seed);
+      const injected = injectedContextAt('standard');
+      expect(injected).not.toContain(HEADINGS.taskStateFresh);
+      const flagLines = injected.split('\n').filter((l) => l.includes('age could not be established'));
+      expect(flagLines, 'exactly one age-unknown line').toHaveLength(1);
+      expect(flagLines[0]).toContain('memesh task');
+    });
+
+    // `full` is byte-identical to the output from before levels existed —
+    // except when the task state is stale, since staleness handling replaces
+    // the task-state block at EVERY level including `full`. Only those lines
+    // differ. Before levels a task state was always shown as the multi-line
+    // block, and that renderer is identical to the current one for a FRESH
+    // task state, so the FRESH phase below stands in for "what the
+    // pre-levels output would be" on this fixture, and the test needs no
+    // old build.
     it('full diverges from a HEAD-equivalent (fresh) run only in the task-state block, for a stale task state', () => {
       seedEverySection();
       const freshCtx = injectedContextAt('full');
@@ -1309,11 +1325,10 @@ describe('Feature: Session Start Hook', () => {
       expect(record.reason).toContain('banana');
     });
 
-    // #360 round 6 (Codex round 5 re-review, item 2): a config.json that is
-    // not even a parseable object — a bare array, a bare string, `null`, or
-    // truncated JSON — used to leave NO trace at all: `readHookConfig()`
-    // swallowed it into `{}`, so every setting silently read as "not set",
-    // real hook, real subprocess, for each shape.
+    // A config.json that is not even a parseable object — a bare array, a
+    // bare string, `null`, or truncated JSON — must leave a trace:
+    // `readHookConfig()` swallows it into `{}`, so every setting reads as
+    // "not set". Real hook, real subprocess, for each shape.
     it.each([
       ['a bare array', '[]'],
       ['a bare string', '"x"'],
@@ -1357,15 +1372,15 @@ describe('Feature: Session Start Hook', () => {
       expect(invalidBriefingRecord, 'no invalid-briefing-value reason either — the top-level key is genuinely absent').toBeUndefined();
     });
 
-    // #360 round 4 (Codex round 3 re-review, item 2): `invalid.value` is a
-    // stored config value, so it is exactly as untrusted as any other
-    // hand-edited config.json field — a huge string or one containing raw
-    // newlines must not reach `additionalContext` whole, and must not
-    // corrupt the JSONL outcome record (a raw `\n` inside a JSON string
-    // value is legal JSON — `JSON.stringify` escapes it to `\\n` — so the
-    // real risk is an UNBOUNDED length reaching agent-visible text, not a
-    // malformed JSONL line; this test proves both: bounded length, and the
-    // record still parses as exactly one JSON object per line).
+    // `invalid.value` is a stored config value, so it is exactly as
+    // untrusted as any other hand-edited config.json field — a huge string
+    // or one containing raw newlines must not reach `additionalContext`
+    // whole, and must not corrupt the JSONL outcome record (a raw `\n`
+    // inside a JSON string value is legal JSON — `JSON.stringify` escapes
+    // it to `\\n` — so the real risk is an UNBOUNDED length reaching
+    // agent-visible text, not a malformed JSONL line; this test proves both:
+    // bounded length, and the record still parses as exactly one JSON object
+    // per line).
     it('a huge, newline-laden stored config value is bounded before it reaches additionalContext or the outcome record', () => {
       seedEverySection();
       const cfgDir = path.join(testDir, '.memesh-config-hostile');
@@ -1393,22 +1408,19 @@ describe('Feature: Session Start Hook', () => {
       expect(record.reason).not.toContain('x'.repeat(10_000));
     });
 
-    // #360 round 8 (Codex round 7 re-review, item 1): `describeInvalidValue`
-    // bounded its INPUT (120 code points), not the SERIALIZED form it
-    // produces — for escape-heavy input, serializing 120 code points can
-    // expand past 700 UTF-16 units (a lone surrogate alone serializes to
-    // the 6-character `\udXXX`). `recordHookOutcome` (`_shared.js`) then
-    // truncates the FULL reason a second time with a raw `.slice(0, 200)`,
-    // which can land inside that same expanded escape or a surrogate pair
-    // — the exact defect class round 7 closed, reopened one layer
-    // downstream, invisible to this module's own unit tests. Fixed by
-    // bounding the SERIALIZED form directly (100 units) — the whole reason
-    // (fixed prefix + that value + fixed suffix) now stays under 200 by a
-    // wide margin, so `recordHookOutcome`'s own truncation never engages
-    // for this diagnostic. Each case below is a real hook subprocess, not
-    // a unit test, since that second truncation only exists there.
-    const PREFIX = 'briefing-level: invalid config value "';
-    const SUFFIX = '", using standard';
+    // `describeInvalidValue` bounds the SERIALIZED form it produces (100
+    // units), not its input: serializing escape-heavy input expands it (a
+    // lone surrogate alone serializes to the 6-character `\udXXX`).
+    // `recordHookOutcome` (`_shared.js`) truncates the FULL reason a second
+    // time with a raw `.slice(0, 200)`, which could land inside an expanded
+    // escape or a surrogate pair — invisible to the module's own unit tests.
+    // The whole reason (fixed prefix + that value + fixed suffix) stays under
+    // 200 by a wide margin, so `recordHookOutcome`'s own truncation never
+    // engages for this diagnostic. Each case below is a real hook
+    // subprocess, not a unit test, since that second truncation only exists
+    // there.
+    const PREFIX = 'briefing-level: invalid config value ';
+    const SUFFIX = ', using standard';
     function extractAndParseEmbeddedValue(reason: string): unknown {
       expect(reason.startsWith(PREFIX), `reason must start with the known fixed prefix: ${reason}`).toBe(true);
       expect(reason.endsWith(SUFFIX), `reason must end with the known fixed suffix: ${reason}`).toBe(true);
@@ -1448,6 +1460,59 @@ describe('Feature: Session Start Hook', () => {
       fs.rmSync(cfgDir, { recursive: true, force: true });
     });
 
+    it('B4: the diagnostics quote an invalid value once — the stderr line and the outcome reason', () => {
+      createScoringDb().close();
+      const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: PROJECT_CWD }),
+        env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'banana' },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      expect(run.status, `hook stderr: ${run.stderr}`).toBe(0);
+      expect(run.stderr).toContain('[memesh session-start] invalid env briefing level "banana" — using "standard"\n');
+      const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+      const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level: invalid'));
+      expect(record?.reason).toBe('briefing-level: invalid env value "banana", using standard');
+    });
+
+    it('a failed memory assembly at minimal records an error — never the "nothing to inject" reason', () => {
+      // One ranked entity with an observation, then the column the snippet
+      // read selects is renamed: the snippet query throws inside the
+      // assembly's try, the ranked entity was selected, and `minimal` skips
+      // the index read, so this catch is the only place the fault can surface.
+      const db = createScoringDb();
+      const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('d1', 'decision').lastInsertRowid as number;
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'A ranked decision');
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, projTag('brokenassembly'));
+      db.exec('ALTER TABLE observations RENAME COLUMN content TO content_x');
+      db.close();
+
+      const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: '/tmp/brokenassembly' }),
+        env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'minimal' },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      expect(run.status, `hook stderr: ${run.stderr}`).toBe(0);
+      // The assembly's own catch fired (not the hook's outer one), and the
+      // full detail went to stderr.
+      expect(run.stderr).toContain('memory-context:');
+      expect(run.stderr).toContain('no such column');
+
+      const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+      const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error');
+      // The locus plus a label, never the exception's message (same rule as
+      // the index read's error record).
+      expect(err?.reason).toMatch(/^memory-context: uncaught [A-Za-z][\w-]*$/);
+      expect(err?.reason).not.toContain('no such column');
+      expect(
+        outcomes.find((o) => typeof o.reason === 'string' && o.reason.includes('nothing to inject')),
+        'a failed assembly must not also be reported as an empty project',
+      ).toBeUndefined();
+    });
+
     it('precedence: env beats config', () => {
       seedEverySection();
       const cfgDir = path.join(testDir, '.memesh-config-full');
@@ -1459,11 +1524,9 @@ describe('Feature: Session Start Hook', () => {
       expect(injected).not.toContain(HEADINGS.index);
     });
 
-    // Codex review round 1, item 4 (and round 3, item 1 — the misleading
-    // name below is what round 3 flagged and this fixes): an initialised,
-    // memory-free project used to still get ~166 chars of preamble wrapped
-    // around an empty fence at `minimal`. Three empty-ish DB states, all
-    // three levels each. Only `minimal` is EVER silent because it has
+    // An initialised, memory-free project must not get ~166 chars of preamble
+    // wrapped around an empty fence at `minimal`. Three empty-ish DB states,
+    // all three levels each. Only `minimal` is EVER silent because it has
     // nothing to fall back to (no task state section, no index at that
     // level); `standard`/`full` are silent on the no-database and
     // no-tables-yet states below too, but that is NOT this rule — those two
@@ -1501,7 +1564,7 @@ describe('Feature: Session Start Hook', () => {
         const standard = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'standard' });
         const standardCtx = (standard.hookSpecificOutput as { additionalContext: string }).additionalContext;
         // #323's guarantee is preserved: the index's own empty-state line is
-        // informative content, not "nothing" — it is NOT suppressed by item 4.
+        // informative content, not "nothing" — it is NOT suppressed.
         expect(standardCtx).toContain('No durable memories');
         expect(standardCtx).not.toContain(HEADINGS.workPackage);
 
@@ -1521,13 +1584,11 @@ describe('Feature: Session Start Hook', () => {
         expect(record.reason).toContain('"minimal"');
       });
 
-      // #360 round 6 (Codex round 5 re-review, item 1): the OTHER two empty
-      // states — no database file at all, and a database file with no
-      // `entities` table — used to call `output()` without a `recorded`
-      // argument, so a silent `minimal` session on either of THESE states
-      // left only the generic `session-start-banner` outcome marker, no
-      // `reason` at all. Both now go through the same `nothingToInjectReason`
-      // helper as the schema-present case above, with their own `detail`.
+      // The OTHER two empty states — no database file at all, and a database
+      // file with no `entities` table — must record a reason too, not only
+      // the generic `session-start-banner` outcome marker. Both go through
+      // the same `nothingToInjectReason` helper as the schema-present case
+      // above, with their own `detail`.
       it('records the same kind of outcome reason on the no-database-file state', () => {
         // EMPTY_CWD's db path does not exist at all at this point in the
         // describe block (no prior test in it created dbPath here).
@@ -1551,11 +1612,11 @@ describe('Feature: Session Start Hook', () => {
         expect(record.reason).toContain('no entities table yet');
       });
 
-      // The fix only adds a `recorded` argument to output() calls — the
-      // printed systemMessage/additionalContext bytes are untouched. Pin
-      // that explicitly at standard/full on both early-exit states, since
-      // those are the levels where output CONTENT must stay byte-identical
-      // to what it was before this round (re-asserted, not merely assumed).
+      // Recording a reason adds only a `recorded` argument to output() calls
+      // — the printed systemMessage/additionalContext bytes are untouched.
+      // Pin that explicitly at standard/full on both early-exit states,
+      // since those are the levels where output CONTENT must stay
+      // byte-identical to the unrecorded behaviour.
       it('the fix changes only the recorded reason, never the injected bytes, at standard/full on both early-exit states', () => {
         // --- no database file at all ---
         const standardNoDb = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'standard' });

@@ -562,11 +562,11 @@ process.stdin.on('end', () => {
     // reason. A run of skips here is normal; a long run of them on a machine
     // that edits files daily is not (#327).
     record('notified', notifiedReason, `injected:${guardMatches.length}g+${recallLines.length}r`);
-    // The fire counter is written LAST. It opens its own writable handle and
-    // waits on the database's write lock; ahead of the output, another
-    // writer holding that lock kept the process waiting until the host's
-    // timeout killed it, and the warning it had already matched was never
-    // printed.
+    // The fire counter is written LAST, so nothing it does can stand between
+    // a matched guard and its warning. It opens its own writable handle and
+    // waits at most `GUARD_COUNTER_WAIT_MS` for the write lock: another writer
+    // still holding it after that skips the count (reported on stderr)
+    // instead of holding this process until the host's timeout kills it.
     if (guardMatches.length > 0) {
       recordGuardFires(dbPath, guardMatches.map((g) => g.lessonId));
     }

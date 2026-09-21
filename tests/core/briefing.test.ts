@@ -41,8 +41,8 @@ import { TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
 import { getProjectName } from '../../src/core/paths.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 // The hook-only work-package notice's literal text — single owner in
-// `_shared.js` (Codex round 4), so this file never hardcodes a second copy
-// to compare against.
+// `_shared.js`, so this file never hardcodes a second copy to compare
+// against.
 import { WORK_PACKAGE_NOTICE } from '../../scripts/hooks/_shared.js';
 
 let tmpDir: string;
@@ -480,16 +480,15 @@ describe('assembleBriefing', () => {
     // exercise) on BOTH sides — the spawned hook's env and this process's
     // env, since assembleBriefing reads process.env directly.
     //
-    // #360 round 7 (Codex round 6 re-review, item 1): the task state this
-    // fixture sets below (a few lines down, `setTaskState({...})`) is
-    // FRESH — stated moments before the hook runs, well inside the 72h
-    // window. This matters for what "full byte-identical to pre-#360
-    // output" can honestly claim: that claim holds ONLY when the task
-    // state is fresh (or absent). A STALE or unknown-age task state
-    // renders as a one-line flag at every level, including `full` —
-    // verified as a real divergence from HEAD in the dedicated test below
-    // this one ("full diverges from HEAD only in the task-state block for
-    // a stale task state"). Docs now qualify the claim the same way.
+    // The task state this fixture sets below (a few lines down,
+    // `setTaskState({...})`) is FRESH — stated moments before the hook runs,
+    // well inside the 72h window. This matters for what "full byte-identical
+    // to the output from before levels existed" can honestly claim: that
+    // claim holds ONLY when the task state is fresh (or absent). A STALE or
+    // unknown-age task state renders as a one-line flag at every level,
+    // including `full` — see the dedicated stale-task-state test in
+    // tests/hooks/session-start.test.ts. The docs qualify the claim the
+    // same way.
     const cwd = path.join(tmpDir, 'proj');
     fs.mkdirSync(cwd, { recursive: true });
     const project = getProjectName(cwd);
@@ -601,16 +600,15 @@ describe('assembleBriefing', () => {
     expect(briefing).toContain('Ship FTS5 as the baseline');
     for (let i = 0; i < 7; i++) expect(briefing).toContain(`Project decision ${i}`);
 
-    // Codex round 4: the assertions above only ever compared SECTIONS
-    // (bullet/heading lines, the index block) — never whether the
-    // hook-only work-package notice was present on one side and absent on
-    // the other, which is exactly how `full`'s cross-surface mismatch
-    // slipped through every earlier round. `injected` (hook) must carry
-    // the notice; `briefing` (CLI/MCP's assembleBriefing) must not, ever,
-    // at `full` or any other level. And with the notice accounted for,
-    // the hook's memory block must be BYTE-equal to `briefing` — not just
-    // equal at the section level — because both are meant to be the exact
-    // same rendered block.
+    // The assertions above only compare SECTIONS (bullet/heading lines, the
+    // index block); this one checks whether the hook-only work-package
+    // notice is present on one side and absent on the other, which a
+    // section-level comparison cannot see. `injected` (hook) must carry the
+    // notice; `briefing` (CLI/MCP's assembleBriefing) must not, ever, at
+    // `full` or any other level. And with the notice accounted for, the
+    // hook's memory block must be BYTE-equal to `briefing` — not just equal
+    // at the section level — because both are meant to be the exact same
+    // rendered block.
     expect(briefing, 'CLI/MCP full must never include the work-package notice').not.toContain('Work packages:');
     const noticeIndex = injected.indexOf(WORK_PACKAGE_NOTICE);
     expect(noticeIndex, 'hook full must include the work-package notice, verbatim').toBeGreaterThan(-1);
@@ -675,9 +673,9 @@ describe('assembleBriefing', () => {
       expect(block).not.toContain('Global memory — applies across projects');
       expect(block).not.toContain('A global rule');
       expect(block).not.toContain('From your other projects');
-      // Codex round 4: `standard.workPackageNotice = false`, so NEITHER
-      // side should ever carry it — unlike `full`, where only the hook
-      // does (see the byte-equality check in the `full` parity test above).
+      // `standard.workPackageNotice = false`, so NEITHER side should ever
+      // carry it — unlike `full`, where only the hook does (see the
+      // byte-equality check in the `full` parity test above).
       expect(block).not.toContain('Work packages:');
     }
     // At `standard` neither surface appends anything after the memory
@@ -685,14 +683,13 @@ describe('assembleBriefing', () => {
     expect(injected, 'hook and CLI/MCP must be byte-equal at standard (no notice to strip)').toBe(briefing);
   });
 
-  // #360 round 3, item 1: an empty-`minimal` parity case across all THREE
-  // real consumers — the real hook subprocess, the real built CLI
-  // (`dist/transports/cli/cli.js`, not the TS source — this is what a user
-  // actually runs), and the MCP tool handler. Before this fix,
-  // `assembleBriefing()` (and therefore the CLI and MCP) wrapped nothing in
-  // a preamble + an empty ` ```text``` ` fence while the hook correctly
-  // emitted no `hookSpecificOutput` at all — the exact "one rule, two
-  // owners" shape this repository has shipped before.
+  // An empty-`minimal` parity case across all THREE real consumers — the
+  // real hook subprocess, the real built CLI (`dist/transports/cli/cli.js`,
+  // not the TS source — this is what a user actually runs), and the MCP tool
+  // handler. `assembleBriefing()` (and therefore the CLI and MCP) must not
+  // wrap nothing in a preamble + an empty ` ```text``` ` fence while the
+  // hook emits no `hookSpecificOutput` at all — the "one rule, two owners"
+  // shape this repository has shipped before.
   it('empty-minimal parity: hook, real CLI, and MCP tool all agree there is nothing to brief', async () => {
     const cwd = path.join(tmpDir, 'proj-empty-minimal');
     fs.mkdirSync(cwd, { recursive: true });
@@ -729,14 +726,11 @@ describe('assembleBriefing', () => {
     );
     // exit 0 is implicit: execFileSync throws on a non-zero exit, so
     // reaching this line already proves it.
-    // #360 round 11 (Codex round 10 re-review, item 1): this used to be a
-    // `toContain` check, which passed even while the CLI printed a SECOND
-    // `console.log` line below the documented one (a "Capture happens
-    // automatically…" hint) — API_REFERENCE.md's contract is ONE short
-    // line, not two. Asserting the EXACT stdout (the one documented line
-    // plus `console.log`'s own trailing newline, nothing else) is what
-    // actually pins the contract; `toContain` cannot tell one line from
-    // several.
+    // Asserting the EXACT stdout (the one documented line plus
+    // `console.log`'s own trailing newline, nothing else) is what pins the
+    // contract: API_REFERENCE.md's contract is ONE short line, not two, and
+    // a `toContain` check would pass even while the CLI printed a SECOND
+    // `console.log` line below it.
     expect(cliTextOut).toBe('Nothing to brief at level minimal — no project memories yet.\n');
 
     // --- the MCP tool (no separate formatter — confirmed by reading
@@ -756,17 +750,15 @@ describe('assembleBriefing', () => {
     expect(mcpResult.text, 'MCP tool: text must be the empty string').toBe('');
   });
 
-  // #360 round 4 (Codex round 4 re-review, finding 1): the SAME empty
-  // project, but at `full` — this is where the hook and CLI/MCP legitimately
-  // DIVERGE (the hook appends the hook-only work-package notice; CLI/MCP
-  // never do, at any level), and that divergence is exactly what the
-  // cross-surface mismatch review found had no test coverage at all: every
-  // existing `full` check exercised a POPULATED database. `beforeEach`
-  // already migrated a schema for this project (zero rows), so this is the
-  // "schema present, zero rows" state — the index's OWN empty-state line is
-  // content, not framing (#323), so `empty` is `false` on every surface,
-  // not `true` (that only happens at `minimal`, which has no index to fall
-  // back to at all — see the sibling `empty-minimal parity` test above).
+  // The SAME empty project, but at `full` — this is where the hook and
+  // CLI/MCP legitimately DIVERGE (the hook appends the hook-only
+  // work-package notice; CLI/MCP never do, at any level), and the other
+  // `full` checks exercise a POPULATED database. `beforeEach` already
+  // migrated a schema for this project (zero rows), so this is the "schema
+  // present, zero rows" state — the index's OWN empty-state line is content,
+  // not framing (#323), so `empty` is `false` on every surface, not `true`
+  // (that only happens at `minimal`, which has no index to fall back to at
+  // all — see the sibling `empty-minimal parity` test above).
   it('empty-full parity: the hook appends the work-package notice AFTER the empty-index line; CLI/MCP never do', async () => {
     const cwd = path.join(tmpDir, 'proj-empty-full');
     fs.mkdirSync(cwd, { recursive: true });
@@ -817,11 +809,10 @@ describe('assembleBriefing', () => {
     expect(mcpResult.text, 'MCP full text must match the CLI byte-for-byte').toBe(cliJson.text);
   });
 
-  // #360 round 4 (Codex round 3 re-review, item 2): a stored NON-STRING
-  // `briefing` (here, a bare number) must be reported invalid — default
-  // level used, reason recorded — on every surface that reads it, not just
-  // the hook (which reads raw config.json directly, bypassing
-  // `readConfig()`'s old `typeof === 'string'` filter entirely). Each leg
+  // A stored NON-STRING `briefing` (here, a bare number) must be reported
+  // invalid — default level used, reason recorded — on every surface that
+  // reads it, not just the hook (which reads raw config.json directly,
+  // bypassing `readConfig()` entirely). Each leg
   // gets its OWN isolated HOME/MEMESH_DIR pointed at a config.json this
   // test wrote — never the owner's real ~/.memesh — and the MCP/core leg
   // mutates `process.env.MEMESH_DIR` only for the duration of the
@@ -837,14 +828,13 @@ describe('assembleBriefing', () => {
     const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-briefing-cfg-'));
     // updateCheck:false: the detached background update-check spawn can
     // migrate an otherwise-untouched db a few ms after a synchronous read
-    // — a real race this repo's own fixtures hit before (documented in the
-    // #360 round-2/round-3 session reports); irrelevant to what this test
-    // checks, but left unset it can make a later assertion flaky.
+    // — a real race this repo's own fixtures hit; irrelevant to what this
+    // test checks, but left unset it can make a later assertion flaky.
     fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ briefing: 42, updateCheck: false }));
 
     try {
-      // --- hook: already worked before this fix (reads raw JSON) — kept
-      // as the baseline the other two surfaces must now match. ---
+      // --- hook: reads raw JSON — the baseline the other two surfaces must
+      // match. ---
       execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
         input: JSON.stringify({ cwd }),
         env: { ...process.env, HOME: configDir, MEMESH_DIR: configDir, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_UPDATE: '0' },
@@ -904,14 +894,28 @@ describe('assembleBriefing', () => {
     }
   });
 
-  // #360 round 5 (Codex round 4 re-review, item 2): an explicit stored
-  // `null` used to be classified the same as "not set" — silently
-  // `standard`, no reason recorded anywhere. Checked against the real
-  // product first: `memesh config unset briefing` deletes the key outright
-  // and nothing in this codebase ever writes a literal `null` for this
-  // field, so a `null` on disk is exactly the same "someone put something
-  // unexpected here" case as `42` — same test shape as that one, same three
-  // real child-process legs, `null` in place of `42`.
+  it('the invalid-value trace quotes the value once (assembleBriefing, shared by the briefing tool and the CLI)', async () => {
+    const previousEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'banana';
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let tracedLines: string[];
+    try {
+      await handleTool('briefing', { project: PROJECT });
+      tracedLines = stderrSpy.mock.calls.map((call) => String(call[0]));
+    } finally {
+      stderrSpy.mockRestore();
+      if (previousEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousEnv;
+    }
+    expect(tracedLines).toContain('[memesh briefing] invalid env briefing level "banana" — using "standard"\n');
+  });
+
+  // An explicit stored `null` is not "not set": `memesh config unset
+  // briefing` deletes the key outright and nothing in this codebase ever
+  // writes a literal `null` for this field, so a `null` on disk is exactly
+  // the same "someone put something unexpected here" case as `42` — same
+  // test shape as that one, same three real child-process legs, `null` in
+  // place of `42`.
   it('an explicit stored null briefing is reported invalid on hook, CLI, and MCP alike — not treated as "not set"', async () => {
     const cwd = path.join(tmpDir, 'proj-null-briefing');
     fs.mkdirSync(cwd, { recursive: true });

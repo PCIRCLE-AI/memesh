@@ -85,7 +85,7 @@ export function assembleBriefing(project, recipient) {
     if (resolvedLevel.invalid) {
         const { source, value } = resolvedLevel.invalid;
         try {
-            process.stderr.write(`[memesh briefing] invalid ${source} briefing level "${value}" — using "${resolvedLevel.level}"\n`);
+            process.stderr.write(`[memesh briefing] invalid ${source} briefing level ${value} — using "${resolvedLevel.level}"\n`);
         }
         catch { }
     }
