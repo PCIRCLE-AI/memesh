@@ -40,11 +40,38 @@ export function unreadInboxLines(count, project, recipient, everSeen) {
     const displayRecipient = JSON.stringify(recipient);
     if (count > 0) {
         const noun = count === 1 ? 'message' : 'messages';
-        return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id; fetching does not acknowledge.`];
+        return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record the intake action for it: fetching alone does not acknowledge, and only intake ends this line.`];
     }
     if (everSeen === false) {
         return [`No messages waiting for ${displayRecipient} in project ${displayProject} — and this recipient id has never been seen in this project (check for a typo).`];
     }
     return [];
+}
+export function unreadInboxLinesFor(db, recipient) {
+    if (!recipient)
+        return [];
+    try {
+        const rows = db.prepare(`SELECT d.project AS project, COUNT(*) AS n
+       FROM agent_message_deliveries d
+       WHERE d.recipient = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_message_receipts r
+           WHERE r.project = d.project
+             AND r.recipient = d.recipient
+             AND r.message_id = d.message_id
+             AND r.receipt_kind = 'intake'
+         )
+       GROUP BY d.project
+       ORDER BY n DESC, d.project
+       LIMIT 5`).all(recipient);
+        return rows.flatMap((row) => typeof row.project === 'string' && typeof row.n === 'number' && row.n > 0
+            ? unreadInboxLines(row.n, row.project, recipient)
+            : []);
+    }
+    catch (err) {
+        if (/no such table: agent_message_deliveries/.test(String(err?.message)))
+            return [];
+        throw err;
+    }
 }
 //# sourceMappingURL=agent-message-inbox.js.map

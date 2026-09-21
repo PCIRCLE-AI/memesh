@@ -24097,7 +24097,7 @@ function unreadInboxLines(count, project, recipient, everSeen) {
   const displayRecipient = JSON.stringify(recipient);
   if (count > 0) {
     const noun = count === 1 ? "message" : "messages";
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id; fetching does not acknowledge.`];
+    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record the intake action for it: fetching alone does not acknowledge, and only intake ends this line.`];
   }
   if (everSeen === false) {
     return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];

@@ -53,6 +53,8 @@ import {
   resolveSessionLimit,
   briefingTaskStateLines,
   resolveBriefingLevel,
+  resolveMessageRecipient,
+  waitingMessageLines,
   briefingLevelPolicy,
   sessionStartAppendsWorkPackageNotice,
   WORK_PACKAGE_NOTICE,
@@ -65,7 +67,6 @@ import {
   writePrivateJson,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
-import { unreadDeliveryCount, unreadInboxLines } from './_generated/agent-message-inbox.js';
 import {
   buildBriefingIndex,
   INDEX_CANDIDATE_CAP,
@@ -1328,8 +1329,10 @@ process.stdin.on('end', async () => {
         const taskRow = db
           .prepare('SELECT metadata FROM entities WHERE name = ?')
           .get(taskStateName(projectName));
-        // SessionStart has no exact recipient identity. The shared leaf fails
-        // closed before querying, so hook and briefing cannot diverge here.
+        // Who this session is comes from `MEMESH_RECIPIENT` (see
+        // resolveMessageRecipient). Without it there is no exact recipient
+        // and the shared leaf returns no lines, so a session never sees a
+        // message addressed to anyone else.
         // #360: briefingTaskStateLines downgrades a stale record to one line
         // at EVERY level, and only consults `briefingPolicy.taskState` for a
         // fresh one — `minimal` omits a fresh state entirely, never a stale
@@ -1343,7 +1346,7 @@ process.stdin.on('end', async () => {
             new Date(),
             { includeFresh: briefingPolicy.taskState },
           ),
-          ...unreadInboxLines(unreadDeliveryCount(db, projectName), projectName),
+          ...waitingMessageLines(db, resolveMessageRecipient(process.env)),
         ];
 
         // The pools overlap by construction (a lesson tagged to this project
