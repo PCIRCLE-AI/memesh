@@ -13,9 +13,9 @@ import {
 } from '../../src/core/briefing-level.js';
 
 describe('briefing-level', () => {
-  it('the three levels, in order, with standard as the default', () => {
+  it('the three levels, in order, with minimal as the default', () => {
     expect(BRIEFING_LEVELS).toEqual(['minimal', 'standard', 'full']);
-    expect(DEFAULT_BRIEFING_LEVEL).toBe('standard');
+    expect(DEFAULT_BRIEFING_LEVEL).toBe('minimal');
   });
 
   describe('isBriefingLevel', () => {
@@ -41,18 +41,26 @@ describe('briefing-level', () => {
   // (the 96-vs-97-character pairs below).
   const INVALID_VALUE_SERIALIZED_MAX_FOR_TESTS = 100;
 
-  describe('resolveBriefingLevel — env > config > default(standard)', () => {
-    it('defaults to standard when neither env nor config sets it', () => {
-      expect(resolveBriefingLevel(undefined, undefined)).toEqual({ level: 'standard', invalid: null });
+  describe('resolveBriefingLevel — env > config > default(minimal)', () => {
+    it('defaults to minimal when neither env nor config sets it', () => {
+      expect(resolveBriefingLevel(undefined, undefined)).toEqual({ level: 'minimal', invalid: null });
     });
 
+    // The explicit values below are the two levels that are NOT the default: a
+    // resolver that ignored its inputs would answer `minimal` for every call,
+    // so an explicit `minimal` could not tell "took effect" from "ignored".
     it('a valid config value takes effect with no env set', () => {
-      expect(resolveBriefingLevel(undefined, 'minimal')).toEqual({ level: 'minimal', invalid: null });
+      expect(resolveBriefingLevel(undefined, 'standard')).toEqual({ level: 'standard', invalid: null });
       expect(resolveBriefingLevel(undefined, 'full')).toEqual({ level: 'full', invalid: null });
     });
 
+    it('an explicit minimal is a valid value, not an invalid one that happens to give the default', () => {
+      expect(resolveBriefingLevel('minimal', undefined)).toEqual({ level: 'minimal', invalid: null });
+      expect(resolveBriefingLevel(undefined, 'minimal')).toEqual({ level: 'minimal', invalid: null });
+    });
+
     it('a valid env value wins over a valid config value', () => {
-      expect(resolveBriefingLevel('minimal', 'full')).toEqual({ level: 'minimal', invalid: null });
+      expect(resolveBriefingLevel('standard', 'full')).toEqual({ level: 'standard', invalid: null });
     });
 
     // B4: each source's invalid value yields the default AND a recorded
@@ -69,27 +77,27 @@ describe('briefing-level', () => {
       // flattened `'banana'` — see the dedicated whitespace-evidence tests
       // further down for why that distinction matters.
       expect(resolveBriefingLevel('banana', 'full')).toEqual({
-        level: 'standard',
+        level: 'minimal',
         invalid: { source: 'env', value: '"banana"' },
       });
     });
 
     it('an invalid config value (no env set) yields the default AND names config as the source', () => {
       expect(resolveBriefingLevel(undefined, 'banana')).toEqual({
-        level: 'standard',
+        level: 'minimal',
         invalid: { source: 'config', value: '"banana"' },
       });
     });
 
     it('a non-string config value (e.g. a stray number) is also reported invalid, not silently ignored', () => {
       expect(resolveBriefingLevel(undefined, 42)).toEqual({
-        level: 'standard',
+        level: 'minimal',
         invalid: { source: 'config', value: '42' },
       });
     });
 
     it('config ABSENT (undefined) is "not set" — no false invalid report', () => {
-      expect(resolveBriefingLevel(undefined, undefined)).toEqual({ level: 'standard', invalid: null });
+      expect(resolveBriefingLevel(undefined, undefined)).toEqual({ level: 'minimal', invalid: null });
     });
 
     // A stored `null` is not "not set": `memesh config unset briefing`
@@ -100,7 +108,7 @@ describe('briefing-level', () => {
     // a legitimate absence. It gets the SAME invalid treatment.
     it('an explicit stored null is INVALID, not "not set" — same bounded reason as any other bad value', () => {
       expect(resolveBriefingLevel(undefined, null)).toEqual({
-        level: 'standard',
+        level: 'minimal',
         invalid: { source: 'config', value: 'null' },
       });
     });
@@ -114,7 +122,7 @@ describe('briefing-level', () => {
     it('a huge stored config value is truncated, not passed through whole (would otherwise blow up the trace)', () => {
       const huge = 'x'.repeat(10_000);
       const result = resolveBriefingLevel(undefined, huge);
-      expect(result.level).toBe('standard');
+      expect(result.level).toBe('minimal');
       expect(result.invalid?.source).toBe('config');
       // Capped well under the hook outcome channel's own 200-char
       // truncation (see briefing-level.ts's `INVALID_VALUE_SERIALIZED_MAX`
@@ -143,7 +151,7 @@ describe('briefing-level', () => {
     it('backticks and embedded newlines in a stored config value: no raw line break, but the escaped evidence survives', () => {
       const hostile = 'line one\nline two\r\nline three\t`backtick` "quote"';
       const result = resolveBriefingLevel(undefined, hostile);
-      expect(result.level).toBe('standard');
+      expect(result.level).toBe('minimal');
       expect(result.invalid?.source).toBe('config');
       expect(result.invalid!.value).not.toContain('\n');
       expect(result.invalid!.value).not.toContain('\r');
@@ -171,7 +179,7 @@ describe('briefing-level', () => {
     // erase exactly the evidence that made it invalid.
     it('a whitespace-padded near-miss (" full ") is NOT reported as the bare, valid-looking level "full"', () => {
       const result = resolveBriefingLevel(undefined, ' full ');
-      expect(result.level).toBe('standard');
+      expect(result.level).toBe('minimal');
       expect(result.invalid?.source).toBe('config');
       // The rendering shows exactly what made this invalid — quotes AND the
       // spaces — not a bare, valid-looking 'full'.
@@ -188,7 +196,7 @@ describe('briefing-level', () => {
       ['null', null, 'null'],
     ])('%s renders as its real JSON.stringify form, not a flattened/trimmed one', (_label, value, expected) => {
       const result = resolveBriefingLevel(undefined, value);
-      expect(result.level).toBe('standard');
+      expect(result.level).toBe('minimal');
       expect(result.invalid?.source).toBe('config');
       expect(result.invalid!.value).toBe(expected);
     });
@@ -439,21 +447,25 @@ describe('briefing-level', () => {
     // `` `briefing-level: invalid ${source} value ${value}, using
     // ${briefingLevel}` `` (see scripts/hooks/session-start.js; `value` is
     // already quoted) — the longest `source` is `"config"` (6 chars, vs
-    // `"env"`'s 3) and the ONLY `briefingLevel` reachable here is
-    // `"standard"` (the resolver's default: an invalid value can only ever
-    // produce the DEFAULT level, never `"minimal"`/`"full"`, so there is no
-    // longer variant to check).
+    // `"env"`'s 3) and the ONLY `briefingLevel` reachable here is the one the
+    // resolver returns for an invalid value: the DEFAULT level (an invalid
+    // value can only ever produce the default, never one of the others, so
+    // there is no longer variant to check). It is read from the resolver
+    // below rather than written out, so this margin is measured against the
+    // level the hook really names and cannot go stale when the default moves.
     // This is a symbolic worst-case proof, not just an empirical one —
     // it fails the instant the template, the source names, or the bound
     // change in a way that erodes the margin, even for an input this
     // file's adversarial cases above did not happen to cover.
     it('the whole reason (fixed prefix + <=100-unit value + fixed suffix) stays well under recordHookOutcome\'s 200-unit second truncation', () => {
       const longestSource = 'config'; // vs "env" (3 chars) — the longer of the two
-      const onlyReachableLevel = 'standard'; // the DEFAULT — the only level an invalid value can produce here
       // A value that is EXACTLY at the 100-unit serialized bound (the
       // worst case describeInvalidValue can produce) — reuse the same
       // fixture this file already proved hits the bound.
-      const worstCaseValue = resolveBriefingLevel(undefined, 'x'.repeat(10_000)).invalid!.value;
+      const worstCase = resolveBriefingLevel(undefined, 'x'.repeat(10_000));
+      const worstCaseValue = worstCase.invalid!.value;
+      const onlyReachableLevel = worstCase.level; // the DEFAULT — the only level an invalid value can produce here
+      expect(onlyReachableLevel).toBe(DEFAULT_BRIEFING_LEVEL);
       expect(worstCaseValue.length).toBeLessThanOrEqual(INVALID_VALUE_SERIALIZED_MAX_FOR_TESTS);
       const reason = `briefing-level: invalid ${longestSource} value ${worstCaseValue}, using ${onlyReachableLevel}`;
       expect(reason.length).toBeLessThan(200);

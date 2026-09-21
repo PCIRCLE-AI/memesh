@@ -698,6 +698,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       OLLAMA_HOST: 'http://ambient-ollama.invalid',
       OPENAI_API_KEY: 'ambient-openai-sentinel',
       ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
+      MEMESH_BRIEFING: 'full',
     };
 
     // Nothing about building this env should print anything — the isolated
@@ -727,6 +728,9 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     for (const key of credentialKeys) {
       expect(env[key]).toBeUndefined();
     }
+    // The briefing level is product configuration, not plumbing: the default is
+    // what the smokes assume, so an ambient value must not move it.
+    expect('MEMESH_BRIEFING' in env).toBe(false);
 
     // Unrelated ambient state (PATH, needed to spawn npm/node) still passes through.
     expect(env.PATH).toBe(pollutedBaseEnv.PATH);
@@ -761,6 +765,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       OLLAMA_HOST: 'http://ambient-ollama.invalid',
       OPENAI_API_KEY: 'ambient-openai-sentinel',
       ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
+      MEMESH_BRIEFING: 'full',
     };
 
     const env = buildIsolatedSuiteEnv(pollutedBaseEnv, { runtimeHome });
@@ -771,6 +776,8 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     // both still be resolved ahead of HOME.
     expect('MEMESH_DIR' in env).toBe(false);
     expect('MEMESH_DB_PATH' in env).toBe(false);
+    // The suite asserts the DEFAULT briefing level, so an ambient value must go.
+    expect('MEMESH_BRIEFING' in env).toBe(false);
     expect(env.npm_config_cache).toBe(path.join(runtimeHome, 'npm-cache'));
     expect('NPM_CONFIG_CACHE' in env).toBe(false);
     for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST']) {

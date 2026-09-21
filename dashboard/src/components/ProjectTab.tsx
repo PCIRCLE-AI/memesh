@@ -140,10 +140,11 @@ function Loading() {
 
 /**
  * What is known here (#323) — the durable-memory index an agent receives at
- * session start, shown as the agent gets it: one line per decision, lesson,
- * pattern or reference, newest first, under the same frozen cap. The memory
- * lines come from the server's renderer verbatim; only the framing around
- * them (heading, overflow, staleness, cost) is translated here.
+ * session start at briefing level `standard`/`full`, shown as the agent gets
+ * it: one line per decision, lesson, pattern or reference, newest first,
+ * under the same frozen cap. The memory lines come from the server's renderer
+ * verbatim; only the framing around them (heading, overflow, staleness, cost)
+ * is translated here.
  */
 export function BriefingIndexCard({ data, error }: { data: BriefingIndexData | null; error: string }) {
   if (error) return <div class="card" style={{ marginTop: 12 }}><div class="error-box" role="alert">{error}</div></div>;

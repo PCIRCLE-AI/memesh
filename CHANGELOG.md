@@ -4,6 +4,49 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **The default briefing level is now `minimal`.** A new session, and a call to
+  the `briefing` tool or `memesh briefing`, gets only what belongs to the
+  project it is in — its decisions, lessons, known facts and recent activity,
+  with the live repository state in front of them — where the default used to
+  be `standard`. Two things a new session no longer receives unless it asks
+  for them: the fresh task state (goal / next / blocked / done) and the capped
+  index of the project's durable memories. To get them back, run `memesh
+  config set briefing standard`, or start the session with
+  `MEMESH_BRIEFING=standard`. `full` is unchanged: it still adds other
+  projects' memory and global memory. Only the default moved. A `briefing`
+  value you already set in `config.json`, or a `MEMESH_BRIEFING` in the
+  environment, is honoured exactly as before, the order is still env >
+  config > default, and an unset value — or an invalid one — now resolves to
+  `minimal` instead of `standard`. A stale or unknown-age task state still
+  gets its one-line flag at every level, `memesh task` and the `task_state`
+  tool still show the whole stored state, and `memesh briefing --index` still
+  prints the index on its own. The dashboard's Project tab no longer says the
+  index is what an agent receives "by default": it names the levels that
+  include it.
+
+### Fixed
+
+- **A new session is no longer shown the oldest of a group of equally scored
+  memories (#401).** The SessionStart hook ranks a project's memories by
+  confidence, use and recency and keeps the top few (`sessionLimit`). The daily
+  decay multiplies the confidence of never-accessed memories by 0.9, so the
+  memories captured since its last run carry one confidence value and, never
+  accessed, score exactly alike (so do old ones that have sunk to the decay
+  floor), and SQLite hands equal scores back in ascending id order (measured):
+  the cut kept the OLDEST of them. The lesson query, whose pool is claimed
+  first, had no ORDER BY at all and kept the five oldest lessons. On a real
+  graph, in the hours after a decay run, a new session was given the same two
+  old commit lines every time and never the decision made an hour earlier,
+  while `memesh briefing` on the same data (which reads a newest-first window)
+  showed the right memories. Equal scores now resolve newest first ("newest" is
+  creation order, the key the briefing sorts by too), in both the exp/log and
+  the legacy ranking forms and in the global and recent pools that `full` adds,
+  and the lesson query orders newest first; a higher score still beats a newer
+  memory. `tests/core/briefing.test.ts` pins the hook and the briefing together
+  on a graph in which every memory ties, lessons included.
+
 ## [4.10.2] — 2026-09-21
 
 ### Added

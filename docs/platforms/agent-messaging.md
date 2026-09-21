@@ -135,7 +135,7 @@ absolute or relative to that login's home, preventing distinct accounts or
 paths from sharing one scope. This keeps the same repo together across
 subdirectories, symlinks, remote-backed clones, and linked worktrees without
 letting two unrelated repos named `shared` discover or receive each other's
-messages. `memesh briefing` in that workspace reports the exact project value.
+messages. `memesh briefing --json` in that workspace reports the exact project value.
 
 If one workspace needs a stable named principal across different threads, run
 `memesh agent setup codex-session --project my-project --principal codex-reviewer

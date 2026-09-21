@@ -108,6 +108,13 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
     fs.writeFileSync(path.join(memeshDir, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
     const isolatedEnv = {
       ...baseEnv,
+      // The session-start-briefing journey asserts that a stated goal comes back
+      // through `memesh briefing` and the SessionStart hook. The fresh task
+      // state is `standard`-level content — the default level (`minimal`) does
+      // not carry it — so the journeys run at the level they exercise instead of
+      // leaning on the default. Set in the env: it wins over any config.json,
+      // and it replaces a MEMESH_BRIEFING the caller's shell may export.
+      MEMESH_BRIEFING: 'standard',
       HOME: homeDir,
       USERPROFILE: homeDir,
       MEMESH_DIR: memeshDir,

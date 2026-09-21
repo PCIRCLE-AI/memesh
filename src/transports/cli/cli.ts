@@ -1496,8 +1496,9 @@ program
 
 // --- task ---
 // The human-driven half of task-state. The MCP tool is how an agent records
-// this mid-session; this is how you set it yourself, and how you check what
-// the next session is about to be told.
+// this mid-session; this is how you set it yourself, and how you read back
+// what is stored — the whole state, at any briefing level. The next session is
+// told the fresh state only at level `standard`/`full`, not at the default.
 program
   .command('task')
   .description('Show or update where the work stands on this project')

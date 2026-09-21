@@ -24534,7 +24534,7 @@ var init_briefing_level = __esm({
   "dist/core/briefing-level.js"() {
     "use strict";
     BRIEFING_LEVELS = ["minimal", "standard", "full"];
-    DEFAULT_BRIEFING_LEVEL = "standard";
+    DEFAULT_BRIEFING_LEVEL = "minimal";
     INVALID_VALUE_SERIALIZED_MAX = 100;
     PRE_SLICE_RAW_MAX = 256;
     POLICIES = {
@@ -26030,7 +26030,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_briefing",
-        description: "The assembled work topology for a project: where the work was left off (by default), decisions, lessons, knowledge, recent activity. Call once at the start of a session to load project context.",
+        description: "The assembled work topology for a project: decisions, lessons, knowledge, recent activity \u2014 and, at briefing level `standard` or `full` (not the default, `minimal`), where the work was left off. Call once at the start of a session to load project context.",
         parameters: {
           type: "object",
           properties: {

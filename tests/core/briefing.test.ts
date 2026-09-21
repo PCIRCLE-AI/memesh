@@ -55,9 +55,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   closeDatabase();
   removeTempDir(tmpDir);
 });
+
+// `assembleBriefing` reads MEMESH_BRIEFING at call time, and the default level
+// is `minimal`: no fresh task state, no durable-memory index. A test whose
+// subject is one of those (or the gate that keeps a memory out of the ranked
+// sections AND the index) pins `standard` on purpose instead of leaning on the
+// default; a test about the default clears the variable on purpose.
+const atStandard = () => vi.stubEnv('MEMESH_BRIEFING', 'standard');
+const withNoLevelSetting = () => vi.stubEnv('MEMESH_BRIEFING', undefined);
 
 // The assembler resolves the current project from cwd when none is given;
 // tests always pass one explicitly so they cannot be polluted by (or pollute)
@@ -115,6 +124,7 @@ describe('assembleBriefing', () => {
   });
 
   it('assembles the topology: task state first, then sections, in one fenced block', () => {
+    atStandard();
     seed();
     setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c', next: 'Open the PR' } });
 
@@ -144,6 +154,7 @@ describe('assembleBriefing', () => {
   });
 
   it('keeps generic briefing quiet and scopes unread guidance to one recipient', async () => {
+    atStandard(); // asserts the unread line's place relative to the task-state block
     seed();
     setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
     // Two real deliveries in one project prove project-wide aggregation is
@@ -323,6 +334,7 @@ describe('assembleBriefing', () => {
   });
 
   it('a project with nothing recorded gets the index empty-state line, not nothing (#323)', () => {
+    atStandard();
     const result = assembleBriefing('no-such-project');
     expect(result.text).toContain('Index of durable memories for "no-such-project" (newest first):');
     expect(result.text).toContain('- No durable memories (decisions, lessons, patterns, references) for "no-such-project" yet.');
@@ -331,6 +343,18 @@ describe('assembleBriefing', () => {
     expect(result.text).not.toMatch(/branch/i);
     expect(result.entityCount).toBe(0);
     expect(result.hasTaskState).toBe(false);
+    expect(result.index.shown).toBe(0);
+  });
+
+  it('with no briefing setting at all, a project with nothing recorded is empty — the default level is minimal', () => {
+    withNoLevelSetting();
+    vi.stubEnv('MEMESH_DIR', tmpDir); // no config.json there: nothing sets the level
+    const result = assembleBriefing('no-such-project');
+    expect(result.level).toBe('minimal');
+    expect(result.empty).toBe(true);
+    expect(result.text).toBe('');
+    expect(result.hasTaskState).toBe(false);
+    // The index is computed at every level; only its place in `text` is level-gated.
     expect(result.index.shown).toBe(0);
   });
 
@@ -355,7 +379,7 @@ describe('assembleBriefing', () => {
     const archivedId = (db.prepare("SELECT id FROM entities WHERE name = 'archived-decision'").get() as { id: number }).id;
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(archivedId, `project:${PROJECT}`);
 
-    // #360 changed the default level to 'standard', which does not rank the
+    // The default level (`minimal`), like `standard`, does not rank the
     // global/foreign pools at all — this fixture plants a distractor in each
     // deliberately, so it needs 'full' to exercise the index's OWN exclusion
     // of them (as opposed to them never being ranked in the first place).
@@ -434,6 +458,7 @@ describe('assembleBriefing', () => {
   });
 
   it('excludes what the auto-injection gate blocks, without restricting explicit recall', async () => {
+    atStandard(); // the assembled block includes the index, which has its own gate
     seed();
     // An imported memory: reachable by explicit recall, never auto-injected.
     remember({
@@ -475,10 +500,10 @@ describe('assembleBriefing', () => {
     // not byte-for-byte, because the two sides may legitimately differ in
     // budget tail behaviour.
     //
-    // Pinned to `full` explicitly (#360 changed the default to `standard`,
-    // which would drop the global/foreign sections this fixture exists to
-    // exercise) on BOTH sides — the spawned hook's env and this process's
-    // env, since assembleBriefing reads process.env directly.
+    // Pinned to `full` explicitly (the default, `minimal`, would drop the
+    // global/foreign sections this fixture exists to exercise) on BOTH sides —
+    // the spawned hook's env and this process's env, since assembleBriefing
+    // reads process.env directly.
     //
     // The task state this fixture sets below (a few lines down,
     // `setTaskState({...})`) is FRESH — stated moments before the hook runs,
@@ -623,8 +648,10 @@ describe('assembleBriefing', () => {
 
   // #360 B7: the level applies to BOTH surfaces, so parity must hold at a
   // non-`full` level too — otherwise the hook and the tool could agree on
-  // `full` (frozen, unlikely to drift) while quietly disagreeing on the new
-  // default every real session actually uses.
+  // `full` (frozen, unlikely to drift) while quietly disagreeing on `standard`,
+  // the level a user turns on to get the task state and the index back. The
+  // level every session gets when nothing is set (`minimal`) has its own
+  // parity tests below.
   it('parity holds at level=standard too: both sides drop global/foreign, keep task state and the index', () => {
     const cwd = path.join(tmpDir, 'proj-standard');
     fs.mkdirSync(cwd, { recursive: true });
@@ -681,6 +708,145 @@ describe('assembleBriefing', () => {
     // At `standard` neither surface appends anything after the memory
     // block, so the two must be byte-equal outright (no notice to strip).
     expect(injected, 'hook and CLI/MCP must be byte-equal at standard (no notice to strip)').toBe(briefing);
+  });
+
+  // The DEFAULT, on all three real surfaces at once. Nothing sets the level —
+  // no MEMESH_BRIEFING, a config with no `briefing` key — so what each surface
+  // assembles is what a new install gets: this project's own sections, and
+  // neither the fresh task state nor the durable-memory index.
+  it('with no briefing setting at all, hook, real CLI and MCP tool assemble at minimal — no task state, no index — and agree byte for byte', async () => {
+    const cwd = path.join(tmpDir, 'proj-default-level');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+    remember({
+      name: 'decision-default', type: 'decision', title: 'Ship the smaller default',
+      observations: ['Detail.'], tags: [`project:${project}`],
+    });
+    remember({
+      name: 'lesson-default', type: 'lesson_learned', title: 'A default nobody chose must be the small one',
+      observations: ['Detail.'], tags: [`project:${project}`],
+    });
+    setTaskState({ project, patch: { goal: 'Prove the default level', next: 'Compare the three surfaces' } });
+    closeDatabase();
+
+    // updateCheck:false — the same detached-update-check race the other config
+    // fixtures in this file avoid. There is deliberately no `briefing` key.
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-briefing-default-'));
+    fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ updateCheck: false }));
+    const noSetting = {
+      ...process.env, HOME: configDir, MEMESH_DIR: configDir, MEMESH_DB_PATH: dbPath,
+      MEMESH_AUTO_UPDATE: '0', MEMESH_BRIEFING: undefined,
+    };
+    const cliPath = path.resolve('dist/transports/cli/cli.js');
+    const runCli = (env: NodeJS.ProcessEnv) => JSON.parse(execFileSync(
+      'node', [cliPath, 'briefing', '--project', project, '--json'],
+      { env, encoding: 'utf8', timeout: 15000 },
+    ).trim());
+
+    try {
+      const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd }), env: noSetting, encoding: 'utf8', timeout: 15000,
+      });
+      const injected: string =
+        JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
+          .hookSpecificOutput.additionalContext;
+
+      const cliJson = runCli(noSetting);
+      expect(cliJson.level, 'CLI: the level nothing set').toBe('minimal');
+
+      openDatabase(dbPath);
+      withNoLevelSetting();
+      vi.stubEnv('MEMESH_DIR', configDir);
+      const mcp = JSON.parse((await handleTool('briefing', { project })).content[0].text);
+      expect(mcp.level, 'MCP/core: the level nothing set').toBe('minimal');
+
+      for (const [surface, block] of [['hook', injected], ['CLI', cliJson.text], ['MCP', mcp.text]] as const) {
+        expect(block, `${surface}: this project's decision`).toContain('Ship the smaller default');
+        expect(block, `${surface}: this project's lesson`).toContain('A default nobody chose must be the small one');
+        expect(block, `${surface}: no fresh task state by default`).not.toContain('Stated about');
+        expect(block, `${surface}: no stated goal by default`).not.toContain('Prove the default level');
+        expect(block, `${surface}: no durable-memory index by default`).not.toContain('Index of durable memories for');
+      }
+      expect(injected, 'hook and CLI must be byte-equal at the default level').toBe(cliJson.text);
+      expect(mcp.text, 'MCP tool and CLI must be byte-equal at the default level').toBe(cliJson.text);
+
+      // Anti-vacuity: the same graph DOES carry both once the level asks for them.
+      const standardJson = runCli({ ...noSetting, MEMESH_BRIEFING: 'standard' });
+      expect(standardJson.level).toBe('standard');
+      expect(standardJson.text).toContain('Stated about');
+      expect(standardJson.text).toContain('Index of durable memories for');
+    } finally {
+      removeTempDir(configDir);
+    }
+  });
+
+  // #401: on a real graph almost every memory is auto-captured with one
+  // confidence value and has never been accessed, so every score TIES. The hook
+  // used to keep the OLDEST of a tie (SQLite returns equal scores in ascending
+  // id, and its lesson query had no ORDER BY at all) while this assembler,
+  // sorting a newest-first window, kept the newest — so a new session was shown
+  // old commits and old lessons and never the decision made minutes ago. Every
+  // fixture above gives its memories distinct confidences, which is exactly why
+  // nothing caught it.
+  it.each([
+    ['exp/log ranking', {}],
+    ['legacy ranking (no SQLite math functions)', { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' }],
+  ])('parity holds when every memory ties on score: both sides keep the newest — %s', (_label, hookEnv) => {
+    const cwd = path.join(tmpDir, 'proj-ties');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+
+    // More commits than a section renders (8), then twelve lessons, then the
+    // decision: the newest row is last, as it is in life. The hook's limit is
+    // raised to the briefing's window (30) because their defaults differ (10 and
+    // 30) and this test is about ORDER, not window size.
+    for (let i = 1; i <= 40; i++) {
+      remember({
+        name: `tied-commit-${i}`, type: 'commit', title: `Tied commit ${i}`,
+        observations: [`Detail ${i}`], tags: [`project:${project}`],
+      });
+    }
+    for (let i = 1; i <= 12; i++) {
+      remember({
+        name: `tied-lesson-${i}`, type: 'lesson_learned', title: `Tied lesson ${i}`,
+        observations: [`Lesson detail ${i}`], tags: [`project:${project}`],
+      });
+    }
+    remember({
+      name: 'newest-decision', type: 'decision', title: 'Ship the newest decision',
+      observations: ['Made last.'], tags: [`project:${project}`],
+    });
+    closeDatabase();
+
+    const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'minimal', MEMESH_SESSION_LIMIT: '30', ...hookEnv },
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    const injected: string =
+      JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
+        .hookSpecificOutput.additionalContext;
+
+    openDatabase(dbPath);
+    const previousBriefingEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'minimal';
+    let briefing: string;
+    try {
+      briefing = assembleBriefing(project).text;
+    } finally {
+      if (previousBriefingEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousBriefingEnv;
+    }
+
+    for (const block of [injected, briefing]) {
+      expect(block).toContain('Ship the newest decision');
+      expect(block).toContain('Tied commit 40');
+      expect(block).toContain('Tied lesson 12');
+      // The oldest lesson only appears if a lesson pool keeps the OLDEST.
+      expect(block).not.toMatch(/Tied lesson 1\b/);
+    }
+    expect(injected, 'hook and CLI/MCP must be byte-equal at minimal (no notice to strip)').toBe(briefing);
   });
 
   // An empty-`minimal` parity case across all THREE real consumers — the
@@ -820,6 +986,7 @@ describe('assembleBriefing', () => {
   // database itself stays on the explicit `dbPath` this suite already
   // isolates in `beforeEach`; MEMESH_DIR only steers config.json.
   it('a non-string stored briefing value (42) is reported invalid on hook, CLI, and MCP alike', async () => {
+    withNoLevelSetting(); // the child processes inherit process.env: an ambient level would beat the stored value
     const cwd = path.join(tmpDir, 'proj-numeric-briefing');
     fs.mkdirSync(cwd, { recursive: true });
     const project = getProjectName(cwd);
@@ -846,7 +1013,7 @@ describe('assembleBriefing', () => {
       const hookRecord = hookOutcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
       expect(hookRecord, 'hook must record a briefing-level reason').toBeTruthy();
       expect(hookRecord.reason).toContain('42');
-      expect(hookRecord.reason).toContain('standard');
+      expect(hookRecord.reason).toContain('minimal');
 
       // --- the real BUILT CLI — this is the surface that silently
       // defaulted with no trace before the fix. spawnSync, not
@@ -860,7 +1027,7 @@ describe('assembleBriefing', () => {
       );
       expect(cliRun.status, `CLI must exit 0 even on an invalid config value; stderr: ${cliRun.stderr}`).toBe(0);
       const cliJson = JSON.parse(cliRun.stdout.trim());
-      expect(cliJson.level, 'CLI: invalid config value falls back to the default level').toBe('standard');
+      expect(cliJson.level, 'CLI: invalid config value falls back to the default level').toBe('minimal');
       expect(cliRun.stderr, 'CLI must trace the invalid value, not silently default').toContain('42');
       expect(cliRun.stderr).toContain('invalid config briefing level');
 
@@ -886,7 +1053,7 @@ describe('assembleBriefing', () => {
         if (previousDir === undefined) delete process.env.MEMESH_DIR;
         else process.env.MEMESH_DIR = previousDir;
       }
-      expect(mcpLevel, 'MCP/core: invalid config value falls back to the default level').toBe('standard');
+      expect(mcpLevel, 'MCP/core: invalid config value falls back to the default level').toBe('minimal');
       expect(tracedLines.some((line) => line.includes('42') && line.includes('invalid config briefing level')),
         `MCP/core must trace the invalid value too; traced lines: ${JSON.stringify(tracedLines)}`).toBe(true);
     } finally {
@@ -907,7 +1074,7 @@ describe('assembleBriefing', () => {
       if (previousEnv === undefined) delete process.env.MEMESH_BRIEFING;
       else process.env.MEMESH_BRIEFING = previousEnv;
     }
-    expect(tracedLines).toContain('[memesh briefing] invalid env briefing level "banana" — using "standard"\n');
+    expect(tracedLines).toContain('[memesh briefing] invalid env briefing level "banana" — using "minimal"\n');
   });
 
   // An explicit stored `null` is not "not set": `memesh config unset
@@ -917,6 +1084,7 @@ describe('assembleBriefing', () => {
   // test shape as that one, same three real child-process legs, `null` in
   // place of `42`.
   it('an explicit stored null briefing is reported invalid on hook, CLI, and MCP alike — not treated as "not set"', async () => {
+    withNoLevelSetting(); // as above: the stored value is only consulted when the env sets nothing
     const cwd = path.join(tmpDir, 'proj-null-briefing');
     fs.mkdirSync(cwd, { recursive: true });
     const project = getProjectName(cwd);
@@ -938,7 +1106,7 @@ describe('assembleBriefing', () => {
       const hookRecord = hookOutcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
       expect(hookRecord, 'hook must record a briefing-level reason for a stored null').toBeTruthy();
       expect(hookRecord.reason).toContain('null');
-      expect(hookRecord.reason).toContain('standard');
+      expect(hookRecord.reason).toContain('minimal');
 
       // --- the real BUILT CLI ---
       const cliRun = spawnSync(
@@ -948,7 +1116,7 @@ describe('assembleBriefing', () => {
       );
       expect(cliRun.status, `CLI must exit 0 even on a stored null; stderr: ${cliRun.stderr}`).toBe(0);
       const cliJson = JSON.parse(cliRun.stdout.trim());
-      expect(cliJson.level, 'CLI: a stored null falls back to the default level').toBe('standard');
+      expect(cliJson.level, 'CLI: a stored null falls back to the default level').toBe('minimal');
       expect(cliRun.stderr, 'CLI must trace the null, not silently default').toContain('null');
       expect(cliRun.stderr).toContain('invalid config briefing level');
 
@@ -977,7 +1145,7 @@ describe('assembleBriefing', () => {
         if (previousDir === undefined) delete process.env.MEMESH_DIR;
         else process.env.MEMESH_DIR = previousDir;
       }
-      expect(mcpLevel, 'MCP/core: a stored null falls back to the default level').toBe('standard');
+      expect(mcpLevel, 'MCP/core: a stored null falls back to the default level').toBe('minimal');
       expect(tracedLines.some((line) => line.includes('null') && line.includes('invalid config briefing level')),
         `MCP/core must trace the null too; traced lines: ${JSON.stringify(tracedLines)}`).toBe(true);
     } finally {
@@ -1010,14 +1178,16 @@ describe('assembleBriefing', () => {
         tags: [`project:${PROJECT}`],
       });
     }
-    // The "recent across all projects" pool (recentRows) is ALREADY
+    // At `full`, the "recent across all projects" pool (recentRows) is ALREADY
     // ordered newest-first and would independently surface this
     // project's newest entities regardless of whether the project-scoped
     // query is fixed — masking the very defect this test exists to catch.
     // A batch of newer, differently-tagged entities pushes every
     // `cap-entity-*` id out of that global top-5, so anything the
     // assembled text says about them can only have come through the
-    // project-scoped query under test.
+    // project-scoped query under test. (The default level never queries
+    // that pool, so at the default this batch is inert; it keeps the test
+    // honest if it is ever run at `full`.)
     for (let i = 0; i < 10; i++) {
       kg.createEntity(`noise-entity-${String(i).padStart(3, '0')}`, 'note', {
         title: `unrelated noise ${i}`,

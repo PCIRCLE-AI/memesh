@@ -140,29 +140,38 @@ describe('resolveAutoUpdatePolicy — env > config > default(off)', () => {
 });
 
 // #360: resolveBriefingLevel — env `MEMESH_BRIEFING` > config `briefing` >
-// default('standard'). Same file, same env-redirected-HOME pattern as the
+// default('minimal'). Same file, same env-redirected-HOME pattern as the
 // suites above, since readHookConfig() resolves through homedir() the same
 // way for every one of these resolvers.
-describe("resolveBriefingLevel — env > config.briefing > default('standard')", () => {
-  it("defaults to 'standard' when neither env nor config sets it", () => {
+//
+// The explicit values in the "takes effect" tests are levels other than the
+// default: a resolver that ignored its inputs would answer `minimal` every
+// time, so an explicit `minimal` could not tell "took effect" from "ignored".
+describe("resolveBriefingLevel — env > config.briefing > default('minimal')", () => {
+  it("defaults to 'minimal' when neither env nor config sets it", () => {
+    expect(resolveBriefingLevel(envFor())).toEqual({ level: 'minimal', invalid: null });
+  });
+
+  it('config briefing=standard takes effect', () => {
+    writeConfig({ briefing: 'standard' });
     expect(resolveBriefingLevel(envFor())).toEqual({ level: 'standard', invalid: null });
   });
 
-  it('config briefing=minimal takes effect', () => {
+  it('an explicit config briefing=minimal is valid, not reported as invalid', () => {
     writeConfig({ briefing: 'minimal' });
     expect(resolveBriefingLevel(envFor())).toEqual({ level: 'minimal', invalid: null });
   });
 
   it('env wins over config', () => {
     writeConfig({ briefing: 'full' });
-    expect(resolveBriefingLevel(envFor({ MEMESH_BRIEFING: 'minimal' })))
-      .toEqual({ level: 'minimal', invalid: null });
+    expect(resolveBriefingLevel(envFor({ MEMESH_BRIEFING: 'standard' })))
+      .toEqual({ level: 'standard', invalid: null });
   });
 
   it('a config object passed in is the stored config — config.json is not read again', () => {
     writeConfig({ briefing: 'full' });
-    expect(resolveBriefingLevel(envFor(), { briefing: 'minimal' }))
-      .toEqual({ level: 'minimal', invalid: null });
+    expect(resolveBriefingLevel(envFor(), { briefing: 'standard' }))
+      .toEqual({ level: 'standard', invalid: null });
   });
 
   // `value` is the real `JSON.stringify('banana')` form (quoted) — see
@@ -171,13 +180,13 @@ describe("resolveBriefingLevel — env > config.briefing > default('standard')",
   it('an invalid env value defaults AND is reported as invalid (source: env) — config is not consulted', () => {
     writeConfig({ briefing: 'full' });
     expect(resolveBriefingLevel(envFor({ MEMESH_BRIEFING: 'banana' })))
-      .toEqual({ level: 'standard', invalid: { source: 'env', value: '"banana"' } });
+      .toEqual({ level: 'minimal', invalid: { source: 'env', value: '"banana"' } });
   });
 
   it('an invalid config value (no env set) defaults AND is reported as invalid (source: config)', () => {
     writeConfig({ briefing: 'banana' });
     expect(resolveBriefingLevel(envFor()))
-      .toEqual({ level: 'standard', invalid: { source: 'config', value: '"banana"' } });
+      .toEqual({ level: 'minimal', invalid: { source: 'config', value: '"banana"' } });
   });
 });
 
@@ -223,7 +232,7 @@ describe('readHookConfigResult — malformed/non-object config document classifi
     const result = readHookConfigResult(envFor());
     expect(result.state).toBe('ok');
     expect(result.config.briefing).toBeUndefined();
-    expect(resolveBriefingLevel(envFor())).toEqual({ level: 'standard', invalid: null });
+    expect(resolveBriefingLevel(envFor())).toEqual({ level: 'minimal', invalid: null });
   });
 
   it('readHookConfig() (the plain wrapper every other caller uses) is unaffected — still returns {} for every unreadable case', () => {
