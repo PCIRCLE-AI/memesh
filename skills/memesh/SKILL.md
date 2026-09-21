@@ -254,6 +254,7 @@ human review. Do not hand-compress memories yourself.
 ```bash
 memesh export --tag "project:myapp" > memories.json
 memesh import memories.json --merge skip     # skip | overwrite | append
+# append/overwrite leave a memory you archived (forgot) alone; --merge append|overwrite --restore-archived brings it back
 memesh status                                # version, install channel, update state
 memesh reindex --fts                         # rebuild the local keyword index
 ```

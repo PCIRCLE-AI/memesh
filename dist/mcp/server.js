@@ -27215,6 +27215,9 @@ function importMemories(args) {
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
     throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(", ")}. Nothing was imported \u2014 refusing rather than guessing, because the wrong guess overwrites existing memories.`);
   }
+  if (args.restore_archived === true && args.merge_strategy === "skip") {
+    throw new Error('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; "skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.');
+  }
   if (args.namespace !== void 0 && !NAMESPACES.includes(args.namespace)) {
     throw new Error(`Unknown namespace "${args.namespace}". Use one of: ${NAMESPACES.join(", ")}. Nothing was imported \u2014 an unrecognised namespace would move existing memories somewhere nothing queries.`);
   }
@@ -27229,6 +27232,7 @@ function importMemories(args) {
   const pendingRelations = [];
   let skipped = 0;
   let appended = 0;
+  let keptArchived = 0;
   const errors = [];
   const skippedRelations = [];
   const setCreatedAt = db2.prepare("UPDATE entities SET created_at = ? WHERE name = ?");
@@ -27255,6 +27259,8 @@ function importMemories(args) {
         if (existing) {
           if (args.merge_strategy === "skip")
             return { kind: "skipped" };
+          if (existing.archived && !args.restore_archived)
+            return { kind: "keptArchived" };
           if (args.merge_strategy === "append") {
             const existingText = new Set(existing.observations);
             const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
@@ -27303,6 +27309,8 @@ function importMemories(args) {
       }).immediate();
       if (outcome.kind === "skipped")
         skipped++;
+      else if (outcome.kind === "keptArchived")
+        keptArchived++;
       else if (outcome.kind === "appended")
         appended++;
       else {
@@ -27326,7 +27334,7 @@ function importMemories(args) {
       errors.push(`${rel.from} -${rel.type}-> ${rel.to}: relation not restored (${err instanceof Error ? err.message : String(err)})`);
     }
   }
-  return { imported, overwritten, skipped, appended, errors, skipped_relations: skippedRelations };
+  return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
 }
 
 // dist/core/operations.js
@@ -30228,7 +30236,8 @@ var ExportResultSchema = external_exports.object({
 var ImportSchema = external_exports.object({
   data: ExportResultSchema,
   namespace: external_exports.enum(NAMESPACES).optional(),
-  merge_strategy: external_exports.enum(["skip", "overwrite", "append"])
+  merge_strategy: external_exports.enum(["skip", "overwrite", "append"]),
+  restore_archived: external_exports.boolean().optional()
 }).strict();
 var LearnSchema = external_exports.object({
   error: external_exports.string().min(1).max(5e3),
@@ -31572,7 +31581,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "import",
-    description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities.",
+    description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.",
     inputSchema: {
       type: "object",
       properties: {
@@ -31582,6 +31591,10 @@ var TOOL_DEFINITIONS = [
           type: "string",
           enum: ["skip", "overwrite", "append"],
           description: "Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived \u2014 this cannot be undone)"
+        },
+        restore_archived: {
+          type: "boolean",
+          description: "Optional, default false. With append or overwrite, a local entity that is archived (forgotten) is left untouched and counted in kept_archived. Set true to bring it back to active and merge or overwrite it like any other; it requires merge_strategy append or overwrite (an error with skip). Only set it when the user asked for archived memories to return."
         }
       },
       required: ["data", "merge_strategy"],

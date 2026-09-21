@@ -6018,6 +6018,9 @@ function importMemories(args) {
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
     throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(", ")}. Nothing was imported \u2014 refusing rather than guessing, because the wrong guess overwrites existing memories.`);
   }
+  if (args.restore_archived === true && args.merge_strategy === "skip") {
+    throw new Error('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; "skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.');
+  }
   if (args.namespace !== void 0 && !NAMESPACES.includes(args.namespace)) {
     throw new Error(`Unknown namespace "${args.namespace}". Use one of: ${NAMESPACES.join(", ")}. Nothing was imported \u2014 an unrecognised namespace would move existing memories somewhere nothing queries.`);
   }
@@ -6032,6 +6035,7 @@ function importMemories(args) {
   const pendingRelations = [];
   let skipped = 0;
   let appended = 0;
+  let keptArchived = 0;
   const errors = [];
   const skippedRelations = [];
   const setCreatedAt = db2.prepare("UPDATE entities SET created_at = ? WHERE name = ?");
@@ -6058,6 +6062,8 @@ function importMemories(args) {
         if (existing) {
           if (args.merge_strategy === "skip")
             return { kind: "skipped" };
+          if (existing.archived && !args.restore_archived)
+            return { kind: "keptArchived" };
           if (args.merge_strategy === "append") {
             const existingText = new Set(existing.observations);
             const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
@@ -6106,6 +6112,8 @@ function importMemories(args) {
       }).immediate();
       if (outcome.kind === "skipped")
         skipped++;
+      else if (outcome.kind === "keptArchived")
+        keptArchived++;
       else if (outcome.kind === "appended")
         appended++;
       else {
@@ -6129,7 +6137,7 @@ function importMemories(args) {
       errors.push(`${rel.from} -${rel.type}-> ${rel.to}: relation not restored (${err instanceof Error ? err.message : String(err)})`);
     }
   }
-  return { imported, overwritten, skipped, appended, errors, skipped_relations: skippedRelations };
+  return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
 }
 var IMPORTABLE_METADATA_KEYS, FORGOTTEN_HASH_RE, MAX_IMPORTED_FORGOTTEN_HASHES, MAX_IMPORTED_REPLACED_HISTORY_ENTRIES, MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES, REPLACED_HISTORY_ENTRY_KEYS, jsonBytesOf, MERGE_STRATEGIES;
 var init_serializer = __esm({
@@ -23615,7 +23623,8 @@ var init_schemas3 = __esm({
     ImportSchema = external_exports.object({
       data: ExportResultSchema,
       namespace: external_exports.enum(NAMESPACES).optional(),
-      merge_strategy: external_exports.enum(["skip", "overwrite", "append"])
+      merge_strategy: external_exports.enum(["skip", "overwrite", "append"]),
+      restore_archived: external_exports.boolean().optional()
     }).strict();
     LearnSchema = external_exports.object({
       error: external_exports.string().min(1).max(5e3),
@@ -25969,6 +25978,10 @@ function exportOpenAITools() {
               type: "string",
               enum: ["skip", "overwrite", "append"],
               description: "Required. How to handle existing entities: skip, overwrite (replace), or append (merge observations)."
+            },
+            restore_archived: {
+              type: "boolean",
+              description: "Optional, default false. With append or overwrite, an archived (forgotten) local entity is left untouched and counted in kept_archived; true brings it back to active and merges or overwrites it, and requires append or overwrite (an error with skip)."
             }
           },
           required: ["data", "merge_strategy"]
@@ -61560,15 +61573,15 @@ program2.command("export").description("Export memories as JSON. Defaults to std
     }
   });
 });
-program2.command("import").description("Import memories from a JSON export file, or a directory of note files (--notes)").argument("[file]", "Path to JSON export file").option("--namespace <ns>", "Override namespace for all imported entities").option("--merge <strategy>", "Merge strategy: skip | overwrite | append", "skip").option("--notes <dir>", "Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.").option("--project <name>", "With --notes: the project tag for ingested memories (default: the current directory's project)").option("--json", "With --notes: output the ingestion result as JSON").action(async (file2, opts, cmd) => {
+program2.command("import").description("Import memories from a JSON export file, or a directory of note files (--notes)").argument("[file]", "Path to JSON export file").option("--namespace <ns>", "Override namespace for all imported entities").option("--merge <strategy>", "Merge strategy: skip | overwrite | append", "skip").option("--restore-archived", "Requires --merge append or overwrite (an error with skip, the default): bring back a local memory you archived (forgot) when the file names it. Without this it stays archived and untouched.").option("--notes <dir>", "Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.").option("--project <name>", "With --notes: the project tag for ingested memories (default: the current directory's project)").option("--json", "With --notes: output the ingestion result as JSON").action(async (file2, opts, cmd) => {
   if (opts.notes !== void 0) {
     if (file2) {
       console.error("Error: pass either a JSON export file or --notes <dir>, not both.");
       process.exit(1);
     }
-    const ignored = ["namespace", "merge"].filter((k) => cmd.getOptionValueSource(k) === "cli");
+    const ignored = ["namespace", "merge", "restoreArchived"].filter((k) => cmd.getOptionValueSource(k) === "cli");
     if (ignored.length > 0) {
-      console.error(`Error: --notes does not take ${ignored.map((k) => `--${k}`).join(" or ")}. Note files always go to the personal namespace and a changed file replaces its memory.`);
+      console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(" or ")}. Note files always go to the personal namespace and a changed file replaces its memory.`);
       process.exit(1);
     }
     await withDatabase(() => {
@@ -61600,7 +61613,7 @@ program2.command("import").description("Import memories from a JSON export file,
   }
   const notesOnly = ["project", "json"].filter((k) => cmd.getOptionValueSource(k) === "cli");
   if (notesOnly.length > 0) {
-    console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(" and ")} only appl${notesOnly.length > 1 ? "y" : "ies"} to --notes. A JSON export file is imported with --namespace and --merge.`);
+    console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(" and ")} only appl${notesOnly.length > 1 ? "y" : "ies"} to --notes. A JSON export file is imported with --namespace, --merge and --restore-archived.`);
     process.exit(1);
   }
   requireOneOf(opts.merge, ["skip", "overwrite", "append"], "--merge");
@@ -61639,7 +61652,8 @@ program2.command("import").description("Import memories from a JSON export file,
       result = importMemories({
         data,
         namespace: opts.namespace,
-        merge_strategy: opts.merge
+        merge_strategy: opts.merge,
+        restore_archived: opts.restoreArchived === true
       });
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
@@ -61647,6 +61661,9 @@ program2.command("import").description("Import memories from a JSON export file,
     }
     const overwriteNote = result.overwritten > 0 ? ` (${result.overwritten} overwritten)` : "";
     console.log(`Imported: ${result.imported}${overwriteNote}, Skipped: ${result.skipped}, Appended: ${result.appended}`);
+    if (result.kept_archived > 0) {
+      console.log(`Kept archived: ${result.kept_archived} (you archived these; the file names them, so they were left untouched). Add --restore-archived to bring them back.`);
+    }
     if (result.skipped_relations.length > 0) {
       console.error(`Note: ${result.skipped_relations.length} relation(s) not restored \u2014 the target is not in this bundle:
   ${result.skipped_relations.join("\n  ")}`);

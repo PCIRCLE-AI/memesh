@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { openDatabase, closeDatabase } from '../../src/db.js';
+import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 
 // Import the Express app (not startServer, which opens its own DB and binds a port).
 // We open our own isolated DB and start the app on a random port.
@@ -324,6 +324,69 @@ describe('HTTP Transport: POST /v1/forget', () => {
     const res = await req('POST', '/v1/forget', { name: 'ghost-entity-xyz' });
     expect(res.status).toBe(200);
     expect(res.body.data.archived).toBe(false);
+  });
+});
+
+describe('HTTP Transport: POST /v1/import and archived memories (#363)', () => {
+  const statusOf = (name: string) =>
+    (getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(name) as { status: string }).status;
+  const observationsOf = (name: string) =>
+    (getDatabase()
+      .prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id')
+      .all(name) as Array<{ content: string }>).map((r) => r.content);
+  const bundleFor = (name: string) => ({
+    version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+    entities: [{ name, type: 'note', namespace: 'personal', observations: ['bundle text'], tags: [], relations: [] }],
+  });
+  const seedArchived = async (name: string) => {
+    await req('POST', '/v1/remember', { name, type: 'note', observations: ['original text'] });
+    expect((await req('POST', '/v1/forget', { name })).body.data.archived).toBe(true);
+    expect(statusOf(name), 'fixture: entity must start archived').toBe('archived');
+  };
+
+  it('leaves an archived entity archived and reports kept_archived', async () => {
+    await seedArchived('http-import-kept');
+    const res = await req('POST', '/v1/import', { data: bundleFor('http-import-kept'), merge_strategy: 'append' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.kept_archived).toBe(1);
+    expect(res.body.data.appended).toBe(0);
+    expect(statusOf('http-import-kept')).toBe('archived');
+    expect(observationsOf('http-import-kept')).toEqual(['original text']);
+  });
+
+  it('restore_archived: true brings it back', async () => {
+    await seedArchived('http-import-restored');
+    const res = await req('POST', '/v1/import', {
+      data: bundleFor('http-import-restored'), merge_strategy: 'append', restore_archived: true,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.data.kept_archived).toBe(0);
+    expect(res.body.data.appended).toBe(1);
+    expect(statusOf('http-import-restored')).toBe('active');
+    expect(observationsOf('http-import-restored')).toContain('bundle text');
+  });
+
+  it('refuses restore_archived with `skip`, as it does an unknown strategy: 400 with the core message', async () => {
+    await seedArchived('http-import-skip-restore');
+    const res = await req('POST', '/v1/import', {
+      data: bundleFor('http-import-skip-restore'), merge_strategy: 'skip', restore_archived: true,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errorCode).toBe('operation.failed');
+    expect(res.body.error).toContain('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"');
+    expect(statusOf('http-import-skip-restore')).toBe('archived');
+    expect(observationsOf('http-import-skip-restore')).toEqual(['original text']);
+  });
+
+  it('refuses a restore_archived that is not a boolean, and changes nothing', async () => {
+    await seedArchived('http-import-not-boolean');
+    const res = await req('POST', '/v1/import', {
+      data: bundleFor('http-import-not-boolean'), merge_strategy: 'append', restore_archived: 'yes',
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(statusOf('http-import-not-boolean')).toBe('archived');
   });
 });
 

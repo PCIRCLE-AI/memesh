@@ -143,12 +143,14 @@ export interface ImportInput {
     data: ExportResult;
     namespace?: string;
     merge_strategy: MergeStrategy;
+    restore_archived?: boolean;
 }
 export interface ImportResult {
     imported: number;
     overwritten: number;
     skipped: number;
     appended: number;
+    kept_archived: number;
     errors: string[];
     skipped_relations: string[];
 }

@@ -678,6 +678,7 @@ program
   .argument('[file]', 'Path to JSON export file')
   .option('--namespace <ns>', 'Override namespace for all imported entities')
   .option('--merge <strategy>', 'Merge strategy: skip | overwrite | append', 'skip')
+  .option('--restore-archived', 'Requires --merge append or overwrite (an error with skip, the default): bring back a local memory you archived (forgot) when the file names it. Without this it stays archived and untouched.')
   .option('--notes <dir>', 'Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.')
   .option('--project <name>', 'With --notes: the project tag for ingested memories (default: the current directory\'s project)')
   .option('--json', 'With --notes: output the ingestion result as JSON')
@@ -690,9 +691,9 @@ program
       // Both flags mean something for a JSON bundle and nothing here; taking
       // them silently would let a user believe notes went into "team", or
       // were merged some other way.
-      const ignored = ['namespace', 'merge'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+      const ignored = ['namespace', 'merge', 'restoreArchived'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
       if (ignored.length > 0) {
-        console.error(`Error: --notes does not take ${ignored.map((k) => `--${k}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
+        console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
         process.exit(1);
       }
       await withDatabase(() => {
@@ -727,7 +728,7 @@ program
     // produce a machine-readable result.
     const notesOnly = ['project', 'json'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
     if (notesOnly.length > 0) {
-      console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(' and ')} only appl${notesOnly.length > 1 ? 'y' : 'ies'} to --notes. A JSON export file is imported with --namespace and --merge.`);
+      console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(' and ')} only appl${notesOnly.length > 1 ? 'y' : 'ies'} to --notes. A JSON export file is imported with --namespace, --merge and --restore-archived.`);
       process.exit(1);
     }
     requireOneOf(opts.merge, ['skip', 'overwrite', 'append'], '--merge');
@@ -773,6 +774,7 @@ program
           data: data as ExportResult,
           namespace: opts.namespace,
           merge_strategy: opts.merge as MergeStrategy,
+          restore_archived: opts.restoreArchived === true,
         });
       } catch (err) {
         // importMemories refuses a bundle it cannot read, and says why in one
@@ -789,6 +791,13 @@ program
       // had happened from the output.
       const overwriteNote = result.overwritten > 0 ? ` (${result.overwritten} overwritten)` : '';
       console.log(`Imported: ${result.imported}${overwriteNote}, Skipped: ${result.skipped}, Appended: ${result.appended}`);
+      // Said on stdout, with the way back: the entities are unchanged, so
+      // nothing else in the output would tell the user the file named them.
+      if (result.kept_archived > 0) {
+        console.log(`Kept archived: ${result.kept_archived} (you archived these; the file names them, so they were left untouched). Add --restore-archived to bring them back.`);
+      }
+      // Said on stdout, with the way back: the entities are unchanged, so
+      // nothing else in the output would tell the user the file named them.
       // Named, not merely counted, and on stderr — a relation the restore
       // could not rebuild is information the user lost, and the only way to
       // get it back is to re-export with the entities it points at.

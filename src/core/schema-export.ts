@@ -136,6 +136,10 @@ export function exportOpenAITools(): object[] {
               enum: ['skip', 'overwrite', 'append'],
               description: 'Required. How to handle existing entities: skip, overwrite (replace), or append (merge observations).',
             },
+            restore_archived: {
+              type: 'boolean',
+              description: 'Optional, default false. With append or overwrite, an archived (forgotten) local entity is left untouched and counted in kept_archived; true brings it back to active and merges or overwrites it, and requires append or overwrite (an error with skip).',
+            },
           },
           required: ['data', 'merge_strategy'],
         },

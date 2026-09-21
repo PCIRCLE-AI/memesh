@@ -426,7 +426,7 @@ Export memories to a portable JSON bundle. Use for personal backup, migrating be
 | field | on export | on import |
 |---|---|---|
 | `created_at` | always | restored for entities the import CREATES, and only when `parseSqliteUtcMs` can read the value. An entity you already had keeps its own creation time. |
-| `status` | present only for archived entities | the entity is archived after it is created. Archived memories are part of a backup: without them, `forget` then export then restore brought the memory back. |
+| `status` | present only for archived entities | the entity is archived after it is created — for an entity the import CREATES. An existing entity keeps its own status: an archived one stays archived under `append` and `overwrite` unless `restore_archived` is set (see **Archived memories** under `import`). Archived memories are part of a backup: without them, `forget` then export then restore brought the memory back. |
 | `metadata` | present when the entity has any | **among the CLI, MCP and HTTP entrypoints, only CLI JSON import retains bundle metadata at all** — `ExportResultSchema` does not declare `metadata`, so the MCP `import` tool and `POST /v1/import` have Zod strip it before it exists to merge (the bare `importMemories()` function has no such restriction). Filtered by an ALLOW-list: only a purely descriptive key (display/provenance) is ever taken from the bundle. `trust` and `provenance` are always rebuilt by the import, never read from the bundle. Every behaviour-changing key is refused by default — `guard` (installs a Bash-command warning), `demo` (`demo --reset` HARD-DELETES every entity carrying it, #361), `task_state` (injected verbatim into SessionStart/`memesh briefing` context — a bundle must not be able to put text in front of the agent), `evidence_for` (a `dream accept` idempotency gate — refused and rebuilt by the real `dream accept` path instead), `consolidation_depth`, `compacted_into`, `proposal_id`, `session_id` — for an entity you already have AND for one the import creates, no exception. Four keys get a narrow FRESH-entity-only, VALIDATED exception: `forgotten_observation_hashes` (64-hex SHA-256, de-duplicated, capped at 1000, or the whole list is dropped), `pin` (only the literal boolean `true`; anything else is refused), `signal_score` (only a finite number with `0 <= x <= 1` — `computeSignalScore`'s own documented range; anything else is dropped and the entity gets its own content-derived score), and `replaced_history` (only an array of at most 50 entries shaped exactly like `--replace`'s own history entries — `replaced_at`/`title`/`observations`/`tags`, optional `truncated` (a boolean), no other key, the WHOLE array's own serialized JSON at most 256 KiB — a budget over the entire array together, not per entry — or the whole list is dropped). An EXISTING entity's own value for any of these four always wins regardless of what the bundle says, same as every other authority key. |
 | `relations` | always | created in a SECOND pass, after every entity in the bundle exists. A relation that still cannot be created points outside the bundle, and is named in `skipped_relations` rather than dropped — reported, but not an error, because every narrowed bundle has them. |
 
@@ -459,6 +459,7 @@ Imported entities are marked with import provenance and treated as untrusted for
 | `data` | object | Yes | The JSON bundle produced by `export` |
 | `merge_strategy` | string | Yes | Merge strategy for conflicts: `"skip"`, `"overwrite"`, or `"append"` |
 | `namespace` | string | No | Force imported entities into this namespace, ignoring the namespace stored in the bundle. With `overwrite` or `append` it also **moves** entities that already exist, in bulk, out of the scope they are in — `metadata.previous_namespace` records where each came from. With `skip` it does not: see the table below. Must be `personal`, `team` or `global`; anything else is refused outright. |
+| `restore_archived` | boolean | No | Default `false`. With `overwrite` or `append`, a local entity that is archived (forgotten) and named by the bundle is left untouched and counted in `kept_archived`. `true` brings it back to active and merges or overwrites it like any other, and **requires** `merge_strategy` `append` or `overwrite`: with `skip` (which touches no existing entity) the call is refused with an error and nothing is imported. Must be a boolean; a string such as `"yes"` is refused. |
 
 **Merge Strategies**:
 
@@ -472,6 +473,24 @@ Imported entities are marked with import provenance and treated as untrusted for
 nothing that is already there, and a namespace move is a change — it takes the
 memory out of every scoped recall that used to return it. An import asking to
 skip existing entities does not get to relocate them as a side effect.
+
+**Archived memories.** `forget` archives a memory instead of deleting it, and
+the dreamer archives the sources it digests. An import does not undo either: an
+existing entity that is archived stays archived and completely untouched when
+the bundle names it — no observations added or replaced, no tag, title,
+namespace or metadata change, nothing reactivated — under `append` and
+`overwrite` alike, and the response counts it in `kept_archived`. Pass
+`restore_archived: true` (CLI: `--restore-archived`) to bring such memories back
+and merge or overwrite them as the strategy says; it requires `append` or
+`overwrite`. `skip` already leaves every existing entity alone, so an archived
+one is counted in `skipped` there, and `restore_archived` together with `skip`
+is refused rather than silently ignored. This is specific to import: `remember`
+still reactivates an archived memory that is stated again.
+
+A bundle entry that is left untouched this way contributes none of its own
+relations, as with `skip`; a relation from another entry in the bundle *to* it
+is still created. A bundle entry's own `status: "archived"` applies only to
+entities the import creates, as before.
 
 A bundle's `title` is applied to the entities the import creates, and replaces
 the title of one it updates (`overwrite`, `append`). A bundle entry with no
@@ -487,6 +506,7 @@ bundle.
   "overwritten": 0,
   "skipped": 2,
   "appended": 0,
+  "kept_archived": 0,
   "errors": [],
   "skipped_relations": ["older-note -supersedes-> a-memory-not-in-this-bundle"]
 }
@@ -495,6 +515,10 @@ bundle.
 `overwritten` is a subset of `imported`: how many of those entities already
 existed and had their data replaced (`merge_strategy: "overwrite"` hitting a
 name already in the graph) rather than being created from nothing.
+
+`kept_archived` counts the archived local entities the bundle named and the
+import left as they were (see **Archived memories** above). It is not part of
+`imported`, `skipped` or `appended`.
 
 `skipped_relations` names each link the restore could not rebuild, as
 `from -type-> to`. It is reported but is **not** an error and does not fail the
@@ -517,6 +541,9 @@ and only `errors` makes the CLI exit non-zero.
 
 // Move existing entities into team as well as filing new ones there
 {"data": {...}, "merge_strategy": "append", "namespace": "team"}
+
+// Also bring back local memories you archived that the bundle names
+{"data": {...}, "merge_strategy": "append", "restore_archived": true}
 ```
 
 ---
@@ -1487,6 +1514,22 @@ memesh remember "Use PKCE for the public client"            # derived name, type
 memesh remember --name auth-choice --obs "PKCE, not implicit" --replace   # keeps type
 memesh remember --name auth-choice --type decision --obs "PKCE, not implicit" --replace  # reclassifies
 ```
+
+### memesh import — a JSON bundle
+
+```bash
+memesh import <file> [--merge skip|overwrite|append] [--namespace <ns>] [--restore-archived]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--merge <strategy>` | `skip` (default), `overwrite` or `append` — see `import` under Tools |
+| `--namespace <ns>` | Force imported entities into this namespace |
+| `--restore-archived` | Requires `--merge append` or `--merge overwrite` (an error with `skip`, the default): bring back a local memory you archived (forgot) when the file names it. Without it, that memory stays archived and untouched |
+
+The summary line is unchanged. When the file named archived memories that were
+left alone, a second line follows — `Kept archived: N (…)` — with the flag that
+brings them back. `--restore-archived` is refused together with `--notes`, and with `--merge skip`.
 
 ### memesh import --notes — note-file directories
 

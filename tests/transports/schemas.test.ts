@@ -191,6 +191,14 @@ describe('ImportSchema', () => {
     const result = ImportSchema.safeParse({ data: validData });
     expect(result.success).toBe(false);
   });
+
+  it('accepts restore_archived as a boolean and refuses anything else (#363)', () => {
+    expect(ImportSchema.safeParse({ data: validData, merge_strategy: 'append', restore_archived: true }).success).toBe(true);
+    expect(ImportSchema.safeParse({ data: validData, merge_strategy: 'append', restore_archived: false }).success).toBe(true);
+    for (const wrong of ['yes', 'true', 1, null]) {
+      expect(ImportSchema.safeParse({ data: validData, merge_strategy: 'append', restore_archived: wrong }).success, String(wrong)).toBe(false);
+    }
+  });
 });
 
 // ── MessageSchema scope identifiers ─────────────────────────────────────────

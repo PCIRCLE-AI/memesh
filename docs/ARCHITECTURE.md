@@ -611,6 +611,8 @@ Entities carry a `namespace` field (`personal` | `team` | `global`, default: `pe
 | `overwrite` | Replace existing entity's observations and tags |
 | `append` | Append imported observations, dedup tags |
 
+An existing entity that is archived (forgotten) is left untouched by `overwrite` and `append`, and the result counts it in `kept_archived`; `restore_archived` brings it back (and requires `append` or `overwrite`). Only import works this way — `remember` still reactivates an archived memory.
+
 ### Cross-Project Recall
 
 `recall` accepts a `cross_project: true` flag. When set, the project-tag filter is lifted and FTS5 search spans all namespaces. The same multi-factor scoring applies.

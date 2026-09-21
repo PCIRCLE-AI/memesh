@@ -279,7 +279,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "import";
-    readonly description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities.";
+    readonly description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -296,6 +296,10 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly type: "string";
                 readonly enum: readonly ["skip", "overwrite", "append"];
                 readonly description: "Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived — this cannot be undone)";
+            };
+            readonly restore_archived: {
+                readonly type: "boolean";
+                readonly description: "Optional, default false. With append or overwrite, a local entity that is archived (forgotten) is left untouched and counted in kept_archived. Set true to bring it back to active and merge or overwrite it like any other; it requires merge_strategy append or overwrite (an error with skip). Only set it when the user asked for archived memories to return.";
             };
         };
         readonly required: readonly ["data", "merge_strategy"];
