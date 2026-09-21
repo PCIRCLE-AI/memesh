@@ -15,6 +15,23 @@ function isUpdateAvailable(currentVersion, latestVersion) {
         return false;
     return compareSemVerPrecedence(current, latest) < 0;
 }
+export function isAheadOfLatest(update) {
+    if (!update || update.latestVersion === null)
+        return false;
+    const current = parseSemVer(update.currentVersion);
+    const latest = parseSemVer(update.latestVersion);
+    if (!current || !latest)
+        return false;
+    return compareSemVerPrecedence(current, latest) > 0;
+}
+export function showsPreReleaseNotice(update) {
+    return update !== null
+        && isAheadOfLatest(update)
+        && !update.currentVersionDeprecated
+        && update.freshness !== 'unavailable'
+        && !update.updateAvailable
+        && !(update.checkSucceeded && update.lastError);
+}
 function getUpdateCheckPath(updateCheckPath, currentVersion) {
     if (updateCheckPath)
         return updateCheckPath;
@@ -342,6 +359,9 @@ export function formatUpdateCheckStatus(update) {
     }
     else if (update.checkSucceeded && update.lastError) {
         lines.push(`Update check: partial — deprecation status unknown (${formatFreshness(update)})`);
+    }
+    else if (showsPreReleaseNotice(update)) {
+        lines.push(`Update check: running pre-release version (${update.currentVersion}), npm latest is ${update.latestVersion} (${formatFreshness(update)})`);
     }
     else if (update.latestVersion) {
         lines.push(`Update check: up to date (${formatFreshness(update)}; latest ${update.latestVersion})`);

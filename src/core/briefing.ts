@@ -51,6 +51,7 @@ import {
   buildReferenceContext,
   hasBriefingContent,
   isAutoInjectable,
+  projectLabel,
   type TopologyEntity,
 } from './work-topology.js';
 import {
@@ -68,7 +69,11 @@ export interface BriefingResult {
   text: string;
   /** How many memories were rendered into the block (excluding the task state). */
   entityCount: number;
-  /** Whether a recorded task state leads the block. */
+  /** Whether a task-state line leads the block: the fresh state, the one-line
+   *  stale flag, or the unreadable-record line. The unread-message reminder
+   *  that rides beside them is not a task state and does not count — a briefing
+   *  whose only state line is that reminder has `hasTaskState: false`. At
+   *  `minimal` a FRESH state is not rendered at all, so it is `false` there. */
   hasTaskState: boolean;
   /** The durable-memory index (#323) — counts, cost and the rendered lines,
    *  computed regardless of level (the `--index` CLI flag and callers that
@@ -282,7 +287,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     });
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError)) throw err;
-    taskLines = [`task state for ${projectName}: ${err.message}`];
+    taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
   }
   const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
   // The inbox line rides WITH the stated lines, not among the ranked
@@ -440,7 +445,9 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     // Counted from the ranked lines only — the index's lines carry the same
     // `- [type] … [mem:id]` shape and are reported under `index` instead.
     entityCount: lines.filter((l) => l.startsWith('- [')).length,
-    hasTaskState: stateLines.length > 0,
+    // `taskLines`, not `stateLines`: the latter also carries the unread-inbox
+    // reminder, which is not a task state.
+    hasTaskState: taskLines.length > 0,
     index,
     level,
     empty,

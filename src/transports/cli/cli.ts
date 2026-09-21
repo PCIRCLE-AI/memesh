@@ -19,8 +19,8 @@ import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS
 import { RememberSchema } from '../schemas.js';
 import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
 import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
-import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
-import { buildReferenceContext } from '../../core/work-topology.js';
+import { BRIEFING_LEVELS, resolveBriefingLevel } from '../../core/briefing-level.js';
+import { buildReferenceContext, projectLabel } from '../../core/work-topology.js';
 import { captureChatSession } from '../../core/session-insight.js';
 import { captureChatTurn } from '../../core/turn-signal.js';
 import {
@@ -1537,7 +1537,7 @@ program
         const lines = taskStateLines(state, project);
         if (lines.length === 0) {
           console.log(
-            `Nothing recorded for "${project}" yet.\n` +
+            `Nothing recorded for "${projectLabel(project)}" yet.\n` +
             `Set it with:  memesh task --goal "…" --next "…"`,
           );
           return;
@@ -1552,10 +1552,10 @@ program
         return;
       }
       if (result.changed.length === 0) {
-        console.log(`No change — "${result.project}" already said exactly that.`);
+        console.log(`No change — "${projectLabel(result.project)}" already said exactly that.`);
         return;
       }
-      console.log(`Updated ${result.changed.join(', ')} for "${result.project}".`);
+      console.log(`Updated ${result.changed.join(', ')} for "${projectLabel(result.project)}".`);
       console.log(taskStateLines(result.state, result.project).join('\n'));
     });
   });
@@ -1570,15 +1570,30 @@ configCmd
     const config = readConfig();
     console.log('Configuration (~/.memesh/config.json):');
     // Iterate ALLOWED_KEYS so `list` and `set` cannot drift.
-    const rows = buildConfigListing(config as unknown as Record<string, unknown>);
-    if (rows.length === 0) {
-      console.log('  (no keys set — all defaults)');
-    } else {
-      for (const { key, value } of rows) console.log(`  ${key}: ${value}`);
-    }
+    const stored = buildConfigListing(config as unknown as Record<string, unknown>);
+    if (stored.length === 0) console.log('  (nothing stored — all defaults)');
+    // `briefing` is the one setting whose default matters to what a session is
+    // told, so it is always shown as the level actually in effect and where that
+    // comes from. A stored `briefing` is replaced by that line, not repeated.
+    const rows = [
+      ...stored.filter(({ key }) => key !== 'briefing'),
+      { key: 'briefing', value: describeEffectiveBriefing(config.briefing) },
+    ].sort((a, b) => (a.key < b.key ? -1 : 1));
+    for (const { key, value } of rows) console.log(`  ${key}: ${value}`);
   });
 
 const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck', 'briefing']);
+
+/**
+ * `set`, `unset` and `get` refuse a key `ALLOWED_KEYS` does not list, in the
+ * same words — one place, so the three cannot drift.
+ */
+function requireAllowedKey(key: string): void {
+  if (ALLOWED_KEYS.has(key)) return;
+  console.error(`Unknown key: ${key}`);
+  console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
+  process.exit(1);
+}
 
 const KEY_VALIDATORS: Record<string, (value: string) => string | null> = {
   autoUpdate: (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : 'must be one of: off, patch, minor, major',
@@ -1619,41 +1634,69 @@ function buildConfigListing(config: Record<string, unknown>): Array<{ key: strin
   return rows;
 }
 
+/**
+ * The briefing level a session would actually get, and where it comes from —
+ * env beats config beats the default, decided by the same `resolveBriefingLevel`
+ * the hook and `briefing` use. A stored or env value that is not a level is
+ * said to be invalid (with the bounded rendering the resolver already made of
+ * it, so a hand-edited `null` or `42` is still visible), never shown as if it
+ * were in effect.
+ */
+function describeEffectiveBriefing(configValue: unknown): string {
+  const envValue = process.env.MEMESH_BRIEFING;
+  const { level, invalid } = resolveBriefingLevel(envValue, configValue);
+  if (invalid) {
+    const where = invalid.source === 'env' ? 'env MEMESH_BRIEFING' : 'config.json';
+    return `${level} (default; the value in ${where} is invalid: ${invalid.value})`;
+  }
+  if (envValue !== undefined) return `${level} (env MEMESH_BRIEFING)`;
+  return configValue !== undefined ? `${level} (config.json)` : `${level} (default)`;
+}
+
+configCmd
+  .command('get')
+  .description('Show one stored config value (for `briefing`, what is stored, not the level in effect that `config list` shows)')
+  .argument('<key>', 'Config key — see `memesh config list` for valid keys')
+  .action((key) => {
+    requireAllowedKey(key);
+    // The rows `list` builds, so the two cannot format a value differently —
+    // except `briefing`, which `list` replaces with the level in effect.
+    const row = buildConfigListing(readConfig() as unknown as Record<string, unknown>).find((r) => r.key === key);
+    // Only what is stored: an environment variable can still override the
+    // default, so "not set" must not claim which value applies.
+    console.log(row ? row.value : `${key} is not set in config.json`);
+  });
+
 configCmd
   .command('set')
   .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck, briefing)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .argument('<value>', 'Config value')
   .action((key, value) => {
-    const canonical = key;
-    if (!ALLOWED_KEYS.has(canonical)) {
-      console.error(`Unknown key: ${key}`);
-      console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
-      process.exit(1);
-    }
-    const validate = KEY_VALIDATORS[canonical];
+    requireAllowedKey(key);
+    const validate = KEY_VALIDATORS[key];
     if (validate) {
       const err = validate(value);
       if (err) {
-        console.error(`Invalid value for ${canonical}: ${err}`);
+        console.error(`Invalid value for ${key}: ${err}`);
         process.exit(1);
       }
     }
     // Coerce numeric string values for keys that take numbers
     let coerced: unknown = value;
-    if (canonical === 'sessionLimit') {
+    if (key === 'sessionLimit') {
       // The third failure `wholeNumber` was written for, and the one it did
       // not reach: `parseInt('abc')` is NaN, the config writer stored null,
       // and `config list` then hid the key entirely — so the user's setting
       // vanished and nothing said why. Same predicate, same message.
       coerced = wholeNumber('sessionLimit')(value);
     }
-    if (canonical === 'autoCapture' || canonical === 'updateCheck') {
+    if (key === 'autoCapture' || key === 'updateCheck') {
       coerced = value === 'true' || value === '1';
     }
-    updateConfig({ [canonical]: coerced } as never);
+    updateConfig({ [key]: coerced } as never);
     const displayValue = String(value);
-    console.log(`✅ Set ${canonical} = ${displayValue}`);
+    console.log(`✅ Set ${key} = ${displayValue}`);
 
   });
 
@@ -1662,19 +1705,14 @@ configCmd
   .description('Remove a config value (ordinary settings only)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .action((key) => {
-    const canonical = key;
-    if (!ALLOWED_KEYS.has(canonical)) {
-      console.error(`Unknown key: ${key}`);
-      console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
-      process.exit(1);
-    }
-    const removed = canonical in readConfig();
-    updateConfig({ [canonical]: undefined } as never);
+    requireAllowedKey(key);
+    const removed = key in readConfig();
+    updateConfig({ [key]: undefined } as never);
     if (!removed) {
-      console.log(`(no change — ${canonical} was not set)`);
+      console.log(`(no change — ${key} was not set)`);
       return;
     }
-    console.log(`✅ Removed ${canonical}`);
+    console.log(`✅ Removed ${key}`);
   });
 
 // --- export-schema ---
@@ -2802,7 +2840,7 @@ program
     const { getCurrentInstallChannel, getInstallChannelSupport } = await import('../../core/install-channel.js');
     const install = getCurrentInstallChannel({ packageRoot });
     const installSupport = getInstallChannelSupport(install, packageRoot);
-    const { getUpdateCheck, formatUpdateCheckStatus } = await import('../../core/version-check.js');
+    const { getUpdateCheck, formatUpdateCheckStatus, showsPreReleaseNotice } = await import('../../core/version-check.js');
     const update = await getUpdateCheck(pkg.version, { preferFresh: !opts.cached });
 
     console.log(`MeMesh v${pkg.version}`);
@@ -2825,7 +2863,16 @@ program
       && update.latestVersion === update.currentVersion
       && update.freshness === 'fresh',
     );
-    if (!confirmedNoUpgradeTarget) {
+    // Same for the line "running pre-release version": an install NEWER than
+    // npm's `latest` (a trial build on the `next` tag) has no update to be
+    // pointed at, and on the one channel that updates itself (npm global) the
+    // command installs `@latest`, a downgrade. Only that line: every other
+    // state keeps its path (a deprecated install's line already says to update;
+    // a partly checked or unavailable check is uncertain and names no action of
+    // its own). The other channels lose only their generic hint; keeping it for
+    // them would need a test that can stand up a global install to prove the
+    // npm-global case still stays silent.
+    if (!confirmedNoUpgradeTarget && !showsPreReleaseNotice(update)) {
       if (installSupport.recommendedCommand) {
         console.log(`Update path: ${installSupport.recommendedCommand}`);
       } else {

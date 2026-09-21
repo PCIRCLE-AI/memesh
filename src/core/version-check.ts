@@ -18,6 +18,46 @@ function isUpdateAvailable(currentVersion: string, latestVersion: string | null)
   return compareSemVerPrecedence(current, latest) < 0;
 }
 
+/**
+ * True when the registry's `latest` has LOWER SemVer precedence than what is
+ * installed — a trial build published under the `next` tag, or an unreleased
+ * branch. That is neither "up to date" nor a reason to run the updater (its
+ * target, `@latest`, would be a downgrade). The exact mirror of
+ * `isUpdateAvailable` above, so the two can never both hold. `memesh doctor`
+ * reaches the same verdict for a build that is ahead of `latest` by version
+ * number and words it "Running pre-release version (X), npm latest is Y". Its
+ * inline test (`latest !== current && !classifyBump(current, latest)`,
+ * doctor.ts) parses versions differently and ignores pre-release and build
+ * tags, so the two can differ for tagged or unparseable versions: a pre-release
+ * of the very version `latest` names (4.10.3-rc.1 against 4.10.3) is behind it
+ * here, while doctor words it as a pre-release build.
+ */
+export function isAheadOfLatest(update: UpdateCheck | null): boolean {
+  if (!update || update.latestVersion === null) return false;
+  const current = parseSemVer(update.currentVersion);
+  const latest = parseSemVer(update.latestVersion);
+  if (!current || !latest) return false;
+  return compareSemVerPrecedence(current, latest) > 0;
+}
+
+/**
+ * True when `formatUpdateCheckStatus` says "running pre-release version": the
+ * install is ahead of `latest` AND nothing that outranks that line speaks
+ * first (a deprecation, an unavailable check, an available update, a partly
+ * failed check). `memesh status` withholds its `Update path:` line on exactly
+ * this test, so the two cannot disagree: every other state keeps its path (a
+ * deprecated install's line already says to update; a partly checked or
+ * unavailable check is uncertain and names no action of its own).
+ */
+export function showsPreReleaseNotice(update: UpdateCheck | null): boolean {
+  return update !== null
+    && isAheadOfLatest(update)
+    && !update.currentVersionDeprecated
+    && update.freshness !== 'unavailable'
+    && !update.updateAvailable
+    && !(update.checkSucceeded && update.lastError);
+}
+
 export type UpdateCheckSource = 'fresh' | 'cache';
 export type UpdateCheckFreshness = 'fresh' | 'cached' | 'stale' | 'unavailable';
 
@@ -620,6 +660,12 @@ export function formatUpdateCheckStatus(update: UpdateCheck | null): string[] {
     // detail line below ("Last update check partial: ...")
     // explains the partial failure.
     lines.push(`Update check: partial — deprecation status unknown (${formatFreshness(update)})`);
+  } else if (showsPreReleaseNotice(update)) {
+    // Newer than npm's `latest` (a trial build on the `next` tag): not "up to
+    // date", and not an update either. Same fact, same words as `memesh doctor`.
+    // (The branches above already left out what the test repeats: `memesh
+    // status` reads the same test to decide about its `Update path:` line.)
+    lines.push(`Update check: running pre-release version (${update.currentVersion}), npm latest is ${update.latestVersion} (${formatFreshness(update)})`);
   } else if (update.latestVersion) {
     lines.push(`Update check: up to date (${formatFreshness(update)}; latest ${update.latestVersion})`);
   } else {

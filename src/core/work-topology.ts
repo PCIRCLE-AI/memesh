@@ -240,10 +240,10 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
   for (const list of [decisions, lessons, knowledge, evidence, global, foreign]) list.sort(bySignal);
 
   const sections: TopologySection[] = [];
-  if (decisions.length) sections.push({ heading: `Decisions and direction for "${projectName}":`, entities: decisions });
-  if (lessons.length) sections.push({ heading: `Lessons from "${projectName}" — do not repeat these:`, entities: lessons });
-  if (knowledge.length) sections.push({ heading: `What is known about "${projectName}":`, entities: knowledge });
-  if (evidence.length) sections.push({ heading: `Recent activity in "${projectName}":`, entities: evidence });
+  if (decisions.length) sections.push({ heading: `Decisions and direction for "${projectLabel(projectName)}":`, entities: decisions });
+  if (lessons.length) sections.push({ heading: `Lessons from "${projectLabel(projectName)}" — do not repeat these:`, entities: lessons });
+  if (knowledge.length) sections.push({ heading: `What is known about "${projectLabel(projectName)}":`, entities: knowledge });
+  if (evidence.length) sections.push({ heading: `Recent activity in "${projectLabel(projectName)}":`, entities: evidence });
   if (global.length) sections.push({ heading: 'Global memory — applies across projects:', entities: global });
   if (foreign.length) sections.push({ heading: 'From your other projects (may or may not apply here):', entities: foreign });
   return sections;
@@ -478,4 +478,42 @@ export function buildReferenceContext(memoryLines: ReadonlyArray<string | null |
     ...safeLines,
     fence,
   ].join('\n');
+}
+
+// =============================================================================
+// projectLabel — how a heading names a project
+// =============================================================================
+//
+// Appended here rather than beside `groupTopology`, which uses it: the audit
+// baseline keys its C5 entry for this file by line number, and a function
+// declaration is hoisted, so where it sits changes nothing but that key.
+
+/** The routing hash `paths.ts` `projectIdentity` appends: `~` + 32 lowercase hex. */
+const PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
+
+/**
+ * The name a HEADING or an empty-state line uses for a project: its id without
+ * the routing hash.
+ *
+ * A project id is `<label>~<32 lowercase hex>` (`getProjectName`, paths.ts) —
+ * the label is for people, the hash is what keeps two projects that share a
+ * name apart. The hash belongs wherever the id IDENTIFIES data (a `project:`
+ * tag, an entity name, the `project` field of a result, `--project`, an inbox
+ * line telling an agent which project to poll); in prose it is 32 characters of
+ * noise repeated in every heading of every session's briefing.
+ *
+ * Exactly one trailing `~<32 lowercase hex>` is removed; anything else comes
+ * back unchanged — an older id with no hash, a label that merely contains `~`,
+ * uppercase or 31/33 hex characters, the empty string. Never a mangled label,
+ * never an empty one: `~<hash>` alone is returned whole, because a heading that
+ * read `""` would say less than the id does.
+ *
+ * The format is composed in paths.ts, not here (this leaf has no imports — the
+ * dashboard bundles it). tests/core/work-topology.test.ts derives real ids from
+ * `getProjectName` and requires this to invert them, so a change to the hash
+ * there fails that test instead of printing the hash again.
+ */
+export function projectLabel(projectId: string): string {
+  const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, '');
+  return label === '' ? projectId : label;
 }

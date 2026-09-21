@@ -6651,7 +6651,9 @@ __export(version_check_exports, {
   checkForUpdate: () => checkForUpdate,
   formatUpdateCheckStatus: () => formatUpdateCheckStatus,
   getLastUpdateCheck: () => getLastUpdateCheck,
-  getUpdateCheck: () => getUpdateCheck
+  getUpdateCheck: () => getUpdateCheck,
+  isAheadOfLatest: () => isAheadOfLatest,
+  showsPreReleaseNotice: () => showsPreReleaseNotice
 });
 import fs4 from "fs";
 import path4 from "path";
@@ -6664,6 +6666,18 @@ function isUpdateAvailable(currentVersion, latestVersion) {
   if (!current || !latest)
     return false;
   return compareSemVerPrecedence(current, latest) < 0;
+}
+function isAheadOfLatest(update) {
+  if (!update || update.latestVersion === null)
+    return false;
+  const current = parseSemVer(update.currentVersion);
+  const latest = parseSemVer(update.latestVersion);
+  if (!current || !latest)
+    return false;
+  return compareSemVerPrecedence(current, latest) > 0;
+}
+function showsPreReleaseNotice(update) {
+  return update !== null && isAheadOfLatest(update) && !update.currentVersionDeprecated && update.freshness !== "unavailable" && !update.updateAvailable && !(update.checkSucceeded && update.lastError);
 }
 function getUpdateCheckPath(updateCheckPath, currentVersion) {
   if (updateCheckPath)
@@ -6956,6 +6970,8 @@ function formatUpdateCheckStatus(update) {
     lines.push(`\u{1F504} Update available: ${update.latestVersion} (${formatFreshness(update)}; run: memesh update)`);
   } else if (update.checkSucceeded && update.lastError) {
     lines.push(`Update check: partial \u2014 deprecation status unknown (${formatFreshness(update)})`);
+  } else if (showsPreReleaseNotice(update)) {
+    lines.push(`Update check: running pre-release version (${update.currentVersion}), npm latest is ${update.latestVersion} (${formatFreshness(update)})`);
   } else if (update.latestVersion) {
     lines.push(`Update check: up to date (${formatFreshness(update)}; latest ${update.latestVersion})`);
   } else {
@@ -23827,289 +23843,6 @@ var init_repo_state = __esm({
   }
 });
 
-// dist/core/task-state.js
-function taskStateName(project) {
-  return `${TASK_STATE_TYPE}:${project}`;
-}
-function parseTaskState(metadata) {
-  const state = {};
-  if (!metadata || typeof metadata !== "object")
-    return state;
-  const raw = metadata.task_state;
-  if (!raw || typeof raw !== "object")
-    return state;
-  const bag = raw;
-  for (const field of TASK_STATE_FIELDS) {
-    const value = bag[field];
-    if (typeof value !== "string")
-      continue;
-    const trimmed = value.trim();
-    if (trimmed)
-      state[field] = trimmed;
-  }
-  const updated = bag.updated_at;
-  if (typeof updated === "string" && updated.trim())
-    state.updated_at = updated.trim();
-  return state;
-}
-function normalizeFieldValue(value) {
-  const flat = value.replace(/\s+/g, " ").trim();
-  if (!flat)
-    return null;
-  return flat.length > MAX_FIELD_CHARS ? `${flat.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat;
-}
-function mergeTaskState(previous, patch, now) {
-  const state = { ...previous };
-  const changed = [];
-  const observations = [];
-  for (const field of TASK_STATE_FIELDS) {
-    const incoming = patch[field];
-    if (incoming === void 0)
-      continue;
-    const normalized = normalizeFieldValue(incoming);
-    const current = state[field];
-    if (normalized === (current ?? null))
-      continue;
-    changed.push(field);
-    if (normalized === null) {
-      delete state[field];
-      observations.push(`${field} cleared`);
-    } else {
-      state[field] = normalized;
-      observations.push(`${field}: ${normalized}`);
-    }
-  }
-  if (changed.length > 0)
-    state.updated_at = now;
-  return { state, changed, observations };
-}
-function isEmptyTaskState(state) {
-  return TASK_STATE_FIELDS.every((field) => !state[field]);
-}
-function ageInDays(updatedAt, now) {
-  if (!updatedAt)
-    return null;
-  const then = Date.parse(updatedAt);
-  if (Number.isNaN(then))
-    return null;
-  const days = Math.floor((now.getTime() - then) / 864e5);
-  return days >= 0 ? days : null;
-}
-function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
-  if (isEmptyTaskState(state))
-    return [];
-  const days = ageInDays(state.updated_at, now);
-  const age = days === null ? "at some point" : days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
-  const lines = [`Stated about "${project}" ${age}, and not revisited since:`];
-  for (const field of TASK_STATE_FIELDS) {
-    const value = state[field];
-    if (value)
-      lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
-  }
-  return lines;
-}
-function isLeapYear(year) {
-  return year % 4 === 0 && year % 100 !== 0 || year % 400 === 0;
-}
-function daysInMonth(year, month) {
-  return month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
-}
-function isRealInstant(groups) {
-  const year = Number(groups.year);
-  const month = Number(groups.month);
-  const day = Number(groups.day);
-  const hour = Number(groups.hour);
-  const minute = Number(groups.minute);
-  const second = groups.second === void 0 ? 0 : Number(groups.second);
-  if (month < 1 || month > 12)
-    return false;
-  if (day < 1 || day > daysInMonth(year, month))
-    return false;
-  if (hour > 23)
-    return false;
-  if (minute > 59)
-    return false;
-  if (second > 59)
-    return false;
-  if (groups.zulu === void 0) {
-    const offHour = Number(groups.offHour);
-    const offMinute = Number(groups.offMinute);
-    if (offHour > 23 || offMinute > 59)
-      return false;
-    if (groups.offSign === "-" && offHour === 0 && offMinute === 0)
-      return false;
-  }
-  return true;
-}
-function resolveTaskStateAge(updatedAt, now) {
-  if (!updatedAt)
-    return { known: false };
-  const match = ZONED_INSTANT.exec(updatedAt);
-  if (!match?.groups || !isRealInstant(match.groups))
-    return { known: false };
-  const then = Date.parse(updatedAt);
-  if (Number.isNaN(then))
-    return { known: false };
-  const hours = (now.getTime() - then) / 36e5;
-  if (hours < -(CLOCK_SKEW_ALLOWANCE_MINUTES / 60))
-    return { known: false };
-  return { known: true, hours: Math.max(0, hours) };
-}
-function staleTaskStateLine(project, hours) {
-  const days = Math.floor(hours / 24);
-  const age = days >= 1 ? `${days} day${days === 1 ? "" : "s"} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? "" : "s"} ago`;
-  return `Task state for "${project}" was last stated ${age} \u2014 older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
-}
-function taskStateAgeUnknownLine(project) {
-  return `Task state for "${project}" has a missing, unreadable, or future-dated timestamp, so its age could not be established \u2014 not shown as current. Run \`memesh task\` to see or update it.`;
-}
-function briefingTaskStateLines(state, project, now = /* @__PURE__ */ new Date(), { includeFresh = true } = {}) {
-  if (isEmptyTaskState(state))
-    return [];
-  const age = resolveTaskStateAge(state.updated_at, now);
-  if (!age.known)
-    return [taskStateAgeUnknownLine(project)];
-  if (age.hours > STALE_TASK_STATE_HOURS) {
-    return [staleTaskStateLine(project, age.hours)];
-  }
-  return includeFresh ? taskStateLines(state, project, now) : [];
-}
-var TASK_STATE_TYPE, TASK_STATE_FIELDS, MAX_FIELD_CHARS, FIELD_LABELS, STALE_TASK_STATE_HOURS, CLOCK_SKEW_ALLOWANCE_MINUTES, ZONED_INSTANT, DAYS_IN_MONTH;
-var init_task_state = __esm({
-  "dist/core/task-state.js"() {
-    "use strict";
-    TASK_STATE_TYPE = "task-state";
-    TASK_STATE_FIELDS = ["goal", "next", "blocked", "done"];
-    MAX_FIELD_CHARS = 300;
-    FIELD_LABELS = {
-      goal: "Goal",
-      next: "Next",
-      blocked: "Blocked",
-      done: "Had just finished"
-    };
-    STALE_TASK_STATE_HOURS = 72;
-    CLOCK_SKEW_ALLOWANCE_MINUTES = 5;
-    ZONED_INSTANT = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt](?<hour>\d{2}):(?<minute>\d{2})(?::(?<second>\d{2})(?:\.\d+)?)?(?:(?<zulu>[Zz])|(?<offSign>[+-])(?<offHour>\d{2}):?(?<offMinute>\d{2}))$/;
-    DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  }
-});
-
-// dist/core/task-state-store.js
-function readState(name) {
-  const row = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
-  if (!row?.metadata)
-    return { state: {}, corrupted: false };
-  let parsed;
-  try {
-    parsed = JSON.parse(row.metadata);
-  } catch {
-    return { state: {}, corrupted: true };
-  }
-  return { state: parseTaskState(parsed), corrupted: false };
-}
-function getTaskState(project) {
-  const resolved = project ?? getProjectName();
-  const { state, corrupted } = readState(taskStateName(resolved));
-  if (corrupted)
-    throw new TaskStateUnreadableError(resolved);
-  return { project: resolved, state };
-}
-function setTaskState(input) {
-  const project = input.project ?? getProjectName();
-  const name = taskStateName(project);
-  const { state: previous } = readState(name);
-  const { state, changed, observations } = mergeTaskState(previous, input.patch, (/* @__PURE__ */ new Date()).toISOString());
-  if (changed.length === 0)
-    return { project, state, changed };
-  const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
-  remember({
-    name,
-    type: TASK_STATE_TYPE,
-    observations,
-    tags: [`project:${project}`],
-    title,
-    sourceHost: input.sourceHost
-  });
-  new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
-    ...current,
-    task_state: state
-  }));
-  return { project, state, changed };
-}
-var TaskStateUnreadableError;
-var init_task_state_store = __esm({
-  "dist/core/task-state-store.js"() {
-    "use strict";
-    init_db();
-    init_knowledge_graph();
-    init_paths();
-    init_operations();
-    init_task_state();
-    TaskStateUnreadableError = class extends Error {
-      project;
-      constructor(project) {
-        super(`task state for project "${project}" is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal \u2026\` (any write replaces the broken record).`);
-        this.project = project;
-        this.name = "TaskStateUnreadableError";
-      }
-    };
-  }
-});
-
-// dist/core/agent-message-inbox.js
-function unreadDeliveryCount(db2, project, recipient) {
-  if (!recipient)
-    return 0;
-  try {
-    const row = db2.prepare(`SELECT COUNT(*) AS n
-       FROM agent_message_deliveries d
-       WHERE d.project = ?
-         AND d.recipient = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM agent_message_receipts r
-           WHERE r.project = d.project
-             AND r.recipient = d.recipient
-             AND r.message_id = d.message_id
-             AND r.receipt_kind = 'intake'
-         )`).get(project, recipient);
-    const n = row?.n;
-    return typeof n === "number" && n > 0 ? n : 0;
-  } catch {
-    return 0;
-  }
-}
-function recipientEverSeen(db2, project, recipient) {
-  try {
-    const row = db2.prepare(`SELECT (
-         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
-         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
-         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
-       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
-    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
-  } catch {
-    return void 0;
-  }
-}
-function unreadInboxLines(count, project, recipient, everSeen) {
-  if (!recipient)
-    return [];
-  const displayProject = JSON.stringify(project);
-  const displayRecipient = JSON.stringify(recipient);
-  if (count > 0) {
-    const noun = count === 1 ? "message" : "messages";
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record the intake action for it: fetching alone does not acknowledge, and only intake ends this line.`];
-  }
-  if (everSeen === false) {
-    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
-  }
-  return [];
-}
-var init_agent_message_inbox = __esm({
-  "dist/core/agent-message-inbox.js"() {
-    "use strict";
-  }
-});
-
 // dist/core/work-topology.js
 function isAutoInjectable(metadata) {
   if (metadata == null)
@@ -24188,13 +23921,13 @@ function groupTopology(entities, projectName) {
     list.sort(bySignal);
   const sections = [];
   if (decisions.length)
-    sections.push({ heading: `Decisions and direction for "${projectName}":`, entities: decisions });
+    sections.push({ heading: `Decisions and direction for "${projectLabel(projectName)}":`, entities: decisions });
   if (lessons.length)
-    sections.push({ heading: `Lessons from "${projectName}" \u2014 do not repeat these:`, entities: lessons });
+    sections.push({ heading: `Lessons from "${projectLabel(projectName)}" \u2014 do not repeat these:`, entities: lessons });
   if (knowledge.length)
-    sections.push({ heading: `What is known about "${projectName}":`, entities: knowledge });
+    sections.push({ heading: `What is known about "${projectLabel(projectName)}":`, entities: knowledge });
   if (evidence.length)
-    sections.push({ heading: `Recent activity in "${projectName}":`, entities: evidence });
+    sections.push({ heading: `Recent activity in "${projectLabel(projectName)}":`, entities: evidence });
   if (global2.length)
     sections.push({ heading: "Global memory \u2014 applies across projects:", entities: global2 });
   if (foreign.length)
@@ -24281,7 +24014,11 @@ function buildReferenceContext(memoryLines) {
     fence
   ].join("\n");
 }
-var LESSON_TYPES, WORK_LAYER_TYPES, EVIDENCE_LAYER_TYPES, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS;
+function projectLabel(projectId) {
+  const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, "");
+  return label === "" ? projectId : label;
+}
+var LESSON_TYPES, WORK_LAYER_TYPES, EVIDENCE_LAYER_TYPES, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, PROJECT_ID_HASH_SUFFIX;
 var init_work_topology = __esm({
   "dist/core/work-topology.js"() {
     "use strict";
@@ -24320,6 +24057,292 @@ var init_work_topology = __esm({
     };
     TOPOLOGY_CANDIDATE_CAP = 400;
     SNIPPET_FETCH_CHARS = DEFAULT_TOPOLOGY_BUDGET.maxLineChars * 4;
+    PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
+  }
+});
+
+// dist/core/task-state.js
+function taskStateName(project) {
+  return `${TASK_STATE_TYPE}:${project}`;
+}
+function parseTaskState(metadata) {
+  const state = {};
+  if (!metadata || typeof metadata !== "object")
+    return state;
+  const raw = metadata.task_state;
+  if (!raw || typeof raw !== "object")
+    return state;
+  const bag = raw;
+  for (const field of TASK_STATE_FIELDS) {
+    const value = bag[field];
+    if (typeof value !== "string")
+      continue;
+    const trimmed = value.trim();
+    if (trimmed)
+      state[field] = trimmed;
+  }
+  const updated = bag.updated_at;
+  if (typeof updated === "string" && updated.trim())
+    state.updated_at = updated.trim();
+  return state;
+}
+function normalizeFieldValue(value) {
+  const flat = value.replace(/\s+/g, " ").trim();
+  if (!flat)
+    return null;
+  return flat.length > MAX_FIELD_CHARS ? `${flat.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat;
+}
+function mergeTaskState(previous, patch, now) {
+  const state = { ...previous };
+  const changed = [];
+  const observations = [];
+  for (const field of TASK_STATE_FIELDS) {
+    const incoming = patch[field];
+    if (incoming === void 0)
+      continue;
+    const normalized = normalizeFieldValue(incoming);
+    const current = state[field];
+    if (normalized === (current ?? null))
+      continue;
+    changed.push(field);
+    if (normalized === null) {
+      delete state[field];
+      observations.push(`${field} cleared`);
+    } else {
+      state[field] = normalized;
+      observations.push(`${field}: ${normalized}`);
+    }
+  }
+  if (changed.length > 0)
+    state.updated_at = now;
+  return { state, changed, observations };
+}
+function isEmptyTaskState(state) {
+  return TASK_STATE_FIELDS.every((field) => !state[field]);
+}
+function ageInDays(updatedAt, now) {
+  if (!updatedAt)
+    return null;
+  const then = Date.parse(updatedAt);
+  if (Number.isNaN(then))
+    return null;
+  const days = Math.floor((now.getTime() - then) / 864e5);
+  return days >= 0 ? days : null;
+}
+function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
+  if (isEmptyTaskState(state))
+    return [];
+  const days = ageInDays(state.updated_at, now);
+  const age = days === null ? "at some point" : days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+  const lines = [`Stated about "${projectLabel(project)}" ${age}, and not revisited since:`];
+  for (const field of TASK_STATE_FIELDS) {
+    const value = state[field];
+    if (value)
+      lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
+  }
+  return lines;
+}
+function isLeapYear(year) {
+  return year % 4 === 0 && year % 100 !== 0 || year % 400 === 0;
+}
+function daysInMonth(year, month) {
+  return month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+}
+function isRealInstant(groups) {
+  const year = Number(groups.year);
+  const month = Number(groups.month);
+  const day = Number(groups.day);
+  const hour = Number(groups.hour);
+  const minute = Number(groups.minute);
+  const second = groups.second === void 0 ? 0 : Number(groups.second);
+  if (month < 1 || month > 12)
+    return false;
+  if (day < 1 || day > daysInMonth(year, month))
+    return false;
+  if (hour > 23)
+    return false;
+  if (minute > 59)
+    return false;
+  if (second > 59)
+    return false;
+  if (groups.zulu === void 0) {
+    const offHour = Number(groups.offHour);
+    const offMinute = Number(groups.offMinute);
+    if (offHour > 23 || offMinute > 59)
+      return false;
+    if (groups.offSign === "-" && offHour === 0 && offMinute === 0)
+      return false;
+  }
+  return true;
+}
+function resolveTaskStateAge(updatedAt, now) {
+  if (!updatedAt)
+    return { known: false };
+  const match = ZONED_INSTANT.exec(updatedAt);
+  if (!match?.groups || !isRealInstant(match.groups))
+    return { known: false };
+  const then = Date.parse(updatedAt);
+  if (Number.isNaN(then))
+    return { known: false };
+  const hours = (now.getTime() - then) / 36e5;
+  if (hours < -(CLOCK_SKEW_ALLOWANCE_MINUTES / 60))
+    return { known: false };
+  return { known: true, hours: Math.max(0, hours) };
+}
+function staleTaskStateLine(project, hours) {
+  const days = Math.floor(hours / 24);
+  const age = days >= 1 ? `${days} day${days === 1 ? "" : "s"} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? "" : "s"} ago`;
+  return `Task state for "${projectLabel(project)}" was last stated ${age} \u2014 older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
+}
+function taskStateAgeUnknownLine(project) {
+  return `Task state for "${projectLabel(project)}" has a missing, unreadable, or future-dated timestamp, so its age could not be established \u2014 not shown as current. Run \`memesh task\` to see or update it.`;
+}
+function briefingTaskStateLines(state, project, now = /* @__PURE__ */ new Date(), { includeFresh = true } = {}) {
+  if (isEmptyTaskState(state))
+    return [];
+  const age = resolveTaskStateAge(state.updated_at, now);
+  if (!age.known)
+    return [taskStateAgeUnknownLine(project)];
+  if (age.hours > STALE_TASK_STATE_HOURS) {
+    return [staleTaskStateLine(project, age.hours)];
+  }
+  return includeFresh ? taskStateLines(state, project, now) : [];
+}
+var TASK_STATE_TYPE, TASK_STATE_FIELDS, MAX_FIELD_CHARS, FIELD_LABELS, STALE_TASK_STATE_HOURS, CLOCK_SKEW_ALLOWANCE_MINUTES, ZONED_INSTANT, DAYS_IN_MONTH;
+var init_task_state = __esm({
+  "dist/core/task-state.js"() {
+    "use strict";
+    init_work_topology();
+    TASK_STATE_TYPE = "task-state";
+    TASK_STATE_FIELDS = ["goal", "next", "blocked", "done"];
+    MAX_FIELD_CHARS = 300;
+    FIELD_LABELS = {
+      goal: "Goal",
+      next: "Next",
+      blocked: "Blocked",
+      done: "Had just finished"
+    };
+    STALE_TASK_STATE_HOURS = 72;
+    CLOCK_SKEW_ALLOWANCE_MINUTES = 5;
+    ZONED_INSTANT = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt](?<hour>\d{2}):(?<minute>\d{2})(?::(?<second>\d{2})(?:\.\d+)?)?(?:(?<zulu>[Zz])|(?<offSign>[+-])(?<offHour>\d{2}):?(?<offMinute>\d{2}))$/;
+    DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  }
+});
+
+// dist/core/task-state-store.js
+function readState(name) {
+  const row = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
+  if (!row?.metadata)
+    return { state: {}, corrupted: false };
+  let parsed;
+  try {
+    parsed = JSON.parse(row.metadata);
+  } catch {
+    return { state: {}, corrupted: true };
+  }
+  return { state: parseTaskState(parsed), corrupted: false };
+}
+function getTaskState(project) {
+  const resolved = project ?? getProjectName();
+  const { state, corrupted } = readState(taskStateName(resolved));
+  if (corrupted)
+    throw new TaskStateUnreadableError(resolved);
+  return { project: resolved, state };
+}
+function setTaskState(input) {
+  const project = input.project ?? getProjectName();
+  const name = taskStateName(project);
+  const { state: previous } = readState(name);
+  const { state, changed, observations } = mergeTaskState(previous, input.patch, (/* @__PURE__ */ new Date()).toISOString());
+  if (changed.length === 0)
+    return { project, state, changed };
+  const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
+  remember({
+    name,
+    type: TASK_STATE_TYPE,
+    observations,
+    tags: [`project:${project}`],
+    title,
+    sourceHost: input.sourceHost
+  });
+  new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
+    ...current,
+    task_state: state
+  }));
+  return { project, state, changed };
+}
+var TaskStateUnreadableError;
+var init_task_state_store = __esm({
+  "dist/core/task-state-store.js"() {
+    "use strict";
+    init_db();
+    init_knowledge_graph();
+    init_paths();
+    init_operations();
+    init_work_topology();
+    init_task_state();
+    TaskStateUnreadableError = class extends Error {
+      project;
+      constructor(project) {
+        super(`task state for project "${projectLabel(project)}" is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal \u2026\` (any write replaces the broken record).`);
+        this.project = project;
+        this.name = "TaskStateUnreadableError";
+      }
+    };
+  }
+});
+
+// dist/core/agent-message-inbox.js
+function unreadDeliveryCount(db2, project, recipient) {
+  if (!recipient)
+    return 0;
+  try {
+    const row = db2.prepare(`SELECT COUNT(*) AS n
+       FROM agent_message_deliveries d
+       WHERE d.project = ?
+         AND d.recipient = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_message_receipts r
+           WHERE r.project = d.project
+             AND r.recipient = d.recipient
+             AND r.message_id = d.message_id
+             AND r.receipt_kind = 'intake'
+         )`).get(project, recipient);
+    const n = row?.n;
+    return typeof n === "number" && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+function recipientEverSeen(db2, project, recipient) {
+  try {
+    const row = db2.prepare(`SELECT (
+         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
+         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
+         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
+       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
+    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
+  } catch {
+    return void 0;
+  }
+}
+function unreadInboxLines(count, project, recipient, everSeen) {
+  if (!recipient)
+    return [];
+  const displayProject = JSON.stringify(project);
+  const displayRecipient = JSON.stringify(recipient);
+  if (count > 0) {
+    const noun = count === 1 ? "message" : "messages";
+    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record the intake action for it: fetching alone does not acknowledge, and only intake ends this line.`];
+  }
+  if (everSeen === false) {
+    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
+  }
+  return [];
+}
+var init_agent_message_inbox = __esm({
+  "dist/core/agent-message-inbox.js"() {
+    "use strict";
   }
 });
 
@@ -24375,10 +24398,10 @@ function indexLine(candidate) {
   return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
 }
 function indexHeading(projectName) {
-  return `Index of durable memories for "${projectName}" (newest first):`;
+  return `Index of durable memories for "${projectLabel(projectName)}" (newest first):`;
 }
 function indexEmptyLine(projectName) {
-  return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
+  return `- No durable memories (decisions, lessons, patterns, references) for "${projectLabel(projectName)}" yet.`;
 }
 function moreLine(n, truncated) {
   return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag "project:\u2026"`;
@@ -24630,7 +24653,7 @@ function assembleBriefing(project, recipient) {
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError))
       throw err;
-    taskLines = [`task state for ${projectName}: ${err.message}`];
+    taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
   }
   const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
   const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient);
@@ -24689,7 +24712,7 @@ function assembleBriefing(project, recipient) {
     project: projectName,
     text: empty ? "" : buildReferenceContext(block),
     entityCount: lines.filter((l) => l.startsWith("- [")).length,
-    hasTaskState: stateLines.length > 0,
+    hasTaskState: taskLines.length > 0,
     index,
     level,
     empty
@@ -62167,7 +62190,7 @@ program2.command("task").description("Show or update where the work stands on th
       }
       const lines = taskStateLines(state, project);
       if (lines.length === 0) {
-        console.log(`Nothing recorded for "${project}" yet.
+        console.log(`Nothing recorded for "${projectLabel(project)}" yet.
 Set it with:  memesh task --goal "\u2026" --next "\u2026"`);
         return;
       }
@@ -62180,10 +62203,10 @@ Set it with:  memesh task --goal "\u2026" --next "\u2026"`);
       return;
     }
     if (result.changed.length === 0) {
-      console.log(`No change \u2014 "${result.project}" already said exactly that.`);
+      console.log(`No change \u2014 "${projectLabel(result.project)}" already said exactly that.`);
       return;
     }
-    console.log(`Updated ${result.changed.join(", ")} for "${result.project}".`);
+    console.log(`Updated ${result.changed.join(", ")} for "${projectLabel(result.project)}".`);
     console.log(taskStateLines(result.state, result.project).join("\n"));
   });
 });
@@ -62191,15 +62214,24 @@ var configCmd = program2.command("config").description("Manage configuration");
 configCmd.command("list").description("Show current configuration").action(() => {
   const config2 = readConfig();
   console.log("Configuration (~/.memesh/config.json):");
-  const rows = buildConfigListing(config2);
-  if (rows.length === 0) {
-    console.log("  (no keys set \u2014 all defaults)");
-  } else {
-    for (const { key, value } of rows)
-      console.log(`  ${key}: ${value}`);
-  }
+  const stored = buildConfigListing(config2);
+  if (stored.length === 0)
+    console.log("  (nothing stored \u2014 all defaults)");
+  const rows = [
+    ...stored.filter(({ key }) => key !== "briefing"),
+    { key: "briefing", value: describeEffectiveBriefing(config2.briefing) }
+  ].sort((a, b) => a.key < b.key ? -1 : 1);
+  for (const { key, value } of rows)
+    console.log(`  ${key}: ${value}`);
 });
 var ALLOWED_KEYS = /* @__PURE__ */ new Set(["autoUpdate", "sessionLimit", "autoCapture", "updateCheck", "briefing"]);
+function requireAllowedKey(key) {
+  if (ALLOWED_KEYS.has(key))
+    return;
+  console.error(`Unknown key: ${key}`);
+  console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(", ")}`);
+  process.exit(1);
+}
 var KEY_VALIDATORS = {
   autoUpdate: (v) => ["off", "patch", "minor", "major"].includes(v) ? null : "must be one of: off, patch, minor, major",
   autoCapture: (v) => ["true", "false", "1", "0"].includes(v) ? null : "must be one of: true, false, 1, 0",
@@ -62216,46 +62248,52 @@ function buildConfigListing(config2) {
   }
   return rows;
 }
-configCmd.command("set").description("Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck, briefing)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value").action((key, value) => {
-  const canonical = key;
-  if (!ALLOWED_KEYS.has(canonical)) {
-    console.error(`Unknown key: ${key}`);
-    console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(", ")}`);
-    process.exit(1);
+function describeEffectiveBriefing(configValue) {
+  const envValue = process.env.MEMESH_BRIEFING;
+  const { level, invalid } = resolveBriefingLevel(envValue, configValue);
+  if (invalid) {
+    const where = invalid.source === "env" ? "env MEMESH_BRIEFING" : "config.json";
+    return `${level} (default; the value in ${where} is invalid: ${invalid.value})`;
   }
-  const validate = KEY_VALIDATORS[canonical];
+  if (envValue !== void 0)
+    return `${level} (env MEMESH_BRIEFING)`;
+  return configValue !== void 0 ? `${level} (config.json)` : `${level} (default)`;
+}
+configCmd.command("get").description("Show one stored config value (for `briefing`, what is stored, not the level in effect that `config list` shows)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").action((key) => {
+  requireAllowedKey(key);
+  const row = buildConfigListing(readConfig()).find((r) => r.key === key);
+  console.log(row ? row.value : `${key} is not set in config.json`);
+});
+configCmd.command("set").description("Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck, briefing)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value").action((key, value) => {
+  requireAllowedKey(key);
+  const validate = KEY_VALIDATORS[key];
   if (validate) {
     const err = validate(value);
     if (err) {
-      console.error(`Invalid value for ${canonical}: ${err}`);
+      console.error(`Invalid value for ${key}: ${err}`);
       process.exit(1);
     }
   }
   let coerced = value;
-  if (canonical === "sessionLimit") {
+  if (key === "sessionLimit") {
     coerced = wholeNumber("sessionLimit")(value);
   }
-  if (canonical === "autoCapture" || canonical === "updateCheck") {
+  if (key === "autoCapture" || key === "updateCheck") {
     coerced = value === "true" || value === "1";
   }
-  updateConfig({ [canonical]: coerced });
+  updateConfig({ [key]: coerced });
   const displayValue = String(value);
-  console.log(`\u2705 Set ${canonical} = ${displayValue}`);
+  console.log(`\u2705 Set ${key} = ${displayValue}`);
 });
 configCmd.command("unset").description("Remove a config value (ordinary settings only)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").action((key) => {
-  const canonical = key;
-  if (!ALLOWED_KEYS.has(canonical)) {
-    console.error(`Unknown key: ${key}`);
-    console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(", ")}`);
-    process.exit(1);
-  }
-  const removed = canonical in readConfig();
-  updateConfig({ [canonical]: void 0 });
+  requireAllowedKey(key);
+  const removed = key in readConfig();
+  updateConfig({ [key]: void 0 });
   if (!removed) {
-    console.log(`(no change \u2014 ${canonical} was not set)`);
+    console.log(`(no change \u2014 ${key} was not set)`);
     return;
   }
-  console.log(`\u2705 Removed ${canonical}`);
+  console.log(`\u2705 Removed ${key}`);
 });
 program2.command("export-schema").description("Export MeMesh tools in OpenAI function calling format").option("--format <format>", "Output format (openai)", "openai").action(async (opts) => {
   const { exportOpenAITools: exportOpenAITools2 } = await Promise.resolve().then(() => (init_schema_export(), schema_export_exports));
@@ -63064,7 +63102,7 @@ program2.command("status").description("Show MeMesh status").option("--cached", 
   const { getCurrentInstallChannel: getCurrentInstallChannel2, getInstallChannelSupport: getInstallChannelSupport2 } = await Promise.resolve().then(() => (init_install_channel(), install_channel_exports));
   const install = getCurrentInstallChannel2({ packageRoot: packageRoot2 });
   const installSupport = getInstallChannelSupport2(install, packageRoot2);
-  const { getUpdateCheck: getUpdateCheck2, formatUpdateCheckStatus: formatUpdateCheckStatus2 } = await Promise.resolve().then(() => (init_version_check(), version_check_exports));
+  const { getUpdateCheck: getUpdateCheck2, formatUpdateCheckStatus: formatUpdateCheckStatus2, showsPreReleaseNotice: showsPreReleaseNotice2 } = await Promise.resolve().then(() => (init_version_check(), version_check_exports));
   const update = await getUpdateCheck2(pkg.version, { preferFresh: !opts.cached });
   console.log(`MeMesh v${pkg.version}`);
   console.log(`Install method: ${installSupport.label}`);
@@ -63073,7 +63111,7 @@ program2.command("status").description("Show MeMesh status").option("--cached", 
 ${line}`);
   }
   const confirmedNoUpgradeTarget = Boolean(update?.currentVersionDeprecated && update.latestVersion && update.latestVersion === update.currentVersion && update.freshness === "fresh");
-  if (!confirmedNoUpgradeTarget) {
+  if (!confirmedNoUpgradeTarget && !showsPreReleaseNotice2(update)) {
     if (installSupport.recommendedCommand) {
       console.log(`Update path: ${installSupport.recommendedCommand}`);
     } else {

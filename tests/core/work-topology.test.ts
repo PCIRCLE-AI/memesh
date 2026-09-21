@@ -14,10 +14,16 @@
  * one, and it must never come back empty on a graph that only has mechanical
  * capture in it (which is every graph on day one).
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { execFileSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
+import { getProjectName } from '../../src/core/paths.js';
 import {
   WORK_LAYER_TYPES,
   layerOf,
+  projectLabel,
   topologyLine,
   extractCitedMemoryIds,
   groupTopology,
@@ -293,5 +299,91 @@ describe('work-topology', () => {
     expect(layerOf('commit')).toBe('evidence');
     expect(layerOf('decision')).toBe('work');
     expect(layerOf('fact')).toBe('knowledge');
+  });
+});
+
+// A project id is `<label>~<32 lowercase hex>`. Every heading of the briefing
+// used to print all of it — 32 characters of hash, three times in a `minimal`
+// block — where the reader needs only the label. The hash stays wherever the id
+// identifies data; `projectLabel` is the one rule for prose.
+describe('projectLabel — the name a heading uses for a project', () => {
+  const HASH = '2c0fe491888c8efb9a4894828bbc2733';
+
+  it.each([
+    ['a hashed id', `memesh~${HASH}`, 'memesh'],
+    ['an older id with no hash', 'memesh', 'memesh'],
+    ['a label that itself contains ~', `a~b~${HASH}`, 'a~b'],
+    ['a label that ends in ~', `odd~~${HASH}`, 'odd~'],
+    ['a label with spaces and non-ASCII', `我的 project~${HASH}`, '我的 project'],
+    ['a label with a newline', `line1\nline2~${HASH}`, 'line1\nline2'],
+    ['exactly one trailing hash is removed', `memesh~${HASH}~${HASH}`, `memesh~${HASH}`],
+    ['a ~ followed by something that is not a hash', 'memesh~notahash', 'memesh~notahash'],
+    ['a hash that is not at the end', `memesh~${HASH}~tail`, `memesh~${HASH}~tail`],
+    ['UPPERCASE hex is not the id format', `memesh~${HASH.toUpperCase()}`, `memesh~${HASH.toUpperCase()}`],
+    ['31 hex characters', `memesh~${HASH.slice(1)}`, `memesh~${HASH.slice(1)}`],
+    ['33 hex characters', `memesh~${HASH}f`, `memesh~${HASH}f`],
+    ['32 characters that are not all hex', `memesh~${HASH.slice(1)}g`, `memesh~${HASH.slice(1)}g`],
+    ['a trailing newline after the hash', `memesh~${HASH}\n`, `memesh~${HASH}\n`],
+    ['the empty string', '', ''],
+    ['a hash with no label (never emitted — returned whole, not as "")', `~${HASH}`, `~${HASH}`],
+  ])('%s', (_name, id, label) => {
+    expect(projectLabel(id)).toBe(label);
+  });
+
+  describe('against the ids getProjectName really produces', () => {
+    const dirs: string[] = [];
+    afterEach(() => {
+      for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    });
+    const scratch = (name: string) => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-label-'));
+      dirs.push(dir);
+      const project = path.join(dir, name);
+      fs.mkdirSync(project);
+      return project;
+    };
+    const HASHED = /^(.+)~([0-9a-f]{32})$/;
+
+    it('a plain directory: the label is its name, and label + ~ + hash is the id', () => {
+      const id = getProjectName(scratch('my-notes'));
+      const match = HASHED.exec(id);
+      expect(match, `getProjectName no longer emits <label>~<32 hex>: ${id}`).not.toBeNull();
+      expect(projectLabel(id)).toBe('my-notes');
+      expect(`${projectLabel(id)}~${match![2]}`).toBe(id);
+    });
+
+    it('a git repo with a remote: the label is the repository name', () => {
+      const cwd = scratch('checkout-dir');
+      execFileSync('git', ['-C', cwd, 'init', '-q']);
+      execFileSync('git', ['-C', cwd, 'remote', 'add', 'origin', 'https://github.com/acme/widgets.git']);
+      const id = getProjectName(cwd);
+      expect(HASHED.test(id), id).toBe(true);
+      expect(projectLabel(id)).toBe('widgets');
+    });
+
+    it('a label that contains ~ survives', () => {
+      const id = getProjectName(scratch('a~b'));
+      expect(projectLabel(id)).toBe('a~b');
+    });
+  });
+
+  it('every heading and section of the block names the project by its label, never the hash', () => {
+    const id = `memesh~${HASH}`;
+    const lines = assembleTopologyBlock([], [{
+      entities: [
+        entity({ type: 'decision', name: 'd', title: 'A decision' }),
+        entity({ type: 'lesson_learned', name: 'l', title: 'A lesson' }),
+        entity({ type: 'reference', name: 'k', title: 'A fact' }),
+        entity({ type: 'commit', name: 'c', title: 'A commit' }),
+      ],
+      foreign: false,
+    }], id);
+    for (const heading of [
+      'Decisions and direction for "memesh":',
+      'Lessons from "memesh" — do not repeat these:',
+      'What is known about "memesh":',
+      'Recent activity in "memesh":',
+    ]) expect(lines, heading).toContain(heading);
+    expect(lines.join('\n')).not.toContain(HASH);
   });
 });
