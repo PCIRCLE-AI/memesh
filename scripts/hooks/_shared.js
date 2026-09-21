@@ -528,26 +528,42 @@ export function resolveMessageRecipient(env = process.env) {
 }
 
 /**
- * The reminder lines for `recipient` from an open database. Never throws: a
- * reminder must not be the reason a prompt or a session start fails, and a
- * failure that is not "nothing waiting" is said on stderr, not swallowed.
+ * A failed inbox read is said twice: the full text on stderr, and one `error`
+ * outcome in the ledger through the calling hook's own recorder. Without the
+ * second, the ledger reads as a clean run and nothing afterwards can tell
+ * "no message was waiting" from "the inbox could not be read". The recorder
+ * gets the exception; it should persist a label, never the message (the
+ * ledger is permanent and exportable, see `hookErrorReason`).
  */
-export function waitingMessageLines(db, recipient) {
+function inboxReadFailed(err, recordFailure) {
+  try { process.stderr.write(`[memesh] could not check for waiting messages: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+  recordFailure?.(err);
+  return [];
+}
+
+/**
+ * The reminder lines for `recipient` from an open database. Never throws
+ * itself: a reminder must not be the reason a prompt or a session start fails,
+ * and a failure that is not "nothing waiting" is said on stderr and handed to
+ * `recordFailure`, not swallowed. `recordFailure` must not throw either; both
+ * hooks pass one built on `recordHookOutcome`, which cannot.
+ */
+export function waitingMessageLines(db, recipient, recordFailure) {
   if (!recipient) return [];
   try {
     return unreadInboxLinesFor(db, recipient);
   } catch (err) {
-    try { process.stderr.write(`[memesh] could not check for waiting messages: ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    return [];
+    return inboxReadFailed(err, recordFailure);
   }
 }
 
 /**
  * The reminder lines for messages waiting for this session's declared
  * recipient. No `MEMESH_RECIPIENT` or no database: no lines, and the database
- * is not opened. Read-only, and it never throws.
+ * is not opened. Read-only, and it never throws (given a `recordFailure` that
+ * does not, see `waitingMessageLines`).
  */
-export function unreadMessageLines(env = process.env) {
+export function unreadMessageLines(env = process.env, recordFailure) {
   const recipient = resolveMessageRecipient(env);
   if (!recipient) return [];
   const dbPath = env.MEMESH_DB_PATH ?? getDbPath();
@@ -557,10 +573,9 @@ export function unreadMessageLines(env = process.env) {
     // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling.
     db = new MemeshDatabase(dbPath, { readOnly: true });
     db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
-    return waitingMessageLines(db, recipient);
+    return waitingMessageLines(db, recipient, recordFailure);
   } catch (err) {
-    try { process.stderr.write(`[memesh] could not check for waiting messages: ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    return [];
+    return inboxReadFailed(err, recordFailure);
   } finally {
     try { db?.close(); } catch { /* already closed */ }
   }

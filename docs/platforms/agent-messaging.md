@@ -25,7 +25,11 @@ until the session records the `intake` action for them (fetching alone does not
 end it). An ordinary Claude Code session started without the channel flag
 has no other identity a sender could address, so without this variable it only
 sees messages it polls for itself. A value over 200 characters is ignored with
-a line on stderr. A caller that already knows its exact
+a line on stderr. If the inbox cannot be read (its receipts table will not
+load, for example), the prompt or session start goes ahead without the
+reminder, says so on stderr, and records an `error` in `hook-outcomes.jsonl`
+(`inbox: uncaught <code>`), so a run that could not look is not mistaken for
+one where nothing was waiting. A caller that already knows its exact
 logical recipient may pass both `project` and `recipient` to `briefing`; the
 result reports only that recipient's unfetched deliveries and tells it to
 `message poll` with the exact scope before fetching each returned
