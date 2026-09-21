@@ -940,6 +940,14 @@ function codePointAt(text, i) {
 // down to `1/.../CLAUDE.md`, a suffix of nothing, so a memory naming the exact
 // file was never recalled. A home-relative `~/docs/CLAUDE.md` is unaffected:
 // it was not a suffix of the edited path before and is not one now.
+//
+// The other side of the same change: a `~` glued to the front of a mention
+// is now part of it, so `x~docs/CLAUDE.md` is no longer read as
+// `docs/CLAUDE.md`, and `x~C:\repo\docs\CLAUDE.md` no longer gets its drive
+// letter spliced on (the splice requires a non-token character, or the start
+// of the text, before the letter). The first used to confirm because the walk
+// stopped at the `~`; the second because the drive-letter splice fired, which
+// it no longer does. Neither string is a path that names the edited file.
 const PATH_TOKEN_CHAR = /[\p{L}\p{M}\p{N}_.~\-/\\]/u;
 // A single ASCII drive letter immediately followed by `:` — the two
 // characters `pathMentionMatches` splices onto the front of a walked-back

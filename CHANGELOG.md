@@ -218,7 +218,9 @@ All notable changes to MeMesh are documented here.
     `notes/CLAUDE.md?x=1`), still confirms — a fragment/query does not
     change which file a path points at. The path-token scan is
     Unicode-aware (a directory name like `文件` is not lost), keeps a `~`
-    inside a directory name (a Windows short name such as `RUNNER~1`), and
+    inside a directory name (a Windows short name such as `RUNNER~1`; a `~`
+    glued to the front of a mention is therefore part of it, and
+    `x~docs/CLAUDE.md` is not read as `docs/CLAUDE.md`), and
     recognises a Windows drive letter (`C:\...`) as the start of a path.
   - **Only the basename and a Windows drive letter are ASCII case-folded in
     a path-style mention; every directory component in between is compared
