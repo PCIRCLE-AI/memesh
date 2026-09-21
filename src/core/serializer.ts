@@ -673,6 +673,16 @@ export function importMemories(args: ImportInput): ImportResult {
     );
   }
 
+  // Restoring what the user forgot needs an explicit boolean. The transports
+  // pass one or refuse the request, but this function is also called
+  // directly, and a truthy string must not read as "yes".
+  if (args.restore_archived !== undefined && typeof args.restore_archived !== 'boolean') {
+    throw new Error(
+      'restore_archived must be the boolean true or false. ' +
+      'Nothing was imported — refusing rather than guessing, because "yes" brings back memories the user forgot.'
+    );
+  }
+
   // `skip` leaves every existing entity alone, an archived one included, so
   // `restore_archived` would change nothing. Refused instead of accepted and
   // ignored: a caller who asked for archived memories back must not read a
@@ -792,7 +802,7 @@ export function importMemories(args: ImportInput): ImportResult {
           // like the `skip` line above, queues none of the bundle entry's own
           // relations; a relation from another bundle entry TO it is still
           // created by the second pass, which finds the row by name.
-          if (existing.archived && !args.restore_archived) return { kind: 'keptArchived' } as const;
+          if (existing.archived && args.restore_archived !== true) return { kind: 'keptArchived' } as const;
           if (args.merge_strategy === 'append') {
             // Exact-text dedupe against what the entity already has.
             // `createEntity` INSERTs every observation it is handed with no

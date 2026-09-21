@@ -445,6 +445,29 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
       },
     );
 
+    // The transports only pass a real boolean, but the core function is the
+    // one place that decides: anything else is refused, never read as "yes".
+    it.each(['append', 'overwrite'] as const)(
+      'import (%s) refuses a restore_archived that is not a boolean, and writes nothing',
+      (merge_strategy) => {
+        const name = `archived-not-boolean-${merge_strategy}`;
+        const before = seedArchived(name);
+
+        for (const value of ['false', 'true', 1, null, {}]) {
+          expect(
+            () => importMemories({
+              data: bundleOf([{ name, observations: ['bundle text'] }, { name: `fresh-${merge_strategy}` }]),
+              merge_strategy,
+              restore_archived: value as unknown as boolean,
+            }),
+            `restore_archived ${JSON.stringify(value)} was accepted`,
+          ).toThrow(/restore_archived must be the boolean true or false/);
+        }
+        expect(getEntity(name)).toEqual(before);
+        expect(new KnowledgeGraph(getDatabase()).getEntity(`fresh-${merge_strategy}`), 'an entry was written before the refusal').toBeNull();
+      },
+    );
+
     it.each(['append', 'overwrite'] as const)(
       'import (%s) with restore_archived brings it back, and the trust rules for an existing entity still hold',
       (merge_strategy) => {

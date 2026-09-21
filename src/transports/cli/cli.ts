@@ -796,8 +796,6 @@ program
       if (result.kept_archived > 0) {
         console.log(`Kept archived: ${result.kept_archived} (you archived these; the file names them, so they were left untouched). Add --restore-archived to bring them back.`);
       }
-      // Said on stdout, with the way back: the entities are unchanged, so
-      // nothing else in the output would tell the user the file named them.
       // Named, not merely counted, and on stderr — a relation the restore
       // could not rebuild is information the user lost, and the only way to
       // get it back is to re-export with the entities it points at.

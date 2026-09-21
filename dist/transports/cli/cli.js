@@ -6018,6 +6018,9 @@ function importMemories(args) {
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
     throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(", ")}. Nothing was imported \u2014 refusing rather than guessing, because the wrong guess overwrites existing memories.`);
   }
+  if (args.restore_archived !== void 0 && typeof args.restore_archived !== "boolean") {
+    throw new Error('restore_archived must be the boolean true or false. Nothing was imported \u2014 refusing rather than guessing, because "yes" brings back memories the user forgot.');
+  }
   if (args.restore_archived === true && args.merge_strategy === "skip") {
     throw new Error('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; "skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.');
   }
@@ -6062,7 +6065,7 @@ function importMemories(args) {
         if (existing) {
           if (args.merge_strategy === "skip")
             return { kind: "skipped" };
-          if (existing.archived && !args.restore_archived)
+          if (existing.archived && args.restore_archived !== true)
             return { kind: "keptArchived" };
           if (args.merge_strategy === "append") {
             const existingText = new Set(existing.observations);
