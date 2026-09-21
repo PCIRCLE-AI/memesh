@@ -113,8 +113,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "f7511fab7e9114e539532e18e1f459e4d70544ae4dcb9143af0fd1ec3d6add09",
-      "bytes": 97511
+      "sha256": "aa6190bb1a5ce0fc8e2777c69e1f76e748d9be22f6ce820fe1b75fa32901b80e",
+      "bytes": 98240
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -148,8 +148,8 @@
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "9fe616c2004f476e33577870eeb2dba706af4a995f490614768609b42935d74b",
-      "bytes": 34584
+      "sha256": "3d7f440a591f843b7a428d7ac425fe6f247cdfc831c895334c03cf6be8ff46e7",
+      "bytes": 34650
     },
     {
       "path": "scripts/hooks/session-start.js",

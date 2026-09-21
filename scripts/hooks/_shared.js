@@ -116,24 +116,36 @@ export function guardWarningLines(matches, toolName) {
   return lines;
 }
 
+/** How long the fire counter waits for another writer's lock, in ms. Exported
+ *  so the tests read the same number the hook uses. */
+export const GUARD_COUNTER_WAIT_MS = 200;
+
 /**
  * Count a guard's fire. Opens its own WRITABLE handle briefly (the
  * evaluating hooks read through a read-only one) and swallows every
  * failure: the count powers guard-ROI review, and review data must never
  * block the user's work.
+ *
+ * Waits at most `GUARD_COUNTER_WAIT_MS` for the write lock. The hooks of
+ * parallel tool calls each hold it for a millisecond or two and take turns;
+ * when the lock is still held after the wait, the count is skipped and it is
+ * reported on stderr as not counted. A missed count is invisible to the user;
+ * a long wait is not. The host kills a hook at its `hooks.json` budget, and a
+ * killed hook loses the guard warning the user needed — on slow CI runners a
+ * contended 2 s wait was measured at close to 4 s of the 5 s, so the wait is
+ * short. With no wait at all, hooks running at the same instant lost about a
+ * third of their counts.
  */
 export function recordGuardFires(dbPath, lessonIds) {
   if (!lessonIds || lessonIds.length === 0) return;
   try {
     const db = new MemeshDatabase(dbPath);
     try {
-      // The hook's own budget, not the database's default 30 s: a wait that
-      // outlives the hook's timeout has one ending — the host kills the
-      // process, the count is lost anyway, and the failure line below never
-      // runs (see `openHookDb`). The cost is the band in between: a lock
-      // held for 2-5 s used to be waited out and counted, and is now
-      // reported as not counted.
-      db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
+      // The constructor only opens the file and sets the 30 s wait meant for
+      // the CLI and servers; nothing has touched the lock yet, so lowering it
+      // here is early enough. Not `HOOK_BUSY_TIMEOUT_MS`: that wait is for
+      // reads and capture writes, which are worth retrying for longer.
+      db.pragma(`busy_timeout = ${GUARD_COUNTER_WAIT_MS}`);
       const stmt = db.prepare(
         `UPDATE entities
          SET metadata = json_set(metadata,
