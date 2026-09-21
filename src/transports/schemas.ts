@@ -219,6 +219,9 @@ export const ImportSchema = z.object({
   // refuses the same value in `importMemories`, so the CLI is covered too.
   namespace: z.enum(NAMESPACES).optional(),
   merge_strategy: z.enum(['skip', 'overwrite', 'append']),
+  // A boolean, not a string flag: a wrong type is refused rather than read as
+  // "yes", because `true` reactivates memories the user forgot.
+  restore_archived: z.boolean().optional(),
 }).strict();
 
 export const LearnSchema = z.object({

@@ -58,6 +58,19 @@ All notable changes to MeMesh are documented here.
   their own memory, so the default now injects what they do not already
   have: live repository state and this project's own recent activity. To
   get the previous behaviour back: `memesh config set briefing full`.
+- **`import` no longer brings back a memory you archived** (#363). A local
+  entity that is archived (`memesh forget`, or archived by the dreamer when it
+  digested it) used to come back to active, with the bundle's observations
+  added or replacing its own, whenever an `append` or `overwrite` import named
+  it. Now it stays archived and completely untouched, and the result reports
+  how many were left that way: `kept_archived` in the MCP/HTTP response, and a
+  `Kept archived: N` line from `memesh import`. `skip` is unchanged (it already
+  left every existing entity alone). To get the old behaviour, pass
+  `--restore-archived` on the CLI (requires `--merge append` or `overwrite`;
+  the CLI default `skip` refuses it), or `restore_archived: true` to the MCP
+  `import` tool and `POST /v1/import` (same rule: with `skip` the call is
+  refused, not silently ignored). Only import changes: `remember` still
+  reactivates an archived memory that is stated again.
 
 ### Removed
 

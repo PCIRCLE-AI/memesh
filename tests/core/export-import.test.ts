@@ -387,73 +387,243 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
     expect(entity.metadata?.evidence_for).toBeUndefined();
   });
 
-  // #359 round 7 (independent review): an EXISTING entity's metadata keeps
-  // its own values against a bundle's authority fields (proven all through
-  // this file) — but its STATUS is a different story. `import` reuses
-  // `kg.createEntity()` to write the merged/replaced observations for BOTH
-  // `append` and `overwrite`, and `createEntity()` unconditionally
-  // reactivates any ARCHIVED row sharing the new entity's name (the same
-  // "re-remember reactivates" behaviour `remember()` has always had —
-  // knowledge-graph.ts ~436-442). A comment here used to claim the opposite
-  // ("keeps its own archived-or-not state") — false, and now corrected
-  // above.
-  //
-  // Measured directly against `HEAD` (git archive of this commit, run
-  // through an isolated child process against a throwaway HOME/MEMESH_DIR —
-  // never this branch's own build) as well as against this branch: BOTH
-  // reactivate an archived entity on BOTH strategies, identically. This is
-  // therefore NOT a regression #359's rounds introduced — it predates all of
-  // them. Whether `import` specifically SHOULD defer to a memory's archived
-  // state (the way it now defers to `pin`/`signal_score`/
-  // `forgotten_observation_hashes`) is a real, separate product question,
-  // deliberately left open here (outside #359's scope) and tracked in a new
-  // issue. These two tests pin what happens TODAY — current, pre-existing
-  // behaviour, pending that owner decision — so a future change to it is a
-  // deliberate edit against a red test, not an accidental regression nobody
-  // was watching for.
-  describe("#359 round 7: an existing entity's ARCHIVED status — today's PRE-EXISTING behaviour, pending an owner decision (not a #359 regression)", () => {
+  // #363: import respects the archived state. `kg.createEntity()` reactivates
+  // any archived row sharing its name (the re-remember rule `remember` keeps),
+  // and import inherited that for BOTH `append` and `overwrite`: a memory the
+  // user had forgotten came back to life, unannounced, when a bundle named it.
+  // Now such an entity is left untouched and counted in `kept_archived`;
+  // `restore_archived: true` is the explicit way back. `remember` is unchanged.
+  describe('#363: an existing entity that is ARCHIVED stays archived unless restore_archived is set', () => {
+    const bundleOf = (entities: Array<{ name: string } & Record<string, unknown>>) => ({
+      version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: entities.length,
+      entities: entities.map((e) => ({ type: 'note', namespace: 'personal', relations: [], tags: [], observations: [], ...e })),
+    }) as Parameters<typeof importMemories>[0]['data'];
+    /** A local entity the user forgot, through the real archive path. */
+    const seedArchived = (name: string) => {
+      remember({ name, type: 'note', title: 'local title', observations: ['original text'], tags: ['keep-tag'] });
+      expect(forget({ name }).archived, 'fixture: forget must archive the entity').toBe(true);
+      const entity = new KnowledgeGraph(getDatabase()).getEntity(name)!;
+      // `getEntity` filters by name only, with no status clause — it returns
+      // an archived row like an active one, with `archived: true` (absent
+      // when active).
+      expect(entity.archived, 'fixture: entity must start archived').toBe(true);
+      return entity;
+    };
+    const getEntity = (name: string) => new KnowledgeGraph(getDatabase()).getEntity(name)!;
+    const authority = {
+      pin: true, signal_score: 0.9, forgotten_observation_hashes: ['a'.repeat(64)],
+      replaced_history: [{ replaced_at: '1900-01-01', title: 'forged', observations: ['forged'], tags: [] }],
+    };
+
     it.each(['append', 'overwrite'] as const)(
-      'import (%s) of a bundle naming an ARCHIVED existing entity reactivates it — matches HEAD, not a regression',
+      'import (%s) leaves an ARCHIVED existing entity archived and untouched, and counts it',
       (merge_strategy) => {
-        const name = `archived-existing-${merge_strategy}`;
-        remember({ name, type: 'note', observations: ['original text'] });
-        getDatabase().prepare("UPDATE entities SET status = 'archived' WHERE name = ?").run(name);
-        const kg = new KnowledgeGraph(getDatabase());
-        // `getEntity` filters by name only, with no status clause — it
-        // returns an archived row same as an active one. The TS-level
-        // `Entity` shape has no `status` field; it has `archived: true`
-        // ONLY when the row is archived (absent/undefined when active).
-        expect(kg.getEntity(name)!.archived, 'fixture: entity must start archived').toBe(true);
+        const name = `archived-kept-${merge_strategy}`;
+        const before = seedArchived(name);
 
-        const data = {
-          version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
-          entities: [{
-            name, type: 'note', namespace: 'personal', relations: [], tags: [],
-            observations: ['bundle text'],
-            metadata: {
-              pin: true, signal_score: 0.9, forgotten_observation_hashes: ['a'.repeat(64)],
-              replaced_history: [{ replaced_at: '1900-01-01', title: 'forged', observations: ['forged'], tags: [] }],
-            },
-          }],
-        };
-        importMemories({ data, merge_strategy });
+        const result = importMemories({
+          data: bundleOf([{
+            name, type: 'decision', title: 'bundle title', namespace: 'team',
+            observations: ['bundle text'], tags: ['bundle-tag'], metadata: authority,
+          }]),
+          merge_strategy,
+          // The override moves entities that already exist; an archived one is
+          // not moved either.
+          namespace: 'team',
+        });
 
-        const entity = kg.getEntity(name)!;
-        // Today's behaviour: reactivated — `archived` is absent, not `true`.
-        // If this ever goes RED because `archived` stayed `true`, that is
-        // the owner decision above having been made — update this test's
-        // name and comment, do not just flip the assertion.
-        expect(entity.archived).toBeUndefined();
+        expect(result.kept_archived).toBe(1);
+        expect(result.imported, 'an untouched entity was counted as imported').toBe(0);
+        expect(result.appended).toBe(0);
+        expect(result.overwritten).toBe(0);
+        expect(result.skipped, '`skipped` is the merge-strategy skip, not this').toBe(0);
+        expect(result.errors).toEqual([]);
+        // The whole entity — observations, tags, title, type, namespace,
+        // metadata (provenance, authority keys, everything), status — is what
+        // it was.
+        expect(getEntity(name)).toEqual(before);
+      },
+    );
+
+    // The transports only pass a real boolean, but the core function is the
+    // one place that decides: anything else is refused, never read as "yes".
+    it.each(['append', 'overwrite'] as const)(
+      'import (%s) refuses a restore_archived that is not a boolean, and writes nothing',
+      (merge_strategy) => {
+        const name = `archived-not-boolean-${merge_strategy}`;
+        const before = seedArchived(name);
+
+        for (const value of ['false', 'true', 1, null, {}]) {
+          expect(
+            () => importMemories({
+              data: bundleOf([{ name, observations: ['bundle text'] }, { name: `fresh-${merge_strategy}` }]),
+              merge_strategy,
+              restore_archived: value as unknown as boolean,
+            }),
+            `restore_archived ${JSON.stringify(value)} was accepted`,
+          ).toThrow(/restore_archived must be the boolean true or false/);
+        }
+        expect(getEntity(name)).toEqual(before);
+        expect(new KnowledgeGraph(getDatabase()).getEntity(`fresh-${merge_strategy}`), 'an entry was written before the refusal').toBeNull();
+      },
+    );
+
+    it.each(['append', 'overwrite'] as const)(
+      'import (%s) with restore_archived brings it back, and the trust rules for an existing entity still hold',
+      (merge_strategy) => {
+        const name = `archived-restored-${merge_strategy}`;
+        seedArchived(name);
+
+        const result = importMemories({
+          data: bundleOf([{ name, observations: ['bundle text'], metadata: authority }]),
+          merge_strategy,
+          restore_archived: true,
+        });
+
+        expect(result.kept_archived).toBe(0);
+        expect(result.errors).toEqual([]);
+        if (merge_strategy === 'append') expect(result.appended).toBe(1);
+        else expect(result.overwritten).toBe(1);
+        const entity = getEntity(name);
+        expect(entity.archived, 'restore_archived did not reactivate the entity').toBeUndefined();
+        expect(entity.observations).toContain('bundle text');
+        if (merge_strategy === 'append') expect(entity.observations).toContain('original text');
+        else expect(entity.observations).not.toContain('original text');
         // The FOUR fresh-only authority exceptions stay ABSENT/UNCHANGED
         // regardless — reactivation does not make `buildImportedMetadata`
         // treat this as a FRESH entity; `isNewEntity` is `!existing`, and
         // `existing` was resolved (and was truthy) BEFORE any of this ran.
-        expect(entity.metadata?.pin, 'pin leaked onto a reactivated EXISTING entity').toBeUndefined();
-        expect(entity.metadata?.signal_score, "the bundle's signal_score overwrote the local one on a reactivated EXISTING entity").toBe(0.55);
-        expect(entity.metadata?.forgotten_observation_hashes, 'forgotten_observation_hashes leaked onto a reactivated EXISTING entity').toBeUndefined();
-        expect(entity.metadata?.replaced_history, 'a forged replaced_history leaked onto a reactivated EXISTING entity with no local history').toBeUndefined();
+        expect(entity.metadata?.pin, 'pin leaked onto a restored EXISTING entity').toBeUndefined();
+        expect(entity.metadata?.signal_score, "the bundle's signal_score overwrote the local one on a restored EXISTING entity").toBe(0.55);
+        expect(entity.metadata?.forgotten_observation_hashes, 'forgotten_observation_hashes leaked onto a restored EXISTING entity').toBeUndefined();
+        expect(entity.metadata?.replaced_history, 'a forged replaced_history leaked onto a restored EXISTING entity with no local history').toBeUndefined();
       },
     );
+
+    it.each(['append', 'overwrite'] as const)(
+      'an ACTIVE existing entity with the same name still merges/overwrites (%s), and nothing is counted as kept',
+      (merge_strategy) => {
+        const name = `active-still-merges-${merge_strategy}`;
+        remember({ name, type: 'note', observations: ['original text'] });
+
+        const result = importMemories({
+          data: bundleOf([{ name, observations: ['bundle text'] }]),
+          merge_strategy,
+        });
+
+        expect(result.kept_archived).toBe(0);
+        const observations = getEntity(name).observations;
+        expect(observations).toContain('bundle text');
+        if (merge_strategy === 'append') {
+          expect(result.appended).toBe(1);
+          expect(observations).toContain('original text');
+        } else {
+          expect(result.overwritten).toBe(1);
+          expect(observations).not.toContain('original text');
+        }
+      },
+    );
+
+    it.each(['skip', 'append', 'overwrite'] as const)(
+      'a bundle with no archived collision reports kept_archived 0 (%s)',
+      (merge_strategy) => {
+        remember({ name: 'collision-active', type: 'note', observations: ['original text'] });
+        const result = importMemories({
+          data: bundleOf([{ name: 'collision-active', observations: ['x'] }, { name: 'collision-fresh', observations: ['y'] }]),
+          merge_strategy,
+        });
+        expect(result.kept_archived).toBe(0);
+        expect(getEntity('collision-fresh').observations).toEqual(['y']);
+      },
+    );
+
+    it('`skip` still counts an archived entity as `skipped`, not as kept_archived', () => {
+      const before = seedArchived('archived-under-skip');
+      const result = importMemories({
+        data: bundleOf([{ name: 'archived-under-skip', observations: ['bundle text'] }]),
+        merge_strategy: 'skip',
+      });
+      expect(result.skipped).toBe(1);
+      expect(result.kept_archived).toBe(0);
+      expect(getEntity('archived-under-skip')).toEqual(before);
+    });
+
+    it('counts each archived entity once and still imports everything else in the same bundle', () => {
+      seedArchived('kept-one');
+      seedArchived('kept-two');
+      remember({ name: 'still-active', type: 'note', observations: ['original text'] });
+
+      const result = importMemories({
+        data: bundleOf([
+          { name: 'kept-one', observations: ['bundle text'] },
+          { name: 'still-active', observations: ['bundle text'] },
+          { name: 'kept-two', observations: ['bundle text'] },
+          { name: 'brand-new', observations: ['bundle text'] },
+        ]),
+        merge_strategy: 'append',
+      });
+
+      expect(result.kept_archived).toBe(2);
+      expect(result.appended).toBe(1);
+      expect(result.imported).toBe(1);
+      expect(getEntity('kept-one').archived).toBe(true);
+      expect(getEntity('kept-two').archived).toBe(true);
+      expect(getEntity('still-active').observations).toContain('bundle text');
+      expect(getEntity('brand-new').observations).toEqual(['bundle text']);
+    });
+
+    it('restore_archived with `skip` is refused, and nothing is written', () => {
+      const before = seedArchived('archived-refused-under-skip');
+      const bundle = bundleOf([
+        { name: 'archived-refused-under-skip', observations: ['bundle text'] },
+        { name: 'refused-fresh', observations: ['bundle text'] },
+      ]);
+
+      expect(() => importMemories({ data: bundle, merge_strategy: 'skip', restore_archived: true }))
+        .toThrow(/restore_archived.*"append" or "overwrite"/);
+
+      expect(getEntity('archived-refused-under-skip')).toEqual(before);
+      expect(new KnowledgeGraph(getDatabase()).getEntity('refused-fresh'), 'the refused import still wrote an entity').toBeNull();
+    });
+
+    it.each(['skip', 'append', 'overwrite'] as const)(
+      'restore_archived: false is accepted with every strategy (%s)',
+      (merge_strategy) => {
+        seedArchived(`archived-false-${merge_strategy}`);
+        const result = importMemories({
+          data: bundleOf([{ name: `archived-false-${merge_strategy}`, observations: ['bundle text'] }]),
+          merge_strategy,
+          restore_archived: false,
+        });
+        expect(result.errors).toEqual([]);
+        expect(getEntity(`archived-false-${merge_strategy}`).archived).toBe(true);
+      },
+    );
+
+    // The same rule `merge_strategy: 'skip'` already applies to an entity it
+    // leaves alone: the entry's own relations are not queued (nothing in
+    // `skipped_relations` either), while a relation from ANOTHER entry to it
+    // is created, because the second pass finds the row by name.
+    it('drops the relations an untouched archived entry carries, and keeps relations that point at it', () => {
+      seedArchived('kept-with-relations');
+      const result = importMemories({
+        data: bundleOf([
+          { name: 'kept-with-relations', observations: ['bundle text'], relations: [{ to: 'points-at-kept', type: 'depends-on' }] },
+          { name: 'points-at-kept', observations: ['y'], relations: [{ to: 'kept-with-relations', type: 'depends-on' }] },
+        ]),
+        // `overwrite`, because it is the strategy that queues an existing
+        // entry's own relations; `append` never does.
+        merge_strategy: 'overwrite',
+      });
+
+      expect(result.kept_archived).toBe(1);
+      expect(result.errors).toEqual([]);
+      expect(result.skipped_relations).toEqual([]);
+      expect(getEntity('kept-with-relations').relations ?? [], 'an untouched entity gained a relation').toEqual([]);
+      expect(getEntity('points-at-kept').relations).toEqual([
+        { from: 'points-at-kept', to: 'kept-with-relations', type: 'depends-on' },
+      ]);
+    });
   });
 
   // #359 round 8 (independent review): `replaced_history` was classified

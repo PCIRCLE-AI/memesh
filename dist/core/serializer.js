@@ -181,6 +181,14 @@ export function importMemories(args) {
         throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(', ')}. ` +
             'Nothing was imported — refusing rather than guessing, because the wrong guess overwrites existing memories.');
     }
+    if (args.restore_archived !== undefined && typeof args.restore_archived !== 'boolean') {
+        throw new Error('restore_archived must be the boolean true or false. ' +
+            'Nothing was imported — refusing rather than guessing, because "yes" brings back memories the user forgot.');
+    }
+    if (args.restore_archived === true && args.merge_strategy === 'skip') {
+        throw new Error('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; ' +
+            '"skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.');
+    }
     if (args.namespace !== undefined && !NAMESPACES.includes(args.namespace)) {
         throw new Error(`Unknown namespace "${args.namespace}". Use one of: ${NAMESPACES.join(', ')}. ` +
             'Nothing was imported — an unrecognised namespace would move existing memories somewhere nothing queries.');
@@ -197,6 +205,7 @@ export function importMemories(args) {
     const pendingRelations = [];
     let skipped = 0;
     let appended = 0;
+    let keptArchived = 0;
     const errors = [];
     const skippedRelations = [];
     const setCreatedAt = db.prepare('UPDATE entities SET created_at = ? WHERE name = ?');
@@ -225,6 +234,8 @@ export function importMemories(args) {
                 if (existing) {
                     if (args.merge_strategy === 'skip')
                         return { kind: 'skipped' };
+                    if (existing.archived && args.restore_archived !== true)
+                        return { kind: 'keptArchived' };
                     if (args.merge_strategy === 'append') {
                         const existingText = new Set(existing.observations);
                         const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
@@ -275,6 +286,8 @@ export function importMemories(args) {
             }).immediate();
             if (outcome.kind === 'skipped')
                 skipped++;
+            else if (outcome.kind === 'keptArchived')
+                keptArchived++;
             else if (outcome.kind === 'appended')
                 appended++;
             else {
@@ -301,6 +314,6 @@ export function importMemories(args) {
                 + `(${err instanceof Error ? err.message : String(err)})`);
         }
     }
-    return { imported, overwritten, skipped, appended, errors, skipped_relations: skippedRelations };
+    return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
 }
 //# sourceMappingURL=serializer.js.map

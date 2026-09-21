@@ -229,7 +229,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'import',
-    description: 'Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities.',
+    description: 'Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -248,6 +248,10 @@ export const TOOL_DEFINITIONS = [
           // API_REFERENCE.md has said the truth all along; this string is what
           // the agent actually reads.
           description: 'Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived — this cannot be undone)',
+        },
+        restore_archived: {
+          type: 'boolean',
+          description: 'Optional, default false. With append or overwrite, a local entity that is archived (forgotten) is left untouched and counted in kept_archived. Set true to bring it back to active and merge or overwrite it like any other; it requires merge_strategy append or overwrite (an error with skip). Only set it when the user asked for archived memories to return.',
         },
       },
       required: ['data', 'merge_strategy'],

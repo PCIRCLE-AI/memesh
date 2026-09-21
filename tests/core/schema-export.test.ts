@@ -65,6 +65,12 @@ describe('exportOpenAITools', () => {
     expect(tool.function.parameters.properties.merge_strategy.description).not.toMatch(/default/i);
   });
 
+  it('memesh_import offers restore_archived as an optional boolean (#363)', () => {
+    const tool = tools.find((t: any) => t.function.name === 'memesh_import') as any;
+    expect(tool.function.parameters.properties.restore_archived.type).toBe('boolean');
+    expect(tool.function.parameters.required).not.toContain('restore_archived');
+  });
+
   it('memesh_export has no required fields (all optional filters)', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_export') as any;
     expect(tool.function.parameters.required).toBeUndefined();

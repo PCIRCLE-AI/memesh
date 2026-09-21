@@ -613,6 +613,11 @@ export function exportMemories(args: ExportInput): ExportResult {
  *   - 'append': add observations to existing entities
  *   - 'overwrite': clear existing data, then re-populate
  *
+ * An existing entity that is ARCHIVED is left untouched by 'append' and
+ * 'overwrite' and counted in `kept_archived`, unless `restore_archived` is set:
+ * forgetting outranks importing, and the count tells the user it happened.
+ * `restore_archived` with 'skip' is refused: 'skip' would ignore it.
+ *
  * An unrecognised strategy is REFUSED, not defaulted. This used to be two
  * `if`s and a fall-through, so any other string — a typo like `sikp`, or
  * `safe` — took the overwrite path: the most destructive of the three, on the
@@ -668,6 +673,27 @@ export function importMemories(args: ImportInput): ImportResult {
     );
   }
 
+  // Restoring what the user forgot needs an explicit boolean. The transports
+  // pass one or refuse the request, but this function is also called
+  // directly, and a truthy string must not read as "yes".
+  if (args.restore_archived !== undefined && typeof args.restore_archived !== 'boolean') {
+    throw new Error(
+      'restore_archived must be the boolean true or false. ' +
+      'Nothing was imported — refusing rather than guessing, because "yes" brings back memories the user forgot.'
+    );
+  }
+
+  // `skip` leaves every existing entity alone, an archived one included, so
+  // `restore_archived` would change nothing. Refused instead of accepted and
+  // ignored: a caller who asked for archived memories back must not read a
+  // successful import as having brought them back.
+  if (args.restore_archived === true && args.merge_strategy === 'skip') {
+    throw new Error(
+      'restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; ' +
+      '"skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.'
+    );
+  }
+
   // The namespace override MOVES entities that already exist, so an
   // unrecognised value does not merely mis-file new rows — it relocates
   // existing memories into a scope no filter matches, and they vanish from
@@ -710,6 +736,8 @@ export function importMemories(args: ImportInput): ImportResult {
   const pendingRelations: Array<{ from: string; to: string; type: string }> = [];
   let skipped = 0;
   let appended = 0;
+  /** Archived local entities left untouched (see `restore_archived`). */
+  let keptArchived = 0;
   const errors: string[] = [];
   /** Relations whose target is not in the bundle and not already stored. */
   const skippedRelations: string[] = [];
@@ -769,6 +797,12 @@ export function importMemories(args: ImportInput): ImportResult {
 
         if (existing) {
           if (args.merge_strategy === 'skip') return { kind: 'skipped' } as const;
+          // A forgotten memory outranks a bundle naming it: without
+          // `restore_archived` it is left exactly as it is. Returning here,
+          // like the `skip` line above, queues none of the bundle entry's own
+          // relations; a relation from another bundle entry TO it is still
+          // created by the second pass, which finds the row by name.
+          if (existing.archived && args.restore_archived !== true) return { kind: 'keptArchived' } as const;
           if (args.merge_strategy === 'append') {
             // Exact-text dedupe against what the entity already has.
             // `createEntity` INSERTs every observation it is handed with no
@@ -820,36 +854,12 @@ export function importMemories(args: ImportInput): ImportResult {
           kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
         }
 
-        // `created_at`, restored only for entities this import CREATED. An
-        // entity the importer already had keeps its own creation time.
-        //
-        // Its ARCHIVED-OR-NOT STATE is a different story, and round 7
-        // (independent review) found the comment that used to sit here
-        // ("keeps its own archived-or-not state") was simply false: measured
-        // against HEAD (git archive of this commit's parent, run in an
-        // isolated child process — not this branch's own code) and against
-        // the current branch, an `overwrite` OR `append` import of a bundle
-        // naming an already-existing ARCHIVED entity brings it back to
-        // `active` on BOTH strategies, in BOTH versions. Nothing in #359's
-        // rounds changed this — it is not a status this file restores or
-        // withholds at all. The mechanism is `kg.createEntity()` itself
-        // (called just above, for append AND overwrite, to write the
-        // merged/replaced observations): it unconditionally reactivates any
-        // archived row sharing the new entity's name — the exact same
-        // "Reactivate archived entities on re-remember" behavior
-        // `remember()` has always had (knowledge-graph.ts ~436-442),
-        // inherited here because import reuses `createEntity` rather than a
-        // decision this file makes. Whether IMPORT specifically should defer
-        // to a memory's archived state the way it now defers to a memory's
-        // fresh-only authority fields (`pin`/`signal_score`/
-        // `forgotten_observation_hashes`/`replaced_history` — all FOUR, round
-        // 8 added the fourth) is a real product question, left
-        // OPEN and tracked separately — see
-        // `tests/core/export-import.test.ts` ("today's PRE-EXISTING
-        // behaviour, pending an owner decision") for the two tests pinning
-        // what happens right now, on both strategies, so a future change
-        // here is a deliberate one, not an accidental regression nobody
-        // pinned.
+        // `created_at` and a bundled `status: 'archived'` are applied only to
+        // entities this import CREATED. An entity the importer already had
+        // keeps its own creation time and takes no status from the bundle.
+        // (With `restore_archived`, an archived one is active again because
+        // the `createEntity` call above reactivates any archived row with the
+        // same name — the re-remember rule `remember` keeps.)
         //
         // The timestamp is accepted only if `parseSqliteUtcMs` vouches for it.
         // That parser exists because a value it cannot read is a value nothing
@@ -890,6 +900,7 @@ export function importMemories(args: ImportInput): ImportResult {
       }).immediate();
 
       if (outcome.kind === 'skipped') skipped++;
+      else if (outcome.kind === 'keptArchived') keptArchived++;
       else if (outcome.kind === 'appended') appended++;
       else {
         pendingRelations.push(...outcome.relations);
@@ -929,5 +940,5 @@ export function importMemories(args: ImportInput): ImportResult {
     }
   }
 
-  return { imported, overwritten, skipped, appended, errors, skipped_relations: skippedRelations };
+  return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
 }

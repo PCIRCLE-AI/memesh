@@ -950,6 +950,78 @@ describe('recall', () => {
   });
 });
 
+// ── Import ──────────────────────────────────────────────────────────────
+
+describe('import and archived memories (#363)', () => {
+  const bundleFor = (name: string) => ({
+    version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+    entities: [{ name, type: 'note', namespace: 'personal', observations: ['bundle text'], tags: [], relations: [] }],
+  });
+  const seedArchived = async (name: string) => {
+    await handleTool('remember', { name, type: 'note', observations: ['original text'] });
+    const forgotten = JSON.parse((await handleTool('forget', { name })).content[0].text);
+    expect(forgotten.archived, 'fixture: forget must archive the entity').toBe(true);
+  };
+  const archivedHit = async (name: string) => {
+    const all = await handleTool('recall', { query: name, include_archived: true });
+    return recallEntities(all).find((e: any) => e.name === name);
+  };
+
+  it('publishes restore_archived as an optional boolean and says what it does', () => {
+    const tool = TOOL_DEFINITIONS.find(t => t.name === 'import')!;
+    const schema = tool.inputSchema as any;
+    expect(schema.properties.restore_archived.type).toBe('boolean');
+    expect(schema.required).toEqual(['data', 'merge_strategy']);
+    expect(tool.description).toContain('restore_archived');
+    expect(tool.description).toContain('kept_archived');
+  });
+
+  it('leaves an archived entity archived and reports kept_archived', async () => {
+    await seedArchived('mcp-import-kept');
+    const result = await handleTool('import', { data: bundleFor('mcp-import-kept'), merge_strategy: 'append' });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.kept_archived).toBe(1);
+    expect(data.appended).toBe(0);
+    const hit = await archivedHit('mcp-import-kept');
+    expect(hit.archived).toBe(true);
+    expect(hit.observations).toEqual(['original text']);
+  });
+
+  it('restore_archived: true brings it back', async () => {
+    await seedArchived('mcp-import-restored');
+    const result = await handleTool('import', {
+      data: bundleFor('mcp-import-restored'), merge_strategy: 'append', restore_archived: true,
+    });
+    const data = JSON.parse(result.content[0].text);
+    expect(data.kept_archived).toBe(0);
+    expect(data.appended).toBe(1);
+    const hit = await archivedHit('mcp-import-restored');
+    expect(hit.archived).toBeUndefined();
+    expect(hit.observations).toContain('bundle text');
+  });
+
+  it('refuses restore_archived with `skip` with an error result carrying the core message', async () => {
+    await seedArchived('mcp-import-skip-restore');
+    const result = await handleTool('import', {
+      data: bundleFor('mcp-import-skip-restore'), merge_strategy: 'skip', restore_archived: true,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"');
+    const hit = await archivedHit('mcp-import-skip-restore');
+    expect(hit.archived).toBe(true);
+    expect(hit.observations).toEqual(['original text']);
+  });
+
+  it('refuses a restore_archived that is not a boolean, and changes nothing', async () => {
+    await seedArchived('mcp-import-not-boolean');
+    const result = await handleTool('import', {
+      data: bundleFor('mcp-import-not-boolean'), merge_strategy: 'append', restore_archived: 'yes',
+    });
+    expect(result.isError).toBe(true);
+    expect((await archivedHit('mcp-import-not-boolean')).archived).toBe(true);
+  });
+});
+
 // ── Forget ──────────────────────────────────────────────────────────────
 
 describe('forget', () => {
