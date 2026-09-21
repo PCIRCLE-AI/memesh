@@ -13,9 +13,19 @@ router directory. Results expose `session_id`, `principal_id`, `host_kind`,
 receipt operation; router unavailability is an explicit error, never an empty
 directory.
 
-Briefing follows the same trust boundary. Generic `briefing` and automatic
-SessionStart context have no recipient identity, so they never aggregate or
-announce unread message activity. A caller that already knows its exact
+Briefing follows the same trust boundary. Generic `briefing` has no recipient
+identity, so it never aggregates or announces unread message activity, and
+neither do the SessionStart and prompt hooks unless the session declares one:
+start it with `MEMESH_RECIPIENT=<exact recipient id>` (for example
+`MEMESH_RECIPIENT=claude-implementer claude`). The hooks then say, at session
+start and at every prompt, how many messages are waiting for exactly that
+recipient and in which project to poll (senders choose the project string, so
+each project with a waiting message is named, up to five, most waiting first),
+until the session records the `intake` action for them (fetching alone does not
+end it). An ordinary Claude Code session started without the channel flag
+has no other identity a sender could address, so without this variable it only
+sees messages it polls for itself. A value over 200 characters is ignored with
+a line on stderr. A caller that already knows its exact
 logical recipient may pass both `project` and `recipient` to `briefing`; the
 result reports only that recipient's unfetched deliveries and tells it to
 `message poll` with the exact scope before fetching each returned

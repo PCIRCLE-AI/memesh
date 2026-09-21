@@ -105,12 +105,15 @@ default and above).
 One call is cheaper than re-exploring the repo to reconstruct the same picture.
 `memesh briefing --index` returns only the index of durable memories — what is
 known here, one line each, without the ranked sections.
-Generic briefing and SessionStart context do not report unread durable messages:
-they have no recipient identity. If you already know the exact logical
-recipient, pass `recipient` with `project` (MCP) or use
+Generic briefing does not report unread durable messages: it has no recipient
+identity. The session-start hook and each prompt do report them, but only when
+the session declared who it is by starting with `MEMESH_RECIPIENT=<id>`. If you
+already know the exact logical recipient, pass `recipient` with `project` (MCP) or use
 `memesh briefing --project <name> --recipient <id>`. The scoped line names the
 project and recipient and directs you to `message poll` first, then `message
-fetch` each returned `message_id`; fetching does not acknowledge. At zero
+fetch` each returned `message_id`, then record `intake` for it (the session-start
+and prompt reminders repeat until you do; fetching alone does not acknowledge).
+At zero
 unread it also says so explicitly if that exact recipient id has never been
 seen in this project at all — treat that as a probable typo in `--recipient`,
 not as an empty, healthy inbox.

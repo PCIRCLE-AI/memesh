@@ -6,6 +6,19 @@ All notable changes to MeMesh are documented here.
 
 ### Added
 
+- **A Claude Code session can now be told that a message is waiting for it
+  (`MEMESH_RECIPIENT`).** A session that was not started with the channel flag
+  has no identity a sender can address, and neither the session-start hook nor
+  any prompt ever mentioned the durable inbox, so a message sent to it was seen
+  only if it polled by itself. Start the session with
+  `MEMESH_RECIPIENT=<exact recipient id>` and both the session-start hook and
+  every prompt add one line per project (up to five, most waiting first) that
+  has messages waiting for that exact recipient (`2 messages waiting for
+  "claude-implementer" in project "team-room" — poll the message tool ...`).
+  The line stops once the session records the `intake` action for those
+  messages; fetching alone does not end it, and the line says so. Without the
+  variable nothing changes, and a session never learns of a message addressed to
+  anyone else.
 - **`briefing` setting — three levels for how much the SessionStart hook and
   the `briefing` MCP tool/CLI inject** (#360): `minimal` — only this
   project: live repository state, its decisions, lessons, known facts and

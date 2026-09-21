@@ -32,6 +32,7 @@ import {
   readUpdateCheckCache,
   readUpdatePromptClaim,
   resolvePluginRoot,
+  unreadMessageLines,
   writeAutoUpdateConsent,
   writeSnooze,
 } from './_shared.js';
@@ -279,13 +280,17 @@ if (isMainModule) {
       const prompt = data.prompt ?? data.user_prompt ?? '';
       const updateDecision = await recordUpdateConsent(data.session_id, prompt);
       const rememberIntent = detectRememberIntent(prompt);
-      if (!rememberIntent && !updateDecision) {
+      // Messages waiting for the recipient this session declared in
+      // MEMESH_RECIPIENT. Read-only and not memory capture, so it is not
+      // gated by autoCapture. Empty when the variable is unset.
+      const inboxLines = unreadMessageLines(process.env);
+      if (!rememberIntent && !updateDecision && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.noPromptIntent);
         return process.exit(0);
       }
       // Update consent is a user-authorized control decision, not memory
       // capture; it must still be recorded when auto-capture is disabled.
-      if (!isAutoCaptureEnabled(process.env) && !updateDecision) {
+      if (!isAutoCaptureEnabled(process.env) && !updateDecision && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.autoCaptureOff);
         return process.exit(0);
       }
@@ -298,10 +303,12 @@ if (isMainModule) {
       } else if (updateDecision === 'never') {
         contexts.push('The user asked never to be asked about MeMesh updates again. updateCheck is now off; do not mention updates. `memesh config set updateCheck true` turns checks back on.');
       }
-      if (rememberIntent) contexts.push(buildHint());
+      const hint = rememberIntent && isAutoCaptureEnabled(process.env);
+      if (hint) contexts.push(buildHint());
+      if (inboxLines.length > 0) contexts.push(inboxLines.join('\n'));
       const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: contexts.join('\n\n') } };
       process.stdout.write(JSON.stringify(out));
-      record('notified', undefined, `hint:${updateDecision ?? 'remember-intent'}`);
+      record('notified', undefined, `hint:${updateDecision ?? (hint ? 'remember-intent' : 'inbox')}`);
       process.exit(0);
     } catch (err) {
       logError('user-prompt-intent', err?.message || err);
