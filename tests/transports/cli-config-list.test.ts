@@ -62,4 +62,17 @@ describe('memesh config list', () => {
     const out = runList({});
     expect(out).toContain('no keys set');
   });
+
+  // #360 round 5 (Codex round 4 re-review, item 2): `briefing: null` used to
+  // be silently OMITTED from `config list` — the one surface in the product
+  // that made an explicit invalid stored value invisible instead of showing
+  // it (every other invalid value, e.g. `42` or `"banana"`, was already
+  // printed as-is). Checked against the real product first: `memesh config
+  // unset briefing` deletes the key outright, so a `null` on disk can only
+  // be a hand edit or a foreign version's value — an invalid value, not a
+  // legitimate "not set".
+  it('shows an explicit null briefing rather than hiding it, same as any other invalid value', () => {
+    const out = runList({ briefing: null });
+    expect(out).toContain('briefing: null');
+  });
 });

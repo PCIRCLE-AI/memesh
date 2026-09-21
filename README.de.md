@@ -119,11 +119,11 @@ memesh remember "Login verwendet OAuth 2.0 mit PKCE"
 memesh recall "Login"
 # -> findet die PKCE-Entscheidung
 
-memesh briefing        # was der Agent über dieses Projekt weiß und wo du aufgehört hast
+memesh briefing        # was der Agent über dieses Projekt weiß
 memesh serve           # startet den lokalen Server und gibt die Dashboard-URL aus
 ```
 
-Lass `memesh serve` laufen und öffne die ausgegebene URL. Für die Memory-Tools brauchst du in Claude Code nicht einmal das Terminal: Sag im Chat „remember this“, und das Briefing kommt bei jedem Sitzungsstart von selbst.
+Lass `memesh serve` laufen und öffne die ausgegebene URL. Für die Memory-Tools brauchst du in Claude Code nicht einmal das Terminal: Sag im Chat „remember this“, und sobald es etwas zu zeigen gibt, kommt das Briefing beim Sitzungsstart von selbst.
 
 Zwei Dinge, die du kennen solltest, sobald Erinnerungen da sind:
 
@@ -146,7 +146,7 @@ Alle Befehle und Tools: [docs/api/API_REFERENCE.md](docs/api/API_REFERENCE.md). 
 | `import` | Memories mit Merge-Strategien importieren (Skip / Overwrite / Append) |
 | `learn` | Strukturierte Lektionen aus Fehlern erfassen (Fehler, Grundursache, Behebung, Prävention) |
 | `task_state` | Arbeitsstand lesen oder festhalten — Ziel, nächster Schritt, Blocker, gerade Erledigtes |
-| `briefing` | Die Arbeitstopologie für jeden MCP-Client, abgeschlossen durch einen begrenzten Index der dauerhaften Memories des Projekts; allgemeiner Kontext bleibt still, während exakte Angaben für `project` + `recipient` nur dessen noch nicht abgerufene Zustellungen anzeigen |
+| `briefing` | Die Arbeitstopologie für jeden MCP-Client wird standardmäßig mit einem begrenzten Index der dauerhaften Memories des Projekts abgeschlossen; wie viel Inhalt zusammengestellt wird, steuert die Einstellung `briefing` (`minimal` / `standard` / `full`); allgemeiner Kontext bleibt still, während exakte Angaben für `project` + `recipient` nur dessen noch nicht abgerufene Zustellungen anzeigen |
 | `user_patterns` | Arbeitsmuster analysieren — Zeitplan, Tools, Stärken, Lernbereiche |
 | `improvement` | Evidenzverknüpfte Produktverbesserung zur menschlichen Prüfung vorschlagen oder ihren Status lesen; Agenten können sie nicht selbst annehmen oder ablehnen |
 | `message` | Aktive Agenten finden und nicht vertrauenswürdige Nachrichten mit exaktem Empfänger austauschen. Dauerhafter JSON-Payload: max. 64 KiB; vollständiger nativer Envelope: max. 16 KiB mit getrennten Fehlern `native_message_too_large` und `recipient_unavailable`. Native Annahme, Discovery, Poll und Fetch bedeuten weder Bestätigung noch Workflow-Status |

@@ -4,6 +4,7 @@ export interface MeMeshConfig {
     autoUpdate?: 'off' | 'patch' | 'minor' | 'major';
     updateCheck?: boolean;
     setupCompleted?: boolean;
+    briefing?: unknown;
 }
 export declare const RETIRED_CONFIG_KEYS: readonly ["llm", "llmFallbacks", "embedder", "language", "transcriptMining"];
 export type RetiredConfigKey = typeof RETIRED_CONFIG_KEYS[number];

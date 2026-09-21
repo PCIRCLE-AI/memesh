@@ -57,20 +57,59 @@ describe('FTS-only config', () => {
     })).toEqual([]);
   });
 
-  it('round-trips only the four retained settings', () => {
+  it('round-trips only the five retained settings', () => {
     updateConfig({
       autoCapture: false,
       sessionLimit: 7,
       autoUpdate: 'minor',
       setupCompleted: true,
+      briefing: 'minimal',
     });
     expect(readConfig()).toEqual({
       autoCapture: false,
       sessionLimit: 7,
       autoUpdate: 'minor',
       setupCompleted: true,
+      briefing: 'minimal',
     });
     expect(getConfigDir()).toBe(dir);
+  });
+
+  // #360: unlike autoUpdate, `briefing` is passed through UNVALIDATED here —
+  // resolveBriefingLevel (core/briefing-level.ts) is where an unknown value
+  // is validated AND reported, so a hand-edited config.json with a bad level
+  // must still reach that resolver rather than being silently dropped the
+  // way a malformed autoUpdate value is (see the field comment on
+  // MeMeshConfig.briefing).
+  it('passes briefing through even when it is not a known level', () => {
+    fs.writeFileSync(getConfigPath(), JSON.stringify({ briefing: 'banana' }));
+    expect(readConfig()).toEqual({ briefing: 'banana' });
+  });
+
+  // Codex round 3 re-review, item 2: this used to be `typeof === 'string'`
+  // gated, which discarded a NON-string briefing value (a number, `true`,
+  // `null`, an array, an object) before `resolveBriefingLevel` ever saw
+  // it — the hook (which reads raw JSON directly, not through this file)
+  // reported `{"briefing":42}` as invalid; `readConfig()`-based callers
+  // (assembleBriefing, the CLI, the MCP tool, GET /v1/config) silently
+  // dropped it and used the default with NO recorded reason. Every JSON
+  // type now survives this file unfiltered; `resolveBriefingLevel`'s own
+  // `isBriefingLevel` check is what decides validity, for every caller.
+  it('passes briefing through for every JSON type, not just strings — the real gap Codex found', () => {
+    for (const value of [42, true, [], { nested: 'object' }]) {
+      fs.writeFileSync(getConfigPath(), JSON.stringify({ briefing: value }));
+      expect(readConfig(), JSON.stringify(value)).toEqual({ briefing: value });
+    }
+  });
+
+  // Round 5 (Codex round 4 re-review, item 2): this file's job is only to
+  // not discard `null` before the resolver sees it — `resolveBriefingLevel`
+  // now classifies an explicit `null` as INVALID (not "not set"; see
+  // tests/core/briefing-level.test.ts), but that is that function's
+  // decision, not this one's. This file must still preserve it unfiltered.
+  it('an explicit null briefing is preserved too — this file does not decide validity, the resolver does', () => {
+    fs.writeFileSync(getConfigPath(), JSON.stringify({ briefing: null }));
+    expect(readConfig()).toEqual({ briefing: null });
   });
 
   it('preserves retired provider/key/vector values on unrelated successful writes', () => {

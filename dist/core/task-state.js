@@ -88,4 +88,74 @@ export function taskStateLines(state, project, now = new Date()) {
     }
     return lines;
 }
+export const STALE_TASK_STATE_HOURS = 72;
+export const CLOCK_SKEW_ALLOWANCE_MINUTES = 5;
+const ZONED_INSTANT = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt](?<hour>\d{2}):(?<minute>\d{2})(?::(?<second>\d{2})(?:\.\d+)?)?(?:(?<zulu>[Zz])|(?<offSign>[+-])(?<offHour>\d{2}):?(?<offMinute>\d{2}))$/;
+function isLeapYear(year) {
+    return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+const DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+function daysInMonth(year, month) {
+    return month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+}
+function isRealInstant(groups) {
+    const year = Number(groups.year);
+    const month = Number(groups.month);
+    const day = Number(groups.day);
+    const hour = Number(groups.hour);
+    const minute = Number(groups.minute);
+    const second = groups.second === undefined ? 0 : Number(groups.second);
+    if (month < 1 || month > 12)
+        return false;
+    if (day < 1 || day > daysInMonth(year, month))
+        return false;
+    if (hour > 23)
+        return false;
+    if (minute > 59)
+        return false;
+    if (second > 59)
+        return false;
+    if (groups.zulu === undefined) {
+        const offHour = Number(groups.offHour);
+        const offMinute = Number(groups.offMinute);
+        if (offHour > 23 || offMinute > 59)
+            return false;
+        if (groups.offSign === '-' && offHour === 0 && offMinute === 0)
+            return false;
+    }
+    return true;
+}
+function resolveTaskStateAge(updatedAt, now) {
+    if (!updatedAt)
+        return { known: false };
+    const match = ZONED_INSTANT.exec(updatedAt);
+    if (!match?.groups || !isRealInstant(match.groups))
+        return { known: false };
+    const then = Date.parse(updatedAt);
+    if (Number.isNaN(then))
+        return { known: false };
+    const hours = (now.getTime() - then) / 3_600_000;
+    if (hours < -(CLOCK_SKEW_ALLOWANCE_MINUTES / 60))
+        return { known: false };
+    return { known: true, hours: Math.max(0, hours) };
+}
+function staleTaskStateLine(project, hours) {
+    const days = Math.floor(hours / 24);
+    const age = days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? '' : 's'} ago`;
+    return `Task state for "${project}" was last stated ${age} — older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
+}
+function taskStateAgeUnknownLine(project) {
+    return `Task state for "${project}" has a missing, unreadable, or future-dated timestamp, so its age could not be established — not shown as current. Run \`memesh task\` to see or update it.`;
+}
+export function briefingTaskStateLines(state, project, now = new Date(), { includeFresh = true } = {}) {
+    if (isEmptyTaskState(state))
+        return [];
+    const age = resolveTaskStateAge(state.updated_at, now);
+    if (!age.known)
+        return [taskStateAgeUnknownLine(project)];
+    if (age.hours > STALE_TASK_STATE_HOURS) {
+        return [staleTaskStateLine(project, age.hours)];
+    }
+    return includeFresh ? taskStateLines(state, project, now) : [];
+}
 //# sourceMappingURL=task-state.js.map

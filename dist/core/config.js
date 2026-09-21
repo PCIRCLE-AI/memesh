@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { memeshDir } from './paths.js';
-const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'setupCompleted'];
+const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'setupCompleted', 'briefing'];
 export const RETIRED_CONFIG_KEYS = [
     'llm',
     'llmFallbacks',
@@ -63,6 +63,8 @@ function selectConfig(raw) {
         config.updateCheck = raw.updateCheck;
     if (typeof raw.setupCompleted === 'boolean')
         config.setupCompleted = raw.setupCompleted;
+    if (raw.briefing !== undefined)
+        config.briefing = raw.briefing;
     return config;
 }
 export function findRetiredConfigKeys(raw) {

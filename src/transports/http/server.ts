@@ -23,6 +23,7 @@ import {
   readConfig,
   updateConfig,
 } from '../../core/config.js';
+import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
@@ -810,8 +811,42 @@ app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => 
     limit: data.limit,
   });
 }));
+// Codex review round 1, item 2: GET used to re-validate a READ through the
+// same strict enum POST writes are validated against, so a `briefing` value
+// already on disk that predates this version's known levels (or a
+// hand-edited config.json) made `ConfigBody.strip().parse(readConfig())`
+// throw a ZodError, which `handleGet` turns into a 500 — a user with a bad
+// stored value could not even read their own config to see what was wrong.
+// `core/config.ts`'s `readConfig()` already passes `briefing` through
+// UNVALIDATED on purpose (see that file's `MeMeshConfig.briefing` comment);
+// the strict enum belongs on WRITE only. `ConfigReadBody` mirrors
+// `ConfigBody` with that one field loosened — still typed, still stripped
+// of genuinely unknown TOP-LEVEL keys, just not re-validated against the
+// finite level list a read must survive regardless.
+//
+// Round 3 re-review, item 2: `z.string()` was still a re-validation — it
+// made `readConfig()`'s widened `briefing?: unknown` throw HERE instead,
+// for exactly the non-string case (`{"briefing":42}`) round 3 found: GET
+// would still 500 on a number even after `readConfig()` stopped discarding
+// it. `z.unknown()` accepts whatever `readConfig()` now hands back —
+// including `null`, which round 5 (Codex round 4 re-review, item 2) made
+// `resolveBriefingLevel` classify as an INVALID stored value (default level
+// + a recorded reason), not "not set" (only the key being genuinely absent
+// means that; this schema's job is unchanged either way — accept the raw
+// value on read, whatever it is, and let the resolver decide validity) —
+// so GET can never throw on this field again, on any JSON type. EVERY
+// OTHER field below is UNCHANGED from `ConfigBody` — this is the one and
+// only field this schema loosens.
+const ConfigReadBody = z.object({
+  autoCapture: z.boolean().optional(),
+  sessionLimit: z.number().int().min(1).max(100).optional(),
+  autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
+  setupCompleted: z.boolean().optional(),
+  briefing: z.unknown().optional(),
+}).strip();
+
 app.get('/v1/config', (_req, res) => handleGet(res, () => ({
-  config: ConfigBody.strip().parse(readConfig()),
+  config: ConfigReadBody.parse(readConfig()),
 })));
 
 const ConfigBody = z.object({
@@ -819,6 +854,10 @@ const ConfigBody = z.object({
   sessionLimit: z.number().int().min(1).max(100).optional(),
   autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
   setupCompleted: z.boolean().optional(),
+  // #360 — same key as `memesh config set briefing`. Strict here: this is
+  // the WRITE path, and an unknown level must be a loud 400, not a value
+  // silently accepted and only reported as wrong later, at read time.
+  briefing: z.enum(BRIEFING_LEVELS as [string, ...string[]]).optional(),
 }).strict();
 
 app.post('/v1/config', (req, res) => handlePost(ConfigBody, req, res, (data) =>
@@ -895,9 +934,12 @@ app.get('/v1/task-state', (req, res) => {
 });
 // --- Briefing index (Project tab, #323) ---
 // The durable-memory index the briefing and the SessionStart block close
-// with — one line per decision / lesson / pattern / reference, newest first,
-// capped — for the same project name /v1/task-state takes. Rendered by the
-// same leaf, so the dashboard shows exactly what an agent is given.
+// with at `standard`/`full` (#360; `minimal` never includes it) — one line
+// per decision / lesson / pattern / reference, newest first, capped — for
+// the same project name /v1/task-state takes. This endpoint itself is not
+// level-gated: it always returns the index for a project regardless of the
+// configured `briefing` level, same as `memesh briefing --index`. Rendered
+// by the same leaf, so the dashboard shows exactly what an agent is given.
 app.get('/v1/briefing-index', (req, res) => {
   const parsed = TaskStateQuerySchema.safeParse(req.query);
   if (!parsed.success) {

@@ -133,6 +133,26 @@ describe('CLI error envelopes: caller mistakes are one line, not a crash', () =>
     expectNoStackTrace(r.stderr, 'config set transcriptMining');
   });
 
+  // #360 — B5: `config set briefing <level>` persists and `config list`
+  // shows it back; an invalid level is a loud, non-zero-exit CLI error that
+  // names all three valid values, the same discipline every other
+  // KEY_VALIDATORS entry already gets.
+  it('config set briefing minimal persists and config list shows it', () => {
+    expect(runCli(['config', 'set', 'briefing', 'minimal']).exitCode).toBe(0);
+    const listed = runCli(['config', 'list']);
+    expect(listed.stdout).toContain('briefing: minimal');
+  });
+
+  it('config set briefing rejects an unknown level, names the three valid ones, and writes nothing', () => {
+    const r = runCli(['config', 'set', 'briefing', 'aggressive']);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('must be one of: minimal, standard, full');
+    expectNoStackTrace(r.stderr, 'config set briefing');
+
+    const listed = runCli(['config', 'list']);
+    expect(listed.stdout).not.toContain('briefing: aggressive');
+  });
+
   it('remember --obs "   " is refused, not stored as a memory with nothing in it (M-05)', () => {
     // Dogfooded on the real v4.7.1 release: `--obs "   "` was accepted and
     // stored `"observations": ["   "]` — a memory with no actual content.

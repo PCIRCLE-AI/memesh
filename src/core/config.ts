@@ -9,9 +9,27 @@ export interface MeMeshConfig {
   /** false = "never ask again": no first-use update notice, no refresh spawn. Default true. */
   updateCheck?: boolean;
   setupCompleted?: boolean;
+  /**
+   * #360 — how much of the injected briefing to assemble: 'minimal' |
+   * 'standard' | 'full' (`core/briefing-level.ts`). Typed as `unknown`, not
+   * even `string`: an invalid stored value — a hand-edited config.json with
+   * `"briefing": 42`, an older/newer memesh writing a value this version
+   * does not know, ANY JSON type — must still reach `resolveBriefingLevel`,
+   * which is where "unknown value" is validated AND reported. Round 3 of
+   * #360's review found that `selectConfig` below used to gate this field
+   * on `typeof === 'string'` (the way `autoUpdate` gates on its own enum),
+   * which silently dropped a non-string value before the resolver ever saw
+   * it — the hook (which reads raw JSON directly, never through this file)
+   * reported it invalid; `assembleBriefing`, the CLI, the MCP tool and
+   * `GET /v1/config` all silently used the default instead, with no
+   * recorded reason anywhere. The value now survives this file unfiltered,
+   * whatever its type, and `resolveBriefingLevel`'s own `isBriefingLevel`
+   * check is what rejects it — the SAME check for every surface.
+   */
+  briefing?: unknown;
 }
 
-const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'setupCompleted'] as const;
+const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'setupCompleted', 'briefing'] as const;
 export const RETIRED_CONFIG_KEYS = [
   'llm',
   'llmFallbacks',
@@ -92,6 +110,18 @@ function selectConfig(raw: RawConfig): MeMeshConfig {
   }
   if (typeof raw.updateCheck === 'boolean') config.updateCheck = raw.updateCheck;
   if (typeof raw.setupCompleted === 'boolean') config.setupCompleted = raw.setupCompleted;
+  // Passed through UNVALIDATED and UNFILTERED on purpose, whatever its JSON
+  // type — see the field comment on MeMeshConfig.briefing. `!== undefined`
+  // only (not a `typeof` gate): `null` is deliberately preserved too — this
+  // file's job is only to not discard it before `resolveBriefingLevel` (the
+  // one owner of what counts as valid) can see it. Round 5 (Codex round 4
+  // re-review, item 2): that resolver used to treat an explicit `null` the
+  // same as "not set"; it now treats it as an invalid stored value like any
+  // other (checked against the product: `memesh config unset briefing`
+  // deletes the key, never writes `null` — nothing in this codebase does),
+  // so a hand-written `null` gets the default level AND a recorded reason,
+  // the same as `42` or `"banana"` would.
+  if (raw.briefing !== undefined) config.briefing = raw.briefing;
   return config;
 }
 

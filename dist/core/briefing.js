@@ -1,13 +1,15 @@
 import { getDatabase } from '../db.js';
 import { getProjectName } from './paths.js';
+import { readConfig } from './config.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { rankEntities } from './scoring.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
-import { taskStateLines } from './task-state.js';
+import { briefingTaskStateLines } from './task-state.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, buildBriefingIndex, } from './briefing-index.js';
-import { GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, buildReferenceContext, isAutoInjectable, } from './work-topology.js';
+import { GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, buildReferenceContext, hasBriefingContent, isAutoInjectable, } from './work-topology.js';
+import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
 const PROJECT_LIMIT = 30;
 const RECENT_LIMIT = 5;
 const CANDIDATE_COLUMNS = 'e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses';
@@ -79,12 +81,24 @@ export function readBriefingIndex(db, projectName, now = Date.now()) {
 export function assembleBriefing(project, recipient) {
     const projectName = project ?? getProjectName();
     const db = getDatabase();
+    const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
+    if (resolvedLevel.invalid) {
+        const { source, value } = resolvedLevel.invalid;
+        try {
+            process.stderr.write(`[memesh briefing] invalid ${source} briefing level "${value}" — using "${resolvedLevel.level}"\n`);
+        }
+        catch { }
+    }
+    const level = resolvedLevel.level;
+    const policy = briefingLevelPolicy(level);
     const repoLines = (project === undefined || project === getProjectName())
         ? repoStateLines(readRepoState())
         : [];
     let taskLines;
     try {
-        taskLines = taskStateLines(getTaskState(projectName).state, projectName);
+        taskLines = briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
+            includeFresh: policy.taskState,
+        });
     }
     catch (err) {
         if (!(err instanceof TaskStateUnreadableError))
@@ -109,7 +123,7 @@ export function assembleBriefing(project, recipient) {
      ORDER BY e.id DESC
      LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
     const projectPool = selectPool(projectRows, PROJECT_LIMIT);
-    const globalRows = hasNamespace
+    const globalRows = policy.global && hasNamespace
         ? db.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
        WHERE e.namespace = 'global' AND e.status = 'active'
@@ -117,11 +131,13 @@ export function assembleBriefing(project, recipient) {
        LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP)
         : [];
     const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
-    const recentRows = db.prepare(`SELECT ${CANDIDATE_COLUMNS}
-     FROM entities e
-     WHERE e.status = 'active'${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP);
+    const recentRows = policy.foreign
+        ? db.prepare(`SELECT ${CANDIDATE_COLUMNS}
+       FROM entities e
+       WHERE e.status = 'active'${nonGlobal}
+       ORDER BY e.id DESC
+       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP)
+        : [];
     const recentPool = selectPool(recentRows, RECENT_LIMIT);
     const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
     const snippets = new Map();
@@ -148,13 +164,19 @@ export function assembleBriefing(project, recipient) {
         ? [...repoLines, '', ...lines]
         : lines;
     const index = readBriefingIndex(db, projectName);
-    const block = withRepo.length > 0 ? [...withRepo, '', ...index.lines] : index.lines;
+    const indexLines = policy.index ? index.lines : [];
+    const block = withRepo.length > 0 && indexLines.length > 0
+        ? [...withRepo, '', ...indexLines]
+        : [...withRepo, ...indexLines];
+    const empty = !hasBriefingContent(block);
     return {
         project: projectName,
-        text: buildReferenceContext(block),
+        text: empty ? '' : buildReferenceContext(block),
         entityCount: lines.filter((l) => l.startsWith('- [')).length,
         hasTaskState: stateLines.length > 0,
         index,
+        level,
+        empty,
     };
 }
 //# sourceMappingURL=briefing.js.map

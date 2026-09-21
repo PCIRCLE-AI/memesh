@@ -192,6 +192,9 @@ export function assembleTopologyBlock(stateLines, pools, projectName, budget = D
     lines.push(...globalLines);
     return lines;
 }
+export function hasBriefingContent(lines) {
+    return lines.length > 0;
+}
 export function buildReferenceContext(memoryLines) {
     const safeLines = memoryLines.map((line) => String(line ?? '')
         .replace(/[\s\u0085\u001c-\u001e]+/g, ' ')

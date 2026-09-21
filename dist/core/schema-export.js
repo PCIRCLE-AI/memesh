@@ -158,7 +158,7 @@ export function exportOpenAITools() {
             type: 'function',
             function: {
                 name: 'memesh_briefing',
-                description: 'The assembled work topology for a project: where the work was left off, decisions, lessons, knowledge, recent activity. Call once at the start of a session to load project context.',
+                description: 'The assembled work topology for a project: where the work was left off (by default), decisions, lessons, knowledge, recent activity. Call once at the start of a session to load project context.',
                 parameters: {
                     type: 'object',
                     properties: {

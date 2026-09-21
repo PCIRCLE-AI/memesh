@@ -14,7 +14,7 @@ const require = createRequire(import.meta.url);
 // Non-git identity is basename + real-path hash; derive seeds through the
 // hook's own mirror so the seeded tag and the hook's derived tag cannot
 // disagree (the rule itself is pinned in tests/core/project-identity.test.ts).
-const { getProjectName: mirrorProjectName } = require('../../scripts/hooks/_shared.js');
+const { getProjectName: mirrorProjectName, WORK_PACKAGE_NOTICE } = require('../../scripts/hooks/_shared.js');
 const projTag = (name: string) => `project:${mirrorProjectName('/tmp/' + name)}`;
 
 describe('Feature: Session Start Hook', () => {
@@ -331,7 +331,8 @@ describe('Feature: Session Start Hook', () => {
     });
 
     it('offers session-scoped host-native work-package choices even without a database', () => {
-      const output = runHook({ cwd: '/tmp/myproject' });
+      // #360: the work-package notice is full-only.
+      const output = runHook({ cwd: '/tmp/myproject' }, { MEMESH_BRIEFING: 'full' });
       // Nothing recalled means nothing to inject — emitting an empty
       // additionalContext would waste a context slot on every fresh install.
       const guidance = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
@@ -437,7 +438,8 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(1, 'A note about something');
     db.close();
 
-    const output = runHook({ cwd: '/tmp/other-project' });
+    // #360: the "recent" (foreign) pool is full-only by default (standard).
+    const output = runHook({ cwd: '/tmp/other-project' }, { MEMESH_BRIEFING: 'full' });
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toContain('◉ MeMesh');
     expect(msg).toMatch(/1 recent/);
@@ -455,7 +457,10 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(2, 'Global note');
     db.close();
 
-    const output = runHook({ cwd: '/tmp/testproj' });
+    // #360: the "recent" (foreign) pool is only queried at level=full by
+    // default (standard); this test is about that pool's mechanics, not
+    // about level-gating, so it pins full explicitly.
+    const output = runHook({ cwd: '/tmp/testproj' }, { MEMESH_BRIEFING: 'full' });
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toContain('◉ MeMesh');
     expect(msg).toMatch(/1 project/);
@@ -536,7 +541,8 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(2, 'Standing rule that applies everywhere');
     db.close();
 
-    runHook({ cwd: '/tmp/testproj' });
+    // #360: the global pool is full-only by default (standard).
+    runHook({ cwd: '/tmp/testproj' }, { MEMESH_BRIEFING: 'full' });
     const session = readLatestSessionFile();
     expect(session?.entityNames).toContain('proj-only');
     expect(session?.entityNames, 'global memory must reach a project it was never tagged with').toContain('always-memesh-on-failure');
@@ -779,7 +785,8 @@ describe('Feature: Session Start Hook', () => {
     for (let i = 0; i < 6; i++) { const id = ins.run(`p${i}`, 'decision', 'personal').lastInsertRowid as number; obs.run(id, `project ${i}`); tag.run(id, projTag('testproj')); }
     db.close();
 
-    runHook({ cwd: '/tmp/testproj' }, { MEMESH_SESSION_LIMIT: '5' });
+    // #360: the global pool is full-only by default (standard).
+    runHook({ cwd: '/tmp/testproj' }, { MEMESH_SESSION_LIMIT: '5', MEMESH_BRIEFING: 'full' });
     const session = readLatestSessionFile();
     expect(session, 'session file was written').toBeTruthy();
     const names = rankedNames(session!);
@@ -842,7 +849,8 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(1, 'Legacy note');
     db.close();
 
-    const output = runHook({ cwd: '/tmp/anyproject' });
+    // #360: the "recent" (foreign) pool is full-only by default (standard).
+    const output = runHook({ cwd: '/tmp/anyproject' }, { MEMESH_BRIEFING: 'full' });
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toContain('◉ MeMesh');
     expect(msg).toMatch(/\d+ recent/);
@@ -1036,6 +1044,534 @@ describe('Feature: Session Start Hook', () => {
       const session = readLatestSessionFile();
       const names = session?.entityNames ?? [];
       expect(names.indexOf('hot')).toBeLessThan(names.indexOf('cold'));
+    });
+  });
+
+  // ── #360: briefing levels ──────────────────────────────────────────────
+  describe('Feature: Briefing levels (#360)', () => {
+    const PROJECT_CWD = '/tmp/everysection';
+    const OTHER_TAG = projTag('everysection-other');
+
+    /** Populates every section the acceptance criteria names: this
+     *  project's own decision/lesson/knowledge/evidence, 3 global, 5
+     *  foreign (other-project), and a task state whose age is controlled by
+     *  `taskUpdatedAt` (an ISO string, or null to omit the task state
+     *  entirely). Deliberately small — a handful of short lines per section —
+     *  so the fixture stays far under the 4000-char topology budget: with
+     *  the budget uncontended, dropping the task-state block at `minimal`
+     *  cannot let the topology grow to fill the freed room and invert the
+     *  minimal < standard size relation. */
+    function seedEverySection(opts: { taskUpdatedAt?: string | null } = {}): void {
+      const db = createScoringDb();
+      db.exec("ALTER TABLE entities ADD COLUMN namespace TEXT DEFAULT 'personal'");
+      db.exec('ALTER TABLE entities ADD COLUMN title TEXT');
+      const insert = db.prepare("INSERT INTO entities (name, type, namespace, title) VALUES (?, ?, 'personal', ?)");
+      const insertGlobal = db.prepare("INSERT INTO entities (name, type, namespace, title) VALUES (?, ?, 'global', ?)");
+      const addObs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+      const addTag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+      const projectTag = projTag('everysection');
+
+      const decision = insert.run('decision-x', 'decision', 'Ship the new cache layer').lastInsertRowid as number;
+      addObs.run(decision, 'Cuts p95 latency in half.');
+      addTag.run(decision, projectTag);
+
+      const lesson = insert.run('lesson-y', 'lesson_learned', 'Do not trust a green suite alone').lastInsertRowid as number;
+      addObs.run(lesson, 'Revert the fix and confirm red.');
+      addTag.run(lesson, projectTag);
+
+      const knowledge = insert.run('ref-z', 'reference', 'API auth uses PKCE').lastInsertRowid as number;
+      addObs.run(knowledge, 'Token endpoint requires a code_verifier.');
+      addTag.run(knowledge, projectTag);
+
+      const evidence = insert.run('commit-1', 'commit', 'Fix off-by-one in scoring').lastInsertRowid as number;
+      addObs.run(evidence, 'entities_fts count was off by one on delete.');
+      addTag.run(evidence, projectTag);
+
+      // Realistic (not padded) title LENGTH, not count, is what grows full's
+      // global/foreign-only mass — GLOBAL_TOPOLOGY_LIMIT/RECENT_LIMIT cap
+      // rendering at 3/5 regardless of how many rows exist, and a real
+      // global rule or a real cross-project decision is a sentence.
+      const GLOBAL_TITLES = [
+        'Never commit a .env file to any repository, even a private fork — rotate the key immediately if it happens',
+        'Rotate every API key on a quarterly schedule across all environments, staging included, not just production',
+        'Redact secrets before any log line leaves the process — a log aggregator is not a trust boundary you control',
+      ];
+      for (let i = 0; i < GLOBAL_TITLES.length; i++) {
+        const id = insertGlobal.run(`global-rule-${i}`, 'directive', GLOBAL_TITLES[i]).lastInsertRowid as number;
+        addObs.run(id, `Cross-project detail ${i}`);
+      }
+
+      const FOREIGN_TITLES = [
+        'Switched the payment webhook retry policy to exponential backoff after repeated duplicate-charge incidents',
+        'Deprecated the v1 export format in favour of a streaming JSON response that does not buffer the whole export',
+        'Moved session tokens out of local storage and into httpOnly cookies to close an XSS token-theft path',
+        'Split the monolithic background worker into three priority queues so a slow job cannot starve the others',
+        'Pinned the base container image to a content digest instead of a floating tag after a silent upstream break',
+      ];
+      for (let i = 0; i < FOREIGN_TITLES.length; i++) {
+        const id = insert.run(`foreign-note-${i}`, 'decision', FOREIGN_TITLES[i]).lastInsertRowid as number;
+        addObs.run(id, `Detail ${i}`);
+        addTag.run(id, OTHER_TAG);
+      }
+
+      if (opts.taskUpdatedAt !== null) {
+        const updatedAt = opts.taskUpdatedAt ?? new Date().toISOString();
+        const project = mirrorProjectName(PROJECT_CWD);
+        const taskId = db.prepare("INSERT INTO entities (name, type, namespace, metadata) VALUES (?, 'task-state', 'personal', ?)")
+          .run(
+            `task-state:${project}`,
+            JSON.stringify({ task_state: { goal: 'Ship #360', next: 'Verify sections', updated_at: updatedAt } }),
+          ).lastInsertRowid as number;
+        addObs.run(taskId, 'goal: Ship #360');
+        addTag.run(taskId, projectTag);
+      }
+
+      db.close();
+    }
+
+    function injectedContextAt(level: string, env: Record<string, string> = {}): string {
+      const output = runHook({ cwd: PROJECT_CWD }, { MEMESH_BRIEFING: level, ...env });
+      return (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    }
+
+    // Headings exactly as work-topology.ts's groupTopology / task-state.ts /
+    // briefing-index.ts render them — read from source, not invented.
+    const HEADINGS = {
+      decisions: 'Decisions and direction for',
+      lessons: 'do not repeat these',
+      knowledge: 'What is known about',
+      evidence: 'Recent activity in',
+      foreign: 'From your other projects',
+      global: 'Global memory — applies across projects',
+      taskStateFresh: 'Stated about',
+      index: 'Index of durable memories for',
+      workPackage: 'Work packages: check work_package prepare',
+    };
+
+    it('B2: minimal has this project\'s own sections + live repo state, and NOTHING else', () => {
+      seedEverySection();
+      const injected = injectedContextAt('minimal');
+
+      for (const key of ['decisions', 'lessons', 'knowledge', 'evidence'] as const) {
+        expect(injected, `minimal must contain "${HEADINGS[key]}"`).toContain(HEADINGS[key]);
+      }
+      for (const key of ['foreign', 'global', 'taskStateFresh', 'index', 'workPackage'] as const) {
+        expect(injected, `minimal must NOT contain "${HEADINGS[key]}"`).not.toContain(HEADINGS[key]);
+      }
+    });
+
+    it('B2: standard adds task state and the durable index, still no global/foreign/notice', () => {
+      seedEverySection();
+      const injected = injectedContextAt('standard');
+
+      for (const key of ['decisions', 'lessons', 'knowledge', 'evidence', 'taskStateFresh', 'index'] as const) {
+        expect(injected, `standard must contain "${HEADINGS[key]}"`).toContain(HEADINGS[key]);
+      }
+      for (const key of ['foreign', 'global', 'workPackage'] as const) {
+        expect(injected, `standard must NOT contain "${HEADINGS[key]}"`).not.toContain(HEADINGS[key]);
+      }
+    });
+
+    it('B2: full has every section', () => {
+      seedEverySection();
+      const injected = injectedContextAt('full');
+      for (const key of Object.keys(HEADINGS) as (keyof typeof HEADINGS)[]) {
+        expect(injected, `full must contain "${HEADINGS[key]}"`).toContain(HEADINGS[key]);
+      }
+    });
+
+    it('B2: size relation — minimal < standard < full, and standard <= 60% of full (measured, not asserted-then-bent)', () => {
+      seedEverySection();
+      const minimal = injectedContextAt('minimal');
+      const standard = injectedContextAt('standard');
+      const full = injectedContextAt('full');
+
+      expect(minimal.length).toBeLessThan(standard.length);
+      expect(standard.length).toBeLessThan(full.length);
+      const ratio = standard.length / full.length;
+      expect(ratio, `standard (${standard.length}) must be <= 60% of full (${full.length}); measured ${(ratio * 100).toFixed(1)}%`)
+        .toBeLessThanOrEqual(0.6);
+    });
+
+    it('B3: a stale task state is ONE line at every level; a fresh one is the full block at standard/full', () => {
+      const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString(); // 100h old
+      seedEverySection({ taskUpdatedAt: staleAt });
+
+      for (const level of ['minimal', 'standard', 'full']) {
+        const injected = injectedContextAt(level);
+        expect(injected, `${level}: stale must not show the multi-line block`).not.toContain('Stated about');
+        const staleLines = injected.split('\n').filter((l) => l.includes('was last stated') && l.includes('72h'));
+        expect(staleLines, `${level}: exactly one stale line`).toHaveLength(1);
+        expect(staleLines[0]).toContain('memesh task');
+      }
+    });
+
+    it('B3 boundary: 71h (just under) is still fresh', () => {
+      const justUnder = new Date(Date.now() - 71 * 60 * 60 * 1000).toISOString();
+      seedEverySection({ taskUpdatedAt: justUnder });
+      const freshInjected = injectedContextAt('standard');
+      expect(freshInjected).toContain('Stated about');
+      expect(freshInjected).not.toContain('72h');
+    });
+
+    it('B3 boundary: 73h (just over) is stale — offsets from Date.now(), never a fixed calendar date', () => {
+      const justOver = new Date(Date.now() - 73 * 60 * 60 * 1000).toISOString();
+      seedEverySection({ taskUpdatedAt: justOver });
+      const staleInjected = injectedContextAt('standard');
+      expect(staleInjected).not.toContain('Stated about');
+      expect(staleInjected).toContain('72h');
+    });
+
+    // #360 round 7 (Codex round 6 re-review, item 1): every doc claimed
+    // `full` is byte-identical to the pre-#360 (HEAD) output, unqualified —
+    // false whenever the task state is stale, since staleness handling
+    // (added by THIS branch, not present at HEAD) replaces that block at
+    // EVERY level including `full`. Manually confirmed against a real HEAD
+    // build (`git archive 554e7142`, built, 2026-09-20) on this exact
+    // fixture shape: HEAD showed the multi-line block unconditionally (no
+    // staleness concept at all); current code showed the one-line flag;
+    // `diff` of the two additionalContext bodies touched ONLY those two
+    // lines, nothing else. This test reproduces that structurally so it
+    // does not depend on rebuilding HEAD on every run: HEAD has no
+    // staleness concept, so HEAD's renderer for a FRESH task state is
+    // (by construction) identical to what current code also renders for a
+    // fresh task state — verified once, manually, above — so the FRESH
+    // phase below stands in for "what HEAD would produce" on this fixture.
+    it('full diverges from a HEAD-equivalent (fresh) run only in the task-state block, for a stale task state', () => {
+      seedEverySection();
+      const freshCtx = injectedContextAt('full');
+      expect(freshCtx, 'fresh must show the multi-line task-state block (HEAD-equivalent)').toContain('Stated about');
+      expect(freshCtx).toContain(HEADINGS.workPackage);
+
+      // seedEverySection() inserts fixed entity names — clear the db (and
+      // WAL/SHM sidecars) before seeding the second fixture in the same
+      // file, or the second seed collides on those names.
+      for (const suffix of ['', '-wal', '-shm']) {
+        fs.rmSync(dbPath + suffix, { force: true });
+      }
+
+      const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString(); // 100h old
+      seedEverySection({ taskUpdatedAt: staleAt });
+      const staleCtx = injectedContextAt('full');
+      expect(staleCtx, 'stale must show the one-line flag, not the multi-line block').not.toContain('Stated about');
+      expect(staleCtx).toContain('72h');
+      expect(staleCtx).toContain(HEADINGS.workPackage);
+
+      // Split each output at the first blank line inside the fence — that
+      // blank line separates the task-state paragraph from everything
+      // after it (the index section, then the fence close, then the
+      // notice). The portion AFTER that point must be byte-identical
+      // between the fresh and stale runs; the portion BEFORE it must NOT
+      // be (otherwise this comparison would be vacuous).
+      const fenceStart = (ctx: string) => ctx.indexOf('```text');
+      const splitAt = (ctx: string) => ctx.indexOf('\n\n', fenceStart(ctx));
+      expect(splitAt(freshCtx), 'fixture sanity: fresh output must contain the fence + a following blank line').toBeGreaterThan(-1);
+      expect(splitAt(staleCtx), 'fixture sanity: stale output must contain the fence + a following blank line').toBeGreaterThan(-1);
+      const restOf = (ctx: string) => ctx.slice(splitAt(ctx));
+      const taskStateBlockOf = (ctx: string) => ctx.slice(0, splitAt(ctx));
+      expect(restOf(staleCtx), 'everything after the task-state block must be byte-identical to the fresh/HEAD-equivalent run')
+        .toBe(restOf(freshCtx));
+      expect(taskStateBlockOf(freshCtx), 'the task-state block itself must differ — otherwise the comparison above is vacuous')
+        .not.toBe(taskStateBlockOf(staleCtx));
+    });
+
+    it('B4: an unknown MEMESH_BRIEFING value defaults to standard AND records why (hook-outcomes.jsonl)', () => {
+      seedEverySection();
+      const injected = injectedContextAt('banana');
+      // standard behaviour: no global/foreign, has task state + index.
+      expect(injected).not.toContain(HEADINGS.global);
+      expect(injected).toContain(HEADINGS.index);
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(record, 'a briefing-level outcome record must exist').toBeTruthy();
+      expect(record.reason).toContain('invalid env value');
+      expect(record.reason).toContain('banana');
+      expect(record.reason).toContain('standard');
+    });
+
+    it('B4: an unknown config briefing value defaults to standard AND records config as the source', () => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-invalid');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ briefing: 'banana' }));
+      const output = runHook({ cwd: PROJECT_CWD }, { MEMESH_DIR: cfgDir });
+      const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      expect(injected).not.toContain(HEADINGS.global);
+      expect(injected).toContain(HEADINGS.index);
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(record, 'a briefing-level outcome record must exist').toBeTruthy();
+      expect(record.reason).toContain('invalid config value');
+      expect(record.reason).toContain('banana');
+    });
+
+    // #360 round 6 (Codex round 5 re-review, item 2): a config.json that is
+    // not even a parseable object — a bare array, a bare string, `null`, or
+    // truncated JSON — used to leave NO trace at all: `readHookConfig()`
+    // swallowed it into `{}`, so every setting silently read as "not set",
+    // real hook, real subprocess, for each shape.
+    it.each([
+      ['a bare array', '[]'],
+      ['a bare string', '"x"'],
+      ['a bare null', 'null'],
+      ['truncated JSON', '{"briefing": "fu'],
+    ])('B4b: a malformed/non-object config document (%s) records why, via the real hook', (_label, raw) => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-malformed');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), raw);
+      const output = runHook({ cwd: PROJECT_CWD }, { MEMESH_DIR: cfgDir });
+      // Every setting reads as its default — the level falls back to
+      // `standard` (env/config `briefing` unreadable), so the injected
+      // block still has the index but not global memory.
+      const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      expect(injected).not.toContain(HEADINGS.global);
+      expect(injected).toContain(HEADINGS.index);
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.startsWith('config:'));
+      expect(record, `a config-unreadable outcome record must exist for ${raw}`).toBeTruthy();
+      expect(record.reason).toContain('could not be read as a settings object');
+      // Never the raw file content or a parse-error fragment — bounded and
+      // generic, the same string for every malformed shape.
+      expect(record.reason).not.toContain(raw);
+      fs.rmSync(cfgDir, { recursive: true, force: true });
+    });
+
+    it('B4b: {"nested":{"briefing":"full"}} is a valid object — no malformed-config reason, briefing stays "not set"', () => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-nested');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ nested: { briefing: 'full' } }));
+      runHook({ cwd: PROJECT_CWD }, { MEMESH_DIR: cfgDir });
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const malformedRecord = lines.find((r) => typeof r.reason === 'string' && r.reason.startsWith('config:'));
+      expect(malformedRecord, 'no malformed-config reason for a valid object with an unrelated nested key').toBeUndefined();
+      const invalidBriefingRecord = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level: invalid'));
+      expect(invalidBriefingRecord, 'no invalid-briefing-value reason either — the top-level key is genuinely absent').toBeUndefined();
+    });
+
+    // #360 round 4 (Codex round 3 re-review, item 2): `invalid.value` is a
+    // stored config value, so it is exactly as untrusted as any other
+    // hand-edited config.json field — a huge string or one containing raw
+    // newlines must not reach `additionalContext` whole, and must not
+    // corrupt the JSONL outcome record (a raw `\n` inside a JSON string
+    // value is legal JSON — `JSON.stringify` escapes it to `\\n` — so the
+    // real risk is an UNBOUNDED length reaching agent-visible text, not a
+    // malformed JSONL line; this test proves both: bounded length, and the
+    // record still parses as exactly one JSON object per line).
+    it('a huge, newline-laden stored config value is bounded before it reaches additionalContext or the outcome record', () => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-hostile');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      const hostile = 'x'.repeat(10_000) + '\nline two\r\nline three\t`backtick`';
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ briefing: hostile }));
+      const output = runHook({ cwd: PROJECT_CWD }, { MEMESH_DIR: cfgDir });
+      const injected = (output.hookSpecificOutput as { additionalContext: string } | undefined)?.additionalContext ?? '';
+      // The bounded/flattened form may still appear (truncated, on one
+      // line) — what must NEVER appear is the whole 10,000-char run or a
+      // raw newline from the stored value.
+      expect(injected).not.toContain('x'.repeat(10_000));
+      expect(injected.length).toBeLessThan(5_000);
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const rawLines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n');
+      // Every line must still be exactly one parseable JSON object — a raw
+      // newline smuggled into `reason` unescaped would split one outcome
+      // record into two lines, one of which fails JSON.parse.
+      const lines = rawLines.map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(record, 'a briefing-level outcome record must exist').toBeTruthy();
+      expect(record.reason).toContain('invalid config value');
+      expect(record.reason.length).toBeLessThan(500);
+      expect(record.reason).not.toContain('x'.repeat(10_000));
+    });
+
+    // #360 round 8 (Codex round 7 re-review, item 1): `describeInvalidValue`
+    // bounded its INPUT (120 code points), not the SERIALIZED form it
+    // produces — for escape-heavy input, serializing 120 code points can
+    // expand past 700 UTF-16 units (a lone surrogate alone serializes to
+    // the 6-character `\udXXX`). `recordHookOutcome` (`_shared.js`) then
+    // truncates the FULL reason a second time with a raw `.slice(0, 200)`,
+    // which can land inside that same expanded escape or a surrogate pair
+    // — the exact defect class round 7 closed, reopened one layer
+    // downstream, invisible to this module's own unit tests. Fixed by
+    // bounding the SERIALIZED form directly (100 units) — the whole reason
+    // (fixed prefix + that value + fixed suffix) now stays under 200 by a
+    // wide margin, so `recordHookOutcome`'s own truncation never engages
+    // for this diagnostic. Each case below is a real hook subprocess, not
+    // a unit test, since that second truncation only exists there.
+    const PREFIX = 'briefing-level: invalid config value "';
+    const SUFFIX = '", using standard';
+    function extractAndParseEmbeddedValue(reason: string): unknown {
+      expect(reason.startsWith(PREFIX), `reason must start with the known fixed prefix: ${reason}`).toBe(true);
+      expect(reason.endsWith(SUFFIX), `reason must end with the known fixed suffix: ${reason}`).toBe(true);
+      const embedded = reason.slice(PREFIX.length, reason.length - SUFFIX.length);
+      // Throws (failing the test) if the second truncation cut the
+      // embedded value mid-escape or mid-surrogate-pair — this is the
+      // exact assertion the finding asked for: "JSON.parse of the
+      // embedded quoted value succeeds".
+      return JSON.parse(embedded);
+    }
+
+    it.each([
+      ['30 lone high surrogates', '\ud83d'.repeat(30)],
+      ['200 emoji', '😀'.repeat(200)],
+      ['150 chars of mixed newline/tab/quote/backslash', '\n\t"\\'.repeat(38)],
+      ['10,000 characters', 'x'.repeat(10_000)],
+    ])('%s: recorded reason stays under 200 units, ends on a complete token, embedded value JSON.parses', (_label, raw) => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-surrogate');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ briefing: raw }));
+      const output = runHook({ cwd: PROJECT_CWD }, { MEMESH_DIR: cfgDir });
+      // The bounded/truncated form may still appear in additionalContext —
+      // it must never be the WHOLE raw adversarial input.
+      const injected = (output.hookSpecificOutput as { additionalContext: string } | undefined)?.additionalContext ?? '';
+      expect(injected).not.toContain(raw);
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(record, 'a briefing-level outcome record must exist').toBeTruthy();
+      // recordHookOutcome's OWN truncation (200 units) must never engage
+      // for this diagnostic — proves the fix at the source is sufficient
+      // and the second, cruder truncation stays a no-op here.
+      expect(record.reason.length).toBeLessThan(200);
+      expect(() => extractAndParseEmbeddedValue(record.reason)).not.toThrow();
+      fs.rmSync(cfgDir, { recursive: true, force: true });
+    });
+
+    it('precedence: env beats config', () => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-full');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ briefing: 'full' }));
+      const output = runHook({ cwd: PROJECT_CWD }, { MEMESH_DIR: cfgDir, MEMESH_BRIEFING: 'minimal' });
+      const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      expect(injected).not.toContain(HEADINGS.global);
+      expect(injected).not.toContain(HEADINGS.index);
+    });
+
+    // Codex review round 1, item 4 (and round 3, item 1 — the misleading
+    // name below is what round 3 flagged and this fixes): an initialised,
+    // memory-free project used to still get ~166 chars of preamble wrapped
+    // around an empty fence at `minimal`. Three empty-ish DB states, all
+    // three levels each. Only `minimal` is EVER silent because it has
+    // nothing to fall back to (no task state section, no index at that
+    // level); `standard`/`full` are silent on the no-database and
+    // no-tables-yet states below too, but that is NOT this rule — those two
+    // states never reach the code that would render the index's
+    // empty-state line at all (there is no schema yet to query), which is
+    // why the THIRD state (schema present, zero rows) is the one that
+    // actually distinguishes `minimal` from `standard` — see its own test.
+    describe('item 1/4: minimal is silent on an empty project; standard still shows the index once the schema exists', () => {
+      const EMPTY_CWD = '/tmp/emptyproject-item4';
+
+      it('no database file at all (neither level has a schema to query, so both are silent — not the minimal-vs-standard rule)', () => {
+        for (const level of ['minimal', 'standard']) {
+          const output = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: level });
+          expect(output.hookSpecificOutput, `${level}: no hookSpecificOutput at all`).toBeUndefined();
+        }
+        const full = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'full' });
+        expect((full.hookSpecificOutput as { additionalContext: string }).additionalContext)
+          .toContain('Work packages:');
+      });
+
+      it('database exists but has no tables yet (same reasoning — no schema to render an index from)', () => {
+        // A bare, valid, empty SQLite file — no schema at all.
+        new Database(dbPath).close();
+        for (const level of ['minimal', 'standard']) {
+          const output = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: level });
+          expect(output.hookSpecificOutput, `${level}: no hookSpecificOutput at all`).toBeUndefined();
+        }
+      });
+
+      it('database has the schema but zero rows: minimal injects nothing, standard keeps the honest empty-index line, full is unchanged', () => {
+        createScoringDb().close();
+        const minimal = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        expect(minimal.hookSpecificOutput, 'minimal: no hookSpecificOutput at all').toBeUndefined();
+
+        const standard = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'standard' });
+        const standardCtx = (standard.hookSpecificOutput as { additionalContext: string }).additionalContext;
+        // #323's guarantee is preserved: the index's own empty-state line is
+        // informative content, not "nothing" — it is NOT suppressed by item 4.
+        expect(standardCtx).toContain('No durable memories');
+        expect(standardCtx).not.toContain(HEADINGS.workPackage);
+
+        const full = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'full' });
+        const fullCtx = (full.hookSpecificOutput as { additionalContext: string }).additionalContext;
+        expect(fullCtx).toContain('No durable memories');
+        expect(fullCtx).toContain(HEADINGS.workPackage);
+      });
+
+      it('records a specific, greppable outcome reason for the "nothing to inject" case (schema present, zero rows)', () => {
+        createScoringDb().close();
+        runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((l) => JSON.parse(l));
+        const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('nothing to inject'));
+        expect(record, 'a "nothing to inject" outcome record must exist').toBeTruthy();
+        expect(record.reason).toContain('"minimal"');
+      });
+
+      // #360 round 6 (Codex round 5 re-review, item 1): the OTHER two empty
+      // states — no database file at all, and a database file with no
+      // `entities` table — used to call `output()` without a `recorded`
+      // argument, so a silent `minimal` session on either of THESE states
+      // left only the generic `session-start-banner` outcome marker, no
+      // `reason` at all. Both now go through the same `nothingToInjectReason`
+      // helper as the schema-present case above, with their own `detail`.
+      it('records the same kind of outcome reason on the no-database-file state', () => {
+        // EMPTY_CWD's db path does not exist at all at this point in the
+        // describe block (no prior test in it created dbPath here).
+        runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((l) => JSON.parse(l));
+        const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('nothing to inject'));
+        expect(record, 'a "nothing to inject" outcome record must exist for the no-database-file state').toBeTruthy();
+        expect(record.reason).toContain('"minimal"');
+        expect(record.reason).toContain('no database yet');
+      });
+
+      it('records the same kind of outcome reason on the no-entities-table state', () => {
+        new Database(dbPath).close();
+        runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((l) => JSON.parse(l));
+        const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('nothing to inject'));
+        expect(record, 'a "nothing to inject" outcome record must exist for the no-entities-table state').toBeTruthy();
+        expect(record.reason).toContain('"minimal"');
+        expect(record.reason).toContain('no entities table yet');
+      });
+
+      // The fix only adds a `recorded` argument to output() calls — the
+      // printed systemMessage/additionalContext bytes are untouched. Pin
+      // that explicitly at standard/full on both early-exit states, since
+      // those are the levels where output CONTENT must stay byte-identical
+      // to what it was before this round (re-asserted, not merely assumed).
+      it('the fix changes only the recorded reason, never the injected bytes, at standard/full on both early-exit states', () => {
+        // --- no database file at all ---
+        const standardNoDb = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'standard' });
+        expect(standardNoDb.hookSpecificOutput, 'standard/no-db: still no hookSpecificOutput').toBeUndefined();
+        const fullNoDb = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'full' });
+        const fullNoDbCtx = (fullNoDb.hookSpecificOutput as { additionalContext: string }).additionalContext;
+        expect(fullNoDbCtx, 'full/no-db: still exactly the notice, byte-identical').toBe(WORK_PACKAGE_NOTICE);
+
+        // --- database file, no entities table ---
+        new Database(dbPath).close();
+        const standardNoTable = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'standard' });
+        expect(standardNoTable.hookSpecificOutput, 'standard/no-table: still no hookSpecificOutput').toBeUndefined();
+        const fullNoTable = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'full' });
+        const fullNoTableCtx = (fullNoTable.hookSpecificOutput as { additionalContext: string }).additionalContext;
+        expect(fullNoTableCtx, 'full/no-table: still exactly the notice, byte-identical').toBe(WORK_PACKAGE_NOTICE);
+      });
     });
   });
 });
