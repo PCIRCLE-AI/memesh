@@ -4,6 +4,8 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+## [4.10.2] — 2026-09-21
+
 ### Added
 
 - **A Claude Code session can now be told that a message is waiting for it
@@ -107,7 +109,7 @@ All notable changes to MeMesh are documented here.
   scripts/lib/verify-core.test.mjs` — because the tests it dropped covered
   code that left, and it now reads its step list from the public
   `scripts/verify.config.json`.
-- The published npm file list is unchanged (402 files, before and after);
+- The published npm file list is unchanged by this removal (402 files, before and after it);
   two shipped files changed content with no behaviour change for users —
   `package.json` (five maintainer-only dev scripts removed) and
   `scripts/upgrade-plugin.sh` (one cleanup line, no longer removing a
