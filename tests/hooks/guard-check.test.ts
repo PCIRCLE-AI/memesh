@@ -11,7 +11,7 @@
  * Contract order matters: every failure path is a silent pass. A guard
  * system that can break the user's Bash tool is worse than no guards.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -141,56 +141,50 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
   // holding the suite for 30 s.
   const LOCKED_RUN_TIMEOUT_MS = 12000;
 
-  // Runs `script` once with nothing contending, then again while a second
-  // connection holds the write lock, and returns the locked run with both
-  // wall-clock times. `input` gets a distinct tag per run because
-  // pre-edit-recall throttles a repeated file within one session.
+  // Runs `script` once with nothing contending (proof the hook itself works),
+  // then again while a second connection holds the write lock, and returns the
+  // locked run. `input` gets a distinct tag per run because pre-edit-recall
+  // throttles a repeated file within one session.
   function runUnderHeldLock(script: string, input: (tag: string) => object) {
-    const timedRun = (tag: string) => {
-      const startedAt = Date.now();
-      const result = spawnSync('node', [path.resolve('scripts/hooks', script)], {
-        input: JSON.stringify({ cwd: tmpHome, ...input(tag) }),
-        env: { ...process.env, MEMESH_DB_PATH: dbPath },
-        encoding: 'utf8',
-        timeout: LOCKED_RUN_TIMEOUT_MS,
-      });
-      return { result, elapsedMs: Date.now() - startedAt };
-    };
+    const run = (tag: string) => spawnSync('node', [path.resolve('scripts/hooks', script)], {
+      input: JSON.stringify({ cwd: tmpHome, ...input(tag) }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: LOCKED_RUN_TIMEOUT_MS,
+    });
 
-    const unlocked = timedRun('unlocked');
-    expect(unlocked.result.status, `the unlocked reference run failed\nstderr:\n${unlocked.result.stderr}`).toBe(0);
-    const unlockedMs = unlocked.elapsedMs;
+    const unlocked = run('unlocked');
+    expect(unlocked.status, `the unlocked reference run failed\nstderr:\n${unlocked.stderr}`).toBe(0);
     db.exec('BEGIN IMMEDIATE');
     try {
-      return { ...timedRun('locked'), unlockedMs };
+      return run('locked');
     } finally {
       db.exec('ROLLBACK');
     }
   }
 
   // A lock that stays held must not stop the guard warning: the hook finishes,
-  // prints it, and says on stderr that the fire was not counted. The one timing
-  // check is deliberately loose (a second, against the counter's short wait of a
-  // fraction of that): it only guards against the old 2 s wait coming back, and
-  // no exact wait is asserted, because timings on slow machines are not
-  // reliable enough to pin one.
-  function expectCounterGaveUpQuickly(
-    script: string,
-    run: ReturnType<typeof runUnderHeldLock>,
-  ) {
-    const { result, elapsedMs, unlockedMs } = run;
-    expect(result.signal, 'the hook was killed at the timeout instead of finishing').toBeNull();
-    expect(result.status).toBe(0);
-    expect(result.stdout).toContain('A guard you accepted');
-    expect(result.stderr).toContain('[memesh guard-fires] not counted');
-    expect(elapsedMs - unlockedMs, `${script} took ${elapsedMs}ms under a held lock against ${unlockedMs}ms unlocked`)
-      .toBeLessThan(1000);
+  // prints it, and says on stderr that the fire was not counted.
+  //
+  // How LONG the counter waits is deliberately not measured here. Against a
+  // designed wait of 200 ms, the whole test (both hook runs) took 0.7 to 1.0 s
+  // on green runs on hosted CI runners, and on one failing macOS run the locked
+  // hook took 1.1 s longer than the unlocked one (two tests: 1130 and 1064 ms),
+  // so a bound near a second fails at random and no tighter one can hold. The
+  // wait is pinned on what sets it instead (the two tests after the hook tests
+  // below); a counter that fell back to the database's own 30 s wait is still
+  // stopped by LOCKED_RUN_TIMEOUT_MS above and fails on `signal`.
+  function expectWarningDeliveredUnderHeldLock(run: ReturnType<typeof runUnderHeldLock>) {
+    expect(run.signal, 'the hook was killed at the timeout instead of finishing').toBeNull();
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('A guard you accepted');
+    expect(run.stderr).toContain('[memesh guard-fires] not counted');
   }
 
   it.each([
     ['a healthy database', false],
     ['observations unreadable', true],
-  ])('a held write lock does not delay the Edit guard hook: the counter gives up after its short wait and the warning is delivered (%s)', (_label, breakObservations) => {
+  ])('a held write lock does not stop the Edit guard warning: the hook finishes and reports the fire as not counted (%s)', (_label, breakObservations) => {
     seedGuardedLesson({
       ...bashGuard,
       tool: 'Edit',
@@ -202,22 +196,61 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
       tool_name: 'Edit',
       tool_input: { file_path: `/repo/src/config-${tag}.ts`, new_string: 'const password = "hunter2"' },
     }));
-    expectCounterGaveUpQuickly('pre-edit-recall.js', run);
+    expectWarningDeliveredUnderHeldLock(run);
   }, 20000);
 
-  it('a held write lock does not delay the Bash guard hook either: the counter gives up after its short wait and the warning is delivered', () => {
+  it('a held write lock does not stop the Bash guard warning either: the hook finishes and reports the fire as not counted', () => {
     seedGuardedLesson(bashGuard);
 
     const run = runUnderHeldLock('guard-check.js', () => ({
       tool_name: 'Bash',
       tool_input: { command: 'git checkout -- src/app.ts' },
     }));
-    expectCounterGaveUpQuickly('guard-check.js', run);
+    expectWarningDeliveredUnderHeldLock(run);
     // guard-check counts first and prints after; the warning is not lost
     // because the counter's wait is short.
     const lines = fs.readFileSync(path.join(tmpHome, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n');
     expect(JSON.parse(lines[lines.length - 1]).outcome).toBe('notified');
   }, 20000);
+
+  // What the removed timing bound stood for, on the settings instead of the
+  // clock: the counter waits a fraction of what a read or a capture write waits
+  // (`HOOK_BUSY_TIMEOUT_MS`) and under half a second, and the connection
+  // `recordGuardFires` opens ends up with that wait as its `busy_timeout` — not
+  // the database's own 30 s default and not the general one.
+  it('the fire counter waits a fraction of the general hook wait, and under half a second', async () => {
+    const { GUARD_COUNTER_WAIT_MS, HOOK_BUSY_TIMEOUT_MS } = await import('../../scripts/hooks/_shared.js');
+    expect(GUARD_COUNTER_WAIT_MS).toBeGreaterThan(0);
+    expect(GUARD_COUNTER_WAIT_MS).toBeLessThanOrEqual(HOOK_BUSY_TIMEOUT_MS / 4);
+    // The ratio alone lets both constants be raised together (200 and 2000
+    // become 2000 and 8000) and still pass, with the counter waiting 2 s.
+    expect(GUARD_COUNTER_WAIT_MS).toBeLessThanOrEqual(500);
+  });
+
+  it('the connection recordGuardFires opens ends up with the counter\'s short wait', async () => {
+    const { recordGuardFires, GUARD_COUNTER_WAIT_MS } = await import('../../scripts/hooks/_shared.js');
+    const { MemeshDatabase } = await import('../../scripts/hooks/_generated/sqlite.js');
+    // The value is read back off the connection after every busy_timeout pragma,
+    // not taken from the statement that was passed: the constructor sets the
+    // database's own 30 s wait first, and the last value read back is the one the
+    // connection keeps. (`recordGuardFires` returns before opening anything when
+    // it is given no lesson, so it gets one.)
+    const original = MemeshDatabase.prototype.pragma;
+    const effective: number[] = [];
+    const spy = vi.spyOn(MemeshDatabase.prototype, 'pragma').mockImplementation(function (this: any, statement: string) {
+      original.call(this, statement);
+      if (String(statement).startsWith('busy_timeout')) {
+        effective.push((this.prepare('PRAGMA busy_timeout').get() as { timeout: number }).timeout);
+      }
+    });
+    try {
+      recordGuardFires(dbPath, [1]);
+      expect(effective.length, 'recordGuardFires set no busy_timeout on the connection it opened').toBeGreaterThan(0);
+      expect(effective.at(-1), 'the fire counter must not wait as long as a read or a capture write').toBe(GUARD_COUNTER_WAIT_MS);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 
   // POSIX only: there a pipe write is asynchronous, so whatever does not fit
   // the pipe is written after the handler returns — the hook must let the
