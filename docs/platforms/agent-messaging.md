@@ -260,11 +260,29 @@ model.
 
 ```bash
 TMPDIR=/private/tmp npm run qa:live-journey -- --core-only --out .qa/core-report.json
-MEMESH_CODEX_QA_HOME="$(mktemp -d /private/tmp/memesh-codex-qa.XXXXXX)"
+MEMESH_CODEX_QA_HOME="$(mktemp -d "$HOME"/.memesh-codex-qa.XXXXXX)"
 CODEX_HOME="$MEMESH_CODEX_QA_HOME" codex login
 TMPDIR=/private/tmp npm run qa:live-journey -- --host codex --codex-home "$MEMESH_CODEX_QA_HOME" --out .qa/codex-report.json
 TMPDIR=/private/tmp npm run qa:live-journey -- --host claude --out .qa/claude-report.json
+rm -rf "$MEMESH_CODEX_QA_HOME"
 ```
+
+`--codex-home` no longer needs to resolve under `TMPDIR` (measured 2026-09-23:
+codex-cli 0.155.1 itself refuses to fully start — "Refusing to create helper
+binaries under temporary dir" — when `CODEX_HOME` resolves under a recognised
+OS temporary directory, so `mktemp -d /private/tmp/...` for this one
+directory now fails; the check this repo's own code applied on top,
+`assertTaskOwnedCodexHome`, was a separate, narrower requirement and has been
+relaxed to match). Prepare it anywhere disposable outside the owner's real
+`~/.codex`, as above; `TMPDIR=/private/tmp` is still needed for the other two
+commands, whose `MEMESH_DIR` socket path is a separate, unrelated constraint.
+
+**This directory holds a real, logged-in Codex credential** (from `codex
+login` above) for as long as it exists. Because it no longer lives under
+`/private/tmp` (which macOS clears on its own), nothing removes it
+automatically — the `rm -rf` above is not optional cleanup, it is the only
+thing that stops a live credential from sitting in the home directory
+indefinitely. Run it even if a step earlier in the sequence fails.
 
 The v4 report begins with five common product journeys before it reaches the
 host-specific delivery path:
