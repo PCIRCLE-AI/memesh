@@ -8,7 +8,7 @@ import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agen
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, buildBriefingIndex, } from './briefing-index.js';
-import { GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, buildReferenceContext, hasBriefingContent, isAutoInjectable, } from './work-topology.js';
+import { GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, buildReferenceContext, hasBriefingContent, isAutoInjectable, projectLabel, } from './work-topology.js';
 import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
 const PROJECT_LIMIT = 30;
 const RECENT_LIMIT = 5;
@@ -103,7 +103,7 @@ export function assembleBriefing(project, recipient) {
     catch (err) {
         if (!(err instanceof TaskStateUnreadableError))
             throw err;
-        taskLines = [`task state for ${projectName}: ${err.message}`];
+        taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
     }
     const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
     const unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient);
@@ -173,7 +173,7 @@ export function assembleBriefing(project, recipient) {
         project: projectName,
         text: empty ? '' : buildReferenceContext(block),
         entityCount: lines.filter((l) => l.startsWith('- [')).length,
-        hasTaskState: stateLines.length > 0,
+        hasTaskState: taskLines.length > 0,
         index,
         level,
         empty,

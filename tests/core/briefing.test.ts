@@ -235,6 +235,158 @@ describe('assembleBriefing', () => {
     expect(t, 'a real recipient with an empty (not unknown) inbox must not be reported as unseen').not.toContain('never been seen');
   });
 
+  // `hasTaskState` used to be `stateLines.length > 0`, and `stateLines` is the
+  // task-state lines PLUS the unread-message reminder. A briefing whose only
+  // state line was "1 message waiting" therefore claimed a task state existed
+  // — and `memesh briefing`'s "set the task state" hint, which is gated on this
+  // field, stayed silent on exactly the project that had none.
+  describe('hasTaskState counts task-state lines only, never the unread-message reminder', () => {
+    const RECIPIENT = 'claude-implementer';
+    const sendOneUnread = () => executeAgentMessageAction(getDatabase(), {
+      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: RECIPIENT,
+      idempotency_key: 'briefing-has-task-state-1', payload: { text: 'review is done' }, content_type: 'application/json',
+    }, { transport: 'mcp', sourceHost: 'test-host' });
+    // The task state's own age stamp is what the stale rule reads.
+    const backdateTaskState = (hours: number) =>
+      new KnowledgeGraph(getDatabase()).updateEntityMetadata(taskStateName(PROJECT), (meta) => ({
+        ...meta,
+        task_state: {
+          ...(meta.task_state as Record<string, unknown>),
+          updated_at: new Date(Date.now() - hours * 3_600_000).toISOString(),
+        },
+      }));
+
+    it('an unread message and NO task state: the reminder is in the block, hasTaskState is false', async () => {
+      atStandard();
+      seed();
+      await sendOneUnread();
+      const result = assembleBriefing(PROJECT, RECIPIENT);
+      expect(result.text, 'the reminder must still be delivered').toContain('1 message waiting');
+      expect(result.text).not.toContain('Stated about');
+      expect(result.hasTaskState).toBe(false);
+    });
+
+    it('an unread message and a FRESH task state: hasTaskState is true', async () => {
+      atStandard(); // a fresh state is rendered at standard/full only
+      seed();
+      setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
+      await sendOneUnread();
+      const result = assembleBriefing(PROJECT, RECIPIENT);
+      expect(result.text).toContain('Stated about');
+      expect(result.text).toContain('1 message waiting');
+      expect(result.hasTaskState).toBe(true);
+    });
+
+    it('an unread message and a STALE task state: hasTaskState is true — the one-line flag leads the block', async () => {
+      // The stale flag is shown at every level, so no level is pinned: this is
+      // the default (`minimal`), which renders nothing for a FRESH state.
+      withNoLevelSetting();
+      vi.stubEnv('MEMESH_DIR', tmpDir); // no config.json there: nothing sets the level
+      seed();
+      setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
+      backdateTaskState(100);
+      await sendOneUnread();
+      const result = assembleBriefing(PROJECT, RECIPIENT);
+      expect(result.level).toBe('minimal');
+      expect(result.text).toContain('was last stated');
+      expect(result.text).toContain('1 message waiting');
+      expect(result.hasTaskState).toBe(true);
+    });
+
+    it('the same fresh state is not rendered at minimal, so hasTaskState follows what the block shows', async () => {
+      withNoLevelSetting();
+      vi.stubEnv('MEMESH_DIR', tmpDir);
+      seed();
+      setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
+      await sendOneUnread();
+      const result = assembleBriefing(PROJECT, RECIPIENT);
+      expect(result.level).toBe('minimal');
+      expect(result.text).not.toContain('Stated about');
+      expect(result.text).toContain('1 message waiting');
+      expect(result.hasTaskState).toBe(false);
+    });
+
+    // The CLI (`briefing --json`) and the MCP tool both return `assembleBriefing`'s
+    // object unchanged (src/transports/cli/cli.ts `console.log(JSON.stringify(result))`,
+    // src/transports/mcp/handlers.ts `ok(assembleBriefing(...))`), so one field
+    // cannot read differently on the two. Checked on the MCP surface here and
+    // on the built CLI in tests/cli/briefing-recipient.test.ts.
+    it('the MCP briefing tool reports the same value', async () => {
+      atStandard();
+      seed();
+      await sendOneUnread();
+      const viaTool = JSON.parse((await handleTool('briefing', { project: PROJECT, recipient: RECIPIENT })).content[0].text);
+      expect(viaTool.text).toContain('1 message waiting');
+      expect(viaTool.hasTaskState).toBe(false);
+    });
+  });
+
+  // A project's id ends in a 32-hex routing hash (`getProjectName`). Every
+  // heading of the briefing used to print all of it — three times in a `minimal`
+  // block. The block names the project by its LABEL; the full id stays wherever
+  // it identifies data (`project`, the tag, the entity name).
+  describe('the block names the project by its label, not by its hashed id', () => {
+    const idFor = (dirName: string) => {
+      const cwd = path.join(tmpDir, dirName);
+      fs.mkdirSync(cwd, { recursive: true });
+      const id = getProjectName(cwd);
+      const match = /^(.+)~([0-9a-f]{32})$/.exec(id);
+      expect(match, `getProjectName no longer emits <label>~<32 hex>: ${id}`).not.toBeNull();
+      return { id, label: match![1], hash: match![2] };
+    };
+
+    it('every heading, and `project` keeps the full id', () => {
+      atStandard(); // the task state and the index are standard-level content
+      const { id, label, hash } = idFor('label-fixture');
+      const tag = [`project:${id}`];
+      remember({ name: 'lbl-decision', type: 'decision', title: 'Use the label', observations: ['x'], tags: tag });
+      remember({ name: 'lbl-lesson', type: 'lesson_learned', title: 'Say less', observations: ['x'], tags: tag });
+      remember({ name: 'lbl-fact', type: 'note', title: 'A known fact', observations: ['x'], tags: tag });
+      remember({ name: 'lbl-commit', type: 'commit', title: 'fix: a thing', observations: ['x'], tags: tag });
+      setTaskState({ project: id, patch: { goal: 'Ship it' } });
+
+      const result = assembleBriefing(id);
+      expect(result.project, 'the id identifies the project and is not shortened').toBe(id);
+      for (const heading of [
+        `Stated about "${label}" today, and not revisited since:`,
+        `Decisions and direction for "${label}":`,
+        `Lessons from "${label}" — do not repeat these:`,
+        `What is known about "${label}":`,
+        `Recent activity in "${label}":`,
+        `Index of durable memories for "${label}" (newest first):`,
+      ]) expect(result.text, heading).toContain(heading);
+      expect(result.text, 'the routing hash reached the model').not.toContain(hash);
+      expect(result.index.lines.join('\n')).not.toContain(hash);
+    });
+
+    it('the empty-state lines of a project with nothing yet', () => {
+      atStandard();
+      const { id, label, hash } = idFor('label-empty');
+      const result = assembleBriefing(id);
+      expect(result.text).toContain(`Index of durable memories for "${label}" (newest first):`);
+      expect(result.text).toContain(`- No durable memories (decisions, lessons, patterns, references) for "${label}" yet.`);
+      expect(result.text).not.toContain(hash);
+    });
+
+    it('the stale flag and the unreadable-record line', () => {
+      const { id, label, hash } = idFor('label-flags');
+      setTaskState({ project: id, patch: { goal: 'Ship it' } });
+      new KnowledgeGraph(getDatabase()).updateEntityMetadata(taskStateName(id), (meta) => ({
+        ...meta,
+        task_state: { ...(meta.task_state as Record<string, unknown>), updated_at: new Date(Date.now() - 100 * 3_600_000).toISOString() },
+      }));
+      const stale = assembleBriefing(id);
+      expect(stale.text).toContain(`Task state for "${label}" was last stated`);
+      expect(stale.text).not.toContain(hash);
+
+      getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName(id));
+      const unreadable = assembleBriefing(id);
+      expect(unreadable.text).toContain(`task state for ${label}: task state for project "${label}" is not readable`);
+      expect(unreadable.text).not.toContain(hash);
+      expect(unreadable.hasTaskState).toBe(true);
+    });
+  });
+
   it('D8: recipient identity is scoped per project — known in one project reads unseen in another', async () => {
     await executeAgentMessageAction(getDatabase(), {
       action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'cross-project-agent',
@@ -1127,7 +1279,10 @@ describe('assembleBriefing', () => {
         { env: { ...process.env, HOME: configDir, MEMESH_DIR: configDir, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 15000 },
       );
       expect(listRun.status).toBe(0);
-      expect(listRun.stdout, 'config list must show the stored null, not omit the key').toContain('briefing: null');
+      expect(
+        listRun.stdout,
+        'config list must show the stored null (as an invalid value that is not in effect), not omit the key',
+      ).toContain('briefing: minimal (default; the value in config.json is invalid: null)');
 
       // --- MCP / core, in-process ---
       openDatabase(dbPath);

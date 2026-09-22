@@ -499,3 +499,35 @@ describe('task-state', () => {
     });
   });
 });
+
+// The id a project is stored under is `<label>~<32 lowercase hex>`; the lines a
+// person or a model READS name the project by its label. The hash stays in
+// `taskStateName` (an entity name identifies data).
+describe('task-state lines name the project by its label, never the routing hash', () => {
+  const HASH = '2c0fe491888c8efb9a4894828bbc2733';
+  const ID = `memesh~${HASH}`;
+  const now = new Date('2026-08-16T12:00:00.000Z');
+
+  it('the fresh block', () => {
+    const lines = taskStateLines({ goal: 'ship it', updated_at: '2026-08-16T01:00:00.000Z' }, ID, now);
+    expect(lines[0]).toBe('Stated about "memesh" today, and not revisited since:');
+  });
+
+  it('the one-line stale flag', () => {
+    const lines = briefingTaskStateLines({ goal: 'g', updated_at: '2026-08-12T08:00:00.000Z' }, ID, now);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^Task state for "memesh" was last stated 4 days ago/);
+    expect(lines[0]).not.toContain(HASH);
+  });
+
+  it('the one-line unknown-age flag', () => {
+    const lines = briefingTaskStateLines({ goal: 'g' }, ID, now);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatch(/^Task state for "memesh" has a missing, unreadable, or future-dated timestamp/);
+    expect(lines[0]).not.toContain(HASH);
+  });
+
+  it('but the entity NAME keeps the full id: it identifies the row', () => {
+    expect(taskStateName(ID)).toBe(`task-state:${ID}`);
+  });
+});

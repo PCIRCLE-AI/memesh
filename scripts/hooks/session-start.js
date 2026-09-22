@@ -15,6 +15,7 @@ import {
   HOOK_BUSY_TIMEOUT_MS,
   importFromPluginRoot,
   assembleTopologyBlock,
+  projectLabel,
   DEFAULT_TOPOLOGY_BUDGET,
   GLOBAL_TOPOLOGY_LIMIT,
   SNIPPET_FETCH_CHARS,
@@ -1245,7 +1246,7 @@ process.stdin.on('end', async () => {
 
       let summary;
       if (memoryFragments.length === 0 && lessonCount === 0) {
-        summary = `◉ MeMesh ready · no memories for "${projectName}" yet`;
+        summary = `◉ MeMesh ready · no memories for "${projectLabel(projectName)}" yet`;
       } else {
         const parts = ['◉ MeMesh'];
         if (memoryFragments.length > 0) {
@@ -1478,7 +1479,7 @@ process.stdin.on('end', async () => {
           // one line above, so nothing is lost.
           reason: `briefing-index: ${hookErrorReason(err)}`,
         });
-        indexLines = [`Index of durable memories for "${projectName}": could not be read this session — run \`memesh doctor\`.`];
+        indexLines = [`Index of durable memories for "${projectLabel(projectName)}": could not be read this session — run \`memesh doctor\`.`];
       }
 
       // Every `[mem:id]` handle a rendered line ends with. Anchored to the

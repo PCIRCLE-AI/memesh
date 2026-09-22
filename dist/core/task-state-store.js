@@ -2,6 +2,7 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { getProjectName } from './paths.js';
 import { remember } from './operations.js';
+import { projectLabel } from './work-topology.js';
 import { TASK_STATE_TYPE, taskStateName, parseTaskState, mergeTaskState, } from './task-state.js';
 function readState(name) {
     const row = getDatabase()
@@ -21,7 +22,7 @@ function readState(name) {
 export class TaskStateUnreadableError extends Error {
     project;
     constructor(project) {
-        super(`task state for project "${project}" is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal …\` (any write replaces the broken record).`);
+        super(`task state for project "${projectLabel(project)}" is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal …\` (any write replaces the broken record).`);
         this.project = project;
         this.name = 'TaskStateUnreadableError';
     }

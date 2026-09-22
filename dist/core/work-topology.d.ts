@@ -37,4 +37,5 @@ export interface TopologyPool {
 export declare function assembleTopologyBlock(stateLines: readonly string[], pools: readonly TopologyPool[], projectName: string, budget?: TopologyBudget): string[];
 export declare function hasBriefingContent(lines: readonly string[]): boolean;
 export declare function buildReferenceContext(memoryLines: ReadonlyArray<string | null | undefined>): string;
+export declare function projectLabel(projectId: string): string;
 //# sourceMappingURL=work-topology.d.ts.map

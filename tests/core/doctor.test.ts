@@ -5,7 +5,7 @@ import { createHash } from 'crypto';
 import { execFileSync } from 'child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { formatDoctorReport, hoursSince, runDoctor as runDoctorImpl } from '../../src/core/doctor.js';
-import type { UpdateCheck } from '../../src/core/version-check.js';
+import { formatUpdateCheckStatus, type UpdateCheck } from '../../src/core/version-check.js';
 
 /** Keep filesystem discovery confined to explicit test fixtures. */
 function runDoctor(options: Parameters<typeof runDoctorImpl>[0]) {
@@ -474,6 +474,53 @@ describe('doctor', () => {
     expect(result.status).toBe('PASS_WITH_CONCERNS');
     expect(result.checks.find((check) => check.id === 'config')?.status).toBe('pass');
     expect(result.checks.find((check) => check.id === 'update-status')?.status).toBe('warn');
+  });
+
+  // `memesh status` used to say "up to date (fresh; latest 4.9.4)" on 4.10.2, a
+  // trial build on the `next` tag that is NEWER than npm's `latest`, while this
+  // check already said the true thing. Both are fed the SAME cache record here
+  // and must agree on the fact and the words.
+  it('a version newer than npm latest reads the same in doctor and in `memesh status`', async () => {
+    const update = makeUpdateCheck({
+      currentVersion: '4.10.2', latestVersion: '4.9.4', freshness: 'fresh', source: 'fresh', updateAvailable: false,
+    });
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    const memeshDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-ahead-'));
+    tempRoots.push(memeshDir);
+    const originalMemeshDir = process.env.MEMESH_DIR;
+    process.env.MEMESH_DIR = memeshDir;
+    let result: Awaited<ReturnType<typeof runDoctor>>;
+    try {
+      result = await runDoctor({
+        packageRoot,
+        packageVersion: '4.10.2',
+        openDatabaseImpl: () => makeDatabase() as never,
+        closeDatabaseImpl: () => undefined,
+        getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+        getUpdateCheckImpl: async () => update,
+        getCurrentInstallChannelImpl: () => 'npm-global',
+        getInstallChannelSupportImpl: () => ({
+          channel: 'npm-global',
+          label: 'npm global',
+          canSelfUpdate: true,
+          recommendedCommand: 'memesh update',
+          guidance: 'This installation can be updated directly from MeMesh.',
+        }),
+        nativeBindingProbeImpl: () => ({ ok: true }),
+      });
+    } finally {
+      if (originalMemeshDir === undefined) delete process.env.MEMESH_DIR;
+      else process.env.MEMESH_DIR = originalMemeshDir;
+    }
+
+    const check = result.checks.find((c) => c.id === 'update-status');
+    expect(check?.status).toBe('pass');
+    expect(check?.summary).toBe('Running pre-release version (4.10.2), npm latest is 4.9.4');
+    const [statusLine, ...more] = formatUpdateCheckStatus(update);
+    expect(more).toEqual([]);
+    expect(statusLine.toLowerCase(), 'status must say what doctor says').toContain(check!.summary.toLowerCase());
+    expect(statusLine).not.toContain('up to date');
   });
 
   it('a fresh install with no update check yet is not a concern (M-10)', async () => {

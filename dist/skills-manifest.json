@@ -33,8 +33,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",
-      "sha256": "30640d535c74e7ccabe7f0e592b73264853dea1ed1a987a5b33480f1431e3e11",
-      "bytes": 6049
+      "sha256": "29157c3e4697d5a0347894606110940cafe6524fcde29b8fcfe159bf5f5be5a2",
+      "bytes": 6091
     },
     {
       "path": "scripts/hooks/_generated/briefing-level.js",
@@ -88,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_generated/task-state.js",
-      "sha256": "e52a1198a8f1aa035b4befa5a69ca67408a27071ee2a1bd0b392dfae26873931",
-      "bytes": 6693
+      "sha256": "6c3aebef4db2dace74ffea4dfa8ecb69cf6ec397bb634bf8ca0c9b0f68d0a3dd",
+      "bytes": 6786
     },
     {
       "path": "scripts/hooks/_generated/time-utils.js",
@@ -108,13 +108,13 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "13a6368d567260af54f761d87c5456d15c2ca5bee09e29fd70df3a19ab005bb8",
-      "bytes": 7966
+      "sha256": "d579bc0e77b78c255ec22b606f272f40b4d910e74763c8d087dd141fc2be4976",
+      "bytes": 8225
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "444bca68f7c92be9f7139992932a40f2887813cfa40100a4608a36d2cb61108c",
-      "bytes": 98528
+      "sha256": "1d6de0083c0e3558df7b7a6f305be543d9e700b7f39a0bf55e1894c69b443130",
+      "bytes": 98542
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -153,8 +153,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "5f09bbb7cf9d271ea44ff2de30ce2fb26809bdc575b505f066169b3c86954f21",
-      "bytes": 94495
+      "sha256": "5b40c9a9ddd01ad37bcefadf688dfa94f9667cebc54996761e2b4f501331a6f5",
+      "bytes": 94539
     },
     {
       "path": "scripts/hooks/session-summary.js",

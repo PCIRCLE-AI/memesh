@@ -42,6 +42,7 @@ describe('CLI briefing recipient scope', () => {
       const generic = runCli(home, 'briefing', '--project', 'briefing-cli-project', '--json');
       expect(generic.status, generic.stderr).toBe(0);
       expect(JSON.parse(generic.stdout).text).not.toContain('message waiting');
+      expect(JSON.parse(generic.stdout).hasTaskState).toBe(false);
 
       const scoped = runCli(
         home, 'briefing', '--project', 'briefing-cli-project', '--recipient', 'recipient-one', '--json',
@@ -51,6 +52,25 @@ describe('CLI briefing recipient scope', () => {
       expect(text).toContain('1 message waiting for "recipient-one"');
       expect(text).toContain('in project "briefing-cli-project"');
       expect(text).not.toContain('recipient-two');
+      // The reminder is the ONLY state line here, and it is not a task state:
+      // `hasTaskState` said `true` for it before it counted task-state lines only.
+      expect(JSON.parse(scoped.stdout).hasTaskState).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // `hasTaskState` gates `memesh briefing`'s "set the task state" hint. With the
+  // reminder counted as a task state the hint stayed silent on exactly the
+  // project that has none; now it says so, beside the reminder.
+  it('a briefing whose only state line is the reminder still points at `memesh task`', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-briefing-hint-'));
+    try {
+      send(home, 'recipient-one', 'cli-briefing-hint');
+      const text = runCli(home, 'briefing', '--project', 'briefing-cli-project', '--recipient', 'recipient-one');
+      expect(text.status, text.stderr).toBe(0);
+      expect(text.stdout).toContain('1 message waiting for "recipient-one"');
+      expect(text.stdout).toContain('memesh task --goal');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

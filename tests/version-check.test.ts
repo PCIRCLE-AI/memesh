@@ -7,7 +7,10 @@ import {
   formatUpdateCheckStatus,
   getLastUpdateCheck,
   getUpdateCheck,
+  isAheadOfLatest,
   MAX_UPDATE_CHECK_FILES,
+  showsPreReleaseNotice,
+  type UpdateCheck,
 } from '../src/core/version-check.js';
 
 /**
@@ -774,6 +777,109 @@ describe('version check', () => {
     } finally {
       if (previousMemeshDir === undefined) delete process.env.MEMESH_DIR;
       else process.env.MEMESH_DIR = previousMemeshDir;
+    }
+  });
+});
+
+// `memesh status` printed "Update check: up to date (fresh; latest 4.9.4)" on
+// an installed 4.10.2 — a trial build on the `next` tag, NEWER than npm's
+// `latest` — while `memesh doctor` said "Running pre-release version (4.10.2),
+// npm latest is 4.9.4". "Up to date" was true of nothing: the install is ahead
+// of the registry, and the updater's target (`@latest`) would be a downgrade.
+describe('an installed version NEWER than the registry latest', () => {
+  const fixture = (currentVersion: string, latestVersion: string | null, overrides: Partial<UpdateCheck> = {}): UpdateCheck => ({
+    currentVersion,
+    latestVersion,
+    checkedAt: '2026-09-22T10:00:00.000Z',
+    lastAttemptAt: '2026-09-22T10:00:00.000Z',
+    lastSuccessfulCheckAt: '2026-09-22T10:00:00.000Z',
+    lastError: null,
+    updateAvailable: false,
+    checkSucceeded: true,
+    source: 'fresh',
+    freshness: 'fresh',
+    currentVersionDeprecated: false,
+    deprecationMessage: null,
+    ...overrides,
+  });
+
+  it('status says it is running a pre-release version — not "up to date", not an update', () => {
+    const lines = formatUpdateCheckStatus(fixture('4.10.2', '4.9.4'));
+    expect(lines).toEqual(['Update check: running pre-release version (4.10.2), npm latest is 4.9.4 (fresh)']);
+    expect(lines.join('\n')).not.toContain('up to date');
+    expect(lines.join('\n')).not.toContain('Update available');
+  });
+
+  it('an EQUAL version is still "up to date", and an OLDER one still reads as an update (anti-vacuity)', () => {
+    expect(formatUpdateCheckStatus(fixture('4.10.2', '4.10.2')))
+      .toEqual(['Update check: up to date (fresh; latest 4.10.2)']);
+    expect(formatUpdateCheckStatus(fixture('4.9.4', '4.10.2', { updateAvailable: true })))
+      .toEqual(['🔄 Update available: 4.10.2 (fresh; run: memesh update)']);
+  });
+
+  it.each([
+    // [installed, registry latest, ahead?]
+    ['4.10.2', '4.9.4', true],      // the reported case
+    ['4.10.2', '4.9.10', true],     // a string compare would call 4.9.10 newer than 4.10.2
+    ['4.11.0-rc.1', '4.10.2', true],
+    ['4.10.2', '4.10.2', false],
+    ['4.10.2+build.7', '4.10.2', false], // build metadata has no precedence
+    ['4.9.4', '4.10.2', false],
+    ['4.10.2-rc.1', '4.10.2', false],    // a pre-release is BEHIND its release
+    ['4.10.2', 'not-a-version', false],  // an unreadable registry answer proves nothing
+    ['not-a-version', '4.9.4', false],
+    ['4.10.2', null, false],
+  ] as const)('isAheadOfLatest(%s installed, %s latest) is %s', (installed, latest, expected) => {
+    expect(isAheadOfLatest(fixture(installed, latest))).toBe(expected);
+  });
+
+  it('a check that could not run is not "ahead"', () => {
+    expect(isAheadOfLatest(null)).toBe(false);
+  });
+
+  // `memesh status` withholds its `Update path:` on exactly this test, so it
+  // must be true only where the "running pre-release version" line is the one
+  // that is printed: anything that outranks that line in the status chain (a
+  // deprecation, an unavailable check, an available update, a partly failed
+  // check) keeps the update path.
+  it.each([
+    ['a clean record that is ahead of latest', {}, true],
+    ['a deprecated install', { currentVersionDeprecated: true, deprecationMessage: 'security advisory: upgrade now' }, false],
+    ['a partly failed check (the version answered, the deprecation lookup did not)', { lastError: 'deprecation lookup failed' }, false],
+    ['a check that could not run', { freshness: 'unavailable', checkSucceeded: false, lastError: 'offline' }, false],
+    ['a record that claims an update is available', { updateAvailable: true }, false],
+  ] as const)('showsPreReleaseNotice: %s', (_what, overrides, expected) => {
+    const record = fixture('4.10.2', '4.9.4', overrides);
+    expect(showsPreReleaseNotice(record)).toBe(expected);
+    // and the status line agrees, whichever way it goes
+    expect(formatUpdateCheckStatus(record).join('\n').includes('running pre-release version')).toBe(expected);
+  });
+
+  it('showsPreReleaseNotice is false for an install that is current, behind, or unchecked', () => {
+    expect(showsPreReleaseNotice(fixture('4.10.2', '4.10.2'))).toBe(false);
+    expect(showsPreReleaseNotice(fixture('4.9.4', '4.10.2', { updateAvailable: true }))).toBe(false);
+    expect(showsPreReleaseNotice(fixture('4.10.2', null))).toBe(false);
+    expect(showsPreReleaseNotice(null)).toBe(false);
+  });
+
+  it('on a real cache record, "update available" and "ahead of latest" are one three-way answer', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-ahead-'));
+    try {
+      for (const [installed, latest, expected] of [
+        ['4.10.2', '4.9.4', { updateAvailable: false, ahead: true }],
+        ['4.9.4', '4.10.2', { updateAvailable: true, ahead: false }],
+        ['4.10.2', '4.10.2', { updateAvailable: false, ahead: false }],
+      ] as const) {
+        const file = path.join(dir, `${installed}-${latest}.json`);
+        fs.writeFileSync(file, JSON.stringify({
+          currentVersion: installed, latestVersion: latest, checkSucceeded: true, lastError: null,
+          lastAttemptAt: '2026-09-22T10:00:00.000Z', lastSuccessfulCheckAt: '2026-09-22T10:00:00.000Z',
+        }));
+        const read = getLastUpdateCheck(installed, { updateCheckPath: file, now: new Date('2026-09-22T10:30:00.000Z') })!;
+        expect({ updateAvailable: read.updateAvailable, ahead: isAheadOfLatest(read) }, `${installed} vs ${latest}`).toEqual(expected);
+      }
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

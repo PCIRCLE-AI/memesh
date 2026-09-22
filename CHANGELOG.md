@@ -26,6 +26,31 @@ All notable changes to MeMesh are documented here.
   index is what an agent receives "by default": it names the levels that
   include it.
 
+- **Headings name a project by its label, not its 32-character hash (#409).** A
+  project's id is `<label>~<32 hex>`, and every heading of the briefing — the
+  session-start block, the `briefing` tool and `memesh briefing` — used to print
+  all of it: `Task state for "memesh~2c0fe491888c8efb9a4894828bbc2733"`,
+  `Decisions and direction for …`, `Recent activity in …`, the index heading, the
+  empty-state lines, the terminal banner a project with no memories greets you
+  with, and the lines `memesh task` prints. They now say `"memesh"`. The full id
+  is unchanged wherever it identifies data: the `project` field of the JSON and
+  MCP results, `project:` tags, entity names (`memesh learn` names lessons as
+  before), `--project`, and the unread-message line, which tells an agent which
+  project to poll. `projectLabel` in `src/core/work-topology.ts` is the one rule:
+  one trailing `~` plus exactly 32 lowercase hex characters is removed, anything
+  else is left as it is. The titles the session-summary and pre-compact hooks
+  stored (`2026-09-22 memesh~…: edited 12 file(s)`) still contain the whole id and
+  are printed as stored, so it can still appear in the lines under `Recent
+  activity`.
+- **`memesh config list` shows the briefing level in effect (#412).** With the
+  default now `minimal`, a config with no `briefing` key told you nothing about
+  what a session would get. `list` now always prints one line for it — `briefing:
+  minimal (default)`, `briefing: standard (config.json)` or `briefing: full (env
+  MEMESH_BRIEFING)` — decided by the same resolver the hook and the tool use
+  (env, then config, then the default). A stored `briefing` is that line, not a
+  second one; a stored or env value that is not a level is said to be invalid and
+  shows the level it resolved to.
+
 ### Fixed
 
 - **A new session is no longer shown the oldest of a group of equally scored
@@ -46,6 +71,26 @@ All notable changes to MeMesh are documented here.
   and the lesson query orders newest first; a higher score still beats a newer
   memory. `tests/core/briefing.test.ts` pins the hook and the briefing together
   on a graph in which every memory ties, lessons included.
+- **`memesh briefing --json`'s `hasTaskState` no longer counts the unread-message
+  reminder.** It was true whenever any state line was present, and the reminder
+  is listed with the task-state lines, so a project with a message waiting and no
+  task state reported one. It is now true exactly when a task-state line leads the
+  block: the fresh state, the one-line stale flag, or the unreadable-record line.
+  The CLI's "set the task state" hint, which reads it, now appears beside the
+  reminder on such a project.
+- **`memesh config get <key>` exists (#410).** It printed `unknown command 'get'`
+  and suggested `set`. It now prints the stored value as `config list` shows it
+  (for `briefing`, what is stored, not the level in effect that `list` prints),
+  or `<key> is not set in config.json` (exit 0); an unknown key gets the same
+  two-line refusal as `set` and `unset` and exits 1.
+- **`memesh status` no longer calls a newer install "up to date" (#410).** On
+  4.10.2, a trial build on the `next` tag while npm `latest` was 4.9.4, it printed
+  `Update check: up to date (fresh; latest 4.9.4)` and then an `Update path:` for
+  `@latest`, a downgrade. It now says `running pre-release version (4.10.2), npm
+  latest is 4.9.4`, as `memesh doctor` already did, and prints no update path. A
+  newer install that is also deprecated, whose check only partly succeeded, or
+  whose check could not run keeps its update path: only the "running pre-release
+  version" line withholds it.
 
 ## [4.10.2] — 2026-09-21
 

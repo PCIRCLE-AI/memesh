@@ -237,10 +237,10 @@ describe('Feature: Session Start Hook', () => {
       expect(injected).not.toContain('oauth-pkce-decision');
       expect(injected).not.toContain('lesson-flaky-timeout');
 
-      // Headings describe the WORK, not where the row came from. Matched on
-      // the stable prefix: the fixture's project name carries a per-run
-      // suffix so temp dirs cannot collide.
-      expect(injected).toContain('Decisions and direction for "myproject');
+      // Headings describe the WORK, not where the row came from, and name the
+      // project by its LABEL: the project id ends in a 32-hex routing hash,
+      // which a heading has no use for.
+      expect(injected).toContain('Decisions and direction for "myproject":');
       expect(injected).toContain('do not repeat these');
     });
 
@@ -575,8 +575,8 @@ describe('Feature: Session Start Hook', () => {
 
     const output = runHook({ cwd: '/tmp/indexproj' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
-    const name = projTag('indexproj').slice('project:'.length);
-    const section = injected.split(`Index of durable memories for "${name}" (newest first):`)[1];
+    // The heading names the project by its label; the hashed id stays in the tag.
+    const section = injected.split('Index of durable memories for "indexproj" (newest first):')[1];
     expect(section, 'index section present').toBeDefined();
     expect(section).toContain(`- [decision] Keep the index capped at forty lines [mem:${d}]`);
     expect(section).not.toContain('bump the lockfile');
@@ -728,7 +728,9 @@ describe('Feature: Session Start Hook', () => {
     const output = JSON.parse(run.stdout.trim()) as Record<string, unknown>;
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     expect(injected).toContain('A ranked decision');
-    expect(injected).toMatch(/Index of durable memories for "[^"]+": could not be read this session — run `memesh doctor`\./);
+    // Named by its label, like every other heading: the id's routing hash is not repeated.
+    expect(injected).toMatch(/Index of durable memories for "brokenidx": could not be read this session — run `memesh doctor`\./);
+    expect(injected).not.toMatch(/~[0-9a-f]{32}/);
     expect(injected).not.toContain('No durable memories');
     const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l));
@@ -778,8 +780,23 @@ describe('Feature: Session Start Hook', () => {
 
     const output = runHook({ cwd: '/tmp/emptyindexproj' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
-    const name = projTag('emptyindexproj').slice('project:'.length);
-    expect(injected).toContain(`- No durable memories (decisions, lessons, patterns, references) for "${name}" yet.`);
+    expect(injected).toContain('- No durable memories (decisions, lessons, patterns, references) for "emptyindexproj" yet.');
+    expect(injected, 'the routing hash must not reach the heading').not.toMatch(/~[0-9a-f]{32}/);
+  });
+
+  // The line the terminal shows a first-time user on a project with no memories
+  // used to greet them with the whole hashed id.
+  it('the terminal banner for a project with no memories names it by its label, not its hashed id', () => {
+    const db = createTestDb();
+    const c = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('commit-elsewhere', 'commit').lastInsertRowid as number;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(c, 'fix: something');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(c, projTag('otherbannerproj'));
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/emptybannerproj' }, STANDARD);
+    const msg = output.systemMessage as string;
+    expect(msg).toContain('◉ MeMesh ready · no memories for "emptybannerproj" yet');
+    expect(msg).not.toMatch(/~[0-9a-f]{32}/);
   });
 
   it('Regression #242: global memories do not displace the project window', () => {

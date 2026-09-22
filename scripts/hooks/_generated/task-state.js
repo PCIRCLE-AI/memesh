@@ -6,6 +6,7 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
+import { projectLabel } from './work-topology.js';
 export const TASK_STATE_TYPE = 'task-state';
 export const TASK_STATE_FIELDS = ['goal', 'next', 'blocked', 'done'];
 export const MAX_FIELD_CHARS = 300;
@@ -88,7 +89,7 @@ export function taskStateLines(state, project, now = new Date()) {
         return [];
     const days = ageInDays(state.updated_at, now);
     const age = days === null ? 'at some point' : days === 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
-    const lines = [`Stated about "${project}" ${age}, and not revisited since:`];
+    const lines = [`Stated about "${projectLabel(project)}" ${age}, and not revisited since:`];
     for (const field of TASK_STATE_FIELDS) {
         const value = state[field];
         if (value)
@@ -150,10 +151,10 @@ function resolveTaskStateAge(updatedAt, now) {
 function staleTaskStateLine(project, hours) {
     const days = Math.floor(hours / 24);
     const age = days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? '' : 's'} ago`;
-    return `Task state for "${project}" was last stated ${age} — older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
+    return `Task state for "${projectLabel(project)}" was last stated ${age} — older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
 }
 function taskStateAgeUnknownLine(project) {
-    return `Task state for "${project}" has a missing, unreadable, or future-dated timestamp, so its age could not be established — not shown as current. Run \`memesh task\` to see or update it.`;
+    return `Task state for "${projectLabel(project)}" has a missing, unreadable, or future-dated timestamp, so its age could not be established — not shown as current. Run \`memesh task\` to see or update it.`;
 }
 export function briefingTaskStateLines(state, project, now = new Date(), { includeFresh = true } = {}) {
     if (isEmptyTaskState(state))

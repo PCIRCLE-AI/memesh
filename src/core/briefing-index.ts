@@ -17,7 +17,7 @@
 // staleness line, the redaction, the caps and the phrasing.
 
 import { redactSecrets, redactUserPaths } from './paths.js';
-import { EVIDENCE_LAYER_TYPES, isAutoInjectable, topologyLine } from './work-topology.js';
+import { EVIDENCE_LAYER_TYPES, isAutoInjectable, projectLabel, topologyLine } from './work-topology.js';
 
 // --- The budget contract ------------------------------------------------------
 // Frozen numbers: #250 measures the index against them. Changing any of these
@@ -177,11 +177,11 @@ function indexLine(candidate: IndexCandidate): string {
 }
 
 function indexHeading(projectName: string): string {
-  return `Index of durable memories for "${projectName}" (newest first):`;
+  return `Index of durable memories for "${projectLabel(projectName)}" (newest first):`;
 }
 
 function indexEmptyLine(projectName: string): string {
-  return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
+  return `- No durable memories (decisions, lessons, patterns, references) for "${projectLabel(projectName)}" yet.`;
 }
 
 /** The project name is NOT interpolated into this command. It comes from a
@@ -189,7 +189,7 @@ function indexEmptyLine(projectName: string): string {
  *  pasting it back into a shell is the caller quoting whatever the filesystem
  *  happened to contain. The placeholder is the convention every other hint in
  *  this codebase uses (`memesh task --goal "…"`), and it costs no
- *  information: the heading two lines above prints the project name, quoted. */
+ *  information: the heading two lines above names the project, quoted. */
 function moreLine(n: number, truncated: boolean): string {
   return `- ${n}${truncated ? '+' : ''} more — memesh recall --tag "project:…"`;
 }
