@@ -297,7 +297,10 @@ export async function fetchTaskState(project: string): Promise<TaskStateData> {
 }
 
 /** The durable-memory index for one project (#323) — the same section the
- *  briefing and the SessionStart block close with, rendered server-side. */
+ *  briefing and the SessionStart block close with at `standard`/`full`
+ *  (#360; `minimal` never includes it), rendered server-side. This fetch
+ *  itself is not level-gated — `/v1/briefing-index` always returns the
+ *  index for a project regardless of the configured `briefing` level. */
 export interface BriefingIndexData {
   project: string;
   staleDays: number;

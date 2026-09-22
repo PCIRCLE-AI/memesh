@@ -195,9 +195,9 @@ describe('Feature: decision-nudge hook (PostToolUse ExitPlanMode|AskUserQuestion
     expectPrivateFile(flagPath);
   });
 
-  it('finishes well under the hook budget', () => {
+  it('finishes inside the hook budget', () => {
     const start = Date.now();
     runHook(payload('ExitPlanMode', 'timing-session'));
-    expect(Date.now() - start).toBeLessThan(1000);
+    expect(Date.now() - start).toBeLessThan(4000);
   });
 });

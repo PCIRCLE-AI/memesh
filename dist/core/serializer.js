@@ -3,12 +3,114 @@ import { KnowledgeGraph } from '../knowledge-graph.js';
 import { truncateTitle } from './title.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { NAMESPACES } from './types.js';
+export const IMPORTABLE_METADATA_KEYS = new Set([
+    'title_source',
+    'source_kind',
+    'source',
+    'cluster_key',
+    'dreamed_at',
+    'kind',
+    'project',
+    'previous_namespace',
+    'namespace_moved_at',
+    'split_from',
+    'retired_recall',
+    'priority',
+    'success_criteria',
+    'verification_scenario',
+    'implementation_state',
+    'outcome_state',
+    'accepted_at',
+    'source_ids',
+]);
+export const AUTHORITY_METADATA_KEYS = new Set([
+    'evidence_for',
+    'guard',
+    'demo',
+    'forgotten_observation_hashes',
+    'task_state',
+    'pin',
+    'signal_score',
+    'replaced_history',
+    'consolidation_depth',
+    'compacted_into',
+    'proposal_id',
+    'session_id',
+    'trust',
+    'provenance',
+]);
+const FORGOTTEN_HASH_RE = /^[a-f0-9]{64}$/;
+const MAX_IMPORTED_FORGOTTEN_HASHES = 1000;
+function validateFreshForgottenHashes(value) {
+    if (!Array.isArray(value) || value.length === 0)
+        return null;
+    const deduped = [...new Set(value)];
+    if (!deduped.every((h) => typeof h === 'string' && FORGOTTEN_HASH_RE.test(h)))
+        return null;
+    return deduped.length <= MAX_IMPORTED_FORGOTTEN_HASHES ? deduped : null;
+}
+function validateFreshSignalScore(value) {
+    return typeof value === 'number' && value >= 0 && value <= 1 ? value : null;
+}
+const MAX_IMPORTED_REPLACED_HISTORY_ENTRIES = 50;
+const MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES = 4 * 64 * 1024;
+const REPLACED_HISTORY_ENTRY_KEYS = new Set([
+    'replaced_at', 'title', 'observations', 'tags', 'truncated',
+]);
+function isPlainObject(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+const jsonBytesOf = (v) => Buffer.byteLength(JSON.stringify(v), 'utf8');
+function isValidReplacedHistoryEntry(entry) {
+    if (!isPlainObject(entry))
+        return false;
+    for (const key of Object.keys(entry)) {
+        if (!REPLACED_HISTORY_ENTRY_KEYS.has(key))
+            return false;
+    }
+    if (typeof entry.replaced_at !== 'string' || entry.replaced_at.length > 64)
+        return false;
+    if (!(entry.title === null || (typeof entry.title === 'string' && entry.title.length <= 500)))
+        return false;
+    if (!Array.isArray(entry.observations) || !entry.observations.every((o) => typeof o === 'string'))
+        return false;
+    if (!Array.isArray(entry.tags) || !entry.tags.every((t) => typeof t === 'string'))
+        return false;
+    if ('truncated' in entry && typeof entry.truncated !== 'boolean')
+        return false;
+    return true;
+}
+function validateFreshReplacedHistory(value) {
+    if (!Array.isArray(value) || value.length === 0)
+        return null;
+    if (value.length > MAX_IMPORTED_REPLACED_HISTORY_ENTRIES)
+        return null;
+    if (!value.every(isValidReplacedHistoryEntry))
+        return null;
+    return jsonBytesOf(value) <= MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES ? value : null;
+}
 function buildImportedMetadata(existingMetadata, args) {
-    const { guard: _guard, ...bundledSafe } = (args.bundled ?? {});
-    void _guard;
+    const bundled = (args.bundled ?? {});
+    const bundledSafe = {};
+    for (const [key, value] of Object.entries(bundled)) {
+        if (IMPORTABLE_METADATA_KEYS.has(key))
+            bundledSafe[key] = value;
+    }
+    const freshForgottenHashes = args.isNewEntity
+        ? validateFreshForgottenHashes(bundled.forgotten_observation_hashes)
+        : null;
+    const freshPin = args.isNewEntity && bundled.pin === true;
+    const freshSignalScore = args.isNewEntity ? validateFreshSignalScore(bundled.signal_score) : null;
+    const freshReplacedHistory = args.isNewEntity
+        ? validateFreshReplacedHistory(bundled.replaced_history)
+        : null;
     return {
         ...(existingMetadata ?? {}),
         ...bundledSafe,
+        ...(freshForgottenHashes ? { forgotten_observation_hashes: freshForgottenHashes } : {}),
+        ...(freshSignalScore !== null ? { signal_score: freshSignalScore } : {}),
+        ...(freshPin ? { pin: true } : {}),
+        ...(freshReplacedHistory ? { replaced_history: freshReplacedHistory } : {}),
         trust: 'untrusted',
         provenance: {
             ...(existingMetadata?.provenance ?? {}),
@@ -79,6 +181,14 @@ export function importMemories(args) {
         throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(', ')}. ` +
             'Nothing was imported — refusing rather than guessing, because the wrong guess overwrites existing memories.');
     }
+    if (args.restore_archived !== undefined && typeof args.restore_archived !== 'boolean') {
+        throw new Error('restore_archived must be the boolean true or false. ' +
+            'Nothing was imported — refusing rather than guessing, because "yes" brings back memories the user forgot.');
+    }
+    if (args.restore_archived === true && args.merge_strategy === 'skip') {
+        throw new Error('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; ' +
+            '"skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.');
+    }
     if (args.namespace !== undefined && !NAMESPACES.includes(args.namespace)) {
         throw new Error(`Unknown namespace "${args.namespace}". Use one of: ${NAMESPACES.join(', ')}. ` +
             'Nothing was imported — an unrecognised namespace would move existing memories somewhere nothing queries.');
@@ -95,6 +205,7 @@ export function importMemories(args) {
     const pendingRelations = [];
     let skipped = 0;
     let appended = 0;
+    let keptArchived = 0;
     const errors = [];
     const skippedRelations = [];
     const setCreatedAt = db.prepare('UPDATE entities SET created_at = ? WHERE name = ?');
@@ -118,10 +229,13 @@ export function importMemories(args) {
                     exportedAt: args.data.exported_at,
                     importVersion: args.data.version,
                     mergeStrategy: args.merge_strategy,
+                    isNewEntity: !existing,
                 });
                 if (existing) {
                     if (args.merge_strategy === 'skip')
                         return { kind: 'skipped' };
+                    if (existing.archived && args.restore_archived !== true)
+                        return { kind: 'keptArchived' };
                     if (args.merge_strategy === 'append') {
                         const existingText = new Set(existing.observations);
                         const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
@@ -172,6 +286,8 @@ export function importMemories(args) {
             }).immediate();
             if (outcome.kind === 'skipped')
                 skipped++;
+            else if (outcome.kind === 'keptArchived')
+                keptArchived++;
             else if (outcome.kind === 'appended')
                 appended++;
             else {
@@ -198,6 +314,6 @@ export function importMemories(args) {
                 + `(${err instanceof Error ? err.message : String(err)})`);
         }
     }
-    return { imported, overwritten, skipped, appended, errors, skipped_relations: skippedRelations };
+    return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
 }
 //# sourceMappingURL=serializer.js.map

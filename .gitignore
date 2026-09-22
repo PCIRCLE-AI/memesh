@@ -29,8 +29,8 @@ secrets/
 # and carries only the handful of facts that live nowhere else. Untracking it was
 # what let it drift — it duplicated public docs and no reviewer saw it change.
 # Personal, machine-specific or client-specific notes belong in the user-level
-# ~/.claude/CLAUDE.md, never here.
-.claude/
+# ~/.claude/CLAUDE.md, never here. Everything under the project .claude/ stays
+# local — see "Maintainer-local development tooling" below.
 # Note: .claude-plugin/plugin.json AND .claude-plugin/marketplace.json
 # ARE Claude Code plugin/marketplace manifests for memesh itself — both
 # MUST be committed. Local-dev installs of OTHER plugins land under
@@ -101,7 +101,6 @@ Dockerfile.test
 
 # === Internal docs (not for public repo) ===
 docs/archive/
-docs/plans/
 docs/internal/
 docs/guides/
 
@@ -128,3 +127,39 @@ docs/notes/
 
 # === qa:live-journey receipts (owner-machine evidence, never shipped) ===
 .qa/
+
+# === Maintainer-local development tooling — never committed ===
+# Every pattern here is root-anchored (leading `/`). `intent/`, `evals/` and
+# `sdlc/` without one would match ANY directory of that name at any depth —
+# `intent` is already a product term (scripts/hooks/user-prompt-intent.js),
+# `benchmarks/longmemeval/` shows nested data dirs are a real shape (so
+# `benchmarks/<x>/evals/` is a plausible future path), and the product installs
+# hooks into `.claude/` (a `tests/fixtures/.claude/` fixture would silently
+# vanish from `git status` and from the tree `.verify/receipt.json` binds to).
+# `.verify/` and `.sdlc-run/` are anchored too even though nothing creates them
+# below the repo root today — verified against every file that touches either
+# name (`git grep`); same failure mode as `intent/`, just not yet exercised.
+#
+# The five workflow files below are named explicitly, not by the glob
+# `/.github/workflows/sdlc-*.yml` this block used to carry. That glob would
+# also swallow a future PUBLIC workflow that happens to start with `sdlc-`
+# (e.g. a checked-in `sdlc-verify.yml`) — silently, from both `git status`
+# and the tree `treeHash()`/`.verify/receipt.json` bind to. Naming exactly
+# the five that left keeps the ignore rule bounded to what actually left.
+/.claude/
+/CLAUDE.local.md
+/scripts/sdlc/
+/sdlc/
+/evals/
+/intent/
+/docs/sdlc/
+/docs/specs/
+/docs/plans/
+/REVIEW.md
+/.github/workflows/sdlc-evals.yml
+/.github/workflows/sdlc-loop.yml
+/.github/workflows/sdlc-monitor.yml
+/.github/workflows/sdlc-release.yml
+/.github/workflows/sdlc-review.yml
+/.verify/
+/.sdlc-run/

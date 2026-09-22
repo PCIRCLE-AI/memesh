@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMain } from './lib/verify-core.mjs';
 import { npmSync } from './lib/npm-bin.mjs';
 
 /**
@@ -121,7 +121,10 @@ export function main() {
 
   let diff;
   try {
-    diff = execFileSync('git', ['--no-pager', 'diff', '--stat', 'HEAD', '--', ...BUILD_OUTPUTS], {
+    // Compare the rebuild with the candidate in the index. Before commit it
+    // contains staged output; on clean CI/release checkouts it equals HEAD.
+    // Comparing HEAD here deadlocks a pre-commit verify after any source edit.
+    diff = execFileSync('git', ['--no-pager', 'diff', '--stat', '--', ...BUILD_OUTPUTS], {
       encoding: 'utf8',
     });
   } catch (err) {
@@ -156,4 +159,4 @@ export function main() {
   console.log(`✓ committed build output (${BUILD_OUTPUTS.join(', ')}) is current`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main();
+if (isMain(import.meta.url)) main();

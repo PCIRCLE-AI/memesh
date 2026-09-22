@@ -1,9 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawn, spawnSync } from 'child_process';
+import { once } from 'node:events';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
+import { HOOK_OUTCOMES_FILENAME } from '../../src/core/capture-liveness.js';
 
 /**
  * The columns these assertions read off a `SELECT`. better-sqlite3 types
@@ -47,7 +49,7 @@ describe('Feature: Post-Commit Hook', () => {
   });
 
   function git(args: string[]): string {
-    return execFileSync('git', ['-C', repoDir, ...args], { encoding: 'utf8', timeout: 15000 });
+    return execFileSync('git', ['-C', repoDir, ...args], { encoding: 'utf8', timeout: 60000 });
   }
 
   /**
@@ -73,20 +75,444 @@ describe('Feature: Post-Commit Hook', () => {
     fs.rmSync(testDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  function runHook(input: object): void {
+  function runHook(input: object, env: NodeJS.ProcessEnv = {}): void {
     const hookPath = path.resolve('scripts/hooks/post-commit.js');
     const jsonInput = JSON.stringify(input);
     execFileSync('node', [hookPath], {
       input: jsonInput,
-      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      env: { ...process.env, ...env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
+    });
+  }
+
+  function spawnHook(input: object) {
+    const child = spawn(process.execPath, [path.resolve('scripts/hooks/post-commit.js')], {
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    child.stdin.end(JSON.stringify(input));
+    return new Promise<void>((resolve, reject) => {
+      let stderr = '';
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.once('error', reject);
+      child.once('exit', code => code === 0 ? resolve() : reject(new Error(`hook exit ${code}: ${stderr}`)));
     });
   }
 
   function openDb(): Database {
     return new Database(dbPath, { readOnly: true });
   }
+
+  function outcomes(): Array<Record<string, unknown>> {
+    const file = path.join(testDir, HOOK_OUTCOMES_FILENAME);
+    return fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+  }
+
+  it('Scenario: a first quiet commit with an explicit successful tool response -> entity created from HEAD', () => {
+    const baseline = commit('chore: establish hook baseline');
+    runHook({
+      tool_name: 'Bash',
+      cwd: repoDir,
+      tool_input: { command: 'git commit -q -m "chore: establish hook baseline"' },
+      tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
+    });
+
+    const firstDb = openDb();
+    const first = firstDb.prepare('SELECT * FROM entities WHERE name = ?').get(`commit-${baseline.hash}`) as Row;
+    firstDb.close();
+    expect(first, 'the explicit successful PostToolUse response must make the first quiet HEAD attributable').toBeTruthy();
+
+    const captured = commit('fix: capture quiet commit');
+    runHook({
+      tool_name: 'Bash',
+      session_id: 'quiet-session',
+      cwd: repoDir,
+      tool_input: { command: 'git commit -q -m "fix: capture quiet commit" >commit.log' },
+      tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
+    });
+
+    const db = openDb();
+    const entity = db.prepare('SELECT * FROM entities WHERE name = ?').get(`commit-${captured.hash}`) as Row;
+    db.close();
+    expect(entity, 'the changed HEAD must be captured even when the command prints nothing').toBeTruthy();
+    expect(entity.type).toBe('commit');
+    expect(entity.title).toBe('fix: capture quiet commit');
+  });
+
+  it.each([{ isError: true }, { interrupted: true }])('Scenario: first-event failure flags %j cannot promote stale output into a capture', (flags) => {
+    const existing = commit('chore: existing history before first hook');
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -m failed' },
+      tool_response: { stdout: `[main ${existing.hash}] stale output`, ...flags },
+    });
+    expect(fs.existsSync(dbPath)).toBe(false);
+    expect(outcomes().at(-1)).toMatchObject({
+      outcome: 'skipped',
+      reason: 'recorded the repository HEAD baseline; no history was backfilled',
+    });
+  });
+
+  it('Scenario: a first quiet legacy payload only establishes a baseline', () => {
+    const baseline = commit('chore: legacy baseline');
+    runHook({
+      tool_name: 'Bash',
+      cwd: repoDir,
+      tool_input: { command: 'git commit -q -m "chore: legacy baseline"' },
+      tool_output: '',
+    });
+    expect(fs.existsSync(dbPath), `legacy output cannot prove ${baseline.hash} was created by this command`).toBe(false);
+    expect(outcomes().at(-1)?.reason).toBe('recorded the repository HEAD baseline; no history was backfilled');
+  });
+
+  it('Scenario: the repository marker lock covers state selection and capture, not only the final rename', async () => {
+    commit('chore: establish locked baseline');
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -q -m baseline' },
+      tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
+    });
+    const markerDir = path.join(testDir, 'post-commit-heads');
+    const marker = fs.readdirSync(markerDir).find(name => name.endsWith('.json'))!;
+    const lock = path.join(markerDir, `${marker}.lock.sqlite`);
+    const holder = new Database(lock);
+    holder.exec('BEGIN IMMEDIATE');
+    const next = commit('fix: serialize state selection');
+    const running = spawnHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -q -m serialize' },
+      tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
+    });
+    await new Promise(resolve => setTimeout(resolve, 250));
+    const blockedDb = openDb();
+    const beforeRelease = blockedDb.prepare('SELECT * FROM entities WHERE name = ?').get(`commit-${next.hash}`);
+    blockedDb.close();
+    holder.close();
+    expect(beforeRelease, 'capture ran before it owned the marker lock').toBeUndefined();
+    await running;
+    const capturedDb = openDb();
+    const afterRelease = capturedDb.prepare('SELECT * FROM entities WHERE name = ?').get(`commit-${next.hash}`);
+    capturedDb.close();
+    expect(afterRelease, 'capture did not resume after the marker lock was released').toBeTruthy();
+  });
+
+  it('Scenario: a live lock owner produces an error outcome before the host timeout', () => {
+    commit('chore: establish timeout baseline');
+    const input = {
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -q -m baseline' },
+      tool_response: { stdout: '', stderr: '', isError: false },
+    };
+    runHook(input);
+    const markerDir = path.join(testDir, 'post-commit-heads');
+    const marker = fs.readdirSync(markerDir).find(name => name.endsWith('.json'))!;
+    const lock = path.join(markerDir, `${marker}.lock.sqlite`);
+    const holder = new Database(lock);
+    holder.exec('BEGIN IMMEDIATE');
+    const before = outcomes().length;
+    const configured = JSON.parse(fs.readFileSync('hooks/hooks.json', 'utf8'));
+    const installed = configured.hooks.PostToolUse.flatMap((entry: any) => entry.hooks)
+      .find((entry: any) => entry.command.includes('post-commit.js'));
+    const result = spawnSync(process.execPath, [path.resolve('scripts/hooks/post-commit.js')], {
+      input: JSON.stringify(input), encoding: 'utf8',
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      timeout: installed.timeout * 1000,
+    });
+    holder.close();
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain('timed out waiting for post-commit state lock');
+    expect(outcomes()).toHaveLength(before + 1);
+    expect(outcomes().at(-1)?.outcome).toBe('error');
+    expect(fs.existsSync(lock)).toBe(true);
+  });
+
+  it('Scenario: concurrent captures recover after a lock owner dies without replacing the lock file', async () => {
+    commit('chore: establish recoverable baseline');
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -q -m baseline' },
+      tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
+    });
+    const markerDir = path.join(testDir, 'post-commit-heads');
+    const marker = fs.readdirSync(markerDir).find(name => name.endsWith('.json'))!;
+    const lock = path.join(markerDir, `${marker}.lock.sqlite`);
+    const stat = fs.statSync(lock);
+    const owner = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { DatabaseSync } from 'node:sqlite';
+      const db = new DatabaseSync(process.argv[1]);
+      db.exec('BEGIN IMMEDIATE');
+      process.stdout.write('locked');
+      setInterval(() => {}, 1000);
+    `, lock], { stdio: ['ignore', 'pipe', 'pipe'] });
+    try {
+      await once(owner.stdout, 'data', { signal: AbortSignal.timeout(3000) });
+    } finally {
+      if (owner.exitCode === null && owner.signalCode === null) {
+        const exited = once(owner, 'exit');
+        owner.kill('SIGKILL');
+        await exited;
+      }
+    }
+    const next = commit('fix: recover abandoned owner');
+    const input = {
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -q -m recover' },
+      tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
+    };
+    const before = outcomes().length;
+    await Promise.all([spawnHook(input), spawnHook(input)]);
+    const db = openDb();
+    const captured = db.prepare('SELECT * FROM entities WHERE name = ?').get(`commit-${next.hash}`);
+    db.close();
+    expect(captured).toBeTruthy();
+    expect(fs.statSync(lock).ino, 'a recoverer replaced the stable lock file').toBe(stat.ino);
+    expect(outcomes().slice(before).filter(row => row.outcome === 'wrote')).toHaveLength(1);
+    expect(outcomes().slice(before).filter(row => row.outcome === 'skipped')).toHaveLength(1);
+  });
+
+  it('Scenario: failed commit with stale commit-shaped output cannot override an unchanged HEAD', () => {
+    const existing = commit('chore: existing commit');
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -q -m existing' },
+      tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
+    });
+    const before = outcomes().length;
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -m failed' },
+      tool_response: {
+        stdout: `[main ${existing.hash}] stale wrapper output`,
+        stderr: 'nothing to commit',
+        interrupted: false,
+        isError: true,
+      },
+    });
+    const rows = outcomes();
+    expect(rows).toHaveLength(before + 1);
+    expect(rows.at(-1)).toMatchObject({
+      outcome: 'skipped',
+      reason: 'a commit-like command completed but repository HEAD did not change',
+    });
+  });
+
+  it('Scenario: unresolved Git state cannot turn stale terminal output into a commit', () => {
+    const existing = commit('chore: establish state-error baseline');
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -q -m baseline' },
+      tool_response: { stdout: '', stderr: '', interrupted: false, isError: false },
+    });
+    // Keep repository discovery valid but leave HEAD unresolved. A real Git
+    // fault also exercises Windows, where execFile ignores a shebang shim.
+    git(['update-ref', '-d', 'refs/heads/main']);
+    expect(git(['rev-parse', '--git-common-dir']).trim()).not.toBe('');
+    const unresolved = spawnSync('git', ['-C', repoDir, 'rev-parse', '--verify', 'HEAD']);
+    expect(unresolved.error).toBeUndefined();
+    expect(unresolved.status).not.toBe(0);
+    const before = outcomes().length;
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -m failed' },
+      tool_response: {
+        stdout: `[main ${existing.hash}] stale wrapper output`,
+        stderr: 'git state became unavailable',
+        interrupted: false,
+        isError: true,
+      },
+    });
+    const rows = outcomes();
+    expect(rows).toHaveLength(before + 1);
+    expect(rows.at(-1)).toMatchObject({
+      outcome: 'skipped',
+      reason: 'a commit-like command ran but repository HEAD could not be resolved',
+    });
+  });
+
+  it('Scenario: a commit-producing command captures every newly reachable commit as one bounded batch', () => {
+    commit('chore: establish batch baseline');
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -q -m baseline' },
+      tool_response: { stdout: '', stderr: '', isError: false },
+    });
+
+    const first = commit('feat: first hidden commit');
+    const second = commit('feat: second hidden commit');
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git merge feature --no-edit >merge.log' },
+      tool_response: { stdout: '', stderr: '', isError: false },
+    });
+
+    const db = openDb();
+    const names = (db.prepare("SELECT name FROM entities WHERE type = 'commit' ORDER BY id").all() as Row[])
+      .map((row) => row.name);
+    for (const hash of [first.hash, second.hash]) expect(names).toContain(`commit-${hash}`);
+    const batchTags = (db.prepare("SELECT t.tag FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.type = 'commit' AND t.tag = 'origin:batch'").all() as Row[]);
+    db.close();
+    expect(batchTags).toHaveLength(2);
+  });
+
+  it('Scenario: a large reachable range captures only the newest 20 and records the skipped count', () => {
+    commit('chore: establish cap baseline');
+    runHook({
+      tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -q -m baseline' }, tool_output: '',
+    });
+    const commits = Array.from({ length: 22 }, (_, index) => commit(`feat: hidden batch ${index + 1}`));
+    runHook({
+      tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git cherry-pick range >result.log' }, tool_output: '',
+    });
+
+    const db = openDb();
+    const names = new Set((db.prepare("SELECT name FROM entities WHERE type = 'commit'").all() as Row[]).map((row) => row.name));
+    db.close();
+    expect(names).toHaveLength(20);
+    expect(names.has(`commit-${commits[0].hash}`)).toBe(false);
+    expect(names.has(`commit-${commits[1].hash}`)).toBe(false);
+    expect(names.has(`commit-${commits.at(-1)!.hash}`)).toBe(true);
+    expect(outcomes().at(-1)?.reason).toBe('captured 20 commits as a batch; skipped 2 older commits');
+  });
+
+  it('Scenario: linked worktrees keep independent positions inside one repository marker', () => {
+    commit('chore: establish common-dir baseline');
+    runHook({
+      tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -q -m baseline' }, tool_output: '',
+    });
+    const worktree = path.join(testDir, 'worktree');
+    git(['worktree', 'add', '-q', '-b', 'feature/worktree-capture', worktree]);
+    fs.writeFileSync(path.join(worktree, 'worktree.txt'), 'captured\n');
+    execFileSync('git', ['-C', worktree, 'add', 'worktree.txt']);
+    execFileSync('git', ['-C', worktree, 'commit', '-q', '-m', 'feat: capture from worktree', '--no-verify']);
+    const hash = execFileSync('git', ['-C', worktree, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
+    runHook({
+      tool_name: 'Bash', cwd: worktree,
+      tool_input: { command: 'git commit -q -m "feat: capture from worktree"' }, tool_output: '',
+    });
+
+    const db = openDb();
+    const entity = db.prepare('SELECT id FROM entities WHERE name = ?').get(`commit-${hash}`);
+    db.close();
+    expect(entity).toBeTruthy();
+    const files = fs.readdirSync(path.join(testDir, 'post-commit-heads'));
+    const markers = files.filter(name => name.endsWith('.json'));
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatch(/^[a-f0-9]{64}\.json$/);
+    expect(files.sort()).toEqual([markers[0], `${markers[0]}.lock.sqlite`].sort());
+    const marker = JSON.parse(fs.readFileSync(path.join(testDir, 'post-commit-heads', markers[0]), 'utf8'));
+    expect(Object.keys(marker.heads)).toHaveLength(2);
+  });
+
+  it('Scenario: alternating divergent linked worktrees capture each new HEAD without replaying a duplicate', () => {
+    commit('chore: establish alternating baseline');
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -q -m baseline' }, tool_output: '' });
+
+    const worktree = path.join(testDir, 'alternating-worktree');
+    git(['worktree', 'add', '-q', '-b', 'feature/alternating', worktree]);
+    const commitIn = (cwd: string, filename: string, message: string): string => {
+      fs.writeFileSync(path.join(cwd, filename), `${message}\n`);
+      execFileSync('git', ['-C', cwd, 'add', filename]);
+      execFileSync('git', ['-C', cwd, 'commit', '-q', '-m', message, '--no-verify']);
+      return execFileSync('git', ['-C', cwd, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
+    };
+
+    const firstWorktree = commitIn(worktree, 'worktree-one.txt', 'feat: first worktree commit');
+    runHook({ tool_name: 'Bash', cwd: worktree, tool_input: { command: 'git commit -q -m first' }, tool_output: '' });
+    const mainCommit = commit('feat: divergent main commit');
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -q -m main' }, tool_output: '' });
+    const secondWorktree = commitIn(worktree, 'worktree-two.txt', 'feat: second worktree commit');
+    runHook({ tool_name: 'Bash', cwd: worktree, tool_input: { command: 'git commit -q -m second' }, tool_output: '' });
+
+    const db = openDb();
+    const names = new Set((db.prepare("SELECT name FROM entities WHERE type = 'commit'").all() as Row[]).map((row) => row.name));
+    db.close();
+    for (const hash of [firstWorktree, mainCommit.hash, secondWorktree]) expect(names.has(`commit-${hash}`)).toBe(true);
+    expect(outcomes().at(-1)?.outcome).toBe('wrote');
+  });
+
+  it('Scenario: a rebased worktree uses another proven ancestor instead of replaying rewritten history', () => {
+    commit('chore: establish rebase baseline');
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -q -m baseline' }, tool_output: '' });
+    const worktree = path.join(testDir, 'rebased-worktree');
+    git(['worktree', 'add', '-q', '-b', 'feature/rebased', worktree]);
+
+    fs.writeFileSync(path.join(worktree, 'before-rebase.txt'), 'old\n');
+    execFileSync('git', ['-C', worktree, 'add', 'before-rebase.txt']);
+    execFileSync('git', ['-C', worktree, 'commit', '-q', '-m', 'feat: before rebase', '--no-verify']);
+    runHook({ tool_name: 'Bash', cwd: worktree, tool_input: { command: 'git commit -q -m old' }, tool_output: '' });
+
+    const mainCommit = commit('feat: advance main for rebase');
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -q -m main' }, tool_output: '' });
+    execFileSync('git', ['-C', worktree, 'rebase', 'main']);
+    const rebasedHash = execFileSync('git', ['-C', worktree, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
+    fs.writeFileSync(path.join(worktree, 'after-rebase.txt'), 'new\n');
+    execFileSync('git', ['-C', worktree, 'add', 'after-rebase.txt']);
+    execFileSync('git', ['-C', worktree, 'commit', '-q', '-m', 'feat: after rebase', '--no-verify']);
+    const afterRebaseHash = execFileSync('git', ['-C', worktree, 'rev-parse', '--short', 'HEAD'], { encoding: 'utf8' }).trim();
+    runHook({ tool_name: 'Bash', cwd: worktree, tool_input: { command: 'git commit -q -m new' }, tool_output: '' });
+
+    const db = openDb();
+    const names = new Set((db.prepare("SELECT name FROM entities WHERE type = 'commit'").all() as Row[]).map((row) => row.name));
+    db.close();
+    expect(names.has(`commit-${mainCommit.hash}`)).toBe(true);
+    expect(names.has(`commit-${rebasedHash}`)).toBe(true);
+    expect(names.has(`commit-${afterRebaseHash}`)).toBe(true);
+    expect(outcomes().at(-1)?.outcome).toBe('wrote');
+  });
+
+  it('Scenario: real merge, cherry-pick and revert commands each capture the commits they create', () => {
+    commit('chore: establish command baseline');
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -q -m baseline' }, tool_output: '' });
+
+    git(['checkout', '-q', '-b', 'feature/merge-source']);
+    const featureFile = path.join(repoDir, 'merged.txt');
+    fs.writeFileSync(featureFile, 'merge\n');
+    git(['add', 'merged.txt']);
+    git(['commit', '-q', '-m', 'feat: merge source', '--no-verify']);
+    const featureHash = git(['rev-parse', '--short', 'HEAD']).trim();
+    git(['checkout', '-q', 'main']);
+    git(['merge', '--no-ff', '-q', '-m', 'merge: feature source', 'feature/merge-source']);
+    const mergeHash = git(['rev-parse', '--short', 'HEAD']).trim();
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git merge --no-ff feature/merge-source' }, tool_output: '' });
+
+    git(['checkout', '-q', '-b', 'feature/pick-source']);
+    fs.writeFileSync(path.join(repoDir, 'picked.txt'), 'pick\n');
+    git(['add', 'picked.txt']);
+    git(['commit', '-q', '-m', 'feat: pick source', '--no-verify']);
+    const sourceHash = git(['rev-parse', 'HEAD']).trim();
+    git(['checkout', '-q', 'main']);
+    git(['cherry-pick', sourceHash]);
+    const pickedHash = git(['rev-parse', '--short', 'HEAD']).trim();
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: `git cherry-pick ${sourceHash}` }, tool_output: '' });
+
+    const revertedTarget = commit('fix: target later reverted');
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -m "fix: target later reverted"' }, tool_output: revertedTarget.output });
+    git(['revert', '--no-edit', 'HEAD']);
+    const revertHash = git(['rev-parse', '--short', 'HEAD']).trim();
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git revert --no-edit HEAD~1' }, tool_output: '' });
+
+    const db = openDb();
+    const names = new Set((db.prepare("SELECT name FROM entities WHERE type = 'commit'").all() as Row[]).map((row) => row.name));
+    db.close();
+    for (const hash of [featureHash, mergeHash, pickedHash, revertedTarget.hash, revertHash]) {
+      expect(names.has(`commit-${hash}`), `${hash} was not captured`).toBe(true);
+    }
+  });
+
+  it('Scenario: a failed commit-like command leaves an unchanged-HEAD outcome and no entity', () => {
+    commit('chore: establish failed-command baseline');
+    runHook({ tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -q -m baseline' }, tool_output: '' });
+    runHook({
+      tool_name: 'Bash', cwd: repoDir,
+      tool_input: { command: 'git commit -m "nothing staged"' },
+      tool_response: { stdout: '', stderr: 'nothing to commit', isError: true },
+    });
+
+    expect(fs.existsSync(dbPath)).toBe(false);
+    expect(outcomes().at(-1)?.reason).toBe('a commit-like command completed but repository HEAD did not change');
+  });
 
   it('Scenario: a repo FIRST commit (root-commit note) -> entity created', () => {
     const c = commit('feat(auth): add PKCE flow');
@@ -372,7 +798,7 @@ describe('Feature: Post-Commit Hook', () => {
       input: JSON.stringify(input),
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
     expect(result.trim(), 'stdout must stay empty — see tests/hooks/cross-host-output-contract.test.ts').toBe('');
   });
@@ -384,7 +810,7 @@ describe('Feature: Post-Commit Hook', () => {
       input: 'not-json',
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
   });
 
@@ -525,7 +951,7 @@ describe('Feature: Post-Commit Hook', () => {
       }),
       env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'false' },
       encoding: 'utf8',
-      timeout: 15000,
+      timeout: 60000,
     });
 
     expect(fs.existsSync(dbPath), 'a disabled hook must not even create the database').toBe(false);

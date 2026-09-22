@@ -19,7 +19,8 @@ import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS
 import { RememberSchema } from '../schemas.js';
 import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest.js';
 import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
-import { buildReferenceContext } from '../../core/work-topology.js';
+import { BRIEFING_LEVELS, resolveBriefingLevel } from '../../core/briefing-level.js';
+import { buildReferenceContext, projectLabel } from '../../core/work-topology.js';
 import { captureChatSession } from '../../core/session-insight.js';
 import { captureChatTurn } from '../../core/turn-signal.js';
 import {
@@ -677,6 +678,7 @@ program
   .argument('[file]', 'Path to JSON export file')
   .option('--namespace <ns>', 'Override namespace for all imported entities')
   .option('--merge <strategy>', 'Merge strategy: skip | overwrite | append', 'skip')
+  .option('--restore-archived', 'Requires --merge append or overwrite (an error with skip, the default): bring back a local memory you archived (forgot) when the file names it. Without this it stays archived and untouched.')
   .option('--notes <dir>', 'Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.')
   .option('--project <name>', 'With --notes: the project tag for ingested memories (default: the current directory\'s project)')
   .option('--json', 'With --notes: output the ingestion result as JSON')
@@ -689,9 +691,9 @@ program
       // Both flags mean something for a JSON bundle and nothing here; taking
       // them silently would let a user believe notes went into "team", or
       // were merged some other way.
-      const ignored = ['namespace', 'merge'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+      const ignored = ['namespace', 'merge', 'restoreArchived'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
       if (ignored.length > 0) {
-        console.error(`Error: --notes does not take ${ignored.map((k) => `--${k}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
+        console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
         process.exit(1);
       }
       await withDatabase(() => {
@@ -726,7 +728,7 @@ program
     // produce a machine-readable result.
     const notesOnly = ['project', 'json'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
     if (notesOnly.length > 0) {
-      console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(' and ')} only appl${notesOnly.length > 1 ? 'y' : 'ies'} to --notes. A JSON export file is imported with --namespace and --merge.`);
+      console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(' and ')} only appl${notesOnly.length > 1 ? 'y' : 'ies'} to --notes. A JSON export file is imported with --namespace, --merge and --restore-archived.`);
       process.exit(1);
     }
     requireOneOf(opts.merge, ['skip', 'overwrite', 'append'], '--merge');
@@ -772,6 +774,7 @@ program
           data: data as ExportResult,
           namespace: opts.namespace,
           merge_strategy: opts.merge as MergeStrategy,
+          restore_archived: opts.restoreArchived === true,
         });
       } catch (err) {
         // importMemories refuses a bundle it cannot read, and says why in one
@@ -788,6 +791,11 @@ program
       // had happened from the output.
       const overwriteNote = result.overwritten > 0 ? ` (${result.overwritten} overwritten)` : '';
       console.log(`Imported: ${result.imported}${overwriteNote}, Skipped: ${result.skipped}, Appended: ${result.appended}`);
+      // Said on stdout, with the way back: the entities are unchanged, so
+      // nothing else in the output would tell the user the file named them.
+      if (result.kept_archived > 0) {
+        console.log(`Kept archived: ${result.kept_archived} (you archived these; the file names them, so they were left untouched). Add --restore-archived to bring them back.`);
+      }
       // Named, not merely counted, and on stderr — a relation the restore
       // could not rebuild is information the user lost, and the only way to
       // get it back is to re-export with the entities it points at.
@@ -1230,7 +1238,7 @@ agentCmd
 // gets it here. Same assembly, same fence, one owner (core/briefing.ts).
 program
   .command('briefing')
-  .description('The assembled work topology for a project — task state, decisions, lessons, knowledge, recent activity')
+  .description('The assembled work topology for a project — decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full (the `briefing` setting)')
   .option('--project <name>', 'Project name (default: the current directory’s project)')
   .option('--recipient <id>', 'Exact recipient; enables recipient-scoped unread message guidance')
   .option('--index', 'Only the index of durable memories (decisions, lessons, patterns, references), newest first')
@@ -1238,8 +1246,11 @@ program
   .action(async (opts) => {
     await withDatabase(() => {
       if (opts.index) {
-        // The same section the full briefing closes with (#323), alone: what
-        // is known here, one line each, without the ranked sections.
+        // The same section a `standard`/`full`-level briefing closes with
+        // (#323), alone: what is known here, one line each, without the
+        // ranked sections. `minimal` never includes it in the assembled
+        // block (#360), but this flag returns it regardless of the
+        // configured level, same as `memesh briefing --json`'s `index` field.
         const project = opts.project ?? getProjectName();
         const index = readBriefingIndex(getDatabase(), project);
         if (opts.json) {
@@ -1254,9 +1265,22 @@ program
         console.log(JSON.stringify(result));
         return;
       }
+      // #360 round 3, item 1: `result.empty` means there was nothing to
+      // show at this level at all (only reachable at `minimal` — see
+      // `BriefingResult.empty`'s doc comment) — a preamble wrapped around
+      // an empty fence is not a briefing, so print one short line instead
+      // of `result.text` (which is `''` here) and exit 0, same as every
+      // other branch of this command.
+      if (result.empty) {
+        console.log(`Nothing to brief at level ${result.level} — no project memories yet.`);
+        return;
+      }
       console.log(result.text);
       if (result.entityCount === 0 && !result.hasTaskState && result.index.shown === 0 && result.index.older === 0) {
-        // Outside the fence: a hint to the human, not memory content.
+        // Outside the fence: a hint to the human, not memory content. Still
+        // reachable here (unlike the branch above) — e.g. `standard`/`full`
+        // on an empty graph, where the index's own empty-state line keeps
+        // `result.empty` false but there is still nothing ranked to hint at.
         console.log(`\nCapture happens automatically as you work; or set the task state:  memesh task --goal "…"`);
       }
     });
@@ -1472,8 +1496,9 @@ program
 
 // --- task ---
 // The human-driven half of task-state. The MCP tool is how an agent records
-// this mid-session; this is how you set it yourself, and how you check what
-// the next session is about to be told.
+// this mid-session; this is how you set it yourself, and how you read back
+// what is stored — the whole state, at any briefing level. The next session is
+// told the fresh state only at level `standard`/`full`, not at the default.
 program
   .command('task')
   .description('Show or update where the work stands on this project')
@@ -1512,7 +1537,7 @@ program
         const lines = taskStateLines(state, project);
         if (lines.length === 0) {
           console.log(
-            `Nothing recorded for "${project}" yet.\n` +
+            `Nothing recorded for "${projectLabel(project)}" yet.\n` +
             `Set it with:  memesh task --goal "…" --next "…"`,
           );
           return;
@@ -1527,10 +1552,10 @@ program
         return;
       }
       if (result.changed.length === 0) {
-        console.log(`No change — "${result.project}" already said exactly that.`);
+        console.log(`No change — "${projectLabel(result.project)}" already said exactly that.`);
         return;
       }
-      console.log(`Updated ${result.changed.join(', ')} for "${result.project}".`);
+      console.log(`Updated ${result.changed.join(', ')} for "${projectLabel(result.project)}".`);
       console.log(taskStateLines(result.state, result.project).join('\n'));
     });
   });
@@ -1545,73 +1570,133 @@ configCmd
     const config = readConfig();
     console.log('Configuration (~/.memesh/config.json):');
     // Iterate ALLOWED_KEYS so `list` and `set` cannot drift.
-    const rows = buildConfigListing(config as unknown as Record<string, unknown>);
-    if (rows.length === 0) {
-      console.log('  (no keys set — all defaults)');
-    } else {
-      for (const { key, value } of rows) console.log(`  ${key}: ${value}`);
-    }
+    const stored = buildConfigListing(config as unknown as Record<string, unknown>);
+    if (stored.length === 0) console.log('  (nothing stored — all defaults)');
+    // `briefing` is the one setting whose default matters to what a session is
+    // told, so it is always shown as the level actually in effect and where that
+    // comes from. A stored `briefing` is replaced by that line, not repeated.
+    const rows = [
+      ...stored.filter(({ key }) => key !== 'briefing'),
+      { key: 'briefing', value: describeEffectiveBriefing(config.briefing) },
+    ].sort((a, b) => (a.key < b.key ? -1 : 1));
+    for (const { key, value } of rows) console.log(`  ${key}: ${value}`);
   });
 
-const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck']);
+const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck', 'briefing']);
+
+/**
+ * `set`, `unset` and `get` refuse a key `ALLOWED_KEYS` does not list, in the
+ * same words — one place, so the three cannot drift.
+ */
+function requireAllowedKey(key: string): void {
+  if (ALLOWED_KEYS.has(key)) return;
+  console.error(`Unknown key: ${key}`);
+  console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
+  process.exit(1);
+}
 
 const KEY_VALIDATORS: Record<string, (value: string) => string | null> = {
   autoUpdate: (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : 'must be one of: off, patch, minor, major',
   autoCapture: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
   // "Never ask again" sets this to false from a hook; this is the way back.
   updateCheck: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
+  // #360 — reject here so a typo'd level is a loud CLI error, not a value
+  // that only surfaces later as a traced-and-defaulted "invalid" reason.
+  briefing: (v) => (BRIEFING_LEVELS as readonly string[]).includes(v)
+    ? null
+    : `must be one of: ${BRIEFING_LEVELS.join(', ')}`,
 };
 
 /**
  * Build the `config list` rows from ALLOWED_KEYS — the single source of truth
  * for settable keys — so `list` shows every key `set` accepts and the two can't
  * drift. Only keys that are actually present are listed.
+ *
+ * `undefined` alone means "not present" — skipped, same as any other absent
+ * key. `null` used to be skipped too, which made sense while it could only
+ * ever reach this function as the leftover of the sessionLimit-NaN bug
+ * described above `wholeNumber()` (now impossible — that coercion refuses
+ * bad input before it is ever stored). `briefing` is a different case: its
+ * config type is `unknown` on purpose (config.ts), so a hand-written
+ * `"briefing": null` DOES reach this function, and round 5 (Codex round 4
+ * re-review, item 2) found it was hidden here — the one place in the
+ * product that made an explicit invalid value invisible instead of showing
+ * it, unlike `42`, `"banana"`, or any other invalid value, which this
+ * function already prints via `String(raw)` same as a valid one.
  */
 function buildConfigListing(config: Record<string, unknown>): Array<{ key: string; value: string }> {
   const rows: Array<{ key: string; value: string }> = [];
   for (const key of Array.from(ALLOWED_KEYS).sort()) {
     const raw = config[key];
-    if (raw === undefined || raw === null) continue;
+    if (raw === undefined) continue;
     rows.push({ key, value: String(raw) });
   }
   return rows;
 }
 
+/**
+ * The briefing level a session would actually get, and where it comes from —
+ * env beats config beats the default, decided by the same `resolveBriefingLevel`
+ * the hook and `briefing` use. A stored or env value that is not a level is
+ * said to be invalid (with the bounded rendering the resolver already made of
+ * it, so a hand-edited `null` or `42` is still visible), never shown as if it
+ * were in effect.
+ */
+function describeEffectiveBriefing(configValue: unknown): string {
+  const envValue = process.env.MEMESH_BRIEFING;
+  const { level, invalid } = resolveBriefingLevel(envValue, configValue);
+  if (invalid) {
+    const where = invalid.source === 'env' ? 'env MEMESH_BRIEFING' : 'config.json';
+    return `${level} (default; the value in ${where} is invalid: ${invalid.value})`;
+  }
+  if (envValue !== undefined) return `${level} (env MEMESH_BRIEFING)`;
+  return configValue !== undefined ? `${level} (config.json)` : `${level} (default)`;
+}
+
+configCmd
+  .command('get')
+  .description('Show one stored config value (for `briefing`, what is stored, not the level in effect that `config list` shows)')
+  .argument('<key>', 'Config key — see `memesh config list` for valid keys')
+  .action((key) => {
+    requireAllowedKey(key);
+    // The rows `list` builds, so the two cannot format a value differently —
+    // except `briefing`, which `list` replaces with the level in effect.
+    const row = buildConfigListing(readConfig() as unknown as Record<string, unknown>).find((r) => r.key === key);
+    // Only what is stored: an environment variable can still override the
+    // default, so "not set" must not claim which value applies.
+    console.log(row ? row.value : `${key} is not set in config.json`);
+  });
+
 configCmd
   .command('set')
-  .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck)')
+  .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck, briefing)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .argument('<value>', 'Config value')
   .action((key, value) => {
-    const canonical = key;
-    if (!ALLOWED_KEYS.has(canonical)) {
-      console.error(`Unknown key: ${key}`);
-      console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
-      process.exit(1);
-    }
-    const validate = KEY_VALIDATORS[canonical];
+    requireAllowedKey(key);
+    const validate = KEY_VALIDATORS[key];
     if (validate) {
       const err = validate(value);
       if (err) {
-        console.error(`Invalid value for ${canonical}: ${err}`);
+        console.error(`Invalid value for ${key}: ${err}`);
         process.exit(1);
       }
     }
     // Coerce numeric string values for keys that take numbers
     let coerced: unknown = value;
-    if (canonical === 'sessionLimit') {
+    if (key === 'sessionLimit') {
       // The third failure `wholeNumber` was written for, and the one it did
       // not reach: `parseInt('abc')` is NaN, the config writer stored null,
       // and `config list` then hid the key entirely — so the user's setting
       // vanished and nothing said why. Same predicate, same message.
       coerced = wholeNumber('sessionLimit')(value);
     }
-    if (canonical === 'autoCapture' || canonical === 'updateCheck') {
+    if (key === 'autoCapture' || key === 'updateCheck') {
       coerced = value === 'true' || value === '1';
     }
-    updateConfig({ [canonical]: coerced } as never);
+    updateConfig({ [key]: coerced } as never);
     const displayValue = String(value);
-    console.log(`✅ Set ${canonical} = ${displayValue}`);
+    console.log(`✅ Set ${key} = ${displayValue}`);
 
   });
 
@@ -1620,19 +1705,14 @@ configCmd
   .description('Remove a config value (ordinary settings only)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .action((key) => {
-    const canonical = key;
-    if (!ALLOWED_KEYS.has(canonical)) {
-      console.error(`Unknown key: ${key}`);
-      console.error(`Allowed keys: ${Array.from(ALLOWED_KEYS).sort().join(', ')}`);
-      process.exit(1);
-    }
-    const removed = canonical in readConfig();
-    updateConfig({ [canonical]: undefined } as never);
+    requireAllowedKey(key);
+    const removed = key in readConfig();
+    updateConfig({ [key]: undefined } as never);
     if (!removed) {
-      console.log(`(no change — ${canonical} was not set)`);
+      console.log(`(no change — ${key} was not set)`);
       return;
     }
-    console.log(`✅ Removed ${canonical}`);
+    console.log(`✅ Removed ${key}`);
   });
 
 // --- export-schema ---
@@ -2760,7 +2840,7 @@ program
     const { getCurrentInstallChannel, getInstallChannelSupport } = await import('../../core/install-channel.js');
     const install = getCurrentInstallChannel({ packageRoot });
     const installSupport = getInstallChannelSupport(install, packageRoot);
-    const { getUpdateCheck, formatUpdateCheckStatus } = await import('../../core/version-check.js');
+    const { getUpdateCheck, formatUpdateCheckStatus, showsPreReleaseNotice } = await import('../../core/version-check.js');
     const update = await getUpdateCheck(pkg.version, { preferFresh: !opts.cached });
 
     console.log(`MeMesh v${pkg.version}`);
@@ -2783,7 +2863,16 @@ program
       && update.latestVersion === update.currentVersion
       && update.freshness === 'fresh',
     );
-    if (!confirmedNoUpgradeTarget) {
+    // Same for the line "running pre-release version": an install NEWER than
+    // npm's `latest` (a trial build on the `next` tag) has no update to be
+    // pointed at, and on the one channel that updates itself (npm global) the
+    // command installs `@latest`, a downgrade. Only that line: every other
+    // state keeps its path (a deprecated install's line already says to update;
+    // a partly checked or unavailable check is uncertain and names no action of
+    // its own). The other channels lose only their generic hint; keeping it for
+    // them would need a test that can stand up a global install to prove the
+    // npm-global case still stays silent.
+    if (!confirmedNoUpgradeTarget && !showsPreReleaseNotice(update)) {
       if (installSupport.recommendedCommand) {
         console.log(`Update path: ${installSupport.recommendedCommand}`);
       } else {

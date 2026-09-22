@@ -139,6 +139,7 @@ export declare const ImportSchema: z.ZodObject<{
         overwrite: "overwrite";
         append: "append";
     }>;
+    restore_archived: z.ZodOptional<z.ZodBoolean>;
 }, z.core.$strict>;
 export declare const LearnSchema: z.ZodObject<{
     error: z.ZodString;

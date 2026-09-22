@@ -37,6 +37,9 @@ export function buildIsolatedRuntimeEnv(baseEnv, { runtimeHome, memeshDir, dbPat
   delete isolatedEnv.ANTHROPIC_API_KEY;
   delete isolatedEnv.OPENAI_API_KEY;
   delete isolatedEnv.OLLAMA_HOST;
+  // The briefing level decides what a session is told and the default is what
+  // the tests and smokes assume, so an ambient MEMESH_BRIEFING must not move it.
+  delete isolatedEnv.MEMESH_BRIEFING;
   return isolatedEnv;
 }
 
@@ -72,5 +75,20 @@ export function buildIsolatedSuiteEnv(baseEnv, { runtimeHome }) {
   delete isolatedEnv.ANTHROPIC_API_KEY;
   delete isolatedEnv.OPENAI_API_KEY;
   delete isolatedEnv.OLLAMA_HOST;
-  return isolatedEnv;
+  delete isolatedEnv.MEMESH_BRIEFING; // see buildIsolatedRuntimeEnv
+  return envWithNpmCache(path.join(runtimeHome, 'npm-cache'), isolatedEnv);
+}
+import path from 'node:path';
+import { envWithNpmCache } from './npm-bin.mjs';
+/**
+ * Keep only process-launch plumbing needed by local release children.  The
+ * caller supplies all product and npm paths explicitly; credentials, proxies,
+ * agents, user config and model/provider settings do not cross this boundary.
+ */
+export function buildCredentialFreeBaseEnv(baseEnv) {
+  const allowed = new Set([
+    'PATH', 'Path', 'PATHEXT', 'SystemRoot', 'SYSTEMROOT', 'COMSPEC',
+    'TMPDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ',
+  ]);
+  return Object.fromEntries(Object.entries(baseEnv).filter(([key]) => allowed.has(key)));
 }

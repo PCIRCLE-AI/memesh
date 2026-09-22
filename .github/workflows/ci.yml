@@ -359,3 +359,56 @@ jobs:
 
       - name: Run release verification
         run: bash scripts/release-verify.sh
+
+  # `node scripts/verify.mjs` runs the same steps a person runs locally as
+  # `npm run verify` — build, verify:release, the isolated suite, the
+  # packaged smoke, the dashboard e2e — and logs the git tree hash it
+  # verified. A receipt quoted in a PR (.verify/receipt.json, bound to that
+  # hash) can therefore be compared with what CI saw for the same tree; a
+  # receipt for a different tree is a finding. The test step before it keeps
+  # scripts/verify.mjs and scripts/verify-receipt.mjs honest about themselves.
+  sdlc-verify:
+    name: SDLC verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      # The PR head, not the merge commit GitHub builds for pull_request
+      # events: the tree hash this job logs must be comparable with the
+      # receipt a person produced locally, and the two differ whenever main
+      # moved since the branch was cut (first run of #350: 326d37dc vs
+      # 6a80cc14). Strict status checks still require the branch to be up to
+      # date before merging, so what merges is what was verified.
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+          fetch-tags: true
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify module tests (tree hash, receipt, verify runner)
+        run: node --test scripts/verify.test.mjs scripts/lib/verify-core.test.mjs
+
+      - name: Golden journeys (node scripts/verify.mjs, logs the tree hash)
+        run: node scripts/verify.mjs
+
+      - name: Keep the verify record on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sdlc-verify-record
+          path: .verify/last-run.json
+          if-no-files-found: ignore

@@ -12,6 +12,7 @@ export interface PluginRefreshResult {
     output: string;
     restartRequired: true;
 }
+export declare function isDoctorFixPermissionError(error: unknown): boolean;
 export declare function pluginHostFromDoctorCheck(check: {
     params?: Record<string, string | number>;
 }): 'claude-code' | 'codex';

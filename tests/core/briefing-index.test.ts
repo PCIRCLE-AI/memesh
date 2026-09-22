@@ -261,4 +261,21 @@ describe('buildBriefingIndex', () => {
     );
     expect(idx.lines.at(-1)).toMatch(/^\(index cost: 0 lines, \d+ bytes/);
   });
+
+  // The id carries a 32-hex routing hash; a person (or a model) reading the
+  // index needs the label. The hash stays wherever the id identifies data.
+  it('names the project by its label in the heading and the empty-state line, never the routing hash', () => {
+    const id = `index-fixture~${'0123456789abcdef'.repeat(2)}`;
+    const populated = buildBriefingIndex([candidate(1)], id, NOW);
+    expect(populated.lines[0]).toBe('Index of durable memories for "index-fixture" (newest first):');
+    const empty = buildBriefingIndex([], id, NOW);
+    expect(empty.lines[0]).toBe('Index of durable memories for "index-fixture" (newest first):');
+    expect(empty.lines[1]).toBe('- No durable memories (decisions, lessons, patterns, references) for "index-fixture" yet.');
+    for (const idx of [populated, empty]) expect(idx.lines.join('\n')).not.toContain('0123456789abcdef');
+  });
+
+  it('an id with no hash (an older project name) is printed as it is', () => {
+    expect(buildBriefingIndex([], 'plain-name', NOW).lines[0])
+      .toBe('Index of durable memories for "plain-name" (newest first):');
+  });
 });

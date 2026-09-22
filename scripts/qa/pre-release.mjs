@@ -20,7 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMain } from '../lib/verify-core.mjs';
 
 /** The steps, in order. Each `id` must be an npm script in package.json. */
 export const STEPS = [
@@ -51,7 +51,7 @@ export const STEPS = [
 export const NOT_CHECKED = [
   'UI review evidence is checked for completeness and candidate binding, not semantic truth. The release owner must verify reviewer independence and replay the retained browser observations; a JSON report cannot prove usability.',
   'Real-host qa:live-journey checks need a caller-prepared authenticated --codex-home for Codex and an interactive Claude Code session for Claude. ' +
-    'Both --host codex and --host claude receipts are required by `release:finish`, using memesh-live-journey/v3 (see release-preconditions.mjs).',
+    'Both --host codex and --host claude receipts are required by `release:finish`, using memesh-live-journey/v4 with all core journeys (see release-preconditions.mjs).',
   'npm run qa:post-release — only meaningful after the release is published; run it next.',
 ];
 
@@ -111,4 +111,4 @@ function main() {
   process.exit(verdict.ok ? 0 : 1);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main();
+if (isMain(import.meta.url)) main();

@@ -32,11 +32,12 @@ import {
   readUpdateCheckCache,
   readUpdatePromptClaim,
   resolvePluginRoot,
+  unreadMessageLines,
   writeAutoUpdateConsent,
   writeSnooze,
 } from './_shared.js';
 import { join } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 
 let installChannelMod = null;
 try {
@@ -217,7 +218,29 @@ function logError(scope, msg) {
 // `file://${process.argv[1]}` produces an invalid URL because the path uses
 // backslashes; pathToFileURL() correctly normalizes to a file:// URL on
 // every platform, so the comparison is portable.
-const isMainModule = import.meta.url === pathToFileURL(process.argv[1]).href;
+//
+// `import.meta.url` is the REAL path of this file; `process.argv[1]` is the
+// path as the host typed it. Through a symlink (plugin cache, global npm
+// prefix) the two differ, so compare the typed path first — under
+// `--preserve-symlinks-main` Node leaves `import.meta.url` unresolved too, and
+// resolving the typed side unconditionally would make them diverge — and only
+// then the resolved path. A realpath failure on that fallback is left to
+// throw: a crash is visible, "not the entry point" is not.
+//
+// Also reads "not main" for `node -` (`argv[1]` is the literal `-`;
+// `realpathSync('-')` would throw) and `node -e`/`-p` (the eval flag is in
+// `process.execArgv`; `argv[1]` is just the caller's first argument). That
+// is `isMain()`'s (scripts/lib/verify-core.mjs) `-`/eval handling and its
+// typed-path-then-realpath order, without its directory case: `node <dir>`
+// reads as "not main" here, where `isMain()` throws. The hook cannot import
+// `isMain()`: it ships standalone (package.json `files`).
+const EVAL_FLAG = /^(-e|-p|-pe|--eval|--print)(=|$)/;
+const entryPath = process.argv[1];
+const isMainModule = Boolean(entryPath)
+  && entryPath !== '-'
+  && !process.execArgv.some((arg) => EVAL_FLAG.test(arg))
+  && (import.meta.url === pathToFileURL(entryPath).href
+    || import.meta.url === pathToFileURL(realpathSync(entryPath)).href);
 if (isMainModule) {
   // See post-commit.js for why every exit path leaves a record (#327). This
   // hook's only effect is the additionalContext it injects, so its outcome is
@@ -257,13 +280,20 @@ if (isMainModule) {
       const prompt = data.prompt ?? data.user_prompt ?? '';
       const updateDecision = await recordUpdateConsent(data.session_id, prompt);
       const rememberIntent = detectRememberIntent(prompt);
-      if (!rememberIntent && !updateDecision) {
+      // Messages waiting for the recipient this session declared in
+      // MEMESH_RECIPIENT. Read-only and not memory capture, so it is not
+      // gated by autoCapture. Empty when the variable is unset. An inbox that
+      // cannot be read is recorded as an `error` of its own (a label, never
+      // the message), next to whatever this prompt's outcome turns out to be,
+      // so a skip below cannot be read as "nothing was waiting".
+      const inboxLines = unreadMessageLines(process.env, (err) => record('error', `inbox: ${hookErrorReason(err)}`));
+      if (!rememberIntent && !updateDecision && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.noPromptIntent);
         return process.exit(0);
       }
       // Update consent is a user-authorized control decision, not memory
       // capture; it must still be recorded when auto-capture is disabled.
-      if (!isAutoCaptureEnabled(process.env) && !updateDecision) {
+      if (!isAutoCaptureEnabled(process.env) && !updateDecision && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.autoCaptureOff);
         return process.exit(0);
       }
@@ -276,10 +306,12 @@ if (isMainModule) {
       } else if (updateDecision === 'never') {
         contexts.push('The user asked never to be asked about MeMesh updates again. updateCheck is now off; do not mention updates. `memesh config set updateCheck true` turns checks back on.');
       }
-      if (rememberIntent) contexts.push(buildHint());
+      const hint = rememberIntent && isAutoCaptureEnabled(process.env);
+      if (hint) contexts.push(buildHint());
+      if (inboxLines.length > 0) contexts.push(inboxLines.join('\n'));
       const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: contexts.join('\n\n') } };
       process.stdout.write(JSON.stringify(out));
-      record('notified', undefined, `hint:${updateDecision ?? 'remember-intent'}`);
+      record('notified', undefined, `hint:${updateDecision ?? (hint ? 'remember-intent' : 'inbox')}`);
       process.exit(0);
     } catch (err) {
       logError('user-prompt-intent', err?.message || err);

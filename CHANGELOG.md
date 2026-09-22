@@ -4,8 +4,549 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **The default briefing level is now `minimal`.** A new session, and a call to
+  the `briefing` tool or `memesh briefing`, gets only what belongs to the
+  project it is in — its decisions, lessons, known facts and recent activity,
+  with the live repository state in front of them — where the default used to
+  be `standard`. Two things a new session no longer receives unless it asks
+  for them: the fresh task state (goal / next / blocked / done) and the capped
+  index of the project's durable memories. To get them back, run `memesh
+  config set briefing standard`, or start the session with
+  `MEMESH_BRIEFING=standard`. `full` is unchanged: it still adds other
+  projects' memory and global memory. Only the default moved. A `briefing`
+  value you already set in `config.json`, or a `MEMESH_BRIEFING` in the
+  environment, is honoured exactly as before, the order is still env >
+  config > default, and an unset value — or an invalid one — now resolves to
+  `minimal` instead of `standard`. A stale or unknown-age task state still
+  gets its one-line flag at every level, `memesh task` and the `task_state`
+  tool still show the whole stored state, and `memesh briefing --index` still
+  prints the index on its own. The dashboard's Project tab no longer says the
+  index is what an agent receives "by default": it names the levels that
+  include it.
+
+- **Headings name a project by its label, not its 32-character hash (#409).** A
+  project's id is `<label>~<32 hex>`, and every heading of the briefing — the
+  session-start block, the `briefing` tool and `memesh briefing` — used to print
+  all of it: `Task state for "memesh~2c0fe491888c8efb9a4894828bbc2733"`,
+  `Decisions and direction for …`, `Recent activity in …`, the index heading, the
+  empty-state lines, the terminal banner a project with no memories greets you
+  with, and the lines `memesh task` prints. They now say `"memesh"`. The full id
+  is unchanged wherever it identifies data: the `project` field of the JSON and
+  MCP results, `project:` tags, entity names (`memesh learn` names lessons as
+  before), `--project`, and the unread-message line, which tells an agent which
+  project to poll. `projectLabel` in `src/core/work-topology.ts` is the one rule:
+  one trailing `~` plus exactly 32 lowercase hex characters is removed, anything
+  else is left as it is. The titles the session-summary and pre-compact hooks
+  stored (`2026-09-22 memesh~…: edited 12 file(s)`) still contain the whole id and
+  are printed as stored, so it can still appear in the lines under `Recent
+  activity`.
+- **`memesh config list` shows the briefing level in effect (#412).** With the
+  default now `minimal`, a config with no `briefing` key told you nothing about
+  what a session would get. `list` now always prints one line for it — `briefing:
+  minimal (default)`, `briefing: standard (config.json)` or `briefing: full (env
+  MEMESH_BRIEFING)` — decided by the same resolver the hook and the tool use
+  (env, then config, then the default). A stored `briefing` is that line, not a
+  second one; a stored or env value that is not a level is said to be invalid and
+  shows the level it resolved to.
+
 ### Fixed
 
+- **A new session is no longer shown the oldest of a group of equally scored
+  memories (#401).** The SessionStart hook ranks a project's memories by
+  confidence, use and recency and keeps the top few (`sessionLimit`). The daily
+  decay multiplies the confidence of never-accessed memories by 0.9, so the
+  memories captured since its last run carry one confidence value and, never
+  accessed, score exactly alike (so do old ones that have sunk to the decay
+  floor), and SQLite hands equal scores back in ascending id order (measured):
+  the cut kept the OLDEST of them. The lesson query, whose pool is claimed
+  first, had no ORDER BY at all and kept the five oldest lessons. On a real
+  graph, in the hours after a decay run, a new session was given the same two
+  old commit lines every time and never the decision made an hour earlier,
+  while `memesh briefing` on the same data (which reads a newest-first window)
+  showed the right memories. Equal scores now resolve newest first ("newest" is
+  creation order, the key the briefing sorts by too), in both the exp/log and
+  the legacy ranking forms and in the global and recent pools that `full` adds,
+  and the lesson query orders newest first; a higher score still beats a newer
+  memory. `tests/core/briefing.test.ts` pins the hook and the briefing together
+  on a graph in which every memory ties, lessons included.
+- **`memesh briefing --json`'s `hasTaskState` no longer counts the unread-message
+  reminder.** It was true whenever any state line was present, and the reminder
+  is listed with the task-state lines, so a project with a message waiting and no
+  task state reported one. It is now true exactly when a task-state line leads the
+  block: the fresh state, the one-line stale flag, or the unreadable-record line.
+  The CLI's "set the task state" hint, which reads it, now appears beside the
+  reminder on such a project.
+- **`memesh config get <key>` exists (#410).** It printed `unknown command 'get'`
+  and suggested `set`. It now prints the stored value as `config list` shows it
+  (for `briefing`, what is stored, not the level in effect that `list` prints),
+  or `<key> is not set in config.json` (exit 0); an unknown key gets the same
+  two-line refusal as `set` and `unset` and exits 1.
+- **`memesh status` no longer calls a newer install "up to date" (#410).** On
+  4.10.2, a trial build on the `next` tag while npm `latest` was 4.9.4, it printed
+  `Update check: up to date (fresh; latest 4.9.4)` and then an `Update path:` for
+  `@latest`, a downgrade. It now says `running pre-release version (4.10.2), npm
+  latest is 4.9.4`, as `memesh doctor` already did, and prints no update path. A
+  newer install that is also deprecated, whose check only partly succeeded, or
+  whose check could not run keeps its update path: only the "running pre-release
+  version" line withholds it.
+
+## [4.10.2] — 2026-09-21
+
+### Added
+
+- **A Claude Code session can now be told that a message is waiting for it
+  (`MEMESH_RECIPIENT`).** A session that was not started with the channel flag
+  has no identity a sender can address, and neither the session-start hook nor
+  any prompt ever mentioned the durable inbox, so a message sent to it was seen
+  only if it polled by itself. Start the session with
+  `MEMESH_RECIPIENT=<exact recipient id>` and both the session-start hook and
+  every prompt add one line per project (up to five, most waiting first) that
+  has messages waiting for that exact recipient (`2 messages waiting for
+  "claude-implementer" in project "team-room" — poll the message tool ...`).
+  The line stops once the session records the `intake` action for those
+  messages; fetching alone does not end it, and the line says so. Without the
+  variable nothing changes, and a session never learns of a message addressed to
+  anyone else.
+- **`briefing` setting — three levels for how much the SessionStart hook and
+  the `briefing` MCP tool/CLI inject** (#360): `minimal` — only this
+  project: its decisions, lessons, known facts and recent activity, with the
+  live repository state in front of them whenever anything else is injected
+  (the repository state alone is never injected); no task state, no durable
+  index, nothing from outside the project. `standard` (**the new default**)
+  — `minimal` + the task state when fresh + the capped index of this
+  project's durable memories. `full`
+  — `standard` + memories from your other projects + global memory
+  (byte-identical, on every surface, to every prior release's only
+  behaviour — EXCEPT when the task state is stale or of unknown age, where
+  the one-line replacement below applies at `full` too, the same as it
+  does at `standard`). The SessionStart hook additionally appends the work-package
+  notice at `full`, as it always has — that notice is a host-agent
+  instruction, not memory, and the `briefing` MCP tool/CLI never included it,
+  before or after this change. Set it with `memesh config set briefing
+  <minimal|standard|full>`; `MEMESH_BRIEFING` overrides the configured value.
+  One policy (`src/core/briefing-level.ts`) decides what each level includes,
+  shared by the hook and the tool so they cannot disagree.
+- **A stated task state (goal/next/blocked/done) older than 72 hours is no
+  longer injected as current, at any level including `full`.** It collapses
+  to one line naming its age and pointing at `memesh task` to see or update
+  it — `memesh task` itself is unaffected and always shows the real value.
+- **A task state whose age cannot be established is now also flagged, not
+  injected as current:** a missing or
+  unparseable `updated_at`, or one more than 5 minutes in the future
+  (`CLOCK_SKEW_ALLOWANCE_MINUTES`), used to be treated as fresh — a future
+  timestamp meant the state was fresh FOREVER. All three now render a
+  distinct one-line flag ("age could not be established") instead.
+- **A timezone-less or date-only `updated_at` is also treated as an
+  unestablished age, not silently parsed with the reader's local clock:**
+  the SAME stored value used to read as
+  fresh under `TZ=UTC` and stale under `TZ=Asia/Taipei` — an age that
+  depends on the READER's timezone was never a real age. Only a full instant
+  with an explicit offset or `Z` (what MeMesh itself writes into
+  `updated_at`) is accepted; everything else — date-only, no offset, or the
+  zone-less `YYYY-MM-DD HH:MM:SS` shape — gets the same "age could not be
+  established" flag.
+
+### Changed
+
+- **The default injected briefing is smaller.** Measured on one real session
+  (plugin 4.10.0, 2026-09-19) the previous, only behaviour (now `full`) was
+  2,545 characters, of which global-namespace memory, other projects' recent
+  memory, and the work-package notice (identical boilerplate every session)
+  made up the majority and are dropped from the new default. `minimal <
+  standard < full`, and `standard` is at most 60% of `full`'s size, is
+  enforced by `tests/hooks/session-start.test.ts`'s size-relation test on its
+  own reference fixture — exact character counts are not a maintained
+  contract and are not quoted here, since they move with the fixture, not
+  with the product. Hosts that run MeMesh (Claude Code, Codex) now carry
+  their own memory, so the default now injects what they do not already
+  have: live repository state and this project's own recent activity. To
+  get the previous behaviour back: `memesh config set briefing full`.
+- **`import` no longer brings back a memory you archived** (#363). A local
+  entity that is archived (`memesh forget`, or archived by the dreamer when it
+  digested it) used to come back to active, with the bundle's observations
+  added or replacing its own, whenever an `append` or `overwrite` import named
+  it. Now it stays archived and completely untouched, and the result reports
+  how many were left that way: `kept_archived` in the MCP/HTTP response, and a
+  `Kept archived: N` line from `memesh import`. `skip` is unchanged (it already
+  left every existing entity alone). To get the old behaviour, pass
+  `--restore-archived` on the CLI (requires `--merge append` or `overwrite`;
+  the CLI default `skip` refuses it), or `restore_archived: true` to the MCP
+  `import` tool and `POST /v1/import` (same rule: with `skip` the call is
+  refused, not silently ignored). Only import changes: `remember` still
+  reactivates an archived memory that is stated again.
+
+### Removed
+
+- **The maintainer's local development-process tooling**, committed on
+  2026-09-13, is no longer tracked in this repository; it now lives only on
+  the maintainer's machine. Gone: the git commit/push gates and the
+  `prepare` script that installed them into every clone; the AI stage
+  workflows, including the pull-request review workflow, the hourly
+  CI/release monitor, and the post-release smoke-receipt workflow; the
+  `intent`/`docs/specs`/`docs/plans` artifact chain; and the Claude Code
+  project hooks and settings that drove it all. The in-repo record of which
+  CI checks are required (`ci.requiredChecks` in the departed
+  `sdlc/config.json`) left with it; the requirement itself is unchanged —
+  it lives in GitHub branch protection, not in the repository.
+- `npm run verify` remains the definition of done. The required `SDLC
+  verify` check keeps its job id, display name and golden-journey step
+  (`node scripts/verify.mjs`); only its preceding test step changed — from
+  the SDLC loop's own suite to `node --test scripts/verify.test.mjs
+  scripts/lib/verify-core.test.mjs` — because the tests it dropped covered
+  code that left, and it now reads its step list from the public
+  `scripts/verify.config.json`.
+- The published npm file list is unchanged by this removal (402 files, before and after it);
+  two shipped files changed content with no behaviour change for users —
+  `package.json` (five maintainer-only dev scripts removed) and
+  `scripts/upgrade-plugin.sh` (one cleanup line, no longer removing a
+  directory that isn't tracked here anymore).
+
+### Fixed
+
+- **A hook that cannot read the inbox now records an `error` instead of
+  looking like a clean run (#394).** When a session declares
+  `MEMESH_RECIPIENT` and the SessionStart or prompt hook cannot read the
+  durable inbox (its receipts table will not load, for example), the hook
+  already said so on stderr and went on without the reminder.
+  `hook-outcomes.jsonl` now also gets one `error` (`inbox: uncaught <code>`, a
+  label, never the message). Before, a prompt with no other intent was
+  recorded as `skipped` and a session start as `notified`, with no trace of
+  the failure, so nothing afterwards could tell "no message was waiting" from
+  "the inbox could not be read". Prompts and session starts are not blocked
+  and their output is unchanged.
+- **The guard fire counter waits at most 200 ms for a locked database
+  (#366).** When another process holds the database's write lock, the two
+  guard hooks (`guard-check.js` and `pre-edit-recall.js`) wait up to 200 ms
+  for it and then give up on the count: the guard warning appears without a
+  long delay, that one fire is not counted, and this line goes to stderr:
+  `[memesh guard-fires] not counted: database is locked`. Before, the wait
+  was 2 seconds, which on a slow machine could get a hook killed at its
+  5-second timeout before the warning was printed; a missed count is
+  invisible to the user, a killed warning is not. The wait is short but not
+  zero on purpose: with none, hooks that run at the same instant (parallel
+  tool calls) lost about a third of their counts, and `memesh doctor`'s guard
+  activity reads low. Reading the graph still waits up to 2 seconds for a
+  lock.
+- **`minimal` no longer reports a failed memory read as an empty project, and
+  a mistyped briefing level is reported with one pair of quotes (#386).** If
+  the SessionStart hook cannot assemble a project's memories (for example when
+  the database is damaged), `hook-outcomes.jsonl` now records an `error` for
+  that session, at every level. At `minimal` it used to record "nothing to
+  inject" instead, which read like a project with no memories; at `standard`
+  and `full` the new record sits next to the existing `briefing-index` one.
+  An unrecognised `MEMESH_BRIEFING` or stored
+  `briefing` value now reads `invalid env briefing level "banana"` on stderr
+  (hook, `briefing` tool and CLI) and `invalid env value "banana"` in the
+  outcome record; both used to show the value in doubled quotes
+  (`""banana""`). A value that is not a string is shown without quotes (a
+  number as itself, a container as `[object]` or `[array]`). The API reference
+  no longer says `memesh doctor` shows an invalid briefing level, because it
+  does not: the value is visible on stderr and in `hook-outcomes.jsonl`.
+- `scripts/audit/verification-audit.mjs` now scans only what git does not
+  ignore, so its verdict depends on the tree and the machine's own git
+  ignore rules, rather than on whatever untracked local files with no
+  ignore rule at all happen to be sitting on the machine that runs it. A
+  path that is part of the repository (in the index) is never dropped by
+  this, so a machine-local exclude can only make one developer's own run
+  scan less than CI, never CI less.
+- **`release:finish`'s post-publish registry check is now behavior-tested
+  (#359).** The poll, post-poll `latest` cross-check, decision, raw progress
+  output, per-line stdout/stderr routing, and all eight outcome rows run under
+  fakes — no network, no real npm publish. Stable-release output matches the
+  pre-#359 script byte-for-byte; a prerelease additionally verifies `latest` did
+  not move, which is new output the pre-#359 script never printed. The
+  executable glue in `scripts/finish-release.mjs` is source-text pinned for
+  delegation, caller flags, the registry reader, exit-code handling, and the
+  required `await`. It also contains a fail-closed runtime guard that refuses to
+  treat a missing or malformed result as success. Three failure paths are
+  handled deliberately, and differently: a `readVersion` failure remains an
+  ordinary UNKNOWN/UNCONFIRMED outcome, never treated as a crash; a failure of
+  `sleep`, `write`, or one of the normal-result output calls (an ordinary throw,
+  a rejected `sleep`, or a hostile `Error` — a throwing `message` getter, a
+  non-string `message`, a Proxy, a thrown `Symbol`) is caught and reported
+  through the error sink as one bounded single-line crash diagnostic, its
+  interpolated exception-message portion capped at 200 UTF-16 code units
+  including the ellipsis (the surrounding diagnostic text is additional),
+  truncated by Unicode code point so a surrogate pair straddling the cut is
+  never split into a corrupting unpaired half; a failure of the error sink
+  itself is deliberately allowed to propagate rather than being caught a second
+  time.
+- **A bundle imported through `memesh import <file>` can no longer grant itself
+  behavioral authority on an EXISTING entity, and four specific fields can no
+  longer be granted on ANY entity without independent validation (#359).**
+  `guard`, `demo`, `task_state`, `consolidation_depth`, `compacted_into`,
+  `proposal_id`, `session_id`, and `evidence_for` are refused for both an
+  existing entity and one the import creates. Four fields get a narrow,
+  validated, fresh-entity-only exception instead, because each DOES change
+  behavior once accepted: `forgotten_observation_hashes` (deduplicated 64-hex
+  SHA-256 hashes, capped at 1000), `pin` (only the literal `true`),
+  `signal_score` (a number in `[0, 1]`), and `replaced_history` (an array of at
+  most 50 entries, each shaped exactly like `--replace`'s own history entries,
+  with the WHOLE array's own serialized JSON bounded to 256 KiB — a budget over
+  the entire array together, not per entry — closing a read-modify-write path
+  that let a bundle's forged history survive an import and then have a genuine
+  later local replace silently append onto it). None of the four can be set,
+  changed, or cleared on a memory you already have. Separately, a restored
+  backup now keeps a moved entity's namespace-move breadcrumb. Not covered by
+  this fix, and unchanged from HEAD (verified, not assumed): an `append` or
+  `overwrite` import naming an archived entity reactivates it, the same way
+  re-`remember`-ing an archived memory always has — a separate product question
+  tracked in #363, deliberately left open.
+- **A bundle can no longer set, change, or clear the `demo` marker on either an
+  existing or import-created memory (#361).** `memesh demo --reset` hard-deletes
+  every entity carrying that marker; before this fix, a crafted import bundle
+  could tag an arbitrary real memory with it and have the next `--reset` delete
+  it. Demo seeding remains a product-owned operation through `seedDemo`/`memesh
+  demo`; an imported memory can never become eligible for `--reset` on its own.
+- **Pre-edit recall no longer injects auto-captured session bookkeeping, or
+  memories about a different file, in place of what is actually relevant
+  (#358).** The final rule, verified against the real hook: a memory is
+  injected for the edited file only if it carries
+  the exact tag `file:<full basename>`, or its `entities.name`/one of its
+  `observations.content` literally names the file — for every script, ASCII
+  or not — and it is not an auto-captured session snapshot.
+  - Excludes `session-insight`/`session-summary` rows from both match
+    strategies (they carry a `file:<name>` tag for every file a session
+    touched, not evidence a memory is about the file being edited).
+  - Matches only the exact full-basename `file:<name>` tag, never also the
+    extension-less stem (the stem is written for every file sharing it —
+    `file:auth` is not unique to `auth.ts` — so it previously matched an
+    unrelated file, e.g. `auth.py`, sharing the same stem).
+  - Uses FTS as a CANDIDATE GENERATOR only (an ASCII basename's words
+    adjacent and in order; a non-ASCII basename's stem, bigram-OR'd), then
+    LITERALLY CONFIRMS the full basename — extension included, for every
+    script, never only the stem — actually appears in the candidate's text,
+    NFC-normalised, ASCII case-folded PER CHARACTER (not only when the whole
+    basename happens to be pure ASCII — a mixed-script basename, the common
+    case for any non-English filename, used to skip folding entirely and
+    miss its own uppercase extension), on a filename boundary. A
+    token-adjacency hit is not proof: text about `05-CLAUDE-md.md` used to
+    satisfy a search for `CLAUDE.md`, and a memory naming `設定配置.py`,
+    bare `設定配置`, or `設定配置.TS` (uppercase) used to satisfy a search
+    for `設定配置.ts`.
+  - **NFC-normalised means CANONICALLY equivalent, pinned by design:**
+    composed/decomposed accents ("café" vs. "cafe" + combining acute)
+    and singleton canonical mappings — KELVIN SIGN U+212A → ASCII "K",
+    ANGSTROM SIGN U+212B → "Å" (U+00C5) — confirm as the same name; a memory
+    naming a file with the Kelvin sign matching an edit to the ASCII-K file
+    is this rule, not a false positive, and is deliberately not
+    special-cased (a per-character exception table on this hot path would
+    break the simplicity the "é" guarantee relies on). COMPATIBILITY
+    equivalents stay distinct — fullwidth "Ａ" (U+FF21) never confirms
+    ASCII "A", and ligatures never confirm their expansions — because this
+    uses NFC, not NFKC. The ASCII-only per-character case fold runs after
+    normalisation and only touches `A-Z`, so Turkish İ (U+0130) / ı (U+0131)
+    and German ß (U+00DF) never fold to their ASCII lookalikes either.
+  - The boundary rejects a mention embedded in a longer identifier or
+    extension chain (`xCLAUDE.md`, `CLAUDE.mdx`, `CLAUDE.md~`, or a `.`
+    followed by a letter, digit, combining mark or invisible format
+    character in any script — `CLAUDE.md.bak`, `CLAUDE.md.備份`; a mark or
+    format character directly after the name counts too, except that bidi
+    marks, embeddings and isolates are skipped — directly after the name
+    and again after a `.` — and the character after them decides; the two
+    bidi overrides are never skipped and reject) or immediately followed by another path separator
+    (`notes/CLAUDE.md/`, `notes/CLAUDE.md/subfile` — that names a
+    DIRECTORY called CLAUDE.md, or a file inside it, not the edited file
+    itself) and, for a path-style mention (`notes/CLAUDE.md`,
+    `文件/CLAUDE.md`, `C:\repo\docs\CLAUDE.md`), accepts it only when it
+    equals, or is a suffix of, the edited file's own path — checked against
+    its path relative to its repository root, its canonical (symlink-
+    resolved) absolute path, AND the absolute path as the edit payload
+    itself named it — editing root `CLAUDE.md`, a `notes/CLAUDE.md`
+    mention does not count. A directory that does not exist yet stays part
+    of that path: a Write into `notes/new/` is checked as
+    `notes/new/CLAUDE.md`, not as `notes/CLAUDE.md`. A trailing sentence period, or a URL fragment
+    or query string after the basename (`notes/CLAUDE.md#section`,
+    `notes/CLAUDE.md?x=1`), still confirms — a fragment/query does not
+    change which file a path points at. The path-token scan is
+    Unicode-aware (a directory name like `文件` is not lost), keeps a `~`
+    inside a directory name (a Windows short name such as `RUNNER~1`; a `~`
+    glued to the front of a mention is therefore part of it, and
+    `x~docs/CLAUDE.md` is not read as `docs/CLAUDE.md`), and
+    recognises a Windows drive letter (`C:\...`) as the start of a path.
+  - **Only the basename and a Windows drive letter are ASCII case-folded in
+    a path-style mention; every directory component in between is compared
+    exactly, on every platform, by design:** a directory's real case
+    sensitivity depends on the volume, which this check has no filesystem
+    call to ask, and this is a hot path that makes none. `DOCS/CLAUDE.md`
+    in a memory does NOT match an edit to `docs/CLAUDE.md` (a deliberate
+    false negative — the memory is still reachable by a relative or bare
+    mention), while `docs/claude.MD` still does.
+  - **A memory can name either the symlinked or canonical spelling of a
+    file's path — but only whichever form the EDIT PAYLOAD ITSELF used, not
+    any spelling invented only in the memory text.** Editing through a
+    `/var/...` alias, a memory naming the canonical `/private/var/...` form
+    still matches; editing the canonical path directly, a memory naming
+    only the `/var/...` alias does not — resolving an alias mentioned only
+    in text would need a filesystem call per mention, which this hot path
+    does not make. The memory remains reachable through a relative or bare
+    mention either way.
+  - **A path-style mention needs a delimiter immediately before it** — any
+    character that is not a letter/mark/digit/`_.-/\`, including start of
+    text, whitespace, punctuation, or an emoji. CJK prose with no delimiter
+    directly before a path is consumed into the path token itself and does
+    not match (`請看文件/CLAUDE.md` misses an edit to `文件/CLAUDE.md`;
+    `📁文件/CLAUDE.md` matches) — a deliberate decision, not an oversight;
+    the same memory remains reachable through any other bare or delimited
+    mention it also contains.
+  - Fetches a bounded window of up to 50 FTS candidates before confirming,
+    not a small multiple of the remaining result slots — the tighter window
+    could let 9+ candidates that all fail confirmation hide a 10th,
+    genuinely-matching one, and then report "nothing to recall" when the
+    search had in fact been cut short. That case now records a distinct,
+    honest reason instead — including when the window filled but 1 or 2
+    memories (not a full 3) were still confirmed and injected: the reason
+    now travels with the actual outcome, not only with an empty one.
+  - No longer requires the basename's stem to be 4+ characters to search at
+    all — `設定.ts`, `c++.md` and similarly short or symbol-heavy names are
+    reachable again, with literal confirmation (not query length) as the
+    safeguard.
+  - Scopes the search by the edited file's own project instead of the
+    session's `cwd`; it still falls back to the `cwd` project when the
+    file is not in a repository or git reports none for its directory.
+    Where git itself stalls, the (at most four, 2-second-capped) git calls
+    can use up the hook's 5 seconds before that fallback is reached (#366).
+  - A fault while reading `observations` (confirming a candidate, or
+    building a snippet) is now recorded as an `error` on every run instead
+    of `skipped / nothing to recall`, the file is not marked as recalled,
+    and a lesson guard that matched the same edit is still injected. The
+    guard warning is also written before the guard's fire counter, and the
+    counter waits at most 200 ms for the database's write lock (in both
+    guard hooks), so another process holding that lock cannot get the hook
+    killed at its timeout with the warning unprinted. A lock still held after
+    that costs that one fire count, reported on stderr.
+
+  **Recall is now narrower, by design, not by accident.** A memory that
+  refers to a file only by its stem ("the `auth` module handles hashing",
+  or, for a non-ASCII file, its stem alone) or only loosely in prose ("the
+  Claude MD file", "claude-md", "CLAUDE_MD") no longer matches — only an
+  exact `file:<basename>` tag or the literal file name (on a filename
+  boundary, respecting the path-suffix rule for a path-style mention) does.
+  A non-ASCII letter directly adjacent to an ASCII basename with no
+  separator (`設定CLAUDE.md`) is deliberately NOT treated as embedding —
+  that remains a bare, accepted mention. `tests/hooks/pre-edit-recall.test.ts`
+  pins this: a memory tagged only with the stem is injected for one file and
+  withheld for another that merely shares that stem, and the existing CJK
+  reachability fixtures were updated to name the full file (extension
+  included) rather than the stem alone.
+- Gates that could report success having checked nothing (#372).
+  `scripts/audit/verification-audit.mjs` now holds a fixed list of the
+  detector classes it expects and fails, naming the class, when one of them
+  never reports — its declaration deleted or skipped by a condition, or its
+  block returning early; before, only classes that did report were looked at.
+  A class declared twice or not on the list, a detector that records twice,
+  and a denominator that is not a positive number all stop the script; a
+  detector can record only under its own class, and cannot change a result
+  after recording it. `--prune-stale` no longer rewrites `baseline.json`
+  after a run that failed. `npm run
+  lint` now lints the files git tracks or would track under `src/`,
+  `scripts/`, `tests/` and `dashboard/src/`, so a git-ignored local file can
+  no longer change its verdict; it fails, naming the directory, when any one
+  of the four contributes no file — or none that `eslint.config.js` does not
+  ignore — and when a file matches no config block in `eslint.config.js`, so
+  ESLint would never lint it; it prints how many files the config ignores,
+  skips a tracked file already deleted on
+  disk (count on stderr), and passes the list to ESLint in batches that stay
+  clear of Windows' command-line ceiling. Entry points reached through a
+  symlink now run instead of exiting 0 having done nothing: the gate scripts
+  (`npm run verify`, `verify:receipt` and eight others), the two token
+  benchmark scripts, and the `UserPromptSubmit` hook — which, installed under
+  a symlinked plugin cache or npm prefix, never reminded the agent to store a
+  "remember this". Started on a directory (`node <dir>`), a gate script now
+  stops with an error naming the path rather than deciding it was imported.
+
+- **`GET /v1/config` no longer 500s when the stored `briefing` level is
+  unrecognised** — a hand-edited config.json,
+  or a value from a different memesh version, made the read itself throw
+  and left a user unable to even see the config to fix it. `briefing` is
+  validated on write (`POST` still answers 400 for an unknown level); a read
+  now always returns the stored value as-is.
+- **`minimal` no longer injects an empty preamble and fence when a project
+  has nothing yet** — an initialised,
+  memory-free project used to get an empty-fence preamble wrapped around
+  nothing at `minimal` (the only level with no task state or durable index
+  to fall back to; no character count is quoted here — see the note above
+  on exact counts not being a maintained contract). Nothing is injected in
+  that case now, and the SessionStart hook records why
+  (`hook-outcomes.jsonl`); `standard`/`full` are unaffected — they still
+  show the durable-memory index's own empty-state line on the same project,
+  which is content, not framing. This qualifies the #323 entry recorded
+  under `[4.10.0]` below: "`briefing.text` is never empty" was true when written and
+  stays true at `standard`/`full` (the index's own empty-state line always
+  renders there), but `minimal` never includes the index at all — since
+  #360, `text` can be `''` (`empty: true`) at `minimal` on a project with no
+  memories yet.
+- **The same "nothing to show" decision now has a single owner shared by
+  the SessionStart hook and the `briefing` MCP tool/CLI** — the hook skipped the
+  empty fence correctly; `assembleBriefing()` (and therefore `memesh
+  briefing --json`, the plain-text CLI, and the MCP tool) did not, and still
+  wrapped nothing in a preamble plus an empty fence on the exact same empty
+  `minimal` project. `BriefingResult` now carries `empty: boolean` (`text`
+  is `''` when true); the CLI prints `Nothing to brief at level minimal —
+  no project memories yet.` instead of the fence and exits `0`; the MCP tool
+  needed no change (it only serialises the result object). Both surfaces
+  now call the same `hasBriefingContent` rule (`src/core/work-topology.ts`).
+
+## [4.10.1] — 2026-09-14
+
+Includes the changes documented under 4.10.0 below; 4.10.0 was not published
+to npm. The previous public release is 4.9.4.
+
+### Added
+
+- **`qa:live-journey` now carries one v4 receipt for core memory and live-host
+  delivery.** Every real Codex or Claude run first exercises five shared
+  journeys: remember/recall, SessionStart briefing injection, quiet commit
+  capture, Stop insight capture, and a packed upgrade from public baselines.
+  Each row records its successful path, a representative failure, persisted
+  effect readback, the exercised boundary, and cleanup. `--core-only` runs the
+  non-interactive catalogue without host credentials; release receipts still
+  require the separate real Codex and Claude model-visible paths.
+
+### Fixed
+
+- Settings that cannot be read show an unknown policy and reload guidance
+  instead of appearing to have automatic updates turned off.
+- **Update-check failures explain how to retry.** Dashboard Settings keeps
+  technical errors collapsed and shows connection and npm registry guidance.
+  Doctor no longer treats a failed first check as unattempted or an unpublished
+  local version as npm's latest release.
+- The optional Claude Channel registration reminder now uses the selected
+  dashboard language, including its setup instructions.
+- **An observation removed with `forget` stays removed from later Stop snapshots
+  (#346).** Files, fixes, and summary snapshots exclude the exact removed text
+  while continuing to accept new content. Explicit `remember` can restore it.
+  Stop replay tests and a memory invariant detect resurrection. See
+  `docs/postmortems/2026-09-14-observation-forget.md`.
+- **Quiet and redirected Git commits are captured from repository state
+  (#321).** The PostToolUse hook keeps the existing Git-output parser as a
+  optional output signal, but commit-producing commands now reconcile the repository's
+  current `HEAD` with a private marker keyed by the shared Git common
+  directory. This covers `git commit -q`, redirected output, merge,
+  cherry-pick, revert, and linked worktrees. A first observation records a
+  baseline without importing old history; later ranges capture at most the
+  newest 20 commits, tag multi-commit ranges `origin:batch`, and record how
+  many older commits were skipped. Failed commands and unresolvable or
+  unchanged heads leave explicit hook outcome records instead of silently
+  looking like a broken hook. See
+  `docs/postmortems/2026-09-14-quiet-commit-capture.md`.
+- **The isolated release suite now owns its npm cache.** The release runner
+  no longer inherits a maintainer's `~/.npm` cache when nested tests execute
+  `npm pack`, so local ownership damage cannot turn an otherwise isolated
+  release check into an `EPERM` failure. A source contract pins the private
+  cache wiring. See
+  `docs/postmortems/2026-09-13-isolated-suite-npm-cache.md`.
+- **Dashboard auto-repair permission failures now explain the next action.**
+  Config and plugin-cache repairs that cannot create their required local
+  files return a stable `operation.permission-denied` error with fixed,
+  path-free guidance. The Dashboard translates it in every supported locale
+  and tells the user to restart `memesh serve` from their own terminal and
+  retry, instead of replacing the cause with “unexpected server error.” The
+  regression gate covers direct filesystem errors, the plugin upgrade-lock
+  failure, unrelated failures, path redaction, and retry availability. See
+  `docs/postmortems/2026-09-13-dashboard-auto-repair-permission.md`.
 - **A later Stop in the same session updates its session insights instead of
   freezing them (#322).** `session-summary.js` runs on `Stop`, which fires at
   the end of every turn, not once per session; a guard added for #240 froze a
@@ -62,8 +603,9 @@ All notable changes to MeMesh are documented here.
   statistics are frozen. Evidence tooling only; nothing ships in the package.
 - **Capture liveness: MeMesh can now tell a quiet hook from a broken one
   (#327).** Every capture hook leaves an outcome record on every exit path —
-  `wrote`, `skipped` with a reason, or `error` with a label (never the
-  exception text) — appended to `hook-outcomes.jsonl` beside the database.
+  `wrote`, `notified` (the hook printed something a person or model reads
+  and stored nothing), `skipped` with a reason, or `error` with a label
+  (never the exception text) — appended to `hook-outcomes.jsonl` beside the database.
   `memesh doctor` gains a **Capture liveness** row, and `memesh doctor --json`
   / `GET /v1/doctor` carry per-hook figures and per-type week-over-week write
   counts under a new `capture` field. Only hooks whose trigger means a write
@@ -113,6 +655,24 @@ All notable changes to MeMesh are documented here.
   Without `replace` the append semantics are exactly as before. The
   contentless FTS index is deleted with the exact text that was indexed, so
   the old words stop matching.
+  The memory keeps the `type` it already has: `type` is required only on a
+  `replace` whose name does not exist yet, and passing a different one is how
+  a memory is reclassified. A `replace` on a memory archived with `forget` is
+  refused — remember it again without `replace` first.
+- **The remember receipt reports the title the row holds (#324).** The response
+  used to carry the title the text *would* have produced, so a memory that kept
+  its own headline was described with one it never had. MCP `remember` and
+  `POST /v1/remember` return the stored value; the CLI no longer re-reads the
+  row to work around it.
+- **The over-cap refusal counts observations, not paragraphs (#324).** A single
+  paragraph of 101 list items yields 101 observations, and the message said
+  "101 paragraphs" — the wrong unit for the thing being capped.
+- **The MCP and exported schemas state the three forms (#324).** `remember`
+  declares `anyOf` — `note`, or `name` + `type`, or `name` + `replace` — so a
+  client reading the schema can tell which fields go together instead of
+  inferring it from an error.
+- **`memesh import` rejects notes-only flags on the JSON path (#324).** Passing
+  a note-directory option without `--notes` used to be accepted and ignored.
 - **Note files are ingested as memories (#324).** `memesh import --notes
   <dir>`, and the Stop hook for the project's own memory directory, upsert
   one memory per frontmatter note file, tagged `source:note-file`, with the

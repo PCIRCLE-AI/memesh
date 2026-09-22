@@ -119,11 +119,11 @@ memesh remember "Login uses OAuth 2.0 with PKCE"
 memesh recall "login"
 # -> finds the PKCE decision
 
-memesh briefing        # what the agent knows about this project, where you left off
+memesh briefing        # what the agent knows about this project
 memesh serve           # starts the local server and prints the dashboard URL
 ```
 
-Keep `memesh serve` running and open the printed URL. In Claude Code you do not even need the terminal for memory tools: say "remember this" in chat, and the briefing arrives on its own at every session start.
+Keep `memesh serve` running and open the printed URL. In Claude Code you do not even need the terminal for memory tools: say "remember this" in chat, and once there is something to show, the briefing arrives on its own at session start.
 
 Two things worth knowing once you have memories:
 
@@ -139,14 +139,14 @@ Full command and tool reference: [docs/api/API_REFERENCE.md](docs/api/API_REFERE
 | Tool | What it does |
 |------|-------------|
 | `work_package` | Prepare one bounded untrusted calendar digest or Claude Code transcript package under one matching MCP workspace root; submit one strict result for pending human review, or defer without durable change. Transcript submission retains bounded redacted source turns; no file path, hidden reasoning, provider, embedding, or vector data is exposed. |
-| `remember` | Store knowledge with observations, relations, and tags |
+| `remember` | Store knowledge as observations, relations and tags — or pass free text as `note` and the title, observations and name are derived; `replace` corrects a memory in place |
 | `recall` | Local FTS5 search with multi-factor scoring (relevance, recency, frequency, confidence, recall impact) |
 | `forget` | Soft-archive (never deletes) or remove specific observations |
 | `export` | Back up, migrate, or move memories as JSON between compatible agents |
 | `import` | Import memories with merge strategies (skip / overwrite / append) |
 | `learn` | Record structured lessons from mistakes (error, root cause, fix, prevention) |
 | `task_state` | Read or record where the work stands — goal, next step, blocker, what was just finished |
-| `briefing` | The assembled work topology for any MCP client, closing with a capped index of the project's durable memories; generic context stays quiet, while exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology for any MCP client — this project's decisions, lessons, knowledge and recent activity by default (`minimal`); `standard` adds the fresh task state and closes with a capped index of the project's durable memories, `full` adds other projects and global memory (the `briefing` setting — `minimal` / `standard` / `full`); generic context stays quiet, while exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze your work patterns — schedule, tools, strengths, learning areas |
 | `improvement` | Stage an evidence-linked product improvement for human review, or read its status; agents cannot accept or reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages. Durable JSON payload max: 64 KiB; complete native envelope max: 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` failures. Native acceptance, discovery, poll, and fetch never imply acknowledgement or disposition |

@@ -28,6 +28,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_WAIT_MS,
   MAX_SOCKET_PATH_BYTES,
+  REQUIRED_BUILD_ARTIFACTS,
   REQUIRED_DIST,
   assertClaudeModelIntakeArmingConfirmation,
   assertClaudePluginIsolationConfirmation,
@@ -55,6 +56,7 @@ import {
   awaitSessionDisconnect,
   buildJourneyEnv,
   buildLiveJourneyPayload,
+  buildPackedUpgradeReceipt,
   claudeTrustedIntakePrompt,
   collectCodexAgentMessages,
   findIntakeReceipt,
@@ -67,9 +69,11 @@ import {
   requestClaudePluginIsolationConfirmation,
   requestClaudeModelIntakeArmingConfirmation,
   shouldRemoveWorkingDirectories,
+  workingDirectoryCleanupReceipt,
 } from '../../scripts/qa/live-journey.mjs';
 import {
   CLAUDE_PLUGIN_ISOLATION_CONFIRMATION,
+  CORE_JOURNEY_IDS,
   LIVE_JOURNEY_SCHEMA_VERSION,
   REQUIRED_LIVE_JOURNEY_STEPS,
   REQUIRED_REGISTRATION_EVIDENCE,
@@ -145,6 +149,10 @@ const RECEIPTS_WITH_INTAKE = [
 const RECEIPTS_WITHOUT_INTAKE = [RECEIPTS_WITH_INTAKE[0]];
 
 describe('parseArgs', () => {
+  it('accepts a CI-safe core-only mode without host credentials', () => {
+    expect(parseArgs(['--core-only'])).toMatchObject({ host: null, mode: 'core-only' });
+  });
+
   it('accepts the bounded automatic Codex registration mode without a host', () => {
     expect(parseArgs(['--codex-session-auto-registration'])).toMatchObject({
       host: null,
@@ -184,6 +192,11 @@ describe('parseArgs', () => {
       .toThrow(/cannot be combined with --host/);
   });
 
+  it('rejects combining core-only with a host mode', () => {
+    expect(() => parseArgs(['--core-only', '--host', 'claude']))
+      .toThrow(/cannot be combined with --host/);
+  });
+
   it('rejects an unsupported host rather than guessing one', () => {
     expect(() => parseArgs(['--host', 'gemini'])).toThrow(/must be codex or claude/);
   });
@@ -208,6 +221,11 @@ describe('parseArgs', () => {
 });
 
 describe('--help', () => {
+  it('documents the core-only golden-journey invocation', () => {
+    expect(helpText()).toMatch(/npm run qa:live-journey -- --core-only/);
+    expect(helpText()).toMatch(/remember.*SessionStart.*quiet commit.*Stop.*packed upgrade/is);
+  });
+
   it('says print mode is unsupported and names the issue', () => {
     const text = helpText();
     expect(text).toMatch(/claude -p/);
@@ -252,6 +270,39 @@ describe('--help', () => {
     expect(helpText()).toMatch(
       /TMPDIR=\/private\/tmp npm run qa:live-journey -- --host codex --codex-home <isolated-home>/,
     );
+  });
+});
+
+describe('packed upgrade receipt', () => {
+  const stdout = [
+    'candidate: version=4.10.0 tarball=pcircle-memesh-4.10.0.tgz sha256=' + 'a'.repeat(64),
+    'upgrade: from=4.9.4 version=4.10.0 package=/tmp/pkg data=/tmp/data',
+    'failure-path: from=4.9.4 the auto-update install failure was reported without SUCCESS; the candidate CLI and pre-existing data remain readable',
+    '✅ Packaged upgrade smoke passed — 1 upgrade path(s) proved: 4.9.4 -> 4.10.0',
+  ].join('\n');
+
+  it('requires success, failure, effect readback, digest, and empty cleanup root', () => {
+    expect(buildPackedUpgradeReceipt({ status: 0, stdout, stderr: '', leftovers: [] })).toMatchObject({
+      id: 'packed-upgrade',
+      status: 'PASS',
+      boundary: 'packed-consumer',
+      success: { observed: true },
+      failure: { observed: true },
+      effect_readback: { observed: true },
+      cleanup: { status: 'PASS', removed: true },
+      artifact_sha256: 'a'.repeat(64),
+    });
+  });
+
+  it('fails closed on a green exit with incomplete or leaked evidence', () => {
+    expect(() => buildPackedUpgradeReceipt({ status: 0, stdout: 'smoke passed', stderr: '', leftovers: [] }))
+      .toThrow(/incomplete/);
+    expect(() => buildPackedUpgradeReceipt({ status: 0, stdout, stderr: '', leftovers: ['leaked'] }))
+      .toThrow(/cleanup/);
+    expect(() => buildPackedUpgradeReceipt({ status: 0, stdout, stderr: '', leftovers: undefined }))
+      .toThrow(/cleanup/);
+    expect(() => buildPackedUpgradeReceipt({ status: 1, stdout, stderr: 'boom', leftovers: [] }))
+      .toThrow(/exit 1/);
   });
 });
 
@@ -326,8 +377,15 @@ describe('Claude trusted intake arming', () => {
 });
 
 describe('live-journey report contract', () => {
-  it('uses v3 and requires distinct model-visible and stopped-session steps for both real hosts', () => {
-    expect(LIVE_JOURNEY_SCHEMA_VERSION).toBe('memesh-live-journey/v3');
+  it('uses v4, requires the core product journeys, and keeps distinct real-host delivery steps', () => {
+    expect(LIVE_JOURNEY_SCHEMA_VERSION).toBe('memesh-live-journey/v4');
+    expect(CORE_JOURNEY_IDS).toEqual([
+      'memory-round-trip',
+      'session-start-briefing',
+      'quiet-commit-capture',
+      'stop-session-insight',
+      'packed-upgrade',
+    ]);
     for (const host of ['codex', 'claude'] as const) {
       expect(REQUIRED_LIVE_JOURNEY_STEPS[host].some(name => name.includes('model-visible'))).toBe(true);
       expect(REQUIRED_LIVE_JOURNEY_STEPS[host]).toContain(
@@ -472,6 +530,13 @@ describe('assertSocketPathFits', () => {
 });
 
 describe('isDistStale', () => {
+  it('compares only generated build artefacts, not directly executed hook or QA sources', () => {
+    expect(REQUIRED_BUILD_ARTIFACTS.length).toBeGreaterThan(0);
+    expect(REQUIRED_BUILD_ARTIFACTS.every((file) => file.startsWith('dist/'))).toBe(true);
+    expect(REQUIRED_BUILD_ARTIFACTS).not.toContain('scripts/hooks/post-commit.js');
+    expect(REQUIRED_BUILD_ARTIFACTS).not.toContain('scripts/qa/core-live-journeys.mjs');
+  });
+
   it('is stale when any dist artefact predates the newest source file', () => {
     expect(isDistStale({ newestSrcMs: 2_000, oldestDistMs: 1_000 })).toBe(true);
   });
@@ -1144,6 +1209,25 @@ describe('shutdown decision', () => {
     expect(shouldRemoveWorkingDirectories({ keep: false, keptForSafety: false })).toBe(true);
     expect(shouldRemoveWorkingDirectories({ keep: false, keptForSafety: true })).toBe(false);
     expect(shouldRemoveWorkingDirectories({ keep: true, keptForSafety: false })).toBe(false);
+  });
+
+  it('never emits release-eligible cleanup evidence for retained or failed outer cleanup', () => {
+    expect(workingDirectoryCleanupReceipt({ keep: true, keptForSafety: false, attempted: false }))
+      .toMatchObject({ status: 'FAIL', removed: false });
+    expect(workingDirectoryCleanupReceipt({ keep: false, keptForSafety: true, attempted: false }))
+      .toMatchObject({ status: 'FAIL', removed: false });
+    expect(workingDirectoryCleanupReceipt({
+      keep: false,
+      keptForSafety: false,
+      attempted: true,
+      leftovers: ['/tmp/leftover'],
+      errors: ['permission denied'],
+    })).toMatchObject({ status: 'FAIL', removed: false, leftovers: ['/tmp/leftover'] });
+    expect(workingDirectoryCleanupReceipt({
+      keep: false,
+      keptForSafety: false,
+      attempted: true,
+    })).toEqual({ status: 'PASS', removed: true, leftovers: 0 });
   });
 });
 

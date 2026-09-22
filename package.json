@@ -1,6 +1,6 @@
 {
   "name": "@pcircle/memesh",
-  "version": "4.10.0",
+  "version": "4.10.2",
   "description": "MeMesh — agentic memory for coding agents. Captured from the agent's real work via hooks, recalled when it acts. One SQLite file, zero cloud required.",
   "main": "dist/index.js",
   "type": "module",
@@ -58,8 +58,8 @@
     "verify:artifact": "npm run verify:release && npm run test:isolated && npm run test:packaged && npm run test:packaged:upgrade",
     "prepublishOnly": "npm run build && npm run verify:artifact",
     "typecheck": "tsc -p tsconfig.check.json && tsc -p tsconfig.check-dashboard.json",
-    "lint": "eslint src/ scripts/ tests/ dashboard/src/ --max-warnings 0",
-    "lint:fix": "eslint src/ scripts/ tests/ dashboard/src/ --fix",
+    "lint": "node scripts/lint-tracked.mjs --max-warnings 0",
+    "lint:fix": "node scripts/lint-tracked.mjs --fix",
     "start": "node dist/mcp/server.js",
     "bench:longmemeval": "node benchmarks/longmemeval/run.mjs --mode A --dataset /tmp/longmemeval_s.json",
     "bench:token:validate": "node benchmarks/token/validate.mjs",
@@ -68,7 +68,10 @@
     "qa:ui-review": "node scripts/qa/ui-review.mjs",
     "qa:post-release": "node scripts/qa/post-release.mjs",
     "test:isolated": "node scripts/run-tests-isolated.mjs",
-    "test:coverage": "node scripts/run-tests-isolated.mjs --coverage"
+    "test:coverage": "node scripts/run-tests-isolated.mjs --coverage",
+    "verify": "node scripts/verify.mjs",
+    "verify:journeys": "node scripts/verify.mjs --journeys",
+    "verify:receipt": "node scripts/verify-receipt.mjs"
   },
   "author": "PCIRCLE-AI",
   "license": "MIT",

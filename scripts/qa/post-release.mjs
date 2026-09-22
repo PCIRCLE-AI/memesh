@@ -12,7 +12,8 @@
  * So this one runs AFTER the release, against the published version, and asks
  * the questions those incidents answer badly:
  *
- *   registry  — is the version actually on the registry, and is it `latest`?
+ *   registry  — is the version published at the selected tag (default latest,
+ *               or next for a trial with a separate stable version)?
  *   consumer  — does a fresh install FROM THE REGISTRY run that version?
  *   artifact  — does the released artifact's own doctor find its tree intact?
  *   machine   — is that version what this machine has installed?
@@ -28,10 +29,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { fileURLToPath } from 'node:url';
 import { binTargets, hookCommands } from '../lib/executable-targets.mjs';
 import { npmSync } from '../lib/npm-bin.mjs';
 import { fetchPackument } from '../lib/upgrade-matrix.mjs';
+import { isMain } from '../lib/verify-core.mjs';
 import { redactSecrets } from '../../dist/core/paths.js';
 
 const packageName = '@pcircle/memesh';
@@ -77,7 +78,10 @@ export const REQUIRED_DOCTOR_CHECKS = [
  * @param {string} version
  * @returns {{ok: boolean, detail: string, fix?: string}}
  */
-export function evaluateRegistry(packument, version) {
+export function evaluateRegistry(packument, version, distTag = 'latest') {
+  if (distTag !== 'latest' && distTag !== 'next') {
+    return { ok: false, detail: `Unsupported dist-tag: ${distTag}. Use latest or next.` };
+  }
   const published = Object.keys(packument?.versions ?? {});
   if (!published.includes(version)) {
     return {
@@ -86,15 +90,21 @@ export function evaluateRegistry(packument, version) {
       fix: 'The tag and the GitHub Release exist without a publish — this is the v4.7.0 shape. Check the publish-npm workflow run for the release.',
     };
   }
-  const latest = packument?.['dist-tags']?.latest;
-  if (latest !== version) {
+  const taggedVersion = packument?.['dist-tags']?.[distTag];
+  if (taggedVersion !== version) {
     return {
       ok: false,
-      detail: `${packageName}@${version} is published but the latest dist-tag is ${latest ?? 'missing'}, so a plain \`npm install\` does not get it`,
-      fix: `Move the tag deliberately: \`npm dist-tag add ${packageName}@${version} latest\`.`,
+      detail: `${packageName}@${version} is published but the ${distTag} dist-tag is ${taggedVersion ?? 'missing'}, so \`npm install ${packageName}@${distTag}\` does not get it`,
+      fix: `Move the tag deliberately: \`npm dist-tag add ${packageName}@${version} ${distTag}\`.`,
     };
   }
-  return { ok: true, detail: `${packageName}@${version} is published and is the latest dist-tag` };
+  if (distTag === 'next' && packument?.['dist-tags']?.latest === version) {
+    return { ok: false, detail: `${packageName}@${version} is already latest; a next-only trial cannot be claimed.` };
+  }
+  if (distTag === 'next' && !packument?.['dist-tags']?.latest) {
+    return { ok: false, detail: 'The latest dist-tag is missing; restore the stable channel before continuing the trial.' };
+  }
+  return { ok: true, detail: `${packageName}@${version} is published and is the ${distTag} dist-tag` };
 }
 
 /**
@@ -342,6 +352,17 @@ function freshConsumerInstall(version, root, registry) {
 async function main() {
   const args = process.argv.slice(2);
   const flagIndex = args.indexOf('--version');
+  const distTagIndex = args.indexOf('--dist-tag');
+  const distTag = distTagIndex < 0 ? 'latest' : args[distTagIndex + 1];
+  if (distTag !== 'latest' && distTag !== 'next') {
+    console.error('--dist-tag must be latest or next');
+    process.exitCode = 1;
+    return;
+  }
+  // --skip-machine: the caller is not an owner machine (a CI runner filing a
+  // release receipt), so the installed-surfaces question has no subject
+  // there. It is reported as NOT RUN below, never as a pass.
+  const skipMachine = args.includes('--skip-machine');
   const repoRoot = process.cwd();
   const version = flagIndex >= 0
     ? args[flagIndex + 1]
@@ -353,10 +374,10 @@ async function main() {
     const registry = String(npmSync(['config', 'get', 'registry'], {
       cwd: repoRoot, encoding: 'utf8', timeout: processTimeoutMs,
     })).trim();
-    console.log(`post-release check: version=${version} registry=${registry}\n`);
+    console.log(`post-release check: version=${version} dist-tag=${distTag} registry=${registry}\n`);
 
     const packument = await fetchPackument(packageName, registry);
-    results.push({ id: 'registry', ...evaluateRegistry(packument, version) });
+    results.push({ id: 'registry', ...evaluateRegistry(packument, version, distTag) });
 
     // Everything below installs the version under test. There is nothing to
     // install when the registry does not have it, and running the rest would
@@ -376,7 +397,7 @@ async function main() {
         });
       }
 
-      results.push({ id: 'machine-surfaces', ...evaluateSurfaces(shellSurfaces(version), version) });
+      if (!skipMachine) results.push({ id: 'machine-surfaces', ...evaluateSurfaces(shellSurfaces(version), version) });
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -387,8 +408,12 @@ async function main() {
   for (const line of verdict.lines) console.log(line);
   const skipped = ['registry', 'consumer', 'artifact-doctor', 'machine-surfaces', 'capture']
     .filter((id) => !results.some((result) => result.id === id));
-  if (skipped.length > 0) {
-    console.log(`  NOT RUN — nothing was installed to check them: ${skipped.join(', ')}`);
+  if (skipMachine) {
+    console.log('  NOT RUN — machine-surfaces: --skip-machine; this is not an owner machine. Run `npm run qa:post-release` on each machine that has memesh installed.');
+  }
+  const notInstalled = skipped.filter((id) => !(skipMachine && id === 'machine-surfaces'));
+  if (notInstalled.length > 0) {
+    console.log(`  NOT RUN — nothing was installed to check them: ${notInstalled.join(', ')}`);
   }
   console.log('\nnot checked here:');
   console.log("  - Each host's plugin cache beyond what the doctor above reports — `memesh doctor` run on that host is the owner-side check.");
@@ -568,4 +593,4 @@ export function captureReceipt(install, spawnHook = spawnSync) {
   return { id: 'capture', ok: true, detail: `commit-${hash} and ${sessionName.name} captured on the shipped code` };
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) await main();
+if (isMain(import.meta.url)) await main();

@@ -1,7 +1,7 @@
 # MeMesh Plugin -- API Reference
 
 **Protocol**: Model Context Protocol (MCP) over stdio
-**Version**: 4.10.0
+**Version**: 4.10.2
 **Compatibility**: Works with Claude Code plugins, Claude Managed Agents (via MCP connector), and any MCP-compatible client.
 
 **Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
@@ -51,9 +51,9 @@ Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Not
 - `name` (when absent) = slug of the title + `-` + the first 8 hex characters of the SHA-256 of the cleaned text, so the same text twice is one memory (the second call adds nothing); two different texts landing on the same name is possible but very unlikely, not impossible — the suffix is only 32 bits; a title with no ASCII letters or digits slugs to `note`;
 - `type` defaults to `"note"`.
 
-The note is cleaned before anything is derived from it: control characters (other than newline and tab) are removed and credential-shaped substrings are replaced with `***REDACTED***`. It may be at most 20,000 characters, and the paragraphs it splits into may not derive more than 100 observations — a paragraph made only of list items yields one observation per item, so a single paragraph can push the count over the limit on its own; beyond that the call is rejected. `note` cannot be combined with `title` or `observations`. A note sent to a `name` that already exists appends its observations and leaves the existing title alone.
+The note is cleaned before anything is derived from it: control characters (other than newline and tab) are removed and credential-shaped substrings are replaced with `***REDACTED***`. It may be at most 20,000 characters, and the paragraphs it splits into may not derive more than 100 observations — a paragraph made only of list items yields one observation per item, so a single paragraph can push the count over the limit on its own; beyond that the call is rejected. One derived observation longer than 10,000 characters is **silently truncated** to that length with a trailing `…` — unlike a structured `observations` entry of the same length, which is rejected. Nothing in the response says it happened, so a caller sending one very long paragraph should split it rather than rely on the cap. `note` cannot be combined with `title` or `observations`. A note sent to a `name` that already exists appends its observations and leaves the existing title alone.
 
-**Replace**: `replace: true` with a `name` rewrites that memory: its observations are replaced by the ones given (or derived from `note`), its tags too when `tags` is given (omitted tags are kept), its title when `title` or `note` is given. The previous title, observations and tags are appended to `metadata.replaced_history` as `{ replaced_at, title, observations, tags }`, so the wrong line leaves recall but is not lost. The history keeps the newest 20 versions and at most 64 KB: older versions are dropped first, and a single version larger than that keeps the observations that fit and is marked `truncated: true`. Relations are untouched by a replace. `recall` results do not carry the history — they carry `metadata.replaced_history_count` — so read the versions from `export` or `GET /v1/entities/:name`. The keyword index is rewritten in the same transaction. On a name that does not exist yet, `replace: true` simply creates the memory and reports `replaced: false`. `replace` with `note` requires an explicit `name`.
+**Replace**: `replace: true` with a `name` rewrites that memory: its observations are replaced by the ones given (or derived from `note`), its tags too when `tags` is given (omitted tags are kept), its title when `title` or `note` is given. The previous title, observations and tags are appended to `metadata.replaced_history` as `{ replaced_at, title, observations, tags }`, so the wrong line leaves recall but is not lost. The history keeps the newest 20 versions and at most 64 KB: older versions are dropped first, and a single version larger than that keeps the observations that fit and is marked `truncated: true`. Relations are untouched by a replace. `recall` results do not carry the history — they carry `metadata.replaced_history_count` — so read the versions from `export` or `GET /v1/entities/:name`. The keyword index is rewritten in the same transaction. On a name that does not exist yet there is no stored type to inherit, so `replace: true` needs an explicit `type`; with one it creates the memory and reports `replaced: false`, without one it is rejected. A memory archived with `forget` refuses `replace` outright: remember it again without `replace` to bring it back, then replace it. `replace` with `note` requires an explicit `name`.
 
 **Input Schema**:
 
@@ -273,6 +273,102 @@ Archive an entity (soft-delete) or remove a specific observation.
 - **Entity archive** (no observation): Archives the entire entity. Hidden from recall by default.
 - **Observation removal** (with observation): Removes one specific observation. Entity stays active.
 
+For Stop-generated `session-<id>-files`, `session-<id>-fixes`, and
+`session-<id>-summary` snapshots, subsequent Stops exclude that exact observation
+text. Other newly derived observations can still update the snapshot. Explicitly
+adding the removed text with `remember` clears its exclusion and restores it.
+
+Among the CLI, MCP and HTTP transport entrypoints, only CLI JSON import
+(`memesh import <file>`) retains bundle metadata at all. The MCP `import`
+tool and `POST /v1/import` both validate the bundle against
+`ExportResultSchema`, which does not declare a `metadata` field on each
+entity — Zod strips unknown keys by default, so no bundle metadata
+(exclusions, `guard`, `demo`, `task_state`, or anything else) ever reaches
+`buildImportedMetadata` through those two transports; the CLI reads the raw
+file with `JSON.parse` and passes it straight through. (The underlying
+`importMemories()` function itself has no such restriction — called directly,
+not through a transport, as `tests/core/export-import.test.ts` does, it
+accepts whatever metadata it is given, same as the CLI path.)
+
+Within a path that reaches it, a bundle's metadata is filtered by an
+ALLOW-list (`IMPORTABLE_METADATA_KEYS` in `serializer.ts`): a key on it purely
+describes the memory — display or provenance — and nothing IN
+`IMPORTABLE_METADATA_KEYS` is ever read back to change what MeMesh does.
+Everything that changes what MeMesh DOES
+(`AUTHORITY_METADATA_KEYS`: `guard`, `demo`, `task_state`, `pin`,
+`signal_score`, `forgotten_observation_hashes`, `replaced_history`,
+`evidence_for`, `consolidation_depth`, `compacted_into`, `proposal_id`,
+`session_id`, and `trust`/`provenance`, which are separately rebuilt) is
+refused by default, whether the entity already exists or the import is
+creating it — with four narrow, explicit, VALIDATED exceptions,
+each accepted on a FRESH entity only. Unlike every other name on the
+allow-list, these four DO change behaviour once accepted (compaction
+eligibility, ranking, what `forget` excludes stays removed, or what
+`--replace` appends future history onto) — which is exactly why each one
+gets its own validator below instead of the blanket admission an allow-list
+entry gets:
+
+- `forgotten_observation_hashes` — the exclusion list behind observation-level
+  `forget` — is never set, changed, or cleared by a bundle on an entity you
+  already have (your own local list always wins, including when the two
+  conflict). For an entity the import CREATES, the bundle's own list is
+  accepted only after validation: every element must be a real SHA-256 hex
+  digest (`/^[a-f0-9]{64}$/`), the list is de-duplicated, and it must not
+  exceed 1000 entries. One invalid element, or too many, drops the whole list
+  — never a partially-filtered one — and the entity is created with no
+  exclusions instead. This is what makes restoring your own backup onto a new
+  machine with `memesh import`, then later append-importing an older backup
+  the same way, not put a removed observation back: the newer restore's
+  exclusion list has to actually land on the entity for the append path's
+  forget-filter to have anything to check against.
+- `pin` — protects a memory from the dreamer's auto-compaction. A bundle can
+  never unpin an entity you already have (a bundle sending `pin: false`, or
+  omitting it, does nothing). A FRESH entity accepts the pin only when the
+  bundle's value is the literal boolean `true` — any other value is refused.
+- `signal_score` — the ranking/default-hide weight. An entity you already
+  have keeps its own score exactly; the bundle's value never reaches the
+  merge, so it can neither raise nor lower it. For an entity the import
+  CREATES, the bundle's score is accepted only when it is a finite number
+  with `0 <= x <= 1` — the exact range `computeSignalScore` itself always
+  produces. No partial trust: a string, `NaN`, `Infinity`, a negative number,
+  anything above `1`, `null`, or an object is refused whole, and the entity
+  gets its own content-derived score instead.
+  This preserves a genuine backup's own scores for entities it recreates from
+  nothing, without letting an untrusted bundle inflate or deflate a memory's
+  ranking with an out-of-range value.
+- `replaced_history` — the versions `--replace` kept, appended to by every
+  LATER local `--replace` on the same memory (`rememberInTransaction`, a
+  read-modify-write, not a display-only field — a forged history in a
+  bundle could otherwise survive an import and then have a genuine later
+  replace silently appended onto it). An entity you already have keeps
+  its own history (or its absence) exactly; the bundle's value never reaches
+  the merge, for `append` and `overwrite` alike. For an entity the import
+  CREATES, the bundle's value is accepted only when it is an array of AT
+  MOST 50 ENTRIES, each one shaped exactly like a real entry (`replaced_at`:
+  a string; `title`: a string or `null`; `observations`: an array of
+  strings; `tags`: an array of strings; optional `truncated`: a boolean,
+  marking a version whose observations were pared down to fit the writer's
+  own 64 KiB cap; no other key), AND the WHOLE array's own serialized JSON
+  is AT MOST 256 KiB — a budget over the entire array together, not per
+  entry (two 140 KiB entries are refused together even though each alone is
+  under 256 KiB). One violation anywhere — shape, count, or the aggregate
+  byte budget — drops the WHOLE list, never a partially-filtered one, and
+  the entity is created with no history instead.
+
+A restored backup therefore does NOT carry a memory's task state (goal, next
+step, blocker), or its `guard`/`demo`/`consolidation_depth`/`compacted_into`/
+`proposal_id`/`session_id`/`evidence_for` markers on ANY entity — those are
+always refused, recomputed, or left absent on the machine doing the
+restoring, never taken from the file, with no exception for either an
+existing or a freshly-created entity. All FOUR fresh-only exceptions —
+`forgotten_observation_hashes`, `pin`, `signal_score`, and
+`replaced_history` — have a live effect once accepted (observation
+suppression, compaction protection, ranking, and future `--replace`
+behaviour, respectively); none of the four is "merely descriptive" the way
+an ordinary `IMPORTABLE_METADATA_KEYS` member is. What makes them safe is
+not that they are inert, but that each is validated, and each restores
+ONLY onto an entity the import creates — never onto one you already have.
+
 ---
 
 ### consolidate — retired
@@ -330,8 +426,8 @@ Export memories to a portable JSON bundle. Use for personal backup, migrating be
 | field | on export | on import |
 |---|---|---|
 | `created_at` | always | restored for entities the import CREATES, and only when `parseSqliteUtcMs` can read the value. An entity you already had keeps its own creation time. |
-| `status` | present only for archived entities | the entity is archived after it is created. Archived memories are part of a backup: without them, `forget` then export then restore brought the memory back. |
-| `metadata` | present when the entity has any | merged, minus `guard`, `trust` and `provenance`. The last two are rebuilt by the import. `guard` is refused: it controls what memesh WARNS about on your tool calls, and a file you were sent must not be able to install one. |
+| `status` | present only for archived entities | the entity is archived after it is created — for an entity the import CREATES. An existing entity keeps its own status: an archived one stays archived under `append` and `overwrite` unless `restore_archived` is set (see **Archived memories** under `import`). Archived memories are part of a backup: without them, `forget` then export then restore brought the memory back. |
+| `metadata` | present when the entity has any | **among the CLI, MCP and HTTP entrypoints, only CLI JSON import retains bundle metadata at all** — `ExportResultSchema` does not declare `metadata`, so the MCP `import` tool and `POST /v1/import` have Zod strip it before it exists to merge (the bare `importMemories()` function has no such restriction). Filtered by an ALLOW-list: only a purely descriptive key (display/provenance) is ever taken from the bundle. `trust` and `provenance` are always rebuilt by the import, never read from the bundle. Every behaviour-changing key is refused by default — `guard` (installs a Bash-command warning), `demo` (`demo --reset` HARD-DELETES every entity carrying it, #361), `task_state` (injected verbatim into SessionStart/`memesh briefing` context — a bundle must not be able to put text in front of the agent), `evidence_for` (a `dream accept` idempotency gate — refused and rebuilt by the real `dream accept` path instead), `consolidation_depth`, `compacted_into`, `proposal_id`, `session_id` — for an entity you already have AND for one the import creates, no exception. Four keys get a narrow FRESH-entity-only, VALIDATED exception: `forgotten_observation_hashes` (64-hex SHA-256, de-duplicated, capped at 1000, or the whole list is dropped), `pin` (only the literal boolean `true`; anything else is refused), `signal_score` (only a finite number with `0 <= x <= 1` — `computeSignalScore`'s own documented range; anything else is dropped and the entity gets its own content-derived score), and `replaced_history` (only an array of at most 50 entries shaped exactly like `--replace`'s own history entries — `replaced_at`/`title`/`observations`/`tags`, optional `truncated` (a boolean), no other key, the WHOLE array's own serialized JSON at most 256 KiB — a budget over the entire array together, not per entry — or the whole list is dropped). An EXISTING entity's own value for any of these four always wins regardless of what the bundle says, same as every other authority key. |
 | `relations` | always | created in a SECOND pass, after every entity in the bundle exists. A relation that still cannot be created points outside the bundle, and is named in `skipped_relations` rather than dropped — reported, but not an error, because every narrowed bundle has them. |
 
 Bundles written by earlier versions (`3.0.0`) import unchanged — every added field is optional.
@@ -363,6 +459,7 @@ Imported entities are marked with import provenance and treated as untrusted for
 | `data` | object | Yes | The JSON bundle produced by `export` |
 | `merge_strategy` | string | Yes | Merge strategy for conflicts: `"skip"`, `"overwrite"`, or `"append"` |
 | `namespace` | string | No | Force imported entities into this namespace, ignoring the namespace stored in the bundle. With `overwrite` or `append` it also **moves** entities that already exist, in bulk, out of the scope they are in — `metadata.previous_namespace` records where each came from. With `skip` it does not: see the table below. Must be `personal`, `team` or `global`; anything else is refused outright. |
+| `restore_archived` | boolean | No | Default `false`. With `overwrite` or `append`, a local entity that is archived (forgotten) and named by the bundle is left untouched and counted in `kept_archived`. `true` brings it back to active and merges or overwrites it like any other, and **requires** `merge_strategy` `append` or `overwrite`: with `skip` (which touches no existing entity) the call is refused with an error and nothing is imported. Must be a boolean; a string such as `"yes"` is refused. |
 
 **Merge Strategies**:
 
@@ -376,6 +473,24 @@ Imported entities are marked with import provenance and treated as untrusted for
 nothing that is already there, and a namespace move is a change — it takes the
 memory out of every scoped recall that used to return it. An import asking to
 skip existing entities does not get to relocate them as a side effect.
+
+**Archived memories.** `forget` archives a memory instead of deleting it, and
+the dreamer archives the sources it digests. An import does not undo either: an
+existing entity that is archived stays archived and completely untouched when
+the bundle names it — no observations added or replaced, no tag, title,
+namespace or metadata change, nothing reactivated — under `append` and
+`overwrite` alike, and the response counts it in `kept_archived`. Pass
+`restore_archived: true` (CLI: `--restore-archived`) to bring such memories back
+and merge or overwrite them as the strategy says; it requires `append` or
+`overwrite`. `skip` already leaves every existing entity alone, so an archived
+one is counted in `skipped` there, and `restore_archived` together with `skip`
+is refused rather than silently ignored. This is specific to import: `remember`
+still reactivates an archived memory that is stated again.
+
+A bundle entry that is left untouched this way contributes none of its own
+relations, as with `skip`; a relation from another entry in the bundle *to* it
+is still created. A bundle entry's own `status: "archived"` applies only to
+entities the import creates, as before.
 
 A bundle's `title` is applied to the entities the import creates, and replaces
 the title of one it updates (`overwrite`, `append`). A bundle entry with no
@@ -391,6 +506,7 @@ bundle.
   "overwritten": 0,
   "skipped": 2,
   "appended": 0,
+  "kept_archived": 0,
   "errors": [],
   "skipped_relations": ["older-note -supersedes-> a-memory-not-in-this-bundle"]
 }
@@ -399,6 +515,10 @@ bundle.
 `overwritten` is a subset of `imported`: how many of those entities already
 existed and had their data replaced (`merge_strategy: "overwrite"` hitting a
 name already in the graph) rather than being created from nothing.
+
+`kept_archived` counts the archived local entities the bundle named and the
+import left as they were (see **Archived memories** above). It is not part of
+`imported`, `skipped` or `appended`.
 
 `skipped_relations` names each link the restore could not rebuild, as
 `from -type-> to`. It is reported but is **not** an error and does not fail the
@@ -421,6 +541,9 @@ and only `errors` makes the CLI exit non-zero.
 
 // Move existing entities into team as well as filing new ones there
 {"data": {...}, "merge_strategy": "append", "namespace": "team"}
+
+// Also bring back local memories you archived that the bundle names
+{"data": {...}, "merge_strategy": "append", "restore_archived": true}
 ```
 
 ---
@@ -474,7 +597,7 @@ Record a structured lesson from a mistake or discovery. Creates a `lesson_learne
 
 ### task_state
 
-Read or update where the work stands on a project: the goal, the next step, what is blocked, and what was just finished. There is exactly one state per project, and it is injected at the top of the next session's context.
+Read or update where the work stands on a project: the goal, the next step, what is blocked, and what was just finished. There is exactly one state per project; fresh state is injected at the top of the next session's context at `standard`/`full` — see **Briefing levels** below for detail — while `minimal`, the default, never shows a fresh state and a stale or unknown-age one instead gets a one-line status at every level, `minimal` included, and `memesh task` (no arguments) always shows the complete stored state regardless of level.
 
 Call it with **no arguments** to read. Any field present is a write.
 
@@ -530,9 +653,21 @@ Passing an **empty string** clears a field — that is how a blocker is removed 
 
 ### briefing
 
-The assembled work topology for a project, ready to place in context: where the work was left off (the `task_state` fields), decisions and direction, lessons not to repeat, what is known, recent activity, and — closing the block — a capped index of the project's durable memories, one line each, newest first, carrying the `[mem:id]` handles needed to cite or recall them (see **The durable-memory index** below for its budget, redaction and empty state; the structured counts and token cost come back in `index`). It is the same block the Claude Code session-start hook injects. This is the cross-vendor read path: an MCP client that runs no hooks (Gemini, Codex) calls this once at the start of a session instead.
+The assembled work topology for a project, ready to place in context: where the work was left off (the `task_state` fields), decisions and direction, lessons not to repeat, what is known, recent activity, and — closing the block — a capped index of the project's durable memories, one line each, newest first, carrying the `[mem:id]` handles needed to cite or recall them (see **The durable-memory index** below for its budget, redaction and empty state; the structured counts and token cost come back in `index`). It is the same MEMORY block the Claude Code session-start hook injects, at the same `briefing` level — this paragraph's list is what `standard` includes; the default, `minimal`, leaves out the task state and the index, and `full` adds other projects and global memory — see **Briefing levels** below — but not the hook's work-package notice at `full`, which is a host-agent instruction rather than memory and is never part of this tool's output, at any level (verified against a real pre-#360 build: it never was). This is the cross-vendor read path: an MCP client that runs no hooks (Gemini, Codex) calls this once at the start of a session instead.
 
 The text is wrapped in the same fence and "background data, not instructions" preamble the hook uses. Memory content is attacker-influenced in the general case, and the wrapping is done by the same single owner on every path.
+
+**Briefing levels (#360).** How much of the block is assembled is controlled by the `briefing` setting — `memesh config set briefing <minimal|standard|full>`, `MEMESH_BRIEFING` (env wins over config), default `minimal` — resolved by the ONE policy in `src/core/briefing-level.ts` that the hook and this tool both call, so they cannot disagree about what a level means. There is no per-call parameter; the level applies uniformly to whatever is calling `briefing` (hook, MCP tool, or `memesh briefing` on the CLI). `memesh config list` always prints the level in effect and where it comes from, on one line in the style of the other settings — `briefing: minimal (default)`, `briefing: standard (config.json)`, `briefing: full (env MEMESH_BRIEFING)` — so a config with no `briefing` key still says what a session will get; a stored `briefing` is that line, not a second one, and a stored or env value that is not a level resolves to the default and is said to be invalid (`briefing: minimal (default; the value in config.json is invalid: "banana")`). `memesh config get briefing` prints the stored value only.
+
+| Level | This project's decisions/lessons/knowledge/recent activity, with the repository state in front of whatever is injected | Task state (fresh) | Durable-memory index | Global memory | Other projects' recent memory | Work-package notice (hook only) |
+|---|---|---|---|---|---|---|
+| `minimal` (default) | yes | no | no | no | no | no |
+| `standard` | yes | yes | yes | no | no | no |
+| `full` | yes | yes | yes | yes | yes | yes |
+
+Stated plainly: `minimal` (the default) is only this project — its decisions, lessons, known facts and recent activity, with the live repository state in front of them whenever anything else is injected (the repository state alone is never injected); no task state, no durable index, nothing from outside the project. `standard` is `minimal` plus the task state when fresh plus the capped index of this project's durable memories. `full` is `standard` plus memories from your other projects plus global memory — this tool's `full` output is byte-identical to every release before #360 for section selection (which pools are included) and for the work-package notice's hook-only status — EXCEPT when the task state is stale or of unknown age, where the one-line replacement described just below applies at `full` too. The work-package notice in the table above is hook-only: the SessionStart hook appends it after this same memory block at `full`, but this tool and the CLI never include it, at any level — it is a host-agent instruction, not memory.
+
+A task state whose last change is older than 72 hours (`STALE_TASK_STATE_HOURS` in `src/core/task-state.ts`) is never shown as the fresh multi-line block, at ANY level including `full` — it is replaced by one line naming its age and pointing at `memesh task` to see or update it. A task state whose age cannot be established at all — a missing or unparseable `updated_at`, or one more than `CLOCK_SKEW_ALLOWANCE_MINUTES` (5) minutes in the future — fails CLOSED the same way, with a distinct one-line flag ("age could not be established") rather than being read as fresh; a future timestamp is deliberately not treated as fresh forever. An unknown env or config value does not silently use the default: it is traced to stderr and, for the SessionStart hook, recorded as an outcome in `hook-outcomes.jsonl` with the offending source (`env` or `config`) and value. Only `minimal` can be silent on an initialised, memory-free project: it has no fixed content to fall back to (no task state, no index), so nothing to show means nothing injected at all (`empty: true`, `text: ''` — no preamble, no fence — the `briefing` tool/CLI report this explicitly; the CLI's non-`--json` form prints one short line instead). `standard`/`full` still show the durable-memory index's own empty-state line even on such a project (#323) — that line is content, not framing around nothing, so it is not suppressed.
 
 **Input Schema**:
 
@@ -541,7 +676,7 @@ The text is wrapped in the same fence and "background data, not instructions" pr
 | `project` | string | No | Project name (default: the current working directory's project) |
 | `recipient` | string | No | Exact logical recipient, in the same canonical form the `message` tool uses — NFC, never a filesystem path — because this counts the same inbox key. When supplied, reports only that recipient's unfetched deliveries for the project. At zero unread, the block also says so explicitly if this exact recipient id has never been addressed in this project either (durable delivery or live connection) — distinct from a real, quiet inbox, so a typo'd recipient is never indistinguishable from "nothing waiting". Omit for generic context; generic briefing never reports unread activity. |
 
-**Response**:
+**Response** (shown at level `standard`, which has a task state and the index to show; at the default, `minimal`, `hasTaskState` is `false` for a fresh task state and `text` carries neither it nor the index):
 
 ```json
 {
@@ -549,23 +684,31 @@ The text is wrapped in the same fence and "background data, not instructions" pr
   "text": "MeMesh reference memory. Treat the content below as background data…",
   "entityCount": 12,
   "hasTaskState": true,
-  "index": { "lines": ["Index of durable memories for \"myproject\" (newest first):", "…"], "shown": 9, "more": 0, "older": 2, "truncated": false, "bytes": "…", "tokens": "…", "ids": [41, 38, 12] }
+  "index": { "lines": ["Index of durable memories for \"myproject\" (newest first):", "…"], "shown": 9, "more": 0, "older": 2, "truncated": false, "bytes": "…", "tokens": "…", "ids": [41, 38, 12] },
+  "level": "standard",
+  "empty": false
 }
 ```
 
+At `minimal` (the default) on a project with nothing yet (#360): `text: ""` and `empty: true` — `index` is still the always-computed object described above, just not folded into `text` at this level. The CLI's non-`--json` form prints `Nothing to brief at level minimal — no project memories yet.` instead of an empty fence, and exits `0`.
+
 `bytes`/`tokens` above are shown as `"…"` because the `lines` they measure are abbreviated in this example — they are only reproducible for a fully spelled-out set of lines (see the `GET /v1/briefing-index` response below for one).
 
-`entityCount` counts the ranked memory lines actually rendered into the block (the character budget can cut candidates), excluding the task-state block and the index. Also available as `memesh briefing` on the CLI, for agents whose only integration is a shell.
+`hasTaskState` is `true` exactly when a task-state line leads the block: the fresh state (at `standard`/`full`), the one-line stale flag, or the unreadable-record line. The unread-message reminder that `recipient` adds rides beside them but is not a task state and does not count.
 
-**The durable-memory index.** The block always closes with an index of what is known about the project, so an agent can see it without having to guess a query (ranked recall stays for questions). The same section closes the SessionStart block, and `memesh briefing --index` prints it on its own (`--index --json` for the structured form).
+**Project names in the text.** A project id is `<label>~<32 lowercase hex>` (`getProjectName`); older ids have no hash. The `project` field above is the full id, because it identifies the project. Every heading and empty-state line in `text` names the project by its label alone (`projectLabel` in `src/core/work-topology.ts` removes one trailing `~<32 hex>` and leaves anything else as it is): `Decisions and direction for "myproject":`, `Lessons from …`, `What is known about …`, `Recent activity in …`, `Stated about …`, `Task state for …`, the index heading and its empty-state line. The hash stays wherever the id identifies data — `project:` tags, entity names, `--project`, and the unread-message line, which tells an agent which project to poll.
+
+`entityCount` counts the ranked memory lines actually rendered into the block (the character budget can cut candidates), excluding the task-state block and the index. `index` is always computed and returned regardless of level (a caller asking for it on its own, e.g. `--index`, still gets it); only its presence inside `text` is level-gated. `level` is the resolved level this result was assembled at. Also available as `memesh briefing` on the CLI, for agents whose only integration is a shell.
+
+**The durable-memory index.** At `standard`/`full` (#360; `minimal` excludes it — see the levels table above), the block closes with an index of what is known about the project, so an agent can see it without having to guess a query (ranked recall stays for questions). The same section closes the SessionStart block at those levels, and `memesh briefing --index` prints it on its own regardless of the configured level (`--index --json` for the structured form).
 
 - One line per durable memory — every type except the evidence layer (`EVIDENCE_LAYER_TYPES` in `src/core/work-topology.ts`: commits, session insights and summaries, keypoints, session identity, weekly summaries, checkpoints) and `task-state` — as `- [type] title — first observation [mem:id]`, newest activity first (the later of creation and the newest observation; ties by id).
 - Scope: rows tagged `project:<name>`, `status = active`, not in the `global` namespace — the same scope the ranked project pool reads, so never another project's rows. Imported or `trust: untrusted` rows are excluded by the auto-injection gate.
-- Each memory line's title and snippet pass `redactSecrets` then `redactUserPaths` before rendering (`indexLine` in `src/core/briefing-index.ts`). The heading and the empty-state line still interpolate the project name directly, unredacted (`indexHeading`, `indexEmptyLine`); the `N more` trailer no longer takes a project name at all — it prints a literal `"project:…"` placeholder (`moreLine`), so it carries nothing to redact.
+- Each memory line's title and snippet pass `redactSecrets` then `redactUserPaths` before rendering (`indexLine` in `src/core/briefing-index.ts`). The heading and the empty-state line still interpolate the project's label directly, unredacted (`indexHeading`, `indexEmptyLine`); the `N more` trailer no longer takes a project name at all — it prints a literal `"project:…"` placeholder (`moreLine`), so it carries nothing to redact.
 - Memories with no change for 180 days are counted in one `N older memories … — recall to see` line instead of listed.
-- **Budget contract (frozen; changing it is a CHANGELOG entry):** at most 40 memory lines and 3072 UTF-8 bytes for the whole section, with a `- N more — memesh recall --tag "project:…"` line when the caps cut. The command uses a literal `"project:…"` placeholder rather than the real project name — it is not interpolated, so pasting the line into a shell never quotes whatever the filesystem or a git remote happened to contain; the heading two lines above already prints the (quoted) project name. A `+` after a count means the 2000-row candidate window was full, so the count is a lower bound.
+- **Budget contract (frozen; changing it is a CHANGELOG entry):** at most 40 memory lines and 3072 UTF-8 bytes for the whole section, with a `- N more — memesh recall --tag "project:…"` line when the caps cut. The command uses a literal `"project:…"` placeholder rather than the real project name — it is not interpolated, so pasting the line into a shell never quotes whatever the filesystem or a git remote happened to contain; the heading two lines above already names the project (its quoted label). A `+` after a count means the 2000-row candidate window was full, so the count is a lower bound.
 - The last line reports the cost: `(index cost: N lines, B bytes ≈ T tokens; cap 40 lines / 3072 bytes)`, where `B` is the byte size of the WHOLE section, footer included, and `T = ceil(B / 4)`. Because the footer's own text feeds the number it prints, `B` is resolved as a fixed point (`closeWithFooter` in `src/core/briefing-index.ts`): render the section without the footer, add a footer for that size, and re-render until the footer text stops changing. `index.bytes` / `index.tokens` carry the same numbers.
-- A project with no durable memories gets `- No durable memories (decisions, lessons, patterns, references) for "<name>" yet.` rather than nothing — so `text` is never empty. Repository facts (branch, dirty files) prefix the block whenever it has task state or ranked memories — the gate is `lines.length > 0` (`src/core/briefing.ts`), and `assembleTopologyBlock` (`src/core/work-topology.ts`) pushes the task-state lines into `lines` unconditionally, so a project with task state but no ranked memory still gets the branch line. The index's own empty-state line never triggers it on its own.
+- A project with no durable memories gets `- No durable memories (decisions, lessons, patterns, references) for "<label>" yet.` rather than nothing, at `standard`/`full` where the index is included — so `text` is never empty AT THOSE LEVELS. `minimal` never includes the index at all (#360), so an initialised, memory-free project at `minimal` gets `text: ''` (`empty: true`) — the one case where `text` genuinely is empty; see `hasBriefingContent` in `src/core/work-topology.ts`, the single rule both the SessionStart hook and this assembler use to decide whether to emit the fence at all. Repository facts (branch, dirty files) prefix the block whenever it has task-state lines or ranked memories — the gate is `lines.length > 0` (`src/core/briefing.ts`), and `assembleTopologyBlock` (`src/core/work-topology.ts`) pushes whatever task-state lines the level renders into `lines` (at `minimal`, only a stale or unknown-age flag — a fresh task state renders nothing there), so a project with task state but no ranked memory still gets the branch line at `standard`/`full`, while at `minimal` a fresh task state alone leaves nothing to prefix. The index's own empty-state line never triggers it on its own.
 - SessionStart records the index's rendered ids with the injected set, so a `[mem:id]` citation of an index line is credited like a ranked one. If the hook cannot read the index it says so in the block and records an `error` outcome; it never shows the empty-state line for a failed read.
 
 **Examples**:
@@ -679,7 +822,7 @@ Status returns the proposal state, source IDs, review timestamps/reason, and `ac
 
 Discover live registrations or exchange durable exact-recipient messages between local hosts connected to the same MeMesh SQLite instance. One tool owns both surfaces so every transport uses the same validation and state semantics.
 
-**When to use it:** use `discover` when you know the project but not the right live recipient; use `send` to hand off work, ask for a result, or report a disposition. For `target_kind: "session"`, MeMesh sends the bounded full message through the exact active native host channel and returns only after `host_accept`. An oversized full envelope returns `native_message_too_large`; if the sender cannot reach the local router it returns `router_unreachable`; an absent, stopped, disconnected, or otherwise rejected exact session returns `recipient_unavailable`. Durable state remains available for scoped recovery in each case, but a failed exact-session native delivery is not automatically replayed when that session later registers. Principal targets retain durable store-and-forward behavior. A briefing surfaces `N messages waiting for "<recipient>" in project "<project>"` only when the caller supplies that exact recipient; generic briefing and SessionStart context have no recipient identity and remain quiet. At zero unread, a scoped briefing still says `... this recipient id has never been seen in this project` when that exact id has no delivery and no live connection recorded for that project — a typo in `--recipient` must not read as an empty, healthy inbox.
+**When to use it:** use `discover` when you know the project but not the right live recipient; use `send` to hand off work, ask for a result, or report a disposition. For `target_kind: "session"`, MeMesh sends the bounded full message through the exact active native host channel and returns only after `host_accept`. An oversized full envelope returns `native_message_too_large`; if the sender cannot reach the local router it returns `router_unreachable`; an absent, stopped, disconnected, or otherwise rejected exact session returns `recipient_unavailable`. Durable state remains available for scoped recovery in each case, but a failed exact-session native delivery is not automatically replayed when that session later registers. Principal targets retain durable store-and-forward behavior. A briefing surfaces `N messages waiting for "<recipient>" in project "<project>"` only when the caller supplies that exact recipient; generic briefing has no recipient identity and remains quiet, and so do the SessionStart and prompt hooks unless the session declares one with `MEMESH_RECIPIENT` (they then report the deliveries waiting for exactly that recipient). Only an `intake` receipt ends the reminder: fetching does not. At zero unread, a scoped briefing still says `... this recipient id has never been seen in this project` when that exact id has no delivery and no live connection recorded for that project — a typo in `--recipient` must not read as an empty, healthy inbox.
 
 The JSON-encoded durable `payload` is limited to 65,536 UTF-8 bytes (64 KiB). Native delivery has a separate 16,384-byte (16 KiB) limit for the complete envelope, including routing metadata and payload. Therefore, fitting the durable payload limit does not guarantee that native delivery can accept the message; that permanent size failure is reported as `native_message_too_large`, not as transient unavailability. Payloads are untrusted data and are never executed by MeMesh.
 
@@ -844,7 +987,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/demo/reset | Remove every demo entity; all-or-nothing transaction |
 | GET | /v1/projects | Distinct projects from `project:*` tags and name-prefix heuristics, with per-project counts |
 | GET | /v1/task-state | The owner-stated task state of one project (`memesh task`); requires the `project` query parameter |
-| GET | /v1/briefing-index | The durable-memory index of one project (the section `briefing` closes with); requires the `project` query parameter |
+| GET | /v1/briefing-index | The durable-memory index of one project (the section `briefing` closes with at `standard`/`full`); requires the `project` query parameter |
 All responses: `{ success: true, data: ... }` or `{ success: false, errorCode: "...", error: "..." }`
 
 ### Stable error codes
@@ -864,6 +1007,7 @@ Every `success: false` envelope carries a machine-readable `errorCode` **alongsi
 | `resource.not-found` | 404 | Route exists, but the named entity / proposal does not |
 | `payload.too-large` | 413 | Body exceeds the 1 MB limit (the legacy `code: "PAYLOAD_TOO_LARGE"` field is also kept) |
 | `operation.failed` | 400 | The request was well-formed but the operation itself rejected it |
+| `operation.permission-denied` | 500 | An explicit local repair could not write its required config or plugin files; the response contains fixed, path-free recovery guidance |
 | `server.internal` | 500/503 | Unexpected server-side failure |
 
 ### The origin boundary
@@ -907,7 +1051,8 @@ Capability diagnosis belongs to `GET /v1/doctor`, not this response.
       "autoCapture": true,
       "autoUpdate": "minor",
       "sessionLimit": 20,
-      "setupCompleted": true
+      "setupCompleted": true,
+      "briefing": "standard"
     }
   }
 }
@@ -915,6 +1060,19 @@ Capability diagnosis belongs to `GET /v1/doctor`, not this response.
 
 Dashboard locale is browser-local UI state and is not part of this server
 configuration.
+
+`briefing` (#360) — `minimal` (default) | `standard` | `full` — controls how
+much of the SessionStart / `briefing` tool block is assembled; see the
+**briefing levels** table under the `briefing` MCP tool above. `MEMESH_BRIEFING`
+overrides it, same precedence as `MEMESH_AUTO_UPDATE` below. Unlike
+`autoUpdate`, an unrecognised stored value is passed through by `GET
+/v1/config` (still `200`, with the raw stored value — whatever its JSON
+type: a string, a number, a boolean, `null`, an array, or an object — not
+narrowed to a string) rather than silently dropped or causing the read
+itself to fail (`resolveBriefingLevel` is where it is validated and
+reported, not the config reader, and not this route) — `POST /v1/config`
+still rejects anything that is not one of the three known level strings
+outright with `400` (`z.enum`).
 
 `autoUpdate` controls the maximum permitted bump, not unattended consent. On a
 supported npm-global install, the first MeMesh use in a session requests a
@@ -966,7 +1124,7 @@ Use `?cached=1` to read the cached state only. Without it, MeMesh prefers a fres
 Save a partial config update. Fields not provided are preserved.
 
 **Request body**: Any supported subset of the non-model `MeMeshConfig` fields
-(`autoCapture`, `sessionLimit`, `autoUpdate`, `setupCompleted`). Unknown fields
+(`autoCapture`, `sessionLimit`, `autoUpdate`, `setupCompleted`, `briefing`). Unknown fields
 are rejected. Dashboard locale is stored in the browser and is not sent here.
 
 **Response**: `{ success: true, data: <updated config> }`. Clients that present
@@ -1019,8 +1177,8 @@ statement is a `200` with `state: {}`.
 ### GET /v1/briefing-index?project=NAME
 
 The durable-memory index for one project — the same section the `briefing`
-tool and the SessionStart block close with (see [briefing](#briefing) for
-selection, redaction and the frozen caps). The dashboard's Project tab renders
+tool and the SessionStart block close with at `standard`/`full` (see
+[briefing](#briefing) for selection, redaction and the frozen caps). The dashboard's Project tab renders
 it. `project` is required (`400`, `validation.bad-param` without it); a project
 with no durable memories is a `200` whose `lines` carry the empty-state line.
 `staleDays` is the staleness window, sent so a client does not restate it.
@@ -1361,6 +1519,22 @@ memesh remember --name auth-choice --obs "PKCE, not implicit" --replace   # keep
 memesh remember --name auth-choice --type decision --obs "PKCE, not implicit" --replace  # reclassifies
 ```
 
+### memesh import — a JSON bundle
+
+```bash
+memesh import <file> [--merge skip|overwrite|append] [--namespace <ns>] [--restore-archived]
+```
+
+| Flag | Meaning |
+|------|---------|
+| `--merge <strategy>` | `skip` (default), `overwrite` or `append` — see `import` under Tools |
+| `--namespace <ns>` | Force imported entities into this namespace |
+| `--restore-archived` | Requires `--merge append` or `--merge overwrite` (an error with `skip`, the default): bring back a local memory you archived (forgot) when the file names it. Without it, that memory stays archived and untouched |
+
+The summary line is unchanged. When the file named archived memories that were
+left alone, a second line follows — `Kept archived: N (…)` — with the flag that
+brings them back. `--restore-archived` is refused together with `--notes`, and with `--merge skip`.
+
 ### memesh import --notes — note-file directories
 
 ```bash
@@ -1427,6 +1601,8 @@ never an absolute path.
   skipped, and one run reads at most 500 files (the rest are reported as "more"
   and picked up by the next run; unchanged files are recognised from their size
   and mtime without being read). Credential-shaped text is redacted.
+  A note file splits into observations exactly as a `note` string does,
+  including the silent truncation described under `remember`.
 
 Under Claude Code the Stop hook runs the same ingestion on the memory directory
 next to the session transcript, throttled by mtime and capped at 100 file reads
@@ -1465,9 +1641,9 @@ memory layer saved anything lately, and if not, why not". `memesh doctor --json`
   "hooks": [
     {
       "hook": "post-commit", "runs": 20, "triggeredRuns": 5, "writes": 0,
-      "skips": 20, "errors": 0,
+      "skips": 20, "errors": 0, "notifies": 0,
       "lastRunAt": "2026-09-08T00:00:00.000Z", "firstTriggeredAt": "2026-09-04T00:00:00.000Z",
-      "lastWriteAt": null, "lastEntity": null, "lastSkipReason": "a git commit ran but printed no commit line",
+      "lastWriteAt": null, "lastNotifiedAt": null, "lastEntity": null, "lastSkipReason": "a git commit ran but printed no commit line",
       "dominantSkipReason": "a git commit ran but printed no commit line", "dominantSkipCount": 5,
       "hosts": ["claude-code"], "silent": true
     }
@@ -1483,6 +1659,9 @@ memory layer saved anything lately, and if not, why not". `memesh doctor --json`
   trigger did not apply (post-commit on a Bash call that is not a git commit).
   `silent` is true only for post-commit, session-summary and pre-compact, when
   `triggeredRuns` is at least 5 and `writes` is 0.
+  `notifies` counts runs that told someone something and stored nothing, so
+  `runs` is not `writes + skips + errors`. It does not rescue a hook from `silent`
+  either, and none of the three hooks that `silent` applies to ever notifies.
 - `types` — auto-capture entities per type, this week (`last7`) against the
   week before (`prev7`); `stopped` means the type wrote last week and nothing
   this week.
@@ -1495,8 +1674,10 @@ stopped type, or heartbeats with no outcome record at all past the grace
 
 The figures come from `hook-outcomes.jsonl` beside the database (the directory
 of `MEMESH_DB_PATH`, `~/.memesh` by default): every capture hook appends one
-JSON line per run — `hook`, `at`, `host`, `outcome` (`wrote` / `skipped` /
-`error`), and a `reason` or `entity` — on every exit path. An error records a
+JSON line per run — `hook`, `at`, `host`, `outcome` (`wrote` / `notified` /
+`skipped` / `error`), and a `reason` or `entity` — on every exit path. A run
+that printed something for a person or model to read and stored nothing
+records `notified`. An error records a
 label — `uncaught <code or name>`, or a fixed literal such as `malformed stdin
 JSON` — never the exception text. Records naming a hook
 MeMesh does not ship are ignored, and reason text is stripped of control
@@ -1510,6 +1691,19 @@ When capture has gone quiet, SessionStart adds one line to its banner
 (`last-capture-liveness-notice.lock`), and not during the first 3 sessions or
 24 hours after an install or upgrade, whichever ends later
 (`capture-liveness-grace.json`). The line disappears once the hook writes again.
+
+### memesh config
+
+Owner-local settings in `~/.memesh/config.json`; `memesh config set --help` names the keys.
+
+| Command | Purpose |
+|---------|---------|
+| `memesh config list` | Every stored key that `set` accepts, one `  key: value` line each (`(nothing stored — all defaults)` when none). `briefing` is always shown as the level in effect and its source — see **Briefing levels** under the `briefing` tool. |
+| `memesh config get <key>` | One stored value, formatted as `list` formats it — except `briefing`, where it is what is stored, not the level in effect that `list` prints. A valid key with nothing stored prints `<key> is not set in config.json` and exits `0` (it says nothing about which value applies: an environment variable can still override the default). |
+| `memesh config set <key> <value>` | Validate and store a value; an invalid value is refused with the accepted ones named. |
+| `memesh config unset <key>` | Remove a stored value. |
+
+An unknown key — for `get`, `set` and `unset` alike — prints `Unknown key: <key>` and `Allowed keys: …` to stderr and exits `1`.
 
 ### memesh reindex
 

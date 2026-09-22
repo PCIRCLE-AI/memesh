@@ -333,8 +333,12 @@ export interface ExportResult {
     /**
      * Everything memesh knows about the memory that is not its text:
      * provenance, `signal_score`, `task_state`, the demo marker. Import
-     * rebuilds trust and provenance for itself and drops `guard` — see
-     * `buildImportedMetadata`.
+     * filters this through an ALLOW-list — only a purely descriptive key
+     * ever comes from the bundle; `trust`/`provenance` are always rebuilt,
+     * and every behaviour-changing key (`guard`, `demo`, `task_state`,
+     * `pin`, ranking/dreamer state) is refused by default — see
+     * `IMPORTABLE_METADATA_KEYS`/`AUTHORITY_METADATA_KEYS` in
+     * `buildImportedMetadata` (serializer.ts).
      */
     metadata?: Record<string, unknown>;
     observations: string[];
@@ -347,6 +351,13 @@ export interface ImportInput {
   data: ExportResult;
   namespace?: string;       // override namespace for all imported entities
   merge_strategy: MergeStrategy;
+  /**
+   * Default false: a local entity that is archived (forgotten) stays archived
+   * and untouched when the bundle names it, under `append` and `overwrite`.
+   * true brings it back to active and merges/overwrites it like any other;
+   * it requires `append` or `overwrite` and is refused with `skip`.
+   */
+  restore_archived?: boolean;
 }
 
 export interface ImportResult {
@@ -357,6 +368,11 @@ export interface ImportResult {
   overwritten: number;
   skipped: number;
   appended: number;
+  /** Archived local entities the bundle named and the import left archived
+   *  and untouched (`append` / `overwrite` without `restore_archived`).
+   *  `skip` never counts here: it leaves every existing entity alone and
+   *  reports it in `skipped`. */
+  kept_archived: number;
   errors: string[];
   /**
    * Relations whose target is in neither the bundle nor the graph, as

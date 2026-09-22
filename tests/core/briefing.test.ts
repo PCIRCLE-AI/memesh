@@ -9,7 +9,7 @@
  * structural forces their outputs to agree; this test is what does.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -40,6 +40,10 @@ import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
 import { getProjectName } from '../../src/core/paths.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+// The hook-only work-package notice's literal text — single owner in
+// `_shared.js`, so this file never hardcodes a second copy to compare
+// against.
+import { WORK_PACKAGE_NOTICE } from '../../scripts/hooks/_shared.js';
 
 let tmpDir: string;
 let dbPath: string;
@@ -51,9 +55,18 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   closeDatabase();
   removeTempDir(tmpDir);
 });
+
+// `assembleBriefing` reads MEMESH_BRIEFING at call time, and the default level
+// is `minimal`: no fresh task state, no durable-memory index. A test whose
+// subject is one of those (or the gate that keeps a memory out of the ranked
+// sections AND the index) pins `standard` on purpose instead of leaning on the
+// default; a test about the default clears the variable on purpose.
+const atStandard = () => vi.stubEnv('MEMESH_BRIEFING', 'standard');
+const withNoLevelSetting = () => vi.stubEnv('MEMESH_BRIEFING', undefined);
 
 // The assembler resolves the current project from cwd when none is given;
 // tests always pass one explicitly so they cannot be polluted by (or pollute)
@@ -111,6 +124,7 @@ describe('assembleBriefing', () => {
   });
 
   it('assembles the topology: task state first, then sections, in one fenced block', () => {
+    atStandard();
     seed();
     setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c', next: 'Open the PR' } });
 
@@ -140,6 +154,7 @@ describe('assembleBriefing', () => {
   });
 
   it('keeps generic briefing quiet and scopes unread guidance to one recipient', async () => {
+    atStandard(); // asserts the unread line's place relative to the task-state block
     seed();
     setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
     // Two real deliveries in one project prove project-wide aggregation is
@@ -218,6 +233,158 @@ describe('assembleBriefing', () => {
     const t = assembleBriefing(PROJECT, 'claude-implementer').text;
     expect(t).not.toContain('message waiting');
     expect(t, 'a real recipient with an empty (not unknown) inbox must not be reported as unseen').not.toContain('never been seen');
+  });
+
+  // `hasTaskState` used to be `stateLines.length > 0`, and `stateLines` is the
+  // task-state lines PLUS the unread-message reminder. A briefing whose only
+  // state line was "1 message waiting" therefore claimed a task state existed
+  // — and `memesh briefing`'s "set the task state" hint, which is gated on this
+  // field, stayed silent on exactly the project that had none.
+  describe('hasTaskState counts task-state lines only, never the unread-message reminder', () => {
+    const RECIPIENT = 'claude-implementer';
+    const sendOneUnread = () => executeAgentMessageAction(getDatabase(), {
+      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: RECIPIENT,
+      idempotency_key: 'briefing-has-task-state-1', payload: { text: 'review is done' }, content_type: 'application/json',
+    }, { transport: 'mcp', sourceHost: 'test-host' });
+    // The task state's own age stamp is what the stale rule reads.
+    const backdateTaskState = (hours: number) =>
+      new KnowledgeGraph(getDatabase()).updateEntityMetadata(taskStateName(PROJECT), (meta) => ({
+        ...meta,
+        task_state: {
+          ...(meta.task_state as Record<string, unknown>),
+          updated_at: new Date(Date.now() - hours * 3_600_000).toISOString(),
+        },
+      }));
+
+    it('an unread message and NO task state: the reminder is in the block, hasTaskState is false', async () => {
+      atStandard();
+      seed();
+      await sendOneUnread();
+      const result = assembleBriefing(PROJECT, RECIPIENT);
+      expect(result.text, 'the reminder must still be delivered').toContain('1 message waiting');
+      expect(result.text).not.toContain('Stated about');
+      expect(result.hasTaskState).toBe(false);
+    });
+
+    it('an unread message and a FRESH task state: hasTaskState is true', async () => {
+      atStandard(); // a fresh state is rendered at standard/full only
+      seed();
+      setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
+      await sendOneUnread();
+      const result = assembleBriefing(PROJECT, RECIPIENT);
+      expect(result.text).toContain('Stated about');
+      expect(result.text).toContain('1 message waiting');
+      expect(result.hasTaskState).toBe(true);
+    });
+
+    it('an unread message and a STALE task state: hasTaskState is true — the one-line flag leads the block', async () => {
+      // The stale flag is shown at every level, so no level is pinned: this is
+      // the default (`minimal`), which renders nothing for a FRESH state.
+      withNoLevelSetting();
+      vi.stubEnv('MEMESH_DIR', tmpDir); // no config.json there: nothing sets the level
+      seed();
+      setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
+      backdateTaskState(100);
+      await sendOneUnread();
+      const result = assembleBriefing(PROJECT, RECIPIENT);
+      expect(result.level).toBe('minimal');
+      expect(result.text).toContain('was last stated');
+      expect(result.text).toContain('1 message waiting');
+      expect(result.hasTaskState).toBe(true);
+    });
+
+    it('the same fresh state is not rendered at minimal, so hasTaskState follows what the block shows', async () => {
+      withNoLevelSetting();
+      vi.stubEnv('MEMESH_DIR', tmpDir);
+      seed();
+      setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
+      await sendOneUnread();
+      const result = assembleBriefing(PROJECT, RECIPIENT);
+      expect(result.level).toBe('minimal');
+      expect(result.text).not.toContain('Stated about');
+      expect(result.text).toContain('1 message waiting');
+      expect(result.hasTaskState).toBe(false);
+    });
+
+    // The CLI (`briefing --json`) and the MCP tool both return `assembleBriefing`'s
+    // object unchanged (src/transports/cli/cli.ts `console.log(JSON.stringify(result))`,
+    // src/transports/mcp/handlers.ts `ok(assembleBriefing(...))`), so one field
+    // cannot read differently on the two. Checked on the MCP surface here and
+    // on the built CLI in tests/cli/briefing-recipient.test.ts.
+    it('the MCP briefing tool reports the same value', async () => {
+      atStandard();
+      seed();
+      await sendOneUnread();
+      const viaTool = JSON.parse((await handleTool('briefing', { project: PROJECT, recipient: RECIPIENT })).content[0].text);
+      expect(viaTool.text).toContain('1 message waiting');
+      expect(viaTool.hasTaskState).toBe(false);
+    });
+  });
+
+  // A project's id ends in a 32-hex routing hash (`getProjectName`). Every
+  // heading of the briefing used to print all of it — three times in a `minimal`
+  // block. The block names the project by its LABEL; the full id stays wherever
+  // it identifies data (`project`, the tag, the entity name).
+  describe('the block names the project by its label, not by its hashed id', () => {
+    const idFor = (dirName: string) => {
+      const cwd = path.join(tmpDir, dirName);
+      fs.mkdirSync(cwd, { recursive: true });
+      const id = getProjectName(cwd);
+      const match = /^(.+)~([0-9a-f]{32})$/.exec(id);
+      expect(match, `getProjectName no longer emits <label>~<32 hex>: ${id}`).not.toBeNull();
+      return { id, label: match![1], hash: match![2] };
+    };
+
+    it('every heading, and `project` keeps the full id', () => {
+      atStandard(); // the task state and the index are standard-level content
+      const { id, label, hash } = idFor('label-fixture');
+      const tag = [`project:${id}`];
+      remember({ name: 'lbl-decision', type: 'decision', title: 'Use the label', observations: ['x'], tags: tag });
+      remember({ name: 'lbl-lesson', type: 'lesson_learned', title: 'Say less', observations: ['x'], tags: tag });
+      remember({ name: 'lbl-fact', type: 'note', title: 'A known fact', observations: ['x'], tags: tag });
+      remember({ name: 'lbl-commit', type: 'commit', title: 'fix: a thing', observations: ['x'], tags: tag });
+      setTaskState({ project: id, patch: { goal: 'Ship it' } });
+
+      const result = assembleBriefing(id);
+      expect(result.project, 'the id identifies the project and is not shortened').toBe(id);
+      for (const heading of [
+        `Stated about "${label}" today, and not revisited since:`,
+        `Decisions and direction for "${label}":`,
+        `Lessons from "${label}" — do not repeat these:`,
+        `What is known about "${label}":`,
+        `Recent activity in "${label}":`,
+        `Index of durable memories for "${label}" (newest first):`,
+      ]) expect(result.text, heading).toContain(heading);
+      expect(result.text, 'the routing hash reached the model').not.toContain(hash);
+      expect(result.index.lines.join('\n')).not.toContain(hash);
+    });
+
+    it('the empty-state lines of a project with nothing yet', () => {
+      atStandard();
+      const { id, label, hash } = idFor('label-empty');
+      const result = assembleBriefing(id);
+      expect(result.text).toContain(`Index of durable memories for "${label}" (newest first):`);
+      expect(result.text).toContain(`- No durable memories (decisions, lessons, patterns, references) for "${label}" yet.`);
+      expect(result.text).not.toContain(hash);
+    });
+
+    it('the stale flag and the unreadable-record line', () => {
+      const { id, label, hash } = idFor('label-flags');
+      setTaskState({ project: id, patch: { goal: 'Ship it' } });
+      new KnowledgeGraph(getDatabase()).updateEntityMetadata(taskStateName(id), (meta) => ({
+        ...meta,
+        task_state: { ...(meta.task_state as Record<string, unknown>), updated_at: new Date(Date.now() - 100 * 3_600_000).toISOString() },
+      }));
+      const stale = assembleBriefing(id);
+      expect(stale.text).toContain(`Task state for "${label}" was last stated`);
+      expect(stale.text).not.toContain(hash);
+
+      getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName(id));
+      const unreadable = assembleBriefing(id);
+      expect(unreadable.text).toContain(`task state for ${label}: task state for project "${label}" is not readable`);
+      expect(unreadable.text).not.toContain(hash);
+      expect(unreadable.hasTaskState).toBe(true);
+    });
   });
 
   it('D8: recipient identity is scoped per project — known in one project reads unseen in another', async () => {
@@ -319,6 +486,7 @@ describe('assembleBriefing', () => {
   });
 
   it('a project with nothing recorded gets the index empty-state line, not nothing (#323)', () => {
+    atStandard();
     const result = assembleBriefing('no-such-project');
     expect(result.text).toContain('Index of durable memories for "no-such-project" (newest first):');
     expect(result.text).toContain('- No durable memories (decisions, lessons, patterns, references) for "no-such-project" yet.');
@@ -327,6 +495,18 @@ describe('assembleBriefing', () => {
     expect(result.text).not.toMatch(/branch/i);
     expect(result.entityCount).toBe(0);
     expect(result.hasTaskState).toBe(false);
+    expect(result.index.shown).toBe(0);
+  });
+
+  it('with no briefing setting at all, a project with nothing recorded is empty — the default level is minimal', () => {
+    withNoLevelSetting();
+    vi.stubEnv('MEMESH_DIR', tmpDir); // no config.json there: nothing sets the level
+    const result = assembleBriefing('no-such-project');
+    expect(result.level).toBe('minimal');
+    expect(result.empty).toBe(true);
+    expect(result.text).toBe('');
+    expect(result.hasTaskState).toBe(false);
+    // The index is computed at every level; only its place in `text` is level-gated.
     expect(result.index.shown).toBe(0);
   });
 
@@ -351,7 +531,19 @@ describe('assembleBriefing', () => {
     const archivedId = (db.prepare("SELECT id FROM entities WHERE name = 'archived-decision'").get() as { id: number }).id;
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(archivedId, `project:${PROJECT}`);
 
-    const result = assembleBriefing(PROJECT);
+    // The default level (`minimal`), like `standard`, does not rank the
+    // global/foreign pools at all — this fixture plants a distractor in each
+    // deliberately, so it needs 'full' to exercise the index's OWN exclusion
+    // of them (as opposed to them never being ranked in the first place).
+    const previousBriefingEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'full';
+    let result: ReturnType<typeof assembleBriefing>;
+    try {
+      result = assembleBriefing(PROJECT);
+    } finally {
+      if (previousBriefingEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousBriefingEnv;
+    }
     const section = result.text.split('Index of durable memories for')[1] ?? '';
     expect(section).toContain('Use PKCE for the CLI');
     expect(section).toContain('Raising the timeout hid a deadlock');
@@ -418,6 +610,7 @@ describe('assembleBriefing', () => {
   });
 
   it('excludes what the auto-injection gate blocks, without restricting explicit recall', async () => {
+    atStandard(); // the assembled block includes the index, which has its own gate
     seed();
     // An imported memory: reachable by explicit recall, never auto-injected.
     remember({
@@ -452,12 +645,27 @@ describe('assembleBriefing', () => {
     expect(scopedData.text).toContain('1 message waiting for "claude-implementer"');
   });
 
-  it('says the same thing the session-start hook injects, from the same database', () => {
+  it('says the same thing the session-start hook injects, from the same database (level=full)', () => {
     // THE acceptance test. Hook and tool own separate selection code on
     // purpose; only this pin keeps "the same block" true. Compared at the
     // level that matters — which memories, which sections, which order —
     // not byte-for-byte, because the two sides may legitimately differ in
     // budget tail behaviour.
+    //
+    // Pinned to `full` explicitly (the default, `minimal`, would drop the
+    // global/foreign sections this fixture exists to exercise) on BOTH sides —
+    // the spawned hook's env and this process's env, since assembleBriefing
+    // reads process.env directly.
+    //
+    // The task state this fixture sets below (a few lines down,
+    // `setTaskState({...})`) is FRESH — stated moments before the hook runs,
+    // well inside the 72h window. This matters for what "full byte-identical
+    // to the output from before levels existed" can honestly claim: that
+    // claim holds ONLY when the task state is fresh (or absent). A STALE or
+    // unknown-age task state renders as a one-line flag at every level,
+    // including `full` — see the dedicated stale-task-state test in
+    // tests/hooks/session-start.test.ts. The docs qualify the claim the
+    // same way.
     const cwd = path.join(tmpDir, 'proj');
     fs.mkdirSync(cwd, { recursive: true });
     const project = getProjectName(cwd);
@@ -515,7 +723,7 @@ describe('assembleBriefing', () => {
 
     const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
       input: JSON.stringify({ cwd }),
-      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'full' },
       encoding: 'utf8',
       timeout: 15000,
     });
@@ -524,7 +732,17 @@ describe('assembleBriefing', () => {
         .hookSpecificOutput.additionalContext;
 
     openDatabase(dbPath);
-    const briefing = assembleBriefing(project).text;
+    const previousBriefingEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'full';
+    let briefing: string;
+    try {
+      const result = assembleBriefing(project);
+      briefing = result.text;
+      expect(result.level).toBe('full');
+    } finally {
+      if (previousBriefingEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousBriefingEnv;
+    }
 
     const contentLines = (block: string) =>
       block.split('\n').filter((l) => l.startsWith('- ') || l.endsWith(':'));
@@ -558,6 +776,536 @@ describe('assembleBriefing', () => {
     expect(briefing).not.toContain('Imported global rule');
     expect(briefing).toContain('Ship FTS5 as the baseline');
     for (let i = 0; i < 7; i++) expect(briefing).toContain(`Project decision ${i}`);
+
+    // The assertions above only compare SECTIONS (bullet/heading lines, the
+    // index block); this one checks whether the hook-only work-package
+    // notice is present on one side and absent on the other, which a
+    // section-level comparison cannot see. `injected` (hook) must carry the
+    // notice; `briefing` (CLI/MCP's assembleBriefing) must not, ever, at
+    // `full` or any other level. And with the notice accounted for, the
+    // hook's memory block must be BYTE-equal to `briefing` — not just equal
+    // at the section level — because both are meant to be the exact same
+    // rendered block.
+    expect(briefing, 'CLI/MCP full must never include the work-package notice').not.toContain('Work packages:');
+    const noticeIndex = injected.indexOf(WORK_PACKAGE_NOTICE);
+    expect(noticeIndex, 'hook full must include the work-package notice, verbatim').toBeGreaterThan(-1);
+    // The notice is appended as `memoryBlock + '\n\n' + notice` (session-start.js) —
+    // strip exactly that separator, not just the notice, before comparing.
+    const hookMemoryBlock = injected.slice(0, noticeIndex).replace(/\n\n$/, '');
+    expect(hookMemoryBlock, 'hook memory block (notice stripped) must be byte-equal to CLI/MCP text').toBe(briefing);
+    // And the hook's remainder — everything from the notice onward — must
+    // be EXACTLY the notice, nothing appended after it.
+    expect(injected.slice(noticeIndex)).toBe(WORK_PACKAGE_NOTICE);
+  });
+
+  // #360 B7: the level applies to BOTH surfaces, so parity must hold at a
+  // non-`full` level too — otherwise the hook and the tool could agree on
+  // `full` (frozen, unlikely to drift) while quietly disagreeing on `standard`,
+  // the level a user turns on to get the task state and the index back. The
+  // level every session gets when nothing is set (`minimal`) has its own
+  // parity tests below.
+  it('parity holds at level=standard too: both sides drop global/foreign, keep task state and the index', () => {
+    const cwd = path.join(tmpDir, 'proj-standard');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+
+    remember({
+      name: 'decision-standard', type: 'decision', title: 'Ship the standard level',
+      observations: ['Detail.'], tags: [`project:${project}`],
+    });
+    remember({
+      name: 'global-rule-standard', type: 'directive', namespace: 'global', title: 'A global rule',
+      observations: ['Detail.'], tags: [],
+    });
+    setTaskState({ project, patch: { goal: 'Prove standard parity', next: 'Compare both sides' } });
+    closeDatabase();
+
+    const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'standard' },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    const injected: string =
+      JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
+        .hookSpecificOutput.additionalContext;
+
+    openDatabase(dbPath);
+    const previousBriefingEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'standard';
+    let briefing: string;
+    let level: string;
+    try {
+      const result = assembleBriefing(project);
+      briefing = result.text;
+      level = result.level;
+    } finally {
+      if (previousBriefingEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousBriefingEnv;
+    }
+
+    expect(level).toBe('standard');
+    for (const block of [injected, briefing]) {
+      expect(block).toContain('Prove standard parity');
+      expect(block).toContain('Ship the standard level');
+      expect(block).toContain('Index of durable memories for');
+      expect(block).not.toContain('Global memory — applies across projects');
+      expect(block).not.toContain('A global rule');
+      expect(block).not.toContain('From your other projects');
+      // `standard.workPackageNotice = false`, so NEITHER side should ever
+      // carry it — unlike `full`, where only the hook does (see the
+      // byte-equality check in the `full` parity test above).
+      expect(block).not.toContain('Work packages:');
+    }
+    // At `standard` neither surface appends anything after the memory
+    // block, so the two must be byte-equal outright (no notice to strip).
+    expect(injected, 'hook and CLI/MCP must be byte-equal at standard (no notice to strip)').toBe(briefing);
+  });
+
+  // The DEFAULT, on all three real surfaces at once. Nothing sets the level —
+  // no MEMESH_BRIEFING, a config with no `briefing` key — so what each surface
+  // assembles is what a new install gets: this project's own sections, and
+  // neither the fresh task state nor the durable-memory index.
+  it('with no briefing setting at all, hook, real CLI and MCP tool assemble at minimal — no task state, no index — and agree byte for byte', async () => {
+    const cwd = path.join(tmpDir, 'proj-default-level');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+    remember({
+      name: 'decision-default', type: 'decision', title: 'Ship the smaller default',
+      observations: ['Detail.'], tags: [`project:${project}`],
+    });
+    remember({
+      name: 'lesson-default', type: 'lesson_learned', title: 'A default nobody chose must be the small one',
+      observations: ['Detail.'], tags: [`project:${project}`],
+    });
+    setTaskState({ project, patch: { goal: 'Prove the default level', next: 'Compare the three surfaces' } });
+    closeDatabase();
+
+    // updateCheck:false — the same detached-update-check race the other config
+    // fixtures in this file avoid. There is deliberately no `briefing` key.
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-briefing-default-'));
+    fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ updateCheck: false }));
+    const noSetting = {
+      ...process.env, HOME: configDir, MEMESH_DIR: configDir, MEMESH_DB_PATH: dbPath,
+      MEMESH_AUTO_UPDATE: '0', MEMESH_BRIEFING: undefined,
+    };
+    const cliPath = path.resolve('dist/transports/cli/cli.js');
+    const runCli = (env: NodeJS.ProcessEnv) => JSON.parse(execFileSync(
+      'node', [cliPath, 'briefing', '--project', project, '--json'],
+      { env, encoding: 'utf8', timeout: 15000 },
+    ).trim());
+
+    try {
+      const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd }), env: noSetting, encoding: 'utf8', timeout: 15000,
+      });
+      const injected: string =
+        JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
+          .hookSpecificOutput.additionalContext;
+
+      const cliJson = runCli(noSetting);
+      expect(cliJson.level, 'CLI: the level nothing set').toBe('minimal');
+
+      openDatabase(dbPath);
+      withNoLevelSetting();
+      vi.stubEnv('MEMESH_DIR', configDir);
+      const mcp = JSON.parse((await handleTool('briefing', { project })).content[0].text);
+      expect(mcp.level, 'MCP/core: the level nothing set').toBe('minimal');
+
+      for (const [surface, block] of [['hook', injected], ['CLI', cliJson.text], ['MCP', mcp.text]] as const) {
+        expect(block, `${surface}: this project's decision`).toContain('Ship the smaller default');
+        expect(block, `${surface}: this project's lesson`).toContain('A default nobody chose must be the small one');
+        expect(block, `${surface}: no fresh task state by default`).not.toContain('Stated about');
+        expect(block, `${surface}: no stated goal by default`).not.toContain('Prove the default level');
+        expect(block, `${surface}: no durable-memory index by default`).not.toContain('Index of durable memories for');
+      }
+      expect(injected, 'hook and CLI must be byte-equal at the default level').toBe(cliJson.text);
+      expect(mcp.text, 'MCP tool and CLI must be byte-equal at the default level').toBe(cliJson.text);
+
+      // Anti-vacuity: the same graph DOES carry both once the level asks for them.
+      const standardJson = runCli({ ...noSetting, MEMESH_BRIEFING: 'standard' });
+      expect(standardJson.level).toBe('standard');
+      expect(standardJson.text).toContain('Stated about');
+      expect(standardJson.text).toContain('Index of durable memories for');
+    } finally {
+      removeTempDir(configDir);
+    }
+  });
+
+  // #401: on a real graph almost every memory is auto-captured with one
+  // confidence value and has never been accessed, so every score TIES. The hook
+  // used to keep the OLDEST of a tie (SQLite returns equal scores in ascending
+  // id, and its lesson query had no ORDER BY at all) while this assembler,
+  // sorting a newest-first window, kept the newest — so a new session was shown
+  // old commits and old lessons and never the decision made minutes ago. Every
+  // fixture above gives its memories distinct confidences, which is exactly why
+  // nothing caught it.
+  it.each([
+    ['exp/log ranking', {}],
+    ['legacy ranking (no SQLite math functions)', { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' }],
+  ])('parity holds when every memory ties on score: both sides keep the newest — %s', (_label, hookEnv) => {
+    const cwd = path.join(tmpDir, 'proj-ties');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+
+    // More commits than a section renders (8), then twelve lessons, then the
+    // decision: the newest row is last, as it is in life. The hook's limit is
+    // raised to the briefing's window (30) because their defaults differ (10 and
+    // 30) and this test is about ORDER, not window size.
+    for (let i = 1; i <= 40; i++) {
+      remember({
+        name: `tied-commit-${i}`, type: 'commit', title: `Tied commit ${i}`,
+        observations: [`Detail ${i}`], tags: [`project:${project}`],
+      });
+    }
+    for (let i = 1; i <= 12; i++) {
+      remember({
+        name: `tied-lesson-${i}`, type: 'lesson_learned', title: `Tied lesson ${i}`,
+        observations: [`Lesson detail ${i}`], tags: [`project:${project}`],
+      });
+    }
+    remember({
+      name: 'newest-decision', type: 'decision', title: 'Ship the newest decision',
+      observations: ['Made last.'], tags: [`project:${project}`],
+    });
+    closeDatabase();
+
+    const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'minimal', MEMESH_SESSION_LIMIT: '30', ...hookEnv },
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    const injected: string =
+      JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!)
+        .hookSpecificOutput.additionalContext;
+
+    openDatabase(dbPath);
+    const previousBriefingEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'minimal';
+    let briefing: string;
+    try {
+      briefing = assembleBriefing(project).text;
+    } finally {
+      if (previousBriefingEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousBriefingEnv;
+    }
+
+    for (const block of [injected, briefing]) {
+      expect(block).toContain('Ship the newest decision');
+      expect(block).toContain('Tied commit 40');
+      expect(block).toContain('Tied lesson 12');
+      // The oldest lesson only appears if a lesson pool keeps the OLDEST.
+      expect(block).not.toMatch(/Tied lesson 1\b/);
+    }
+    expect(injected, 'hook and CLI/MCP must be byte-equal at minimal (no notice to strip)').toBe(briefing);
+  });
+
+  // An empty-`minimal` parity case across all THREE real consumers — the
+  // real hook subprocess, the real built CLI (`dist/transports/cli/cli.js`,
+  // not the TS source — this is what a user actually runs), and the MCP tool
+  // handler. `assembleBriefing()` (and therefore the CLI and MCP) must not
+  // wrap nothing in a preamble + an empty ` ```text``` ` fence while the
+  // hook emits no `hookSpecificOutput` at all — the "one rule, two owners"
+  // shape this repository has shipped before.
+  it('empty-minimal parity: hook, real CLI, and MCP tool all agree there is nothing to brief', async () => {
+    const cwd = path.join(tmpDir, 'proj-empty-minimal');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+    // Deliberately seed NOTHING — schema exists (openDatabase in beforeEach
+    // already migrated it), zero entities for this project.
+    closeDatabase();
+
+    // --- the real hook, spawned exactly as Claude Code would invoke it ---
+    const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'minimal' },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    const hookPayload = JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!);
+    expect(hookPayload.hookSpecificOutput, 'hook: no hookSpecificOutput at all when empty').toBeUndefined();
+
+    // --- the real BUILT CLI (dist/, not the TS source — what a user runs) ---
+    const cliJsonOut = execFileSync(
+      'node',
+      [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project, '--json'],
+      { env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'minimal' }, encoding: 'utf8', timeout: 15000 },
+    );
+    const cliJson = JSON.parse(cliJsonOut.trim());
+    expect(cliJson.empty, 'CLI --json: empty must be true').toBe(true);
+    expect(cliJson.text, 'CLI --json: text must be the empty string, not a fence').toBe('');
+    expect(cliJson.level).toBe('minimal');
+
+    const cliTextOut = execFileSync(
+      'node',
+      [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project],
+      { env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'minimal' }, encoding: 'utf8', timeout: 15000 },
+    );
+    // exit 0 is implicit: execFileSync throws on a non-zero exit, so
+    // reaching this line already proves it.
+    // Asserting the EXACT stdout (the one documented line plus
+    // `console.log`'s own trailing newline, nothing else) is what pins the
+    // contract: API_REFERENCE.md's contract is ONE short line, not two, and
+    // a `toContain` check would pass even while the CLI printed a SECOND
+    // `console.log` line below it.
+    expect(cliTextOut).toBe('Nothing to brief at level minimal — no project memories yet.\n');
+
+    // --- the MCP tool (no separate formatter — confirmed by reading
+    // src/transports/mcp/handlers.ts: `ok(assembleBriefing(...))` only) ---
+    openDatabase(dbPath);
+    const previousBriefingEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'minimal';
+    let mcpResult: { empty: boolean; text: string; level: string };
+    try {
+      const mcpOut = await handleTool('briefing', { project });
+      mcpResult = JSON.parse(mcpOut.content[0].text);
+    } finally {
+      if (previousBriefingEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousBriefingEnv;
+    }
+    expect(mcpResult.empty, 'MCP tool: empty must be true').toBe(true);
+    expect(mcpResult.text, 'MCP tool: text must be the empty string').toBe('');
+  });
+
+  // The SAME empty project, but at `full` — this is where the hook and
+  // CLI/MCP legitimately DIVERGE (the hook appends the hook-only
+  // work-package notice; CLI/MCP never do, at any level), and the other
+  // `full` checks exercise a POPULATED database. `beforeEach` already
+  // migrated a schema for this project (zero rows), so this is the "schema
+  // present, zero rows" state — the index's OWN empty-state line is content,
+  // not framing (#323), so `empty` is `false` on every surface, not `true`
+  // (that only happens at `minimal`, which has no index to fall back to at
+  // all — see the sibling `empty-minimal parity` test above).
+  it('empty-full parity: the hook appends the work-package notice AFTER the empty-index line; CLI/MCP never do', async () => {
+    const cwd = path.join(tmpDir, 'proj-empty-full');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+    closeDatabase();
+
+    const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'full' },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    const hookPayload = JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!);
+    const hookCtx = (hookPayload.hookSpecificOutput as { additionalContext: string } | undefined)?.additionalContext;
+    expect(hookCtx, 'hook full: must inject something (the empty-index line, at least)').toBeTruthy();
+    expect(hookCtx).toContain('No durable memories');
+    const noticeIndex = hookCtx!.indexOf(WORK_PACKAGE_NOTICE);
+    expect(noticeIndex, 'hook full: must still append the notice on an otherwise-empty project').toBeGreaterThan(-1);
+    expect(hookCtx!.slice(noticeIndex), 'hook full: the notice must be the exact remainder').toBe(WORK_PACKAGE_NOTICE);
+    const hookMemoryBlock = hookCtx!.slice(0, noticeIndex).replace(/\n\n$/, '');
+
+    const cliJsonOut = execFileSync(
+      'node',
+      [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project, '--json'],
+      { env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'full' }, encoding: 'utf8', timeout: 15000 },
+    );
+    const cliJson = JSON.parse(cliJsonOut.trim());
+    expect(cliJson.level).toBe('full');
+    expect(cliJson.text).toContain('No durable memories');
+    expect(cliJson.text, 'CLI --json full: must never carry the notice').not.toContain('Work packages:');
+    // Same byte-equality relationship as the populated-fixture parity test:
+    // hook memory block (notice stripped) === CLI/MCP text, exactly.
+    expect(hookMemoryBlock, 'hook memory block (notice stripped) must be byte-equal to CLI text').toBe(cliJson.text);
+
+    openDatabase(dbPath);
+    const previousBriefingEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'full';
+    let mcpResult: { empty: boolean; text: string; level: string };
+    try {
+      const mcpOut = await handleTool('briefing', { project });
+      mcpResult = JSON.parse(mcpOut.content[0].text);
+    } finally {
+      if (previousBriefingEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousBriefingEnv;
+    }
+    expect(mcpResult.level).toBe('full');
+    expect(mcpResult.text, 'MCP full: must never carry the notice').not.toContain('Work packages:');
+    expect(mcpResult.text, 'MCP full text must match the CLI byte-for-byte').toBe(cliJson.text);
+  });
+
+  // A stored NON-STRING `briefing` (here, a bare number) must be reported
+  // invalid — default level used, reason recorded — on every surface that
+  // reads it, not just the hook (which reads raw config.json directly,
+  // bypassing `readConfig()` entirely). Each leg
+  // gets its OWN isolated HOME/MEMESH_DIR pointed at a config.json this
+  // test wrote — never the owner's real ~/.memesh — and the MCP/core leg
+  // mutates `process.env.MEMESH_DIR` only for the duration of the
+  // in-process call (save/restore), which is safe here because the
+  // database itself stays on the explicit `dbPath` this suite already
+  // isolates in `beforeEach`; MEMESH_DIR only steers config.json.
+  it('a non-string stored briefing value (42) is reported invalid on hook, CLI, and MCP alike', async () => {
+    withNoLevelSetting(); // the child processes inherit process.env: an ambient level would beat the stored value
+    const cwd = path.join(tmpDir, 'proj-numeric-briefing');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+    closeDatabase();
+
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-briefing-cfg-'));
+    // updateCheck:false: the detached background update-check spawn can
+    // migrate an otherwise-untouched db a few ms after a synchronous read
+    // — a real race this repo's own fixtures hit; irrelevant to what this
+    // test checks, but left unset it can make a later assertion flaky.
+    fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ briefing: 42, updateCheck: false }));
+
+    try {
+      // --- hook: reads raw JSON — the baseline the other two surfaces must
+      // match. ---
+      execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd }),
+        env: { ...process.env, HOME: configDir, MEMESH_DIR: configDir, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_UPDATE: '0' },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      const hookOutcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+      const hookRecord = hookOutcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(hookRecord, 'hook must record a briefing-level reason').toBeTruthy();
+      expect(hookRecord.reason).toContain('42');
+      expect(hookRecord.reason).toContain('minimal');
+
+      // --- the real BUILT CLI — this is the surface that silently
+      // defaulted with no trace before the fix. spawnSync, not
+      // execFileSync: the process exits 0 (an invalid config value is
+      // handled, not an error), and execFileSync only exposes stderr when
+      // the child throws. ---
+      const cliRun = spawnSync(
+        'node',
+        [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project, '--json'],
+        { env: { ...process.env, HOME: configDir, MEMESH_DIR: configDir, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 15000 },
+      );
+      expect(cliRun.status, `CLI must exit 0 even on an invalid config value; stderr: ${cliRun.stderr}`).toBe(0);
+      const cliJson = JSON.parse(cliRun.stdout.trim());
+      expect(cliJson.level, 'CLI: invalid config value falls back to the default level').toBe('minimal');
+      expect(cliRun.stderr, 'CLI must trace the invalid value, not silently default').toContain('42');
+      expect(cliRun.stderr).toContain('invalid config briefing level');
+
+      // --- MCP / core, in-process ---
+      openDatabase(dbPath);
+      const previousDir = process.env.MEMESH_DIR;
+      process.env.MEMESH_DIR = configDir;
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let mcpLevel: string;
+      // Read out of `stderrSpy.mock.calls` BEFORE `mockRestore()` runs: restore
+      // does everything `mockReset()` does (vitest/jest docs), which clears
+      // `mock.calls` along with the implementation — reading it after restore
+      // always sees `[]`, which is exactly the false-negative this test hit
+      // (confirmed by instrumenting the call count: 2 calls landed during
+      // `handleTool`, 0 remained after `mockRestore()`).
+      let tracedLines: string[] = [];
+      try {
+        const mcpOut = await handleTool('briefing', { project });
+        mcpLevel = JSON.parse(mcpOut.content[0].text).level;
+        tracedLines = stderrSpy.mock.calls.map((call) => String(call[0]));
+      } finally {
+        stderrSpy.mockRestore();
+        if (previousDir === undefined) delete process.env.MEMESH_DIR;
+        else process.env.MEMESH_DIR = previousDir;
+      }
+      expect(mcpLevel, 'MCP/core: invalid config value falls back to the default level').toBe('minimal');
+      expect(tracedLines.some((line) => line.includes('42') && line.includes('invalid config briefing level')),
+        `MCP/core must trace the invalid value too; traced lines: ${JSON.stringify(tracedLines)}`).toBe(true);
+    } finally {
+      removeTempDir(configDir);
+    }
+  });
+
+  it('the invalid-value trace quotes the value once (assembleBriefing, shared by the briefing tool and the CLI)', async () => {
+    const previousEnv = process.env.MEMESH_BRIEFING;
+    process.env.MEMESH_BRIEFING = 'banana';
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let tracedLines: string[];
+    try {
+      await handleTool('briefing', { project: PROJECT });
+      tracedLines = stderrSpy.mock.calls.map((call) => String(call[0]));
+    } finally {
+      stderrSpy.mockRestore();
+      if (previousEnv === undefined) delete process.env.MEMESH_BRIEFING;
+      else process.env.MEMESH_BRIEFING = previousEnv;
+    }
+    expect(tracedLines).toContain('[memesh briefing] invalid env briefing level "banana" — using "minimal"\n');
+  });
+
+  // An explicit stored `null` is not "not set": `memesh config unset
+  // briefing` deletes the key outright and nothing in this codebase ever
+  // writes a literal `null` for this field, so a `null` on disk is exactly
+  // the same "someone put something unexpected here" case as `42` — same
+  // test shape as that one, same three real child-process legs, `null` in
+  // place of `42`.
+  it('an explicit stored null briefing is reported invalid on hook, CLI, and MCP alike — not treated as "not set"', async () => {
+    withNoLevelSetting(); // as above: the stored value is only consulted when the env sets nothing
+    const cwd = path.join(tmpDir, 'proj-null-briefing');
+    fs.mkdirSync(cwd, { recursive: true });
+    const project = getProjectName(cwd);
+    closeDatabase();
+
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-briefing-cfg-'));
+    fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ briefing: null, updateCheck: false }));
+
+    try {
+      // --- hook (reads raw JSON directly) ---
+      execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd }),
+        env: { ...process.env, HOME: configDir, MEMESH_DIR: configDir, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_UPDATE: '0' },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      const hookOutcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+      const hookRecord = hookOutcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(hookRecord, 'hook must record a briefing-level reason for a stored null').toBeTruthy();
+      expect(hookRecord.reason).toContain('null');
+      expect(hookRecord.reason).toContain('minimal');
+
+      // --- the real BUILT CLI ---
+      const cliRun = spawnSync(
+        'node',
+        [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project, '--json'],
+        { env: { ...process.env, HOME: configDir, MEMESH_DIR: configDir, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 15000 },
+      );
+      expect(cliRun.status, `CLI must exit 0 even on a stored null; stderr: ${cliRun.stderr}`).toBe(0);
+      const cliJson = JSON.parse(cliRun.stdout.trim());
+      expect(cliJson.level, 'CLI: a stored null falls back to the default level').toBe('minimal');
+      expect(cliRun.stderr, 'CLI must trace the null, not silently default').toContain('null');
+      expect(cliRun.stderr).toContain('invalid config briefing level');
+
+      // --- the real built CLI's `config list` — must show it, not hide it ---
+      const listRun = spawnSync(
+        'node',
+        [path.resolve('dist/transports/cli/cli.js'), 'config', 'list'],
+        { env: { ...process.env, HOME: configDir, MEMESH_DIR: configDir, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 15000 },
+      );
+      expect(listRun.status).toBe(0);
+      expect(
+        listRun.stdout,
+        'config list must show the stored null (as an invalid value that is not in effect), not omit the key',
+      ).toContain('briefing: minimal (default; the value in config.json is invalid: null)');
+
+      // --- MCP / core, in-process ---
+      openDatabase(dbPath);
+      const previousDir = process.env.MEMESH_DIR;
+      process.env.MEMESH_DIR = configDir;
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let mcpLevel: string;
+      let tracedLines: string[] = [];
+      try {
+        const mcpOut = await handleTool('briefing', { project });
+        mcpLevel = JSON.parse(mcpOut.content[0].text).level;
+        tracedLines = stderrSpy.mock.calls.map((call) => String(call[0]));
+      } finally {
+        stderrSpy.mockRestore();
+        if (previousDir === undefined) delete process.env.MEMESH_DIR;
+        else process.env.MEMESH_DIR = previousDir;
+      }
+      expect(mcpLevel, 'MCP/core: a stored null falls back to the default level').toBe('minimal');
+      expect(tracedLines.some((line) => line.includes('null') && line.includes('invalid config briefing level')),
+        `MCP/core must trace the null too; traced lines: ${JSON.stringify(tracedLines)}`).toBe(true);
+    } finally {
+      removeTempDir(configDir);
+    }
   });
 
   it('the candidate window keeps the newest entities when a project exceeds the cap (M-19)', () => {
@@ -585,14 +1333,16 @@ describe('assembleBriefing', () => {
         tags: [`project:${PROJECT}`],
       });
     }
-    // The "recent across all projects" pool (recentRows) is ALREADY
+    // At `full`, the "recent across all projects" pool (recentRows) is ALREADY
     // ordered newest-first and would independently surface this
     // project's newest entities regardless of whether the project-scoped
     // query is fixed — masking the very defect this test exists to catch.
     // A batch of newer, differently-tagged entities pushes every
     // `cap-entity-*` id out of that global top-5, so anything the
     // assembled text says about them can only have come through the
-    // project-scoped query under test.
+    // project-scoped query under test. (The default level never queries
+    // that pool, so at the default this batch is inert; it keeps the test
+    // honest if it is ever run at `full`.)
     for (let i = 0; i < 10; i++) {
       kg.createEntity(`noise-entity-${String(i).padStart(3, '0')}`, 'note', {
         title: `unrelated noise ${i}`,

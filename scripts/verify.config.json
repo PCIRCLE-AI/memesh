@@ -1,0 +1,63 @@
+{
+  "$comment": "Config for `npm run verify` (scripts/verify.mjs, scripts/verify-receipt.mjs). Only the keys the verify runner reads: the verify command name as CLAUDE.md quotes it, and the step list. command `pnpm`/`npm`/`npx` gets .cmd on Windows; `node` is the running Node binary. `journeys: true` marks the steps CI reruns on every PR/MR (build + the suites that drive the running app). `regenerates: true` marks a step that rewrites tracked output (a committed dist/): the tree is re-baselined after it, so the receipt binds to the tree a person commits.",
+  "commands": {
+    "verify": "npm run verify"
+  },
+  "verify": {
+    "steps": [
+      {
+        "id": "build",
+        "label": "build (tsc, bundles, hook core, skills manifest, dashboard, smoke-test; regenerates the tracked dist/)",
+        "command": "npm",
+        "args": [
+          "run",
+          "build"
+        ],
+        "cwd": ".",
+        "journeys": true,
+        "regenerates": true
+      },
+      {
+        "id": "release-gates",
+        "label": "verify:release (lint, typecheck, version coherence, generated mirror, surface parity, doc claims, audits)",
+        "command": "npm",
+        "args": [
+          "run",
+          "verify:release"
+        ],
+        "cwd": "."
+      },
+      {
+        "id": "unit",
+        "label": "isolated test suite (throwaway HOME)",
+        "command": "node",
+        "args": [
+          "scripts/run-tests-isolated.mjs"
+        ],
+        "cwd": "."
+      },
+      {
+        "id": "packaged",
+        "label": "packaged artifact smoke (npm pack, install, run the CLI and doctor)",
+        "command": "npm",
+        "args": [
+          "run",
+          "test:packaged"
+        ],
+        "cwd": ".",
+        "journeys": true
+      },
+      {
+        "id": "dashboard-e2e",
+        "label": "packaged dashboard e2e (Playwright Chromium against the real serve)",
+        "command": "npm",
+        "args": [
+          "run",
+          "test:e2e-dashboard"
+        ],
+        "cwd": ".",
+        "journeys": true
+      }
+    ]
+  }
+}

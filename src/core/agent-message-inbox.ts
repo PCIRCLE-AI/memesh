@@ -38,6 +38,11 @@ interface InboxDb {
   prepare(sql: string): { get(...params: unknown[]): unknown };
 }
 
+/** Same, for the one query that returns several rows. */
+interface InboxListDb {
+  prepare(sql: string): { all(...params: unknown[]): unknown[] };
+}
+
 /**
  * Deliveries addressed to recipients in `project` that have no intake receipt.
  * 0 when the message tables are absent (pre-4.8.0 graph) or on any query
@@ -126,10 +131,52 @@ export function unreadInboxLines(count: number, project: string, recipient?: str
   const displayRecipient = JSON.stringify(recipient);
   if (count > 0) {
     const noun = count === 1 ? 'message' : 'messages';
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id; fetching does not acknowledge.`];
+    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record the intake action for it: fetching alone does not acknowledge, and only intake ends this line.`];
   }
   if (everSeen === false) {
     return [`No messages waiting for ${displayRecipient} in project ${displayProject} — and this recipient id has never been seen in this project (check for a typo).`];
   }
   return [];
+}
+
+/**
+ * The reminder lines for a session that has declared who it is
+ * (`MEMESH_RECIPIENT`): every project in which deliveries addressed to that
+ * exact recipient have no intake receipt yet, one line per project (at most
+ * five, most waiting first). Senders pick the project string themselves, so
+ * this does not assume the session's own project name; the line names the
+ * project to poll with. The recipient must match exactly, so an agent still
+ * never learns that a message exists for anyone else. No recipient, nothing
+ * waiting, or a database from before the message tables existed all return no
+ * lines; any other failure is raised, because it is not "no messages".
+ */
+export function unreadInboxLinesFor(db: InboxListDb, recipient?: string): string[] {
+  if (!recipient) return [];
+  try {
+    const rows = db.prepare(
+      `SELECT d.project AS project, COUNT(*) AS n
+       FROM agent_message_deliveries d
+       WHERE d.recipient = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_message_receipts r
+           WHERE r.project = d.project
+             AND r.recipient = d.recipient
+             AND r.message_id = d.message_id
+             AND r.receipt_kind = 'intake'
+         )
+       GROUP BY d.project
+       ORDER BY n DESC, d.project
+       LIMIT 5`,
+    ).all(recipient) as Array<{ project?: string; n?: number }>;
+    return rows.flatMap((row) =>
+      typeof row.project === 'string' && typeof row.n === 'number' && row.n > 0
+        ? unreadInboxLines(row.n, row.project, recipient)
+        : [],
+    );
+  } catch (err) {
+    // A database from before the message tables existed has nothing to report.
+    // Any other failure is not "no messages": raise it so the caller can say so.
+    if (/no such table: agent_message_deliveries/.test(String((err as { message?: unknown })?.message))) return [];
+    throw err;
+  }
 }

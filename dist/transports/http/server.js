@@ -7,7 +7,8 @@ import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
-import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
+import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
+import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -291,15 +292,25 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
         throw new HttpError(400, 'operation.failed', 'This diagnostic has no automatic repair.');
     }
     let action;
-    switch (check.fixId) {
-        case 'config-retired-settings':
-            action = removeRetiredConfigKeys();
-            break;
-        case 'plugin-cache-refresh':
-            action = refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check));
-            break;
-        default:
-            throw new HttpError(400, 'operation.failed', 'This diagnostic must be repaired from the command line.');
+    try {
+        switch (check.fixId) {
+            case 'config-retired-settings':
+                action = removeRetiredConfigKeys();
+                break;
+            case 'plugin-cache-refresh':
+                action = refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check));
+                break;
+            default:
+                throw new HttpError(400, 'operation.failed', 'This diagnostic must be repaired from the command line.');
+        }
+    }
+    catch (error) {
+        if (error instanceof HttpError)
+            throw error;
+        if (isDoctorFixPermissionError(error)) {
+            throw new HttpError(500, 'operation.permission-denied', 'MeMesh cannot modify the local files required for this repair. Close this dashboard, start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.');
+        }
+        throw error;
     }
     const after = await runDoctor({ packageRoot, packageVersion });
     const safe = (value) => JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(value))));
@@ -434,14 +445,22 @@ app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => 
         limit: data.limit,
     });
 }));
+const ConfigReadBody = z.object({
+    autoCapture: z.boolean().optional(),
+    sessionLimit: z.number().int().min(1).max(100).optional(),
+    autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
+    setupCompleted: z.boolean().optional(),
+    briefing: z.unknown().optional(),
+}).strip();
 app.get('/v1/config', (_req, res) => handleGet(res, () => ({
-    config: ConfigBody.strip().parse(readConfig()),
+    config: ConfigReadBody.parse(readConfig()),
 })));
 const ConfigBody = z.object({
     autoCapture: z.boolean().optional(),
     sessionLimit: z.number().int().min(1).max(100).optional(),
     autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
     setupCompleted: z.boolean().optional(),
+    briefing: z.enum(BRIEFING_LEVELS).optional(),
 }).strict();
 app.post('/v1/config', (req, res) => handlePost(ConfigBody, req, res, (data) => ConfigBody.strip().parse(updateConfig(data))));
 app.get('/v1/update-status', (req, res) => handleGet(res, async () => {

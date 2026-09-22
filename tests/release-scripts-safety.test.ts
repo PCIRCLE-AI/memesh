@@ -18,7 +18,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
-import { buildIsolatedRuntimeEnv, buildIsolatedSuiteEnv } from '../scripts/lib/isolated-env.mjs';
+import { buildCredentialFreeBaseEnv, buildIsolatedRuntimeEnv, buildIsolatedSuiteEnv } from '../scripts/lib/isolated-env.mjs';
 import { findOrphanedTypeScriptOutputs } from '../scripts/check-generated-mirror.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -111,10 +111,6 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(buildAt, 'the gate does not run the build').toBeGreaterThan(-1);
     expect(diffAt, 'the gate does not diff the build outputs').toBeGreaterThan(-1);
     expect(buildAt, 'the gate diffs before it builds').toBeLessThan(diffAt);
-    expect(
-      text.slice(diffAt, diffAt + 120),
-      'the gate compares only working tree to index, so staged generated output can false-green',
-    ).toContain("'HEAD'");
     // A failed build must fail the gate. Reporting "output is current" because
     // the compiler crashed is the same class of lie one level up.
     //
@@ -139,6 +135,45 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       text.slice(buildCatchStart, buildCatchEnd),
       'a failed build no longer fails the gate: it falls through to the diff, which is empty on any tree whose committed output already matches HEAD',
     ).toContain('process.exit(1)');
+  });
+
+  it('accepts staged rebuilt output but rejects stale staged and untracked output', () => {
+    const fixture = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-staged-output-')));
+    const run = (command: string, args: string[]) => spawnSync(command, args, {
+      cwd: fixture, encoding: 'utf8', timeout: 20000,
+    });
+    try {
+      fs.mkdirSync(path.join(fixture, 'scripts/lib'), { recursive: true });
+      fs.mkdirSync(path.join(fixture, 'src/core'), { recursive: true });
+      fs.mkdirSync(path.join(fixture, 'dist/core'), { recursive: true });
+      for (const script of ['check-generated-mirror.mjs', 'lib/npm-bin.mjs', 'lib/verify-core.mjs']) {
+        fs.copyFileSync(path.join(repoRoot, 'scripts', script), path.join(fixture, 'scripts', script));
+      }
+      fs.writeFileSync(path.join(fixture, 'package.json'), JSON.stringify({
+        type: 'module', scripts: { build: 'node build.mjs' },
+      }));
+      fs.writeFileSync(path.join(fixture, 'build.mjs'), "import fs from 'node:fs'; for (const name of fs.readdirSync('src/core')) fs.copyFileSync('src/core/' + name, 'dist/core/' + name.replace(/\\.ts$/, '.js'));\n");
+      fs.writeFileSync(path.join(fixture, 'src/core/kept.ts'), 'export const kept = true;\n');
+      fs.writeFileSync(path.join(fixture, 'dist/core/kept.js'), 'export const kept = true;\n');
+      expect(run('git', ['init']).status).toBe(0);
+      expect(run('git', ['add', '--', 'src/core/kept.ts', 'dist/core/kept.js']).status).toBe(0);
+      const check = () => run(process.execPath, [path.join(fixture, 'scripts/check-generated-mirror.mjs')]);
+      const staged = check();
+      expect(staged.status).toBe(0);
+      expect(staged.stdout).toContain('build output');
+      fs.writeFileSync(path.join(fixture, 'src/core/kept.ts'), 'export const kept = false;\n');
+      const stale = check();
+      expect(stale.status).toBe(1);
+      expect(stale.stderr).toContain('build output is stale');
+      expect(run('git', ['add', '--', 'src/core/kept.ts', 'dist/core/kept.js']).status).toBe(0);
+      expect(check().status).toBe(0);
+      fs.writeFileSync(path.join(fixture, 'src/core/new.ts'), 'export const added = true;\n');
+      const untracked = check();
+      expect(untracked.status).toBe(1);
+      expect(untracked.stderr).toContain('untracked build output:');
+    } finally {
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it('the build-output gate detects compiler artifacts whose source module was deleted', () => {
@@ -659,9 +694,11 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       USERPROFILE: 'C:\\ambient\\maintainer-home-sentinel',
       MEMESH_DIR: '/ambient/maintainer-memesh-sentinel',
       MEMESH_DB_PATH: '/ambient/maintainer-db-sentinel.db',
+      NPM_CONFIG_CACHE: '/ambient/maintainer-npm-cache-sentinel',
       OLLAMA_HOST: 'http://ambient-ollama.invalid',
       OPENAI_API_KEY: 'ambient-openai-sentinel',
       ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
+      MEMESH_BRIEFING: 'full',
     };
 
     // Nothing about building this env should print anything — the isolated
@@ -691,9 +728,22 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     for (const key of credentialKeys) {
       expect(env[key]).toBeUndefined();
     }
+    // The briefing level is product configuration, not plumbing: the default is
+    // what the smokes assume, so an ambient value must not move it.
+    expect('MEMESH_BRIEFING' in env).toBe(false);
 
     // Unrelated ambient state (PATH, needed to spawn npm/node) still passes through.
     expect(env.PATH).toBe(pollutedBaseEnv.PATH);
+  });
+
+  it('credential-free environment retains launch plumbing and removes owner configuration', () => {
+    const clean = buildCredentialFreeBaseEnv({
+      PATH: '/bin', LANG: 'en_US.UTF-8', TMPDIR: '/tmp',
+      NPM_TOKEN: 'secret', npm_config_userconfig: '/owner/.npmrc', HTTPS_PROXY: 'http://owner',
+      SSH_AUTH_SOCK: '/owner/agent', ANTHROPIC_API_KEY: 'secret', MEMESH_DB_PATH: '/owner/db',
+    });
+    expect(clean).toEqual({ PATH: '/bin', LANG: 'en_US.UTF-8', TMPDIR: '/tmp' });
+    expect(read('scripts/smoke-packed-upgrade.mjs')).toContain("const registry = 'https://registry.npmjs.org/'");
   });
 
   // The other half. `buildIsolatedRuntimeEnv` pins a database path; the suite
@@ -715,6 +765,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       OLLAMA_HOST: 'http://ambient-ollama.invalid',
       OPENAI_API_KEY: 'ambient-openai-sentinel',
       ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
+      MEMESH_BRIEFING: 'full',
     };
 
     const env = buildIsolatedSuiteEnv(pollutedBaseEnv, { runtimeHome });
@@ -725,6 +776,10 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     // both still be resolved ahead of HOME.
     expect('MEMESH_DIR' in env).toBe(false);
     expect('MEMESH_DB_PATH' in env).toBe(false);
+    // The suite asserts the DEFAULT briefing level, so an ambient value must go.
+    expect('MEMESH_BRIEFING' in env).toBe(false);
+    expect(env.npm_config_cache).toBe(path.join(runtimeHome, 'npm-cache'));
+    expect('NPM_CONFIG_CACHE' in env).toBe(false);
     for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST']) {
       expect(env[key]).toBeUndefined();
     }

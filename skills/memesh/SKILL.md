@@ -35,7 +35,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 | `import` | Import a JSON export with the required skip, append, or overwrite strategy |
 | `learn` | Record a structured lesson with error, fix, root cause, and prevention |
 | `task_state` | Read or update user-stated goal, next step, blocker, and finished work |
-| `briefing` | Assemble the current project's work topology, closing with a capped index of its durable memories |
+| `briefing` | Assemble the current project's work topology — its decisions, lessons, knowledge and recent activity by default (`minimal`); `standard` adds the fresh task state and closes with a capped index of its durable memories, `full` adds other projects and global memory (the `briefing` setting — `minimal` / `standard` / `full`) |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |
@@ -98,15 +98,22 @@ Durable audit does not mean unbounded silent growth. Owners can inspect it with 
 
 **SESSION START → load the briefing (once).**
 Call the `briefing` MCP tool or run `memesh briefing`. It returns the assembled
-work topology: where the work was left off (goal / next / blocked / done),
-decisions and direction, lessons not to repeat, what is known, recent activity.
+work topology: this project's decisions and direction, lessons not to repeat,
+what is known, and recent activity always; where the work was left off (goal /
+next / blocked / done) too at `standard`/`full` (not at the `briefing`
+setting's default, `minimal`).
 One call is cheaper than re-exploring the repo to reconstruct the same picture.
-Generic briefing and SessionStart context do not report unread durable messages:
-they have no recipient identity. If you already know the exact logical
-recipient, pass `recipient` with `project` (MCP) or use
+`memesh briefing --index` returns only the index of durable memories — what is
+known here, one line each, without the ranked sections.
+Generic briefing does not report unread durable messages: it has no recipient
+identity. The session-start hook and each prompt do report them, but only when
+the session declared who it is by starting with `MEMESH_RECIPIENT=<id>`. If you
+already know the exact logical recipient, pass `recipient` with `project` (MCP) or use
 `memesh briefing --project <name> --recipient <id>`. The scoped line names the
 project and recipient and directs you to `message poll` first, then `message
-fetch` each returned `message_id`; fetching does not acknowledge. At zero
+fetch` each returned `message_id`, then record `intake` for it (the session-start
+and prompt reminders repeat until you do; fetching alone does not acknowledge).
+At zero
 unread it also says so explicitly if that exact recipient id has never been
 seen in this project at all — treat that as a probable typo in `--recipient`,
 not as an empty, healthy inbox.
@@ -120,15 +127,19 @@ memesh task --blocked "Waiting on the Windows runner"
 memesh task --blocked ""      # blocker resolved — empty string clears the field
 ```
 Fields: `--goal` `--next` `--blocked` `--done` (MCP tool: `task_state`).
-Record ONLY what the user actually said. This state is injected at the top of
-the next session and read as fact — a goal you guessed from which files were
-edited reaches that session with nothing to correct it. If it was not said,
-leave the field out.
+Record ONLY what the user actually said. Fresh state is injected at the top
+of the next session at `standard`/`full` and read as fact — a goal you
+guessed from which files were edited reaches that session with nothing to
+correct it; the default, `minimal`, never shows a fresh state
+(`memesh config set briefing standard` turns it on), but a stale or
+unknown-age one still gets a one-line flag at every level. If it was not
+said, leave the field out.
 
 **SESSION END or milestone → make the task state match reality.**
-`memesh task` (no flags) shows exactly what the next session will be told.
-If "next" is now done, record what is actually next; if the blocker cleared,
-clear it.
+`memesh task` (no flags) always shows the complete stored state — not
+necessarily what the next session will be told, which depends on freshness
+and the `briefing` level. If "next" is now done, record what is actually
+next; if the blocker cleared, clear it.
 
 **USER ASKS "what do you remember / where were we" → briefing, then relay.**
 Run `memesh briefing` (or `--project <name>`) and answer from it. For specific
@@ -149,7 +160,7 @@ With the Claude Code plugin, the first eight rows happen **without any action fr
 
 | Hook | When | What it does |
 |------|------|-------------|
-| **SessionStart** | Every session begins | Injects the briefing: task state → lessons → project memories → recent activity |
+| **SessionStart** | Every session begins | Injects the briefing when the configured level has something to show (an empty project at `minimal` injects nothing) — decisions, lessons and recent activity always; task state and the durable-memory index too at `standard`/`full` (not at the default, `minimal`) |
 | **PreToolUse (Edit/Write)** | Before editing files | Injects memories related to the file or project |
 | **UserPromptSubmit** | When you submit a prompt | Detects "remember this" intent (5 languages) and reminds Claude to use memesh |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
@@ -160,7 +171,8 @@ With the Claude Code plugin, the first eight rows happen **without any action fr
 | **SessionStart/SessionEnd (Codex)** | An ordinary Codex CLI plugin session starts, resumes, or ends | Launches the detached exact-thread companion, replaces its generation on resume, and retires it after the bounded idle queue window; a matching owner-private config may override its project/principal |
 
 Because of the SessionStart hook: **in Claude Code, do NOT call `briefing` at
-session start — it is already in your context.** Call it only mid-session
+session start — whatever the configured level has to show is already in your
+context.** Call it only mid-session
 (context was compacted, or the user asks what you remember) or on hosts
 without these hooks (other MCP clients, shell-only agents). Double-injection
 spends the very tokens this system exists to save.
@@ -246,6 +258,7 @@ human review. Do not hand-compress memories yourself.
 ```bash
 memesh export --tag "project:myapp" > memories.json
 memesh import memories.json --merge skip     # skip | overwrite | append
+# append/overwrite leave a memory you archived (forgot) alone; --merge append|overwrite --restore-archived brings it back
 memesh status                                # version, install channel, update state
 memesh reindex --fts                         # rebuild the local keyword index
 ```

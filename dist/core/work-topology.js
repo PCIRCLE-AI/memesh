@@ -105,13 +105,13 @@ export function groupTopology(entities, projectName) {
         list.sort(bySignal);
     const sections = [];
     if (decisions.length)
-        sections.push({ heading: `Decisions and direction for "${projectName}":`, entities: decisions });
+        sections.push({ heading: `Decisions and direction for "${projectLabel(projectName)}":`, entities: decisions });
     if (lessons.length)
-        sections.push({ heading: `Lessons from "${projectName}" — do not repeat these:`, entities: lessons });
+        sections.push({ heading: `Lessons from "${projectLabel(projectName)}" — do not repeat these:`, entities: lessons });
     if (knowledge.length)
-        sections.push({ heading: `What is known about "${projectName}":`, entities: knowledge });
+        sections.push({ heading: `What is known about "${projectLabel(projectName)}":`, entities: knowledge });
     if (evidence.length)
-        sections.push({ heading: `Recent activity in "${projectName}":`, entities: evidence });
+        sections.push({ heading: `Recent activity in "${projectLabel(projectName)}":`, entities: evidence });
     if (global.length)
         sections.push({ heading: 'Global memory — applies across projects:', entities: global });
     if (foreign.length)
@@ -192,6 +192,9 @@ export function assembleTopologyBlock(stateLines, pools, projectName, budget = D
     lines.push(...globalLines);
     return lines;
 }
+export function hasBriefingContent(lines) {
+    return lines.length > 0;
+}
 export function buildReferenceContext(memoryLines) {
     const safeLines = memoryLines.map((line) => String(line ?? '')
         .replace(/[\s\u0085\u001c-\u001e]+/g, ' ')
@@ -211,5 +214,10 @@ export function buildReferenceContext(memoryLines) {
         ...safeLines,
         fence,
     ].join('\n');
+}
+const PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
+export function projectLabel(projectId) {
+    const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, '');
+    return label === '' ? projectId : label;
 }
 //# sourceMappingURL=work-topology.js.map

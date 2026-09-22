@@ -279,7 +279,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "import";
-    readonly description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities.";
+    readonly description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -296,6 +296,10 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly type: "string";
                 readonly enum: readonly ["skip", "overwrite", "append"];
                 readonly description: "Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived — this cannot be undone)";
+            };
+            readonly restore_archived: {
+                readonly type: "boolean";
+                readonly description: "Optional, default false. With append or overwrite, a local entity that is archived (forgotten) is left untouched and counted in kept_archived. Set true to bring it back to active and merge or overwrite it like any other; it requires merge_strategy append or overwrite (an error with skip). Only set it when the user asked for archived memories to return.";
             };
         };
         readonly required: readonly ["data", "merge_strategy"];
@@ -334,7 +338,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "task_state";
-    readonly description: "Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Injected at the start of the next session, so record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: \"\" once a blocker is resolved).";
+    readonly description: "Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Included in the next session's briefing when the `briefing` level is `standard` or `full` (not at the default, `minimal`), so record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: \"\" once a blocker is resolved).";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -363,7 +367,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "briefing";
-    readonly description: "The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, recent activity, and a capped index of the project’s durable memories (one line each, newest first, with [mem:id] handles; structured counts and token cost in `index`) — the same block Claude Code receives at session start. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.";
+    readonly description: "The work topology for a project, assembled and ready to use — the same memory block Claude Code receives at session start (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). How much is assembled follows the `briefing` setting: `minimal` (the default) is only this project’s decisions and direction, lessons not to repeat, known facts and recent activity, with the live repository state in front of them, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds where the work was left off (goal / next / blocked / done) when it is fresh, and closes with a capped index of the project’s durable memories (one line each, newest first, with [mem:id] handles); `full` additionally includes memories from other projects and global memory. Whatever the level, the result’s `index` field carries the index’s structured counts and token cost. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {

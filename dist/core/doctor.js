@@ -1042,7 +1042,7 @@ function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
         ? servers['memesh-channel']
         : undefined;
     if (server === undefined) {
-        return createCheck('claude-channel', 'Claude Channel registration', 'warn', 'No user-scoped memesh-channel registration was found. Durable MCP/inbox messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.', 'If you want the opt-in channel, run `memesh agent setup claude` and then register the printed user-scoped MCP command.');
+        return createCheck('claude-channel', 'Claude Channel registration', 'warn', 'No user-scoped memesh-channel registration was found. Durable MCP/inbox messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.', 'If you want the opt-in channel, run `memesh agent setup claude` and then register the printed user-scoped MCP command.', { code: 'claude-channel.unregistered' });
     }
     const record = server && typeof server === 'object' && !Array.isArray(server)
         ? server
@@ -1135,7 +1135,7 @@ async function inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSu
         return createCheck('update-status', 'Update status', 'fail', `Installed version ${packageVersion} is DEPRECATED by maintainers: ${update.deprecationMessage}`, fix, { code: 'update-status.deprecated', params: { version: packageVersion, detail: update.deprecationMessage ?? '' } });
     }
     if (update.freshness === 'unavailable') {
-        if (isFreshInstall()) {
+        if (isFreshInstall() && !update.lastAttemptAt && !update.lastError) {
             return createCheck('update-status', 'Update status', 'pass', 'Installed recently — memesh has not had a chance to check for updates yet. This resolves itself on the first successful check.');
         }
         return createCheck('update-status', 'Update status', 'warn', 'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.', 'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.', { code: 'update-status.no-cache' });
@@ -1166,7 +1166,7 @@ async function inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSu
             params: { version: packageVersion, detail: update.lastError ?? '' },
         });
     }
-    if (update.updateAvailable && update.latestVersion) {
+    if (update.latestVersion && update.latestVersion !== packageVersion) {
         if (classifyBump(packageVersion, update.latestVersion)) {
             return createCheck('update-status', 'Update status', 'warn', `Update available: ${update.latestVersion} (current: ${packageVersion})`, `Run 'memesh update' to upgrade`, { code: 'update-status.update-available', params: { latest: update.latestVersion, current: packageVersion } });
         }

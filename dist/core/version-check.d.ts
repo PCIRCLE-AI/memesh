@@ -1,4 +1,6 @@
 import { execFile } from 'child_process';
+export declare function isAheadOfLatest(update: UpdateCheck | null): boolean;
+export declare function showsPreReleaseNotice(update: UpdateCheck | null): boolean;
 export type UpdateCheckSource = 'fresh' | 'cache';
 export type UpdateCheckFreshness = 'fresh' | 'cached' | 'stale' | 'unavailable';
 export interface UpdateCheck {

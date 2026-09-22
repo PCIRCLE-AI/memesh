@@ -32,7 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { isMain } from '../../scripts/lib/verify-core.mjs';
 
 /** Fields a ledger turn must carry for the contract to accept it. */
 export const REQUIRED_TURN_FIELDS = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens'];
@@ -224,4 +224,4 @@ function main(argv) {
   console.log(`  transcript sha256=${ledger.session.transcript_sha256}`);
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) main(process.argv);
+if (isMain(import.meta.url)) main(process.argv);

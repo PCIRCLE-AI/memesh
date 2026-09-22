@@ -20,7 +20,7 @@
  * turns CI red. Verified non-vacuous: reintroducing the FTS omission in
  * captureEntity, or changing the mirror's path precedence, fails these tests.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createRequire } from 'module';
 import fs from 'fs';
 import os from 'os';
@@ -281,6 +281,94 @@ describe('F5 mirror parity: scripts/hooks/_shared.js vs src/core', () => {
       // equality test against core would silently start passing if BOTH sides
       // regressed together.
       expect(shared.hookMatchExpression('v2-图-final')).toContain('"图"*');
+    });
+  });
+
+  // #360, cross-model review round 1, item 5: briefing-level.ts is copied
+  // VERBATIM to _generated/briefing-level.js (no hand-mirror, unlike the
+  // paths/FTS logic above) — but the source of the copy is dist/, one build
+  // step removed from src/. A mutation to src/core/briefing-level.ts that is
+  // never rebuilt leaves _generated/briefing-level.js (and
+  // dist/core/briefing-level.js) silently answering the OLD policy: the
+  // TS-importing side (briefing.ts, and anything vitest transforms directly
+  // from src/) sees the mutation immediately, the hook — which can only ever
+  // import the generated copy — does not, and nothing above in this file
+  // would have caught that split, because this file's coverage stops at
+  // paths/FTS/query segmentation. This closes that gap directly: compare the
+  // generated mirror's answer against the TS source's answer for every
+  // level, so a source edit landing without `npm run build` /
+  // generate-hook-core.mjs turns THIS file red instead of dist/'s staleness
+  // being the only thing that would have caught it
+  // (scripts/check-generated-mirror.mjs, a separate, not-always-run gate).
+  describe('briefing-level parity (#360)', () => {
+    it('the generated mirror answers the same policy as core for every level', async () => {
+      const core = await import('../../src/core/briefing-level.js');
+      for (const level of core.BRIEFING_LEVELS) {
+        expect(shared.briefingLevelPolicy(level), `policy drift at level "${level}"`)
+          .toEqual(core.briefingLevelPolicy(level));
+      }
+    });
+
+    it('the generated mirror agrees on the level list, the default and validity', async () => {
+      const core = await import('../../src/core/briefing-level.js');
+      expect(shared.DEFAULT_BRIEFING_LEVEL).toBe(core.DEFAULT_BRIEFING_LEVEL);
+      for (const level of ['minimal', 'standard', 'full', 'banana', '', 'FULL']) {
+        expect(shared.isBriefingLevel(level), `isBriefingLevel drift for ${JSON.stringify(level)}`)
+          .toBe(core.isBriefingLevel(level));
+      }
+    });
+
+    // Round 5 (Codex round 4 re-review, finding 1): the new named predicate
+    // — `session-start.js`'s ONLY call site for "should the notice be
+    // appended at this level" — must answer identically from the generated
+    // mirror and from core, for every level, same as `briefingLevelPolicy`
+    // itself above.
+    it('the generated mirror\'s sessionStartAppendsWorkPackageNotice agrees with core for every level', async () => {
+      const core = await import('../../src/core/briefing-level.js');
+      for (const level of core.BRIEFING_LEVELS) {
+        expect(shared.sessionStartAppendsWorkPackageNotice(level), `workPackageNotice drift at level "${level}"`)
+          .toBe(core.sessionStartAppendsWorkPackageNotice(level));
+      }
+    });
+  });
+
+  // #360 round 6 (Codex round 5 re-review, item 2): `_shared.js`'s
+  // `HOOK_CONFIG_UNREADABLE_REASON` is NOT a byte-copy of core's
+  // `warnUnreadable()` message on purpose — that one prints the real file
+  // path and the raw parse-error text, which this hook-side reason is
+  // explicitly forbidden from doing (it can quote the file). This is a
+  // WEAKER, deliberate check: both describe the exact same event, so they
+  // must still share the core descriptive phrase — if a future edit to
+  // either message drops it, this test is the one thing that would notice
+  // the two silently describing the same state in unrecognisably different
+  // words.
+  describe('config-unreadable wording parity (#360 round 6)', () => {
+    it('the hook-side reason and the real core stderr trace share the same descriptive phrase', async () => {
+      const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cfg-parity-'));
+      const previousDir = process.env.MEMESH_DIR;
+      process.env.MEMESH_DIR = configDir;
+      fs.writeFileSync(path.join(configDir, 'config.json'), '{ broken');
+      const writes: string[] = [];
+      const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+        writes.push(String(chunk));
+        return true;
+      });
+      let coreState: string;
+      try {
+        const core = await import('../../src/core/config.js');
+        coreState = core.readConfigResult().state;
+      } finally {
+        spy.mockRestore();
+        if (previousDir === undefined) delete process.env.MEMESH_DIR;
+        else process.env.MEMESH_DIR = previousDir;
+        fs.rmSync(configDir, { recursive: true, force: true });
+      }
+      expect(coreState).toBe('unreadable');
+      const coreMessage = writes.find((line) => line.includes('[memesh config]'));
+      expect(coreMessage, 'core must have traced something for the corrupt file').toBeTruthy();
+      const SHARED_PHRASE = 'could not be read as a settings object';
+      expect(coreMessage).toContain(SHARED_PHRASE);
+      expect(shared.HOOK_CONFIG_UNREADABLE_REASON).toContain(SHARED_PHRASE);
     });
   });
 

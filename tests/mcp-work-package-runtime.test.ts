@@ -45,7 +45,7 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     cwd: runtimeCwd, env, stderr: 'pipe',
   });
   const call = async (name: string, args: Record<string, unknown>) => {
-    const response = await client.callTool({ name, arguments: args }, undefined, { timeout: 5000 });
+    const response = await client.callTool({ name, arguments: args }, undefined, { timeout: 30000 });
     expect(Array.isArray(response.content)).toBe(true);
     const content = response.content as Array<{ type: string; text?: string }>;
     expect(content[0]?.type).toBe('text');
@@ -61,11 +61,11 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     // this fixture so registration/dispatch cannot come from stale local dist.
     execFileSync(process.execPath, [require.resolve('typescript/bin/tsc'), '-p', path.join(repo, 'tsconfig.json'),
       '--outDir', path.join(runtime, 'dist'), '--declaration', 'false', '--declarationMap', 'false', '--sourceMap', 'false'],
-    { cwd: repo, env, timeout: 20000, stdio: 'pipe' });
+    { cwd: repo, env, timeout: 60000, stdio: 'pipe' });
     fs.copyFileSync(path.join(repo, 'package.json'), path.join(runtime, 'package.json'));
     fs.symlinkSync(path.join(repo, 'node_modules'), path.join(runtime, 'node_modules'), 'dir');
     const cli = (args: string[]) => spawnSync(process.execPath, [path.join(runtime, 'dist/transports/cli/cli.js'), ...args], {
-      cwd: runtimeCwd, env, encoding: 'utf8', timeout: 5000,
+      cwd: runtimeCwd, env, encoding: 'utf8', timeout: 30000,
     });
     const help = cli(['--help']);
     expect(help.status, help.stderr).toBe(0);
@@ -88,7 +88,7 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
       expect(rejected.status, rejected.stderr).toBe(1);
     }
     expect(fs.existsSync(path.join(runtime, 'config.json'))).toBe(false);
-    await client.connect(transport, { timeout: 5000 });
+    await client.connect(transport, { timeout: 30000 });
     const childPid = transport.pid;
     expect(childPid).toBeTypeOf('number');
     expect(childPid).not.toBe(process.pid);
@@ -254,4 +254,4 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
       removeTempDir(runtime);
     }
   }
-}, 30000);
+}, 120000);

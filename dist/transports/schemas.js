@@ -126,6 +126,7 @@ export const ImportSchema = z.object({
     data: ExportResultSchema,
     namespace: z.enum(NAMESPACES).optional(),
     merge_strategy: z.enum(['skip', 'overwrite', 'append']),
+    restore_archived: z.boolean().optional(),
 }).strict();
 export const LearnSchema = z.object({
     error: z.string().min(1).max(5000),

@@ -121,11 +121,11 @@ memesh remember "登入功能用 OAuth 2.0 加 PKCE"
 memesh recall "登入"
 # -> 找到那筆 PKCE 的決定
 
-memesh briefing        # agent 對這個專案知道多少、上次做到哪
+memesh briefing        # agent 對這個專案知道多少
 memesh serve           # 啟動本機 server 並印出儀表板網址
 ```
 
-讓 `memesh serve` 保持執行，再開啟它印出的網址。在 Claude Code 裡使用記憶工具時連終端機都不用開：在對話裡說「記下來」就好，每次開新對話也會自動先收到摘要。
+讓 `memesh serve` 保持執行，再開啟它印出的網址。在 Claude Code 裡使用記憶工具時連終端機都不用開：在對話裡說「記下來」就好；有內容可看之後，開新對話時也會自動先收到摘要。
 
 有了記憶之後，兩件值得知道的事：
 
@@ -141,14 +141,14 @@ memesh serve           # 啟動本機 server 並印出儀表板網址
 | 工具 | 做什麼 |
 |------|--------|
 | `work_package` | 準備一份有界限且不受信任的日曆摘要，或從唯一符合的 MCP workspace root 準備 Claude Code transcript 套件；提交一份嚴格結果等待人工審核，或延後而不產生耐久變更。Transcript 提交會保留有界且已遮蔽的來源輪次；不會暴露檔案路徑、隱藏推理、provider、embedding 或 vector 資料。 |
-| `remember` | 用觀察、關係和標籤儲存知識 |
+| `remember` | 用觀察、關係和標籤儲存知識；也可以只給一段自由文字（`note`），標題、觀察和名稱會自動推導出來；`replace` 則是直接改掉既有的那一筆 |
 | `recall` | 本機 FTS5 搜尋，包含多因素評分（相關性、近期性、頻率、信心、回憶影響） |
 | `forget` | 軟歸檔（永不刪除）或移除特定觀察 |
 | `export` | 以 JSON 備份、搬遷記憶，或在相容代理之間轉移 |
 | `import` | 匯入記憶，包含合併策略（跳過 / 覆寫 / 追加） |
 | `learn` | 記錄來自錯誤的結構化教訓（錯誤、根本原因、修復、預防） |
 | `task_state` | 讀取或記下工作進度——目標、下一步、卡住的地方、剛完成的事 |
-| `briefing` | 提供給任何 MCP client 的工作拓撲，最後附上這個專案長期記憶的索引（有數量上限）；一般情境不顯示未讀訊息，確切的 `project` + `recipient` 才會顯示該收件者尚未擷取的訊息 |
+| `briefing` | 提供給任何 MCP client 的工作拓撲——預設（`minimal`）只含這個專案的決定、教訓、已知事實與近期活動；`standard` 另加最新的任務狀態，並在最後附上這個專案長期記憶的索引（有數量上限），`full` 再加入其他專案與全域記憶（由 `briefing` 設定的 `minimal` / `standard` / `full` 決定）；一般情境不顯示未讀訊息，確切的 `project` + `recipient` 才會顯示該收件者尚未擷取的訊息 |
 | `user_patterns` | 分析你的工作模式——時間表、工具、優勢、學習領域 |
 | `improvement` | 將有證據來源的產品改善送交人類審核，或讀取其狀態；agent 不能自行接受或拒絕 |
 | `message` | 先找出活動 agent，再交換確切收件者的不受信任訊息。Durable JSON payload 上限 64 KiB；完整 native envelope 上限 16 KiB，並區分 `native_message_too_large` 與 `recipient_unavailable`。原生接受、探索、輪詢與擷取都不代表 ACK 或 workflow disposition |

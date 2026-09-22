@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { execFileSync, spawnSync } from 'child_process';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
+import { pathToFileURL } from 'url';
 
 import {
   detectRememberIntent,
@@ -284,7 +285,7 @@ describe('Feature: User Prompt Intent Hook', () => {
       rmSync(tmpHome, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     });
 
-    function runHook(input: object | string, extraEnv: NodeJS.ProcessEnv = {}) {
+    function runHook(input: object | string, extraEnv: NodeJS.ProcessEnv = {}, hookPath: string = HOOK_PATH) {
       const stdinBody = typeof input === 'string' ? input : JSON.stringify(input);
       // Build a clean env: process.env minus MEMESH_* (so tests don't inherit
       // dev's local overrides), plus our isolated HOME and any test extras.
@@ -295,7 +296,7 @@ describe('Feature: User Prompt Intent Hook', () => {
       baseEnv.HOME = tmpHome;
       baseEnv.USERPROFILE = tmpHome; // Windows parity
       try {
-        const stdout = execFileSync('node', [HOOK_PATH], {
+        const stdout = execFileSync('node', [hookPath], {
           input: stdinBody,
           env: { ...baseEnv, ...extraEnv },
           encoding: 'utf8',
@@ -332,6 +333,112 @@ describe('Feature: User Prompt Intent Hook', () => {
 
       it('does not emit hint on conversational prompt', () => {
         expectNoOp(runHook({ prompt: 'do you remember the docs?' }));
+      });
+
+      // A plugin cache or a global npm prefix is often reached through a
+      // symlink. Node resolves `import.meta.url` to the real path and leaves
+      // `process.argv[1]` as typed; a guard comparing the two unresolved made
+      // this hook do nothing on every prompt and still report success, with
+      // nothing to show for it in doctor.
+      it('emits the hint when the hook is reached through a symlinked directory', (ctx) => {
+        const linkParent = mkdtempSync(path.join(tmpdir(), 'memesh-uph-link-'));
+        try {
+          const hooksLink = path.join(linkParent, 'hooks-link');
+          try {
+            symlinkSync(path.dirname(HOOK_PATH), hooksLink, 'dir');
+          } catch {
+            console.warn('skipping the symlinked-hook test: symlinkSync is not permitted on this platform/user');
+            ctx.skip();
+            return;
+          }
+          const typed = path.join(hooksLink, 'user-prompt-intent.js');
+          // Precondition: the typed path and its realpath really differ.
+          expect(realpathSync(typed)).not.toBe(path.resolve(typed));
+          expectHint(runHook({ prompt: 'remember this preference' }, {}, typed));
+        } finally {
+          rmSync(linkParent, { recursive: true, force: true });
+        }
+      });
+
+      // Under `--preserve-symlinks-main`, Node leaves `import.meta.url`
+      // UNRESOLVED for the main module, so a guard that only compares the
+      // realpath'd typed path (never the unresolved one) goes silent through
+      // the same symlinked directory as above.
+      it('emits the hint through a symlinked directory under --preserve-symlinks-main', (ctx) => {
+        const linkParent = mkdtempSync(path.join(tmpdir(), 'memesh-uph-link-psm-'));
+        try {
+          const hooksLink = path.join(linkParent, 'hooks-link');
+          try {
+            symlinkSync(path.dirname(HOOK_PATH), hooksLink, 'dir');
+          } catch {
+            console.warn('skipping the symlinked-hook --preserve-symlinks-main test: symlinkSync is not permitted on this platform/user');
+            ctx.skip();
+            return;
+          }
+          const typed = path.join(hooksLink, 'user-prompt-intent.js');
+          expect(realpathSync(typed)).not.toBe(path.resolve(typed));
+          expectHint(
+            runHook(
+              { prompt: 'remember this preference' },
+              { NODE_OPTIONS: '--preserve-symlinks-main' },
+              typed,
+            ),
+          );
+        } finally {
+          rmSync(linkParent, { recursive: true, force: true });
+        }
+      });
+    });
+
+    // Mirrors isMain()'s rule (scripts/lib/verify-core.mjs) for `node -`
+    // (`argv[1]` is the literal `-`, no file to realpath) and `node -e`/`-p`
+    // (the eval flag is in `process.execArgv`; `argv[1]` is just the
+    // caller's first argument): importing the hook must not throw and must
+    // emit nothing.
+    describe('Entry-point guard: importing under `node -e` / `node -` does not throw', () => {
+      it('importing the hook from `node -e` (its own path handed as an argument) does not throw and emits nothing, even with stdin that WOULD trigger a hint if the stdin pipeline incorrectly ran', () => {
+        // argv[1] here is the hook's own path, the one handed to import(), so
+        // without the eval-flag check the unresolved-path comparison matches
+        // and treats this import as main. Matching stdin makes that
+        // observable: it would emit the hint.
+        const importIt = "import(require('node:url').pathToFileURL(process.argv[1]).href)";
+        const result = spawnSync(process.execPath, ['-e', importIt, HOOK_PATH], {
+          encoding: 'utf8',
+          timeout: 5000,
+          input: JSON.stringify({ prompt: 'remember this preference' }),
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout.trim()).toBe('');
+      });
+
+      // The guard's realpath fallback is left to throw: an entry file that
+      // vanished before the import must fail loudly, not read "not main".
+      it('importing the hook after its entry file vanished fails with ENOENT instead of reading "not main"', () => {
+        const dir = mkdtempSync(path.join(tmpdir(), 'memesh-uph-vanished-'));
+        try {
+          const entry = path.join(dir, 'entry.mjs');
+          writeFileSync(
+            entry,
+            "import { unlinkSync } from 'node:fs';\nimport { fileURLToPath } from 'node:url';\n" +
+              `unlinkSync(fileURLToPath(import.meta.url));\nawait import(${JSON.stringify(pathToFileURL(HOOK_PATH).href)});\n`,
+          );
+          const result = spawnSync(process.execPath, [entry], { encoding: 'utf8', timeout: 5000 });
+          expect(result.status).not.toBe(0);
+          expect(result.stderr).toContain('ENOENT');
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      });
+
+      it('importing the hook while the process itself was started via `node -` (stdin) does not throw and emits nothing', () => {
+        const stdinScript = `import ${JSON.stringify(pathToFileURL(HOOK_PATH).href)};\n`;
+        const result = spawnSync(process.execPath, ['--input-type=module', '-'], {
+          input: stdinScript,
+          encoding: 'utf8',
+          timeout: 5000,
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout.trim()).toBe('');
       });
     });
 

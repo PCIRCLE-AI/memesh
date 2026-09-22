@@ -14,8 +14,20 @@ const require = createRequire(import.meta.url);
 // Non-git identity is basename + real-path hash; derive seeds through the
 // hook's own mirror so the seeded tag and the hook's derived tag cannot
 // disagree (the rule itself is pinned in tests/core/project-identity.test.ts).
-const { getProjectName: mirrorProjectName } = require('../../scripts/hooks/_shared.js');
+const { getProjectName: mirrorProjectName, WORK_PACKAGE_NOTICE } = require('../../scripts/hooks/_shared.js');
 const projTag = (name: string) => `project:${mirrorProjectName('/tmp/' + name)}`;
+
+// The fresh task state and the durable-memory index are `standard`-level
+// content. The default level is `minimal`, which injects neither, so a test
+// whose subject is one of them — or the gate that keeps a memory out of the
+// ranked block AND the index — runs at `standard` on purpose instead of leaning
+// on the default.
+const STANDARD = { MEMESH_BRIEFING: 'standard' } as const;
+
+// The other direction: a test about what happens when NOTHING sets the level
+// spreads this so the shell running the suite cannot leak a MEMESH_BRIEFING in
+// (`execFileSync` drops an env entry whose value is `undefined`).
+const NO_LEVEL_SETTING = { MEMESH_BRIEFING: undefined } as const;
 
 describe('Feature: Session Start Hook', () => {
   let testDir: string;
@@ -32,7 +44,7 @@ describe('Feature: Session Start Hook', () => {
     removeTempDir(testDir);
   });
 
-  function runHook(input: object, env: Record<string, string> = {}): Record<string, unknown> {
+  function runHook(input: object, env: Record<string, string | undefined> = {}): Record<string, unknown> {
     const hookPath = path.resolve('scripts/hooks/session-start.js');
     const jsonInput = JSON.stringify(input);
     const result = execFileSync('node', [hookPath], {
@@ -225,10 +237,10 @@ describe('Feature: Session Start Hook', () => {
       expect(injected).not.toContain('oauth-pkce-decision');
       expect(injected).not.toContain('lesson-flaky-timeout');
 
-      // Headings describe the WORK, not where the row came from. Matched on
-      // the stable prefix: the fixture's project name carries a per-run
-      // suffix so temp dirs cannot collide.
-      expect(injected).toContain('Decisions and direction for "myproject');
+      // Headings describe the WORK, not where the row came from, and name the
+      // project by its LABEL: the project id ends in a 32-hex routing hash,
+      // which a heading has no use for.
+      expect(injected).toContain('Decisions and direction for "myproject":');
       expect(injected).toContain('do not repeat these');
     });
 
@@ -258,7 +270,7 @@ describe('Feature: Session Start Hook', () => {
       db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, projTag('myproject'));
       db.close();
 
-      const output = runHook({ cwd: '/tmp/myproject' });
+      const output = runHook({ cwd: '/tmp/myproject' }, STANDARD);
       const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
 
       // The heading attributes rather than asserts. It read `was left off`
@@ -313,7 +325,7 @@ describe('Feature: Session Start Hook', () => {
 
     it('does not render the same entity twice across groups', () => {
       seedProjectMemory();
-      const output = runHook({ cwd: '/tmp/myproject' });
+      const output = runHook({ cwd: '/tmp/myproject' }, STANDARD);
       const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
 
       // Counted on the rendered text, since the name is no longer emitted.
@@ -331,7 +343,8 @@ describe('Feature: Session Start Hook', () => {
     });
 
     it('offers session-scoped host-native work-package choices even without a database', () => {
-      const output = runHook({ cwd: '/tmp/myproject' });
+      // #360: the work-package notice is full-only.
+      const output = runHook({ cwd: '/tmp/myproject' }, { MEMESH_BRIEFING: 'full' });
       // Nothing recalled means nothing to inject — emitting an empty
       // additionalContext would waste a context slot on every fresh install.
       const guidance = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
@@ -354,11 +367,10 @@ describe('Feature: Session Start Hook', () => {
   });
 
   it('Scenario: No database + flagged installed version -> deprecation banner emits before welcome', () => {
-    // Codex review (2026-05-06) live-test caught this: the no-DB
-    // short-circuit returned BEFORE the deprecation banner logic, so
-    // a fresh install of a deprecated version saw the welcome line
-    // but never the security warning. The banner must fire on the
-    // no-DB path too.
+    // The no-DB short-circuit must not return BEFORE the deprecation banner
+    // logic: otherwise a fresh install of a deprecated version sees the
+    // welcome line but never the security warning. The banner must fire on
+    // the no-DB path too.
     const cachePath = path.join(testDir, 'update-check.json');
     const repoPkg = require(path.resolve('package.json'));
     fs.writeFileSync(cachePath, JSON.stringify({
@@ -390,14 +402,12 @@ describe('Feature: Session Start Hook', () => {
     expect(messages.some((m) => m.includes('DEPRECATED'))).toBe(true);
     expect(messages.some((m) => m.includes('TEST: live-test deprecation banner verification'))).toBe(true);
     expect(messages.some((m) => m.includes('◉ MeMesh ready'))).toBe(true);
-    // Codex round 36: even when latestVersion === currentVersion in
-    // the cache (no upgrade target apparent), the banner must
-    // include a remediation line. Previously the gate was
-    // `latestVersion !== currentVersion`, which left the security
-    // warning without an action — users had to know to run a
-    // command. Channel-specific text varies (memesh update / npm
-    // install / git pull...), but every channel must produce at
-    // least one indented hint line.
+    // Even when latestVersion === currentVersion in the cache (no upgrade
+    // target apparent), the banner must include a remediation line — gating
+    // it on `latestVersion !== currentVersion` would leave the security
+    // warning without an action. Channel-specific text varies (memesh update
+    // / npm install / git pull...), but every channel must produce at least
+    // one indented hint line.
     expect(messages.some((m) => /\n\s{4}(Run|Source checkout|Project-local install|Upgrade)/.test(m))).toBe(true);
   });
 
@@ -437,7 +447,9 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(1, 'A note about something');
     db.close();
 
-    const output = runHook({ cwd: '/tmp/other-project' });
+    // #360: the "recent" (foreign) pool is full-only: `minimal` (the default)
+    // and `standard` never query it.
+    const output = runHook({ cwd: '/tmp/other-project' }, { MEMESH_BRIEFING: 'full' });
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toContain('◉ MeMesh');
     expect(msg).toMatch(/1 recent/);
@@ -455,7 +467,11 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(2, 'Global note');
     db.close();
 
-    const output = runHook({ cwd: '/tmp/testproj' });
+    // #360: the "recent" (foreign) pool is only queried at level=full
+    // (`minimal`, the default, and `standard` skip it); this test is about
+    // that pool's mechanics, not about level-gating, so it pins full
+    // explicitly.
+    const output = runHook({ cwd: '/tmp/testproj' }, { MEMESH_BRIEFING: 'full' });
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toContain('◉ MeMesh');
     expect(msg).toMatch(/1 project/);
@@ -536,7 +552,9 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(2, 'Standing rule that applies everywhere');
     db.close();
 
-    runHook({ cwd: '/tmp/testproj' });
+    // #360: the global pool is full-only: `minimal` (the default) and
+    // `standard` never query it.
+    runHook({ cwd: '/tmp/testproj' }, { MEMESH_BRIEFING: 'full' });
     const session = readLatestSessionFile();
     expect(session?.entityNames).toContain('proj-only');
     expect(session?.entityNames, 'global memory must reach a project it was never tagged with').toContain('always-memesh-on-failure');
@@ -555,10 +573,10 @@ describe('Feature: Session Start Hook', () => {
     tag.run(c, projTag('indexproj'));
     db.close();
 
-    const output = runHook({ cwd: '/tmp/indexproj' });
+    const output = runHook({ cwd: '/tmp/indexproj' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
-    const name = projTag('indexproj').slice('project:'.length);
-    const section = injected.split(`Index of durable memories for "${name}" (newest first):`)[1];
+    // The heading names the project by its label; the hashed id stays in the tag.
+    const section = injected.split('Index of durable memories for "indexproj" (newest first):')[1];
     expect(section, 'index section present').toBeDefined();
     expect(section).toContain(`- [decision] Keep the index capped at forty lines [mem:${d}]`);
     expect(section).not.toContain('bump the lockfile');
@@ -589,7 +607,7 @@ describe('Feature: Session Start Hook', () => {
     }
     db.close();
 
-    runHook({ cwd: '/tmp/indexonly' }, { MEMESH_SESSION_LIMIT: '1' });
+    runHook({ cwd: '/tmp/indexonly' }, { ...STANDARD, MEMESH_SESSION_LIMIT: '1' });
     const session = readLatestSessionFile()!;
     const ranked = rankedIds(session);
     // Anti-vacuity: an empty ranked set would make every id below "index
@@ -619,7 +637,7 @@ describe('Feature: Session Start Hook', () => {
     add('foreign', 'active', 'personal', 'foreignproj', 'Other project decision');
     db.close();
 
-    const output = runHook({ cwd: '/tmp/scopeproj' });
+    const output = runHook({ cwd: '/tmp/scopeproj' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     const section = injected.split('Index of durable memories for')[1] ?? '';
     expect(section).toContain(`Kept project decision [mem:${kept}]`);
@@ -662,7 +680,7 @@ describe('Feature: Session Start Hook', () => {
     // Comfortably over INDEX_MAX_LINES (40) so a `more` line exists at all,
     // and far under INDEX_CANDIDATE_CAP so nothing was cut off by the query.
     seedIndexRows('capunder', 60);
-    const output = runHook({ cwd: '/tmp/capunder' });
+    const output = runHook({ cwd: '/tmp/capunder' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     const section = injected.split('Index of durable memories for')[1] ?? '';
     const m = section.match(MORE_LINE);
@@ -674,7 +692,7 @@ describe('Feature: Session Start Hook', () => {
     // Exactly INDEX_CANDIDATE_CAP rows: the hook's query returns the cap, so
     // rows beyond it exist unseen and every count downstream is a lower bound.
     seedIndexRows('capover', INDEX_CANDIDATE_CAP);
-    const output = runHook({ cwd: '/tmp/capover' });
+    const output = runHook({ cwd: '/tmp/capover' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     const section = injected.split('Index of durable memories for')[1] ?? '';
     const m = section.match(MORE_LINE);
@@ -703,14 +721,16 @@ describe('Feature: Session Start Hook', () => {
     // must show the detail went somewhere.
     const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
       input: JSON.stringify({ cwd: '/tmp/brokenidx' }),
-      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, ...STANDARD },
       encoding: 'utf8',
       timeout: 15000,
     });
     const output = JSON.parse(run.stdout.trim()) as Record<string, unknown>;
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     expect(injected).toContain('A ranked decision');
-    expect(injected).toMatch(/Index of durable memories for "[^"]+": could not be read this session — run `memesh doctor`\./);
+    // Named by its label, like every other heading: the id's routing hash is not repeated.
+    expect(injected).toMatch(/Index of durable memories for "brokenidx": could not be read this session — run `memesh doctor`\./);
+    expect(injected).not.toMatch(/~[0-9a-f]{32}/);
     expect(injected).not.toContain('No durable memories');
     const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l));
@@ -745,7 +765,7 @@ describe('Feature: Session Start Hook', () => {
     add('clean-meta', null, 'Decision with no metadata recorded');
     db.close();
 
-    const output = runHook({ cwd: '/tmp/corruptmeta' });
+    const output = runHook({ cwd: '/tmp/corruptmeta' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     expect(injected, 'a row with unreadable metadata was auto-injected').not.toContain('Decision with unreadable metadata');
     expect(injected).toContain('Decision with no metadata recorded');
@@ -758,10 +778,25 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(c, projTag('otherproj'));
     db.close();
 
-    const output = runHook({ cwd: '/tmp/emptyindexproj' });
+    const output = runHook({ cwd: '/tmp/emptyindexproj' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
-    const name = projTag('emptyindexproj').slice('project:'.length);
-    expect(injected).toContain(`- No durable memories (decisions, lessons, patterns, references) for "${name}" yet.`);
+    expect(injected).toContain('- No durable memories (decisions, lessons, patterns, references) for "emptyindexproj" yet.');
+    expect(injected, 'the routing hash must not reach the heading').not.toMatch(/~[0-9a-f]{32}/);
+  });
+
+  // The line the terminal shows a first-time user on a project with no memories
+  // used to greet them with the whole hashed id.
+  it('the terminal banner for a project with no memories names it by its label, not its hashed id', () => {
+    const db = createTestDb();
+    const c = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('commit-elsewhere', 'commit').lastInsertRowid as number;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(c, 'fix: something');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(c, projTag('otherbannerproj'));
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/emptybannerproj' }, STANDARD);
+    const msg = output.systemMessage as string;
+    expect(msg).toContain('◉ MeMesh ready · no memories for "emptybannerproj" yet');
+    expect(msg).not.toMatch(/~[0-9a-f]{32}/);
   });
 
   it('Regression #242: global memories do not displace the project window', () => {
@@ -779,7 +814,9 @@ describe('Feature: Session Start Hook', () => {
     for (let i = 0; i < 6; i++) { const id = ins.run(`p${i}`, 'decision', 'personal').lastInsertRowid as number; obs.run(id, `project ${i}`); tag.run(id, projTag('testproj')); }
     db.close();
 
-    runHook({ cwd: '/tmp/testproj' }, { MEMESH_SESSION_LIMIT: '5' });
+    // #360: the global pool is full-only: `minimal` (the default) and
+    // `standard` never query it.
+    runHook({ cwd: '/tmp/testproj' }, { MEMESH_SESSION_LIMIT: '5', MEMESH_BRIEFING: 'full' });
     const session = readLatestSessionFile();
     expect(session, 'session file was written').toBeTruthy();
     const names = rankedNames(session!);
@@ -802,7 +839,7 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(2, projTag('trusttest'));
     db.close();
 
-    runHook({ cwd: '/tmp/trusttest' });
+    runHook({ cwd: '/tmp/trusttest' }, STANDARD);
     const session = readLatestSessionFile();
     expect(session?.entityNames).toContain('trusted-memory');
     expect(session?.entityNames).not.toContain('imported-memory');
@@ -828,7 +865,7 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(3, 'Archived global');
     db.close();
 
-    runHook({ cwd: '/tmp/archivetest' });
+    runHook({ cwd: '/tmp/archivetest' }, STANDARD);
     const session = readLatestSessionFile();
     expect(session?.entityNames).toContain('active-module');
     expect(session?.entityNames).not.toContain('archived-module');
@@ -842,7 +879,9 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(1, 'Legacy note');
     db.close();
 
-    const output = runHook({ cwd: '/tmp/anyproject' });
+    // #360: the "recent" (foreign) pool is full-only: `minimal` (the default)
+    // and `standard` never query it.
+    const output = runHook({ cwd: '/tmp/anyproject' }, { MEMESH_BRIEFING: 'full' });
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toContain('◉ MeMesh');
     expect(msg).toMatch(/\d+ recent/);
@@ -924,7 +963,11 @@ describe('Feature: Session Start Hook', () => {
     }
     db.close();
 
-    const output = runHook({ cwd: '/tmp/limittest' }, { MEMESH_SESSION_LIMIT: '5' });
+    // Pinned to `standard`: `rankedNames` exists to keep the durable-memory
+    // index (which closes the block at standard/full) from reading as the
+    // ranked window overflowing its limit, and at the default level there is
+    // no index for it to separate — the check would pass without it.
+    const output = runHook({ cwd: '/tmp/limittest' }, { MEMESH_SESSION_LIMIT: '5', ...STANDARD });
     const msg = (output as { systemMessage: string }).systemMessage;
     expect(msg).toMatch(/5 project/);
     const session = readLatestSessionFile();
@@ -1036,6 +1079,712 @@ describe('Feature: Session Start Hook', () => {
       const session = readLatestSessionFile();
       const names = session?.entityNames ?? [];
       expect(names.indexOf('hot')).toBeLessThan(names.indexOf('cold'));
+    });
+  });
+
+  // #401: equal scores resolve newest-first. Auto-captured memories carry one
+  // confidence value and have never been accessed, so they score EXACTLY alike,
+  // and SQLite returns equal scores in ascending id order (measured): the cut used
+  // to keep the OLDEST of such a tie, and the lesson query had no ORDER BY at all,
+  // so a new session never saw the newest memories.
+  describe('Scenario: equal scores resolve newest-first (#401)', () => {
+    const seedTied = (db: Database, count: number, type = 'commit', prefix = 'tied') => {
+      for (let i = 1; i <= count; i++) {
+        db.prepare("INSERT INTO entities (name, type, confidence, status) VALUES (?, ?, 0.9, 'active')").run(`${prefix}-${i}`, type);
+        db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(i, `observation ${i}`);
+        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(i, projTag('ties'));
+      }
+    };
+    const BOTH_FORMS: Array<[string, Record<string, string>]> = [
+      ['exp/log ranking', {}],
+      ['legacy ranking (no SQLite math functions)', { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' }],
+    ];
+
+    it.each(BOTH_FORMS)('with a limit of 3 the injected memories are the newest three — %s', (_label, env) => {
+      const db = createScoringDb();
+      seedTied(db, 12);
+      db.close();
+
+      runHook({ cwd: '/tmp/ties' }, { MEMESH_SESSION_LIMIT: '3', MEMESH_BRIEFING: 'minimal', ...env });
+      const session = readLatestSessionFile();
+      expect(session).not.toBeNull();
+      expect([...rankedNames(session!)].sort()).toEqual(['tied-10', 'tied-11', 'tied-12']);
+    });
+
+    it.each(BOTH_FORMS)('a higher score still beats a newer id: the tie-break orders only equal scores — %s', (_label, env) => {
+      const db = createScoringDb();
+      seedTied(db, 6);
+      // The OLDEST row is the only one ever accessed, and just now: under a limit
+      // of 1 it must still win against every newer, tied row.
+      db.prepare("UPDATE entities SET access_count = 40, last_accessed_at = datetime('now') WHERE name = 'tied-1'").run();
+      db.close();
+
+      runHook({ cwd: '/tmp/ties' }, { MEMESH_SESSION_LIMIT: '1', MEMESH_BRIEFING: 'minimal', ...env });
+      const session = readLatestSessionFile();
+      expect(session).not.toBeNull();
+      expect(rankedNames(session!)).toEqual(['tied-1']);
+    });
+
+    it('the lesson section keeps the newest lessons, not the oldest', () => {
+      const db = createScoringDb();
+      seedTied(db, 12, 'lesson_learned', 'lesson');
+      db.close();
+
+      // The project pool is cut to the newest one (12); the five lessons of the
+      // lesson pool are 12..8. Before #401 that pool had no ORDER BY and kept 1..5.
+      runHook({ cwd: '/tmp/ties' }, { MEMESH_SESSION_LIMIT: '1', MEMESH_BRIEFING: 'minimal' });
+      const session = readLatestSessionFile();
+      expect(session).not.toBeNull();
+      expect([...rankedNames(session!)].sort()).toEqual(['lesson-10', 'lesson-11', 'lesson-12', 'lesson-8', 'lesson-9']);
+    });
+  });
+
+  // ── #360: briefing levels ──────────────────────────────────────────────
+  describe('Feature: Briefing levels (#360)', () => {
+    const PROJECT_CWD = '/tmp/everysection';
+    const OTHER_TAG = projTag('everysection-other');
+
+    /** Populates every section the acceptance criteria names: this
+     *  project's own decision/lesson/knowledge/evidence, 3 global, 5
+     *  foreign (other-project), and a task state whose age is controlled by
+     *  `taskUpdatedAt` (an ISO string, or null to omit the task state
+     *  entirely; `omitTaskUpdatedAt` keeps the task state but writes no
+     *  `updated_at` at all). Deliberately small — a handful of short lines per section —
+     *  so the fixture stays far under the 4000-char topology budget: with
+     *  the budget uncontended, dropping the task-state block at `minimal`
+     *  cannot let the topology grow to fill the freed room and invert the
+     *  minimal < standard size relation. */
+    function seedEverySection(opts: { taskUpdatedAt?: string | null; omitTaskUpdatedAt?: boolean } = {}): void {
+      const db = createScoringDb();
+      db.exec("ALTER TABLE entities ADD COLUMN namespace TEXT DEFAULT 'personal'");
+      db.exec('ALTER TABLE entities ADD COLUMN title TEXT');
+      const insert = db.prepare("INSERT INTO entities (name, type, namespace, title) VALUES (?, ?, 'personal', ?)");
+      const insertGlobal = db.prepare("INSERT INTO entities (name, type, namespace, title) VALUES (?, ?, 'global', ?)");
+      const addObs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+      const addTag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+      const projectTag = projTag('everysection');
+
+      const decision = insert.run('decision-x', 'decision', 'Ship the new cache layer').lastInsertRowid as number;
+      addObs.run(decision, 'Cuts p95 latency in half.');
+      addTag.run(decision, projectTag);
+
+      const lesson = insert.run('lesson-y', 'lesson_learned', 'Do not trust a green suite alone').lastInsertRowid as number;
+      addObs.run(lesson, 'Revert the fix and confirm red.');
+      addTag.run(lesson, projectTag);
+
+      const knowledge = insert.run('ref-z', 'reference', 'API auth uses PKCE').lastInsertRowid as number;
+      addObs.run(knowledge, 'Token endpoint requires a code_verifier.');
+      addTag.run(knowledge, projectTag);
+
+      const evidence = insert.run('commit-1', 'commit', 'Fix off-by-one in scoring').lastInsertRowid as number;
+      addObs.run(evidence, 'entities_fts count was off by one on delete.');
+      addTag.run(evidence, projectTag);
+
+      // Realistic (not padded) title LENGTH, not count, is what grows full's
+      // global/foreign-only mass — GLOBAL_TOPOLOGY_LIMIT/RECENT_LIMIT cap
+      // rendering at 3/5 regardless of how many rows exist, and a real
+      // global rule or a real cross-project decision is a sentence.
+      const GLOBAL_TITLES = [
+        'Never commit a .env file to any repository, even a private fork — rotate the key immediately if it happens',
+        'Rotate every API key on a quarterly schedule across all environments, staging included, not just production',
+        'Redact secrets before any log line leaves the process — a log aggregator is not a trust boundary you control',
+      ];
+      for (let i = 0; i < GLOBAL_TITLES.length; i++) {
+        const id = insertGlobal.run(`global-rule-${i}`, 'directive', GLOBAL_TITLES[i]).lastInsertRowid as number;
+        addObs.run(id, `Cross-project detail ${i}`);
+      }
+
+      const FOREIGN_TITLES = [
+        'Switched the payment webhook retry policy to exponential backoff after repeated duplicate-charge incidents',
+        'Deprecated the v1 export format in favour of a streaming JSON response that does not buffer the whole export',
+        'Moved session tokens out of local storage and into httpOnly cookies to close an XSS token-theft path',
+        'Split the monolithic background worker into three priority queues so a slow job cannot starve the others',
+        'Pinned the base container image to a content digest instead of a floating tag after a silent upstream break',
+      ];
+      for (let i = 0; i < FOREIGN_TITLES.length; i++) {
+        const id = insert.run(`foreign-note-${i}`, 'decision', FOREIGN_TITLES[i]).lastInsertRowid as number;
+        addObs.run(id, `Detail ${i}`);
+        addTag.run(id, OTHER_TAG);
+      }
+
+      if (opts.taskUpdatedAt !== null) {
+        const updatedAt = opts.taskUpdatedAt ?? new Date().toISOString();
+        const project = mirrorProjectName(PROJECT_CWD);
+        const taskId = db.prepare("INSERT INTO entities (name, type, namespace, metadata) VALUES (?, 'task-state', 'personal', ?)")
+          .run(
+            `task-state:${project}`,
+            JSON.stringify({
+              task_state: {
+                goal: 'Ship #360',
+                next: 'Verify sections',
+                ...(opts.omitTaskUpdatedAt ? {} : { updated_at: updatedAt }),
+              },
+            }),
+          ).lastInsertRowid as number;
+        addObs.run(taskId, 'goal: Ship #360');
+        addTag.run(taskId, projectTag);
+      }
+
+      db.close();
+    }
+
+    function injectedContextAt(level: string, env: Record<string, string> = {}): string {
+      const output = runHook({ cwd: PROJECT_CWD }, { MEMESH_BRIEFING: level, ...env });
+      return (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    }
+
+    // Headings exactly as work-topology.ts's groupTopology / task-state.ts /
+    // briefing-index.ts render them — read from source, not invented.
+    const HEADINGS = {
+      decisions: 'Decisions and direction for',
+      lessons: 'do not repeat these',
+      knowledge: 'What is known about',
+      evidence: 'Recent activity in',
+      foreign: 'From your other projects',
+      global: 'Global memory — applies across projects',
+      taskStateFresh: 'Stated about',
+      index: 'Index of durable memories for',
+      workPackage: 'Work packages: check work_package prepare',
+    };
+
+    /** What `minimal` — the default level — injects: this project's own
+     *  sections, and none of the rest. One definition, used by every test
+     *  about the default and by the explicit `minimal` test below. */
+    function expectMinimalBlock(injected: string, label: string): void {
+      for (const key of ['decisions', 'lessons', 'knowledge', 'evidence'] as const) {
+        expect(injected, `${label} must contain "${HEADINGS[key]}"`).toContain(HEADINGS[key]);
+      }
+      for (const key of ['foreign', 'global', 'taskStateFresh', 'index', 'workPackage'] as const) {
+        expect(injected, `${label} must NOT contain "${HEADINGS[key]}"`).not.toContain(HEADINGS[key]);
+      }
+    }
+
+    /** An env in which nothing sets the level: no MEMESH_BRIEFING, and a config
+     *  dir that holds no config.json. */
+    function noSettingEnv(): Record<string, string | undefined> {
+      const dir = path.join(testDir, '.memesh-config-none');
+      fs.mkdirSync(dir, { recursive: true });
+      return { ...NO_LEVEL_SETTING, MEMESH_DIR: dir };
+    }
+
+    it('B2: minimal has this project\'s own sections + live repo state, and NOTHING else', () => {
+      seedEverySection();
+      expectMinimalBlock(injectedContextAt('minimal'), 'minimal');
+    });
+
+    it('B1: with no setting at all the hook injects exactly what minimal injects — the default level is minimal', () => {
+      seedEverySection();
+      const output = runHook({ cwd: PROJECT_CWD }, noSettingEnv());
+      const unset = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      expectMinimalBlock(unset, 'no setting');
+      // Anti-vacuity: the same fixture DOES carry the task state and the index
+      // at `standard`, so their absence above is the level, not the fixture.
+      const standard = injectedContextAt('standard');
+      expect(standard).toContain(HEADINGS.taskStateFresh);
+      expect(standard).toContain(HEADINGS.index);
+      expect(unset, 'no setting must be byte-identical to an explicit minimal').toBe(injectedContextAt('minimal'));
+    });
+
+    it('B2: standard adds task state and the durable index, still no global/foreign/notice', () => {
+      seedEverySection();
+      const injected = injectedContextAt('standard');
+
+      for (const key of ['decisions', 'lessons', 'knowledge', 'evidence', 'taskStateFresh', 'index'] as const) {
+        expect(injected, `standard must contain "${HEADINGS[key]}"`).toContain(HEADINGS[key]);
+      }
+      for (const key of ['foreign', 'global', 'workPackage'] as const) {
+        expect(injected, `standard must NOT contain "${HEADINGS[key]}"`).not.toContain(HEADINGS[key]);
+      }
+    });
+
+    it('B2: full has every section', () => {
+      seedEverySection();
+      const injected = injectedContextAt('full');
+      for (const key of Object.keys(HEADINGS) as (keyof typeof HEADINGS)[]) {
+        expect(injected, `full must contain "${HEADINGS[key]}"`).toContain(HEADINGS[key]);
+      }
+    });
+
+    it('B2: size relation — minimal < standard < full, and standard <= 60% of full (measured, not asserted-then-bent)', () => {
+      seedEverySection();
+      const minimal = injectedContextAt('minimal');
+      const standard = injectedContextAt('standard');
+      const full = injectedContextAt('full');
+
+      expect(minimal.length).toBeLessThan(standard.length);
+      expect(standard.length).toBeLessThan(full.length);
+      const ratio = standard.length / full.length;
+      expect(ratio, `standard (${standard.length}) must be <= 60% of full (${full.length}); measured ${(ratio * 100).toFixed(1)}%`)
+        .toBeLessThanOrEqual(0.6);
+    });
+
+    it('B3: a stale task state is ONE line at every level; a fresh one is the full block at standard/full', () => {
+      const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString(); // 100h old
+      seedEverySection({ taskUpdatedAt: staleAt });
+
+      for (const level of ['minimal', 'standard', 'full']) {
+        const injected = injectedContextAt(level);
+        expect(injected, `${level}: stale must not show the multi-line block`).not.toContain('Stated about');
+        const staleLines = injected.split('\n').filter((l) => l.includes('was last stated') && l.includes('72h'));
+        expect(staleLines, `${level}: exactly one stale line`).toHaveLength(1);
+        expect(staleLines[0]).toContain('memesh task');
+      }
+    });
+
+    it('B3 boundary: 71h (just under) is still fresh', () => {
+      const justUnder = new Date(Date.now() - 71 * 60 * 60 * 1000).toISOString();
+      seedEverySection({ taskUpdatedAt: justUnder });
+      const freshInjected = injectedContextAt('standard');
+      expect(freshInjected).toContain('Stated about');
+      expect(freshInjected).not.toContain('72h');
+    });
+
+    it('B3 boundary: 73h (just over) is stale — offsets from Date.now(), never a fixed calendar date', () => {
+      const justOver = new Date(Date.now() - 73 * 60 * 60 * 1000).toISOString();
+      seedEverySection({ taskUpdatedAt: justOver });
+      const staleInjected = injectedContextAt('standard');
+      expect(staleInjected).not.toContain('Stated about');
+      expect(staleInjected).toContain('72h');
+    });
+
+    // The age parser itself is pinned in tests/core/task-state.test.ts; this
+    // pins the hook's wiring to it: every stored shape whose age cannot be
+    // established renders the one "age could not be established" line and
+    // never the fresh block, at EVERY level: `minimal` is the default, and
+    // the flag must survive there exactly as the stale one does.
+    it.each([
+      ['a missing updated_at', { omitTaskUpdatedAt: true }],
+      ['an unparseable updated_at', { taskUpdatedAt: 'not-a-date' }],
+      ['a future-dated updated_at (+2h)', { taskUpdatedAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString() }],
+      ['a timezone-less updated_at', { taskUpdatedAt: '2026-09-20T10:00:00' }],
+      ['a date-only updated_at', { taskUpdatedAt: '2026-09-20' }],
+    ])('B3: %s is one "age could not be established" line at every level, never the fresh block', (_label, seed) => {
+      seedEverySection(seed);
+      for (const level of ['minimal', 'standard', 'full']) {
+        const injected = injectedContextAt(level);
+        expect(injected, `${level}: no fresh block`).not.toContain(HEADINGS.taskStateFresh);
+        const flagLines = injected.split('\n').filter((l) => l.includes('age could not be established'));
+        expect(flagLines, `${level}: exactly one age-unknown line`).toHaveLength(1);
+        expect(flagLines[0]).toContain('memesh task');
+      }
+    });
+
+    // `full` is byte-identical to the output from before levels existed —
+    // except when the task state is stale, since staleness handling replaces
+    // the task-state block at EVERY level including `full`. Only those lines
+    // differ. Before levels a task state was always shown as the multi-line
+    // block, and that renderer is identical to the current one for a FRESH
+    // task state, so the FRESH phase below stands in for "what the
+    // pre-levels output would be" on this fixture, and the test needs no
+    // old build.
+    it('full diverges from a HEAD-equivalent (fresh) run only in the task-state block, for a stale task state', () => {
+      seedEverySection();
+      const freshCtx = injectedContextAt('full');
+      expect(freshCtx, 'fresh must show the multi-line task-state block (HEAD-equivalent)').toContain('Stated about');
+      expect(freshCtx).toContain(HEADINGS.workPackage);
+
+      // seedEverySection() inserts fixed entity names — clear the db (and
+      // WAL/SHM sidecars) before seeding the second fixture in the same
+      // file, or the second seed collides on those names.
+      for (const suffix of ['', '-wal', '-shm']) {
+        fs.rmSync(dbPath + suffix, { force: true });
+      }
+
+      const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString(); // 100h old
+      seedEverySection({ taskUpdatedAt: staleAt });
+      const staleCtx = injectedContextAt('full');
+      expect(staleCtx, 'stale must show the one-line flag, not the multi-line block').not.toContain('Stated about');
+      expect(staleCtx).toContain('72h');
+      expect(staleCtx).toContain(HEADINGS.workPackage);
+
+      // Split each output at the first blank line inside the fence — that
+      // blank line separates the task-state paragraph from everything
+      // after it (the index section, then the fence close, then the
+      // notice). The portion AFTER that point must be byte-identical
+      // between the fresh and stale runs; the portion BEFORE it must NOT
+      // be (otherwise this comparison would be vacuous).
+      const fenceStart = (ctx: string) => ctx.indexOf('```text');
+      const splitAt = (ctx: string) => ctx.indexOf('\n\n', fenceStart(ctx));
+      expect(splitAt(freshCtx), 'fixture sanity: fresh output must contain the fence + a following blank line').toBeGreaterThan(-1);
+      expect(splitAt(staleCtx), 'fixture sanity: stale output must contain the fence + a following blank line').toBeGreaterThan(-1);
+      const restOf = (ctx: string) => ctx.slice(splitAt(ctx));
+      const taskStateBlockOf = (ctx: string) => ctx.slice(0, splitAt(ctx));
+      expect(restOf(staleCtx), 'everything after the task-state block must be byte-identical to the fresh/HEAD-equivalent run')
+        .toBe(restOf(freshCtx));
+      expect(taskStateBlockOf(freshCtx), 'the task-state block itself must differ — otherwise the comparison above is vacuous')
+        .not.toBe(taskStateBlockOf(staleCtx));
+    });
+
+    it('B4: an unknown MEMESH_BRIEFING value defaults to minimal AND records why (hook-outcomes.jsonl)', () => {
+      seedEverySection();
+      const injected = injectedContextAt('banana');
+      // minimal behaviour — the default: this project's own sections, and no
+      // global/foreign, no task state, no index.
+      expectMinimalBlock(injected, 'an unknown value');
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(record, 'a briefing-level outcome record must exist').toBeTruthy();
+      expect(record.reason).toContain('invalid env value');
+      expect(record.reason).toContain('banana');
+      expect(record.reason).toContain('minimal');
+    });
+
+    it('B4: an unknown config briefing value defaults to minimal AND records config as the source', () => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-invalid');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ briefing: 'banana' }));
+      const output = runHook({ cwd: PROJECT_CWD }, { ...NO_LEVEL_SETTING, MEMESH_DIR: cfgDir });
+      const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      expectMinimalBlock(injected, 'an unknown config value');
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(record, 'a briefing-level outcome record must exist').toBeTruthy();
+      expect(record.reason).toContain('invalid config value');
+      expect(record.reason).toContain('banana');
+      expect(record.reason).toContain('minimal');
+    });
+
+    // A config.json that is not even a parseable object — a bare array, a
+    // bare string, `null`, or truncated JSON — must leave a trace:
+    // `readHookConfig()` swallows it into `{}`, so every setting reads as
+    // "not set". Real hook, real subprocess, for each shape.
+    it.each([
+      ['a bare array', '[]'],
+      ['a bare string', '"x"'],
+      ['a bare null', 'null'],
+      ['truncated JSON', '{"briefing": "fu'],
+    ])('B4b: a malformed/non-object config document (%s) records why, via the real hook', (_label, raw) => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-malformed');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), raw);
+      const output = runHook({ cwd: PROJECT_CWD }, { ...NO_LEVEL_SETTING, MEMESH_DIR: cfgDir });
+      // Every setting reads as its default — the level falls back to
+      // `minimal` (env/config `briefing` unreadable), so the injected
+      // block has this project's own sections but neither the index, the task
+      // state nor global memory.
+      const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      expectMinimalBlock(injected, `an unreadable config (${raw})`);
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.startsWith('config:'));
+      expect(record, `a config-unreadable outcome record must exist for ${raw}`).toBeTruthy();
+      expect(record.reason).toContain('could not be read as a settings object');
+      // Never the raw file content or a parse-error fragment — bounded and
+      // generic, the same string for every malformed shape.
+      expect(record.reason).not.toContain(raw);
+      fs.rmSync(cfgDir, { recursive: true, force: true });
+    });
+
+    it('B4b: {"nested":{"briefing":"full"}} is a valid object — no malformed-config reason, briefing stays "not set"', () => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-nested');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ nested: { briefing: 'full' } }));
+      runHook({ cwd: PROJECT_CWD }, { ...NO_LEVEL_SETTING, MEMESH_DIR: cfgDir });
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const malformedRecord = lines.find((r) => typeof r.reason === 'string' && r.reason.startsWith('config:'));
+      expect(malformedRecord, 'no malformed-config reason for a valid object with an unrelated nested key').toBeUndefined();
+      const invalidBriefingRecord = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level: invalid'));
+      expect(invalidBriefingRecord, 'no invalid-briefing-value reason either — the top-level key is genuinely absent').toBeUndefined();
+    });
+
+    // `invalid.value` is a stored config value, so it is exactly as
+    // untrusted as any other hand-edited config.json field — a huge string
+    // or one containing raw newlines must not reach `additionalContext`
+    // whole, and must not corrupt the JSONL outcome record (a raw `\n`
+    // inside a JSON string value is legal JSON — `JSON.stringify` escapes
+    // it to `\\n` — so the real risk is an UNBOUNDED length reaching
+    // agent-visible text, not a malformed JSONL line; this test proves both:
+    // bounded length, and the record still parses as exactly one JSON object
+    // per line).
+    it('a huge, newline-laden stored config value is bounded before it reaches additionalContext or the outcome record', () => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-hostile');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      const hostile = 'x'.repeat(10_000) + '\nline two\r\nline three\t`backtick`';
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ briefing: hostile }));
+      const output = runHook({ cwd: PROJECT_CWD }, { ...NO_LEVEL_SETTING, MEMESH_DIR: cfgDir });
+      const injected = (output.hookSpecificOutput as { additionalContext: string } | undefined)?.additionalContext ?? '';
+      // The bounded/flattened form may still appear (truncated, on one
+      // line) — what must NEVER appear is the whole 10,000-char run or a
+      // raw newline from the stored value.
+      expect(injected).not.toContain('x'.repeat(10_000));
+      expect(injected.length).toBeLessThan(5_000);
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const rawLines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n');
+      // Every line must still be exactly one parseable JSON object — a raw
+      // newline smuggled into `reason` unescaped would split one outcome
+      // record into two lines, one of which fails JSON.parse.
+      const lines = rawLines.map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(record, 'a briefing-level outcome record must exist').toBeTruthy();
+      expect(record.reason).toContain('invalid config value');
+      expect(record.reason.length).toBeLessThan(500);
+      expect(record.reason).not.toContain('x'.repeat(10_000));
+    });
+
+    // `describeInvalidValue` bounds the SERIALIZED form it produces (100
+    // units), not its input: serializing escape-heavy input expands it (a
+    // lone surrogate alone serializes to the 6-character `\udXXX`).
+    // `recordHookOutcome` (`_shared.js`) truncates the FULL reason a second
+    // time with a raw `.slice(0, 200)`, which could land inside an expanded
+    // escape or a surrogate pair — invisible to the module's own unit tests.
+    // The whole reason (fixed prefix + that value + fixed suffix) stays under
+    // 200 by a wide margin, so `recordHookOutcome`'s own truncation never
+    // engages for this diagnostic. Each case below is a real hook
+    // subprocess, not a unit test, since that second truncation only exists
+    // there.
+    const PREFIX = 'briefing-level: invalid config value ';
+    const SUFFIX = ', using minimal';
+    function extractAndParseEmbeddedValue(reason: string): unknown {
+      expect(reason.startsWith(PREFIX), `reason must start with the known fixed prefix: ${reason}`).toBe(true);
+      expect(reason.endsWith(SUFFIX), `reason must end with the known fixed suffix: ${reason}`).toBe(true);
+      const embedded = reason.slice(PREFIX.length, reason.length - SUFFIX.length);
+      // Throws (failing the test) if the second truncation cut the
+      // embedded value mid-escape or mid-surrogate-pair — this is the
+      // exact assertion the finding asked for: "JSON.parse of the
+      // embedded quoted value succeeds".
+      return JSON.parse(embedded);
+    }
+
+    it.each([
+      ['30 lone high surrogates', '\ud83d'.repeat(30)],
+      ['200 emoji', '😀'.repeat(200)],
+      ['150 chars of mixed newline/tab/quote/backslash', '\n\t"\\'.repeat(38)],
+      ['10,000 characters', 'x'.repeat(10_000)],
+    ])('%s: recorded reason stays under 200 units, ends on a complete token, embedded value JSON.parses', (_label, raw) => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-surrogate');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ briefing: raw }));
+      const output = runHook({ cwd: PROJECT_CWD }, { ...NO_LEVEL_SETTING, MEMESH_DIR: cfgDir });
+      // The bounded/truncated form may still appear in additionalContext —
+      // it must never be the WHOLE raw adversarial input.
+      const injected = (output.hookSpecificOutput as { additionalContext: string } | undefined)?.additionalContext ?? '';
+      expect(injected).not.toContain(raw);
+
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const lines = fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+      const record = lines.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level'));
+      expect(record, 'a briefing-level outcome record must exist').toBeTruthy();
+      // recordHookOutcome's OWN truncation (200 units) must never engage
+      // for this diagnostic — proves the fix at the source is sufficient
+      // and the second, cruder truncation stays a no-op here.
+      expect(record.reason.length).toBeLessThan(200);
+      expect(() => extractAndParseEmbeddedValue(record.reason)).not.toThrow();
+      fs.rmSync(cfgDir, { recursive: true, force: true });
+    });
+
+    it('B4: the diagnostics quote an invalid value once — the stderr line and the outcome reason', () => {
+      createScoringDb().close();
+      const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: PROJECT_CWD }),
+        env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'banana' },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      expect(run.status, `hook stderr: ${run.stderr}`).toBe(0);
+      expect(run.stderr).toContain('[memesh session-start] invalid env briefing level "banana" — using "minimal"\n');
+      const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+      const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('briefing-level: invalid'));
+      expect(record?.reason).toBe('briefing-level: invalid env value "banana", using minimal');
+    });
+
+    it('a failed memory assembly at minimal records an error — never the "nothing to inject" reason', () => {
+      // One ranked entity with an observation, then the column the snippet
+      // read selects is renamed: the snippet query throws inside the
+      // assembly's try, the ranked entity was selected, and `minimal` skips
+      // the index read, so this catch is the only place the fault can surface.
+      const db = createScoringDb();
+      const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('d1', 'decision').lastInsertRowid as number;
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'A ranked decision');
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, projTag('brokenassembly'));
+      db.exec('ALTER TABLE observations RENAME COLUMN content TO content_x');
+      db.close();
+
+      const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: '/tmp/brokenassembly' }),
+        env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'minimal' },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      expect(run.status, `hook stderr: ${run.stderr}`).toBe(0);
+      // The assembly's own catch fired (not the hook's outer one), and the
+      // full detail went to stderr.
+      expect(run.stderr).toContain('memory-context:');
+      expect(run.stderr).toContain('no such column');
+
+      const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+      const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error');
+      // The locus plus a label, never the exception's message (same rule as
+      // the index read's error record).
+      expect(err?.reason).toMatch(/^memory-context: uncaught [A-Za-z][\w-]*$/);
+      expect(err?.reason).not.toContain('no such column');
+      expect(
+        outcomes.find((o) => typeof o.reason === 'string' && o.reason.includes('nothing to inject')),
+        'a failed assembly must not also be reported as an empty project',
+      ).toBeUndefined();
+    });
+
+    it('precedence: env beats config', () => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-full');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ briefing: 'full' }));
+      // env=standard and config=full: neither is the default, so a hook that
+      // ignored both would show no index at all, and one that read config
+      // over env would show global memory.
+      const output = runHook({ cwd: PROJECT_CWD }, { MEMESH_DIR: cfgDir, ...STANDARD });
+      const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      expect(injected).not.toContain(HEADINGS.global);
+      expect(injected).toContain(HEADINGS.index);
+    });
+
+    it('a config-set level takes effect when the env does not set one', () => {
+      seedEverySection();
+      const cfgDir = path.join(testDir, '.memesh-config-standard');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ briefing: 'standard' }));
+      const output = runHook({ cwd: PROJECT_CWD }, { ...NO_LEVEL_SETTING, MEMESH_DIR: cfgDir });
+      const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      // The one way to get the task state and the index back without setting
+      // an env var in every shell: `memesh config set briefing standard`.
+      expect(injected).toContain(HEADINGS.taskStateFresh);
+      expect(injected).toContain(HEADINGS.index);
+      expect(injected).not.toContain(HEADINGS.global);
+    });
+
+    // An initialised, memory-free project must not get ~166 chars of preamble
+    // wrapped around an empty fence at `minimal`. Three empty-ish DB states,
+    // all three levels each. Only `minimal` is EVER silent because it has
+    // nothing to fall back to (no task state section, no index at that
+    // level); `standard`/`full` are silent on the no-database and
+    // no-tables-yet states below too, but that is NOT this rule — those two
+    // states never reach the code that would render the index's
+    // empty-state line at all (there is no schema yet to query), which is
+    // why the THIRD state (schema present, zero rows) is the one that
+    // actually distinguishes `minimal` from `standard` — see its own test.
+    describe('item 1/4: minimal is silent on an empty project; standard still shows the index once the schema exists', () => {
+      const EMPTY_CWD = '/tmp/emptyproject-item4';
+
+      it('no database file at all (neither level has a schema to query, so both are silent — not the minimal-vs-standard rule)', () => {
+        for (const level of ['minimal', 'standard']) {
+          const output = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: level });
+          expect(output.hookSpecificOutput, `${level}: no hookSpecificOutput at all`).toBeUndefined();
+        }
+        const full = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'full' });
+        expect((full.hookSpecificOutput as { additionalContext: string }).additionalContext)
+          .toContain('Work packages:');
+      });
+
+      it('database exists but has no tables yet (same reasoning — no schema to render an index from)', () => {
+        // A bare, valid, empty SQLite file — no schema at all.
+        new Database(dbPath).close();
+        for (const level of ['minimal', 'standard']) {
+          const output = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: level });
+          expect(output.hookSpecificOutput, `${level}: no hookSpecificOutput at all`).toBeUndefined();
+        }
+      });
+
+      it('database has the schema but zero rows: minimal injects nothing, standard keeps the honest empty-index line, full is unchanged', () => {
+        createScoringDb().close();
+        const minimal = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        expect(minimal.hookSpecificOutput, 'minimal: no hookSpecificOutput at all').toBeUndefined();
+
+        const standard = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'standard' });
+        const standardCtx = (standard.hookSpecificOutput as { additionalContext: string }).additionalContext;
+        // #323's guarantee is preserved: the index's own empty-state line is
+        // informative content, not "nothing" — it is NOT suppressed.
+        expect(standardCtx).toContain('No durable memories');
+        expect(standardCtx).not.toContain(HEADINGS.workPackage);
+
+        const full = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'full' });
+        const fullCtx = (full.hookSpecificOutput as { additionalContext: string }).additionalContext;
+        expect(fullCtx).toContain('No durable memories');
+        expect(fullCtx).toContain(HEADINGS.workPackage);
+      });
+
+      it('with no setting at all an empty project is silent, and the recorded reason names the default level, minimal', () => {
+        createScoringDb().close();
+        const output = runHook({ cwd: EMPTY_CWD }, noSettingEnv());
+        expect(output.hookSpecificOutput, 'no setting: no hookSpecificOutput at all').toBeUndefined();
+        const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((l) => JSON.parse(l));
+        const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('nothing to inject'));
+        expect(record, 'a "nothing to inject" outcome record must exist').toBeTruthy();
+        expect(record.reason).toContain('"minimal"');
+      });
+
+      it('records a specific, greppable outcome reason for the "nothing to inject" case (schema present, zero rows)', () => {
+        createScoringDb().close();
+        runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((l) => JSON.parse(l));
+        const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('nothing to inject'));
+        expect(record, 'a "nothing to inject" outcome record must exist').toBeTruthy();
+        expect(record.reason).toContain('"minimal"');
+      });
+
+      // The OTHER two empty states — no database file at all, and a database
+      // file with no `entities` table — must record a reason too, not only
+      // the generic `session-start-banner` outcome marker. Both go through
+      // the same `nothingToInjectReason` helper as the schema-present case
+      // above, with their own `detail`.
+      it('records the same kind of outcome reason on the no-database-file state', () => {
+        // EMPTY_CWD's db path does not exist at all at this point in the
+        // describe block (no prior test in it created dbPath here).
+        runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((l) => JSON.parse(l));
+        const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('nothing to inject'));
+        expect(record, 'a "nothing to inject" outcome record must exist for the no-database-file state').toBeTruthy();
+        expect(record.reason).toContain('"minimal"');
+        expect(record.reason).toContain('no database yet');
+      });
+
+      it('records the same kind of outcome reason on the no-entities-table state', () => {
+        new Database(dbPath).close();
+        runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((l) => JSON.parse(l));
+        const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('nothing to inject'));
+        expect(record, 'a "nothing to inject" outcome record must exist for the no-entities-table state').toBeTruthy();
+        expect(record.reason).toContain('"minimal"');
+        expect(record.reason).toContain('no entities table yet');
+      });
+
+      // Recording a reason adds only a `recorded` argument to output() calls
+      // — the printed systemMessage/additionalContext bytes are untouched.
+      // Pin that explicitly at standard/full on both early-exit states,
+      // since those are the levels where output CONTENT must stay
+      // byte-identical to the unrecorded behaviour.
+      it('the fix changes only the recorded reason, never the injected bytes, at standard/full on both early-exit states', () => {
+        // --- no database file at all ---
+        const standardNoDb = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'standard' });
+        expect(standardNoDb.hookSpecificOutput, 'standard/no-db: still no hookSpecificOutput').toBeUndefined();
+        const fullNoDb = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'full' });
+        const fullNoDbCtx = (fullNoDb.hookSpecificOutput as { additionalContext: string }).additionalContext;
+        expect(fullNoDbCtx, 'full/no-db: still exactly the notice, byte-identical').toBe(WORK_PACKAGE_NOTICE);
+
+        // --- database file, no entities table ---
+        new Database(dbPath).close();
+        const standardNoTable = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'standard' });
+        expect(standardNoTable.hookSpecificOutput, 'standard/no-table: still no hookSpecificOutput').toBeUndefined();
+        const fullNoTable = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'full' });
+        const fullNoTableCtx = (fullNoTable.hookSpecificOutput as { additionalContext: string }).additionalContext;
+        expect(fullNoTableCtx, 'full/no-table: still exactly the notice, byte-identical').toBe(WORK_PACKAGE_NOTICE);
+      });
     });
   });
 });

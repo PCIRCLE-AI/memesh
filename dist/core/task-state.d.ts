@@ -16,4 +16,9 @@ export interface TaskStateMerge {
 export declare function mergeTaskState(previous: TaskState, patch: Partial<Record<TaskStateField, string>>, now: string): TaskStateMerge;
 export declare function isEmptyTaskState(state: TaskState): boolean;
 export declare function taskStateLines(state: TaskState, project: string, now?: Date): string[];
+export declare const STALE_TASK_STATE_HOURS = 72;
+export declare const CLOCK_SKEW_ALLOWANCE_MINUTES = 5;
+export declare function briefingTaskStateLines(state: TaskState, project: string, now?: Date, { includeFresh }?: {
+    includeFresh?: boolean;
+}): string[];
 //# sourceMappingURL=task-state.d.ts.map

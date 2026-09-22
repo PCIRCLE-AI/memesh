@@ -27,12 +27,13 @@
 
 import { getDatabase } from '../db.js';
 import { getProjectName } from './paths.js';
+import { readConfig } from './config.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { rankEntities } from './scoring.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
-import { taskStateLines } from './task-state.js';
+import { briefingTaskStateLines } from './task-state.js';
 import {
   INDEX_CANDIDATE_CAP,
   INDEX_EXCLUDED_TYPES,
@@ -48,9 +49,16 @@ import {
   TOPOLOGY_CANDIDATE_CAP,
   assembleTopologyBlock,
   buildReferenceContext,
+  hasBriefingContent,
   isAutoInjectable,
+  projectLabel,
   type TopologyEntity,
 } from './work-topology.js';
+import {
+  briefingLevelPolicy,
+  resolveBriefingLevel,
+  type BriefingLevel,
+} from './briefing-level.js';
 
 const PROJECT_LIMIT = 30;
 const RECENT_LIMIT = 5;
@@ -61,12 +69,29 @@ export interface BriefingResult {
   text: string;
   /** How many memories were rendered into the block (excluding the task state). */
   entityCount: number;
-  /** Whether a recorded task state leads the block. */
+  /** Whether a task-state line leads the block: the fresh state, the one-line
+   *  stale flag, or the unreadable-record line. The unread-message reminder
+   *  that rides beside them is not a task state and does not count — a briefing
+   *  whose only state line is that reminder has `hasTaskState: false`. At
+   *  `minimal` a FRESH state is not rendered at all, so it is `false` there. */
   hasTaskState: boolean;
-  /** The durable-memory index (#323) that closes the block — counts, cost
-   *  and the rendered lines. Always present: an empty project renders the
-   *  empty-state line rather than nothing. */
+  /** The durable-memory index (#323) — counts, cost and the rendered lines,
+   *  computed regardless of level (the `--index` CLI flag and callers that
+   *  want the index on its own read this even when `level` excludes it from
+   *  `text`). Always present: an empty project renders the empty-state line
+   *  rather than nothing. */
   index: BriefingIndex;
+  /** #360 — the resolved level this result was assembled at. */
+  level: BriefingLevel;
+  /** #360: true when there was NOTHING to show at this
+   *  level — `text` is `''` in that case, not a preamble wrapped around an
+   *  empty fence. Callers that render for a human (the CLI) must check this
+   *  and print a short line instead of `text`; callers that just forward
+   *  the object (MCP) do not need to — `empty: true, text: ''` already says
+   *  the same thing machine-readably. Can only be true at `minimal`: at
+   *  `standard`/`full` the durable-memory index always contributes at
+   *  least its own empty-state line (#323). */
+  empty: boolean;
 }
 
 interface CandidateRow {
@@ -205,6 +230,32 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   const projectName = project ?? getProjectName();
   const db = getDatabase();
 
+  // #360 — env > config > default('minimal'), the same precedence
+  // `resolveSessionLimit` uses for the hook. No `--level` parameter exists
+  // (or is needed) on this function: `assembleBriefing` has exactly one
+  // caller-visible knob for this, the `briefing` config key, so the CLI and
+  // the MCP tool cannot be told two different levels for the same project. An
+  // unknown env/config value is not a silent fallback — it is traced, the
+  // same discipline the SessionStart hook applies via its outcome record
+  // (this module has no equivalent JSONL channel, so stderr is the honest
+  // substitute; a CLI/MCP process never mixes stderr into its stdout JSON).
+  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
+  if (resolvedLevel.invalid) {
+    const { source, value } = resolvedLevel.invalid;
+    try {
+      process.stderr.write(
+        `[memesh briefing] invalid ${source} briefing level ${value} — using "${resolvedLevel.level}"\n`,
+      );
+    } catch { /* stderr gone */ }
+  }
+  const level = resolvedLevel.level;
+  const policy = briefingLevelPolicy(level);
+  // `policy.workPackageNotice` is deliberately never read here — see its
+  // field comment in briefing-level.ts. This function's result is the
+  // MEMORY block only; the notice is a SessionStart-hook-only host-agent
+  // instruction, appended by `session-start.js`, never by this function —
+  // enforced by the parity tests in tests/core/briefing.test.ts.
+
   // Derived first, stated second, and in that order on purpose. Both blocks
   // used to be one: the stated goal was injected under a heading that read as
   // the project's status, and nothing else in the briefing said where the work
@@ -228,10 +279,15 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // replace it, in the slot the stated lines would have taken.
   let taskLines: string[];
   try {
-    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
+    // #360: briefingTaskStateLines downgrades a stale record to one line
+    // (at every level) and, when fresh, honours the level's own
+    // taskState flag — `minimal` omits it entirely.
+    taskLines = briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
+      includeFresh: policy.taskState,
+    });
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError)) throw err;
-    taskLines = [`task state for ${projectName}: ${err.message}`];
+    taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
   }
   const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
   // The inbox line rides WITH the stated lines, not among the ranked
@@ -284,7 +340,11 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // render budget. Keeping it out of the project and recent queries below
   // makes this the only selection path, so a tagged global row cannot appear
   // twice and overflow globals cannot sneak back through recency.
-  const globalRows: CandidateRow[] = hasNamespace
+  //
+  // #360: `minimal`/`standard` skip this query outright rather than fetch
+  // and then not render it — the whole reason for the level is to stop
+  // paying for what is not the current project.
+  const globalRows: CandidateRow[] = policy.global && hasNamespace
     ? db.prepare(
       `SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
@@ -297,14 +357,17 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
 
   // Recent pool: newest activity across ALL projects. Anything only here is
   // from elsewhere and must say so — the assembler files rows from a foreign
-  // pool under a heading that does not claim this project.
-  const recentRows = db.prepare(
-    `SELECT ${CANDIDATE_COLUMNS}
-     FROM entities e
-     WHERE e.status = 'active'${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`,
-  ).all(TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
+  // pool under a heading that does not claim this project. Skipped at
+  // `minimal`/`standard` for the same reason as the global pool above.
+  const recentRows: CandidateRow[] = policy.foreign
+    ? db.prepare(
+      `SELECT ${CANDIDATE_COLUMNS}
+       FROM entities e
+       WHERE e.status = 'active'${nonGlobal}
+       ORDER BY e.id DESC
+       LIMIT ?`,
+    ).all(TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[]
+    : [];
   const recentPool = selectPool(recentRows, RECENT_LIMIT);
 
   // One snippet per survivor, one query — first observation per entity,
@@ -353,16 +416,40 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // honest empty state (#323). Repository facts still prefix only a block
   // that has ranked memories: the index's empty-state line is not a reason
   // to tell the agent its own branch name.
+  //
+  // #360: computed at every level regardless — `result.index` is a
+  // documented, always-present field (other callers, e.g. the CLI's
+  // `--index` flag, read it on its own) — but its lines only enter the
+  // INJECTED block when the level includes it.
   const index = readBriefingIndex(db, projectName);
-  const block = withRepo.length > 0 ? [...withRepo, '', ...index.lines] : index.lines;
+  const indexLines = policy.index ? index.lines : [];
+  const block = withRepo.length > 0 && indexLines.length > 0
+    ? [...withRepo, '', ...indexLines]
+    : [...withRepo, ...indexLines];
+
+  // #360: `block` can be genuinely empty — `minimal` on a
+  // project with nothing yet: no ranked topology, no repo-state prefix
+  // (repo lines only prepend onto EXISTING topology lines, unchanged from
+  // before #360), and `indexLines` itself empty because `minimal` excludes
+  // the index entirely (`policy.index === false`). Wrapping nothing in the
+  // preamble + an empty fence is not "nothing" — `hasBriefingContent` is
+  // the SAME rule the hook applies to its own assembled lines (see
+  // session-start.js's `memoryContext` construction), so the two cannot
+  // drift on what "nothing to show" means, even though neither can call
+  // the other's code (A1a).
+  const empty = !hasBriefingContent(block);
 
   return {
     project: projectName,
-    text: buildReferenceContext(block),
+    text: empty ? '' : buildReferenceContext(block),
     // Counted from the ranked lines only — the index's lines carry the same
     // `- [type] … [mem:id]` shape and are reported under `index` instead.
     entityCount: lines.filter((l) => l.startsWith('- [')).length,
-    hasTaskState: stateLines.length > 0,
+    // `taskLines`, not `stateLines`: the latter also carries the unread-inbox
+    // reminder, which is not a task state.
+    hasTaskState: taskLines.length > 0,
     index,
+    level,
+    empty,
   };
 }

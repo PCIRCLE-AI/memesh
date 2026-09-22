@@ -3229,8 +3229,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path10) {
-      let input = path10;
+    function removeDotSegments(path11) {
+      let input = path11;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3482,8 +3482,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path10, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path10 && path10 !== "/" ? path10 : void 0;
+        const [path11, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path11 && path11 !== "/" ? path11 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6670,7 +6670,7 @@ var require_formats = __commonJS({
       email: /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/i
     };
     exports.formatNames = Object.keys(exports.fullFormats);
-    function isLeapYear(year) {
+    function isLeapYear2(year) {
       return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
     }
     var DATE = /^(\d\d\d\d)-(\d\d)-(\d\d)$/;
@@ -6682,7 +6682,7 @@ var require_formats = __commonJS({
       const year = +matches[1];
       const month = +matches[2];
       const day = +matches[3];
-      return month >= 1 && month <= 12 && day >= 1 && day <= (month === 2 && isLeapYear(year) ? 29 : DAYS[month]);
+      return month >= 1 && month <= 12 && day >= 1 && day <= (month === 2 && isLeapYear2(year) ? 29 : DAYS[month]);
     }
     function compareDate(d1, d2) {
       if (!(d1 && d2))
@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs12, exportName) {
+    function addFormats(ajv, list, fs13, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs12[f]);
+        ajv.addFormat(f, fs13[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,8 +6916,8 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs11 from "fs";
-import path9 from "path";
+import fs12 from "fs";
+import path10 from "path";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -7442,10 +7442,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path10) {
-  if (!path10)
+function getElementAtPath(obj, path11) {
+  if (!path11)
     return obj;
-  return path10.reduce((acc, key) => acc?.[key], obj);
+  return path11.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -7854,11 +7854,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path10, issues) {
+function prefixIssues(path11, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path10);
+    iss.path.unshift(path11);
     return iss;
   });
 }
@@ -8005,16 +8005,16 @@ function flattenError(error51, mapper = (issue2) => issue2.message) {
 }
 function formatError(error51, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error52, path10 = []) => {
+  const processError = (error52, path11 = []) => {
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -8041,17 +8041,17 @@ function formatError(error51, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error51, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error52, path10 = []) => {
+  const processError = (error52, path11 = []) => {
     var _a3, _b;
     for (const issue2 of error52.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -8083,8 +8083,8 @@ function treeifyError(error51, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path10 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path10) {
+  const path11 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path11) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -21082,13 +21082,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path10 = ref.slice(1).split("/").filter(Boolean);
-  if (path10.length === 0) {
+  const path11 = ref.slice(1).split("/").filter(Boolean);
+  if (path11.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path10[0] === defsKey) {
-    const key = path10[1];
+  if (path11[0] === defsKey) {
+    const key = path11[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -24819,8 +24819,8 @@ var { DatabaseSync } = loadNodeSqlite();
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path10, options = {}) {
-    super(path10, options);
+  constructor(path11, options = {}) {
+    super(path11, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -24857,6 +24857,9 @@ var MemeshDatabase = class extends DatabaseSync {
 // dist/db.js
 import path2 from "path";
 import fs2 from "fs";
+
+// dist/knowledge-graph.js
+import { createHash } from "node:crypto";
 
 // dist/storage/conflicts.js
 function findConflicts(db2, entityNames) {
@@ -25184,16 +25187,30 @@ var KnowledgeGraph = class {
     }
     const prevObsText = isNewEntity ? void 0 : joinIndexedObservations(prevObs.map((o) => o.content));
     if (opts?.observations?.length) {
+      let observations = opts.observations;
+      if (row.type === "session-insight" && /^session-.+-(files|fixes|summary)$/.test(name)) {
+        this.updateEntityMetadata(name, (meta3) => {
+          if (!Array.isArray(meta3.forgotten_observation_hashes))
+            return meta3;
+          const hashes = new Set(meta3.forgotten_observation_hashes);
+          if ((opts.trustOverride ?? opts.metadata?.trust ?? "trusted") !== "trusted") {
+            observations = observations.filter((obs) => !hashes.has(createHash("sha256").update(obs).digest("hex")));
+            return meta3;
+          }
+          const restored = new Set(observations.map((obs) => createHash("sha256").update(obs).digest("hex")));
+          return { ...meta3, forgotten_observation_hashes: meta3.forgotten_observation_hashes.filter((hash2) => !restored.has(hash2)) };
+        });
+      }
       const insertObs = this.db.prepare("INSERT INTO observations (entity_id, content) VALUES (?, ?)");
       const effectiveType = isNewEntity ? type : row.type;
       const isLessonFamily = effectiveType === "lesson_learned" || effectiveType === "lesson" || effectiveType === "mistake";
       if (isLessonFamily) {
-        for (const obs of opts.observations) {
+        for (const obs of observations) {
           insertObs.run(entityId, obs);
         }
       } else {
         const existingObsContent = new Set(isNewEntity ? [] : this.db.prepare("SELECT content FROM observations WHERE entity_id = ?").all(entityId).map((o) => o.content));
-        for (const obs of opts.observations) {
+        for (const obs of observations) {
           if (existingObsContent.has(obs))
             continue;
           existingObsContent.add(obs);
@@ -25512,7 +25529,7 @@ var KnowledgeGraph = class {
   }
   removeObservation(entityName, observationContent) {
     return this.db.transaction(() => {
-      const row = this.db.prepare("SELECT id, title, status FROM entities WHERE name = ?").get(entityName);
+      const row = this.db.prepare("SELECT id, title, status, type, metadata FROM entities WHERE name = ?").get(entityName);
       if (!row)
         return { removed: false, remainingObservations: 0, entityFound: false };
       const prevObs = this.db.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(row.id);
@@ -25526,6 +25543,12 @@ var KnowledgeGraph = class {
           )`).run(row.id, observationContent);
       if (deleteResult.changes === 0) {
         return { removed: false, remainingObservations: prevObs.length, entityFound: true };
+      }
+      if (row.type === "session-insight" && /^session-.+-(files|fixes|summary)$/.test(entityName)) {
+        const meta3 = this.parseMetadata(row.metadata);
+        const hashes = Array.isArray(meta3.forgotten_observation_hashes) ? meta3.forgotten_observation_hashes : [];
+        const hash2 = createHash("sha256").update(observationContent).digest("hex");
+        this.db.prepare("UPDATE entities SET metadata = ? WHERE id = ?").run(JSON.stringify({ ...meta3, forgotten_observation_hashes: [.../* @__PURE__ */ new Set([...hashes, hash2])] }), row.id);
       }
       if (row.status !== "archived") {
         this.rebuildFts(row.id, entityName, prevObsText, row.title);
@@ -25598,7 +25621,7 @@ var COMPRESS_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { createHash } from "crypto";
+import { createHash as createHash2 } from "crypto";
 import { execFileSync } from "child_process";
 var AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
 function homeDir() {
@@ -25658,7 +25681,7 @@ var PROJECT_ID_MAX_LENGTH = 200;
 var PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
 function projectIdentity(label, locator) {
   const readable = label.normalize("NFC").slice(0, PROJECT_LABEL_MAX_LENGTH) || "project";
-  const suffix = createHash("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
+  const suffix = createHash2("sha256").update(locator).digest("hex").slice(0, PROJECT_HASH_HEX_LENGTH);
   return `${readable}~${suffix}`;
 }
 function tryGit(cwd, args) {
@@ -26297,12 +26320,12 @@ function ensureFtsSegmentation(db2) {
 }
 
 // dist/core/lesson-slug.js
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 function lessonSlug(error51) {
   const normalized = error51.normalize("NFKC").trim().replace(/\s+/g, " ").toLowerCase();
   const words = normalized.replace(/[^a-z0-9\u4e00-\u9fff]+/g, " ").trim().split(/\s+/).filter((w) => w.length > 1).slice(0, 8);
   const readable = words.join("-") || "unspecified";
-  const digest = createHash2("sha256").update(normalized).digest("hex").slice(0, 8);
+  const digest = createHash3("sha256").update(normalized).digest("hex").slice(0, 8);
   return `${readable.slice(0, 71)}-${digest}`;
 }
 
@@ -26880,7 +26903,7 @@ function getDatabase() {
 }
 
 // dist/transports/mcp/handlers.js
-import fs10 from "node:fs";
+import fs11 from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/core/scoring.js
@@ -26972,7 +26995,7 @@ function inferErrorPattern(error51) {
 }
 
 // dist/core/note-derive.js
-import { createHash as createHash3 } from "crypto";
+import { createHash as createHash4 } from "crypto";
 var NOTE_OBSERVATION_MAX_CHARS = 1e4;
 var NOTE_MAX_OBSERVATIONS = 100;
 var NOTE_MAX_CHARS = 2e4;
@@ -27022,7 +27045,7 @@ function deriveNote(raw) {
   const title = truncateTitle(titleSource) || "note";
   const body = splitObservations(rest);
   const observations = title === firstLine && body.length > 0 ? body : [...splitObservations(firstLine), ...body];
-  const digest = createHash3("sha256").update(text).digest("hex").slice(0, 8);
+  const digest = createHash4("sha256").update(text).digest("hex").slice(0, 8);
   const name = `${slugify2(title) || NOTE_DEFAULT_TYPE}-${digest}`;
   return { text, title, observations, name };
 }
@@ -27031,12 +27054,98 @@ function deriveNote(raw) {
 var NAMESPACES = ["personal", "team", "global"];
 
 // dist/core/serializer.js
+var IMPORTABLE_METADATA_KEYS = /* @__PURE__ */ new Set([
+  "title_source",
+  "source_kind",
+  "source",
+  "cluster_key",
+  "dreamed_at",
+  "kind",
+  "project",
+  "previous_namespace",
+  "namespace_moved_at",
+  "split_from",
+  "retired_recall",
+  "priority",
+  "success_criteria",
+  "verification_scenario",
+  "implementation_state",
+  "outcome_state",
+  "accepted_at",
+  "source_ids"
+]);
+var FORGOTTEN_HASH_RE = /^[a-f0-9]{64}$/;
+var MAX_IMPORTED_FORGOTTEN_HASHES = 1e3;
+function validateFreshForgottenHashes(value) {
+  if (!Array.isArray(value) || value.length === 0)
+    return null;
+  const deduped = [...new Set(value)];
+  if (!deduped.every((h) => typeof h === "string" && FORGOTTEN_HASH_RE.test(h)))
+    return null;
+  return deduped.length <= MAX_IMPORTED_FORGOTTEN_HASHES ? deduped : null;
+}
+function validateFreshSignalScore(value) {
+  return typeof value === "number" && value >= 0 && value <= 1 ? value : null;
+}
+var MAX_IMPORTED_REPLACED_HISTORY_ENTRIES = 50;
+var MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES = 4 * 64 * 1024;
+var REPLACED_HISTORY_ENTRY_KEYS = /* @__PURE__ */ new Set([
+  "replaced_at",
+  "title",
+  "observations",
+  "tags",
+  "truncated"
+]);
+function isPlainObject3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+var jsonBytesOf = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
+function isValidReplacedHistoryEntry(entry) {
+  if (!isPlainObject3(entry))
+    return false;
+  for (const key of Object.keys(entry)) {
+    if (!REPLACED_HISTORY_ENTRY_KEYS.has(key))
+      return false;
+  }
+  if (typeof entry.replaced_at !== "string" || entry.replaced_at.length > 64)
+    return false;
+  if (!(entry.title === null || typeof entry.title === "string" && entry.title.length <= 500))
+    return false;
+  if (!Array.isArray(entry.observations) || !entry.observations.every((o) => typeof o === "string"))
+    return false;
+  if (!Array.isArray(entry.tags) || !entry.tags.every((t) => typeof t === "string"))
+    return false;
+  if ("truncated" in entry && typeof entry.truncated !== "boolean")
+    return false;
+  return true;
+}
+function validateFreshReplacedHistory(value) {
+  if (!Array.isArray(value) || value.length === 0)
+    return null;
+  if (value.length > MAX_IMPORTED_REPLACED_HISTORY_ENTRIES)
+    return null;
+  if (!value.every(isValidReplacedHistoryEntry))
+    return null;
+  return jsonBytesOf(value) <= MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES ? value : null;
+}
 function buildImportedMetadata(existingMetadata, args) {
-  const { guard: _guard, ...bundledSafe } = args.bundled ?? {};
-  void _guard;
+  const bundled = args.bundled ?? {};
+  const bundledSafe = {};
+  for (const [key, value] of Object.entries(bundled)) {
+    if (IMPORTABLE_METADATA_KEYS.has(key))
+      bundledSafe[key] = value;
+  }
+  const freshForgottenHashes = args.isNewEntity ? validateFreshForgottenHashes(bundled.forgotten_observation_hashes) : null;
+  const freshPin = args.isNewEntity && bundled.pin === true;
+  const freshSignalScore = args.isNewEntity ? validateFreshSignalScore(bundled.signal_score) : null;
+  const freshReplacedHistory = args.isNewEntity ? validateFreshReplacedHistory(bundled.replaced_history) : null;
   return {
     ...existingMetadata ?? {},
     ...bundledSafe,
+    ...freshForgottenHashes ? { forgotten_observation_hashes: freshForgottenHashes } : {},
+    ...freshSignalScore !== null ? { signal_score: freshSignalScore } : {},
+    ...freshPin ? { pin: true } : {},
+    ...freshReplacedHistory ? { replaced_history: freshReplacedHistory } : {},
     trust: "untrusted",
     provenance: {
       ...existingMetadata?.provenance ?? {},
@@ -27106,6 +27215,12 @@ function importMemories(args) {
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
     throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(", ")}. Nothing was imported \u2014 refusing rather than guessing, because the wrong guess overwrites existing memories.`);
   }
+  if (args.restore_archived !== void 0 && typeof args.restore_archived !== "boolean") {
+    throw new Error('restore_archived must be the boolean true or false. Nothing was imported \u2014 refusing rather than guessing, because "yes" brings back memories the user forgot.');
+  }
+  if (args.restore_archived === true && args.merge_strategy === "skip") {
+    throw new Error('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"; "skip" leaves every existing entity untouched, so there is nothing to restore. Nothing was imported.');
+  }
   if (args.namespace !== void 0 && !NAMESPACES.includes(args.namespace)) {
     throw new Error(`Unknown namespace "${args.namespace}". Use one of: ${NAMESPACES.join(", ")}. Nothing was imported \u2014 an unrecognised namespace would move existing memories somewhere nothing queries.`);
   }
@@ -27120,6 +27235,7 @@ function importMemories(args) {
   const pendingRelations = [];
   let skipped = 0;
   let appended = 0;
+  let keptArchived = 0;
   const errors = [];
   const skippedRelations = [];
   const setCreatedAt = db2.prepare("UPDATE entities SET created_at = ? WHERE name = ?");
@@ -27140,11 +27256,14 @@ function importMemories(args) {
           bundled: entity.metadata,
           exportedAt: args.data.exported_at,
           importVersion: args.data.version,
-          mergeStrategy: args.merge_strategy
+          mergeStrategy: args.merge_strategy,
+          isNewEntity: !existing
         });
         if (existing) {
           if (args.merge_strategy === "skip")
             return { kind: "skipped" };
+          if (existing.archived && args.restore_archived !== true)
+            return { kind: "keptArchived" };
           if (args.merge_strategy === "append") {
             const existingText = new Set(existing.observations);
             const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
@@ -27193,6 +27312,8 @@ function importMemories(args) {
       }).immediate();
       if (outcome.kind === "skipped")
         skipped++;
+      else if (outcome.kind === "keptArchived")
+        keptArchived++;
       else if (outcome.kind === "appended")
         appended++;
       else {
@@ -27216,7 +27337,7 @@ function importMemories(args) {
       errors.push(`${rel.from} -${rel.type}-> ${rel.to}: relation not restored (${err instanceof Error ? err.message : String(err)})`);
     }
   }
-  return { imported, overwritten, skipped, appended, errors, skipped_relations: skippedRelations };
+  return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
 }
 
 // dist/core/operations.js
@@ -27469,11 +27590,11 @@ function forget(args) {
 }
 
 // dist/core/dreamer.js
-import { createHash as createHash6 } from "node:crypto";
+import { createHash as createHash7 } from "node:crypto";
 
 // dist/core/transcript-source.js
 import fs3 from "fs";
-import { createHash as createHash4 } from "node:crypto";
+import { createHash as createHash5 } from "node:crypto";
 import path3 from "path";
 var MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
 var MAX_TRANSCRIPT_SCAN_BYTES = 16 * 1024 * 1024;
@@ -27516,7 +27637,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash4("sha256").update(bytes).digest("hex");
+    const contentHash = createHash5("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -27706,7 +27827,7 @@ function parseVisibleConversation(transcript) {
 }
 
 // dist/core/product-improvements.js
-import { createHash as createHash5 } from "node:crypto";
+import { createHash as createHash6 } from "node:crypto";
 var PRODUCT_IMPROVEMENT_KIND = "product_improvement";
 function clean(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -27816,7 +27937,7 @@ function stageProductImprovement(db2, input) {
       success_criteria: successCriteria,
       priority
     };
-    const digest = createHash5("sha256").update(JSON.stringify(canonical)).digest("hex");
+    const digest = createHash6("sha256").update(JSON.stringify(canonical)).digest("hex");
     const clusterKey = `product-improvement:${digest}`;
     const existing = db2.prepare(`SELECT id, project, source_ids, proposed_digest, status, reason, created_at, reviewed_at
        FROM dream_proposals
@@ -28022,7 +28143,7 @@ function executeWorkPackage(db2, input, context = {}) {
   const execute = () => {
     const project = input.action === "prepare" ? input.project : input.ref.project;
     const kind = input.action === "prepare" ? input.kind : input.ref.kind;
-    const hash2 = (value) => createHash6("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash7("sha256").update(JSON.stringify(value)).digest("hex");
     if (input.action !== "prepare") {
       const submitted = input.action === "submit" ? input.result : void 0;
       if (submitted && [submitted.name, ...submitted.observations, ...submitted.tags].some((s) => redactSecrets(s) !== s)) {
@@ -28248,10 +28369,72 @@ function computePatterns(db2, categories) {
   };
 }
 
-// dist/core/repo-state.js
-import { execFileSync as execFileSync2 } from "child_process";
+// dist/core/config.js
 import fs4 from "fs";
 import path4 from "path";
+function configDir() {
+  return memeshDir();
+}
+function configFilePath() {
+  return path4.join(configDir(), "config.json");
+}
+var lastConfigReadWarning = null;
+function warnUnreadable(p, detail) {
+  const key = `${p}::${detail}`;
+  if (key === lastConfigReadWarning)
+    return;
+  lastConfigReadWarning = key;
+  try {
+    process.stderr.write(`[memesh config] ${p} exists but could not be read as a settings object (${detail}). Existing settings are ignored and will not be overwritten until the file is fixed.
+`);
+  } catch {
+  }
+}
+function readRawConfigResult() {
+  const p = configFilePath();
+  if (!fs4.existsSync(p))
+    return { raw: {}, state: "absent" };
+  try {
+    const parsed = JSON.parse(fs4.readFileSync(p, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("top-level JSON value is not an object");
+    }
+    return { raw: parsed, state: "ok" };
+  } catch (error51) {
+    warnUnreadable(p, error51 instanceof Error ? error51.message : String(error51));
+    return { raw: {}, state: "unreadable" };
+  }
+}
+function selectConfig(raw) {
+  const config2 = {};
+  if (typeof raw.autoCapture === "boolean")
+    config2.autoCapture = raw.autoCapture;
+  if (typeof raw.sessionLimit === "number" && Number.isFinite(raw.sessionLimit)) {
+    config2.sessionLimit = raw.sessionLimit;
+  }
+  if (raw.autoUpdate === "off" || raw.autoUpdate === "patch" || raw.autoUpdate === "minor" || raw.autoUpdate === "major") {
+    config2.autoUpdate = raw.autoUpdate;
+  }
+  if (typeof raw.updateCheck === "boolean")
+    config2.updateCheck = raw.updateCheck;
+  if (typeof raw.setupCompleted === "boolean")
+    config2.setupCompleted = raw.setupCompleted;
+  if (raw.briefing !== void 0)
+    config2.briefing = raw.briefing;
+  return config2;
+}
+function readConfigResult() {
+  const result = readRawConfigResult();
+  return { config: selectConfig(result.raw), state: result.state };
+}
+function readConfig() {
+  return readConfigResult().config;
+}
+
+// dist/core/repo-state.js
+import { execFileSync as execFileSync2 } from "child_process";
+import fs5 from "fs";
+import path5 from "path";
 var GIT_TIMEOUT_MS = 5e3;
 function tryGit2(cwd, args) {
   try {
@@ -28266,7 +28449,7 @@ function tryGit2(cwd, args) {
 }
 function declaredVersionOf(repoRoot) {
   try {
-    const raw = fs4.readFileSync(path4.join(repoRoot, "package.json"), "utf8");
+    const raw = fs5.readFileSync(path5.join(repoRoot, "package.json"), "utf8");
     const version2 = JSON.parse(raw).version;
     return typeof version2 === "string" && version2.length > 0 ? version2 : null;
   } catch {
@@ -28314,237 +28497,6 @@ function repoStateLines(state) {
   }
   return lines;
 }
-
-// dist/core/task-state.js
-var TASK_STATE_TYPE = "task-state";
-var TASK_STATE_FIELDS = ["goal", "next", "blocked", "done"];
-var MAX_FIELD_CHARS = 300;
-function taskStateName(project) {
-  return `${TASK_STATE_TYPE}:${project}`;
-}
-function parseTaskState(metadata) {
-  const state = {};
-  if (!metadata || typeof metadata !== "object")
-    return state;
-  const raw = metadata.task_state;
-  if (!raw || typeof raw !== "object")
-    return state;
-  const bag = raw;
-  for (const field of TASK_STATE_FIELDS) {
-    const value = bag[field];
-    if (typeof value !== "string")
-      continue;
-    const trimmed = value.trim();
-    if (trimmed)
-      state[field] = trimmed;
-  }
-  const updated = bag.updated_at;
-  if (typeof updated === "string" && updated.trim())
-    state.updated_at = updated.trim();
-  return state;
-}
-function normalizeFieldValue(value) {
-  const flat = value.replace(/\s+/g, " ").trim();
-  if (!flat)
-    return null;
-  return flat.length > MAX_FIELD_CHARS ? `${flat.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat;
-}
-function mergeTaskState(previous, patch, now) {
-  const state = { ...previous };
-  const changed = [];
-  const observations = [];
-  for (const field of TASK_STATE_FIELDS) {
-    const incoming = patch[field];
-    if (incoming === void 0)
-      continue;
-    const normalized = normalizeFieldValue(incoming);
-    const current = state[field];
-    if (normalized === (current ?? null))
-      continue;
-    changed.push(field);
-    if (normalized === null) {
-      delete state[field];
-      observations.push(`${field} cleared`);
-    } else {
-      state[field] = normalized;
-      observations.push(`${field}: ${normalized}`);
-    }
-  }
-  if (changed.length > 0)
-    state.updated_at = now;
-  return { state, changed, observations };
-}
-function isEmptyTaskState(state) {
-  return TASK_STATE_FIELDS.every((field) => !state[field]);
-}
-var FIELD_LABELS = {
-  goal: "Goal",
-  next: "Next",
-  blocked: "Blocked",
-  done: "Had just finished"
-};
-function ageInDays(updatedAt, now) {
-  if (!updatedAt)
-    return null;
-  const then = Date.parse(updatedAt);
-  if (Number.isNaN(then))
-    return null;
-  const days = Math.floor((now.getTime() - then) / 864e5);
-  return days >= 0 ? days : null;
-}
-function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
-  if (isEmptyTaskState(state))
-    return [];
-  const days = ageInDays(state.updated_at, now);
-  const age = days === null ? "at some point" : days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
-  const lines = [`Stated about "${project}" ${age}, and not revisited since:`];
-  for (const field of TASK_STATE_FIELDS) {
-    const value = state[field];
-    if (value)
-      lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
-  }
-  return lines;
-}
-
-// dist/core/task-state-store.js
-function readState(name) {
-  const row = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
-  if (!row?.metadata)
-    return { state: {}, corrupted: false };
-  let parsed;
-  try {
-    parsed = JSON.parse(row.metadata);
-  } catch {
-    return { state: {}, corrupted: true };
-  }
-  return { state: parseTaskState(parsed), corrupted: false };
-}
-var TaskStateUnreadableError = class extends Error {
-  project;
-  constructor(project) {
-    super(`task state for project "${project}" is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal \u2026\` (any write replaces the broken record).`);
-    this.project = project;
-    this.name = "TaskStateUnreadableError";
-  }
-};
-function getTaskState(project) {
-  const resolved = project ?? getProjectName();
-  const { state, corrupted } = readState(taskStateName(resolved));
-  if (corrupted)
-    throw new TaskStateUnreadableError(resolved);
-  return { project: resolved, state };
-}
-function setTaskState(input) {
-  const project = input.project ?? getProjectName();
-  const name = taskStateName(project);
-  const { state: previous } = readState(name);
-  const { state, changed, observations } = mergeTaskState(previous, input.patch, (/* @__PURE__ */ new Date()).toISOString());
-  if (changed.length === 0)
-    return { project, state, changed };
-  const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
-  remember({
-    name,
-    type: TASK_STATE_TYPE,
-    observations,
-    tags: [`project:${project}`],
-    title,
-    sourceHost: input.sourceHost
-  });
-  new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
-    ...current,
-    task_state: state
-  }));
-  return { project, state, changed };
-}
-
-// dist/core/agent-message-inbox.js
-function unreadDeliveryCount(db2, project, recipient) {
-  if (!recipient)
-    return 0;
-  try {
-    const row = db2.prepare(`SELECT COUNT(*) AS n
-       FROM agent_message_deliveries d
-       WHERE d.project = ?
-         AND d.recipient = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM agent_message_receipts r
-           WHERE r.project = d.project
-             AND r.recipient = d.recipient
-             AND r.message_id = d.message_id
-             AND r.receipt_kind = 'intake'
-         )`).get(project, recipient);
-    const n = row?.n;
-    return typeof n === "number" && n > 0 ? n : 0;
-  } catch {
-    return 0;
-  }
-}
-function recipientEverSeen(db2, project, recipient) {
-  try {
-    const row = db2.prepare(`SELECT (
-         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
-         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
-         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
-       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
-    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
-  } catch {
-    return void 0;
-  }
-}
-function unreadInboxLines(count, project, recipient, everSeen) {
-  if (!recipient)
-    return [];
-  const displayProject = JSON.stringify(project);
-  const displayRecipient = JSON.stringify(recipient);
-  if (count > 0) {
-    const noun = count === 1 ? "message" : "messages";
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id; fetching does not acknowledge.`];
-  }
-  if (everSeen === false) {
-    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
-  }
-  return [];
-}
-
-// dist/core/agent-scope-id.js
-var AGENT_SCOPE_ID_MAX_LENGTH = 200;
-function canonicalAgentScopeId(value) {
-  return value.normalize("NFC").trim();
-}
-function isFilesystemPathScopeId(value) {
-  const v = canonicalAgentScopeId(value);
-  if (v.startsWith("/") || v.startsWith("\\"))
-    return true;
-  return /^[A-Za-z]:[\\/]/.test(v);
-}
-function lastPathSegment(value) {
-  const segments = canonicalAgentScopeId(value).split(/[\\/]+/).filter((s) => s.length > 0);
-  const last = segments[segments.length - 1];
-  if (last === void 0)
-    return null;
-  if (/^[A-Za-z]:$/.test(last))
-    return null;
-  return last;
-}
-function agentScopeIdRejection(field, value) {
-  if (!isFilesystemPathScopeId(value))
-    return null;
-  const suggestion = lastPathSegment(value);
-  const example = suggestion === null ? "reviewer-agent" : suggestion;
-  return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
-}
-var AGENT_MESSAGE_SCOPE_COLUMNS = [
-  { table: "agent_messages", columns: ["project", "recipient"] },
-  { table: "agent_message_deliveries", columns: ["project", "recipient"] },
-  { table: "agent_message_events", columns: ["project", "recipient"] },
-  { table: "agent_message_cursors", columns: ["project", "recipient"] },
-  { table: "agent_message_receipts", columns: ["project", "recipient", "actor"] },
-  { table: "agent_message_idempotency", columns: ["project"] },
-  { table: "agent_ack_facts", columns: ["actor"] },
-  { table: "agent_workflow_facts", columns: ["actor"] },
-  { table: "agent_retention_facts", columns: ["actor"] }
-];
-var AGENT_MESSAGE_PROJECT_TABLES = AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes("project")).map((e) => e.table);
 
 // dist/core/work-topology.js
 var LESSON_TYPES = /* @__PURE__ */ new Set(["lesson_learned", "lesson", "mistake"]);
@@ -28647,13 +28599,13 @@ function groupTopology(entities, projectName) {
     list.sort(bySignal);
   const sections = [];
   if (decisions.length)
-    sections.push({ heading: `Decisions and direction for "${projectName}":`, entities: decisions });
+    sections.push({ heading: `Decisions and direction for "${projectLabel(projectName)}":`, entities: decisions });
   if (lessons.length)
-    sections.push({ heading: `Lessons from "${projectName}" \u2014 do not repeat these:`, entities: lessons });
+    sections.push({ heading: `Lessons from "${projectLabel(projectName)}" \u2014 do not repeat these:`, entities: lessons });
   if (knowledge.length)
-    sections.push({ heading: `What is known about "${projectName}":`, entities: knowledge });
+    sections.push({ heading: `What is known about "${projectLabel(projectName)}":`, entities: knowledge });
   if (evidence.length)
-    sections.push({ heading: `Recent activity in "${projectName}":`, entities: evidence });
+    sections.push({ heading: `Recent activity in "${projectLabel(projectName)}":`, entities: evidence });
   if (global.length)
     sections.push({ heading: "Global memory \u2014 applies across projects:", entities: global });
   if (foreign.length)
@@ -28731,6 +28683,9 @@ function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_
   lines.push(...globalLines);
   return lines;
 }
+function hasBriefingContent(lines) {
+  return lines.length > 0;
+}
 function buildReferenceContext(memoryLines) {
   const safeLines = memoryLines.map((line) => String(line ?? "").replace(/[\s\u0085\u001c-\u001e]+/g, " ").trim());
   let longestRun = 0;
@@ -28749,6 +28704,312 @@ function buildReferenceContext(memoryLines) {
     fence
   ].join("\n");
 }
+var PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
+function projectLabel(projectId) {
+  const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, "");
+  return label === "" ? projectId : label;
+}
+
+// dist/core/task-state.js
+var TASK_STATE_TYPE = "task-state";
+var TASK_STATE_FIELDS = ["goal", "next", "blocked", "done"];
+var MAX_FIELD_CHARS = 300;
+function taskStateName(project) {
+  return `${TASK_STATE_TYPE}:${project}`;
+}
+function parseTaskState(metadata) {
+  const state = {};
+  if (!metadata || typeof metadata !== "object")
+    return state;
+  const raw = metadata.task_state;
+  if (!raw || typeof raw !== "object")
+    return state;
+  const bag = raw;
+  for (const field of TASK_STATE_FIELDS) {
+    const value = bag[field];
+    if (typeof value !== "string")
+      continue;
+    const trimmed = value.trim();
+    if (trimmed)
+      state[field] = trimmed;
+  }
+  const updated = bag.updated_at;
+  if (typeof updated === "string" && updated.trim())
+    state.updated_at = updated.trim();
+  return state;
+}
+function normalizeFieldValue(value) {
+  const flat = value.replace(/\s+/g, " ").trim();
+  if (!flat)
+    return null;
+  return flat.length > MAX_FIELD_CHARS ? `${flat.slice(0, MAX_FIELD_CHARS - 1).trimEnd()}\u2026` : flat;
+}
+function mergeTaskState(previous, patch, now) {
+  const state = { ...previous };
+  const changed = [];
+  const observations = [];
+  for (const field of TASK_STATE_FIELDS) {
+    const incoming = patch[field];
+    if (incoming === void 0)
+      continue;
+    const normalized = normalizeFieldValue(incoming);
+    const current = state[field];
+    if (normalized === (current ?? null))
+      continue;
+    changed.push(field);
+    if (normalized === null) {
+      delete state[field];
+      observations.push(`${field} cleared`);
+    } else {
+      state[field] = normalized;
+      observations.push(`${field}: ${normalized}`);
+    }
+  }
+  if (changed.length > 0)
+    state.updated_at = now;
+  return { state, changed, observations };
+}
+function isEmptyTaskState(state) {
+  return TASK_STATE_FIELDS.every((field) => !state[field]);
+}
+var FIELD_LABELS = {
+  goal: "Goal",
+  next: "Next",
+  blocked: "Blocked",
+  done: "Had just finished"
+};
+function ageInDays(updatedAt, now) {
+  if (!updatedAt)
+    return null;
+  const then = Date.parse(updatedAt);
+  if (Number.isNaN(then))
+    return null;
+  const days = Math.floor((now.getTime() - then) / 864e5);
+  return days >= 0 ? days : null;
+}
+function taskStateLines(state, project, now = /* @__PURE__ */ new Date()) {
+  if (isEmptyTaskState(state))
+    return [];
+  const days = ageInDays(state.updated_at, now);
+  const age = days === null ? "at some point" : days === 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+  const lines = [`Stated about "${projectLabel(project)}" ${age}, and not revisited since:`];
+  for (const field of TASK_STATE_FIELDS) {
+    const value = state[field];
+    if (value)
+      lines.push(`- ${FIELD_LABELS[field]}: ${value}`);
+  }
+  return lines;
+}
+var STALE_TASK_STATE_HOURS = 72;
+var CLOCK_SKEW_ALLOWANCE_MINUTES = 5;
+var ZONED_INSTANT = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt](?<hour>\d{2}):(?<minute>\d{2})(?::(?<second>\d{2})(?:\.\d+)?)?(?:(?<zulu>[Zz])|(?<offSign>[+-])(?<offHour>\d{2}):?(?<offMinute>\d{2}))$/;
+function isLeapYear(year) {
+  return year % 4 === 0 && year % 100 !== 0 || year % 400 === 0;
+}
+var DAYS_IN_MONTH = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+function daysInMonth(year, month) {
+  return month === 2 && isLeapYear(year) ? 29 : DAYS_IN_MONTH[month - 1];
+}
+function isRealInstant(groups) {
+  const year = Number(groups.year);
+  const month = Number(groups.month);
+  const day = Number(groups.day);
+  const hour = Number(groups.hour);
+  const minute = Number(groups.minute);
+  const second = groups.second === void 0 ? 0 : Number(groups.second);
+  if (month < 1 || month > 12)
+    return false;
+  if (day < 1 || day > daysInMonth(year, month))
+    return false;
+  if (hour > 23)
+    return false;
+  if (minute > 59)
+    return false;
+  if (second > 59)
+    return false;
+  if (groups.zulu === void 0) {
+    const offHour = Number(groups.offHour);
+    const offMinute = Number(groups.offMinute);
+    if (offHour > 23 || offMinute > 59)
+      return false;
+    if (groups.offSign === "-" && offHour === 0 && offMinute === 0)
+      return false;
+  }
+  return true;
+}
+function resolveTaskStateAge(updatedAt, now) {
+  if (!updatedAt)
+    return { known: false };
+  const match = ZONED_INSTANT.exec(updatedAt);
+  if (!match?.groups || !isRealInstant(match.groups))
+    return { known: false };
+  const then = Date.parse(updatedAt);
+  if (Number.isNaN(then))
+    return { known: false };
+  const hours = (now.getTime() - then) / 36e5;
+  if (hours < -(CLOCK_SKEW_ALLOWANCE_MINUTES / 60))
+    return { known: false };
+  return { known: true, hours: Math.max(0, hours) };
+}
+function staleTaskStateLine(project, hours) {
+  const days = Math.floor(hours / 24);
+  const age = days >= 1 ? `${days} day${days === 1 ? "" : "s"} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? "" : "s"} ago`;
+  return `Task state for "${projectLabel(project)}" was last stated ${age} \u2014 older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
+}
+function taskStateAgeUnknownLine(project) {
+  return `Task state for "${projectLabel(project)}" has a missing, unreadable, or future-dated timestamp, so its age could not be established \u2014 not shown as current. Run \`memesh task\` to see or update it.`;
+}
+function briefingTaskStateLines(state, project, now = /* @__PURE__ */ new Date(), { includeFresh = true } = {}) {
+  if (isEmptyTaskState(state))
+    return [];
+  const age = resolveTaskStateAge(state.updated_at, now);
+  if (!age.known)
+    return [taskStateAgeUnknownLine(project)];
+  if (age.hours > STALE_TASK_STATE_HOURS) {
+    return [staleTaskStateLine(project, age.hours)];
+  }
+  return includeFresh ? taskStateLines(state, project, now) : [];
+}
+
+// dist/core/task-state-store.js
+function readState(name) {
+  const row = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
+  if (!row?.metadata)
+    return { state: {}, corrupted: false };
+  let parsed;
+  try {
+    parsed = JSON.parse(row.metadata);
+  } catch {
+    return { state: {}, corrupted: true };
+  }
+  return { state: parseTaskState(parsed), corrupted: false };
+}
+var TaskStateUnreadableError = class extends Error {
+  project;
+  constructor(project) {
+    super(`task state for project "${projectLabel(project)}" is not readable: the stored record is not valid JSON. Re-state it with \`memesh task --goal \u2026\` (any write replaces the broken record).`);
+    this.project = project;
+    this.name = "TaskStateUnreadableError";
+  }
+};
+function getTaskState(project) {
+  const resolved = project ?? getProjectName();
+  const { state, corrupted } = readState(taskStateName(resolved));
+  if (corrupted)
+    throw new TaskStateUnreadableError(resolved);
+  return { project: resolved, state };
+}
+function setTaskState(input) {
+  const project = input.project ?? getProjectName();
+  const name = taskStateName(project);
+  const { state: previous } = readState(name);
+  const { state, changed, observations } = mergeTaskState(previous, input.patch, (/* @__PURE__ */ new Date()).toISOString());
+  if (changed.length === 0)
+    return { project, state, changed };
+  const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
+  remember({
+    name,
+    type: TASK_STATE_TYPE,
+    observations,
+    tags: [`project:${project}`],
+    title,
+    sourceHost: input.sourceHost
+  });
+  new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
+    ...current,
+    task_state: state
+  }));
+  return { project, state, changed };
+}
+
+// dist/core/agent-message-inbox.js
+function unreadDeliveryCount(db2, project, recipient) {
+  if (!recipient)
+    return 0;
+  try {
+    const row = db2.prepare(`SELECT COUNT(*) AS n
+       FROM agent_message_deliveries d
+       WHERE d.project = ?
+         AND d.recipient = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_message_receipts r
+           WHERE r.project = d.project
+             AND r.recipient = d.recipient
+             AND r.message_id = d.message_id
+             AND r.receipt_kind = 'intake'
+         )`).get(project, recipient);
+    const n = row?.n;
+    return typeof n === "number" && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+function recipientEverSeen(db2, project, recipient) {
+  try {
+    const row = db2.prepare(`SELECT (
+         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
+         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
+         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
+       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
+    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
+  } catch {
+    return void 0;
+  }
+}
+function unreadInboxLines(count, project, recipient, everSeen) {
+  if (!recipient)
+    return [];
+  const displayProject = JSON.stringify(project);
+  const displayRecipient = JSON.stringify(recipient);
+  if (count > 0) {
+    const noun = count === 1 ? "message" : "messages";
+    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record the intake action for it: fetching alone does not acknowledge, and only intake ends this line.`];
+  }
+  if (everSeen === false) {
+    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
+  }
+  return [];
+}
+
+// dist/core/agent-scope-id.js
+var AGENT_SCOPE_ID_MAX_LENGTH = 200;
+function canonicalAgentScopeId(value) {
+  return value.normalize("NFC").trim();
+}
+function isFilesystemPathScopeId(value) {
+  const v = canonicalAgentScopeId(value);
+  if (v.startsWith("/") || v.startsWith("\\"))
+    return true;
+  return /^[A-Za-z]:[\\/]/.test(v);
+}
+function lastPathSegment(value) {
+  const segments = canonicalAgentScopeId(value).split(/[\\/]+/).filter((s) => s.length > 0);
+  const last = segments[segments.length - 1];
+  if (last === void 0)
+    return null;
+  if (/^[A-Za-z]:$/.test(last))
+    return null;
+  return last;
+}
+function agentScopeIdRejection(field, value) {
+  if (!isFilesystemPathScopeId(value))
+    return null;
+  const suggestion = lastPathSegment(value);
+  const example = suggestion === null ? "reviewer-agent" : suggestion;
+  return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
+}
+var AGENT_MESSAGE_SCOPE_COLUMNS = [
+  { table: "agent_messages", columns: ["project", "recipient"] },
+  { table: "agent_message_deliveries", columns: ["project", "recipient"] },
+  { table: "agent_message_events", columns: ["project", "recipient"] },
+  { table: "agent_message_cursors", columns: ["project", "recipient"] },
+  { table: "agent_message_receipts", columns: ["project", "recipient", "actor"] },
+  { table: "agent_message_idempotency", columns: ["project"] },
+  { table: "agent_ack_facts", columns: ["actor"] },
+  { table: "agent_workflow_facts", columns: ["actor"] },
+  { table: "agent_retention_facts", columns: ["actor"] }
+];
+var AGENT_MESSAGE_PROJECT_TABLES = AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes("project")).map((e) => e.table);
 
 // dist/core/briefing-index.js
 var INDEX_MAX_LINES = 40;
@@ -28810,10 +29071,10 @@ function indexLine(candidate) {
   return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
 }
 function indexHeading(projectName) {
-  return `Index of durable memories for "${projectName}" (newest first):`;
+  return `Index of durable memories for "${projectLabel(projectName)}" (newest first):`;
 }
 function indexEmptyLine(projectName) {
-  return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
+  return `- No durable memories (decisions, lessons, patterns, references) for "${projectLabel(projectName)}" yet.`;
 }
 function moreLine(n, truncated) {
   return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag "project:\u2026"`;
@@ -28885,6 +29146,79 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
   return { ...closed, shown: rendered.length, more, older, truncated, ids };
 }
 
+// dist/core/briefing-level.js
+var BRIEFING_LEVELS = ["minimal", "standard", "full"];
+var DEFAULT_BRIEFING_LEVEL = "minimal";
+function isBriefingLevel(value) {
+  return typeof value === "string" && BRIEFING_LEVELS.includes(value);
+}
+var INVALID_VALUE_SERIALIZED_MAX = 100;
+var PRE_SLICE_RAW_MAX = 256;
+function safeRawPreSlice(value, maxUnits) {
+  if (value.length <= maxUnits)
+    return value;
+  let end = maxUnits;
+  const lastKept = value.charCodeAt(end - 1);
+  const nextUnit = value.charCodeAt(end);
+  const lastKeptIsHighSurrogate = lastKept >= 55296 && lastKept <= 56319;
+  const nextUnitIsLowSurrogate = nextUnit >= 56320 && nextUnit <= 57343;
+  if (lastKeptIsHighSurrogate && nextUnitIsLowSurrogate)
+    end -= 1;
+  return value.slice(0, end);
+}
+function truncateToSerializedBound(codePoints) {
+  let kept = 0;
+  for (; kept < codePoints.length; kept++) {
+    const candidate = JSON.stringify(`${codePoints.slice(0, kept + 1).join("")}\u2026`);
+    if (candidate.length > INVALID_VALUE_SERIALIZED_MAX)
+      break;
+  }
+  return JSON.stringify(`${codePoints.slice(0, kept).join("")}\u2026`);
+}
+function describeInvalidValue(value) {
+  if (typeof value === "string") {
+    if (value.length <= INVALID_VALUE_SERIALIZED_MAX) {
+      const whole = JSON.stringify(value);
+      if (whole.length <= INVALID_VALUE_SERIALIZED_MAX)
+        return whole;
+      return truncateToSerializedBound(Array.from(value));
+    }
+    return truncateToSerializedBound(Array.from(safeRawPreSlice(value, PRE_SLICE_RAW_MAX)));
+  }
+  if (Array.isArray(value))
+    return "[array]";
+  if (value !== null && typeof value === "object")
+    return "[object]";
+  if (typeof value === "bigint")
+    return "[bigint]";
+  if (typeof value === "symbol")
+    return "[symbol]";
+  if (typeof value === "function")
+    return "[function]";
+  return JSON.stringify(value) ?? String(value);
+}
+function resolveBriefingLevel(envValue, configValue) {
+  if (envValue !== void 0) {
+    if (isBriefingLevel(envValue))
+      return { level: envValue, invalid: null };
+    return { level: DEFAULT_BRIEFING_LEVEL, invalid: { source: "env", value: describeInvalidValue(envValue) } };
+  }
+  if (configValue !== void 0) {
+    if (isBriefingLevel(configValue))
+      return { level: configValue, invalid: null };
+    return { level: DEFAULT_BRIEFING_LEVEL, invalid: { source: "config", value: describeInvalidValue(configValue) } };
+  }
+  return { level: DEFAULT_BRIEFING_LEVEL, invalid: null };
+}
+var POLICIES = {
+  minimal: { global: false, foreign: false, taskState: false, index: false, workPackageNotice: false },
+  standard: { global: false, foreign: false, taskState: true, index: true, workPackageNotice: false },
+  full: { global: true, foreign: true, taskState: true, index: true, workPackageNotice: true }
+};
+function briefingLevelPolicy(level) {
+  return POLICIES[level];
+}
+
 // dist/core/briefing.js
 var PROJECT_LIMIT = 30;
 var RECENT_LIMIT = 5;
@@ -28953,14 +29287,27 @@ function readBriefingIndex(db2, projectName, now = Date.now()) {
 function assembleBriefing(project, recipient) {
   const projectName = project ?? getProjectName();
   const db2 = getDatabase();
+  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
+  if (resolvedLevel.invalid) {
+    const { source, value } = resolvedLevel.invalid;
+    try {
+      process.stderr.write(`[memesh briefing] invalid ${source} briefing level ${value} \u2014 using "${resolvedLevel.level}"
+`);
+    } catch {
+    }
+  }
+  const level = resolvedLevel.level;
+  const policy = briefingLevelPolicy(level);
   const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
   let taskLines;
   try {
-    taskLines = taskStateLines(getTaskState(projectName).state, projectName);
+    taskLines = briefingTaskStateLines(getTaskState(projectName).state, projectName, /* @__PURE__ */ new Date(), {
+      includeFresh: policy.taskState
+    });
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError))
       throw err;
-    taskLines = [`task state for ${projectName}: ${err.message}`];
+    taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
   }
   const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
   const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient);
@@ -28977,17 +29324,17 @@ function assembleBriefing(project, recipient) {
      ORDER BY e.id DESC
      LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
   const projectPool = selectPool(projectRows, PROJECT_LIMIT);
-  const globalRows = hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+  const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
        WHERE e.namespace = 'global' AND e.status = 'active'
        ORDER BY e.id DESC
        LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
   const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
-  const recentRows = db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
-     FROM entities e
-     WHERE e.status = 'active'${nonGlobal}
-     ORDER BY e.id DESC
-     LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP);
+  const recentRows = policy.foreign ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
+       FROM entities e
+       WHERE e.status = 'active'${nonGlobal}
+       ORDER BY e.id DESC
+       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
   const recentPool = selectPool(recentRows, RECENT_LIMIT);
   const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
   const snippets = /* @__PURE__ */ new Map();
@@ -29012,13 +29359,17 @@ function assembleBriefing(project, recipient) {
   ], projectName);
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
   const index = readBriefingIndex(db2, projectName);
-  const block = withRepo.length > 0 ? [...withRepo, "", ...index.lines] : index.lines;
+  const indexLines = policy.index ? index.lines : [];
+  const block = withRepo.length > 0 && indexLines.length > 0 ? [...withRepo, "", ...indexLines] : [...withRepo, ...indexLines];
+  const empty = !hasBriefingContent(block);
   return {
     project: projectName,
-    text: buildReferenceContext(block),
+    text: empty ? "" : buildReferenceContext(block),
     entityCount: lines.filter((l) => l.startsWith("- [")).length,
-    hasTaskState: stateLines.length > 0,
-    index
+    hasTaskState: taskLines.length > 0,
+    index,
+    level,
+    empty
   };
 }
 
@@ -29026,11 +29377,11 @@ function assembleBriefing(project, recipient) {
 import { randomUUID as randomUUID4 } from "node:crypto";
 
 // dist/core/agent-messaging.js
-import { createHash as createHash8, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash9, randomBytes, randomUUID as randomUUID2 } from "node:crypto";
 
 // dist/core/agent-message-storage.js
-import { createHash as createHash7, randomUUID } from "node:crypto";
-import fs5 from "node:fs";
+import { createHash as createHash8, randomUUID } from "node:crypto";
+import fs6 from "node:fs";
 var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
   code;
@@ -29662,7 +30013,7 @@ function parseTargetKind(value) {
 }
 function parseJsonObject(json2, label) {
   const parsed = parseJsonObjectOrValue(json2);
-  if (!isPlainObject3(parsed))
+  if (!isPlainObject4(parsed))
     throw new AgentMessagingError(`${label} must contain a JSON object.`);
   return parsed;
 }
@@ -29677,7 +30028,7 @@ function parseJsonObjectOrValue(json2) {
   return parsed;
 }
 function hashCanonical(value) {
-  return createHash8("sha256").update(stableStringify(value)).digest("hex");
+  return createHash9("sha256").update(stableStringify(value)).digest("hex");
 }
 function stableStringify(value) {
   if (value === null)
@@ -29712,7 +30063,7 @@ function assertJsonValue(value, label) {
     value.forEach((entry, index) => assertJsonValue(entry, `${label}[${index}]`));
     return;
   }
-  if (isPlainObject3(value)) {
+  if (isPlainObject4(value)) {
     for (const [key, entry] of Object.entries(value)) {
       assertJsonValue(entry, `${label}.${key}`);
     }
@@ -29724,7 +30075,7 @@ function normalizeObject(value) {
   assertJsonValue(value, "object");
   return value;
 }
-function isPlainObject3(value) {
+function isPlainObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function requireText(label, value, maxLength) {
@@ -29893,7 +30244,8 @@ var ExportResultSchema = external_exports.object({
 var ImportSchema = external_exports.object({
   data: ExportResultSchema,
   namespace: external_exports.enum(NAMESPACES).optional(),
-  merge_strategy: external_exports.enum(["skip", "overwrite", "append"])
+  merge_strategy: external_exports.enum(["skip", "overwrite", "append"]),
+  restore_archived: external_exports.boolean().optional()
 }).strict();
 var LearnSchema = external_exports.object({
   error: external_exports.string().min(1).max(5e3),
@@ -30020,9 +30372,9 @@ var MessageSchema = external_exports.discriminatedUnion("action", [
 
 // dist/core/agent-router.js
 import { randomUUID as randomUUID3 } from "node:crypto";
-import fs6 from "node:fs";
+import fs7 from "node:fs";
 import net from "node:net";
-import path5 from "node:path";
+import path6 from "node:path";
 var AGENT_ROUTER_PROTOCOL_VERSION = 2;
 var AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
 var MAX_LEASE_MS = 5 * 6e4;
@@ -30030,9 +30382,9 @@ var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
 var MAX_FIELD_LENGTH = 200;
 var MAX_ADAPTER_RECEIPT_BYTES = 16 * 1024;
 function isLegacyAgentRouterVersionMismatchResponse(value) {
-  if (!isPlainObject4(value) || value.version !== 1 || value.request_id !== "" || value.ok !== false)
+  if (!isPlainObject5(value) || value.version !== 1 || value.request_id !== "" || value.ok !== false)
     return false;
-  if (!isPlainObject4(value.error))
+  if (!isPlainObject5(value.error))
     return false;
   return value.error.code === "unsupported_type" || value.error.code === "unsupported_version";
 }
@@ -30100,7 +30452,7 @@ async function sendAgentRouterRequest(socketPath, request, timeoutMs = DEFAULT_C
         if (isLegacyAgentRouterVersionMismatchResponse(response)) {
           throw new AgentRouterProtocolError("router_version_mismatch", "router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.");
         }
-        const uncorrelatedError = response.request_id === "" && response.ok === false && isPlainObject4(response.error) && typeof response.error.code === "string" && typeof response.error.message === "string";
+        const uncorrelatedError = response.request_id === "" && response.ok === false && isPlainObject5(response.error) && typeof response.error.code === "string" && typeof response.error.message === "string";
         if (response.version !== AGENT_ROUTER_PROTOCOL_VERSION || response.request_id !== request.request_id && !uncorrelatedError) {
           throw new AgentRouterProtocolError("invalid_response", "Router response identity does not match.");
         }
@@ -30119,7 +30471,7 @@ async function sendAgentRouterRequest(socketPath, request, timeoutMs = DEFAULT_C
   });
 }
 function validateRouterSuccessResult(request, value) {
-  if (!isPlainObject4(value)) {
+  if (!isPlainObject5(value)) {
     throw new AgentRouterProtocolError("invalid_response", "Router response result must be an object.");
   }
   const requireResultString = (field) => {
@@ -30177,17 +30529,17 @@ function validateRouterSuccessResult(request, value) {
   return value;
 }
 function isSelectionCard(value, project) {
-  if (!isPlainObject4(value))
+  if (!isPlainObject5(value))
     return false;
   return typeof value.session_id === "string" && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
 }
 function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path5.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > 103) {
+  if (typeof socketPath !== "string" || !path6.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > 103) {
     throw new AgentRouterProtocolError("invalid_socket_path", "Router socket path must be absolute and at most 103 bytes.");
   }
   return socketPath;
 }
-function isPlainObject4(value) {
+function isPlainObject5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -30540,14 +30892,14 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
 }
 
 // dist/core/update-entrypoint.js
-import fs9 from "fs";
-import path8 from "path";
+import fs10 from "fs";
+import path9 from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 // dist/core/version-check.js
-import fs7 from "fs";
-import path6 from "path";
+import fs8 from "fs";
+import path7 from "path";
 
 // dist/core/semver.js
 var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
@@ -30616,7 +30968,7 @@ function getUpdateCheckPath(updateCheckPath, currentVersion) {
   if (process.env.MEMESH_UPDATE_CHECK_PATH)
     return process.env.MEMESH_UPDATE_CHECK_PATH;
   const versionTag = currentVersion && /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  return path6.join(memeshDir(), `update-check.${versionTag}.json`);
+  return path7.join(memeshDir(), `update-check.${versionTag}.json`);
 }
 function parseIsoDate(value) {
   if (!value)
@@ -30691,9 +31043,9 @@ function parseStoredUpdateCheck(raw) {
 function readStoredUpdateCheck(updateCheckPath, currentVersion) {
   try {
     const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
-    if (!fs7.existsSync(targetPath))
+    if (!fs8.existsSync(targetPath))
       return null;
-    return parseStoredUpdateCheck(JSON.parse(fs7.readFileSync(targetPath, "utf8")));
+    return parseStoredUpdateCheck(JSON.parse(fs8.readFileSync(targetPath, "utf8")));
   } catch {
     return null;
   }
@@ -30706,8 +31058,8 @@ function getLastUpdateCheck(currentVersion, options = {}) {
 }
 
 // dist/core/update-notice.js
-import fs8 from "fs";
-import path7 from "path";
+import fs9 from "fs";
+import path8 from "path";
 var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
 var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
 var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
@@ -30743,16 +31095,16 @@ function parseIso(value) {
 }
 function readJson(file2) {
   try {
-    if (!fs8.existsSync(file2))
+    if (!fs9.existsSync(file2))
       return null;
-    const parsed = JSON.parse(fs8.readFileSync(file2, "utf8"));
+    const parsed = JSON.parse(fs9.readFileSync(file2, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
 }
 function readSnooze(dir) {
-  const raw = readJson(path7.join(dir, SNOOZE_FILE));
+  const raw = readJson(path8.join(dir, SNOOZE_FILE));
   if (!raw)
     return null;
   const { target, level, since } = raw;
@@ -30770,7 +31122,7 @@ function snoozeExpiresAt(state) {
   return since + duration3;
 }
 function readJustUpgradedMarker(dir) {
-  const raw = readJson(path7.join(dir, JUST_UPGRADED_FILE));
+  const raw = readJson(path8.join(dir, JUST_UPGRADED_FILE));
   if (!raw)
     return null;
   const { from, to, at } = raw;
@@ -30780,21 +31132,21 @@ function readJustUpgradedMarker(dir) {
 }
 function clearJustUpgradedMarker(dir) {
   try {
-    fs8.unlinkSync(path7.join(dir, JUST_UPGRADED_FILE));
+    fs9.unlinkSync(path8.join(dir, JUST_UPGRADED_FILE));
   } catch {
   }
 }
 function claimJustUpgradedMarker(dir) {
-  const file2 = path7.join(dir, JUST_UPGRADED_FILE);
+  const file2 = path8.join(dir, JUST_UPGRADED_FILE);
   const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    fs8.renameSync(file2, taken);
+    fs9.renameSync(file2, taken);
   } catch {
     return null;
   }
   const raw = readJson(taken);
   try {
-    fs8.unlinkSync(taken);
+    fs9.unlinkSync(taken);
   } catch {
   }
   if (!raw)
@@ -30881,31 +31233,31 @@ function formatUpdateNoticeLine(notice) {
   }
 }
 function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__PURE__ */ new Date()) {
-  const claims = path8.join(dir, "update-prompt-claims");
+  const claims = path9.join(dir, "update-prompt-claims");
   let names;
   try {
-    names = fs9.readdirSync(claims);
+    names = fs10.readdirSync(claims);
   } catch {
     return false;
   }
   for (const name of names) {
     if (!name.endsWith(".json"))
       continue;
-    const file2 = path8.join(claims, name);
+    const file2 = path9.join(claims, name);
     let fd = null;
     try {
-      fd = fs9.openSync(file2, "r");
-      const stat = fs9.fstatSync(fd);
+      fd = fs10.openSync(file2, "r");
+      const stat = fs10.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
-      const value = JSON.parse(fs9.readFileSync(fd, "utf8"));
+      const value = JSON.parse(fs10.readFileSync(fd, "utf8"));
       if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
       if (fd !== null)
         try {
-          fs9.closeSync(fd);
+          fs10.closeSync(fd);
         } catch {
         }
     }
@@ -30914,7 +31266,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
 }
 function updateCheckEnabledIn(dir) {
   try {
-    const raw = JSON.parse(fs9.readFileSync(path8.join(dir, "config.json"), "utf8"));
+    const raw = JSON.parse(fs10.readFileSync(path9.join(dir, "config.json"), "utf8"));
     return raw.updateCheck !== false;
   } catch {
     return true;
@@ -30922,34 +31274,34 @@ function updateCheckEnabledIn(dir) {
 }
 function cliThrottled(dir, currentVersion, now) {
   const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-  const marker = path8.join(dir, `last-cli-update-notice.${tag}.lock`);
+  const marker = path9.join(dir, `last-cli-update-notice.${tag}.lock`);
   let fd = null;
   try {
     try {
-      fd = fs9.openSync(marker, "r+");
+      fd = fs10.openSync(marker, "r+");
     } catch (err) {
       const code = err.code;
       if (code !== "ENOENT") {
         return true;
       }
-      fs9.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs10.mkdirSync(dir, { recursive: true, mode: 448 });
       try {
-        fd = fs9.openSync(marker, "wx", 384);
+        fd = fs10.openSync(marker, "wx", 384);
       } catch (raceErr) {
         if (raceErr.code === "EEXIST")
           return true;
         throw raceErr;
       }
-      fs9.writeSync(fd, String(now.getTime()));
+      fs10.writeSync(fd, String(now.getTime()));
       return false;
     }
-    const stat = fs9.fstatSync(fd);
+    const stat = fs10.fstatSync(fd);
     if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
       return true;
-    fs9.ftruncateSync(fd, 0);
-    fs9.writeSync(fd, String(now.getTime()), 0);
+    fs10.ftruncateSync(fd, 0);
+    fs10.writeSync(fd, String(now.getTime()), 0);
     try {
-      fs9.fchmodSync(fd, 384);
+      fs10.fchmodSync(fd, 384);
     } catch {
     }
     return false;
@@ -30958,7 +31310,7 @@ function cliThrottled(dir, currentVersion, now) {
   } finally {
     if (fd !== null)
       try {
-        fs9.closeSync(fd);
+        fs10.closeSync(fd);
       } catch {
       }
   }
@@ -30966,23 +31318,23 @@ function cliThrottled(dir, currentVersion, now) {
 function spawnCacheRefresh(dir, currentVersion, now) {
   try {
     const cliPath = fileURLToPath(new URL("../transports/cli/cli.js", import.meta.url));
-    if (!fs9.existsSync(cliPath))
+    if (!fs10.existsSync(cliPath))
       return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
-    const marker = path8.join(dir, `last-fresh-refresh.${tag}.lock`);
+    const marker = path9.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
-      if (now.getTime() - fs9.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+      if (now.getTime() - fs10.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
         return false;
-      fs9.unlinkSync(marker);
+      fs10.unlinkSync(marker);
     } catch {
     }
-    fs9.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs10.mkdirSync(dir, { recursive: true, mode: 448 });
     try {
-      const fd = fs9.openSync(marker, "wx", 384);
+      const fd = fs10.openSync(marker, "wx", 384);
       try {
-        fs9.writeSync(fd, `${process.pid}-${now.getTime()}`);
+        fs10.writeSync(fd, `${process.pid}-${now.getTime()}`);
       } finally {
-        fs9.closeSync(fd);
+        fs10.closeSync(fd);
       }
     } catch {
       return false;
@@ -31047,7 +31399,7 @@ function updateNoticeForEntryPoint(input) {
     const dir = input.dir ?? memeshDir();
     const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : "unknown";
-    const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path8.join(dir, `update-check.${tag}.json`) });
+    const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path9.join(dir, `update-check.${tag}.json`) });
     if (updateCheckEnabled && shouldRefreshUpdateCache(input.currentVersion, cache, now)) {
       (input.refresh ?? spawnCacheRefresh)(dir, input.currentVersion, now);
     }
@@ -31086,8 +31438,8 @@ function resolveTranscriptWorkspace(project, rootUris) {
       const parsed = new URL(uri);
       if (parsed.protocol !== "file:")
         continue;
-      const root = fs10.realpathSync(fileURLToPath2(parsed));
-      if (!fs10.statSync(root).isDirectory() || getProjectName(root) !== project)
+      const root = fs11.realpathSync(fileURLToPath2(parsed));
+      if (!fs11.statSync(root).isDirectory() || getProjectName(root) !== project)
         continue;
       matches.add(root);
     } catch {
@@ -31237,7 +31589,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "import",
-    description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities.",
+    description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.",
     inputSchema: {
       type: "object",
       properties: {
@@ -31247,6 +31599,10 @@ var TOOL_DEFINITIONS = [
           type: "string",
           enum: ["skip", "overwrite", "append"],
           description: "Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived \u2014 this cannot be undone)"
+        },
+        restore_archived: {
+          type: "boolean",
+          description: "Optional, default false. With append or overwrite, a local entity that is archived (forgotten) is left untouched and counted in kept_archived. Set true to bring it back to active and merge or overwrite it like any other; it requires merge_strategy append or overwrite (an error with skip). Only set it when the user asked for archived memories to return."
         }
       },
       required: ["data", "merge_strategy"],
@@ -31275,7 +31631,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "task_state",
-    description: 'Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Injected at the start of the next session, so record ONLY what the user actually stated \u2014 never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: "" once a blocker is resolved).',
+    description: 'Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Included in the next session\'s briefing when the `briefing` level is `standard` or `full` (not at the default, `minimal`), so record ONLY what the user actually stated \u2014 never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: "" once a blocker is resolved).',
     inputSchema: {
       type: "object",
       properties: {
@@ -31293,7 +31649,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "briefing",
-    description: "The work topology for a project, assembled and ready to use: where the work was left off (goal / next / blocked / done), decisions and direction, lessons not to repeat, what is known, recent activity, and a capped index of the project\u2019s durable memories (one line each, newest first, with [mem:id] handles; structured counts and token cost in `index`) \u2014 the same block Claude Code receives at session start. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.",
+    description: "The work topology for a project, assembled and ready to use \u2014 the same memory block Claude Code receives at session start (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool\u2019s output). How much is assembled follows the `briefing` setting: `minimal` (the default) is only this project\u2019s decisions and direction, lessons not to repeat, known facts and recent activity, with the live repository state in front of them, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds where the work was left off (goal / next / blocked / done) when it is fresh, and closes with a capped index of the project\u2019s durable memories (one line each, newest first, with [mem:id] handles); `full` additionally includes memories from other projects and global memory. Whatever the level, the result\u2019s `index` field carries the index\u2019s structured counts and token cost. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.",
     inputSchema: {
       type: "object",
       properties: {
@@ -31412,8 +31768,8 @@ function fail(message) {
   return { content: [{ type: "text", text: message }], isError: true };
 }
 function formatIssue(issue2) {
-  const path10 = issue2.path.join(".");
-  return path10 ? `${path10}: ${issue2.message}` : issue2.message;
+  const path11 = issue2.path.join(".");
+  return path11 ? `${path11}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
   if (Array.isArray(value))
@@ -31454,7 +31810,7 @@ function normalizeClientHost(name) {
 }
 var packageVersion = (() => {
   try {
-    return JSON.parse(fs10.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
+    return JSON.parse(fs11.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
   } catch {
     return "0.0.0";
   }
@@ -31631,8 +31987,8 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
 }
 
 // dist/mcp/server.js
-var packageJsonPath = path9.resolve(path9.dirname(fileURLToPath3(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs11.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
+var packageJsonPath = path10.resolve(path10.dirname(fileURLToPath3(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs12.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOL_DEFINITIONS.map((t) => ({

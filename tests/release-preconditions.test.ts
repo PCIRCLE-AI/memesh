@@ -26,6 +26,7 @@ import {
   LIVE_JOURNEY_RECEIPT_PATHS,
 } from '../scripts/lib/release-preconditions.mjs';
 import {
+  CORE_JOURNEY_IDS,
   LIVE_JOURNEY_SCHEMA_VERSION,
   REQUIRED_LIVE_JOURNEY_STEPS,
   REQUIRED_REGISTRATION_EVIDENCE,
@@ -46,6 +47,16 @@ function liveReport(host: 'codex' | 'claude') {
     started_at: new Date(Date.now() - 1_000).toISOString(),
     finished_at: new Date().toISOString(),
     registration_evidence: REQUIRED_REGISTRATION_EVIDENCE[host],
+    core_journeys: CORE_JOURNEY_IDS.map(id => ({
+      id,
+      status: 'PASS',
+      boundary: id === 'packed-upgrade' ? 'packed-consumer' : 'isolated-process',
+      success: { observed: true },
+      failure: { observed: true },
+      effect_readback: { observed: true },
+      cleanup: { status: 'PASS', removed: true },
+    })),
+    outer_cleanup: { status: 'PASS', removed: true, leftovers: 0 },
     steps: REQUIRED_LIVE_JOURNEY_STEPS[host].map(name => ({ name, status: 'PASS' })),
   };
 }
@@ -87,6 +98,33 @@ describe('release preconditions', () => {
     const r = checkReleasePreconditions(ready());
     expect(r.blockers).toEqual([]);
     expect(r.ok).toBe(true);
+  });
+
+  it('refuses a core journey receipt bound to the wrong execution boundary', () => {
+    const reports = readyLiveJourney();
+    reports[0].report.core_journeys[0].boundary = 'fixture';
+    const r = checkReleasePreconditions(ready({ liveJourneyCandidates: reports }));
+    expect(r.ok).toBe(false);
+    expect(r.blockers.join('\n')).toContain('wrong exercised boundary');
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['failed', { status: 'FAIL', removed: false, reason: 'retained by --keep' }],
+  ])('refuses %s outer cleanup evidence', (_label, outerCleanup) => {
+    const reports = readyLiveJourney();
+    (reports[0].report as any).outer_cleanup = outerCleanup;
+    const r = checkReleasePreconditions(ready({ liveJourneyCandidates: reports }));
+    expect(r.ok).toBe(false);
+    expect(r.blockers.join('\n')).toContain('outer_cleanup does not prove');
+  });
+
+  it.each([undefined, false, 'true'])('refuses core cleanup without proven removal (%s)', removed => {
+    const reports = readyLiveJourney();
+    (reports[0].report.core_journeys[0].cleanup as Record<string, unknown>).removed = removed;
+    const r = checkReleasePreconditions(ready({ liveJourneyCandidates: reports }));
+    expect(r.ok).toBe(false);
+    expect(r.blockers.join('\n')).toContain('successful cleanup receipt');
   });
 
   it('refuses off main', () => {
@@ -145,10 +183,8 @@ describe('release preconditions', () => {
   });
 
   it('refuses a prerelease version rather than mis-publishing it', () => {
-    // Deliberate, not an oversight in the regex: `gh release create` would
-    // mark 4.7.0-rc.1 as latest without `--prerelease`, and publish-npm.yml
-    // runs `npm publish` with no `--tag`, so it would take npm's `latest`
-    // dist-tag too. A prerelease flow is its own change.
+    // Trials promote one final X.Y.Z artifact from next to latest; the
+    // prerelease channel flag does not allow suffixed package versions.
     expect(checkReleasePreconditions(ready({ pkgVersion: '4.7.0-rc.1' })).ok).toBe(false);
   });
 
@@ -233,6 +269,28 @@ describe('release preconditions', () => {
 
 describe('findUsableLiveJourneyReceipt', () => {
   const pass = liveReport('codex');
+
+  it('refuses a host receipt that omits a core product journey', () => {
+    const incomplete = {
+      ...pass,
+      core_journeys: pass.core_journeys.slice(0, -1),
+    };
+    const result = findUsableLiveJourneyReceipt([
+      { host: 'codex', path: '.qa/codex-report.json', report: incomplete, readError: null },
+    ], HEAD, 'codex');
+    expect(result.ok).toBe(false);
+    expect(result.reasons.join('\n')).toContain('packed-upgrade');
+  });
+
+  it('refuses a core journey without success, failure, effect, and cleanup receipts', () => {
+    const malformed = structuredClone(pass);
+    malformed.core_journeys[0].failure = null as never;
+    const result = findUsableLiveJourneyReceipt([
+      { host: 'codex', path: '.qa/codex-report.json', report: malformed, readError: null },
+    ], HEAD, 'codex');
+    expect(result.ok).toBe(false);
+    expect(result.reasons.join('\n')).toContain('memory-round-trip');
+  });
 
   it('accepts a PASS receipt for the exact HEAD revision', () => {
     const r = findUsableLiveJourneyReceipt([{ host: 'codex', path: '.qa/codex-report.json', report: pass, readError: null }], HEAD);
@@ -509,6 +567,119 @@ describe('finish-release cuts the release in one call', () => {
   it('creates the tag through `gh release create --target`', () => {
     expect(code).toMatch(/'release',\s*'create'/);
     expect(code).toMatch(/'--target'/);
+  });
+
+  it('keeps trial selection, registry polling, and publisher tags aligned', () => {
+    expect(code).toContain('let prerelease = false;');
+    expect(code).toContain("const distTag = prerelease ? 'next' : 'latest';");
+    expect(code).toContain("...(prerelease ? ['--prerelease'] : [])");
+    // #359 round 4: the poll, the `latest` read, the decision, the printing
+    // and the exit code all moved into `runPostPublishFlow`
+    // (scripts/lib/publish-flow.mjs) — this pins the DELEGATION; the
+    // mechanics are behaviour-tested with fakes in tests/publish-flow.test.ts.
+    expect(code).toContain("from './lib/publish-flow.mjs'");
+    expect(code).toContain('runPostPublishFlow(');
+    const publisher = fs.readFileSync(path.join(repoRoot, '.github/workflows/publish-npm.yml'), 'utf8');
+    expect(publisher).toContain('npm publish --access public --provenance --tag "$MEMESH_NPM_DIST_TAG"');
+    expect(publisher).toContain("github.event.release.prerelease && 'next' || 'latest'");
+  });
+
+  it('#359 round 4: the poll, the latest read and the decision no longer live in this script at all', () => {
+    // Round 2 fixed the script owning the exit-code COMBINATION
+    // (`decidePublishOutcome`). Round 4's independent review found that was
+    // still not enough: the script still computed `seen` itself by polling
+    // inline, and a reviewer mutated the CALL SITE twice — hard-coding
+    // `seen: pkgVersion` (skips the poll, always "confirmed"), and
+    // separately hard-coding `prerelease: false` (skips the latest
+    // cross-check even on a real prerelease) — and every one of 117 tests
+    // stayed green, because nothing exercised the WIRING between the poll
+    // and the decision. There is now no `seen` variable, no `NPM_POLL_*`
+    // constant, and no literal `@pcircle/memesh@latest` string in this
+    // script at all — every one of those moved into `runPostPublishFlow`.
+    expect(code).not.toMatch(/\bNPM_POLL_ATTEMPTS\b/);
+    expect(code).not.toMatch(/\bNPM_POLL_INTERVAL_MS\b/);
+    expect(code).not.toMatch(/\blet seen\b/);
+    // `'@pcircle/memesh@latest'` still appears ONCE, legitimately — reading
+    // `stableVersionBefore` in the precondition-gathering section, well
+    // before the publish attempt. A SECOND occurrence (the post-publish
+    // `latest` read) would mean the extraction did not actually happen.
+    expect((code.match(/'@pcircle\/memesh@latest'/g) ?? []).length, 'the post-publish latest read is back in this script').toBe(1);
+    expect(code).not.toMatch(/\bconst confirmed\b/);
+    expect(code).not.toMatch(/latestGuard/);
+    expect(code).toMatch(/if \(result\.exitCode !== 0\)/);
+    expect(code).toMatch(/process\.exit\(result\.exitCode\)/);
+  });
+
+  it('passes the caller-gathered stableBefore straight through — the only latest-related value left at script level', () => {
+    // `stableVersionBefore` is read by the PRECONDITION-gathering code far
+    // above this call (`checkReleasePreconditions` already requires it to
+    // exist before anything is created), so it stays a script-level
+    // variable; everything downstream of it (the poll, the second read, the
+    // decision) is now inside `runPostPublishFlow`.
+    expect(code).toMatch(/stableBefore:\s*stableVersionBefore\b/);
+  });
+
+  it('passes the CALLER\'S OWN prerelease flag, not a hard-coded literal (round-4 glue mutation: "pass the wrong flag")', () => {
+    // Measured: hard-coding `prerelease: false` at this call site made every
+    // one of 117 release tests pass while silently skipping the latest
+    // cross-check on a real prerelease — the exact hole this pin exists to
+    // close. The shorthand property `prerelease,` is the caller's own
+    // `let prerelease = false;` (mutated by `--prerelease` above), not a
+    // literal `true`/`false` written at the call site itself.
+    const callAt = code.indexOf('runPostPublishFlow({');
+    expect(callAt, 'runPostPublishFlow is not called').toBeGreaterThan(-1);
+    const callBlockEnd = code.indexOf('});', callAt);
+    const callBlock = code.slice(callAt, callBlockEnd);
+    expect(callBlock, 'the call passes a literal prerelease value instead of the flag').toMatch(/\bprerelease,/);
+    expect(callBlock).not.toMatch(/prerelease:\s*(true|false)\b/);
+  });
+
+  it('wires the REAL registry reader as readVersion, not a constant (round-4 glue mutation: "pass a constant instead of the poll function")', () => {
+    const depsBlockAt = code.indexOf('deps: {');
+    const depsBlockEnd = code.indexOf('});', depsBlockAt);
+    expect(depsBlockAt, 'no deps block passed to runPostPublishFlow').toBeGreaterThan(-1);
+    const depsBlock = code.slice(depsBlockAt, depsBlockEnd);
+    // A real reader is a function OF THE TAG that calls the registry; a
+    // constant-instead-of-the-poll-function mutation looks like
+    // `readVersion: () => pkgVersion` — no parameter, no `capture(` call.
+    expect(depsBlock).toMatch(/readVersion:\s*\(tag\)\s*=>\s*capture\(/);
+  });
+
+  it('#359 round 8: the call is awaited, and a malformed result fails CLOSED (round-8 glue mutation: "drop the `await`")', () => {
+    // Measured: removing `await` from `const result = await
+    // runPostPublishFlow({...})` left every one of 148 release tests green.
+    // `runPostPublishFlow` is `async` (round 7); without `await`, `result` is
+    // a Promise, `result.exitCode` is `undefined`, and the OLD single
+    // `if (result.exitCode !== 0) { process.exit(result.exitCode); }` guard
+    // never fires (`undefined !== 0` is `true`, so it WOULD have called
+    // `process.exit(undefined)` — Node treats that as exit code 0) — the
+    // script would finish claiming success without ever having waited for
+    // the registry check. No source-text pin distinguished present-`await`
+    // from absent-`await`: syntactically valid either way. This pin does.
+    const callAt = code.indexOf('runPostPublishFlow({');
+    expect(callAt, 'runPostPublishFlow is not called').toBeGreaterThan(-1);
+    // The `await` must sit directly before the call, on the same
+    // `const result = ` assignment — not merely present anywhere in the file
+    // (a stray `await` elsewhere would satisfy an "await appears somewhere"
+    // check without protecting THIS call).
+    const beforeCall = code.slice(0, callAt);
+    const assignmentAt = beforeCall.lastIndexOf('const result =');
+    expect(assignmentAt, 'no `const result = ` assignment immediately precedes the call').toBeGreaterThan(-1);
+    const assignmentToCall = code.slice(assignmentAt, callAt);
+    expect(assignmentToCall, 'the runPostPublishFlow call is not awaited').toMatch(/const result\s*=\s*await\s*$/);
+
+    // The fail-closed guard: any result that is not a real integer exit code
+    // (missing, a Promise, `undefined`, a string, ...) reports UNCONFIRMED
+    // and exits 1 — BEFORE the pre-existing `result.exitCode !== 0` check,
+    // which alone cannot distinguish "confirmed failure" from "no verdict at
+    // all".
+    const callBlockEnd = code.indexOf('});', callAt);
+    const afterCall = code.slice(callBlockEnd, callBlockEnd + 600);
+    expect(afterCall, 'no fail-closed guard on a malformed result').toMatch(
+      /if\s*\(\s*!result\s*\|\|\s*!Number\.isInteger\(result\.exitCode\)\s*\)/,
+    );
+    expect(afterCall, 'the fail-closed guard does not exit non-zero').toMatch(/process\.exit\(1\)/);
+    expect(afterCall, 'the fail-closed guard prints no diagnostic').toMatch(/UNCONFIRMED: post-publish check returned no verdict/);
   });
 
   it('never pushes a tag by hand', () => {

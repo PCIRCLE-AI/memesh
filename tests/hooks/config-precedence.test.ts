@@ -6,6 +6,9 @@ import {
   isAutoCaptureEnabled,
   resolveAutoUpdatePolicy,
   resolveSessionLimit,
+  resolveBriefingLevel,
+  readHookConfig,
+  readHookConfigResult,
 } from '../../scripts/hooks/_shared.js';
 
 // Item #11 regression: env-only feature flags now have config-file
@@ -133,5 +136,109 @@ describe('resolveAutoUpdatePolicy — env > config > default(off)', () => {
   it('invalid config value falls through to default', () => {
     writeConfig({ autoUpdate: 'auto' });
     expect(resolveAutoUpdatePolicy(envFor())).toBe('off');
+  });
+});
+
+// #360: resolveBriefingLevel — env `MEMESH_BRIEFING` > config `briefing` >
+// default('minimal'). Same file, same env-redirected-HOME pattern as the
+// suites above, since readHookConfig() resolves through homedir() the same
+// way for every one of these resolvers.
+//
+// The explicit values in the "takes effect" tests are levels other than the
+// default: a resolver that ignored its inputs would answer `minimal` every
+// time, so an explicit `minimal` could not tell "took effect" from "ignored".
+describe("resolveBriefingLevel — env > config.briefing > default('minimal')", () => {
+  it("defaults to 'minimal' when neither env nor config sets it", () => {
+    expect(resolveBriefingLevel(envFor())).toEqual({ level: 'minimal', invalid: null });
+  });
+
+  it('config briefing=standard takes effect', () => {
+    writeConfig({ briefing: 'standard' });
+    expect(resolveBriefingLevel(envFor())).toEqual({ level: 'standard', invalid: null });
+  });
+
+  it('an explicit config briefing=minimal is valid, not reported as invalid', () => {
+    writeConfig({ briefing: 'minimal' });
+    expect(resolveBriefingLevel(envFor())).toEqual({ level: 'minimal', invalid: null });
+  });
+
+  it('env wins over config', () => {
+    writeConfig({ briefing: 'full' });
+    expect(resolveBriefingLevel(envFor({ MEMESH_BRIEFING: 'standard' })))
+      .toEqual({ level: 'standard', invalid: null });
+  });
+
+  it('a config object passed in is the stored config — config.json is not read again', () => {
+    writeConfig({ briefing: 'full' });
+    expect(resolveBriefingLevel(envFor(), { briefing: 'standard' }))
+      .toEqual({ level: 'standard', invalid: null });
+  });
+
+  // `value` is the real `JSON.stringify('banana')` form (quoted) — see
+  // tests/core/briefing-level.test.ts for the dedicated whitespace-evidence
+  // tests behind that rendering.
+  it('an invalid env value defaults AND is reported as invalid (source: env) — config is not consulted', () => {
+    writeConfig({ briefing: 'full' });
+    expect(resolveBriefingLevel(envFor({ MEMESH_BRIEFING: 'banana' })))
+      .toEqual({ level: 'minimal', invalid: { source: 'env', value: '"banana"' } });
+  });
+
+  it('an invalid config value (no env set) defaults AND is reported as invalid (source: config)', () => {
+    writeConfig({ briefing: 'banana' });
+    expect(resolveBriefingLevel(envFor()))
+      .toEqual({ level: 'minimal', invalid: { source: 'config', value: '"banana"' } });
+  });
+});
+
+// `readHookConfig()` swallows EVERY way a config document itself could be
+// unusable — malformed JSON, a truncated file, a non-object top-level value —
+// into a plain `{}`, indistinguishable from "file legitimately empty/absent".
+// `core/config.ts` (CLI/MCP) reports this state, so the hook must not
+// silently use every default with no trace. `readHookConfigResult()` is the
+// state-aware reader session-start.js checks in addition to (not instead of)
+// the plain `readHookConfig()` every other caller in `_shared.js` uses.
+describe('readHookConfigResult — malformed/non-object config document classification', () => {
+  it('an absent file is "absent", not "unreadable" — no false alarm on first run', () => {
+    expect(readHookConfigResult(envFor())).toEqual({ config: {}, state: 'absent' });
+  });
+
+  it('a normal object config is "ok"', () => {
+    writeConfig({ briefing: 'full' });
+    expect(readHookConfigResult(envFor())).toEqual({ config: { briefing: 'full' }, state: 'ok' });
+  });
+
+  it.each([
+    ['a bare array', '[]'],
+    ['a bare string', '"x"'],
+    ['a bare number', '42'],
+    ['a bare boolean', 'true'],
+    ['a bare null', 'null'],
+    ['truncated JSON', '{"briefing": "fu'],
+    ['not JSON at all', 'not json at all'],
+  ])('%s top-level document is classified "unreadable", config defaults to {}', (_label, raw) => {
+    const dir = path.join(tmpDir, '.memesh');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), raw);
+    expect(readHookConfigResult(envFor())).toEqual({ config: {}, state: 'unreadable' });
+  });
+
+  // Explicitly re-asserted per the coordinator's requirement: this is a
+  // DIFFERENT case from a broken document — the document is a perfectly
+  // valid object, `briefing` merely is not a TOP-LEVEL key in it (it is
+  // nested under an unrelated key). That is a legitimate "not set", not a
+  // malformed document, and must stay "ok" with `briefing` absent.
+  it('{"nested":{"briefing":"full"}} stays a plain "not set" — the object itself is valid', () => {
+    writeConfig({ nested: { briefing: 'full' } });
+    const result = readHookConfigResult(envFor());
+    expect(result.state).toBe('ok');
+    expect(result.config.briefing).toBeUndefined();
+    expect(resolveBriefingLevel(envFor())).toEqual({ level: 'minimal', invalid: null });
+  });
+
+  it('readHookConfig() (the plain wrapper every other caller uses) is unaffected — still returns {} for every unreadable case', () => {
+    const dir = path.join(tmpDir, '.memesh');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config.json'), '[]');
+    expect(readHookConfig(envFor())).toEqual({});
   });
 });

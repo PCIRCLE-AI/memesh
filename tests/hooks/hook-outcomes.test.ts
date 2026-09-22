@@ -20,7 +20,7 @@ import {
   RECORD_TEXT_MAX,
   type HookOutcomeRecord,
 } from '../../src/core/capture-liveness.js';
-import { recordHookOutcome } from '../../scripts/hooks/_shared.js';
+import { recordHookOutcome, sliceUtf16UnitsSurrogateSafe } from '../../scripts/hooks/_shared.js';
 
 /**
  * The guard for issue #327: every capture-hook exit path leaves a record.
@@ -125,9 +125,10 @@ describe('hook outcome records', () => {
     expect(fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8')).not.toContain('sess-1');
   });
 
-  it('post-commit records a SKIPPED naming the #321 reason when the output has no commit line', () => {
-    // Exactly what `git commit -q` looks like from inside this hook: the
-    // command IS a commit, and the output says nothing about it.
+  it('post-commit records a SKIPPED reason when a commit-like command has no resolvable HEAD', () => {
+    // The command claims to be a commit, but this empty repository has no
+    // HEAD. That is now distinct from a successful quiet commit, which the
+    // state fallback captures after its baseline exists.
     runHook('post-commit', {
       tool_name: 'Bash',
       cwd: repoDir,
@@ -137,7 +138,7 @@ describe('hook outcome records', () => {
     const rows = records('post-commit');
     expect(rows.length, 'post-commit left no record on its most common skip path').toBe(1);
     expect(rows[0].outcome).toBe('skipped');
-    expect(rows[0].reason).toBe(SKIP_REASONS.commitLineMissing);
+    expect(rows[0].reason).toBe(SKIP_REASONS.commitHeadUnresolvable);
   });
 
   it('post-commit records a SKIPPED with a reason on every other bail', () => {
@@ -524,7 +525,10 @@ describe('hook outcome records', () => {
     ['git show HEAD -- src/commit.ts', false],
     ['git rev-parse --verify commit', false],
     ['git commit-tree HEAD^{tree}', false],
-    ['git merge feature', false],
+    ['git merge feature', true],
+    ['git cherry-pick abc1234', true],
+    ['git revert --no-edit abc1234', true],
+    ['git merge-base main feature', false],
     ['legit commit', false],
     ['xgit commit', false],
     ['npm run release:finish', false],
@@ -610,5 +614,103 @@ describe('hook outcome records', () => {
     });
     expect(cleared.status).toBe('PASS');
     expect(captureLivenessNotice(cleared)).toBeNull();
+  });
+
+  // #360 round 8 (Codex round 7 re-review, item 1, second part): a plain
+  // `.slice(0, maxUnits)` truncates by raw UTF-16 code UNIT, which can land
+  // between the two halves of a surrogate pair and leave a lone, unpaired
+  // one at the end (`isWellFormed()` false — confirmed against a real cut
+  // landing on a pair straddling unit 200, the exact bound
+  // `recordHookOutcome` uses for `reason`/`entity`). This is a MINIMAL,
+  // separate fix from the `describeInvalidValue` one (which bounds ONE
+  // diagnostic at the source): it protects `recordHookOutcome` itself,
+  // for EVERY hook and EVERY reason/entity string that reaches it, not
+  // just the briefing-level one. Deliberately does not change the ~200-unit
+  // cap other callers already rely on — only the CUT POINT, and only when
+  // the raw cut would otherwise split a pair.
+  describe('sliceUtf16UnitsSurrogateSafe — recordHookOutcome\'s truncation never splits a surrogate pair', () => {
+    it('a string shorter than the bound is returned unchanged', () => {
+      expect(sliceUtf16UnitsSurrogateSafe('hello', 200)).toBe('hello');
+    });
+
+    it('a plain-ASCII string longer than the bound is cut at exactly maxUnits (no surrogates involved, nothing to protect)', () => {
+      const s = 'a'.repeat(250);
+      const cut = sliceUtf16UnitsSurrogateSafe(s, 200);
+      expect(cut.length).toBe(200);
+      expect(cut).toBe('a'.repeat(200));
+    });
+
+    it('a surrogate pair straddling the cut boundary is backed off by one unit — never split', () => {
+      // 199 'a' + an emoji (2 units: indices 199-200) + more content. A raw
+      // `.slice(0, 200)` would keep the emoji's high surrogate (index 199)
+      // and drop its low surrogate (index 200) — a lone, unpaired
+      // surrogate. This function must back off to 199 instead.
+      const s = 'a'.repeat(199) + '😀' + 'zzzzz';
+      const rawCut = s.slice(0, 200); // reproduce the OLD unsafe behaviour for comparison
+      expect(rawCut.length).toBe(200);
+      const highSurrogate = rawCut.charCodeAt(199);
+      expect(highSurrogate >= 0xd800 && highSurrogate <= 0xdbff, 'fixture sanity: the raw cut really does split the pair').toBe(true);
+
+      const safeCut = sliceUtf16UnitsSurrogateSafe(s, 200);
+      expect(safeCut.length).toBe(199); // backed off by exactly one unit
+      expect(safeCut).toBe('a'.repeat(199)); // the emoji is dropped WHOLE, not half of it
+      // No lone surrogate anywhere in the safe result.
+      expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(safeCut)).toBe(false);
+    });
+
+    it('a surrogate pair that does NOT straddle the boundary is unaffected (cuts at exactly maxUnits)', () => {
+      // The emoji is well before the cut point — nothing to back off for.
+      const s = '😀' + 'a'.repeat(250);
+      const cut = sliceUtf16UnitsSurrogateSafe(s, 200);
+      expect(cut.length).toBe(200);
+    });
+
+    it('a pre-existing LONE (already-unpaired) surrogate at the cut point is left exactly as it was — this only protects a REAL pair', () => {
+      // 199 'a' + a lone high surrogate with NO matching low surrogate
+      // anywhere after it. There is no pair to protect here; cutting at
+      // 200 is already correct (the source string was already malformed).
+      const s = 'a'.repeat(199) + '\ud83d' + 'zzzzz'; // \ud83d alone, next char is 'z' not a low surrogate
+      const cut = sliceUtf16UnitsSurrogateSafe(s, 200);
+      expect(cut.length).toBe(200);
+      expect(cut).toBe('a'.repeat(199) + '\ud83d');
+    });
+
+    it('recordHookOutcome applies this to a real record — reason built to straddle unit 200 exactly', () => {
+      // recordHookOutcome reads MEMESH_DIR/MEMESH_DB_PATH/HOME off
+      // `process.env` directly (getMemeshDirFromDbPath, core-paths.ts) —
+      // not off whatever object is passed as its first argument — so
+      // redirecting the write target safely means mutating `process.env`
+      // itself (save/restore), the same pattern the existing
+      // "redacts a secret before the 200-character reason cap" test above
+      // uses, never a fabricated env object.
+      const previous = {
+        MEMESH_DIR: process.env.MEMESH_DIR,
+        MEMESH_DB_PATH: process.env.MEMESH_DB_PATH,
+        HOME: process.env.HOME,
+      };
+      process.env.MEMESH_DIR = memeshDir;
+      process.env.MEMESH_DB_PATH = path.join(memeshDir, 'knowledge-graph.db');
+      process.env.HOME = testDir;
+      try {
+        // 199 'a' + an emoji (2 units: positions 199-200) + more content —
+        // a raw `.slice(0, 200)` would keep the emoji's high surrogate and
+        // drop its low surrogate. This is recordHookOutcome's OWN slice
+        // being exercised directly (any hook's reason could be this long;
+        // the briefing-level diagnostic itself no longer reaches close to
+        // 200 after the round-8 source-level fix — see the real-hook
+        // regressions in tests/hooks/session-start.test.ts for THAT path).
+        const reason = 'a'.repeat(199) + '😀' + 'zzzzz';
+        recordHookOutcome(process.env, { hook: 'session-start', outcome: 'notified', reason });
+        const raw = fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8');
+        const record = JSON.parse(raw.trim()) as { reason?: string };
+        expect(record.reason, 'a reason must have been recorded').toBeTruthy();
+        expect(record.reason!.length).toBeLessThanOrEqual(200);
+        expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(record.reason!)).toBe(false);
+      } finally {
+        if (previous.MEMESH_DIR === undefined) delete process.env.MEMESH_DIR; else process.env.MEMESH_DIR = previous.MEMESH_DIR;
+        if (previous.MEMESH_DB_PATH === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = previous.MEMESH_DB_PATH;
+        if (previous.HOME === undefined) delete process.env.HOME; else process.env.HOME = previous.HOME;
+      }
+    });
   });
 });

@@ -94,6 +94,9 @@ export const SKIP_REASONS = {
     notBash: 'not a Bash tool call',
     notGitCommit: 'not a git commit command',
     commitLineMissing: 'a git commit ran but printed no commit line',
+    commitHeadBaseline: 'recorded the repository HEAD baseline; no history was backfilled',
+    commitHeadUnchanged: 'a commit-like command completed but repository HEAD did not change',
+    commitHeadUnresolvable: 'a commit-like command ran but repository HEAD could not be resolved',
     alreadyCaptured: 'this session was already captured',
     payloadTooLarge: 'payload exceeded the stdin byte cap',
     toolNameAbsent: 'tool_name absent in payload',
@@ -119,6 +122,7 @@ export const SKIP_REASONS = {
     noFilePath: 'no file_path in the tool input',
     noDatabaseForRecall: 'no database yet — nothing to recall',
     nothingToRecall: 'no guard matched and nothing to recall for this file',
+    candidateWindowTruncated: 'more candidates may exist than the search window examined',
     noPromptIntent: 'the prompt carried no remember intent and no update decision',
     noMemoryDir: 'no Claude Code memory directory for this project',
     noNoteChanged: 'no note file changed since the last ingestion',
@@ -152,15 +156,17 @@ export function isGitCommitCommand(command) {
 }
 const VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace']);
 const COMMIT_END = /[\s;&|)`]/;
+const COMMIT_SUBCOMMANDS = ['commit', 'merge', 'cherry-pick', 'revert'];
 function commitFollowsGit(s, i) {
     for (;;) {
         const afterSpace = skipSpace(s, i);
         if (afterSpace === i)
             return { commit: false, end: i };
         i = afterSpace;
-        if (s.startsWith('commit', i)) {
-            const next = s[i + 6];
-            return { commit: next === undefined || COMMIT_END.test(next), end: i + 6 };
+        const subcommand = COMMIT_SUBCOMMANDS.find((candidate) => s.startsWith(candidate, i));
+        if (subcommand) {
+            const next = s[i + subcommand.length];
+            return { commit: next === undefined || COMMIT_END.test(next), end: i + subcommand.length };
         }
         if (s[i] !== '-')
             return { commit: false, end: i };

@@ -7,7 +7,7 @@
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
 import { redactSecrets, redactUserPaths } from './core-paths.js';
-import { EVIDENCE_LAYER_TYPES, isAutoInjectable, topologyLine } from './work-topology.js';
+import { EVIDENCE_LAYER_TYPES, isAutoInjectable, projectLabel, topologyLine } from './work-topology.js';
 export const INDEX_MAX_LINES = 40;
 export const INDEX_MAX_BYTES = 3072;
 export const INDEX_STALE_DAYS = 180;
@@ -68,10 +68,10 @@ function indexLine(candidate) {
     return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || 'memory', title: text || null }, INDEX_LINE_MAX_CHARS);
 }
 function indexHeading(projectName) {
-    return `Index of durable memories for "${projectName}" (newest first):`;
+    return `Index of durable memories for "${projectLabel(projectName)}" (newest first):`;
 }
 function indexEmptyLine(projectName) {
-    return `- No durable memories (decisions, lessons, patterns, references) for "${projectName}" yet.`;
+    return `- No durable memories (decisions, lessons, patterns, references) for "${projectLabel(projectName)}" yet.`;
 }
 function moreLine(n, truncated) {
     return `- ${n}${truncated ? '+' : ''} more — memesh recall --tag "project:…"`;

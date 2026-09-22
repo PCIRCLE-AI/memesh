@@ -68,6 +68,10 @@ const SOURCES = [
   // The durable-memory index (#323): SessionStart and `briefing` must render
   // the same index under the same frozen caps, so the builder is mirrored.
   { from: 'dist/core/briefing-index.js', to: 'briefing-index.js', src: 'src/core/briefing-index.ts' },
+  // The briefing-level policy (#360): SessionStart and `briefing` must agree
+  // on what `minimal` / `standard` / `full` include, so the ONE policy table
+  // is mirrored rather than re-decided per hook.
+  { from: 'dist/core/briefing-level.js', to: 'briefing-level.js', src: 'src/core/briefing-level.ts' },
   { from: 'dist/storage/fts-index.js', to: 'fts-index.js', src: 'src/storage/fts-index.ts' },
   { from: 'dist/storage/schema.js', to: 'schema.js', src: 'src/storage/schema.ts' },
   // The SQLite driver. A leaf by construction — it imports `node:module` and
