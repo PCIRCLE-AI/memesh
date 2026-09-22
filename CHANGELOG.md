@@ -4,6 +4,8 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+## [4.10.3] — 2026-09-22
+
 ### Changed
 
 - **The default briefing level is now `minimal`.** A new session, and a call to
