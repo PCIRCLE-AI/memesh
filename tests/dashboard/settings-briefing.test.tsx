@@ -48,6 +48,17 @@ function briefingSelect(container: HTMLElement): HTMLSelectElement {
   return within(container).getByLabelText('Session start briefing') as HTMLSelectElement;
 }
 
+/** Every id a select's aria-describedby names must exist in the DOM, in every state. */
+function expectDescribedByResolves(root: HTMLElement): void {
+  const selects = Array.from(root.querySelectorAll('select[aria-describedby]'));
+  expect(selects.length).toBeGreaterThan(0);
+  for (const select of selects) {
+    for (const id of (select.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)) {
+      expect(root.querySelector(`#${id}`), `#${id} named by aria-describedby must exist`).not.toBeNull();
+    }
+  }
+}
+
 describe('SettingsTab briefing level', () => {
   afterEach(() => { vi.restoreAllMocks(); setLocale('en'); });
 
@@ -92,6 +103,7 @@ describe('SettingsTab briefing level', () => {
     expect(hint.textContent).toContain('MEMESH_BRIEFING overrides this setting');
     expect(select.getAttribute('aria-describedby')).toBe('settings-briefing-hint');
     expect(select.getAttribute('aria-invalid')).toBeNull();
+    expectDescribedByResolves(container as HTMLElement);
   });
 
   it.each([['an unknown word', 'bogus'], ['a level in the wrong case', 'Standard'], ['a number', 42], ['null', null]])(
@@ -203,16 +215,51 @@ describe('SettingsTab briefing level', () => {
     const messageOf = (id: string) => root.querySelector(`#${id}`)?.textContent ?? null;
     await waitFor(() => expect(briefing.disabled).toBe(false));
 
+    expectDescribedByResolves(root);
     fireEvent.change(briefing, { target: { value: 'standard' } });
     await waitFor(() => expect(messageOf('settings-briefing-message')).toBe('Saved.'));
     expect(messageOf('settings-autoupdate-message')).toBeNull();
     expect(briefing.getAttribute('aria-describedby')).toBe('settings-briefing-hint settings-briefing-message');
+    expectDescribedByResolves(root);
 
     fireEvent.change(autoUpdate, { target: { value: 'patch' } });
     await waitFor(() => expect(messageOf('settings-autoupdate-message')).toBe('Saved.'));
     expect(messageOf('settings-briefing-message')).toBeNull();
     expect(autoUpdate.getAttribute('aria-describedby')).toBe('settings-autoupdate-hint settings-autoupdate-message');
     expect(briefing.getAttribute('aria-describedby')).toBe('settings-briefing-hint');
+    expectDescribedByResolves(root);
+  });
+
+  it('announces a success politely and leaves both controls valid', async () => {
+    fakeServer({});
+    const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
+    const root = container as HTMLElement;
+    const briefing = briefingSelect(root);
+    const autoUpdate = within(root).getByLabelText('Auto-update policy') as HTMLSelectElement;
+    await waitFor(() => expect(briefing.disabled).toBe(false));
+    fireEvent.change(autoUpdate, { target: { value: 'patch' } });
+    await waitFor(() => expect(root.querySelector('#settings-autoupdate-message')?.textContent).toBe('Saved.'));
+    expect(root.querySelector('#settings-autoupdate-message')?.getAttribute('role')).toBe('status');
+    expect(within(root).queryByRole('alert')).toBeNull();
+    expect(autoUpdate.getAttribute('aria-invalid')).toBeNull();
+    expect(briefing.getAttribute('aria-invalid')).toBeNull();
+    expectDescribedByResolves(root);
+  });
+
+  it('files a failed auto-update save under the auto-update control, not the briefing one', async () => {
+    fakeServer({ briefing: 'standard' }, { failPost: true });
+    const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
+    const root = container as HTMLElement;
+    const briefing = briefingSelect(root);
+    const autoUpdate = within(root).getByLabelText('Auto-update policy') as HTMLSelectElement;
+    await waitFor(() => expect(autoUpdate.disabled).toBe(false));
+    fireEvent.change(autoUpdate, { target: { value: 'patch' } });
+    const alert = await waitFor(() => within(root).getByRole('alert'));
+    expect(alert.id).toBe('settings-autoupdate-message');
+    expect(alert.textContent).toContain('save failed');
+    expect(autoUpdate.getAttribute('aria-invalid')).toBe('true');
+    expect(briefing.getAttribute('aria-invalid')).toBeNull();
+    expectDescribedByResolves(root);
   });
 
   it('announces a failed save under the control that failed and marks only that control invalid', async () => {
