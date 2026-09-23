@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { runCoreLiveJourneys } from '../../scripts/qa/core-live-journeys.mjs';
 
@@ -12,6 +13,15 @@ function fixture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-core-live-journeys-'));
   dirs.push(dir);
   return dir;
+}
+
+// Mirrors the module's own defaultCli (not exported) so this test can run
+// every call through the real built CLI except the one it deliberately
+// intercepts.
+function realCli({ args, env, cwd, input }: { args: string[]; env: NodeJS.ProcessEnv; cwd: string; input?: string }) {
+  return spawnSync(process.execPath, [path.join(cwd, 'dist/transports/cli/cli.js'), ...args], {
+    cwd, env, input, encoding: 'utf8', timeout: 20_000,
+  });
 }
 
 afterEach(() => {
@@ -56,6 +66,20 @@ describe('core live journeys', () => {
       cli: () => ({ status: 73, stdout: '', stderr: 'controlled CLI failure' }),
     })).rejects.toThrow(/remember failed \(exit 73\).*controlled CLI failure/);
     expect(fs.existsSync(path.join(runDir, 'memory-round-trip'))).toBe(false);
+  });
+
+  it('routes the standard-level briefing override through the injected CLI runner, not a hardcoded path', async () => {
+    const runDir = fixture();
+    const cli = (opts: { args: string[]; env: NodeJS.ProcessEnv; cwd: string; input?: string }) =>
+      opts.env.MEMESH_BRIEFING === 'standard'
+        ? { status: 73, stdout: '', stderr: 'controlled standard-env failure' }
+        : realCli(opts);
+    // If session-start-briefing ever regresses to spawning `dist/transports/cli/cli.js`
+    // directly for the standard-override check (bypassing the `cli` parameter this
+    // function is injected with), this wrapper never sees that call and the journey
+    // wrongly succeeds instead of surfacing the controlled failure below.
+    await expect(runCoreLiveJourneys({ repoRoot, runDir, cli }))
+      .rejects.toThrow(/standard-level briefing readback failed \(exit 73\).*controlled standard-env failure/);
   });
 
   it('overrides an inherited database path so the caller graph remains untouched', async () => {

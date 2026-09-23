@@ -108,13 +108,12 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
     fs.writeFileSync(path.join(memeshDir, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
     const isolatedEnv = {
       ...baseEnv,
-      // The session-start-briefing journey asserts that a stated goal comes back
-      // through `memesh briefing` and the SessionStart hook. The fresh task
-      // state is `standard`-level content — the default level (`minimal`) does
-      // not carry it — so the journeys run at the level they exercise instead of
-      // leaning on the default. Set in the env: it wins over any config.json,
-      // and it replaces a MEMESH_BRIEFING the caller's shell may export.
-      MEMESH_BRIEFING: 'standard',
+      // No MEMESH_BRIEFING pin here (issue #412): a real install gets the
+      // default level (`minimal`) unless it opts into something else, and
+      // that is what these journeys must exercise. Only
+      // `session-start-briefing` below cares about the level at all — it
+      // adds its own MEMESH_BRIEFING override locally, on top of this env,
+      // for the one assertion that needs `standard`.
       HOME: homeDir,
       USERPROFILE: homeDir,
       MEMESH_DIR: memeshDir,
@@ -192,18 +191,57 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
       'task', '--project', project, '--goal', goal, '--next', next, '--json',
     ]), 'task state write'), 'task state write');
     if (task.state?.goal !== goal || task.state?.next !== next) throw new Error('task state write did not read back exact values');
-    const briefing = json(
-      mustSucceed(invokeCli(['briefing', '--project', project, '--json']), 'briefing readback'),
-      'briefing readback',
+
+    // issue #412: `isolatedEnv` carries no MEMESH_BRIEFING override, so this
+    // is what a real install actually gets — the default level (`minimal`).
+    // A goal/next is `standard`+-only content (briefing-level.ts POLICIES);
+    // the remembered sentinel is not level-gated at all. Asserting BOTH —
+    // goal absent, sentinel present — at the level every fresh install ships
+    // with is the point: `tests/core/briefing.test.ts` already covers this
+    // at the unit/subprocess layer, but nothing at the journey layer (real
+    // CLI + real SessionStart hook, glued together) exercised the default
+    // before this fix; only `standard` was ever run here.
+    const defaultBriefing = json(
+      mustSucceed(invokeCli(['briefing', '--project', project, '--json']), 'default-level briefing readback'),
+      'default-level briefing readback',
     );
-    if (!briefing.text?.includes(goal) || !briefing.text?.includes(next)) throw new Error('CLI briefing omitted stated task state');
+    if (defaultBriefing.level !== 'minimal') throw new Error(`briefing ran at unexpected default level: ${defaultBriefing.level}`);
+    if (defaultBriefing.text?.includes(goal) || defaultBriefing.text?.includes(next)) {
+      throw new Error('CLI briefing included task state at the default (minimal) level, which must omit it');
+    }
+    if (!defaultBriefing.text?.includes(sentinel)) {
+      throw new Error('CLI briefing omitted the remembered sentinel at the default (minimal) level');
+    }
     const hook = path.join(repoRoot, 'scripts/hooks/session-start.js');
     const good = mustSucceed(runNode(hook, { cwd: repoRoot, env: isolatedEnv, input: JSON.stringify({ cwd: repoRoot, source: 'startup' }) }), 'SessionStart');
     const output = json(good, 'SessionStart');
-    if (!output.hookSpecificOutput?.additionalContext?.includes(sentinel)
-      || !output.hookSpecificOutput.additionalContext.includes(goal)) {
-      throw new Error('SessionStart did not inject recalled memory and stated task state');
+    const additionalContext = output.hookSpecificOutput?.additionalContext;
+    if (!additionalContext?.includes(sentinel)) {
+      throw new Error('SessionStart did not inject the recalled memory at the default (minimal) level');
     }
+    if (additionalContext.includes(goal) || additionalContext.includes(next)) {
+      throw new Error('SessionStart injected task state at the default (minimal) level, which must omit it');
+    }
+
+    // Separately, confirm the `standard` override itself still works
+    // end-to-end (not just at the unit layer): the same stated goal, read
+    // through the same CLI AND the same SessionStart hook (a distinct
+    // implementation — scripts/hooks/_shared.js resolves the level on its
+    // own), WITH the override this journey used to always set
+    // unconditionally.
+    const standardEnv = { ...isolatedEnv, MEMESH_BRIEFING: 'standard' };
+    const standardResult = cli({ args: ['briefing', '--project', project, '--json'], env: standardEnv, cwd: repoRoot });
+    const standard = json(mustSucceed(standardResult, 'standard-level briefing readback'), 'standard-level briefing readback');
+    if (standard.level !== 'standard') throw new Error(`MEMESH_BRIEFING=standard override did not produce standard level: ${standard.level}`);
+    if (!standard.text?.includes(goal) || !standard.text?.includes(next)) {
+      throw new Error('CLI briefing omitted stated task state at the standard level');
+    }
+    const standardHook = mustSucceed(runNode(hook, { cwd: repoRoot, env: standardEnv, input: JSON.stringify({ cwd: repoRoot, source: 'startup' }) }), 'SessionStart standard-level override');
+    const standardAdditionalContext = json(standardHook, 'SessionStart standard-level override').hookSpecificOutput?.additionalContext;
+    if (!standardAdditionalContext?.includes(goal) || !standardAdditionalContext.includes(next)) {
+      throw new Error('SessionStart did not inject task state under the standard-level override');
+    }
+
     const blocker = path.join(journeyDir, 'not-a-directory');
     fs.writeFileSync(blocker, 'blocks database parent creation');
     const bad = mustSucceed(runNode(hook, {
@@ -219,7 +257,7 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
       'session-start-briefing',
       { observed: true, operations: ['task_state', 'briefing', 'SessionStart'] },
       { observed: true, databaseFailureBanner: true },
-      { observed: true, taskStateReadback: true, cliBriefing: true, hookSpecificOutput: true },
+      { observed: true, taskStateReadback: true, cliBriefing: true, hookSpecificOutput: true, defaultLevelExcludesTaskState: true, standardLevelOverrideStillWorks: true },
     );
   })));
 
