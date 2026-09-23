@@ -55,7 +55,7 @@ export function recentHookNoticeExists(dir, currentVersion, latestVersion, now =
     }
     return false;
 }
-function updateCheckEnabledIn(dir) {
+export function updateCheckEnabledIn(dir) {
     try {
         const raw = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
         return raw.updateCheck !== false;

@@ -56,6 +56,21 @@ accepted the work.
 
 ## One-time owner-private local-host setup
 
+**Two tiers, easy to conflate.** `memesh agent setup <host>` (below) only
+writes a local config file — it registers nothing by itself, and for `claude`
+and the managed `codex` runner it must be followed by actually starting that
+host (`memesh-host-claude` via [Claude channel runner](#claude-channel-runner),
+`memesh-host-codex` via
+[Separate: MeMesh-managed Codex app-server runner](#separate-memesh-managed-codex-app-server-runner)).
+The [Claude channel runner](#claude-channel-runner) tier additionally requires
+Claude's own `--dangerously-load-development-channels` opt-in, since Claude
+Channels is an upstream research-preview feature — that step is NOT required
+for ordinary Codex plugin sessions (which auto-register per thread with no
+setup at all) or for durable, non-live `send`/`fetch` to a stable recipient
+(which needs no registration of any kind). If discovery/live delivery isn't
+working, first confirm which tier you actually need before debugging the
+wrong one.
+
 Native delivery is optional and local to one Unix account. Do this setup once
 for the account that owns both the MeMesh database and the active host
 sessions; do not place router tokens or host config in a repository, shared

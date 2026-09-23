@@ -6,6 +6,17 @@ All notable changes to MeMesh are documented here.
 
 ### Changed
 
+- `message discover` now returns a named, actionable `router_unreachable` error
+  (naming `memesh-router` or the managed host's launch step) instead of a raw
+  connection error when the local agent router can't be reached.
+- The MCP server now notices when the code on disk has moved past what it
+  loaded at startup (e.g. a plugin-marketplace upgrade while the session was
+  still open) and appends a one-line notice telling you to restart the
+  session, instead of silently continuing to run stale code with no signal.
+- `memesh agent setup`, `memesh briefing`, `memesh config set`, and
+  `memesh dream accept` now have more complete `--help` text (the exact
+  `briefing` levels and how to set them, which `agent setup` hosts require it
+  vs. auto-register, and what `dream accept` actually does per proposal kind).
 - `memesh delegation record` now takes a required `--source <name>` instead of
   always tagging the record `deepseek-worker`. Any delegate worker can record
   a delegation, not only the DeepSeek worker. The record's identity now folds
@@ -15,6 +26,12 @@ All notable changes to MeMesh are documented here.
   creates a new record instead of the usual no-op, since the naming scheme
   changed; existing records are unaffected and `delegation verify` still
   works on them.
+
+### Fixed
+
+- `dream accept`'s and `agent setup`'s help text previously said things that
+  weren't true for several cases (e.g. claiming every proposal kind archives
+  its sources, or that setup is optional for the managed Codex runner).
 
 ## [4.10.4] — 2026-09-23
 

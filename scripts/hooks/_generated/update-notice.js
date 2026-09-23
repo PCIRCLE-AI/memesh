@@ -15,6 +15,19 @@ export const ANSWER_VALID_MS = 24 * 60 * 60 * 1000;
 export const SNOOZE_LEVEL_MS = [24 * 60 * 60 * 1000, 48 * 60 * 60 * 1000, 7 * 24 * 60 * 60 * 1000];
 const SNOOZE_FILE = 'update-snooze.json';
 const JUST_UPGRADED_FILE = 'just-upgraded.json';
+export function staleRunningProcessNotice(runningVersion, packageJsonPath) {
+    let onDisk;
+    try {
+        onDisk = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')).version;
+    }
+    catch {
+        return null;
+    }
+    if (typeof onDisk !== 'string' || !onDisk || !isStrictlyOlder(runningVersion, onDisk))
+        return null;
+    return `[memesh update] This session started on v${runningVersion}, but v${onDisk} is now installed on disk. `
+        + `Restart this session (or reconnect this MCP server, e.g. Claude Code's /reload-plugins) to use it.`;
+}
 export function isStrictlyOlder(a, b) {
     const parse = (v) => {
         const [main, ...rest] = String(v).split(/[-+]/);

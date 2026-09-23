@@ -459,7 +459,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "message";
-    readonly description: "Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. send durably stores one untrusted JSON-encoded payload of at most 65536 UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate 16384-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.";
+    readonly description: "Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most 65536 UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate 16384-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -559,6 +559,7 @@ type ToolResult = {
     isError?: boolean;
 };
 export declare function normalizeClientHost(name: string | undefined): string;
+export declare function configureVersionSource(version: string, jsonPath: string | URL): void;
 export declare function resetFirstCallNoticeForTests(): void;
 export declare function handleTool(name: string, args: Record<string, unknown> | undefined, sourceHost?: string, signal?: AbortSignal, requestContext?: McpRequestContext): Promise<ToolResult>;
 export {};

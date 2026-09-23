@@ -63,6 +63,30 @@ export interface JustUpgradedMarker {
 }
 
 /**
+ * Is the code THIS PROCESS loaded at startup older than what is on disk
+ * right now? Every long-lived process (the MCP server) reads its own
+ * version once and never again — a plugin marketplace install (`claude
+ * plugin install`) replaces the files on disk without signalling any
+ * already-running connection, so the process has no other way to notice.
+ * This is the mirror case of `JUST_UPGRADED` above: that kind tells a FRESH
+ * process (started after an upgrade) that it landed; this tells a STILL
+ * RUNNING, pre-upgrade process that it did not. Deliberately stateless — no
+ * marker, no cache, no snooze: a cheap re-read of one small file is enough,
+ * and every caller decides its own throttling.
+ */
+export function staleRunningProcessNotice(runningVersion: string, packageJsonPath: string | URL): string | null {
+  let onDisk: string | undefined;
+  try {
+    onDisk = (JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as { version?: unknown }).version as string | undefined;
+  } catch {
+    return null;
+  }
+  if (typeof onDisk !== 'string' || !onDisk || !isStrictlyOlder(runningVersion, onDisk)) return null;
+  return `[memesh update] This session started on v${runningVersion}, but v${onDisk} is now installed on disk. `
+    + `Restart this session (or reconnect this MCP server, e.g. Claude Code's /reload-plugins) to use it.`;
+}
+
+/**
  * True iff `a` is strictly older than `b`. Numeric per dot-separated
  * component (4.2.9 < 4.2.10); a prerelease tag sorts before its release.
  */

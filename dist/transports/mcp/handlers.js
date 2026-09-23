@@ -11,8 +11,9 @@ import { getProductImprovementStatus, stageProductImprovement, } from '../../cor
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { RememberSchema, RecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, LearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
-import { getProjectName } from '../../core/paths.js';
-import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
+import { getProjectName, memeshDir } from '../../core/paths.js';
+import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/update-entrypoint.js';
+import { staleRunningProcessNotice } from '../../core/update-notice.js';
 export function resolveTranscriptWorkspace(project, rootUris) {
     if (!rootUris)
         return { transcriptWorkspaceError: 'workspace_unavailable' };
@@ -312,7 +313,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'message',
-        description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
+        description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
         inputSchema: {
             type: 'object',
             properties: {
@@ -401,7 +402,7 @@ function parseOrFail(schema, args) {
 export function normalizeClientHost(name) {
     return (name ?? '').replace(/[\u0000-\u001F\u007F]/g, '').trim().slice(0, 64) || 'mcp';
 }
-const packageVersion = (() => {
+let packageVersion = (() => {
     try {
         return JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version ?? '0.0.0';
     }
@@ -409,13 +410,27 @@ const packageVersion = (() => {
         return '0.0.0';
     }
 })();
+let packageJsonPath = new URL('../../../package.json', import.meta.url);
+export function configureVersionSource(version, jsonPath) {
+    packageVersion = version;
+    packageJsonPath = jsonPath;
+}
 let firstCallNoticeOnce = new Set();
+let staleProcessNoticeGiven = false;
 export function resetFirstCallNoticeForTests() {
     firstCallNoticeOnce = new Set();
+    staleProcessNoticeGiven = false;
 }
 function withFirstCallNotice(result) {
     if (result.isError)
         return result;
+    if (!staleProcessNoticeGiven && updateCheckEnabledIn(memeshDir())) {
+        const staleLine = staleRunningProcessNotice(packageVersion, packageJsonPath);
+        if (staleLine) {
+            staleProcessNoticeGiven = true;
+            return { ...result, content: [...result.content, { type: 'text', text: staleLine }] };
+        }
+    }
     const line = updateNoticeForEntryPoint({ currentVersion: packageVersion, entryPoint: 'mcp', processOnce: firstCallNoticeOnce });
     if (!line)
         return result;
