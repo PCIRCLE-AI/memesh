@@ -1995,11 +1995,13 @@ a message on stderr.
 
 ### memesh delegation
 
-Record a task handed to a delegate worker (the DeepSeek worker), from the
-orchestrator's side. Guide: [Delegate worker](../platforms/deepseek-worker.md).
+Record a task handed to an untrusted external worker, from the orchestrator's
+side. `--source` names which worker/skill it went through (e.g. the DeepSeek
+worker — see [Delegate worker](../platforms/deepseek-worker.md) for a worked
+example); it is caller-chosen and not limited to one fixed name.
 
 ```bash
-memesh delegation record --envelope envelope.json --prompt-file prompt.txt [--allow-tool <name> ...] [--verdict unreviewed|accepted|rejected] [--follow-up "<text>"] [--json]
+memesh delegation record --envelope envelope.json --prompt-file prompt.txt --source <name> [--allow-tool <name> ...] [--verdict unreviewed|accepted|rejected] [--follow-up "<text>"] [--json]
 memesh delegation verify <name> --verdict accepted|rejected [--note "<text>"] [--json]
 ```
 
@@ -2007,21 +2009,29 @@ memesh delegation verify <name> --verdict accepted|rejected [--note "<text>"] [-
 |--------|-------------|
 | `--envelope <file>` | The worker client's JSON envelope (`record`, required). It must be a JSON object with a boolean `ok`; at most 4 MiB. |
 | `--prompt-file <file>` | The prompt that was sent (`record`, required). Only its sha256 is stored. |
+| `--source <name>` | `record`, required. Which worker/skill this delegation went through, e.g. `deepseek-worker`. |
 | `--allow-tool <name>` | `record`: a tool you granted the worker; repeat for each. This list is recorded as authoritative; if the envelope reports a different one, the mismatch is stored too. |
 | `--verdict <verdict>` | `record`: `unreviewed` (default), `accepted` or `rejected`. `verify`: `accepted` or `rejected` (required). |
 | `--follow-up <text>` | `record`: what you decided to do next, stored as one line. |
 | `--note <text>` | `verify`: why, stored with the verdict. |
 
 `record` stores one `delegation` entity named
-`delegation-<prompt sha256, 12>-<envelope sha256, 8>`, tagged
-`source:deepseek-worker` and `project:<current project>`. It keeps the model,
+`delegation-<prompt sha256, 12>-<hash of --source + envelope, 8>`, tagged
+`source:<--source value>` and `project:<current project>`. The name's second
+segment is not the plain envelope sha256 — it folds `--source` in, so the same
+envelope recorded under two different sources gets two different names. To
+find a record by the envelope's own hash, check
+`metadata.provenance.envelope_sha256` (the plain sha256), not the name. It
+keeps the model,
 mode (`harness` when the envelope has a `task_id`, otherwise `direct`),
 the allowed tools (from `--allow-tool`, else the envelope's `allowed_tools`, else "not reported" — never a guessed "none"), `usage`, `finish_reason`, `ok`, and the verdict. It never
 keeps the prompt text or the worker's output. `metadata.provenance` carries
-`source: "deepseek-worker"` and `trust`: `untrusted-until-verified` until a
+`source: "<--source value>"` and `trust`: `untrusted-until-verified` until a
 verdict is given, then `verified` or `rejected`; `metadata.trust` is
 `untrusted` until the verdict is `accepted`. Recording the same envelope
-again writes nothing (`"stored": false`) and reports the stored verdict.
+again under the same `--source` writes nothing (`"stored": false`) and
+reports the stored verdict; the same envelope under a DIFFERENT `--source` is
+a separate record.
 
 `verify` changes the verdict and `trust` in place, keeps every other
 provenance field, and adds the verdict as a new observation. It refuses a

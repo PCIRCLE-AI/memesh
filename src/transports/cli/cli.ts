@@ -2759,20 +2759,21 @@ function reportDelegationError(err: unknown): never {
 
 const delegationCmd = program
   .command('delegation')
-  .description('Record a task delegated to the DeepSeek worker, and the orchestrator\'s verdict on it');
+  .description('Record a task delegated to an untrusted external worker, and the orchestrator\'s verdict on it');
 
 delegationCmd
   .command('record')
   .description('Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage — never the prompt or the output)')
   .option('--envelope <file>', 'The JSON envelope the worker client printed (required)')
   .option('--prompt-file <file>', 'The prompt that was sent; only its sha256 is stored (required)')
+  .option('--source <name>', 'Which worker/skill this delegation went through, e.g. "deepseek-worker" (required)')
   .option('--allow-tool <name>', 'A tool you granted the worker; repeat for each. Recorded as the authoritative list (the envelope only reports tools in Harness mode)', (value: string, prev?: string[]) => (prev ? [...prev, value] : [value]))
   .option('--verdict <verdict>', 'unreviewed (default), accepted, or rejected')
   .option('--follow-up <text>', 'What you decided to do next, in your own words')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
-    if (!opts.envelope || !opts.promptFile) {
-      console.error('Error: --envelope <file> and --prompt-file <file> are both required.');
+    if (!opts.envelope || !opts.promptFile || !opts.source) {
+      console.error('Error: --envelope <file>, --prompt-file <file>, and --source <name> are all required.');
       process.exit(1);
     }
     requireOneOf(opts.verdict, DELEGATION_VERDICTS, '--verdict');
@@ -2782,7 +2783,7 @@ delegationCmd
       let result: ReturnType<typeof recordDelegation>;
       try {
         result = recordDelegation({
-          envelopeText, promptSha256, verdict: opts.verdict, followUp: opts.followUp, project: getProjectName(),
+          envelopeText, promptSha256, source: opts.source, verdict: opts.verdict, followUp: opts.followUp, project: getProjectName(),
           grantedTools: opts.allowTool,
         });
       } catch (err) {

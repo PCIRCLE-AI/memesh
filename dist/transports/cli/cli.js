@@ -60962,7 +60962,6 @@ init_operations();
 init_paths();
 import { createHash as createHash9 } from "crypto";
 var DELEGATION_TYPE = "delegation";
-var DELEGATION_SOURCE = "deepseek-worker";
 var DELEGATION_VERDICTS = ["unreviewed", "accepted", "rejected"];
 var ENVELOPE_MAX_BYTES = 4 * 1024 * 1024;
 var SHA256_RE = /^[0-9a-f]{64}$/;
@@ -61030,6 +61029,10 @@ function recordDelegation(input) {
   if (!SHA256_RE.test(input.promptSha256)) {
     throw new DelegationInputError("the prompt hash must be 64 lowercase hex characters (sha256)");
   }
+  const source = clean(input.source, 64).trim();
+  if (!source) {
+    throw new DelegationInputError("source must be a non-empty worker/skill label");
+  }
   if (Buffer.byteLength(input.envelopeText, "utf8") > ENVELOPE_MAX_BYTES) {
     throw new DelegationInputError(`the envelope is larger than ${ENVELOPE_MAX_BYTES} bytes`);
   }
@@ -61043,7 +61046,8 @@ function recordDelegation(input) {
   const verdict = input.verdict ?? "unreviewed";
   const trust = trustFor(verdict);
   const envelopeSha256 = createHash9("sha256").update(input.envelopeText).digest("hex");
-  const name = `delegation-${input.promptSha256.slice(0, 12)}-${envelopeSha256.slice(0, 8)}`;
+  const identityHash = createHash9("sha256").update(source).update("\0").update(envelopeSha256).digest("hex");
+  const name = `delegation-${input.promptSha256.slice(0, 12)}-${identityHash.slice(0, 8)}`;
   const existing = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
   if (existing) {
     const stored = storedProvenance(existing.metadata);
@@ -61074,10 +61078,10 @@ function recordDelegation(input) {
       verdictLine(verdict, at),
       ...input.followUp ? [`Follow-up: ${clean(input.followUp, 500)}`] : []
     ],
-    tags: [`source:${DELEGATION_SOURCE}`, `project:${input.project}`],
+    tags: [`source:${source}`, `project:${input.project}`],
     trustOverride: verdict === "accepted" ? "trusted" : "untrusted",
     provenanceOverride: {
-      source: DELEGATION_SOURCE,
+      source,
       trust,
       verdict,
       ...verdict !== "unreviewed" ? { verified_at: at } : {},
@@ -61101,7 +61105,7 @@ function setDelegationVerdict(input) {
   if (!row)
     throw new DelegationInputError(`no memory named "${input.name}"`);
   const provenance = storedProvenance(row.metadata);
-  if (row.type !== DELEGATION_TYPE || provenance.source !== DELEGATION_SOURCE) {
+  if (row.type !== DELEGATION_TYPE || !SHA256_RE.test(String(provenance.prompt_sha256))) {
     throw new DelegationInputError(`"${input.name}" is not a delegation record`);
   }
   const at = (/* @__PURE__ */ new Date()).toISOString();
@@ -63044,10 +63048,10 @@ function reportDelegationError(err) {
   }
   throw err;
 }
-var delegationCmd = program2.command("delegation").description("Record a task delegated to the DeepSeek worker, and the orchestrator's verdict on it");
-delegationCmd.command("record").description("Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage \u2014 never the prompt or the output)").option("--envelope <file>", "The JSON envelope the worker client printed (required)").option("--prompt-file <file>", "The prompt that was sent; only its sha256 is stored (required)").option("--allow-tool <name>", "A tool you granted the worker; repeat for each. Recorded as the authoritative list (the envelope only reports tools in Harness mode)", (value, prev) => prev ? [...prev, value] : [value]).option("--verdict <verdict>", "unreviewed (default), accepted, or rejected").option("--follow-up <text>", "What you decided to do next, in your own words").option("--json", "Output as JSON").action(async (opts) => {
-  if (!opts.envelope || !opts.promptFile) {
-    console.error("Error: --envelope <file> and --prompt-file <file> are both required.");
+var delegationCmd = program2.command("delegation").description("Record a task delegated to an untrusted external worker, and the orchestrator's verdict on it");
+delegationCmd.command("record").description("Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage \u2014 never the prompt or the output)").option("--envelope <file>", "The JSON envelope the worker client printed (required)").option("--prompt-file <file>", "The prompt that was sent; only its sha256 is stored (required)").option("--source <name>", 'Which worker/skill this delegation went through, e.g. "deepseek-worker" (required)').option("--allow-tool <name>", "A tool you granted the worker; repeat for each. Recorded as the authoritative list (the envelope only reports tools in Harness mode)", (value, prev) => prev ? [...prev, value] : [value]).option("--verdict <verdict>", "unreviewed (default), accepted, or rejected").option("--follow-up <text>", "What you decided to do next, in your own words").option("--json", "Output as JSON").action(async (opts) => {
+  if (!opts.envelope || !opts.promptFile || !opts.source) {
+    console.error("Error: --envelope <file>, --prompt-file <file>, and --source <name> are all required.");
     process.exit(1);
   }
   requireOneOf(opts.verdict, DELEGATION_VERDICTS, "--verdict");
@@ -63059,6 +63063,7 @@ delegationCmd.command("record").description("Turn a worker JSON envelope into on
       result = recordDelegation({
         envelopeText,
         promptSha256,
+        source: opts.source,
         verdict: opts.verdict,
         followUp: opts.followUp,
         project: getProjectName(),

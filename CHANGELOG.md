@@ -4,6 +4,18 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- `memesh delegation record` now takes a required `--source <name>` instead of
+  always tagging the record `deepseek-worker`. Any delegate worker can record
+  a delegation, not only the DeepSeek worker. The record's identity now folds
+  in `--source`, so the same prompt+envelope recorded under two different
+  sources are stored as two records instead of the second silently colliding
+  with the first. One side effect: re-recording a pre-upgrade envelope now
+  creates a new record instead of the usual no-op, since the naming scheme
+  changed; existing records are unaffected and `delegation verify` still
+  works on them.
+
 ## [4.10.4] — 2026-09-23
 
 ### Changed

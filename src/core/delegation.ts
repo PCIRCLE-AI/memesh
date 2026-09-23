@@ -1,13 +1,13 @@
 // delegation — remember that a task was delegated to an untrusted worker,
 // what was asked, what came back, and whether the orchestrator accepted it.
 //
-// The DeepSeek worker (the `deepseek-worker` skill: a two-node vLLM pool and
-// a disposable Harness sandbox) is a delegate, not a host. It has no MCP
-// tools, its only network peer is a task-specific gateway, and the machine's
-// `memesh serve` is loopback-only — so it cannot write the graph, and it must
-// not: its output is untrusted by policy. What memesh CAN remember is the
-// delegation itself, written by the ORCHESTRATOR from the JSON envelope the
-// worker client printed:
+// An external worker (a separate model, sandbox, or service — anything
+// reached by a skill or script outside this process) is a delegate, not a
+// host. It has no MCP tools, and memesh's own `memesh serve` is
+// loopback-only — so it cannot write the graph, and it must not: its output
+// is untrusted by policy. What memesh CAN remember is the delegation itself,
+// written by the ORCHESTRATOR from the JSON envelope the worker client
+// printed:
 //
 //   - the prompt's sha256, never the prompt text;
 //   - model, mode, allowed_tools, usage, finish_reason, ok;
@@ -19,6 +19,11 @@
 // belongs in a memory the orchestrator writes in its own words, with this
 // entity as the cause.
 //
+// `source` names which worker/skill a given delegation went through (an
+// arbitrary caller-chosen label, e.g. a specific worker pool or sandbox
+// setup) — it is never validated against a fixed list, since memesh has no
+// way to enumerate every delegate a caller might use.
+//
 // There is no HTTP route or MCP tool for this — the only door is the local
 // `memesh delegation` CLI, run by the orchestrator on the orchestrator's
 // machine. Nothing the sandbox can reach writes here.
@@ -29,7 +34,6 @@ import { remember } from './operations.js';
 import { redactSecrets } from './paths.js';
 
 export const DELEGATION_TYPE = 'delegation';
-export const DELEGATION_SOURCE = 'deepseek-worker';
 export const DELEGATION_VERDICTS = ['unreviewed', 'accepted', 'rejected'] as const;
 export type DelegationVerdict = typeof DELEGATION_VERDICTS[number];
 export type DelegationTrust = 'untrusted-until-verified' | 'verified' | 'rejected';
@@ -127,6 +131,8 @@ export interface RecordDelegationInput {
   envelopeText: string;
   /** sha256 (hex) of the prompt sent to the worker. */
   promptSha256: string;
+  /** Which worker/skill this delegation went through, e.g. "deepseek-worker". */
+  source: string;
   verdict?: DelegationVerdict;
   /** What the orchestrator decided to do next, in its own words. */
   followUp?: string;
@@ -149,10 +155,14 @@ export interface RecordDelegationResult {
   summary: EnvelopeSummary;
 }
 
-/** Store one delegation entity. Recording the same envelope twice is a no-op. */
+/** Store one delegation entity. Recording the same envelope twice under the same source is a no-op. */
 export function recordDelegation(input: RecordDelegationInput): RecordDelegationResult {
   if (!SHA256_RE.test(input.promptSha256)) {
     throw new DelegationInputError('the prompt hash must be 64 lowercase hex characters (sha256)');
+  }
+  const source = clean(input.source, 64).trim();
+  if (!source) {
+    throw new DelegationInputError('source must be a non-empty worker/skill label');
   }
   if (Buffer.byteLength(input.envelopeText, 'utf8') > ENVELOPE_MAX_BYTES) {
     throw new DelegationInputError(`the envelope is larger than ${ENVELOPE_MAX_BYTES} bytes`);
@@ -167,7 +177,14 @@ export function recordDelegation(input: RecordDelegationInput): RecordDelegation
   const verdict = input.verdict ?? 'unreviewed';
   const trust = trustFor(verdict);
   const envelopeSha256 = createHash('sha256').update(input.envelopeText).digest('hex');
-  const name = `delegation-${input.promptSha256.slice(0, 12)}-${envelopeSha256.slice(0, 8)}`;
+  // The name segment folds `source` in too (kept separate from
+  // `envelope_sha256` below, which stays the plain hash of the envelope
+  // bytes for external verification): otherwise two different sources
+  // recording byte-identical prompt+envelope would collide on the same
+  // name, and the second call would silently report `stored: false` and
+  // keep the first source's record instead of writing its own.
+  const identityHash = createHash('sha256').update(source).update('\0').update(envelopeSha256).digest('hex');
+  const name = `delegation-${input.promptSha256.slice(0, 12)}-${identityHash.slice(0, 8)}`;
 
   const existing = getDatabase().prepare('SELECT metadata FROM entities WHERE name = ?').get(name) as
     { metadata: string | null } | undefined;
@@ -208,10 +225,10 @@ export function recordDelegation(input: RecordDelegationInput): RecordDelegation
       verdictLine(verdict, at),
       ...(input.followUp ? [`Follow-up: ${clean(input.followUp, 500)}`] : []),
     ],
-    tags: [`source:${DELEGATION_SOURCE}`, `project:${input.project}`],
+    tags: [`source:${source}`, `project:${input.project}`],
     trustOverride: verdict === 'accepted' ? 'trusted' : 'untrusted',
     provenanceOverride: {
-      source: DELEGATION_SOURCE,
+      source,
       trust,
       verdict,
       ...(verdict !== 'unreviewed' ? { verified_at: at } : {}),
@@ -254,7 +271,11 @@ export function setDelegationVerdict(input: {
     .get(input.name) as { type: string; metadata: string | null } | undefined;
   if (!row) throw new DelegationInputError(`no memory named "${input.name}"`);
   const provenance = storedProvenance(row.metadata);
-  if (row.type !== DELEGATION_TYPE || provenance.source !== DELEGATION_SOURCE) {
+  // `source` alone no longer proves this is a delegation record: ordinary
+  // `remember` calls also stamp a non-empty `provenance.source` (`'local'`).
+  // `prompt_sha256` is written only by recordDelegation, so it is the field
+  // that actually distinguishes a delegation row from any other memory.
+  if (row.type !== DELEGATION_TYPE || !SHA256_RE.test(String(provenance.prompt_sha256))) {
     throw new DelegationInputError(`"${input.name}" is not a delegation record`);
   }
   const at = new Date().toISOString();

@@ -15,7 +15,7 @@ This guide accompanies the source implementation in `extensions/memory-memesh/` 
 
 **CRITICAL**: OpenClaw's auto-capture is **trigger-phrase + character-threshold gated** (configured via `autoCapture`, caps at 3 memories/turn), NOT "every turn" like Hermes's `sync_turn()`.
 
-Do NOT blindly port the Hermes plugin's "write every turn" assumption — that exact pattern caused a real bug in the Hermes build (see lesson `lesson-ktseng-bea7afee-other` in MeMesh's knowledge graph) where an over-eager memory-management `system_prompt_block()` prompt caused the model to also rewrite Hermes's built-in `USER.md` file as an unintended side effect.
+Do NOT blindly port the Hermes plugin's "write every turn" assumption — that exact pattern caused a real bug in the Hermes build, where an over-eager memory-management `system_prompt_block()` prompt caused the model to also rewrite Hermes's built-in `USER.md` file as an unintended side effect.
 
 For OpenClaw, decide deliberately:
 - **Mirror OpenClaw's threshold-gated model**: only capture when the user message meets `autoCapture` criteria (trigger phrase present + character threshold exceeded). Safer, matches LanceDB's behavior.
