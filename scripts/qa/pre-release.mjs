@@ -53,19 +53,26 @@ export const STEPS = [
 
 /**
  * `finish-release.mjs` sets this to `'1'` for BOTH its `--dry-run` and its
- * real invocation of `npm run qa:pre-release` — the one caller for whom two
- * back-to-back runs are provably against the same branch and the same git
- * tags (nothing in between them can tag or retarget anything; that is the
- * whole point of the sequence). A bare `npm run qa:pre-release`, or CI, never
- * sets it, so it never reads or writes a cache receipt — closing the gap a
- * review found: `verify:artifact` also depends on the current branch, local
- * git tags and the live npm advisory database, none of which a tree hash
- * covers, and `check-version-coherence.mjs`'s own `main-declares-published-
- * version` check reads this exact variable to loosen itself for a release
- * about to tag. Caching a pass earned under that loosened check and reusing
- * it for a plain, unset-variable run would be a false PASS. Scoping caching
- * to this one variable make it correct BY CONSTRUCTION rather than by an
- * arbitrary time limit that would still leave that hole open.
+ * real invocation of `npm run qa:pre-release`. A bare `npm run
+ * qa:pre-release`, or CI, never sets it, so it never reads or writes a cache
+ * receipt — closing the gap a review found: `verify:artifact` also depends
+ * on the current branch, local git tags and the live npm advisory database,
+ * none of which a tree hash covers, and `check-version-coherence.mjs`'s own
+ * `main-declares-published-version` check reads this exact variable to
+ * loosen itself for a release about to tag. Caching a pass earned under
+ * that loosened check and reusing it for a plain, unset-variable run would
+ * be a false PASS.
+ *
+ * This closes that specific gap, not every gap the receipt has no
+ * expiry on: a stale dry-run receipt could in principle be reused by a much
+ * later real run on the same tree with this same marker set, past whatever
+ * an operator would call "immediately". Branch and tags are safe regardless
+ * — `release-preconditions.mjs` independently re-checks both right before
+ * tagging, marker or no marker — and a stale npm-advisory-database result
+ * is safe too, because `publish-npm.yml` re-runs `verify:release` (which
+ * includes that audit) right before the actual `npm publish`. So a stale
+ * receipt can waste the fast path, not let anything unsafe through; adding
+ * an actual expiry is a candidate follow-up, not required for correctness.
  */
 export const CACHE_ENV_VAR = 'MEMESH_FINISH_RELEASE_TAGGING';
 
