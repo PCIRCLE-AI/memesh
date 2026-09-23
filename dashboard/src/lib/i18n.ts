@@ -2160,7 +2160,7 @@ const translations: Record<Locale, Record<string, string>> = {
     'settings.latestVersion': '最新バージョン',
     'settings.lastAttempted': '最終確認試行',
     'settings.lastSuccessful': '最後に成功した確認',
-    'settings.updateSourceFresh': '今すぐ確認',
+    'settings.updateSourceFresh': '最新の結果を使用',
     'settings.updateSourceCached': 'キャッシュ結果を使用',
     'settings.updateSourceStale': '古いキャッシュ結果を使用',
     'settings.updateSourceUnavailable': '利用できるキャッシュなし',
