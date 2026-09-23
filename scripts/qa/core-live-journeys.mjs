@@ -219,20 +219,27 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
     if (!additionalContext?.includes(sentinel)) {
       throw new Error('SessionStart did not inject the recalled memory at the default (minimal) level');
     }
-    if (additionalContext.includes(goal)) {
+    if (additionalContext.includes(goal) || additionalContext.includes(next)) {
       throw new Error('SessionStart injected task state at the default (minimal) level, which must omit it');
     }
 
     // Separately, confirm the `standard` override itself still works
     // end-to-end (not just at the unit layer): the same stated goal, read
-    // through the same CLI, WITH the override this journey used to always
-    // set unconditionally.
+    // through the same CLI AND the same SessionStart hook (a distinct
+    // implementation — scripts/hooks/_shared.js resolves the level on its
+    // own), WITH the override this journey used to always set
+    // unconditionally.
     const standardEnv = { ...isolatedEnv, MEMESH_BRIEFING: 'standard' };
     const standardResult = cli({ args: ['briefing', '--project', project, '--json'], env: standardEnv, cwd: repoRoot });
     const standard = json(mustSucceed(standardResult, 'standard-level briefing readback'), 'standard-level briefing readback');
     if (standard.level !== 'standard') throw new Error(`MEMESH_BRIEFING=standard override did not produce standard level: ${standard.level}`);
     if (!standard.text?.includes(goal) || !standard.text?.includes(next)) {
       throw new Error('CLI briefing omitted stated task state at the standard level');
+    }
+    const standardHook = mustSucceed(runNode(hook, { cwd: repoRoot, env: standardEnv, input: JSON.stringify({ cwd: repoRoot, source: 'startup' }) }), 'SessionStart standard-level override');
+    const standardAdditionalContext = json(standardHook, 'SessionStart standard-level override').hookSpecificOutput?.additionalContext;
+    if (!standardAdditionalContext?.includes(goal) || !standardAdditionalContext.includes(next)) {
+      throw new Error('SessionStart did not inject task state under the standard-level override');
     }
 
     const blocker = path.join(journeyDir, 'not-a-directory');
