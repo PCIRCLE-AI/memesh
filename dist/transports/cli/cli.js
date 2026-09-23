@@ -58883,7 +58883,7 @@ var init_server = __esm({
       setupCompleted: external_exports.boolean().optional(),
       briefing: external_exports.enum(BRIEFING_LEVELS).optional()
     }).strict();
-    app.post("/v1/config", (req, res) => handlePost(ConfigBody, req, res, (data) => ConfigBody.strip().parse(updateConfig(data))));
+    app.post("/v1/config", (req, res) => handlePost(ConfigBody, req, res, (data) => ConfigReadBody.parse(updateConfig(data))));
     app.get("/v1/update-status", (req, res) => handleGet(res, async () => {
       const cached2 = req.query.cached === "1" || req.query.cached === "true";
       const install = getCurrentInstallChannel({ packageRoot });

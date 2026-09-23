@@ -1129,7 +1129,10 @@ are rejected. Dashboard locale is stored in the browser and is not sent here.
 
 **Response**: `{ success: true, data: <updated config> }`. Clients that present
 a persisted-success state should follow with `GET /v1/config` and render that
-authoritative readback.
+authoritative readback. The response is a read of what is stored, like `GET`:
+a stored `briefing` that is not a known level (only writes are checked against
+the level list) is returned as it is and does not turn a change to another
+field into a `400`.
 
 ### GET /v1/stats
 

@@ -4,6 +4,17 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- The dashboard's Settings tab now has a "Session start briefing" control
+  (Minimal / Standard / Full), the same setting as
+  `memesh config set briefing` (#360). It saves as soon as you pick a level
+  and only says "Saved." after re-reading the value from the server. A stored
+  value that is not a known level is shown as unrecognised instead of being
+  displayed as a real level, and picking a level replaces it. New sessions use
+  the new level; the `briefing` tool and `memesh briefing` use it on their next
+  call.
+
 ### Changed
 
 - `message discover` now returns a named, actionable `router_unreachable` error
@@ -29,6 +40,10 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- `POST /v1/config` no longer answers 400 for a change it has already saved
+  when the stored `briefing` is not a known level: changing another setting
+  (for example `autoUpdate`) in that state used to write the change and then
+  report a failure. The stored `briefing` value is left as it was.
 - **`npm run qa:pre-release`'s `verify:artifact` step (the full isolated test
   suite plus two packaged-artifact runs — several minutes) no longer re-runs
   back to back for an unchanged tree, when called from `finish-release.mjs`.**
