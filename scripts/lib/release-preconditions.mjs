@@ -43,7 +43,7 @@ import {
  * @param {string[]|null} input.remoteTags    Every `v*` tag on `origin`.
  * @param {string|null}   input.repoSlug      `owner/name` as `gh` reports it — proof gh is authenticated.
  * @param {string|null}   input.notes         Release body, already resolved.
- * @param {number|null}   input.qaPreReleaseStatus   Exit code of `npm run qa:pre-release`, run fresh by this script; null if it could not run at all.
+ * @param {number|null}   input.qaPreReleaseStatus   Exit code of `npm run qa:pre-release`, run by this script (its slowest step may reuse a receipt from an earlier --dry-run of the same tree — see scripts/qa/pre-release.mjs CACHE_ENV_VAR); null if it could not run at all.
  * @param {LiveJourneyCandidate[]} input.liveJourneyCandidates  See `findUsableLiveJourneyReceipt`.
  * @returns {{ok: boolean, blockers: string[]}}
  */
