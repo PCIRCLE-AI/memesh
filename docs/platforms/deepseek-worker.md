@@ -25,7 +25,7 @@ then:
 
 ```bash
 memesh delegation record --envelope envelope.json --prompt-file prompt.txt \
-  --allow-tool read_file --allow-tool write_file
+  --source deepseek-worker --allow-tool read_file --allow-tool write_file
 ```
 
 This stores one `delegation` memory:
@@ -44,8 +44,9 @@ diagnostics are **not** stored. They are untrusted text. When a result turns
 out to be right, write the conclusion yourself with `remember`, in your own
 words, and point it at the delegation record.
 
-Recording the same envelope again writes nothing and reports the verdict
-already stored.
+Recording the same envelope again under the same `--source` writes nothing
+and reports the verdict already stored; the same envelope under a different
+`--source` is recorded as a separate delegation.
 
 ## The verify flip
 

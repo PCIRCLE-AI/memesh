@@ -55,6 +55,17 @@ export class AgentRouterUnavailableError extends AgentMessagingError {
   }
 }
 
+export class AgentDiscoveryUnavailableError extends AgentMessagingError {
+  readonly code = 'router_unreachable';
+
+  constructor() {
+    super('router_unreachable: could not reach the local agent router to discover live hosts. '
+      + 'Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), '
+      + 'or skip discovery — `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; '
+      + 'an exact `target_kind: "session"` send still needs it.');
+  }
+}
+
 const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
 const EXACT_SESSION_NATIVE_TIMEOUT_MS = 12_000;
 const PUBLIC_DISPOSITIONS = new Set(['accepted', 'rejected', 'completed', 'cancelled', 'deferred']);
@@ -480,11 +491,22 @@ export async function executeAgentMessageAction(
         hops: 0,
       };
       // Discovery is deliberately router-only: it neither reads nor writes
-      // durable message state, and router failures remain explicit errors.
-      return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(
-        routerSocketPath(),
-        request,
-      );
+      // durable message state, and router failures remain explicit errors —
+      // never a silently empty directory. Connection-level failures are
+      // translated into an actionable error the same way requireExactSessionNativeAcceptance
+      // translates them for `send`; a protocol/identity error (a broken or
+      // skewed router, not an unreachable one) still passes through unchanged.
+      try {
+        return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(
+          routerSocketPath(),
+          request,
+        );
+      } catch (error) {
+        if (error instanceof AgentRouterError && !['timeout', 'connection_closed'].includes(error.code)) {
+          throw error;
+        }
+        throw new AgentDiscoveryUnavailableError();
+      }
     }
     case 'fetch':
       return fetchAgentMessage(db, input);

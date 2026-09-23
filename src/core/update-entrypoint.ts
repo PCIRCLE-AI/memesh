@@ -76,7 +76,7 @@ export function recentHookNoticeExists(dir: string, currentVersion: string, late
   return false;
 }
 
-function updateCheckEnabledIn(dir: string): boolean {
+export function updateCheckEnabledIn(dir: string): boolean {
   // Same file config.ts owns; read directly so `dir` wins over the env.
   try {
     const raw = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8')) as Record<string, unknown>;

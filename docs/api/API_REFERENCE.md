@@ -179,7 +179,7 @@ A query that is not empty but contains nothing searchable — `???`, `@#$%` — 
 
 Returns an object whose `entities` array holds the matching entities ranked by multi-factor score — relevance 0.30, recency 0.25, frequency 0.18, confidence 0.17, recall-effectiveness impact 0.10. The envelope is an object, never a bare array: Gemini CLI JSON-parses a tool's text payload into the MCP result's `structuredContent`, which the protocol requires to be an object — a bare array failed every Gemini recall while other hosts read it fine:
 
-On the first successful tool call of a server process, any tool's result may carry a second content item `{ "type": "text", "text": "[memesh update] …" }` — the update notice (available upgrade, just-upgraded receipt, or a failed check). `content[0]` is always the tool's own payload; clients that read only the first item are unaffected.
+A successful tool result may carry a second content item `{ "type": "text", "text": "[memesh update] …" }` — the update notice (available upgrade, just-upgraded receipt, or a failed check), shown once per server process on the first tool call that has an answer for it; or a stale-process notice ("this session started on v… but v… is now installed on disk") on whichever call first detects the running process has fallen behind the code on disk, which is not necessarily the first call. `content[0]` is always the tool's own payload; clients that read only the first item are unaffected.
 
 ```json
 {
@@ -820,7 +820,7 @@ Status returns the proposal state, source IDs, review timestamps/reason, and `ac
 
 ### message
 
-Discover live registrations or exchange durable exact-recipient messages between local hosts connected to the same MeMesh SQLite instance. One tool owns both surfaces so every transport uses the same validation and state semantics.
+Discover live registrations or exchange durable exact-recipient messages between local hosts connected to the same MeMesh SQLite instance. One tool owns both surfaces so every transport uses the same validation and state semantics. `discover` and a principal-target `send`/`fetch` are independent: an empty `discover` result does not predict whether that will work, since durable store-and-forward to a named recipient needs neither the router nor any live registration — but an exact `target_kind: "session"` send still needs both.
 
 **When to use it:** use `discover` when you know the project but not the right live recipient; use `send` to hand off work, ask for a result, or report a disposition. For `target_kind: "session"`, MeMesh sends the bounded full message through the exact active native host channel and returns only after `host_accept`. An oversized full envelope returns `native_message_too_large`; if the sender cannot reach the local router it returns `router_unreachable`; an absent, stopped, disconnected, or otherwise rejected exact session returns `recipient_unavailable`. Durable state remains available for scoped recovery in each case, but a failed exact-session native delivery is not automatically replayed when that session later registers. Principal targets retain durable store-and-forward behavior. A briefing surfaces `N messages waiting for "<recipient>" in project "<project>"` only when the caller supplies that exact recipient; generic briefing has no recipient identity and remains quiet, and so do the SessionStart and prompt hooks unless the session declares one with `MEMESH_RECIPIENT` (they then report the deliveries waiting for exactly that recipient). Only an `intake` receipt ends the reminder: fetching does not. At zero unread, a scoped briefing still says `... this recipient id has never been seen in this project` when that exact id has no delivery and no live connection recorded for that project — a typo in `--recipient` must not read as an empty, healthy inbox.
 
@@ -1954,6 +1954,22 @@ human-authority actions; an agent using `work_package` can only submit a pending
 proposal or defer. The Dashboard exposes the same list, detail, accept, and
 reject review surface without adding another queue or execution path.
 
+A proposal has one of five kinds, and `accept`'s effect is specific to each:
+
+- `digest` from a calendar cluster: creates one digest entity from the
+  proposal's source memories and archives those sources.
+- `digest` from a transcript: purely additive — there are no source entities
+  to archive.
+- `pattern_emergent`: creates an entity and links its sources with an
+  `evidence_for` relation; the sources stay active, not archived.
+- `relation`: creates one relation between two existing entities and changes
+  nothing else — no new entity, nothing archived.
+- `guard`: patches the source lesson's own metadata and creates no entity.
+- `product_improvement`: creates a linked product-work entity and preserves
+  its sources (not archived). Accepting the proposal is not a claim that the
+  improvement was built or that it worked — implementation and outcome remain
+  unverified until confirmed separately.
+
 ### memesh hermes
 
 The write path of the Hermes Agent memory plugin
@@ -1995,11 +2011,13 @@ a message on stderr.
 
 ### memesh delegation
 
-Record a task handed to a delegate worker (the DeepSeek worker), from the
-orchestrator's side. Guide: [Delegate worker](../platforms/deepseek-worker.md).
+Record a task handed to an untrusted external worker, from the orchestrator's
+side. `--source` names which worker/skill it went through (e.g. the DeepSeek
+worker — see [Delegate worker](../platforms/deepseek-worker.md) for a worked
+example); it is caller-chosen and not limited to one fixed name.
 
 ```bash
-memesh delegation record --envelope envelope.json --prompt-file prompt.txt [--allow-tool <name> ...] [--verdict unreviewed|accepted|rejected] [--follow-up "<text>"] [--json]
+memesh delegation record --envelope envelope.json --prompt-file prompt.txt --source <name> [--allow-tool <name> ...] [--verdict unreviewed|accepted|rejected] [--follow-up "<text>"] [--json]
 memesh delegation verify <name> --verdict accepted|rejected [--note "<text>"] [--json]
 ```
 
@@ -2007,21 +2025,29 @@ memesh delegation verify <name> --verdict accepted|rejected [--note "<text>"] [-
 |--------|-------------|
 | `--envelope <file>` | The worker client's JSON envelope (`record`, required). It must be a JSON object with a boolean `ok`; at most 4 MiB. |
 | `--prompt-file <file>` | The prompt that was sent (`record`, required). Only its sha256 is stored. |
+| `--source <name>` | `record`, required. Which worker/skill this delegation went through, e.g. `deepseek-worker`. |
 | `--allow-tool <name>` | `record`: a tool you granted the worker; repeat for each. This list is recorded as authoritative; if the envelope reports a different one, the mismatch is stored too. |
 | `--verdict <verdict>` | `record`: `unreviewed` (default), `accepted` or `rejected`. `verify`: `accepted` or `rejected` (required). |
 | `--follow-up <text>` | `record`: what you decided to do next, stored as one line. |
 | `--note <text>` | `verify`: why, stored with the verdict. |
 
 `record` stores one `delegation` entity named
-`delegation-<prompt sha256, 12>-<envelope sha256, 8>`, tagged
-`source:deepseek-worker` and `project:<current project>`. It keeps the model,
+`delegation-<prompt sha256, 12>-<hash of --source + envelope, 8>`, tagged
+`source:<--source value>` and `project:<current project>`. The name's second
+segment is not the plain envelope sha256 — it folds `--source` in, so the same
+envelope recorded under two different sources gets two different names. To
+find a record by the envelope's own hash, check
+`metadata.provenance.envelope_sha256` (the plain sha256), not the name. It
+keeps the model,
 mode (`harness` when the envelope has a `task_id`, otherwise `direct`),
 the allowed tools (from `--allow-tool`, else the envelope's `allowed_tools`, else "not reported" — never a guessed "none"), `usage`, `finish_reason`, `ok`, and the verdict. It never
 keeps the prompt text or the worker's output. `metadata.provenance` carries
-`source: "deepseek-worker"` and `trust`: `untrusted-until-verified` until a
+`source: "<--source value>"` and `trust`: `untrusted-until-verified` until a
 verdict is given, then `verified` or `rejected`; `metadata.trust` is
 `untrusted` until the verdict is `accepted`. Recording the same envelope
-again writes nothing (`"stored": false`) and reports the stored verdict.
+again under the same `--source` writes nothing (`"stored": false`) and
+reports the stored verdict; the same envelope under a DIFFERENT `--source` is
+a separate record.
 
 `verify` changes the verdict and `trust` in place, keeps every other
 provenance field, and adds the verdict as a new observation. It refuses a

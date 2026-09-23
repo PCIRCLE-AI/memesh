@@ -11,14 +11,21 @@ import {
 import { fileURLToPath } from 'url';
 import { openDatabase, closeDatabase } from '../db.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
-import { normalizeClientHost } from '../transports/mcp/handlers.js';
+import { configureVersionSource, normalizeClientHost } from '../transports/mcp/handlers.js';
 
+// This file sits at the same depth (2 levels below the package root) both as
+// TS source (src/mcp/server.ts) and inside the bundled dist/mcp/server.js
+// esbuild produces, so this computation is correct in both contexts — unlike
+// handlers.ts's own default, which esbuild bundles IN here from a different
+// original depth. Handed to handlers.ts below so its notices read the right
+// file instead of guessing (issue #426 review).
 const packageJsonPath = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../package.json'
 );
 const packageVersion =
   JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')).version ?? '0.0.0';
+configureVersionSource(packageVersion, packageJsonPath);
 
 const server = new Server(
   { name: 'memesh', version: packageVersion },

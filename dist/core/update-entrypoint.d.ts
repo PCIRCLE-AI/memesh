@@ -5,6 +5,7 @@ export declare const FRESH_CHECK_THROTTLE_MS: number;
 export type EntryPoint = 'mcp' | 'cli';
 export declare function formatUpdateNoticeLine(notice: UpdateNotice): string | null;
 export declare function recentHookNoticeExists(dir: string, currentVersion: string, latestVersion: string | null, now?: Date): boolean;
+export declare function updateCheckEnabledIn(dir: string): boolean;
 export interface EntryPointNoticeInput {
     currentVersion: string;
     entryPoint: EntryPoint;

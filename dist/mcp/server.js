@@ -30556,6 +30556,12 @@ var AgentRouterUnavailableError = class extends AgentMessagingError {
     super("router_unreachable: the sender could not reach the local agent router; the durable message is preserved.");
   }
 };
+var AgentDiscoveryUnavailableError = class extends AgentMessagingError {
+  code = "router_unreachable";
+  constructor() {
+    super('router_unreachable: could not reach the local agent router to discover live hosts. Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), or skip discovery \u2014 `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; an exact `target_kind: "session"` send still needs it.');
+  }
+};
 var AGENT_MESSAGE_STORAGE_QUOTA_ENV = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
 var EXACT_SESSION_NATIVE_TIMEOUT_MS = 12e3;
 var PUBLIC_DISPOSITIONS = /* @__PURE__ */ new Set(["accepted", "rejected", "completed", "cancelled", "deferred"]);
@@ -30856,7 +30862,14 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         limit: input.limit,
         hops: 0
       };
-      return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+      try {
+        return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+      } catch (error51) {
+        if (error51 instanceof AgentRouterError && !["timeout", "connection_closed"].includes(error51.code)) {
+          throw error51;
+        }
+        throw new AgentDiscoveryUnavailableError();
+      }
     }
     case "fetch":
       return fetchAgentMessage(db2, input);
@@ -31066,6 +31079,17 @@ var ANSWER_VALID_MS = 24 * 60 * 60 * 1e3;
 var SNOOZE_LEVEL_MS = [24 * 60 * 60 * 1e3, 48 * 60 * 60 * 1e3, 7 * 24 * 60 * 60 * 1e3];
 var SNOOZE_FILE = "update-snooze.json";
 var JUST_UPGRADED_FILE = "just-upgraded.json";
+function staleRunningProcessNotice(runningVersion, packageJsonPath3) {
+  let onDisk;
+  try {
+    onDisk = JSON.parse(fs9.readFileSync(packageJsonPath3, "utf8")).version;
+  } catch {
+    return null;
+  }
+  if (typeof onDisk !== "string" || !onDisk || !isStrictlyOlder(runningVersion, onDisk))
+    return null;
+  return `[memesh update] This session started on v${runningVersion}, but v${onDisk} is now installed on disk. Restart this session (or reconnect this MCP server, e.g. Claude Code's /reload-plugins) to use it.`;
+}
 function isStrictlyOlder(a, b) {
   const parse3 = (v) => {
     const [main2, ...rest] = String(v).split(/[-+]/);
@@ -31721,7 +31745,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "message",
-    description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
+    description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
     inputSchema: {
       type: "object",
       properties: {
@@ -31815,10 +31839,23 @@ var packageVersion = (() => {
     return "0.0.0";
   }
 })();
+var packageJsonPath = new URL("../../../package.json", import.meta.url);
+function configureVersionSource(version2, jsonPath) {
+  packageVersion = version2;
+  packageJsonPath = jsonPath;
+}
 var firstCallNoticeOnce = /* @__PURE__ */ new Set();
+var staleProcessNoticeGiven = false;
 function withFirstCallNotice(result) {
   if (result.isError)
     return result;
+  if (!staleProcessNoticeGiven && updateCheckEnabledIn(memeshDir())) {
+    const staleLine = staleRunningProcessNotice(packageVersion, packageJsonPath);
+    if (staleLine) {
+      staleProcessNoticeGiven = true;
+      return { ...result, content: [...result.content, { type: "text", text: staleLine }] };
+    }
+  }
   const line = updateNoticeForEntryPoint({ currentVersion: packageVersion, entryPoint: "mcp", processOnce: firstCallNoticeOnce });
   if (!line)
     return result;
@@ -31987,8 +32024,9 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
 }
 
 // dist/mcp/server.js
-var packageJsonPath = path10.resolve(path10.dirname(fileURLToPath3(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs12.readFileSync(packageJsonPath, "utf8")).version ?? "0.0.0";
+var packageJsonPath2 = path10.resolve(path10.dirname(fileURLToPath3(import.meta.url)), "../../package.json");
+var packageVersion2 = JSON.parse(fs12.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
+configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOL_DEFINITIONS.map((t) => ({

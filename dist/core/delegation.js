@@ -3,7 +3,6 @@ import { getDatabase } from '../db.js';
 import { remember } from './operations.js';
 import { redactSecrets } from './paths.js';
 export const DELEGATION_TYPE = 'delegation';
-export const DELEGATION_SOURCE = 'deepseek-worker';
 export const DELEGATION_VERDICTS = ['unreviewed', 'accepted', 'rejected'];
 export const ENVELOPE_MAX_BYTES = 4 * 1024 * 1024;
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -71,6 +70,10 @@ export function recordDelegation(input) {
     if (!SHA256_RE.test(input.promptSha256)) {
         throw new DelegationInputError('the prompt hash must be 64 lowercase hex characters (sha256)');
     }
+    const source = clean(input.source, 64).trim();
+    if (!source) {
+        throw new DelegationInputError('source must be a non-empty worker/skill label');
+    }
     if (Buffer.byteLength(input.envelopeText, 'utf8') > ENVELOPE_MAX_BYTES) {
         throw new DelegationInputError(`the envelope is larger than ${ENVELOPE_MAX_BYTES} bytes`);
     }
@@ -85,7 +88,8 @@ export function recordDelegation(input) {
     const verdict = input.verdict ?? 'unreviewed';
     const trust = trustFor(verdict);
     const envelopeSha256 = createHash('sha256').update(input.envelopeText).digest('hex');
-    const name = `delegation-${input.promptSha256.slice(0, 12)}-${envelopeSha256.slice(0, 8)}`;
+    const identityHash = createHash('sha256').update(source).update('\0').update(envelopeSha256).digest('hex');
+    const name = `delegation-${input.promptSha256.slice(0, 12)}-${identityHash.slice(0, 8)}`;
     const existing = getDatabase().prepare('SELECT metadata FROM entities WHERE name = ?').get(name);
     if (existing) {
         const stored = storedProvenance(existing.metadata);
@@ -122,10 +126,10 @@ export function recordDelegation(input) {
             verdictLine(verdict, at),
             ...(input.followUp ? [`Follow-up: ${clean(input.followUp, 500)}`] : []),
         ],
-        tags: [`source:${DELEGATION_SOURCE}`, `project:${input.project}`],
+        tags: [`source:${source}`, `project:${input.project}`],
         trustOverride: verdict === 'accepted' ? 'trusted' : 'untrusted',
         provenanceOverride: {
-            source: DELEGATION_SOURCE,
+            source,
             trust,
             verdict,
             ...(verdict !== 'unreviewed' ? { verified_at: at } : {}),
@@ -151,7 +155,7 @@ export function setDelegationVerdict(input) {
     if (!row)
         throw new DelegationInputError(`no memory named "${input.name}"`);
     const provenance = storedProvenance(row.metadata);
-    if (row.type !== DELEGATION_TYPE || provenance.source !== DELEGATION_SOURCE) {
+    if (row.type !== DELEGATION_TYPE || !SHA256_RE.test(String(provenance.prompt_sha256))) {
         throw new DelegationInputError(`"${input.name}" is not a delegation record`);
     }
     const at = new Date().toISOString();

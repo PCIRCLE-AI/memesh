@@ -25558,7 +25558,14 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         limit: input.limit,
         hops: 0
       };
-      return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+      try {
+        return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+      } catch (error51) {
+        if (error51 instanceof AgentRouterError && !["timeout", "connection_closed"].includes(error51.code)) {
+          throw error51;
+        }
+        throw new AgentDiscoveryUnavailableError();
+      }
     }
     case "fetch":
       return fetchAgentMessage(db2, input);
@@ -25592,7 +25599,7 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
       return readPublicReceipts(db2, input);
   }
 }
-var AgentRecipientUnavailableError, AgentRouterUnavailableError, AGENT_MESSAGE_STORAGE_QUOTA_ENV, EXACT_SESSION_NATIVE_TIMEOUT_MS, PUBLIC_DISPOSITIONS;
+var AgentRecipientUnavailableError, AgentRouterUnavailableError, AgentDiscoveryUnavailableError, AGENT_MESSAGE_STORAGE_QUOTA_ENV, EXACT_SESSION_NATIVE_TIMEOUT_MS, PUBLIC_DISPOSITIONS;
 var init_agent_messaging2 = __esm({
   "dist/transports/agent-messaging.js"() {
     "use strict";
@@ -25610,6 +25617,12 @@ var init_agent_messaging2 = __esm({
       code = "router_unreachable";
       constructor() {
         super("router_unreachable: the sender could not reach the local agent router; the durable message is preserved.");
+      }
+    };
+    AgentDiscoveryUnavailableError = class extends AgentMessagingError {
+      code = "router_unreachable";
+      constructor() {
+        super('router_unreachable: could not reach the local agent router to discover live hosts. Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), or skip discovery \u2014 `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; an exact `target_kind: "session"` send still needs it.');
       }
     };
     AGENT_MESSAGE_STORAGE_QUOTA_ENV = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
@@ -60962,7 +60975,6 @@ init_operations();
 init_paths();
 import { createHash as createHash9 } from "crypto";
 var DELEGATION_TYPE = "delegation";
-var DELEGATION_SOURCE = "deepseek-worker";
 var DELEGATION_VERDICTS = ["unreviewed", "accepted", "rejected"];
 var ENVELOPE_MAX_BYTES = 4 * 1024 * 1024;
 var SHA256_RE = /^[0-9a-f]{64}$/;
@@ -61030,6 +61042,10 @@ function recordDelegation(input) {
   if (!SHA256_RE.test(input.promptSha256)) {
     throw new DelegationInputError("the prompt hash must be 64 lowercase hex characters (sha256)");
   }
+  const source = clean(input.source, 64).trim();
+  if (!source) {
+    throw new DelegationInputError("source must be a non-empty worker/skill label");
+  }
   if (Buffer.byteLength(input.envelopeText, "utf8") > ENVELOPE_MAX_BYTES) {
     throw new DelegationInputError(`the envelope is larger than ${ENVELOPE_MAX_BYTES} bytes`);
   }
@@ -61043,7 +61059,8 @@ function recordDelegation(input) {
   const verdict = input.verdict ?? "unreviewed";
   const trust = trustFor(verdict);
   const envelopeSha256 = createHash9("sha256").update(input.envelopeText).digest("hex");
-  const name = `delegation-${input.promptSha256.slice(0, 12)}-${envelopeSha256.slice(0, 8)}`;
+  const identityHash = createHash9("sha256").update(source).update("\0").update(envelopeSha256).digest("hex");
+  const name = `delegation-${input.promptSha256.slice(0, 12)}-${identityHash.slice(0, 8)}`;
   const existing = getDatabase().prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
   if (existing) {
     const stored = storedProvenance(existing.metadata);
@@ -61074,10 +61091,10 @@ function recordDelegation(input) {
       verdictLine(verdict, at),
       ...input.followUp ? [`Follow-up: ${clean(input.followUp, 500)}`] : []
     ],
-    tags: [`source:${DELEGATION_SOURCE}`, `project:${input.project}`],
+    tags: [`source:${source}`, `project:${input.project}`],
     trustOverride: verdict === "accepted" ? "trusted" : "untrusted",
     provenanceOverride: {
-      source: DELEGATION_SOURCE,
+      source,
       trust,
       verdict,
       ...verdict !== "unreviewed" ? { verified_at: at } : {},
@@ -61101,7 +61118,7 @@ function setDelegationVerdict(input) {
   if (!row)
     throw new DelegationInputError(`no memory named "${input.name}"`);
   const provenance = storedProvenance(row.metadata);
-  if (row.type !== DELEGATION_TYPE || provenance.source !== DELEGATION_SOURCE) {
+  if (row.type !== DELEGATION_TYPE || !SHA256_RE.test(String(provenance.prompt_sha256))) {
     throw new DelegationInputError(`"${input.name}" is not a delegation record`);
   }
   const at = (/* @__PURE__ */ new Date()).toISOString();
@@ -61930,7 +61947,7 @@ messageStorageCmd.command("prune").description("Dry-run one bounded terminal-pay
   });
 });
 var agentCmd = program2.command("agent").description("Set up reusable owner-private local host configuration");
-agentCmd.command("setup").argument("<host>", "codex-session | codex | claude | gemini").requiredOption("--project <name>", "Project scope used for exact routing").requiredOption("--principal <id>", "Stable logical recipient ID").option("--workspace <path>", "Managed Codex/Gemini workspace", process.cwd()).option("--model <id>", "Optional declared model identifier").option("--work-summary <text>", "Optional declared current work summary").option("--json", "Output machine-readable setup result").action((host, opts) => {
+agentCmd.command("setup").description("Write this host's local config (a stable project + principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner \u2014 also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. See docs/platforms/agent-messaging.md.").argument("<host>", "codex-session | codex | claude | gemini").requiredOption("--project <name>", "Project scope used for exact routing").requiredOption("--principal <id>", "Stable logical recipient ID").option("--workspace <path>", "Managed Codex/Gemini workspace", process.cwd()).option("--model <id>", "Optional declared model identifier").option("--work-summary <text>", "Optional declared current work summary").option("--json", "Output machine-readable setup result").action((host, opts) => {
   requireOneOf(host, ["codex-session", "codex", "claude", "gemini"], "<host>");
   assertSecureLocalHostRuntimeSupported();
   const messageDir = path19.dirname(getDbPath());
@@ -61976,7 +61993,7 @@ agentCmd.command("setup").argument("<host>", "codex-session | codex | claude | g
     ]
   ].join("\n"));
 });
-program2.command("briefing").description("The assembled work topology for a project \u2014 decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full (the `briefing` setting)").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--index", "Only the index of durable memories (decisions, lessons, patterns, references), newest first").option("--json", "Output as JSON").action(async (opts) => {
+program2.command("briefing").description("The assembled work topology for a project \u2014 decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full. Level is `minimal` (default), `standard`, or `full` \u2014 change it with `memesh config set briefing <level>`, or override per-session with the MEMESH_BRIEFING env var (env wins over config).").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--index", "Only the index of durable memories (decisions, lessons, patterns, references), newest first").option("--json", "Output as JSON").action(async (opts) => {
   await withDatabase(() => {
     if (opts.index) {
       const project = opts.project ?? getProjectName();
@@ -62264,7 +62281,7 @@ configCmd.command("get").description("Show one stored config value (for `briefin
   const row = buildConfigListing(readConfig()).find((r) => r.key === key);
   console.log(row ? row.value : `${key} is not set in config.json`);
 });
-configCmd.command("set").description("Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck, briefing)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value").action((key, value) => {
+configCmd.command("set").description("Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number), autoUpdate (off|patch|minor|major), updateCheck (true|false), briefing (minimal|standard|full \u2014 controls what a session start gets; MEMESH_BRIEFING env var overrides this)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value \u2014 see this command's description for each key's valid values").action((key, value) => {
   requireAllowedKey(key);
   const validate = KEY_VALIDATORS[key];
   if (validate) {
@@ -62743,7 +62760,7 @@ dreamCmd.command("show <id>").description("Show a proposal in full \u2014 name, 
     console.log(`Accept: memesh dream accept ${detail.id}   |   Reject: memesh dream reject ${detail.id}`);
   });
 });
-dreamCmd.command("accept <id>").description("Apply a reviewed pending proposal (behaviour depends on proposal kind)").action(async (id) => {
+dreamCmd.command("accept <id>").description("Apply a reviewed pending proposal; effect depends on kind. digest from a calendar cluster: creates one digest entity and archives its sources. digest from a transcript: purely additive, no sources to archive. pattern_emergent: creates an entity and links sources as evidence, keeping them active (not archived). relation: creates a relation between two existing entities, nothing else. guard: patches the source lesson's metadata, creates no entity. product_improvement: creates a linked product-work entity and preserves its sources \u2014 implementation and outcome remain unverified until confirmed separately. See `memesh dream show <id>` first.").action(async (id) => {
   await withDatabase(async () => {
     const { applyProposal: applyProposal2 } = await Promise.resolve().then(() => (init_dreamer(), dreamer_exports));
     const { getDatabase: getDatabase2 } = await Promise.resolve().then(() => (init_db(), db_exports));
@@ -63044,10 +63061,10 @@ function reportDelegationError(err) {
   }
   throw err;
 }
-var delegationCmd = program2.command("delegation").description("Record a task delegated to the DeepSeek worker, and the orchestrator's verdict on it");
-delegationCmd.command("record").description("Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage \u2014 never the prompt or the output)").option("--envelope <file>", "The JSON envelope the worker client printed (required)").option("--prompt-file <file>", "The prompt that was sent; only its sha256 is stored (required)").option("--allow-tool <name>", "A tool you granted the worker; repeat for each. Recorded as the authoritative list (the envelope only reports tools in Harness mode)", (value, prev) => prev ? [...prev, value] : [value]).option("--verdict <verdict>", "unreviewed (default), accepted, or rejected").option("--follow-up <text>", "What you decided to do next, in your own words").option("--json", "Output as JSON").action(async (opts) => {
-  if (!opts.envelope || !opts.promptFile) {
-    console.error("Error: --envelope <file> and --prompt-file <file> are both required.");
+var delegationCmd = program2.command("delegation").description("Record a task delegated to an untrusted external worker, and the orchestrator's verdict on it");
+delegationCmd.command("record").description("Turn a worker JSON envelope into one delegation memory (prompt hash, model, tools, usage \u2014 never the prompt or the output)").option("--envelope <file>", "The JSON envelope the worker client printed (required)").option("--prompt-file <file>", "The prompt that was sent; only its sha256 is stored (required)").option("--source <name>", 'Which worker/skill this delegation went through, e.g. "deepseek-worker" (required)').option("--allow-tool <name>", "A tool you granted the worker; repeat for each. Recorded as the authoritative list (the envelope only reports tools in Harness mode)", (value, prev) => prev ? [...prev, value] : [value]).option("--verdict <verdict>", "unreviewed (default), accepted, or rejected").option("--follow-up <text>", "What you decided to do next, in your own words").option("--json", "Output as JSON").action(async (opts) => {
+  if (!opts.envelope || !opts.promptFile || !opts.source) {
+    console.error("Error: --envelope <file>, --prompt-file <file>, and --source <name> are all required.");
     process.exit(1);
   }
   requireOneOf(opts.verdict, DELEGATION_VERDICTS, "--verdict");
@@ -63059,6 +63076,7 @@ delegationCmd.command("record").description("Turn a worker JSON envelope into on
       result = recordDelegation({
         envelopeText,
         promptSha256,
+        source: opts.source,
         verdict: opts.verdict,
         followUp: opts.followUp,
         project: getProjectName(),

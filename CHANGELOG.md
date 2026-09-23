@@ -4,6 +4,29 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- `message discover` now returns a named, actionable `router_unreachable` error
+  (naming `memesh-router` or the managed host's launch step) instead of a raw
+  connection error when the local agent router can't be reached.
+- The MCP server now notices when the code on disk has moved past what it
+  loaded at startup (e.g. a plugin-marketplace upgrade while the session was
+  still open) and appends a one-line notice telling you to restart the
+  session, instead of silently continuing to run stale code with no signal.
+- `memesh agent setup`, `memesh briefing`, `memesh config set`, and
+  `memesh dream accept` now have more complete `--help` text (the exact
+  `briefing` levels and how to set them, which `agent setup` hosts require it
+  vs. auto-register, and what `dream accept` actually does per proposal kind).
+- `memesh delegation record` now takes a required `--source <name>` instead of
+  always tagging the record `deepseek-worker`. Any delegate worker can record
+  a delegation, not only the DeepSeek worker. The record's identity now folds
+  in `--source`, so the same prompt+envelope recorded under two different
+  sources are stored as two records instead of the second silently colliding
+  with the first. One side effect: re-recording a pre-upgrade envelope now
+  creates a new record instead of the usual no-op, since the naming scheme
+  changed; existing records are unaffected and `delegation verify` still
+  works on them.
+
 ### Fixed
 
 - **`npm run qa:pre-release`'s `verify:artifact` step (the full isolated test
@@ -21,6 +44,9 @@ All notable changes to MeMesh are documented here.
   `qa:ui-review` and `audit:memory` stay uncached regardless — the first
   already binds itself to the exact commit, and the second reads this
   machine's live, mutable graph, which a git tree hash cannot see.
+- `dream accept`'s and `agent setup`'s help text previously said things that
+  weren't true for several cases (e.g. claiming every proposal kind archives
+  its sources, or that setup is optional for the managed Codex runner).
 
 ## [4.10.4] — 2026-09-23
 

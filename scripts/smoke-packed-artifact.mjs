@@ -326,6 +326,77 @@ try {
   },
 );
 
+// A running MCP server never re-reads its own package.json after startup, so
+// a plugin-marketplace upgrade that replaces files on disk while this process
+// is still alive must be self-detected some other way (issue #426 review): a
+// prior version of this check computed a relative path from handlers.ts's own
+// ORIGINAL source depth, which esbuild bundles into dist/mcp/server.js at a
+// SHALLOWER depth — silently reading nothing (or a neighbour package.json) in
+// exactly this raw-plugin-cache scenario. Only a real spawned bundle, mutated
+// mid-session, can catch that class of bug; a source-level unit test cannot.
+const staleNoticeHome = path.join(smokeDir, 'stale-notice-home');
+const staleNoticeMemeshDir = path.join(staleNoticeHome, '.memesh');
+fs.mkdirSync(staleNoticeMemeshDir, { recursive: true });
+const staleNoticeDbPath = path.join(staleNoticeMemeshDir, 'knowledge-graph.db');
+// A `-suffix` would be a PRERELEASE tag (isStrictlyOlder treats
+// `4.10.4-x` as OLDER than `4.10.4`, correctly per semver) — bump the last
+// numeric component instead, so this is unambiguously a newer release.
+const versionParts = packagedJson.version.split('.');
+versionParts[versionParts.length - 1] = String(Number(versionParts[versionParts.length - 1]) + 1);
+const bumpedVersion = versionParts.join('.');
+execFileSync(
+  process.execPath,
+  [
+    '--input-type=module',
+    '-e',
+    `import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { Client } from ${JSON.stringify(clientModuleUrl)};
+import { StdioClientTransport } from ${JSON.stringify(transportModuleUrl)};
+
+const packageJsonPath = ${JSON.stringify(path.join(packageDir, 'package.json'))};
+const transport = new StdioClientTransport({
+  command: ${JSON.stringify(codexMcp.command)},
+  args: ${JSON.stringify(codexMcp.args)},
+  cwd: ${JSON.stringify(path.resolve(packageDir, codexMcp.cwd))},
+  env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false' },
+});
+const client = new Client({ name: 'memesh-stale-notice-smoke', version: '1.0.0' });
+try {
+  await client.connect(transport);
+  const before = await client.callTool({ name: 'recall', arguments: { query: 'anything' } });
+  assert.equal(before.content.length, 1, 'first call must carry no stale-process notice yet');
+
+  const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  pkg.version = ${JSON.stringify(bumpedVersion)};
+  fs.writeFileSync(packageJsonPath, JSON.stringify(pkg));
+
+  const after = await client.callTool({ name: 'recall', arguments: { query: 'anything' } });
+  assert.equal(after.content.length, 2, 'second call must carry exactly one appended notice');
+  const noticeText = after.content[1].text;
+  assert.ok(noticeText.includes('This session started on'), 'must be the stale-process notice');
+  assert.ok(noticeText.includes(${JSON.stringify(packagedJson.version)}), 'must name the version this process started on');
+  assert.ok(noticeText.includes(${JSON.stringify(bumpedVersion)}), 'must name the version now on disk');
+  assert.ok(noticeText.includes('Restart this session'), 'must tell the user how to pick up the change');
+
+  const third = await client.callTool({ name: 'recall', arguments: { query: 'anything' } });
+  assert.equal(third.content.length, 1, 'third call must not repeat the notice once this process already gave it');
+} finally {
+  await client.close();
+}
+`,
+  ],
+  {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: buildIsolatedRuntimeEnv(rawBaseEnv, {
+      runtimeHome: staleNoticeHome,
+      memeshDir: staleNoticeMemeshDir,
+      dbPath: staleNoticeDbPath,
+    }),
+  },
+);
+
 // Install the way a consumer does — production deps only, scripts ON so the
 // native bindings actually build — into a project that has no relationship to
 // this repo's node_modules. Without this the import below has nothing to
