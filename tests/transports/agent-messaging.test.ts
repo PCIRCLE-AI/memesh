@@ -4,7 +4,7 @@ import { executeAgentMessageAction } from '../../src/transports/agent-messaging.
 import { getDatabase } from '../../src/db.js';
 import { MessageSchema } from '../../src/transports/schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES } from '../../src/core/agent-messaging.js';
-import { AGENT_ROUTER_PROTOCOL_VERSION } from '../../src/core/agent-router.js';
+import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterProtocolError } from '../../src/core/agent-router.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 useTestDatabase('memesh-agent-message-transport-');
@@ -127,12 +127,26 @@ describe('agent message transport', () => {
     expect(getDatabase().prepare('SELECT COUNT(*) AS count FROM agent_message_receipts').get()).toEqual(beforeReceipts);
   });
 
-  it('propagates router discovery errors instead of returning an empty directory', async () => {
+  it('translates a router connection failure into an actionable, named error instead of the raw one', async () => {
+    // A bare connect ENOENT (or any other non-AgentRouterError failure) must
+    // never reach a caller verbatim: it reads as an opaque stack trace with
+    // no hint that a separate `memesh-router` daemon is even involved.
     await expect(executeAgentMessageAction(getDatabase(), {
       action: 'discover', project: 'directory', limit: 1,
     }, { transport: 'mcp', sourceHost: 'mcp' }, {
-      sendRouterRequest: async () => { throw new Error('router unavailable'); },
-    })).rejects.toThrow('router unavailable');
+      sendRouterRequest: async () => { const err = new Error('connect ENOENT /tmp/x.sock') as NodeJS.ErrnoException; err.code = 'ENOENT'; throw err; },
+    })).rejects.toMatchObject({ code: 'router_unreachable', message: expect.stringContaining('memesh-router') });
+  });
+
+  it('still propagates a router protocol/identity error unchanged, not the discovery-unavailable translation', async () => {
+    // A malformed or version-mismatched response means the router IS
+    // reachable but broken — that must not be reported as "unreachable".
+    const protocolError = new AgentRouterProtocolError('invalid_response', 'Router response identity does not match.');
+    await expect(executeAgentMessageAction(getDatabase(), {
+      action: 'discover', project: 'directory', limit: 1,
+    }, { transport: 'mcp', sourceHost: 'mcp' }, {
+      sendRouterRequest: async () => { throw protocolError; },
+    })).rejects.toBe(protocolError);
   });
 
   it('commits a durable send when the optional router hint path is unusable', async () => {

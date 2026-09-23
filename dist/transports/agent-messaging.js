@@ -15,6 +15,15 @@ export class AgentRouterUnavailableError extends AgentMessagingError {
         super('router_unreachable: the sender could not reach the local agent router; the durable message is preserved.');
     }
 }
+export class AgentDiscoveryUnavailableError extends AgentMessagingError {
+    code = 'router_unreachable';
+    constructor() {
+        super('router_unreachable: could not reach the local agent router to discover live hosts. '
+            + 'Start it with `memesh-router` (or your host\'s managed launch step, e.g. `memesh-host-codex`), '
+            + 'or skip discovery — `send`/`fetch` to a principal (a stable recipient, not an exact session) work without the router; '
+            + 'an exact `target_kind: "session"` send still needs it.');
+    }
+}
 const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
 const EXACT_SESSION_NATIVE_TIMEOUT_MS = 12_000;
 const PUBLIC_DISPOSITIONS = new Set(['accepted', 'rejected', 'completed', 'cancelled', 'deferred']);
@@ -327,7 +336,15 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 limit: input.limit,
                 hops: 0,
             };
-            return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+            try {
+                return await (dependencies.sendRouterRequest ?? sendAgentRouterRequest)(routerSocketPath(), request);
+            }
+            catch (error) {
+                if (error instanceof AgentRouterError && !['timeout', 'connection_closed'].includes(error.code)) {
+                    throw error;
+                }
+                throw new AgentDiscoveryUnavailableError();
+            }
         }
         case 'fetch':
             return fetchAgentMessage(db, input);

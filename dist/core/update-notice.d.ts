@@ -48,6 +48,7 @@ export interface JustUpgradedMarker {
     to: string;
     at: string;
 }
+export declare function staleRunningProcessNotice(runningVersion: string, packageJsonPath: string | URL): string | null;
 export declare function isStrictlyOlder(a: string, b: string): boolean;
 export declare function readSnooze(dir: string): SnoozeState | null;
 export declare function writeSnooze(dir: string, target: string, now?: Date): SnoozeState;

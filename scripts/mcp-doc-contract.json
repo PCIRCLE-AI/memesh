@@ -1,13 +1,13 @@
 {
   "schema_version": "mcp-doc-contract/v2",
-  "source_sha256": "2f59839cfed13a9b0997d471ed0badcc761a29dd6e2112231f4cbad3a9e1f48e",
+  "source_sha256": "391702a9e2878b47f93fd8a55833255cc1a2ca616e279de6e7397337bdda08af",
   "surfaces": {
-    "README.md": "dbabef82ef5b9de230bf06892c3e99c47013d3c9d8748e7368412bcce7c3c240",
-    "README.zh-TW.md": "c6f349e0d4f311c9b84736d3e457205ec01e2fdb25a710babee75e97138d549d",
-    "README.de.md": "43269f3a305c2f2d0bc1b9e7046208f4e5ea697a34d61669e9194442ea9afafb",
-    "AGENTS.md": "4e911002773cb3d59e3b08fafb2fab966062761c054be1321bcf5d85a4e59777",
-    "skills/memesh/SKILL.md": "e22fd22703f9d0bde71a0b6d0e928eb09847f1276745296488bf2fa3a666d327",
-    "docs/api/API_REFERENCE.md": "51f67951f8db6145f47adbdc63f3c79539aa71c73b7080c9f6ac16d2c9e91c2e",
-    "docs/ARCHITECTURE.md": "ec005e1fe6e789de8e0dcf5f539bcc09e0d887729840484989fff1916dea5bc2"
+    "README.md": "42abd2a131b3ca409026cf2e306f5038c857fbf9ae936194e05669f28f2c6225",
+    "README.zh-TW.md": "8ad35dd4caa4fe820d8e1a48aca6b781bd2c53aee5b98f7bad0f0f3f6a0ee997",
+    "README.de.md": "c2a42dc0d6d219007767017464eb2197466da45b96b6121b82d53caf19cb9299",
+    "AGENTS.md": "8c1e0403ef7a5a287653b11eb66cf776ce6a45a30bd4b9fde00ed608a79a19d3",
+    "skills/memesh/SKILL.md": "e84f9fd6df7ba71ecaa22ae510873cac941cfc84fb8b9dcff9536aa5027b3bfa",
+    "docs/api/API_REFERENCE.md": "987a7ffb63ac7871b9679d475a764315aaf3a17409ed030ee274d53fadb4b455",
+    "docs/ARCHITECTURE.md": "e87d9ed3c6faf70dc87f1a1b37f3ce4bcf93bb19b596132e33d4b2154bea3e13"
   }
 }

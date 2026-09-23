@@ -24,8 +24,9 @@ import {
   ImprovementSchema, MessageSchema, WorkPackageSchema,
 } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
-import { getProjectName } from '../../core/paths.js';
-import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
+import { getProjectName, memeshDir } from '../../core/paths.js';
+import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/update-entrypoint.js';
+import { staleRunningProcessNotice } from '../../core/update-notice.js';
 
 export interface McpRequestContext {
   workspaceRootUris?: readonly string[];
@@ -382,7 +383,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'message',
     description:
-      `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
+      `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -546,22 +547,57 @@ export function normalizeClientHost(name: string | undefined): string {
 // structuredContent). Once per server process; never on an error result.
 // ---------------------------------------------------------------------------
 
-const packageVersion: string = (() => {
+// This module's OWN `import.meta.url`-relative guess is only correct when
+// this file runs at its true source depth (src/transports/mcp/handlers.ts,
+// or the equivalent unbundled dist/ path — both 3 levels below the package
+// root, which is what every direct-import test exercises). The real MCP
+// entry point does not run this file standalone: `scripts/build-mcp-bundle.mjs`
+// esbuild-bundles it INTO `dist/mcp/server.js`, 2 levels below the package
+// root, and a bundled `import.meta.url` reflects the BUNDLE's location, not
+// this module's original one — so the 3-up guess overshoots by one directory
+// there (issue #426 review). `configureVersionSource` lets the real entry
+// point (server.ts, which sits at the same 2-level depth pre- and post-bundle
+// and so can compute this correctly either way) inject the right answer;
+// tests that import this module directly keep the 3-up default, which is
+// correct for them.
+let packageVersion: string = (() => {
   try {
     return JSON.parse(fs.readFileSync(new URL('../../../package.json', import.meta.url), 'utf8')).version ?? '0.0.0';
   } catch {
     return '0.0.0';
   }
 })();
+let packageJsonPath: string | URL = new URL('../../../package.json', import.meta.url);
+
+/** Called once by the real MCP entry point (server.ts); see the comment above. */
+export function configureVersionSource(version: string, jsonPath: string | URL): void {
+  packageVersion = version;
+  packageJsonPath = jsonPath;
+}
+
 let firstCallNoticeOnce = new Set<string>();
+let staleProcessNoticeGiven = false;
 
 /** @internal Tests drive several "processes" through one module instance; not part of the MCP contract. */
 export function resetFirstCallNoticeForTests(): void {
   firstCallNoticeOnce = new Set<string>();
+  staleProcessNoticeGiven = false;
 }
 
 function withFirstCallNotice(result: ToolResult): ToolResult {
   if (result.isError) return result;
+  // Checked first and separately from the registry-based notice below: this
+  // is a plain re-read of the file beside this process, not the throttled,
+  // cached "is a new release published" check, and it answers a different
+  // question — is the CODE ON DISK newer than what THIS process loaded,
+  // regardless of why (plugin install, manual npm install, anything).
+  if (!staleProcessNoticeGiven && updateCheckEnabledIn(memeshDir())) {
+    const staleLine = staleRunningProcessNotice(packageVersion, packageJsonPath);
+    if (staleLine) {
+      staleProcessNoticeGiven = true;
+      return { ...result, content: [...result.content, { type: 'text', text: staleLine }] };
+    }
+  }
   const line = updateNoticeForEntryPoint({ currentVersion: packageVersion, entryPoint: 'mcp', processOnce: firstCallNoticeOnce });
   if (!line) return result;
   return { ...result, content: [...result.content, { type: 'text', text: line }] };

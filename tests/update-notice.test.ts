@@ -13,6 +13,7 @@ import {
   readSnooze,
   resolveUpdateNotice,
   shouldRefreshUpdateCache,
+  staleRunningProcessNotice,
   writeJustUpgradedMarker,
   writeSnooze,
 } from '../src/core/update-notice.js';
@@ -175,5 +176,43 @@ describe('isStrictlyOlder', () => {
     expect(isStrictlyOlder('4.10.0', '4.9.4')).toBe(false);
     expect(isStrictlyOlder('4.9.4', '4.9.4')).toBe(false);
     expect(isStrictlyOlder('4.9.4-rc.1', '4.9.4')).toBe(true);
+  });
+});
+
+describe('staleRunningProcessNotice — the process running old code notices, not just the fresh one', () => {
+  function fixturePackageJson(dir: string, version: string): string {
+    const file = path.join(dir, 'package.json');
+    fs.writeFileSync(file, JSON.stringify({ version }));
+    return file;
+  }
+
+  it('says nothing when the file on disk matches what this process already loaded', () => {
+    const dir = tmp();
+    const file = fixturePackageJson(dir, '4.10.4');
+    expect(staleRunningProcessNotice('4.10.4', file)).toBeNull();
+  });
+
+  it('names both versions and tells the user how to pick up the change, when disk is newer', () => {
+    const dir = tmp();
+    const file = fixturePackageJson(dir, '4.10.5');
+    const line = staleRunningProcessNotice('4.10.4', file);
+    expect(line).toContain('4.10.4');
+    expect(line).toContain('4.10.5');
+    expect(line).toContain('Restart this session');
+    expect(line).toContain('/reload-plugins');
+  });
+
+  it('says nothing when disk is OLDER than what this process loaded (a downgrade, or a race mid-write)', () => {
+    const dir = tmp();
+    const file = fixturePackageJson(dir, '4.10.3');
+    expect(staleRunningProcessNotice('4.10.4', file)).toBeNull();
+  });
+
+  it('never throws on a missing or unparseable file — a broken check must not break a tool call', () => {
+    expect(staleRunningProcessNotice('4.10.4', path.join(tmp(), 'does-not-exist.json'))).toBeNull();
+    const dir = tmp();
+    const file = path.join(dir, 'package.json');
+    fs.writeFileSync(file, 'not json');
+    expect(staleRunningProcessNotice('4.10.4', file)).toBeNull();
   });
 });

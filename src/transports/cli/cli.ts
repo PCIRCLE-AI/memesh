@@ -1153,6 +1153,7 @@ const agentCmd = program
 
 agentCmd
   .command('setup')
+  .description('Write this host\'s local config (a stable project + principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner — also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. See docs/platforms/agent-messaging.md.')
   .argument('<host>', 'codex-session | codex | claude | gemini')
   .requiredOption('--project <name>', 'Project scope used for exact routing')
   .requiredOption('--principal <id>', 'Stable logical recipient ID')
@@ -1238,7 +1239,7 @@ agentCmd
 // gets it here. Same assembly, same fence, one owner (core/briefing.ts).
 program
   .command('briefing')
-  .description('The assembled work topology for a project — decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full (the `briefing` setting)')
+  .description('The assembled work topology for a project — decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full. Level is `minimal` (default), `standard`, or `full` — change it with `memesh config set briefing <level>`, or override per-session with the MEMESH_BRIEFING env var (env wins over config).')
   .option('--project <name>', 'Project name (default: the current directory’s project)')
   .option('--recipient <id>', 'Exact recipient; enables recipient-scoped unread message guidance')
   .option('--index', 'Only the index of durable memories (decisions, lessons, patterns, references), newest first')
@@ -1669,9 +1670,11 @@ configCmd
 
 configCmd
   .command('set')
-  .description('Set an ordinary config value (autoCapture, sessionLimit, autoUpdate, updateCheck, briefing)')
+  .description('Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number), '
+    + 'autoUpdate (off|patch|minor|major), updateCheck (true|false), '
+    + 'briefing (minimal|standard|full — controls what a session start gets; MEMESH_BRIEFING env var overrides this)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
-  .argument('<value>', 'Config value')
+  .argument('<value>', 'Config value — see this command\'s description for each key\'s valid values')
   .action((key, value) => {
     requireAllowedKey(key);
     const validate = KEY_VALIDATORS[key];
@@ -2352,7 +2355,13 @@ dreamCmd
 
 dreamCmd
   .command('accept <id>')
-  .description('Apply a reviewed pending proposal (behaviour depends on proposal kind)')
+  .description('Apply a reviewed pending proposal; effect depends on kind. digest from a calendar cluster: '
+    + 'creates one digest entity and archives its sources. digest from a transcript: purely additive, no sources to archive. '
+    + 'pattern_emergent: creates an entity and links sources as evidence, keeping them active (not archived). '
+    + 'relation: creates a relation between two existing entities, nothing else. '
+    + 'guard: patches the source lesson\'s metadata, creates no entity. '
+    + 'product_improvement: creates a linked product-work entity and preserves its sources — implementation and outcome remain unverified until confirmed separately. '
+    + 'See `memesh dream show <id>` first.')
   .action(async (id) => {
     await withDatabase(async () => {
       const { applyProposal } = await import('../../core/dreamer.js');

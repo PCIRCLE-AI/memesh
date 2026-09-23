@@ -4,6 +4,26 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- `message discover` now returns a named, actionable `router_unreachable` error
+  (naming `memesh-router` or the managed host's launch step) instead of a raw
+  connection error when the local agent router can't be reached.
+- The MCP server now notices when the code on disk has moved past what it
+  loaded at startup (e.g. a plugin-marketplace upgrade while the session was
+  still open) and appends a one-line notice telling you to restart the
+  session, instead of silently continuing to run stale code with no signal.
+- `memesh agent setup`, `memesh briefing`, `memesh config set`, and
+  `memesh dream accept` now have more complete `--help` text (the exact
+  `briefing` levels and how to set them, which `agent setup` hosts require it
+  vs. auto-register, and what `dream accept` actually does per proposal kind).
+
+### Fixed
+
+- `dream accept`'s and `agent setup`'s help text previously said things that
+  weren't true for several cases (e.g. claiming every proposal kind archives
+  its sources, or that setup is optional for the managed Codex runner).
+
 ## [4.10.4] — 2026-09-23
 
 ### Changed
