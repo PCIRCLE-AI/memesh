@@ -38,10 +38,11 @@ export const STEPS = [
     // The one step slow enough (several minutes: the full isolated suite plus
     // two packaged-artifact runs) that running it twice back to back for the
     // same unchanged tree — `finish-release.mjs --dry-run` immediately
-    // followed by the real run — is pure waste, not extra safety: nothing
-    // about this step's result depends on anything OTHER than the tree
-    // (unlike audit:memory below, which reads this machine's live, mutable
-    // graph and must never be cached). See cacheableReceiptPath.
+    // followed by the real run — is pure waste. Caching is scoped to exactly
+    // that sequence (see CACHE_ENV_VAR below): it does NOT hold for this
+    // step's result in general, which also depends on the current branch,
+    // local git tags and the live npm advisory database — none of them part
+    // of the tree. See cacheableReceiptPath.
     cacheable: true,
   },
   {
@@ -49,6 +50,24 @@ export const STEPS = [
     why: 'the memory-layer invariants, against this machine\'s real graph. Deliberately outside verify:release, which must reproduce on a fresh clone.',
   },
 ];
+
+/**
+ * `finish-release.mjs` sets this to `'1'` for BOTH its `--dry-run` and its
+ * real invocation of `npm run qa:pre-release` — the one caller for whom two
+ * back-to-back runs are provably against the same branch and the same git
+ * tags (nothing in between them can tag or retarget anything; that is the
+ * whole point of the sequence). A bare `npm run qa:pre-release`, or CI, never
+ * sets it, so it never reads or writes a cache receipt — closing the gap a
+ * review found: `verify:artifact` also depends on the current branch, local
+ * git tags and the live npm advisory database, none of which a tree hash
+ * covers, and `check-version-coherence.mjs`'s own `main-declares-published-
+ * version` check reads this exact variable to loosen itself for a release
+ * about to tag. Caching a pass earned under that loosened check and reusing
+ * it for a plain, unset-variable run would be a false PASS. Scoping caching
+ * to this one variable make it correct BY CONSTRUCTION rather than by an
+ * arbitrary time limit that would still leave that hole open.
+ */
+export const CACHE_ENV_VAR = 'MEMESH_FINISH_RELEASE_TAGGING';
 
 /**
  * Where a cacheable step's last passing tree is recorded. One file per step
@@ -65,12 +84,12 @@ export function cacheableReceiptPath(repoRoot, stepId) {
 /**
  * Same trust model `npm run verify` already uses for `.verify/receipt.json`
  * (scripts/lib/verify-core.mjs `receiptStatus`): a tree hash is the whole
- * question, with no separate time limit — if the tree has not changed, a
- * clock ticking forward changes nothing a deterministic step would measure.
- * `treeHash` itself can fail (this gate's own tests run it inside a bare
- * temp directory with no `.git`); that failure disables caching for this
- * call rather than crashing the gate that caching is only ever a shortcut
- * inside.
+ * question once `CACHE_ENV_VAR` has narrowed the caller to one where nothing
+ * else relevant can have changed either. `treeHash` itself can fail (this
+ * gate's own tests run it inside a bare temp directory with no `.git`); a
+ * caller asking to cache anyway is told so on stderr rather than silently
+ * falling back to "always run", so an operator debugging "why did this run
+ * twice" is not left guessing.
  *
  * @param {string} repoRoot
  * @returns {string|null}
@@ -78,7 +97,10 @@ export function cacheableReceiptPath(repoRoot, stepId) {
 export function currentTreeHash(repoRoot) {
   try {
     return treeHash(repoRoot);
-  } catch {
+  } catch (error) {
+    if (process.env[CACHE_ENV_VAR] === '1') {
+      console.error(`pre-release gate: could not compute a tree hash, caching disabled for this run (${error.message})`);
+    }
     return null;
   }
 }
@@ -135,10 +157,16 @@ function main() {
   }
 
   console.log(`pre-release gate: ${STEPS.length} steps, in order\n`);
-  const tree = currentTreeHash(repoRoot);
+  // Only the finish-release.mjs dry-run/real pair sets this (see
+  // CACHE_ENV_VAR); every other caller runs every step fresh, always.
+  const cachingAllowed = process.env[CACHE_ENV_VAR] === '1';
   const results = [];
   for (const step of STEPS) {
-    if (step.cacheable && tree) {
+    // Hashed fresh at each cacheable step, not once before the loop: `build`
+    // (not cacheable) runs first and rewrites the version-controlled dist/,
+    // so the tree `verify:artifact` actually measures only exists after it.
+    const tree = step.cacheable && cachingAllowed ? currentTreeHash(repoRoot) : null;
+    if (tree) {
       const receiptPath = cacheableReceiptPath(repoRoot, step.id);
       const receipt = readJson(receiptPath);
       if (receipt?.tree === tree) {
@@ -151,7 +179,7 @@ function main() {
     const child = spawnSync('npm', ['run', step.id], { cwd: repoRoot, stdio: 'inherit', shell: process.platform === 'win32' });
     results.push({ id: step.id, status: child.status, signal: child.signal });
     if (child.status !== 0) break;
-    if (step.cacheable && tree) writeJson(cacheableReceiptPath(repoRoot, step.id), { tree, at: new Date().toISOString() });
+    if (tree) writeJson(cacheableReceiptPath(repoRoot, step.id), { tree, at: new Date().toISOString() });
   }
 
   const verdict = formatVerdict(results);

@@ -8,18 +8,19 @@ All notable changes to MeMesh are documented here.
 
 - **`npm run qa:pre-release`'s `verify:artifact` step (the full isolated test
   suite plus two packaged-artifact runs — several minutes) no longer re-runs
-  back to back for an unchanged tree.** `finish-release.mjs --dry-run`
-  immediately followed by the real run used to pay for it twice, even though
-  nothing about that step's result depends on anything but the tree. It now
-  writes a tree-hash receipt to `.qa/verify-artifact-receipt.json` on a pass
-  (same trust model `npm run verify` already uses for `.verify/receipt.json`:
-  a tree-hash match is the whole question, with no separate time limit) and
-  reuses it the next time the tree matches, instead of re-running. A failing
-  run is never cached — only a pass writes the receipt, so a fix always gets
-  a real re-run. `qa:ui-review` and `audit:memory` are unaffected: the first
-  already binds itself to the exact commit and is cheap to re-validate, and
-  the second reads this machine's live, mutable graph, which a git tree hash
-  cannot see and must never be cached.
+  back to back for an unchanged tree, when called from `finish-release.mjs`.**
+  `finish-release.mjs --dry-run` immediately followed by the real run used to
+  pay for it twice. It now writes a tree-hash receipt to
+  `.qa/verify-artifact-receipt.json` on a pass and reuses it the next run if
+  the tree still matches, but only when `finish-release.mjs`'s
+  `MEMESH_FINISH_RELEASE_TAGGING` marker is set — that step's result also
+  depends on the current branch, local git tags and the live npm advisory
+  database, none of which a tree hash covers, so a bare `npm run
+  qa:pre-release` (no marker: CI, a manual run) never reads or writes this
+  cache and always runs fresh. A failing run is never cached either way.
+  `qa:ui-review` and `audit:memory` stay uncached regardless — the first
+  already binds itself to the exact commit, and the second reads this
+  machine's live, mutable graph, which a git tree hash cannot see.
 
 ## [4.10.4] — 2026-09-23
 

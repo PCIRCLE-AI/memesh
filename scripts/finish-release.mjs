@@ -183,7 +183,11 @@ const repoSlug = capture('gh', ['repo', 'view', '--json', 'nameWithOwner', '-q',
 //
 // `qa:pre-release` is fully scriptable, so it is RUN, not merely checked for
 // — a receipt can go stale the moment the next commit lands, and re-running a
-// few minutes of build+test is cheaper than trusting a stale one.
+// few minutes of build+test is cheaper than trusting a stale one. The one
+// exception: its `verify:artifact` step reuses a receipt of its own IF this
+// exact spawn's MEMESH_FINISH_RELEASE_TAGGING=1 (below) matches what wrote
+// it — see scripts/qa/pre-release.mjs CACHE_ENV_VAR — so a `--dry-run`
+// immediately followed by this real run does not pay for that step twice.
 console.log(`\n--- npm run qa:pre-release (build + verify:artifact + audit:memory; several minutes)`);
 // MEMESH_FINISH_RELEASE_TAGGING=1 tells check-version-coherence.mjs's
 // main-declares-published-version check that THIS run is the one about to

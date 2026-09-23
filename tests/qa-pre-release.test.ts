@@ -45,9 +45,20 @@ function fixtureRepo(failing: string | null) {
   return dir;
 }
 
-function runGate(cwd: string) {
-  return spawnSync(process.execPath, [gate], { cwd, encoding: 'utf8', timeout: 120_000 });
+function runGate(cwd: string, extraEnv: Record<string, string> = {}) {
+  return spawnSync(process.execPath, [gate], {
+    cwd,
+    encoding: 'utf8',
+    timeout: 120_000,
+    env: { ...process.env, ...extraEnv },
+  });
 }
+
+// The env var `finish-release.mjs` sets on both its --dry-run and real
+// `npm run qa:pre-release` calls, and the one thing that turns caching on
+// (see CACHE_ENV_VAR in scripts/qa/pre-release.mjs). Passed through runGate's
+// env, never embedded in a script string.
+const CACHING_ON = { MEMESH_FINISH_RELEASE_TAGGING: '1' };
 
 /**
  * Same shape as `fixtureRepo`, but a real git repo (so `treeHash` — the
@@ -60,6 +71,14 @@ function runGate(cwd: string) {
  * inside the tree it is being measured against would change `treeHash` on
  * every real run, and a caching test built on a tree hash that moves under
  * it would not be testing what it claims to.
+ *
+ * The log's path travels to the spawned `node -e` script through the
+ * `MEMESH_TEST_RUNS_LOG` environment variable, not string-embedded into the
+ * script text: a Windows path (`C:\Users\...`) embedded in a JS string
+ * literal has its backslashes read as escape sequences by the `node -e`
+ * that runs it, silently corrupting the path on that OS. `runGate` always
+ * forwards its `extraEnv` (and this repo's whole environment) down through
+ * `npm run <script>`, so the child script reads it the same way on every OS.
  */
 function gitFixtureRepo() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-pre-release-git-fixture-'));
@@ -74,7 +93,7 @@ function gitFixtureRepo() {
   const scripts: Record<string, string> = {};
   for (const step of STEPS) {
     scripts[step.id] = step.id === 'verify:artifact'
-      ? `node -e "require('fs').appendFileSync('${runsLog.replace(/'/g, "\\'")}', 'ran\\n')"`
+      ? `node -e "require('fs').appendFileSync(process.env.MEMESH_TEST_RUNS_LOG, 'ran\\n')"`
       : 'node -e "0"';
   }
   fs.writeFileSync(path.join(dir, 'package.json'),
@@ -87,7 +106,7 @@ function gitFixtureRepo() {
   fs.writeFileSync(path.join(dir, '.gitignore'), '.qa/\n');
   run(['add', '-A']);
   run(['commit', '--quiet', '-m', 'init']);
-  return { dir, runsLog };
+  return { dir, runsLog, env: { ...CACHING_ON, MEMESH_TEST_RUNS_LOG: runsLog } };
 }
 
 function countRuns(runsLog: string): number {
@@ -193,19 +212,21 @@ describe('caching the slow step', () => {
   // KT 2026-09-23: `finish-release.mjs --dry-run` immediately followed by the
   // real run spent several extra minutes re-running the exact same
   // `verify:artifact` (full isolated suite + packaged-artifact runs) against
-  // a tree that had not changed since the dry run. Not a safety concern —
-  // nothing about that step's result depends on anything but the tree — just
-  // pure waste. This is the fix: a tree-hash receipt, same trust model
-  // `npm run verify` already uses.
+  // a tree that had not changed since the dry run — pure waste. But that
+  // step's result is NOT a pure function of the tree in general (branch,
+  // local git tags and the live npm advisory database all matter too), so
+  // caching is scoped to exactly the caller for whom none of those can have
+  // moved between two runs: `finish-release.mjs`'s own dry-run/real pair
+  // (CACHE_ENV_VAR). Everyone else always runs fresh.
   it('runs verify:artifact once, then reuses the pass for an unchanged tree', () => {
-    const { dir, runsLog } = gitFixtureRepo();
-    const first = runGate(dir);
+    const { dir, runsLog, env } = gitFixtureRepo();
+    const first = runGate(dir, env);
     expect(first.status).toBe(0);
     expect(first.stdout).toContain('PASS  verify:artifact (exit=0)');
     expect(countRuns(runsLog)).toBe(1);
     expect(fs.existsSync(cacheableReceiptPath(dir, 'verify:artifact'))).toBe(true);
 
-    const second = runGate(dir);
+    const second = runGate(dir, env);
     expect(second.status).toBe(0);
     expect(second.stdout).toContain('PASS  verify:artifact (reused, not re-run');
     expect(second.stdout).not.toContain('verify:artifact (exit=0)');
@@ -214,15 +235,15 @@ describe('caching the slow step', () => {
   });
 
   it('re-runs verify:artifact once the tree actually changes', () => {
-    const { dir, runsLog } = gitFixtureRepo();
-    expect(runGate(dir).status).toBe(0);
+    const { dir, runsLog, env } = gitFixtureRepo();
+    expect(runGate(dir, env).status).toBe(0);
     expect(countRuns(runsLog)).toBe(1);
 
     fs.writeFileSync(path.join(dir, 'CHANGED.txt'), 'anything');
     spawnSync('git', ['add', '-A'], { cwd: dir });
     spawnSync('git', ['commit', '--quiet', '-m', 'change'], { cwd: dir });
 
-    const second = runGate(dir);
+    const second = runGate(dir, env);
     expect(second.status).toBe(0);
     expect(second.stdout).toContain('PASS  verify:artifact (exit=0)');
     expect(second.stdout).not.toContain('reused');
@@ -230,20 +251,58 @@ describe('caching the slow step', () => {
   });
 
   it('never reuses a failing run: a failure never writes the receipt', () => {
-    const { dir } = gitFixtureRepo();
+    const { dir, env } = gitFixtureRepo();
     const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
     pkg.scripts['verify:artifact'] = 'node -e "process.exit(3)"';
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
     spawnSync('git', ['add', '-A'], { cwd: dir });
     spawnSync('git', ['commit', '--quiet', '-m', 'fail'], { cwd: dir });
 
-    expect(runGate(dir).status).toBe(1);
+    expect(runGate(dir, env).status).toBe(1);
     expect(fs.existsSync(cacheableReceiptPath(dir, 'verify:artifact'))).toBe(false);
     // A second run against the same (still-failing) tree must try again, not
     // read a receipt that was never written.
-    const second = runGate(dir);
+    const second = runGate(dir, env);
     expect(second.status).toBe(1);
     expect(second.stdout).toContain('FAIL  verify:artifact (exit=3)');
+  });
+
+  // The gap two independent reviews found in an earlier draft of this fix:
+  // `verify:artifact`'s result also depends on things outside the tree (most
+  // concretely, `MEMESH_FINISH_RELEASE_TAGGING` itself loosens a check inside
+  // it — scripts/lib/published-version.mjs). A receipt written by a run THAT
+  // HAD the marker set must never be read by a run that does not have it, in
+  // either direction, or a plain `npm run qa:pre-release` could read back a
+  // pass that a stricter, unmarked run would not have earned.
+  it('never reads or writes the cache without the finish-release marker', () => {
+    const { dir, runsLog } = gitFixtureRepo();
+    // Explicitly '' rather than merely absent: guards against a stray
+    // MEMESH_FINISH_RELEASE_TAGGING=1 already present in this test runner's
+    // own environment making the test pass for the wrong reason.
+    const noCache = { MEMESH_TEST_RUNS_LOG: runsLog, MEMESH_FINISH_RELEASE_TAGGING: '' };
+    const first = runGate(dir, noCache);
+    expect(first.status).toBe(0);
+    expect(first.stdout).toContain('PASS  verify:artifact (exit=0)');
+    expect(fs.existsSync(cacheableReceiptPath(dir, 'verify:artifact'))).toBe(false);
+
+    const second = runGate(dir, noCache);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain('PASS  verify:artifact (exit=0)');
+    expect(second.stdout).not.toContain('reused');
+    expect(countRuns(runsLog)).toBe(2);
+  });
+
+  it('never reuses a receipt a marked run wrote, once the marker is gone', () => {
+    const { dir, runsLog, env } = gitFixtureRepo();
+    expect(runGate(dir, env).status).toBe(0);
+    expect(countRuns(runsLog)).toBe(1);
+    expect(fs.existsSync(cacheableReceiptPath(dir, 'verify:artifact'))).toBe(true);
+
+    const unmarked = runGate(dir, { MEMESH_TEST_RUNS_LOG: runsLog, MEMESH_FINISH_RELEASE_TAGGING: '' });
+    expect(unmarked.status).toBe(0);
+    expect(unmarked.stdout).toContain('PASS  verify:artifact (exit=0)');
+    expect(unmarked.stdout).not.toContain('reused');
+    expect(countRuns(runsLog)).toBe(2);
   });
 });
 
