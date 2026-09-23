@@ -4,7 +4,7 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
-## [4.10.3] — 2026-09-22
+## [4.10.4] — 2026-09-23
 
 ### Changed
 
@@ -55,6 +55,14 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- **The ja Settings update-freshness label no longer duplicates its Check now
+  button (#420).** Both read 今すぐ確認; the status label now reads 最新の結果を使用.
+- **`qa:live-journey --host codex` works with codex-cli 0.155.1's `CODEX_HOME`
+  rule and reports codex's real failure reason on error (#422).** `--codex-home`
+  no longer requires (or refuses) a path under the OS temp dir, and a startup
+  failure now shows stdout, where codex's real error actually prints, not just
+  stderr. An end-to-end pass is still blocked by the QA account's own usage
+  limit, unrelated to this code.
 - **A new session is no longer shown the oldest of a group of equally scored
   memories (#401).** The SessionStart hook ranks a project's memories by
   confidence, use and recency and keeps the top few (`sessionLimit`). The daily
