@@ -17,6 +17,15 @@ All notable changes to MeMesh are documented here.
   `memesh dream accept` now have more complete `--help` text (the exact
   `briefing` levels and how to set them, which `agent setup` hosts require it
   vs. auto-register, and what `dream accept` actually does per proposal kind).
+- `memesh delegation record` now takes a required `--source <name>` instead of
+  always tagging the record `deepseek-worker`. Any delegate worker can record
+  a delegation, not only the DeepSeek worker. The record's identity now folds
+  in `--source`, so the same prompt+envelope recorded under two different
+  sources are stored as two records instead of the second silently colliding
+  with the first. One side effect: re-recording a pre-upgrade envelope now
+  creates a new record instead of the usual no-op, since the naming scheme
+  changed; existing records are unaffected and `delegation verify` still
+  works on them.
 
 ### Fixed
 
