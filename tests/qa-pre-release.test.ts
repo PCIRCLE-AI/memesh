@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { NOT_CHECKED, STEPS, formatVerdict, unknownSteps } from '../scripts/qa/pre-release.mjs';
+import { NOT_CHECKED, STEPS, formatVerdict, unknownSteps, cacheableReceiptPath } from '../scripts/qa/pre-release.mjs';
 import { LIVE_JOURNEY_SCHEMA_VERSION } from '../scripts/lib/live-journey-contract.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -47,6 +47,51 @@ function fixtureRepo(failing: string | null) {
 
 function runGate(cwd: string) {
   return spawnSync(process.execPath, [gate], { cwd, encoding: 'utf8', timeout: 120_000 });
+}
+
+/**
+ * Same shape as `fixtureRepo`, but a real git repo (so `treeHash` — the
+ * caching decision — resolves instead of throwing) whose `verify:artifact`
+ * script appends one line to a run log every time it ACTUALLY runs. A cache
+ * hit must leave that log with exactly one line no matter how many times the
+ * gate is invoked against the unchanged commit.
+ *
+ * The log lives OUTSIDE the repo directory on purpose: a script writing
+ * inside the tree it is being measured against would change `treeHash` on
+ * every real run, and a caching test built on a tree hash that moves under
+ * it would not be testing what it claims to.
+ */
+function gitFixtureRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-pre-release-git-fixture-'));
+  fixtureDirs.push(dir);
+  const runsLog = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-pre-release-runs-')) + '/runs.log';
+  fixtureDirs.push(path.dirname(runsLog));
+  fs.writeFileSync(runsLog, '');
+  const run = (args: string[]) => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+  run(['init', '--quiet']);
+  run(['config', 'user.email', 'test@example.invalid']);
+  run(['config', 'user.name', 'test']);
+  const scripts: Record<string, string> = {};
+  for (const step of STEPS) {
+    scripts[step.id] = step.id === 'verify:artifact'
+      ? `node -e "require('fs').appendFileSync('${runsLog.replace(/'/g, "\\'")}', 'ran\\n')"`
+      : 'node -e "0"';
+  }
+  fs.writeFileSync(path.join(dir, 'package.json'),
+    JSON.stringify({ name: 'fixture', version: '0.0.0', scripts }, null, 2));
+  // `.qa/` is gitignored in the real repo (`.gitignore:129`), so `treeHash`'s
+  // `git add -A` never sees the receipt this gate writes there — writing one
+  // does not move the tree hash out from under the very check that reads it.
+  // Without this the fixture would not reproduce the production behavior the
+  // tests below actually rely on.
+  fs.writeFileSync(path.join(dir, '.gitignore'), '.qa/\n');
+  run(['add', '-A']);
+  run(['commit', '--quiet', '-m', 'init']);
+  return { dir, runsLog };
+}
+
+function countRuns(runsLog: string): number {
+  return fs.readFileSync(runsLog, 'utf8').split('\n').filter((line) => line === 'ran').length;
 }
 
 describe('the plan', () => {
@@ -141,6 +186,64 @@ describe('running it', () => {
     expect(run.stdout).toMatch(/NOT RUN — stopped at the first failure: audit:memory/);
     expect(run.stdout).toMatch(/FAIL — pre-release gate/);
     expect(run.stdout).not.toMatch(/PASS — pre-release gate/);
+  });
+});
+
+describe('caching the slow step', () => {
+  // KT 2026-09-23: `finish-release.mjs --dry-run` immediately followed by the
+  // real run spent several extra minutes re-running the exact same
+  // `verify:artifact` (full isolated suite + packaged-artifact runs) against
+  // a tree that had not changed since the dry run. Not a safety concern —
+  // nothing about that step's result depends on anything but the tree — just
+  // pure waste. This is the fix: a tree-hash receipt, same trust model
+  // `npm run verify` already uses.
+  it('runs verify:artifact once, then reuses the pass for an unchanged tree', () => {
+    const { dir, runsLog } = gitFixtureRepo();
+    const first = runGate(dir);
+    expect(first.status).toBe(0);
+    expect(first.stdout).toContain('PASS  verify:artifact (exit=0)');
+    expect(countRuns(runsLog)).toBe(1);
+    expect(fs.existsSync(cacheableReceiptPath(dir, 'verify:artifact'))).toBe(true);
+
+    const second = runGate(dir);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain('PASS  verify:artifact (reused, not re-run');
+    expect(second.stdout).not.toContain('verify:artifact (exit=0)');
+    // The load-bearing assertion: the underlying script did not run again.
+    expect(countRuns(runsLog)).toBe(1);
+  });
+
+  it('re-runs verify:artifact once the tree actually changes', () => {
+    const { dir, runsLog } = gitFixtureRepo();
+    expect(runGate(dir).status).toBe(0);
+    expect(countRuns(runsLog)).toBe(1);
+
+    fs.writeFileSync(path.join(dir, 'CHANGED.txt'), 'anything');
+    spawnSync('git', ['add', '-A'], { cwd: dir });
+    spawnSync('git', ['commit', '--quiet', '-m', 'change'], { cwd: dir });
+
+    const second = runGate(dir);
+    expect(second.status).toBe(0);
+    expect(second.stdout).toContain('PASS  verify:artifact (exit=0)');
+    expect(second.stdout).not.toContain('reused');
+    expect(countRuns(runsLog)).toBe(2);
+  });
+
+  it('never reuses a failing run: a failure never writes the receipt', () => {
+    const { dir } = gitFixtureRepo();
+    const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+    pkg.scripts['verify:artifact'] = 'node -e "process.exit(3)"';
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(pkg, null, 2));
+    spawnSync('git', ['add', '-A'], { cwd: dir });
+    spawnSync('git', ['commit', '--quiet', '-m', 'fail'], { cwd: dir });
+
+    expect(runGate(dir).status).toBe(1);
+    expect(fs.existsSync(cacheableReceiptPath(dir, 'verify:artifact'))).toBe(false);
+    // A second run against the same (still-failing) tree must try again, not
+    // read a receipt that was never written.
+    const second = runGate(dir);
+    expect(second.status).toBe(1);
+    expect(second.stdout).toContain('FAIL  verify:artifact (exit=3)');
   });
 });
 

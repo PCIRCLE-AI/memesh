@@ -20,7 +20,7 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isMain } from '../lib/verify-core.mjs';
+import { isMain, treeHash, readJson, writeJson } from '../lib/verify-core.mjs';
 
 /** The steps, in order. Each `id` must be an npm script in package.json. */
 export const STEPS = [
@@ -35,12 +35,53 @@ export const STEPS = [
   {
     id: 'verify:artifact',
     why: 'lint, typecheck, version coherence, doc claims, the isolated test suite, the packed artifact and every derived upgrade path — the same sequence npm publish runs.',
+    // The one step slow enough (several minutes: the full isolated suite plus
+    // two packaged-artifact runs) that running it twice back to back for the
+    // same unchanged tree — `finish-release.mjs --dry-run` immediately
+    // followed by the real run — is pure waste, not extra safety: nothing
+    // about this step's result depends on anything OTHER than the tree
+    // (unlike audit:memory below, which reads this machine's live, mutable
+    // graph and must never be cached). See cacheableReceiptPath.
+    cacheable: true,
   },
   {
     id: 'audit:memory',
     why: 'the memory-layer invariants, against this machine\'s real graph. Deliberately outside verify:release, which must reproduce on a fresh clone.',
   },
 ];
+
+/**
+ * Where a cacheable step's last passing tree is recorded. One file per step
+ * id, not a shared one, so a future second cacheable step cannot clobber this
+ * one's receipt or be mistaken for it.
+ *
+ * @param {string} repoRoot
+ * @param {string} stepId
+ */
+export function cacheableReceiptPath(repoRoot, stepId) {
+  return path.join(repoRoot, '.qa', `${stepId.replace(/[^a-z0-9]+/gi, '-')}-receipt.json`);
+}
+
+/**
+ * Same trust model `npm run verify` already uses for `.verify/receipt.json`
+ * (scripts/lib/verify-core.mjs `receiptStatus`): a tree hash is the whole
+ * question, with no separate time limit — if the tree has not changed, a
+ * clock ticking forward changes nothing a deterministic step would measure.
+ * `treeHash` itself can fail (this gate's own tests run it inside a bare
+ * temp directory with no `.git`); that failure disables caching for this
+ * call rather than crashing the gate that caching is only ever a shortcut
+ * inside.
+ *
+ * @param {string} repoRoot
+ * @returns {string|null}
+ */
+export function currentTreeHash(repoRoot) {
+  try {
+    return treeHash(repoRoot);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * What this gate does NOT cover. Printed on every run, pass or fail.
@@ -62,7 +103,11 @@ export const NOT_CHECKED = [
 export function formatVerdict(results) {
   const lines = results.map((result) => {
     const outcome = result.status === 0 ? 'PASS' : 'FAIL';
-    const detail = result.signal ? `killed by ${result.signal}` : `exit=${result.status}`;
+    const detail = result.signal
+      ? `killed by ${result.signal}`
+      : result.reused
+        ? `reused, not re-run — see ${result.reused}`
+        : `exit=${result.status}`;
     return `  ${outcome}  ${result.id} (${detail})`;
   });
   return { ok: results.length > 0 && results.every((result) => result.status === 0), lines };
@@ -90,12 +135,23 @@ function main() {
   }
 
   console.log(`pre-release gate: ${STEPS.length} steps, in order\n`);
+  const tree = currentTreeHash(repoRoot);
   const results = [];
   for (const step of STEPS) {
+    if (step.cacheable && tree) {
+      const receiptPath = cacheableReceiptPath(repoRoot, step.id);
+      const receipt = readJson(receiptPath);
+      if (receipt?.tree === tree) {
+        console.log(`--- ${step.id}\n    reusing the pass already recorded for this exact tree (${receipt.at}); nothing under it has changed since. Delete ${receiptPath} to force a re-run.`);
+        results.push({ id: step.id, status: 0, signal: null, reused: receiptPath });
+        continue;
+      }
+    }
     console.log(`--- ${step.id}\n    ${step.why}`);
     const child = spawnSync('npm', ['run', step.id], { cwd: repoRoot, stdio: 'inherit', shell: process.platform === 'win32' });
     results.push({ id: step.id, status: child.status, signal: child.signal });
     if (child.status !== 0) break;
+    if (step.cacheable && tree) writeJson(cacheableReceiptPath(repoRoot, step.id), { tree, at: new Date().toISOString() });
   }
 
   const verdict = formatVerdict(results);

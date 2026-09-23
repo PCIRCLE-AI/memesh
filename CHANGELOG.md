@@ -4,6 +4,23 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`npm run qa:pre-release`'s `verify:artifact` step (the full isolated test
+  suite plus two packaged-artifact runs — several minutes) no longer re-runs
+  back to back for an unchanged tree.** `finish-release.mjs --dry-run`
+  immediately followed by the real run used to pay for it twice, even though
+  nothing about that step's result depends on anything but the tree. It now
+  writes a tree-hash receipt to `.qa/verify-artifact-receipt.json` on a pass
+  (same trust model `npm run verify` already uses for `.verify/receipt.json`:
+  a tree-hash match is the whole question, with no separate time limit) and
+  reuses it the next time the tree matches, instead of re-running. A failing
+  run is never cached — only a pass writes the receipt, so a fix always gets
+  a real re-run. `qa:ui-review` and `audit:memory` are unaffected: the first
+  already binds itself to the exact commit and is cheap to re-validate, and
+  the second reads this machine's live, mutable graph, which a git tree hash
+  cannot see and must never be cached.
+
 ## [4.10.4] — 2026-09-23
 
 ### Changed
