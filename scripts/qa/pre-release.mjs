@@ -38,11 +38,11 @@ export const STEPS = [
     // The one step slow enough (several minutes: the full isolated suite plus
     // two packaged-artifact runs) that running it twice back to back for the
     // same unchanged tree — `finish-release.mjs --dry-run` immediately
-    // followed by the real run — is pure waste. Caching is scoped to exactly
-    // that sequence (see CACHE_ENV_VAR below): it does NOT hold for this
-    // step's result in general, which also depends on the current branch,
-    // local git tags and the live npm advisory database — none of them part
-    // of the tree. See cacheableReceiptPath.
+    // followed by the real run — is pure waste. Caching only activates when
+    // CACHE_ENV_VAR is set (below): this step's result also depends on the
+    // current branch, local git tags and the live npm advisory database —
+    // none of them part of the tree — so a bare `npm run qa:pre-release`
+    // must never read or write this cache. See cacheableReceiptPath.
     cacheable: true,
   },
   {
@@ -63,8 +63,8 @@ export const STEPS = [
  * that loosened check and reusing it for a plain, unset-variable run would
  * be a false PASS.
  *
- * This closes that specific gap, not every gap the receipt has no
- * expiry on: a stale dry-run receipt could in principle be reused by a much
+ * This closes that specific gap, not the gap left by the receipt having no
+ * expiry: a stale dry-run receipt could in principle be reused by a much
  * later real run on the same tree with this same marker set, past whatever
  * an operator would call "immediately". Branch and tags are safe regardless
  * — `release-preconditions.mjs` independently re-checks both right before
@@ -90,9 +90,9 @@ export function cacheableReceiptPath(repoRoot, stepId) {
 
 /**
  * Same trust model `npm run verify` already uses for `.verify/receipt.json`
- * (scripts/lib/verify-core.mjs `receiptStatus`): a tree hash is the whole
- * question once `CACHE_ENV_VAR` has narrowed the caller to one where nothing
- * else relevant can have changed either. `treeHash` itself can fail (this
+ * (scripts/lib/verify-core.mjs `receiptStatus`): tree hash plus `CACHE_ENV_VAR`
+ * is the whole read/write key, with no separate time limit — see CACHE_ENV_VAR
+ * for what that does and does not guarantee. `treeHash` itself can fail (this
  * gate's own tests run it inside a bare temp directory with no `.git`); a
  * caller asking to cache anyway is told so on stderr rather than silently
  * falling back to "always run", so an operator debugging "why did this run
