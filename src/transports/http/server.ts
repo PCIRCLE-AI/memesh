@@ -860,8 +860,11 @@ const ConfigBody = z.object({
   briefing: z.enum(BRIEFING_LEVELS as [string, ...string[]]).optional(),
 }).strict();
 
+// The response is a READ of what `updateConfig` stored, so it is parsed with
+// the read schema: the write-side enum must not turn an already-saved change
+// into a 400 just because some other stored `briefing` is not a known level.
 app.post('/v1/config', (req, res) => handlePost(ConfigBody, req, res, (data) =>
-  ConfigBody.strip().parse(updateConfig(data))));
+  ConfigReadBody.parse(updateConfig(data))));
 
 // --- Update status ---
 app.get('/v1/update-status', (req, res) => handleGet(res, async () => {

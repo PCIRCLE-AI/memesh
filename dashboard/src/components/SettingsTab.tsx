@@ -36,6 +36,23 @@ function briefingSelectState(stored: unknown): BriefingLevel | 'unrecognised' {
   return isBriefingLevel(stored) ? stored : 'unrecognised';
 }
 
+type SettingKey = 'autoUpdate' | 'briefing';
+/** The outcome of the last save, kept with the setting it belongs to so it is shown under that control. */
+interface ConfigMessage { setting: SettingKey; text: string; error: boolean }
+
+function SettingMessage({ id, message }: { id: string; message: ConfigMessage | null }) {
+  if (!message) return null;
+  return (
+    <div id={id} role={message.error ? 'alert' : 'status'} style={{ marginTop: 8, fontSize: 14 }}>
+      {message.text}
+    </div>
+  );
+}
+
+function describedBy(...ids: Array<string | null>): string {
+  return ids.filter(Boolean).join(' ');
+}
+
 // Literal t() keys (not a key map) so tests/dashboard-i18n.test.ts can see them;
 // the exhaustive switch makes a new level a compile error until it is labelled.
 function briefingLevelLabel(level: BriefingLevel): string {
@@ -100,7 +117,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusData | null>(null);
   const [configLoading, setConfigLoading] = useState(true);
   const [configSaving, setConfigSaving] = useState(false);
-  const [configMessage, setConfigMessage] = useState('');
+  const [configMessage, setConfigMessage] = useState<ConfigMessage | null>(null);
   const [updateLoading, setUpdateLoading] = useState(true);
   const [updateRefreshing, setUpdateRefreshing] = useState(false);
   async function loadUpdateStatus(forceFresh = true, keepCurrentState = false) {
@@ -166,8 +183,9 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
 
   /** Write one setting, then re-read it: "Saved" is only shown once the server confirms the new value. */
   async function saveSetting(patch: { autoUpdate: AutoUpdatePolicy } | { briefing: BriefingLevel }) {
+    const setting: SettingKey = 'autoUpdate' in patch ? 'autoUpdate' : 'briefing';
     setConfigSaving(true);
-    setConfigMessage('');
+    setConfigMessage(null);
     try {
       await api('POST', '/v1/config', patch);
       const readback = await api<ConfigData>('GET', '/v1/config');
@@ -178,9 +196,9 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
       );
       if (!confirmed) throw new Error(t('settings.configReadbackFailed'));
       setConfig(readback);
-      setConfigMessage(t('settings.saved'));
+      setConfigMessage({ setting, text: t('settings.saved'), error: false });
     } catch (e) {
-      setConfigMessage(t('common.error') + ': ' + actionFailureMessage(e));
+      setConfigMessage({ setting, text: t('common.error') + ': ' + actionFailureMessage(e), error: true });
     } finally {
       setConfigSaving(false);
     }
@@ -279,6 +297,8 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
   const showLastError = Boolean(updateStatus?.lastError) && !isCheckingUpdates;
   const configLoadFailed = !configLoading && !config;
   const briefingState = config ? briefingSelectState(config.config.briefing) : null;
+  const autoUpdateMessage = configMessage?.setting === 'autoUpdate' ? configMessage : null;
+  const briefingMessage = configMessage?.setting === 'briefing' ? configMessage : null;
 
   return (
     <div style={{ display: 'grid', gap: 12 }}>
@@ -389,10 +409,10 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
         </div>
       </div>
 
-      {/* Behaviour — surfaces autoUpdate so users can configure it from the
-          dashboard instead of editing ~/.memesh/config.json by hand. The
-          field was already accepted by POST /v1/config; this is the missing
-          UI side. */}
+      {/* Behaviour — surfaces autoUpdate and briefing so users can configure
+          them from the dashboard instead of editing ~/.memesh/config.json by
+          hand. Both fields were already accepted by POST /v1/config. Each
+          control shows the outcome of its own last save directly beneath it. */}
       <div class="card">
         <div class="card-title">{t('settings.behaviourTitle')}</div>
 
@@ -403,6 +423,8 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
           </label>
           <select
             aria-labelledby="settings-autoupdate-label"
+            aria-describedby={describedBy('settings-autoupdate-hint', autoUpdateMessage ? 'settings-autoupdate-message' : null)}
+            aria-invalid={autoUpdateMessage?.error || undefined}
             value={config ? (config.config.autoUpdate ?? 'off') : ''}
             disabled={!config || configSaving}
             onChange={(e) => { void saveSetting({ autoUpdate: (e.target as HTMLSelectElement).value as AutoUpdatePolicy }); }}
@@ -414,15 +436,18 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
             <option value="minor">{t('settings.autoUpdateMinor')}</option>
             <option value="major">{t('settings.autoUpdateMajor')}</option>
           </select>
-          <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 4 }}>
+          <div id="settings-autoupdate-hint" style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 4 }}>
             {t('settings.autoUpdateHint')}
           </div>
+          <SettingMessage id="settings-autoupdate-message" message={autoUpdateMessage} />
 
           <label id="settings-briefing-label" style={{ fontSize: 14, color: 'var(--text-2)', display: 'block', marginTop: 16, marginBottom: 4 }}>
             {t('settings.briefingLabel')}
           </label>
           <select
             aria-labelledby="settings-briefing-label"
+            aria-describedby={describedBy('settings-briefing-hint', briefingMessage ? 'settings-briefing-message' : null)}
+            aria-invalid={briefingState === 'unrecognised' || briefingMessage?.error || undefined}
             value={briefingState && briefingState !== 'unrecognised' ? briefingState : ''}
             disabled={!config || configSaving}
             onChange={(e) => { void saveSetting({ briefing: (e.target as HTMLSelectElement).value as BriefingLevel }); }}
@@ -434,12 +459,13 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
               <option key={level} value={level}>{briefingLevelLabel(level)}</option>
             ))}
           </select>
-          <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 4 }}>
+          <div id="settings-briefing-hint" style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 4 }}>
             {t('settings.briefingHint')}
           </div>
-          {(configLoadFailed || configMessage) && (
-            <div role={configLoadFailed || configMessage.startsWith(t('common.error')) ? 'alert' : 'status'} style={{ marginTop: 8, fontSize: 14 }}>
-              {configLoadFailed ? t('common.error') + ': ' + t('settings.configLoadFailed') : configMessage}
+          <SettingMessage id="settings-briefing-message" message={briefingMessage} />
+          {configLoadFailed && (
+            <div role="alert" style={{ marginTop: 8, fontSize: 14 }}>
+              {t('common.error') + ': ' + t('settings.configLoadFailed')}
             </div>
           )}
         </div>

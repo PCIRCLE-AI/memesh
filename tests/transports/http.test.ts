@@ -1115,4 +1115,26 @@ describe('HTTP Transport: agent-only workflows', () => {
     expect(posted.status).toBe(400);
     expect(posted.body.errorCode).toBe('validation.bad-body');
   });
+
+  // `updateConfig()` writes the file first, and its result used to be
+  // re-parsed with the WRITE-side strict level enum. So changing an unrelated
+  // setting while an unrecognised `briefing` was stored saved the change to
+  // disk and then answered 400: the client showed a failure for a write that
+  // had happened. The response is a read of what is stored; it must survive
+  // the same values GET survives, and must leave the stored value alone.
+  it.each(['banana', 'Standard', 42, null])(
+    '#360: POST of another setting succeeds when the stored briefing is %j, and leaves that value alone',
+    async (value) => {
+      fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ briefing: value }));
+
+      const posted = await req('POST', '/v1/config', { autoUpdate: 'patch' });
+      expect(posted.status).toBe(200);
+      expect(posted.body.data.autoUpdate).toBe('patch');
+      expect(posted.body.data.briefing).toEqual(value);
+
+      const got = await req('GET', '/v1/config');
+      expect(got.body.data.config.autoUpdate).toBe('patch');
+      expect(got.body.data.config.briefing).toEqual(value);
+    },
+  );
 });
