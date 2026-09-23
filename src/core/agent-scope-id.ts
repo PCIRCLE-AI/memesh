@@ -8,7 +8,7 @@
 //
 //   recipient  root 25          vs  /root 20
 //   project    memesh 38        vs  memesh-llm-memory 28
-//              /Users/ktseng/Developer/Projects/memesh-llm-memory 1
+//              /home/alice/Projects/memesh-llm-memory 1
 //
 // A recipient that fetches under one spelling never sees what was sent under
 // the other, and `briefing`'s unread count is computed per spelling.

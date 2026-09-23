@@ -1,5 +1,4 @@
 export declare const DELEGATION_TYPE = "delegation";
-export declare const DELEGATION_SOURCE = "deepseek-worker";
 export declare const DELEGATION_VERDICTS: readonly ["unreviewed", "accepted", "rejected"];
 export type DelegationVerdict = typeof DELEGATION_VERDICTS[number];
 export type DelegationTrust = 'untrusted-until-verified' | 'verified' | 'rejected';
@@ -19,6 +18,7 @@ export declare function summarizeEnvelope(raw: unknown): EnvelopeSummary;
 export interface RecordDelegationInput {
     envelopeText: string;
     promptSha256: string;
+    source: string;
     verdict?: DelegationVerdict;
     followUp?: string;
     grantedTools?: string[];

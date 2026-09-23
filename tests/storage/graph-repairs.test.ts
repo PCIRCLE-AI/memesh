@@ -1046,7 +1046,7 @@ describe('historical message scope identities spelled as paths', () => {
     seed((db) => {
       message(db, 'm1', 'memesh-llm-memory', '/root');
       message(db, 'm2', 'memesh-llm-memory', 'root');
-      message(db, 'm3', '/Users/ktseng/Developer/Projects/memesh-llm-memory', '/root');
+      message(db, 'm3', '/home/alice/Projects/memesh-llm-memory', '/root');
       db.prepare(
         `INSERT INTO agent_message_receipts
            (receipt_id, message_id, project, recipient, receipt_kind, actor, idempotency_key, request_hash, detail_json)
@@ -1056,7 +1056,7 @@ describe('historical message scope identities spelled as paths', () => {
 
     const db = openDatabase(dbPath);
     expect(recipients(db)).toEqual([
-      { project: '/Users/ktseng/Developer/Projects/memesh-llm-memory', recipient: '/root', n: 1 },
+      { project: '/home/alice/Projects/memesh-llm-memory', recipient: '/root', n: 1 },
       { project: 'memesh-llm-memory', recipient: '/root', n: 1 },
       { project: 'memesh-llm-memory', recipient: 'root', n: 1 },
     ]);
@@ -1069,7 +1069,7 @@ describe('historical message scope identities spelled as paths', () => {
     closeDatabase();
     const again = openDatabase(dbPath);
     expect(recipients(again)).toEqual([
-      { project: '/Users/ktseng/Developer/Projects/memesh-llm-memory', recipient: '/root', n: 1 },
+      { project: '/home/alice/Projects/memesh-llm-memory', recipient: '/root', n: 1 },
       { project: 'memesh-llm-memory', recipient: '/root', n: 1 },
       { project: 'memesh-llm-memory', recipient: 'root', n: 1 },
     ]);

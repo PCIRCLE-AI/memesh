@@ -4,6 +4,7 @@ import path from 'path';
 import { createHash } from 'crypto';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { getDatabase } from '../../src/db.js';
+import { remember } from '../../src/core/operations.js';
 import {
   DelegationInputError,
   recordDelegation,
@@ -58,7 +59,7 @@ describe('recordDelegation / setDelegationVerdict', () => {
   useTestDatabase('memesh-delegation-');
 
   it('a fixture envelope yields one delegation entity with usage, tools, verdict and provenance', () => {
-    const r = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, project: 'demo' });
+    const r = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: 'deepseek-worker', project: 'demo' });
     expect(r.stored).toBe(true);
     expect(r.name).toMatch(new RegExp(`^delegation-${promptSha.slice(0, 12)}-[0-9a-f]{8}$`));
     const e = stored(r.name)!;
@@ -84,7 +85,7 @@ describe('recordDelegation / setDelegationVerdict', () => {
   });
 
   it('never stores the prompt text or the worker output', () => {
-    const r = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, project: 'demo' });
+    const r = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: 'deepseek-worker', project: 'demo' });
     const everything = JSON.stringify(stored(r.name));
     expect(everything).not.toContain('Summarise the auth module');
     expect(everything).not.toContain('hunter2');
@@ -93,16 +94,16 @@ describe('recordDelegation / setDelegationVerdict', () => {
   });
 
   it('recording the same envelope twice writes nothing the second time and reports the stored verdict', () => {
-    const first = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, project: 'demo' });
+    const first = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: 'deepseek-worker', project: 'demo' });
     setDelegationVerdict({ name: first.name, verdict: 'accepted' });
-    const again = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, project: 'demo' });
+    const again = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: 'deepseek-worker', project: 'demo' });
     expect(again.stored).toBe(false);
     expect(again.verdict).toBe('accepted');
     expect(stored(first.name)!.metadata.provenance.verdict).toBe('accepted');
   });
 
   it('the verify flip rewrites trust and verdict, keeps the rest of provenance, and appends the verdict', () => {
-    const r = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, project: 'demo' });
+    const r = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: 'deepseek-worker', project: 'demo' });
     const before = stored(r.name)!;
     expect(before.metadata.provenance.trust).toBe('untrusted-until-verified');
 
@@ -130,8 +131,16 @@ describe('recordDelegation / setDelegationVerdict', () => {
     expect(() => setDelegationVerdict({ name: 'missing', verdict: 'accepted' })).toThrow(/no memory named/);
   });
 
+  it('verify refuses an ordinary memory typed "delegation" that recordDelegation never wrote', () => {
+    // Every `remember` call stamps a non-empty `provenance.source` (`'local'`),
+    // so `source` alone cannot distinguish a real delegation record — only
+    // `prompt_sha256`, which only recordDelegation sets, can.
+    remember({ name: 'fake-delegation', type: 'delegation', observations: ['not a real delegation'] });
+    expect(() => setDelegationVerdict({ name: 'fake-delegation', verdict: 'accepted' })).toThrow(/not a delegation record/);
+  });
+
   it('an envelope without allowed_tools records "not reported", not "none" (F2)', () => {
-    const r = recordDelegation({ envelopeText: directText, promptSha256: promptSha, project: 'demo' });
+    const r = recordDelegation({ envelopeText: directText, promptSha256: promptSha, source: 'deepseek-worker', project: 'demo' });
     const e = stored(r.name)!;
     expect(e.observations).toContain('Allowed tools: not reported in the envelope');
     expect(e.observations.some((o: string) => o === 'Allowed tools: none')).toBe(false);
@@ -141,7 +150,7 @@ describe('recordDelegation / setDelegationVerdict', () => {
 
   it('the orchestrator can state the tools it granted; a mismatch with the envelope is recorded (F2)', () => {
     const granted = recordDelegation({
-      envelopeText: directText, promptSha256: promptSha, project: 'demo', grantedTools: ['read_file'],
+      envelopeText: directText, promptSha256: promptSha, source: 'deepseek-worker', project: 'demo', grantedTools: ['read_file'],
     });
     const g = stored(granted.name)!;
     expect(g.observations).toContain('Allowed tools: read_file (granted by the orchestrator)');
@@ -149,7 +158,7 @@ describe('recordDelegation / setDelegationVerdict', () => {
 
     const other = createHash('sha256').update('another prompt').digest('hex');
     const mismatch = recordDelegation({
-      envelopeText: harnessText, promptSha256: other, project: 'demo', grantedTools: ['read_file'],
+      envelopeText: harnessText, promptSha256: other, source: 'deepseek-worker', project: 'demo', grantedTools: ['read_file'],
     });
     const m = stored(mismatch.name)!;
     expect(m.observations).toContain('Allowed tools mismatch: the envelope reports read_file, write_file');
@@ -157,7 +166,31 @@ describe('recordDelegation / setDelegationVerdict', () => {
   });
 
   it('refuses a malformed prompt hash and a non-JSON envelope', () => {
-    expect(() => recordDelegation({ envelopeText: harnessText, promptSha256: 'abc', project: 'demo' })).toThrow(/sha256/);
-    expect(() => recordDelegation({ envelopeText: 'not json', promptSha256: promptSha, project: 'demo' })).toThrow(/not JSON/);
+    expect(() => recordDelegation({ envelopeText: harnessText, promptSha256: 'abc', source: 'deepseek-worker', project: 'demo' })).toThrow(/sha256/);
+    expect(() => recordDelegation({ envelopeText: 'not json', promptSha256: promptSha, source: 'deepseek-worker', project: 'demo' })).toThrow(/not JSON/);
+  });
+
+  it('refuses an empty or whitespace-only source', () => {
+    expect(() => recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: '', project: 'demo' })).toThrow(/source/);
+    expect(() => recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: '   ', project: 'demo' })).toThrow(/source/);
+  });
+
+  it('source is caller-chosen, not fixed to one worker name', () => {
+    const r = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: 'other-worker', project: 'demo' });
+    const e = stored(r.name)!;
+    expect(e.tags).toContain('source:other-worker');
+    expect(e.metadata.provenance.source).toBe('other-worker');
+    // A verdict can still be set on a record from a non-default source.
+    const v = setDelegationVerdict({ name: r.name, verdict: 'accepted' });
+    expect(v.verdict).toBe('accepted');
+  });
+
+  it('byte-identical prompt+envelope from two different sources are two records, not a silent collision', () => {
+    const first = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: 'worker-a', project: 'demo' });
+    const second = recordDelegation({ envelopeText: harnessText, promptSha256: promptSha, source: 'worker-b', project: 'demo' });
+    expect(first.name).not.toBe(second.name);
+    expect(second.stored).toBe(true);
+    expect(stored(first.name)!.metadata.provenance.source).toBe('worker-a');
+    expect(stored(second.name)!.metadata.provenance.source).toBe('worker-b');
   });
 });

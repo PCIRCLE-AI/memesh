@@ -26,7 +26,7 @@ describe('memesh delegation', () => {
   it('records an envelope, then flips it to verified', () => {
     const prompt = path.join(home, 'prompt.txt');
     fs.writeFileSync(prompt, 'Summarise the auth module');
-    const rec = run(['delegation', 'record', '--envelope', ENVELOPE, '--prompt-file', prompt,
+    const rec = run(['delegation', 'record', '--envelope', ENVELOPE, '--prompt-file', prompt, '--source', 'deepseek-worker',
       '--allow-tool', 'read_file', '--allow-tool', 'write_file', '--json']);
     expect(rec.code, rec.stderr).toBe(0);
     const recorded = JSON.parse(rec.stdout);
@@ -42,9 +42,10 @@ describe('memesh delegation', () => {
 
   it('refuses missing inputs and bad verdicts with a message, not a stack', () => {
     for (const args of [
-      ['delegation', 'record', '--envelope', ENVELOPE],
-      ['delegation', 'record', '--envelope', path.join(home, 'nope.json'), '--prompt-file', ENVELOPE],
-      ['delegation', 'record', '--envelope', ENVELOPE, '--prompt-file', ENVELOPE, '--verdict', 'maybe'],
+      ['delegation', 'record', '--envelope', ENVELOPE, '--source', 'x'],
+      ['delegation', 'record', '--envelope', ENVELOPE, '--prompt-file', ENVELOPE],
+      ['delegation', 'record', '--envelope', path.join(home, 'nope.json'), '--prompt-file', ENVELOPE, '--source', 'x'],
+      ['delegation', 'record', '--envelope', ENVELOPE, '--prompt-file', ENVELOPE, '--source', 'x', '--verdict', 'maybe'],
       ['delegation', 'verify', 'whatever', '--verdict', 'unreviewed'],
       ['delegation', 'verify', 'no-such-delegation', '--verdict', 'accepted'],
     ]) {
