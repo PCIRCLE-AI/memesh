@@ -220,8 +220,12 @@ export function helpText() {
     '                         remember/recall, SessionStart briefing, quiet commit capture,',
     '                         Stop insight capture, and packed upgrade with data readback.',
     '  --codex-home <path>   Required with --host codex. An already-authenticated, task-owned',
-    '                         CODEX_HOME beneath the OS temporary directory. The runner installs this',
-    '                         candidate plugin there; it never copies credentials or uses ~/.codex.',
+    '                         CODEX_HOME distinct from the owner\'s real ~/.codex. The runner installs',
+    '                         this candidate plugin there; it never copies credentials or reads ~/.codex.',
+    '                         Measured 2026-09-23: codex-cli 0.155.1 refuses to fully start with CODEX_HOME',
+    '                         under a recognised OS temporary directory ("Refusing to create helper',
+    '                         binaries under temporary dir"), so this no longer requires one — prepare it',
+    '                         anywhere disposable, e.g. mktemp -d "$HOME"/.memesh-codex-qa.XXXXXX.',
     '  --out <path>           Write the JSON evidence report here (also written on failure).',
     '  --keep                 Keep the temporary MEMESH_DIR instead of deleting it on exit.',
     `  --wait-ms <N>          Bound for each wait on the operator or the model, default ${DEFAULT_WAIT_MS}.`,
@@ -411,7 +415,17 @@ export function assertOutsideOwnerMemesh(input) {
  * The caller prepares authentication in a disposable, task-owned CODEX_HOME;
  * this runner consumes it but never reads, copies, or deletes credentials.
  *
- * @param {{codexHome: string, ownerCodexHome: string, temporaryRoot: string, realpath: (p: string) => string}} input
+ * This used to also require `codexHome` to resolve under an OS temporary
+ * directory, as a belt-and-braces check against pointing this at some OTHER
+ * persistent location. Measured 2026-09-23 (codex-cli 0.155.1): `codex exec`
+ * now refuses to fully start ("Refusing to create helper binaries under
+ * temporary dir") when CODEX_HOME resolves under a recognised temp root, so
+ * that requirement now directly conflicts with the CLI it exists to drive.
+ * The actual safety property this function guarantees is narrower than "must
+ * be temporary" — it is "must not be the owner's real, credentialed home" —
+ * and that is fully covered by the owner check below on its own.
+ *
+ * @param {{codexHome: string, ownerCodexHome: string, realpath: (p: string) => string}} input
  */
 export function assertTaskOwnedCodexHome(input) {
   if (typeof input.codexHome !== 'string' || input.codexHome.length === 0) {
@@ -419,12 +433,8 @@ export function assertTaskOwnedCodexHome(input) {
   }
   const home = input.realpath(input.codexHome);
   const owner = input.realpath(input.ownerCodexHome);
-  const temporaryRoot = input.realpath(input.temporaryRoot);
   if (home === owner || home.startsWith(`${owner}${path.sep}`)) {
-    throw new Error(`Refusing to use owner CODEX_HOME ${owner}; provide a task-owned authenticated home under ${temporaryRoot}.`);
-  }
-  if (home !== temporaryRoot && !home.startsWith(`${temporaryRoot}${path.sep}`)) {
-    throw new Error(`Refusing CODEX_HOME ${home}: it is outside the allowed temporary root ${temporaryRoot}.`);
+    throw new Error(`Refusing to use owner CODEX_HOME ${owner}; provide a separate, task-owned authenticated home.`);
   }
   if (!fs.existsSync(home) || !fs.statSync(home).isDirectory()) {
     throw new Error(`Refusing CODEX_HOME ${home}: the caller-provided isolated home must already exist.`);
@@ -1087,6 +1097,26 @@ function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
+    // Only one caller (send(), via cli() -> run(process.execPath, ..., { input })) writes to
+    // stdin; every other caller here (git, npm, codex --version/login status/plugin add, codex
+    // exec with an explicit prompt argument) means "no stdin". `stdio[0]` defaults to 'ignore'
+    // and only becomes 'pipe' when `options.input` is actually supplied.
+    //
+    // CORRECTION 2026-09-23 (fresh-eyes review caught the original claim here, and the matching
+    // claim in a commit message, as wrong -- verified by re-running codex exec 0.155.1 three
+    // ways): codex prints "Reading additional input from stdin..." on BOTH the spawnSync default
+    // (a socket) and 'ignore' (/dev/null) -- neither is a TTY, and codex reads either to instant
+    // EOF (0ms) and keeps going; the message is informational, not a block, and disappears only
+    // under a real pty. So this change does NOT explain or fix the "codex exec startup exited 1"
+    // failure this repo hit live -- that failure's real cause was hidden in stdout (a JSON
+    // turn.failed event, e.g. the account's usage limit), which the two `throw new Error(...)`
+    // call sites below only used to surface via stderr; see the stdout-tail fix there instead.
+    // This stdio default is kept anyway on its own, smaller merit: it is still the accurate
+    // default for what every caller other than send() means (no stdin), and it is what actually
+    // protects send()'s own payload -- 'ignore' + a supplied `input` silently drops the payload
+    // instead of writing it (measured), so the ternary is load-bearing for that one caller even
+    // though it is not the fix for the other symptom.
+    stdio: [options.input !== undefined ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     ...options,
   });
   return {
@@ -1781,7 +1811,6 @@ async function runCodex(journey) {
   const codexHome = assertTaskOwnedCodexHome({
     codexHome: journey.options.codexHome,
     ownerCodexHome: path.join(os.homedir(), '.codex'),
-    temporaryRoot: os.tmpdir(),
     realpath: realpathAsFarAsPossible,
   });
   const codexEnv = { ...journey.env, CODEX_HOME: codexHome };
@@ -1841,7 +1870,15 @@ async function runCodex(journey) {
     '-s', 'read-only', '-C', workspace, setupPrompt,
   ], { env: codexEnv, timeout: 120_000 });
   if (first.status !== 0) {
-    throw new Error(`codex exec startup exited ${first.status}: ${first.stderr.trim().slice(0, 600)}`);
+    // Measured 2026-09-23: codex exec's real failure reason (e.g. a turn.failed JSON event
+    // reporting the account's usage limit) prints to STDOUT, not stderr -- stderr alone can be
+    // one harmless informational line ("Reading additional input from stdin...", printed whether
+    // or not codex actually blocks on it) while the line that explains the non-zero exit sits in
+    // stdout, invisible to a caller that only surfaces stderr. Show the tail of both.
+    const stderrTail = first.stderr.trim().slice(-600);
+    const stdoutTail = first.stdout.trim().slice(-600);
+    throw new Error(`codex exec startup exited ${first.status}: stderr(tail)=${stderrTail || '(empty)'} `
+      + `stdout(tail)=${stdoutTail || '(empty)'}`);
   }
   fs.writeFileSync(path.join(journey.dir, 'codex-startup.jsonl'), first.stdout);
   const threadId = parseCodexThreadId(first.stdout);
@@ -1934,7 +1971,12 @@ async function runCodex(journey) {
 
   const second = await resumedExecution.completed;
   if (second.status !== 0) {
-    throw new Error(`codex exec resume exited ${second.status}: ${second.stderr.trim().slice(0, 600)}`);
+    // Same stdout/stderr split as the startup call above: the real reason lives in the JSON
+    // events on stdout, not necessarily in stderr.
+    const stderrTail = second.stderr.trim().slice(-600);
+    const stdoutTail = second.stdout.trim().slice(-600);
+    throw new Error(`codex exec resume exited ${second.status}: stderr(tail)=${stderrTail || '(empty)'} `
+      + `stdout(tail)=${stdoutTail || '(empty)'}`);
   }
   fs.writeFileSync(path.join(journey.dir, 'codex-resume.jsonl'), second.stdout);
   const resumedReply = assertCodexReply({

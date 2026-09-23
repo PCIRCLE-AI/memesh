@@ -1078,34 +1078,82 @@ describe('installed Codex plugin lifecycle proof', () => {
 describe.skipIf(process.platform === 'win32')('task-owned Codex home boundary', () => {
   const identity = (candidate: string) => candidate;
 
-  it('accepts only an existing temporary home outside the owner configuration', () => {
-    const temporaryRoot = os.tmpdir();
-    const temporary = fs.mkdtempSync(path.join(temporaryRoot, 'memesh-codex-home-test-'));
+  // codex-cli 0.155.1 (measured 2026-09-23) refuses to fully start with
+  // CODEX_HOME under a recognised OS temporary directory ("Refusing to
+  // create helper binaries under temporary dir"), so this no longer requires
+  // one — an existing directory anywhere outside the owner's real ~/.codex
+  // is accepted. The temp-only case is still covered (a disposable home
+  // caller-prepared under os.tmpdir() must still work), alongside a home
+  // prepared somewhere else entirely.
+  it('accepts an existing home outside the owner configuration, temporary or not', () => {
+    // KT 2026-09-23: this "non-temporary" fixture must be a REAL non-temp
+    // location to mean anything -- codex-cli itself refuses a temp CODEX_HOME
+    // (the whole reason assertTaskOwnedCodexHome no longer requires one), so
+    // swapping this fixture for another os.tmpdir() path would stop testing
+    // the case that actually matters. Guard instead: fail loudly, before
+    // creating anything, unless the current HOME is known throwaway -- true
+    // whenever this runs through the isolated test runner
+    // (scripts/run-tests-isolated.mjs always mkdtemps HOME under
+    // os.tmpdir()) OR on CI (ci.yml's and publish-npm.yml's "Run tests"
+    // steps run bare `npm test -- --run`, un-isolated, against the runner's
+    // own HOME -- e.g. /home/runner -- which never resolves under
+    // os.tmpdir() but is itself a fresh, disposable machine with no real
+    // knowledge graph to lose; confirmed by reproducing this exact failure
+    // locally with a direct `vitest run` before adding the CI exemption).
+    // False only when a developer bypassed the isolated runner on their own
+    // machine and HOME is their real, persistent developer home. A `finally`
+    // cleanup cannot survive SIGKILL; this stops the directory from ever
+    // being created against a real home in the first place, the same
+    // "refuse before creating anything" shape assertOutsideOwnerMemesh
+    // already uses for MEMESH_DIR. Checked against the literal string
+    // 'true', not Boolean(process.env.CI) -- a bare truthiness check would
+    // also exempt CI=false/CI=0 (any non-empty string is truthy), which a
+    // developer's own shell could set for unrelated reasons; GitHub Actions
+    // documents that it always sets CI to exactly 'true', and it's the only
+    // CI provider this project runs on per .github/workflows/*.yml.
+    const home = fs.realpathSync(os.homedir());
+    const tmp = fs.realpathSync(os.tmpdir());
+    const homeIsThrowaway = home === tmp || home.startsWith(tmp + path.sep) || process.env.CI === 'true';
+    if (!homeIsThrowaway) {
+      throw new Error(
+        `Refusing to create a test fixture under os.homedir() (${home}): it does not resolve `
+        + `under os.tmpdir() (${tmp}) and CI is not 'true', so this is not running through the `
+        + 'isolated test runner (scripts/run-tests-isolated.mjs) and HOME looks like a real '
+        + 'developer home. Run tests via that script instead of a bare `npm test`/`vitest run`.',
+      );
+    }
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-home-test-'));
+    const nonTemporary = fs.mkdtempSync(path.join(os.homedir(), '.memesh-codex-home-test-'));
     try {
-      expect(assertTaskOwnedCodexHome({
-        codexHome: temporary,
-        ownerCodexHome: '/Users/example/.codex',
-        temporaryRoot,
-        realpath: identity,
-      })).toBe(temporary);
+      for (const home of [temporary, nonTemporary]) {
+        expect(assertTaskOwnedCodexHome({
+          codexHome: home,
+          ownerCodexHome: '/Users/example/.codex',
+          realpath: identity,
+        })).toBe(home);
+      }
     } finally {
       fs.rmSync(temporary, { recursive: true, force: true });
+      fs.rmSync(nonTemporary, { recursive: true, force: true });
     }
   });
 
-  it('rejects owner and non-temporary homes', () => {
+  it('rejects the owner home, a path inside it, and a home that does not exist', () => {
     expect(() => assertTaskOwnedCodexHome({
       codexHome: '/Users/example/.codex',
       ownerCodexHome: '/Users/example/.codex',
-      temporaryRoot: '/private/tmp',
       realpath: identity,
     })).toThrow(/owner CODEX_HOME/);
     expect(() => assertTaskOwnedCodexHome({
-      codexHome: '/Users/example/codex-test',
+      codexHome: '/Users/example/.codex/plugins',
       ownerCodexHome: '/Users/example/.codex',
-      temporaryRoot: '/private/tmp',
       realpath: identity,
-    })).toThrow(/outside the allowed temporary root/);
+    })).toThrow(/owner CODEX_HOME/);
+    expect(() => assertTaskOwnedCodexHome({
+      codexHome: '/Users/example/codex-test-does-not-exist',
+      ownerCodexHome: '/Users/example/.codex',
+      realpath: identity,
+    })).toThrow(/must already exist/);
   });
 });
 
