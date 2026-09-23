@@ -4,6 +4,16 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- The dashboard's Settings tab now has a "Session start briefing" control
+  (Minimal / Standard / Full), the same setting as
+  `memesh config set briefing` (#360). It saves as soon as you pick a level
+  and only says "Saved." after re-reading the value from the server. A stored
+  value that is not a known level is shown as unrecognised instead of being
+  displayed as a real level, and picking a level replaces it. The change
+  applies to the next session you start.
+
 ### Changed
 
 - `message discover` now returns a named, actionable `router_unreachable` error

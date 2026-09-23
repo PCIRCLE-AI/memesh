@@ -9,6 +9,12 @@ import { t, setLocale, getLocales, type Locale } from '../lib/i18n';
 import { actionFailureMessage } from '../lib/failure';
 import { TerminalHandoff } from './ExternalHandoff';
 import { InstallationDetails } from './InstallationDetails';
+import {
+  BRIEFING_LEVELS,
+  DEFAULT_BRIEFING_LEVEL,
+  isBriefingLevel,
+  type BriefingLevel,
+} from '../../../src/core/briefing-level.js';
 
 interface SettingsTabProps {
   locale: Locale;
@@ -18,6 +24,26 @@ interface SettingsTabProps {
 /** Reject a successful but incompatible response instead of rendering false state. */
 export function isConfigRenderable(c: ConfigData | null): c is ConfigData {
   return typeof c?.config === 'object' && c.config !== null;
+}
+
+/**
+ * What the briefing select shows for a stored value. Absent means the default
+ * applies. Anything else that is not a known level (hand-edited, or written by
+ * a newer version) is `unrecognised` — never shown as if it were a level.
+ */
+function briefingSelectState(stored: unknown): BriefingLevel | 'unrecognised' {
+  if (stored === undefined) return DEFAULT_BRIEFING_LEVEL;
+  return isBriefingLevel(stored) ? stored : 'unrecognised';
+}
+
+// Literal t() keys (not a key map) so tests/dashboard-i18n.test.ts can see them;
+// the exhaustive switch makes a new level a compile error until it is labelled.
+function briefingLevelLabel(level: BriefingLevel): string {
+  switch (level) {
+    case 'minimal': return t('settings.briefingMinimal');
+    case 'standard': return t('settings.briefingStandard');
+    case 'full': return t('settings.briefingFull');
+  }
 }
 
 /**
@@ -138,15 +164,19 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
     };
   }, []);
 
-  async function saveAutoUpdate(next: AutoUpdatePolicy) {
+  /** Write one setting, then re-read it: "Saved" is only shown once the server confirms the new value. */
+  async function saveSetting(patch: { autoUpdate: AutoUpdatePolicy } | { briefing: BriefingLevel }) {
     setConfigSaving(true);
     setConfigMessage('');
     try {
-      await api('POST', '/v1/config', { autoUpdate: next });
+      await api('POST', '/v1/config', patch);
       const readback = await api<ConfigData>('GET', '/v1/config');
-      if (!isConfigRenderable(readback) || readback.config.autoUpdate !== next) {
-        throw new Error(t('settings.configReadbackFailed'));
-      }
+      const confirmed = isConfigRenderable(readback) && (
+        'autoUpdate' in patch
+          ? readback.config.autoUpdate === patch.autoUpdate
+          : readback.config.briefing === patch.briefing
+      );
+      if (!confirmed) throw new Error(t('settings.configReadbackFailed'));
       setConfig(readback);
       setConfigMessage(t('settings.saved'));
     } catch (e) {
@@ -248,6 +278,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
   const showLastSuccessful = Boolean(updateStatus?.lastSuccessfulCheckAt);
   const showLastError = Boolean(updateStatus?.lastError) && !isCheckingUpdates;
   const configLoadFailed = !configLoading && !config;
+  const briefingState = config ? briefingSelectState(config.config.briefing) : null;
 
   return (
     <div style={{ display: 'grid', gap: 12 }}>
@@ -374,7 +405,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
             aria-labelledby="settings-autoupdate-label"
             value={config ? (config.config.autoUpdate ?? 'off') : ''}
             disabled={!config || configSaving}
-            onChange={(e) => { void saveAutoUpdate((e.target as HTMLSelectElement).value as AutoUpdatePolicy); }}
+            onChange={(e) => { void saveSetting({ autoUpdate: (e.target as HTMLSelectElement).value as AutoUpdatePolicy }); }}
             style={{ fontSize: 16, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
           >
             {!config && <option value="" disabled>{t(configLoading ? 'common.loading' : 'common.unknown')}</option>}
@@ -385,6 +416,26 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
           </select>
           <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 4 }}>
             {t('settings.autoUpdateHint')}
+          </div>
+
+          <label id="settings-briefing-label" style={{ fontSize: 14, color: 'var(--text-2)', display: 'block', marginTop: 16, marginBottom: 4 }}>
+            {t('settings.briefingLabel')}
+          </label>
+          <select
+            aria-labelledby="settings-briefing-label"
+            value={briefingState && briefingState !== 'unrecognised' ? briefingState : ''}
+            disabled={!config || configSaving}
+            onChange={(e) => { void saveSetting({ briefing: (e.target as HTMLSelectElement).value as BriefingLevel }); }}
+            style={{ fontSize: 16, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
+          >
+            {!config && <option value="" disabled>{t(configLoading ? 'common.loading' : 'common.unknown')}</option>}
+            {briefingState === 'unrecognised' && <option value="" disabled>{t('settings.briefingUnrecognised')}</option>}
+            {BRIEFING_LEVELS.map((level) => (
+              <option key={level} value={level}>{briefingLevelLabel(level)}</option>
+            ))}
+          </select>
+          <div style={{ fontSize: 14, color: 'var(--text-3)', marginTop: 4 }}>
+            {t('settings.briefingHint')}
           </div>
           {(configLoadFailed || configMessage) && (
             <div role={configLoadFailed || configMessage.startsWith(t('common.error')) ? 'alert' : 'status'} style={{ marginTop: 8, fontSize: 14 }}>
