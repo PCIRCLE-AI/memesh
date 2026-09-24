@@ -1,7 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   cleanHandoffText,
+  handoffLines,
+  handoffView,
+  HANDOFF_FUTURE_SKEW_MINUTES,
+  HANDOFF_MAX_AGE_DAYS,
   HANDOFF_MAX_CHARS,
+  HANDOFF_STALE_HOURS,
   lastAssistantText,
   SESSION_HANDOFF_TYPE,
   sessionHandoffName,
@@ -163,5 +168,68 @@ describe('the handoff is one entity per project and nobody else lists it', () =>
 
   it('is kept out of the knowledge radar', () => {
     expect(NOISE_TYPES.has(SESSION_HANDOFF_TYPE)).toBe(true);
+  });
+});
+
+describe('handoffLines (the one renderer both surfaces use)', () => {
+  const NOW = new Date('2026-09-24T12:00:00Z');
+  const HOUR = 3_600_000;
+  const sqlite = (msAgo: number) => new Date(NOW.getTime() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
+  const rec = (msAgo: number, text = 'We finished the parser tests.\nNext: open the PR once CI is green.') =>
+    ({ id: 42, text, observedAt: sqlite(msAgo) });
+
+  it('leads with where the last session left off, its age and a citation handle, then the text', () => {
+    expect(handoffLines(rec(2 * HOUR), NOW)).toEqual([
+      'Where the last session left off (2 hours ago): [mem:42]',
+      'We finished the parser tests.',
+      'Next: open the PR once CI is green.',
+    ]);
+    expect(handoffLines(rec(10 * 60_000), NOW)[0]).toBe('Where the last session left off (less than an hour ago): [mem:42]');
+  });
+
+  it('is fresh through exactly 72 hours and says it may be out of date one second later', () => {
+    expect(handoffLines(rec(HANDOFF_STALE_HOURS * HOUR), NOW)[0]).toBe('Where the last session left off (3 days ago): [mem:42]');
+    expect(handoffLines(rec(HANDOFF_STALE_HOURS * HOUR + 1000), NOW)[0])
+      .toBe('Where the last session left off (3 days ago — may be out of date; check it against the repository): [mem:42]');
+  });
+
+  it('is shown through exactly 14 days and omitted one second later', () => {
+    expect(handoffLines(rec(HANDOFF_MAX_AGE_DAYS * 24 * HOUR), NOW)).toHaveLength(3);
+    expect(handoffLines(rec(HANDOFF_MAX_AGE_DAYS * 24 * HOUR + 1000), NOW)).toEqual([]);
+  });
+
+  it('treats up to 5 minutes in the future as clock skew and anything later as an unknown age', () => {
+    expect(handoffLines(rec(-HANDOFF_FUTURE_SKEW_MINUTES * 60_000), NOW)[0]).toBe('Where the last session left off (less than an hour ago): [mem:42]');
+    expect(handoffLines(rec(-HANDOFF_FUTURE_SKEW_MINUTES * 60_000 - 1000), NOW)).toEqual([]);
+  });
+
+  it('shows nothing it cannot date or that has no text', () => {
+    for (const observedAt of [null, undefined, '', 'yesterday', '2026-02-30 10:00:00', '2026-09-24T11:00:00Z']) {
+      expect(handoffLines({ id: 1, text: 'Next: ship it.', observedAt }, NOW), String(observedAt)).toEqual([]);
+    }
+    expect(handoffLines({ id: 1, text: '   ', observedAt: sqlite(HOUR) }, NOW)).toEqual([]);
+    expect(handoffLines(null, NOW)).toEqual([]);
+  });
+});
+
+describe('handoffView: the reason a handoff is hidden', () => {
+  const NOW = new Date('2026-09-24T12:00:00Z');
+  const at = (msAgo: number) => new Date(NOW.getTime() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
+  const HOUR = 3_600_000;
+  it('names each outcome', () => {
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(HOUR) }, NOW).status).toBe('shown');
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(80 * HOUR) }, NOW).status).toBe('stale');
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(15 * 24 * HOUR) }, NOW)).toEqual({ lines: [], status: 'expired' });
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: 'soon' }, NOW)).toEqual({ lines: [], status: 'undatable' });
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(-HOUR) }, NOW)).toEqual({ lines: [], status: 'future' });
+    expect(handoffView({ id: 1, text: '```\nonly code\n```', observedAt: at(HOUR) }, NOW)).toEqual({ lines: [], status: 'empty' });
+    expect(handoffView(null, NOW)).toEqual({ lines: [], status: 'empty' });
+  });
+
+  it('bounds the text whoever wrote it, keeping the end', () => {
+    const view = handoffView({ id: 1, text: `${'x '.repeat(5000)}\nNEXT: the last line survives.`, observedAt: at(HOUR) }, NOW);
+    const body = view.lines.slice(1).join('\n');
+    expect(body.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
+    expect(body.endsWith('NEXT: the last line survives.')).toBe(true);
   });
 });

@@ -7,7 +7,7 @@ import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
+import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, buildBriefingIndex, } from './briefing-index.js';
 import { GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, buildReferenceContext, hasBriefingContent, isAutoInjectable, projectLabel, } from './work-topology.js';
 import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
@@ -39,7 +39,7 @@ function selectPool(rows, cap) {
         recall_misses: row.recall_misses ?? undefined,
     }));
     return rankEntities(withMeta, new Map())
-        .filter((row) => isAutoInjectable(row.meta) && row.type !== SESSION_HANDOFF_TYPE)
+        .filter((row) => isAutoInjectable(row.meta))
         .slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {
@@ -111,7 +111,16 @@ export function assembleBriefing(project, recipient) {
     const everSeen = inboxRecipient !== undefined && unreadCount === 0
         ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
         : undefined;
+    const handoffRow = db.prepare(`SELECT e.id, e.metadata, o.content AS text, o.created_at AS observedAt
+     FROM entities e JOIN observations o ON o.entity_id = e.id
+     WHERE e.name = ? AND e.type = ? AND e.status = 'active'
+     ORDER BY o.id DESC
+     LIMIT 1`).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE);
+    const handoffMeta = handoffRow ? parseMetadata(handoffRow.metadata) : null;
+    const handoffTrusted = !!handoffRow && (handoffRow.metadata === null || handoffMeta !== null) && isAutoInjectable(handoffMeta);
+    const handoff = handoffTrusted ? handoffLines(handoffRow) : [];
     const stateLines = [
+        ...handoff,
         ...taskLines,
         ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen),
     ];
@@ -120,9 +129,9 @@ export function assembleBriefing(project, recipient) {
     const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : '';
     const projectRows = db.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ? AND e.status = 'active'${nonGlobal}
+     WHERE t.tag = ? AND e.status = 'active' AND e.type <> ?${nonGlobal}
      ORDER BY e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
+     LIMIT ?`).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
     const projectPool = selectPool(projectRows, PROJECT_LIMIT);
     const globalRows = policy.global && hasNamespace
         ? db.prepare(`SELECT ${CANDIDATE_COLUMNS}
@@ -135,9 +144,9 @@ export function assembleBriefing(project, recipient) {
     const recentRows = policy.foreign
         ? db.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
-       WHERE e.status = 'active'${nonGlobal}
+       WHERE e.status = 'active' AND e.type <> ?${nonGlobal}
        ORDER BY e.id DESC
-       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP)
+       LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP)
         : [];
     const recentPool = selectPool(recentRows, RECENT_LIMIT);
     const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
@@ -173,8 +182,9 @@ export function assembleBriefing(project, recipient) {
     return {
         project: projectName,
         text: empty ? '' : buildReferenceContext(block),
-        entityCount: lines.filter((l) => l.startsWith('- [')).length,
+        entityCount: lines.slice(stateLines.length).filter((l) => l.startsWith('- [')).length,
         hasTaskState: taskLines.length > 0,
+        hasHandoff: handoff.length > 0,
         index,
         level,
         empty,

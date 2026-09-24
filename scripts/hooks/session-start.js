@@ -74,7 +74,7 @@ import {
   INDEX_EXCLUDED_TYPES,
   INDEX_SNIPPET_FETCH_CHARS,
 } from './_generated/briefing-index.js';
-import { SESSION_HANDOFF_TYPE } from './_generated/session-handoff.js';
+import { handoffView, SESSION_HANDOFF_TYPE, sessionHandoffName } from './_generated/session-handoff.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1149,9 +1149,14 @@ process.stdin.on('end', async () => {
       const notGlobal = colNames.has('namespace')
         ? "AND (e.namespace IS NULL OR e.namespace <> 'global')"
         : '';
+      // The session handoff is not a ranked memory — it leads the block on its
+      // own (below). Excluded in SQL, before the LIMIT: excluded only after it,
+      // enough handoff rows ahead of real memories could fill the window.
+      // A constant, not user input, so it is safe inline.
+      const notHandoff = `AND e.type <> '${SESSION_HANDOFF_TYPE}'`;
       const projectQuery = buildScoringQuery(
         `JOIN tags t ON t.entity_id = e.id`,
-        `WHERE t.tag = ? ${notGlobal} ${statusFilter}`,
+        `WHERE t.tag = ? ${notGlobal} ${statusFilter} ${notHandoff}`,
       );
       // Over-fetch WIDE, then filter. The window used to be `sessionLimit * 3`
       // and the trust filter ran after it — so a class of entity that ranks
@@ -1165,11 +1170,8 @@ process.stdin.on('end', async () => {
       // Shared with the briefing surface via the leaf, so the two sides'
       // candidate windows cannot drift apart.
       const CANDIDATE_CAP = TOPOLOGY_CANDIDATE_CAP;
-      // The handoff is not a ranked memory. Nothing lists it yet, so it must
-      // not take a slot in the project pool or in the recent pool below.
-      const isRankable = (entity) => entity.type !== SESSION_HANDOFF_TYPE;
       const projectOnly = db.prepare(projectQuery).all(projectTag, CANDIDATE_CAP)
-        .filter(entity => isRankable(entity) && isTrustedForAutoContext(entity.metadata));
+        .filter(entity => isTrustedForAutoContext(entity.metadata));
 
       // The `global` namespace is the documented way to store something that
       // is not tied to one project — and the injection selected purely by
@@ -1201,13 +1203,48 @@ process.stdin.on('end', async () => {
         const recentConditions = [
           hasStatus ? "e.status = 'active'" : '',
           colNames.has('namespace') ? "(e.namespace IS NULL OR e.namespace <> 'global')" : '',
+          `e.type <> '${SESSION_HANDOFF_TYPE}'`,
         ].filter(Boolean);
         const recentWhere = recentConditions.length > 0 ? `WHERE ${recentConditions.join(' AND ')}` : '';
         const recentQuery = buildScoringQuery('', recentWhere);
         recentEntities = db.prepare(recentQuery).all(CANDIDATE_CAP)
-          .filter(entity => isRankable(entity) && isTrustedForAutoContext(entity.metadata))
+          .filter(entity => isTrustedForAutoContext(entity.metadata))
           .slice(0, 5);
       }
+
+      // Where the last session in THIS project left off — it leads the block
+      // at every level (same renderer as `briefing`). Exact name, active, and
+      // through the same trust gate as every memory. A failed read is its own
+      // recorded error, not a failed assembly: the rest of the context ships.
+      // `handoffHidden` names why an existing handoff is not shown (a bounded
+      // label, never its text), so session-start's own record can say so
+      // instead of reporting an empty project.
+      let handoffRow;
+      let handoffHidden = null;
+      try {
+        handoffRow = db.prepare(
+          `SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
+           FROM entities e JOIN observations o ON o.entity_id = e.id
+           WHERE e.name = ? AND e.type = ? ${statusFilter}
+           ORDER BY o.id DESC
+           LIMIT 1`,
+        ).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE);
+        if (handoffRow && !isTrustedForAutoContext(handoffRow.metadata)) {
+          handoffRow = undefined;
+          handoffHidden = 'untrusted';
+        }
+      } catch (err) {
+        handoffRow = undefined;
+        try { process.stderr.write(`[memesh session-start] session handoff: ${err?.message || err}\n`); } catch {}
+        recordHookOutcome(process.env, {
+          hook: 'session-start',
+          outcome: 'error',
+          reason: `handoff: ${hookErrorReason(err)}`,
+        });
+      }
+      const handoffShown = handoffView(handoffRow);
+      const handoffBlock = handoffShown.lines;
+      if (handoffRow && handoffBlock.length === 0) handoffHidden = handoffShown.status;
 
       // Lesson count (queried for summary, not listed individually).
       // Status-column gate matches the project/recent queries above —
@@ -1249,10 +1286,11 @@ process.stdin.on('end', async () => {
       if (recentCount > 0) memoryFragments.push(`${recentCount} recent`);
 
       let summary;
-      if (memoryFragments.length === 0 && lessonCount === 0) {
+      if (memoryFragments.length === 0 && lessonCount === 0 && handoffBlock.length === 0) {
         summary = `◉ MeMesh ready · no memories for "${projectLabel(projectName)}" yet`;
       } else {
         const parts = ['◉ MeMesh'];
+        if (handoffBlock.length > 0) parts.push('handoff from the last session');
         if (memoryFragments.length > 0) {
           parts.push(`${memoryFragments.join(' + ')} memories`);
         }
@@ -1347,6 +1385,7 @@ process.stdin.on('end', async () => {
         // recorded as its own `error` (a label, like the two below), and is
         // not a failed memory assembly: the rest of the context still ships.
         const stateLines = [
+          ...handoffBlock,
           ...briefingTaskStateLines(
             parseTaskState(parseEntityMetadata(taskRow?.metadata)),
             projectName,
@@ -1579,8 +1618,16 @@ process.stdin.on('end', async () => {
       // derived from rendered citation handles, so clipped or budgeted-away
       // candidates cannot be credited as shown.
       try {
+        // The handoff's text is the agent's own last message: a `[mem:N]` at
+        // the end of one of its lines is a citation it wrote, not a memory
+        // this hook rendered. One occurrence is removed per such line.
         const renderedEntityIds = renderedHandles(memoryLines);
-        const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities, ...indexEntities];
+        for (const id of renderedHandles(handoffBlock.slice(1))) {
+          const at = renderedEntityIds.indexOf(id);
+          if (at >= 0) renderedEntityIds.splice(at, 1);
+        }
+        const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities, ...indexEntities,
+          ...(handoffBlock.length > 0 ? [handoffRow] : [])];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
         // A memory can appear in the ranked block AND the index; it was
         // injected once.
@@ -1700,8 +1747,12 @@ process.stdin.on('end', async () => {
         // that failure has its own error record, and an empty result it
         // caused must not also be reported as an empty project.
         !memoryContext && !memoryAssemblyFailed
-          ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'no project content, no repository state, index excluded') }
-          : null,
+          ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, handoffHidden
+            ? `session handoff not shown (${handoffHidden}); no other project content, no repository state, index excluded`
+            : 'no project content, no repository state, index excluded') }
+          : handoffHidden
+            ? { outcome: 'notified', reason: `session handoff not shown (${handoffHidden})`, entity: memoryContext ? 'session-start-context' : 'session-start-banner' }
+            : null,
       );
       if (updateConsentContext) {
         finalizeUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion);
@@ -1845,7 +1896,7 @@ function output(text, memoryContext = undefined, recorded = null) {
   }
   console.log(JSON.stringify(payload));
   recordHookOutcome(process.env, recorded
-    ? { hook: 'session-start', outcome: recorded.outcome, reason: recorded.reason }
+    ? { hook: 'session-start', outcome: recorded.outcome, reason: recorded.reason, ...(recorded.entity ? { entity: recorded.entity } : {}) }
     : {
       hook: 'session-start',
       outcome: 'notified',

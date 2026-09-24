@@ -99,6 +99,7 @@ function captureHandoff(payload, { captureEnabled, project, env }) {
       tags: [AUTO_CAPTURE_TAG, `project:${project}`, ...(sessionId ? [`session:${sessionId}`] : [])],
       title: HANDOFF_TITLE,
       replace: true,
+      localHandoff: true,
     });
     if (result === null) throw new Error('captureEntity could not resolve the handoff entity');
     if (result.archived) return { outcome: 'skipped', reason: SKIP_REASONS.handoffArchived, entity: name };

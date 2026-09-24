@@ -24347,12 +24347,85 @@ var init_agent_message_inbox = __esm({
 });
 
 // dist/core/session-handoff.js
-var SESSION_HANDOFF_TYPE, HANDOFF_TRANSCRIPT_TAIL_BYTES;
+function sessionHandoffName(project) {
+  return `${SESSION_HANDOFF_TYPE}:${project}`;
+}
+function stripFences(text) {
+  const kept = [];
+  let open = null;
+  for (const line of text.split("\n")) {
+    const m = FENCE_LINE.exec(line);
+    if (open) {
+      if (m && m[1][0] === open.char && m[1].length >= open.len)
+        open = null;
+      continue;
+    }
+    if (m && !(m[1][0] === "`" && m[2].includes("`"))) {
+      open = { char: m[1][0], len: m[1].length };
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join("\n");
+}
+function cleanHandoffText(raw) {
+  let text = stripFences(String(raw ?? "").replace(/\r\n?/g, "\n")).split("\n").map((line) => line.trimEnd()).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (text.length <= HANDOFF_MAX_CHARS)
+    return text;
+  text = text.slice(-(HANDOFF_MAX_CHARS - 1));
+  const first = text.charCodeAt(0);
+  if (first >= 56320 && first <= 57343)
+    text = text.slice(1);
+  const newline = text.indexOf("\n");
+  if (newline >= 0 && newline < HANDOFF_MAX_CHARS / 3)
+    text = text.slice(newline + 1);
+  return `\u2026${text.trim()}`;
+}
+function ageText(hours) {
+  if (hours < 1)
+    return "less than an hour ago";
+  if (hours < 24) {
+    const h = Math.floor(hours);
+    return `${h} hour${h === 1 ? "" : "s"} ago`;
+  }
+  const d = Math.floor(hours / 24);
+  return `${d} day${d === 1 ? "" : "s"} ago`;
+}
+function handoffView(record2, now = /* @__PURE__ */ new Date()) {
+  const text = record2 ? cleanHandoffText(record2.text ?? "") : "";
+  if (!record2 || !text)
+    return { lines: [], status: "empty" };
+  const then = typeof record2.observedAt === "string" ? parseSqliteUtcMs(record2.observedAt) : null;
+  if (then === null)
+    return { lines: [], status: "undatable" };
+  const hours = (now.getTime() - then) / 36e5;
+  if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60)
+    return { lines: [], status: "future" };
+  const age = Math.max(0, hours);
+  if (age > HANDOFF_MAX_AGE_DAYS * 24)
+    return { lines: [], status: "expired" };
+  const stale = age > HANDOFF_STALE_HOURS;
+  const when = stale ? `${ageText(age)} \u2014 may be out of date; check it against the repository` : ageText(age);
+  return {
+    lines: [`Where the last session left off (${when}): [mem:${record2.id}]`, ...text.split("\n")],
+    status: stale ? "stale" : "shown"
+  };
+}
+function handoffLines(record2, now = /* @__PURE__ */ new Date()) {
+  return handoffView(record2, now).lines;
+}
+var SESSION_HANDOFF_TYPE, HANDOFF_STALE_HOURS, HANDOFF_MAX_AGE_DAYS, HANDOFF_FUTURE_SKEW_MINUTES, HANDOFF_MAX_CHARS, HANDOFF_TRANSCRIPT_TAIL_BYTES, FENCE_LINE;
 var init_session_handoff = __esm({
   "dist/core/session-handoff.js"() {
     "use strict";
+    init_time_utils();
     SESSION_HANDOFF_TYPE = "session-handoff";
+    HANDOFF_STALE_HOURS = 72;
+    HANDOFF_MAX_AGE_DAYS = 14;
+    HANDOFF_FUTURE_SKEW_MINUTES = 5;
+    HANDOFF_MAX_CHARS = 800;
     HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+    FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
   }
 });
 
@@ -24603,7 +24676,7 @@ function selectPool(rows, cap) {
     recall_hits: row.recall_hits ?? void 0,
     recall_misses: row.recall_misses ?? void 0
   }));
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta) && row.type !== SESSION_HANDOFF_TYPE).slice(0, cap);
+  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {
   const signal = row.meta?.signal_score;
@@ -24669,7 +24742,16 @@ function assembleBriefing(project, recipient) {
   const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
   const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient);
   const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName), inboxRecipient) : void 0;
+  const handoffRow = db2.prepare(`SELECT e.id, e.metadata, o.content AS text, o.created_at AS observedAt
+     FROM entities e JOIN observations o ON o.entity_id = e.id
+     WHERE e.name = ? AND e.type = ? AND e.status = 'active'
+     ORDER BY o.id DESC
+     LIMIT 1`).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE);
+  const handoffMeta = handoffRow ? parseMetadata(handoffRow.metadata) : null;
+  const handoffTrusted = !!handoffRow && (handoffRow.metadata === null || handoffMeta !== null) && isAutoInjectable(handoffMeta);
+  const handoff = handoffTrusted ? handoffLines(handoffRow) : [];
   const stateLines = [
+    ...handoff,
     ...taskLines,
     ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)
   ];
@@ -24677,9 +24759,9 @@ function assembleBriefing(project, recipient) {
   const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
   const projectRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ? AND e.status = 'active'${nonGlobal}
+     WHERE t.tag = ? AND e.status = 'active' AND e.type <> ?${nonGlobal}
      ORDER BY e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP);
+     LIMIT ?`).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
   const projectPool = selectPool(projectRows, PROJECT_LIMIT);
   const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
@@ -24689,9 +24771,9 @@ function assembleBriefing(project, recipient) {
   const globalPool = selectPool(globalRows, GLOBAL_TOPOLOGY_LIMIT);
   const recentRows = policy.foreign ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
-       WHERE e.status = 'active'${nonGlobal}
+       WHERE e.status = 'active' AND e.type <> ?${nonGlobal}
        ORDER BY e.id DESC
-       LIMIT ?`).all(TOPOLOGY_CANDIDATE_CAP) : [];
+       LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) : [];
   const recentPool = selectPool(recentRows, RECENT_LIMIT);
   const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
   const snippets = /* @__PURE__ */ new Map();
@@ -24722,8 +24804,9 @@ function assembleBriefing(project, recipient) {
   return {
     project: projectName,
     text: empty ? "" : buildReferenceContext(block),
-    entityCount: lines.filter((l) => l.startsWith("- [")).length,
+    entityCount: lines.slice(stateLines.length).filter((l) => l.startsWith("- [")).length,
     hasTaskState: taskLines.length > 0,
+    hasHandoff: handoff.length > 0,
     index,
     level,
     empty
@@ -62040,7 +62123,7 @@ program2.command("briefing").description("The assembled work topology for a proj
       return;
     }
     console.log(result.text);
-    if (result.entityCount === 0 && !result.hasTaskState && result.index.shown === 0 && result.index.older === 0) {
+    if (result.entityCount === 0 && !result.hasTaskState && !result.hasHandoff && result.index.shown === 0 && result.index.older === 0) {
       console.log(`
 Capture happens automatically as you work; or set the task state:  memesh task --goal "\u2026"`);
     }

@@ -6,7 +6,11 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
+import { parseSqliteUtcMs } from './time-utils.js';
 export const SESSION_HANDOFF_TYPE = 'session-handoff';
+export const HANDOFF_STALE_HOURS = 72;
+export const HANDOFF_MAX_AGE_DAYS = 14;
+export const HANDOFF_FUTURE_SKEW_MINUTES = 5;
 export const HANDOFF_MAX_CHARS = 800;
 export const HANDOFF_MIN_CHARS = 80;
 export const HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
@@ -80,4 +84,39 @@ export function lastAssistantText(jsonl) {
             return text;
     }
     return null;
+}
+function ageText(hours) {
+    if (hours < 1)
+        return 'less than an hour ago';
+    if (hours < 24) {
+        const h = Math.floor(hours);
+        return `${h} hour${h === 1 ? '' : 's'} ago`;
+    }
+    const d = Math.floor(hours / 24);
+    return `${d} day${d === 1 ? '' : 's'} ago`;
+}
+export function handoffView(record, now = new Date()) {
+    const text = record ? cleanHandoffText(record.text ?? '') : '';
+    if (!record || !text)
+        return { lines: [], status: 'empty' };
+    const then = typeof record.observedAt === 'string' ? parseSqliteUtcMs(record.observedAt) : null;
+    if (then === null)
+        return { lines: [], status: 'undatable' };
+    const hours = (now.getTime() - then) / 3_600_000;
+    if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60)
+        return { lines: [], status: 'future' };
+    const age = Math.max(0, hours);
+    if (age > HANDOFF_MAX_AGE_DAYS * 24)
+        return { lines: [], status: 'expired' };
+    const stale = age > HANDOFF_STALE_HOURS;
+    const when = stale
+        ? `${ageText(age)} — may be out of date; check it against the repository`
+        : ageText(age);
+    return {
+        lines: [`Where the last session left off (${when}): [mem:${record.id}]`, ...text.split('\n')],
+        status: stale ? 'stale' : 'shown',
+    };
+}
+export function handoffLines(record, now = new Date()) {
+    return handoffView(record, now).lines;
 }

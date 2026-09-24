@@ -6,6 +6,7 @@ export interface BriefingResult {
     text: string;
     entityCount: number;
     hasTaskState: boolean;
+    hasHandoff: boolean;
     index: BriefingIndex;
     level: BriefingLevel;
     empty: boolean;
