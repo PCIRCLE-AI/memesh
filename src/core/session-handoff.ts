@@ -29,11 +29,33 @@ interface TranscriptLine {
   message?: { model?: unknown; content?: unknown };
 }
 
-// A fence is a line that OPENS with ``` (up to three spaces in) and has no
-// backtick after it. A ``` in the middle of a sentence is prose about
-// backticks, not a fence, and must not swallow what follows it.
-const FENCED_BLOCK = /^ {0,3}```[^`\n]*\n[\s\S]*?^ {0,3}```[ \t]*$/gm;
-const UNCLOSED_FENCE = /^ {0,3}```[^`\n]*(?:\n[\s\S]*)?$/m;
+const FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
+
+/**
+ * Drop fenced code, one line at a time so the cost stays linear whatever the
+ * input. A fence opens on a line that STARTS (at any indent — list items nest
+ * them) with ``` or ~~~, and closes on the next line that starts with at
+ * least as many of the same character; an unclosed fence runs to the end.
+ * A ``` in the middle of a sentence, or a backtick line that closes itself
+ * (```x```), is prose about code, not a fence.
+ */
+function stripFences(text: string): string {
+  const kept: string[] = [];
+  let open: { char: string; len: number } | null = null;
+  for (const line of text.split('\n')) {
+    const m = FENCE_LINE.exec(line);
+    if (open) {
+      if (m && m[1][0] === open.char && m[1].length >= open.len) open = null;
+      continue;
+    }
+    if (m && !(m[1][0] === '`' && m[2].includes('`'))) {
+      open = { char: m[1][0], len: m[1].length };
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join('\n');
+}
 
 /**
  * The text worth keeping from an assistant message: prose only (fenced code is
@@ -46,10 +68,7 @@ const UNCLOSED_FENCE = /^ {0,3}```[^`\n]*(?:\n[\s\S]*)?$/m;
  * matches the pattern that would have caught it.
  */
 export function cleanHandoffText(raw: string): string {
-  let text = String(raw ?? '')
-    .replace(/\r\n?/g, '\n')
-    .replace(FENCED_BLOCK, '')
-    .replace(UNCLOSED_FENCE, '')
+  let text = stripFences(String(raw ?? '').replace(/\r\n?/g, '\n'))
     .split('\n')
     .map((line) => line.trimEnd())
     .join('\n')

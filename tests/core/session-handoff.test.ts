@@ -33,7 +33,25 @@ describe('cleanHandoffText', () => {
 
   it('keeps prose after a closed fence and drops only the fenced lines', () => {
     const out = cleanHandoffText('Before.\n```\nfirst block\n```\nBetween.\n```py\nsecond block\n```\nAfter.');
-    expect(out).toBe('Before.\n\nBetween.\n\nAfter.');
+    expect(out).toBe('Before.\nBetween.\nAfter.');
+  });
+
+  it('recognises the fence shapes markdown allows: tildes, list indentation, a longer closer, text after the closer', () => {
+    const next = 'Next: rebase and open the PR.';
+    expect(cleanHandoffText(`Intro.\n~~~\nsecret-looking code\n~~~\n${next}`)).toBe(`Intro.\n${next}`);
+    expect(cleanHandoffText(`Steps:\n10. Build it:\n    \`\`\`bash\n    npm run build\n    \`\`\`\n${next}`)).toBe(`Steps:\n10. Build it:\n${next}`);
+    expect(cleanHandoffText(`Intro.\n\`\`\`\ncode\n\`\`\`\`\n${next}`)).toBe(`Intro.\n${next}`);
+    expect(cleanHandoffText(`Intro.\n\`\`\`\ncode\n\`\`\` done with that\n${next}`)).toBe(`Intro.\n${next}`);
+    // A shorter or different run inside the block does not close it.
+    expect(cleanHandoffText(`Intro.\n\`\`\`\`\n\`\`\`\n~~~\nstill code\n\`\`\`\`\n${next}`)).toBe(`Intro.\n${next}`);
+    expect(cleanHandoffText(`Intro.\n\`\`\`\n~~~~\nstill code\n\`\`\`\n${next}`)).toBe(`Intro.\n${next}`);
+  });
+
+  it('stays linear on many fence openers that never close', () => {
+    const started = Date.now();
+    const out = cleanHandoffText(`Intro.\n${'```js\n'.repeat(40_000)}`);
+    expect(out).toBe('Intro.');
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 
   it('collapses runs of blank lines and trailing spaces', () => {

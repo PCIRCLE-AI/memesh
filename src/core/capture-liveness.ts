@@ -561,10 +561,11 @@ export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string
   'note-ingest': [SKIP_REASONS.noNoteChanged],
   'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
   // Also per Stop: a turn that ends on "done" or "ok" is not a handoff, and
-  // keeping the previous one is the point. noAssistantText, noTranscript and
+  // keeping the previous one is the point; with auto-capture turned off
+  // there was never going to be one. noAssistantText, noTranscript and
   // handoffArchived stay counted: with the hook in SILENT_ELIGIBLE_HOOKS, a
   // Stop that never yields a handoff surfaces in doctor instead of hiding.
-  'handoff-capture': [SKIP_REASONS.handoffTooShort],
+  'handoff-capture': [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff],
 };
 
 /**
@@ -809,7 +810,7 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
     // `writes === 0` is unchanged, and `notified` deliberately does not
     // rescue a hook from it — a hook that only printed lines HAS written
     // nothing. Safe because no notifying hook is in SILENT_ELIGIBLE_HOOKS
-    // (post-commit, session-summary, pre-compact), so this cannot turn the
+    // (post-commit, session-summary, pre-compact, handoff-capture), so this cannot turn the
     // repair into a daily false alarm; the test file pins that pairing.
     silent: (SILENT_ELIGIBLE_HOOKS as readonly string[]).includes(hook)
       && triggeredRuns >= SILENT_HOOK_MIN_RUNS

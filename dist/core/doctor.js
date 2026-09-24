@@ -20,7 +20,7 @@ import { AUTO_CAPTURE_TAG } from './types.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
-import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, } from './capture-liveness.js';
+import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
@@ -612,8 +612,11 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     if (verdict.silentHook) {
         const h = verdict.silentHook;
         const reason = h.dominantSkipReason ?? 'no reason recorded';
+        const fix = h.hook === 'handoff-capture' && reason === SKIP_REASONS.handoffArchived
+            ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name — `memesh remember --name "session-handoff:<project>" --obs "restart"`, with the exact name from `memesh recall --include-archived` — and the next Stop replaces it.'
+            : 'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.';
         return {
-            check: createCheck('capture-liveness', TITLE, 'warn', `${h.hook}: ${h.triggeredRuns} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, 'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.', { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
+            check: createCheck('capture-liveness', TITLE, 'warn', `${h.hook}: ${h.triggeredRuns} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, fix, { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
             report,
         };
     }

@@ -208,7 +208,7 @@ export const NOT_TRIGGERED_SKIP_REASONS = {
     'session-summary': [SKIP_REASONS.alreadyCaptured],
     'note-ingest': [SKIP_REASONS.noNoteChanged],
     'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
-    'handoff-capture': [SKIP_REASONS.handoffTooShort],
+    'handoff-capture': [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff],
 };
 export const UNCLASSIFIED_SKIP_HOOKS = [
     'pre-compact',

@@ -13,13 +13,27 @@ export const HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 export function sessionHandoffName(project) {
     return `${SESSION_HANDOFF_TYPE}:${project}`;
 }
-const FENCED_BLOCK = /^ {0,3}```[^`\n]*\n[\s\S]*?^ {0,3}```[ \t]*$/gm;
-const UNCLOSED_FENCE = /^ {0,3}```[^`\n]*(?:\n[\s\S]*)?$/m;
+const FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
+function stripFences(text) {
+    const kept = [];
+    let open = null;
+    for (const line of text.split('\n')) {
+        const m = FENCE_LINE.exec(line);
+        if (open) {
+            if (m && m[1][0] === open.char && m[1].length >= open.len)
+                open = null;
+            continue;
+        }
+        if (m && !(m[1][0] === '`' && m[2].includes('`'))) {
+            open = { char: m[1][0], len: m[1].length };
+            continue;
+        }
+        kept.push(line);
+    }
+    return kept.join('\n');
+}
 export function cleanHandoffText(raw) {
-    let text = String(raw ?? '')
-        .replace(/\r\n?/g, '\n')
-        .replace(FENCED_BLOCK, '')
-        .replace(UNCLOSED_FENCE, '')
+    let text = stripFences(String(raw ?? '').replace(/\r\n?/g, '\n'))
         .split('\n')
         .map((line) => line.trimEnd())
         .join('\n')

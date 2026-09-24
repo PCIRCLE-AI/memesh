@@ -3,7 +3,7 @@
  * Every test spawns the REAL hook (scripts/hooks/session-summary.js →
  * scripts/hooks/_stop-handoff.js) against a throwaway HOME.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -278,6 +278,33 @@ describe('Stop hook: the session handoff', () => {
     const r = runStop({ last_assistant_message: LONG_ENOUGH }, { MEMESH_DB_PATH: blocked });
     expect(r.status).toBe(0);
     expect(outcomes().at(-1)).toMatchObject({ outcome: 'error' });
+  }, 30_000);
+
+  it('a database that fails to CLOSE after the write still records the write', async () => {
+    // In-process, so the close can be made to fail after a real commit.
+    const { DatabaseSync } = await import('node:sqlite');
+    const { runStopHandoff } = await import('../../scripts/hooks/_stop-handoff.js');
+    // The outcome record's location is read from process.env, not the env
+    // argument, so both point at this test's HOME.
+    vi.stubEnv('MEMESH_DB_PATH', dbPath());
+    vi.stubEnv('MEMESH_DIR', path.join(home, '.memesh'));
+    const env = process.env;
+    const realClose = DatabaseSync.prototype.close;
+    DatabaseSync.prototype.close = function failingClose(this: InstanceType<typeof DatabaseSync>) {
+      realClose.call(this);
+      throw new Error('simulated close failure');
+    };
+    try {
+      runStopHandoff(
+        { session_id: 'handoff-s1', transcript_path: transcript, cwd, hook_event_name: 'Stop', last_assistant_message: LONG_ENOUGH },
+        { captureEnabled: true, project, env },
+      );
+    } finally {
+      DatabaseSync.prototype.close = realClose;
+      vi.unstubAllEnvs();
+    }
+    expect(handoffRows().observations).toEqual([LONG_ENOUGH]);
+    expect(outcomes().at(-1)).toMatchObject({ outcome: 'wrote' });
   }, 30_000);
 
   it('is not shown to a new session yet: not in the ranked block, the index or another project\'s view, and it takes no slot', () => {

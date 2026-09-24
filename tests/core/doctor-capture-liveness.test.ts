@@ -308,11 +308,30 @@ describe('doctor: capture-liveness', () => {
     expect(summary(errors).silent, 'six failed Stops in a row went unremarked').toBe(true);
     expect(summary(skips('handoff-capture', 6, SKIP_REASONS.noAssistantText)).silent).toBe(true);
     expect(summary(skips('handoff-capture', 6, SKIP_REASONS.handoffArchived)).silent, 'a forgotten handoff is never written again').toBe(true);
-    // Acknowledgements ("Done.") are the ordinary case and must stay quiet.
-    const quiet = summary(skips('handoff-capture', 30, SKIP_REASONS.handoffTooShort));
-    expect(quiet.silent).toBe(false);
-    expect(quiet.triggeredRuns).toBe(0);
-    expect(quiet.dominantSkipReason).toBeNull();
+    // Acknowledgements ("Done.") are the ordinary case and must stay quiet,
+    // and so must an install where auto-capture is turned off on purpose.
+    for (const reason of [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff]) {
+      const quiet = summary(skips('handoff-capture', 30, reason));
+      expect(quiet.silent, reason).toBe(false);
+      expect(quiet.triggeredRuns).toBe(0);
+      expect(quiet.dominantSkipReason).toBeNull();
+    }
+  });
+
+  it('a forgotten handoff gets advice that can work, not "reinstall the hooks"', async () => {
+    memeshDirWith([
+      ...Array.from({ length: 6 }, (_, i) => ({
+        hook: 'session-summary', at: `2026-09-0${i + 1}T01:00:00.000Z`, host: 'claude-code' as const,
+        outcome: 'wrote' as const, entity: `session-s${i}-summary`,
+      })),
+      ...skips('handoff-capture', 6, SKIP_REASONS.handoffArchived),
+    ]);
+    const result = await run();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).toBe('capture-liveness.silent-hook');
+    expect(check.params?.hook).toBe('handoff-capture');
+    expect(check.fix).toContain('memesh remember --name');
+    expect(check.fix).not.toContain('install-hooks');
   });
 
   it('post-commit silence counts commits, not Bash calls, and quotes the commit reason', async () => {

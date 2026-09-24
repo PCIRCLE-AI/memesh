@@ -55704,7 +55704,7 @@ var init_capture_liveness = __esm({
       "session-summary": [SKIP_REASONS.alreadyCaptured],
       "note-ingest": [SKIP_REASONS.noNoteChanged],
       "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
-      "handoff-capture": [SKIP_REASONS.handoffTooShort]
+      "handoff-capture": [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff]
     };
     NEVER_RAN_GRACE_HOURS = 72;
     RECORD_TEXT_MAX = 200;
@@ -56350,8 +56350,9 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   if (verdict.silentHook) {
     const h = verdict.silentHook;
     const reason = h.dominantSkipReason ?? "no reason recorded";
+    const fix = h.hook === "handoff-capture" && reason === SKIP_REASONS.handoffArchived ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name \u2014 `memesh remember --name "session-handoff:<project>" --obs "restart"`, with the exact name from `memesh recall --include-archived` \u2014 and the next Stop replaces it.' : "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.";
     return {
-      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, fix, { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
       report
     };
   }

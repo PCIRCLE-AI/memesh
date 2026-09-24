@@ -103,7 +103,13 @@ function captureHandoff(payload, { captureEnabled, project, env }) {
     if (result === null) throw new Error('captureEntity could not resolve the handoff entity');
     if (result.archived) return { outcome: 'skipped', reason: SKIP_REASONS.handoffArchived, entity: name };
   } finally {
-    db.close();
+    // By here the write has committed (or already thrown). A close that fails
+    // must not turn a stored handoff into an `error` record.
+    try {
+      db.close();
+    } catch (err) {
+      try { process.stderr.write(`[memesh handoff-capture] closing the database failed: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+    }
   }
   return { outcome: 'wrote', reason: `kept ${text.length} characters of the last message (from the ${source})`, entity: name };
 }
