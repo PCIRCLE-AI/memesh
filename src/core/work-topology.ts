@@ -226,10 +226,10 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
     // left behind by a project rename, would otherwise render its goal
     // under "Decisions and direction" as though it were a decision.
     //
-    // `session-handoff` is dropped the same way and for the same reason: the
-    // handoff block is its sole renderer. (A literal, not the constant in
-    // session-handoff.ts, so this leaf keeps importing nothing; a test pins
-    // the two together.)
+    // `session-handoff` is dropped the same way: it is never a ranked line
+    // (a later SessionStart block will be its sole renderer). A literal, not
+    // the constant in session-handoff.ts, so this leaf keeps importing
+    // nothing; a test pins the two together.
     if (e.type === 'task-state' || e.type === 'session-handoff') continue;
     if (e.global) { global.push(e); continue; }
     // Scope is checked before layer: a memory from another project must never

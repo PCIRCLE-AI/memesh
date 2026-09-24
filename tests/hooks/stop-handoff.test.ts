@@ -96,7 +96,7 @@ describe('Stop hook: the session handoff', () => {
     JSON.stringify({ type: 'assistant', message: { role: 'assistant', content }, ...extra });
   const writeTranscript = (lines: string[]) => fs.writeFileSync(transcript, lines.join('\n') + '\n');
 
-  it('stores the payload message as ONE entity per project, and records where it came from', () => {
+  it('stores the payload message as ONE entity per project — even on a turn with no tool calls — and records where it came from', () => {
     const r = runStop({ last_assistant_message: LONG_ENOUGH });
     expect(r.status).toBe(0);
     expectValidHookOutput(r.stdout);
@@ -108,12 +108,6 @@ describe('Stop hook: the session handoff', () => {
     expect(rows.tags).toEqual(expect.arrayContaining([`project:${project}`, 'session:handoff-s1']));
     expect(outcomes().at(-1)).toMatchObject({ outcome: 'wrote', entity: entityName });
     expect(outcomes().at(-1)?.reason).toMatch(/from the payload/);
-  }, 30_000);
-
-  it('captures on a turn that used no tools, where the session capture itself bails', () => {
-    const r = runStop({ last_assistant_message: LONG_ENOUGH });
-    expect(r.status).toBe(0);
-    expect(handoffRows().observations).toEqual([LONG_ENOUGH]);
   }, 30_000);
 
   it('replaces the previous handoff on the next Stop instead of adding to it', () => {
@@ -143,7 +137,7 @@ describe('Stop hook: the session handoff', () => {
       asstLine([{ type: 'text', text: LONG_ENOUGH }]),
       asstLine([{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'ls' } }]),
       asstLine([{ type: 'text', text: 'A sub-agent report that must not become the handoff, long enough to pass the floor.' }], { isSidechain: true }),
-      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, message: { model: '<synthetic>', content: [{ type: 'text', text: 'API Error: 529 overloaded, retry later please, this line is long enough too.' }] } }),
+      JSON.stringify({ type: 'assistant', isApiErrorMessage: true, message: { model: '<synthetic>', content: [{ type: 'text', text: 'API Error: 529 overloaded, retry later please; this line is deliberately long enough to pass the length floor on its own.' }] } }),
     ]);
     const r = runStop({});
     expect(r.status).toBe(0);
@@ -167,6 +161,47 @@ describe('Stop hook: the session handoff', () => {
     runStop({});
     expect(handoffRows().observations).toEqual([LONG_ENOUGH]);
   }, 60_000);
+
+  it('prefers the payload message over the transcript, and falls back when the payload one is blank', () => {
+    writeTranscript([asstLine([{ type: 'text', text: 'TRANSCRIPT-TEXT: the previous turn said this, which is long enough to pass the floor.' }])]);
+    runStop({ last_assistant_message: LONG_ENOUGH });
+    expect(handoffRows().observations).toEqual([LONG_ENOUGH]);
+
+    runStop({ last_assistant_message: '   \n ', session_id: 'handoff-s2' });
+    expect(handoffRows().observations[0]).toContain('TRANSCRIPT-TEXT');
+    expect(outcomes().at(-1)?.reason).toMatch(/from the transcript/);
+  }, 60_000);
+
+  it('measures the length AFTER cleaning: a long message that is mostly code keeps the previous handoff', () => {
+    runStop({ last_assistant_message: LONG_ENOUGH });
+    const codeHeavy = `Here is the patch:\n\`\`\`diff\n${'+ an added line of code\n'.repeat(50)}\`\`\``;
+    expect(codeHeavy.length).toBeGreaterThan(1000);
+    runStop({ last_assistant_message: codeHeavy });
+
+    expect(handoffRows().observations).toEqual([LONG_ENOUGH]);
+    expect(outcomes().at(-1)?.reason).toMatch(/too short to be a handoff/);
+  }, 60_000);
+
+  it('adds no session tag for an id that is not a plain token', () => {
+    runStop({ last_assistant_message: LONG_ENOUGH, session_id: 'has spaces/and:colons' });
+    const { tags } = handoffRows();
+    expect(tags).toContain(`project:${project}`);
+    expect(tags.some((t) => t.startsWith('session:'))).toBe(false);
+  }, 30_000);
+
+  it('redacts a secret BEFORE it cuts the text: a token straddling the cut leaves no fragment', () => {
+    const secret = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
+    // 770 characters follow the token, so an 800-character cut lands 11
+    // characters INSIDE it. Cut first and the tail of the token no longer
+    // looks like a token and is stored; redact first and it is gone.
+    const message = `${'lead-in words '.repeat(10)}${secret} ${'tail words '.repeat(70).trimEnd()}`;
+    runStop({ last_assistant_message: message });
+
+    const [stored] = handoffRows().observations;
+    expect(stored.startsWith('…'), 'the message was not cut, so the order of redaction and cutting did not matter').toBe(true);
+    expect(stored).not.toContain(secret.slice(11));
+    expect(stored).not.toContain(secret.slice(-12));
+  }, 30_000);
 
   it('drops fenced code and redacts secrets BEFORE anything is stored', () => {
     const secret = 'ghp_' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8';
@@ -277,5 +312,36 @@ describe('Stop hook: the session handoff', () => {
       expect(context).not.toContain('HANDOFF-MARKER');
       expect(context).not.toContain('Where the last session left off');
     }
+  }, 120_000);
+
+  it('takes no slot in the other-projects list either: at full, all five other decisions still show', () => {
+    // Other project first (it makes the database), then five of ITS decisions,
+    // then THIS project's handoff — the newest row, which wins every tie for the
+    // five places of the recent pool.
+    const other = path.join(home, 'work', 'beta');
+    fs.mkdirSync(other, { recursive: true });
+    runStop({ last_assistant_message: 'BETA-HANDOFF-MARKER: the beta project stopped before its release step, which is still to do.', cwd: other });
+
+    const db = new MemeshDatabase(dbPath());
+    for (let i = 1; i <= 5; i++) {
+      const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(`other-decision-${i}`, 'decision').lastInsertRowid as number;
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, `OTHER-DECISION-${i}: beta settled question ${i}.`);
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `project:${getProjectName(other)}`);
+    }
+    db.close();
+    runStop({ last_assistant_message: 'HANDOFF-MARKER: this project stopped right before the release step, which is still to do.' });
+
+    const r = spawnSync('node', [START_HOOK], {
+      input: JSON.stringify({ cwd, hook_event_name: 'SessionStart', source: 'startup' }),
+      env: childEnv({ MEMESH_BRIEFING: 'full' }),
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    expect(r.status).toBe(0);
+    const out = JSON.parse(r.stdout.trim());
+    const context = String(out.hookSpecificOutput?.additionalContext ?? '');
+    for (let i = 1; i <= 5; i++) expect(context, `other decision ${i} was pushed out of the recent pool`).toContain(`OTHER-DECISION-${i}`);
+    expect(context).not.toContain('HANDOFF-MARKER');
+    expect(String(out.systemMessage ?? '')).toMatch(/5 recent/);
   }, 120_000);
 });

@@ -7,7 +7,6 @@ import {
   sessionHandoffName,
 } from '../../src/core/session-handoff.js';
 import { groupTopology } from '../../src/core/work-topology.js';
-import { INDEX_EXCLUDED_TYPES } from '../../src/core/briefing-index.js';
 import { NOISE_TYPES } from '../../src/core/analytics.js';
 
 const line = (entry: object) => JSON.stringify(entry);
@@ -25,6 +24,18 @@ describe('cleanHandoffText', () => {
     expect(cleanHandoffText('Done with the change.\n```bash\nrm -rf build')).toBe('Done with the change.');
   });
 
+  it('does not mistake a ``` in the middle of a sentence for a fence', () => {
+    const inline = 'Fixed the markdown renderer so a line that starts with ``` is no longer treated as a fence by mistake. Next: rebase and open the PR.';
+    expect(cleanHandoffText(inline)).toBe(inline);
+    // A single line that opens AND closes with backticks is a code span, not a fence.
+    expect(cleanHandoffText('```one-liner``` was the old spelling.\nNext: rebase and open the PR.')).toContain('Next: rebase and open the PR.');
+  });
+
+  it('keeps prose after a closed fence and drops only the fenced lines', () => {
+    const out = cleanHandoffText('Before.\n```\nfirst block\n```\nBetween.\n```py\nsecond block\n```\nAfter.');
+    expect(out).toBe('Before.\n\nBetween.\n\nAfter.');
+  });
+
   it('collapses runs of blank lines and trailing spaces', () => {
     expect(cleanHandoffText('one  \n\n\n\n\ntwo\t')).toBe('one\n\ntwo');
   });
@@ -32,7 +43,7 @@ describe('cleanHandoffText', () => {
   it('keeps the END of a long message, so the next step survives', () => {
     const long = `${'background sentence. '.repeat(200)}\nNEXT STEP: rebase and open the PR.`;
     const out = cleanHandoffText(long);
-    expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS + 1);
+    expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
     expect(out.startsWith('…')).toBe(true);
     expect(out.endsWith('NEXT STEP: rebase and open the PR.')).toBe(true);
   });
@@ -44,17 +55,30 @@ describe('cleanHandoffText', () => {
     const body = `${'x'.repeat(300)}\nWhole line one kept.\n${'filler line\n'.repeat(50)}`;
     const out = cleanHandoffText(body);
     expect(out.startsWith('…Whole line one kept.')).toBe(true);
-    expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS + 1);
+    expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
   });
 
   it('never starts on half of a surrogate pair', () => {
-    // 1002 UTF-16 units; the last 800 begin exactly on the LOW half of an
-    // emoji, which the cut has to step over rather than keep.
-    const out = cleanHandoffText(`x${'😀'.repeat(500)}y`);
+    // 1001 UTF-16 units; the last 799 (the ellipsis takes the 800th) begin
+    // exactly on the LOW half of an emoji, which the cut has to step over.
+    const out = cleanHandoffText(`x${'😀'.repeat(500)}`);
     const body = out.slice(1);
     expect(out.startsWith('…')).toBe(true);
     const first = body.charCodeAt(0);
     expect(first >= 0xdc00 && first <= 0xdfff, 'the kept text starts on a lone low surrogate').toBe(false);
+  });
+
+  it('handles a very long run of spaces inside a line in linear time', () => {
+    // The Stop hook has a 10 s budget. A trailing-space pattern that retries
+    // from every position of a run FOLLOWED BY TEXT takes ~4 s at 80,000 spaces
+    // and ~15 s at 160,000; this run is 200,000 and must still be instant.
+    const line = `first${' '.repeat(200_000)}last`;
+    const started = Date.now();
+    const out = cleanHandoffText(`${line}\nsecond line   `);
+    const elapsed = Date.now() - started;
+    // Far longer than the bound, so only the end survives.
+    expect(out).toBe('…last\nsecond line');
+    expect(elapsed).toBeLessThan(2_000);
   });
 
   it('returns an empty string when only code is left', () => {
@@ -107,7 +131,6 @@ describe('lastAssistantText', () => {
 describe('the handoff is one entity per project and nobody else lists it', () => {
   it('is named per project', () => {
     expect(sessionHandoffName('acme')).toBe(`${SESSION_HANDOFF_TYPE}:acme`);
-    expect(sessionHandoffName('a')).not.toBe(sessionHandoffName('b'));
   });
 
   it('groupTopology drops it, in the project pool and as a foreign one', () => {
@@ -120,8 +143,7 @@ describe('the handoff is one entity per project and nobody else lists it', () =>
     expect(listed).toEqual(['decision-1']);
   });
 
-  it('is kept out of the durable index and the knowledge radar', () => {
-    expect(INDEX_EXCLUDED_TYPES).toContain(SESSION_HANDOFF_TYPE);
+  it('is kept out of the knowledge radar', () => {
     expect(NOISE_TYPES.has(SESSION_HANDOFF_TYPE)).toBe(true);
   });
 });

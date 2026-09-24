@@ -7,6 +7,7 @@ import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
+import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, buildBriefingIndex, } from './briefing-index.js';
 import { GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, buildReferenceContext, hasBriefingContent, isAutoInjectable, projectLabel, } from './work-topology.js';
 import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
@@ -38,7 +39,7 @@ function selectPool(rows, cap) {
         recall_misses: row.recall_misses ?? undefined,
     }));
     return rankEntities(withMeta, new Map())
-        .filter((row) => isAutoInjectable(row.meta))
+        .filter((row) => isAutoInjectable(row.meta) && row.type !== SESSION_HANDOFF_TYPE)
         .slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {

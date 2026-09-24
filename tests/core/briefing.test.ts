@@ -1362,4 +1362,23 @@ describe('assembleBriefing', () => {
     expect(text, 'the oldest candidate is still winning a ranking slot over the newest')
       .not.toContain('cap entity number 0\n');
   }, 30_000);
+
+  it('the session handoff takes no slot in the recent pool, so the other projects keep all five (full)', () => {
+    vi.stubEnv('MEMESH_BRIEFING', 'full');
+    for (let i = 1; i <= 5; i++) {
+      remember({
+        name: `other-decision-${i}`, type: 'decision', title: `Other project decision ${i}`,
+        observations: [`Decision ${i} from elsewhere.`], tags: ['project:other-project'],
+      });
+    }
+    // Written AFTER the decisions: the highest id wins every score tie for the
+    // recent pool's five places.
+    remember({
+      name: 'session-handoff:other-project', type: 'session-handoff', title: 'Where the last session left off',
+      observations: ['Stopped right before the release step.'], tags: ['project:other-project'],
+    });
+    const { text } = assembleBriefing(PROJECT);
+    for (let i = 1; i <= 5; i++) expect(text, `decision ${i} was pushed out by the handoff`).toContain(`Other project decision ${i}`);
+    expect(text).not.toContain('Where the last session left off');
+  });
 });

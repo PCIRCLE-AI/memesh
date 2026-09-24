@@ -34,6 +34,7 @@ import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
+import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import {
   INDEX_CANDIDATE_CAP,
   INDEX_EXCLUDED_TYPES,
@@ -154,8 +155,10 @@ function selectPool(rows: CandidateRow[], cap: number): PoolRow[] {
     recall_hits: row.recall_hits ?? undefined,
     recall_misses: row.recall_misses ?? undefined,
   }));
+  // The handoff has no renderer here yet and is dropped at grouping time, after
+  // the cut; it must not spend one of the pool's few slots first.
   return rankEntities(withMeta, new Map())
-    .filter((row) => isAutoInjectable(row.meta))
+    .filter((row) => isAutoInjectable(row.meta) && row.type !== SESSION_HANDOFF_TYPE)
     .slice(0, cap);
 }
 

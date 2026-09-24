@@ -48,8 +48,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "2ba8bb7f3fdd590a7672093165af8331e33edcbc937a8914e51663c528fdef15",
-      "bytes": 17832
+      "sha256": "eeabb12af7a85cd6ea9f3e4c0655d85b3358b05e6440b20d473a2219206bbcba",
+      "bytes": 17851
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -83,8 +83,8 @@
     },
     {
       "path": "scripts/hooks/_generated/session-handoff.js",
-      "sha256": "c226016fff35181789666e55f8ec729c6d044d5d79ec41cb03da4e1df2855ea4",
-      "bytes": 2604
+      "sha256": "0cf30fa6f857f61dec744de4929cf07c3c479449f6be41d6a65511b686b29639",
+      "bytes": 2650
     },
     {
       "path": "scripts/hooks/_generated/sqlite.js",
@@ -118,13 +118,13 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "2926629555bdc1f333cfc7237ca5b3405e365c0dbc3c28d818a31bf09551af14",
-      "bytes": 98636
+      "sha256": "760a14dbbc402e1bcdc0f7a54695c09c46542b3b2b6766be7b94c0d3a213ede2",
+      "bytes": 98826
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
-      "sha256": "60577db11691847c514b770468302dc3d25ca17ba838cdbf562309dfb76815ad",
-      "bytes": 5178
+      "sha256": "8f7e64663dd23fc23c1462aad37fe1beaf4b437e84ac958990812e6631bbc3ac",
+      "bytes": 5109
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -163,8 +163,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "8faea6abe31eeddda61916b3ebcf417faa8fe9dcc654a6112e7c7876431df168",
-      "bytes": 94772
+      "sha256": "1911938a2b3a837039ad85fccc4fc5bc897a8684e7a5c3e20b0e9d6ad9d38833",
+      "bytes": 94882
     },
     {
       "path": "scripts/hooks/session-summary.js",

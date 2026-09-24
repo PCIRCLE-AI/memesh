@@ -8,9 +8,10 @@ All notable changes to MeMesh are documented here.
 
 - At every Stop, MeMesh now keeps the agent's last message as the project's
   session handoff (`session-handoff:<project>`, one per project, replaced each
-  turn, secrets redacted, code blocks dropped, at most 800 characters). It costs
-  no extra model turn. Nothing reads it yet, so new sessions are unchanged; it
-  is a separate entry in `memesh doctor`'s capture check (`handoff-capture`).
+  turn, known credential shapes redacted, code blocks dropped, at most 800
+  characters). It costs no extra model turn. New sessions do not show it yet;
+  `recall` and the dashboard can find it. `memesh doctor` reports it as its own
+  `handoff-capture` hook and warns if it keeps failing to store one.
 - The reminder shown after an approved plan or an answered question now also
   asks the agent to record the goal and next step with `task_state`.
 - The dashboard's Settings tab now has a "Session start briefing" control

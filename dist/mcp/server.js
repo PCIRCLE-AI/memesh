@@ -28305,8 +28305,12 @@ function executeWorkPackage(db2, input, context = {}) {
   return input.action === "submit" ? db2.transaction(execute).immediate() : execute();
 }
 
+// dist/core/session-handoff.js
+var SESSION_HANDOFF_TYPE = "session-handoff";
+var HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+
 // dist/core/patterns.js
-var AUTO_TYPES = ["session_keypoint", "commit", "session_identity", "workflow_checkpoint", "session-insight"];
+var AUTO_TYPES = ["session_keypoint", "commit", "session_identity", "workflow_checkpoint", "session-insight", SESSION_HANDOFF_TYPE];
 var LEARNING_TYPES = ["lesson_learned", "mistake", "bug_fix", "lesson"];
 function computePatterns(db2, categories) {
   const allCategories = !categories || categories.length === 0;
@@ -29011,10 +29015,6 @@ var AGENT_MESSAGE_SCOPE_COLUMNS = [
 ];
 var AGENT_MESSAGE_PROJECT_TABLES = AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes("project")).map((e) => e.table);
 
-// dist/core/session-handoff.js
-var SESSION_HANDOFF_TYPE = "session-handoff";
-var HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
-
 // dist/core/briefing-index.js
 var INDEX_MAX_LINES = 40;
 var INDEX_MAX_BYTES = 3072;
@@ -29250,7 +29250,7 @@ function selectPool(rows, cap) {
     recall_hits: row.recall_hits ?? void 0,
     recall_misses: row.recall_misses ?? void 0
   }));
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
+  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta) && row.type !== SESSION_HANDOFF_TYPE).slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {
   const signal = row.meta?.signal_score;

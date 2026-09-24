@@ -17,6 +17,7 @@ import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
+import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
 import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, } from './capture-liveness.js';
@@ -542,7 +543,8 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
          JOIN tags t ON t.entity_id = e.id
         WHERE t.tag = ?
           AND e.created_at > datetime('now', '-14 days')
-        GROUP BY e.type`).all(AUTO_CAPTURE_TAG);
+          AND e.type <> ?
+        GROUP BY e.type`).all(AUTO_CAPTURE_TAG, SESSION_HANDOFF_TYPE);
         types = summarizeTypeTrends(rows.map((r) => ({
             type: String(r.type),
             last7: Number(r.last7) || 0,

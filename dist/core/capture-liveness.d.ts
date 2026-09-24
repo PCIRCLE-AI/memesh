@@ -21,7 +21,7 @@ export declare function trimHookOutcomeLines(raw: string, max?: number, maxBytes
 export declare const SILENT_HOOK_MIN_RUNS = 5;
 export declare const CAPTURE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start", "note-ingest", "remember-nudge", "handoff-capture"];
 export declare const FAIL_ELIGIBLE_HOOKS: readonly ["session-summary"];
-export declare const SILENT_ELIGIBLE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact"];
+export declare const SILENT_ELIGIBLE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "handoff-capture"];
 export declare const SKIP_REASONS: {
     readonly notBash: "not a Bash tool call";
     readonly notGitCommit: "not a git commit command";

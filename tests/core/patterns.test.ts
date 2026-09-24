@@ -35,6 +35,14 @@ describe('computePatterns', () => {
     expect(types).not.toContain('commit');
   });
 
+  it('does not count the session handoff as a focus area', () => {
+    remember({ name: 'e1', type: 'decision', observations: ['arch choice'] });
+    remember({ name: 'session-handoff:p', type: 'session-handoff', observations: ['Stopped right before the release step.'] });
+    const types = computePatterns(getDatabase()).focusAreas.map((f) => f.type);
+    expect(types).toContain('decision');
+    expect(types).not.toContain('session-handoff');
+  });
+
   it('filters by categories when specified', () => {
     remember({ name: 'e1', type: 'decision', observations: ['test'] });
     const db = getDatabase();

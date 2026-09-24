@@ -42,12 +42,12 @@ import {
 
 const HANDOFF_TITLE = 'Where the last session left off';
 
-/** The last `maxBytes` of a file. Its first line may be torn; the parser skips a line it cannot read. */
-export function readTranscriptTail(transcriptPath, maxBytes = HANDOFF_TRANSCRIPT_TAIL_BYTES) {
+/** The last HANDOFF_TRANSCRIPT_TAIL_BYTES of a file. Its first line may be torn; the parser skips a line it cannot read. */
+function readTranscriptTail(transcriptPath) {
   const fd = openSync(transcriptPath, 'r');
   try {
     const size = fstatSync(fd).size;
-    const start = Math.max(0, size - maxBytes);
+    const start = Math.max(0, size - HANDOFF_TRANSCRIPT_TAIL_BYTES);
     const buf = Buffer.alloc(size - start);
     let got = 0;
     while (got < buf.length) {
@@ -67,7 +67,7 @@ export function readTranscriptTail(transcriptPath, maxBytes = HANDOFF_TRANSCRIPT
  * caller records it and a skip nobody can explain is the silent skip the
  * outcome gate exists to forbid.
  */
-export function captureHandoff(payload, { captureEnabled, project, env = process.env }) {
+function captureHandoff(payload, { captureEnabled, project, env }) {
   if (!captureEnabled) return { outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff };
   if (project === undefined || project === null) return { outcome: 'skipped', reason: SKIP_REASONS.cwdAbsent };
 
@@ -103,7 +103,7 @@ export function captureHandoff(payload, { captureEnabled, project, env = process
     if (result === null) throw new Error('captureEntity could not resolve the handoff entity');
     if (result.archived) return { outcome: 'skipped', reason: SKIP_REASONS.handoffArchived, entity: name };
   } finally {
-    try { db.close(); } catch { /* already closed */ }
+    db.close();
   }
   return { outcome: 'wrote', reason: `kept ${text.length} characters of the last message (from the ${source})`, entity: name };
 }

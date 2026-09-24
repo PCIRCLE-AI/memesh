@@ -1,4 +1,5 @@
 import { KNOWN_ERROR_PATTERNS } from './lesson-engine.js';
+import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 const PROJECT_TAG_PREFIX = 'project:';
 export function extractProjectFromName(name) {
     if (!name.startsWith('lesson-'))
@@ -31,7 +32,8 @@ export function computeProjects(db) {
       (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
     FROM entities e
     WHERE e.status = 'active'
-  `).all();
+      AND e.type <> ?
+  `).all(SESSION_HANDOFF_TYPE);
     const acc = new Map();
     for (const row of rows) {
         let tagList = [];

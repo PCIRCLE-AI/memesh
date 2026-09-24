@@ -15,6 +15,7 @@
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { KNOWN_ERROR_PATTERNS } from './lesson-engine.js';
+import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 
 export interface ProjectInfo {
   /** Canonical project key, suitable for matching against tag values. */
@@ -95,7 +96,8 @@ export function computeProjects(db: MemeshDatabase): ProjectInfo[] {
       (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
     FROM entities e
     WHERE e.status = 'active'
-  `).all() as RawEntity[];
+      AND e.type <> ?
+  `).all(SESSION_HANDOFF_TYPE) as RawEntity[];
 
   const acc = new Map<string, { count: number; types: Map<string, number>; sources: Set<'tag' | 'heuristic'> }>();
 

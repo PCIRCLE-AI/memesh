@@ -1,14 +1,14 @@
 // The session handoff: the agent's own last words, kept per project so the
 // next session starts from where this one stopped.
 //
-// A leaf (no imports) on purpose: the Stop hook writes the handoff and the
-// SessionStart hook reads it, and hooks cannot import src/ — this file is
-// mirrored to scripts/hooks/_generated/ (scripts/generate-hook-core.mjs).
-// Everything here is pure; the hook owns the reads, the write and the record.
+// A leaf (no imports) on purpose: the Stop hook that writes the handoff cannot
+// import src/, so this file is mirrored to scripts/hooks/_generated/
+// (scripts/generate-hook-core.mjs). Everything here is pure; the hook owns the
+// reads, the write and the record.
 
 export const SESSION_HANDOFF_TYPE = 'session-handoff';
 
-/** Most characters kept. The tail of a final message is where "next" lives. */
+/** Most characters kept, the leading ellipsis included. The tail of a final message is where "next" lives. */
 export const HANDOFF_MAX_CHARS = 800;
 
 /** Fewer characters than this is an acknowledgement, not a handoff. */
@@ -29,14 +29,18 @@ interface TranscriptLine {
   message?: { model?: unknown; content?: unknown };
 }
 
-const FENCED_BLOCK = /```[\s\S]*?```/g;
-const UNCLOSED_FENCE = /```[\s\S]*$/;
+// A fence is a line that OPENS with ``` (up to three spaces in) and has no
+// backtick after it. A ``` in the middle of a sentence is prose about
+// backticks, not a fence, and must not swallow what follows it.
+const FENCED_BLOCK = /^ {0,3}```[^`\n]*\n[\s\S]*?^ {0,3}```[ \t]*$/gm;
+const UNCLOSED_FENCE = /^ {0,3}```[^`\n]*(?:\n[\s\S]*)?$/m;
 
 /**
  * The text worth keeping from an assistant message: prose only (fenced code is
  * dropped — it is what the diff and the repo already hold), blank runs
- * collapsed, and if it is longer than HANDOFF_MAX_CHARS the END is kept, cut
- * at a line break where one is near. Returns '' when there is nothing left.
+ * collapsed, and if it is longer than HANDOFF_MAX_CHARS the END is kept behind
+ * a `…`, cut at a line break where one is near. Never longer than
+ * HANDOFF_MAX_CHARS. Returns '' when there is nothing left.
  *
  * Redact BEFORE calling: a secret cut in half at the boundary no longer
  * matches the pattern that would have caught it.
@@ -47,13 +51,13 @@ export function cleanHandoffText(raw: string): string {
     .replace(FENCED_BLOCK, '')
     .replace(UNCLOSED_FENCE, '')
     .split('\n')
-    .map((line) => line.replace(/[ \t]+$/, ''))
+    .map((line) => line.trimEnd())
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   if (text.length <= HANDOFF_MAX_CHARS) return text;
 
-  text = text.slice(-HANDOFF_MAX_CHARS);
+  text = text.slice(-(HANDOFF_MAX_CHARS - 1));
   // Never start on half of a surrogate pair.
   const first = text.charCodeAt(0);
   if (first >= 0xdc00 && first <= 0xdfff) text = text.slice(1);

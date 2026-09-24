@@ -409,9 +409,11 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     });
 
     it('(i-b) excludes a session handoff that names the edited file in its text', () => {
-      // The handoff is a per-project snapshot of the last message and is
-      // shown at session start; repeating it on every edit of a file it
-      // happens to mention would only spend the reader's context twice.
+      // The handoff is a per-project snapshot of the agent's last message,
+      // meant for the start of the next session; repeating it on every edit
+      // of a file it happens to mention would only spend the reader's context.
+      // A note with the same text is the control: it IS recalled, so an empty
+      // result for the handoff is the exclusion at work, not a missed match.
       const db = createTestDb();
       db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('session-handoff:acme', 'session-handoff');
       const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('session-handoff:acme') as any;
@@ -419,10 +421,16 @@ describe('Feature: Pre-Edit Recall Hook', () => {
       db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, obs);
       db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
       indexFts(db, row.id, 'session-handoff:acme', obs);
+      db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-note-control', 'note');
+      const control = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-note-control') as any;
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(control.id, obs);
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(control.id, projectTag());
+      indexFts(db, control.id, 'auth-note-control', obs);
       db.close();
 
       const result = runHook({ tool_input: { file_path: '/src/auth.ts' } });
-      expect(result).toBe('');
+      expect(result).toContain('auth-note-control');
+      expect(result).not.toContain('session-handoff');
     });
 
     it("(ii/a) ignores a different file's file: tag, but reaches a curated lesson naming this file literally in prose", () => {

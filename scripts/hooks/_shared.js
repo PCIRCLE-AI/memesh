@@ -402,7 +402,9 @@ export const AUTO_CAPTURE_TAG = 'source:auto-capture';
 /**
  * Auto-captured SESSION-SNAPSHOT types — the transient rollups `pre-compact.js`
  * and `session-summary.js` restate on every PreCompact / Stop, purely as
- * session bookkeeping ("N tool calls", "compaction reason: auto"). Not the
+ * session bookkeeping ("N tool calls", "compaction reason: auto"), and the
+ * session handoff `_stop-handoff.js` restates on every Stop (the agent's last
+ * message, which names files in passing). Not the
  * same set as `AUTO_CAPTURE_TAG`: that tag also marks `commit` entities,
  * which can genuinely be about the file being edited, so it is too broad for
  * this exclusion.
@@ -411,8 +413,9 @@ export const AUTO_CAPTURE_TAG = 'source:auto-capture';
  * ANY file a session touched — `session-<id>-files`/`-fixes` carry a
  * `file:<name>` tag per file, unconditionally — so without this exclusion it
  * injects lines like "Session edited 1 file(s): X" for every edit of a file
- * that session ever touched (#358). No list already in the codebase matches
- * this pair alone: `EVIDENCE_LAYER_TYPES` (work-topology.ts), `NOISE_TYPES`
+ * that session ever touched (#358). The handoff would match the same way
+ * through its text. No list already in the codebase matches these three
+ * alone: `EVIDENCE_LAYER_TYPES` (work-topology.ts), `NOISE_TYPES`
  * (analytics.ts, lifecycle.ts) and `COMPACTABLE_TYPES` (dreamer.ts) all also
  * include `commit` (and some include `session_keypoint`, `workflow_checkpoint`
  * etc.), which this exclusion must NOT touch.

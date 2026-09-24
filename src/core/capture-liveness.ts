@@ -263,8 +263,10 @@ export const CAPTURE_HOOKS = [
   'note-ingest',
   'remember-nudge',
   // The agent's own last message, kept as the project's handoff
-  // (scripts/hooks/_stop-handoff.js). Not SILENT_ELIGIBLE: a turn that ends on
-  // an acknowledgement correctly keeps the previous handoff.
+  // (scripts/hooks/_stop-handoff.js). SILENT_ELIGIBLE: a turn that ends on an
+  // acknowledgement is a not-triggered skip, so what is left — errors, no
+  // message or transcript to read, a handoff `forget` archived — is a
+  // handoff that should have been kept and was not.
   'handoff-capture',
 ] as const;
 
@@ -282,11 +284,13 @@ export const CAPTURE_HOOKS = [
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
 
 /**
- * The hooks whose silence can mean anything, and why it is these three.
+ * The hooks whose silence can mean anything, and why it is these four.
  *
  * "Ran N times and wrote nothing" is only a signal when running implies a
  * write is due. That holds for post-commit (a commit happened), pre-compact
- * (a compaction happened) and session-summary (a session ended). It does NOT
+ * (a compaction happened), session-summary (a session ended) and
+ * handoff-capture (a Stop that ended on a real message — the acknowledgement
+ * turns are classified as not-triggered before they can count). It does NOT
  * hold for guard-check and post-commit's PreToolUse/PostToolUse siblings,
  * which fire on every Bash call and skip almost every one of them BY DESIGN,
  * or for user-prompt-intent, which fires on every prompt and writes only
@@ -294,7 +298,7 @@ export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
  * install PASS_WITH_CONCERNS with a daily banner about a hook doing exactly
  * its job.
  */
-export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact'] as const;
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact', 'handoff-capture'] as const;
 
 /**
  * Skip reasons shared between the hooks that record them and the verdict
@@ -557,8 +561,9 @@ export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string
   'note-ingest': [SKIP_REASONS.noNoteChanged],
   'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
   // Also per Stop: a turn that ends on "done" or "ok" is not a handoff, and
-  // keeping the previous one is the point. noAssistantText stays counted — a
-  // payload and transcript that never hold a message is a broken extractor.
+  // keeping the previous one is the point. noAssistantText, noTranscript and
+  // handoffArchived stay counted: with the hook in SILENT_ELIGIBLE_HOOKS, a
+  // Stop that never yields a handoff surfaces in doctor instead of hiding.
   'handoff-capture': [SKIP_REASONS.handoffTooShort],
 };
 

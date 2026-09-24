@@ -6,8 +6,23 @@
 // exported by lesson-engine.
 
 import { describe, it, expect } from 'vitest';
-import { extractProjectFromName } from '../../src/core/projects.js';
+import { computeProjects, extractProjectFromName } from '../../src/core/projects.js';
 import { KNOWN_ERROR_PATTERNS } from '../../src/core/lesson-engine.js';
+import { getDatabase } from '../../src/db.js';
+import { remember } from '../../src/core/operations.js';
+import { useTestDatabase } from '../helpers/db-fixture.js';
+
+useTestDatabase('memesh-projects-');
+
+describe('computeProjects', () => {
+  it('does not turn a directory that only has a session handoff into a project', () => {
+    remember({ name: 'alpha-decision', type: 'decision', observations: ['We use SQLite.'], tags: ['project:alpha'] });
+    remember({ name: 'session-handoff:beta', type: 'session-handoff', observations: ['Stopped right before the release step.'], tags: ['project:beta'] });
+    const names = computeProjects(getDatabase()).map((p) => p.name);
+    expect(names, 'the control project is missing, so this test proves nothing').toContain('alpha');
+    expect(names).not.toContain('beta');
+  });
+});
 
 describe('extractProjectFromName', () => {
   it('extracts a single-word project from a known pattern suffix', () => {

@@ -24603,7 +24603,7 @@ function selectPool(rows, cap) {
     recall_hits: row.recall_hits ?? void 0,
     recall_misses: row.recall_misses ?? void 0
   }));
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
+  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta) && row.type !== SESSION_HANDOFF_TYPE).slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {
   const signal = row.meta?.signal_score;
@@ -24742,6 +24742,7 @@ var init_briefing = __esm({
     init_agent_message_inbox();
     init_agent_scope_id();
     init_task_state();
+    init_session_handoff();
     init_briefing_index();
     init_work_topology();
     init_briefing_level();
@@ -53355,7 +53356,8 @@ var AUTO_TYPES, LEARNING_TYPES;
 var init_patterns = __esm({
   "dist/core/patterns.js"() {
     "use strict";
-    AUTO_TYPES = ["session_keypoint", "commit", "session_identity", "workflow_checkpoint", "session-insight"];
+    init_session_handoff();
+    AUTO_TYPES = ["session_keypoint", "commit", "session_identity", "workflow_checkpoint", "session-insight", SESSION_HANDOFF_TYPE];
     LEARNING_TYPES = ["lesson_learned", "mistake", "bug_fix", "lesson"];
   }
 });
@@ -53644,7 +53646,8 @@ function computeProjects(db2) {
       (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
     FROM entities e
     WHERE e.status = 'active'
-  `).all();
+      AND e.type <> ?
+  `).all(SESSION_HANDOFF_TYPE);
   const acc = /* @__PURE__ */ new Map();
   for (const row of rows) {
     let tagList = [];
@@ -53680,6 +53683,7 @@ var init_projects = __esm({
   "dist/core/projects.js"() {
     "use strict";
     init_lesson_engine();
+    init_session_handoff();
     PROJECT_TAG_PREFIX = "project:";
   }
 });
@@ -55644,7 +55648,7 @@ var init_capture_liveness = __esm({
       "handoff-capture"
     ];
     FAIL_ELIGIBLE_HOOKS = ["session-summary"];
-    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact"];
+    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact", "handoff-capture"];
     SKIP_REASONS = {
       notBash: "not a Bash tool call",
       notGitCommit: "not a git commit command",
@@ -56281,7 +56285,8 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
          JOIN tags t ON t.entity_id = e.id
         WHERE t.tag = ?
           AND e.created_at > datetime('now', '-14 days')
-        GROUP BY e.type`).all(AUTO_CAPTURE_TAG);
+          AND e.type <> ?
+        GROUP BY e.type`).all(AUTO_CAPTURE_TAG, SESSION_HANDOFF_TYPE);
     types = summarizeTypeTrends(rows.map((r) => ({
       type: String(r.type),
       last7: Number(r.last7) || 0,
@@ -57228,6 +57233,7 @@ var init_doctor = __esm({
     init_fts_index();
     init_sqlite();
     init_types();
+    init_session_handoff();
     init_time_utils();
     init_capture_flag();
     init_capture_liveness();

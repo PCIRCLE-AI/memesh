@@ -98,7 +98,7 @@ export const CAPTURE_HOOKS = [
     'handoff-capture',
 ];
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
-export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact'];
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact', 'handoff-capture'];
 export const SKIP_REASONS = {
     notBash: 'not a Bash tool call',
     notGitCommit: 'not a git commit command',

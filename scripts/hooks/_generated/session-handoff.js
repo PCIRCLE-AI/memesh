@@ -13,21 +13,21 @@ export const HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
 export function sessionHandoffName(project) {
     return `${SESSION_HANDOFF_TYPE}:${project}`;
 }
-const FENCED_BLOCK = /```[\s\S]*?```/g;
-const UNCLOSED_FENCE = /```[\s\S]*$/;
+const FENCED_BLOCK = /^ {0,3}```[^`\n]*\n[\s\S]*?^ {0,3}```[ \t]*$/gm;
+const UNCLOSED_FENCE = /^ {0,3}```[^`\n]*(?:\n[\s\S]*)?$/m;
 export function cleanHandoffText(raw) {
     let text = String(raw ?? '')
         .replace(/\r\n?/g, '\n')
         .replace(FENCED_BLOCK, '')
         .replace(UNCLOSED_FENCE, '')
         .split('\n')
-        .map((line) => line.replace(/[ \t]+$/, ''))
+        .map((line) => line.trimEnd())
         .join('\n')
         .replace(/\n{3,}/g, '\n\n')
         .trim();
     if (text.length <= HANDOFF_MAX_CHARS)
         return text;
-    text = text.slice(-HANDOFF_MAX_CHARS);
+    text = text.slice(-(HANDOFF_MAX_CHARS - 1));
     const first = text.charCodeAt(0);
     if (first >= 0xdc00 && first <= 0xdfff)
         text = text.slice(1);

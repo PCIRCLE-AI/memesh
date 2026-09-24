@@ -23,6 +23,7 @@ import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
+import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
 import {
@@ -1448,6 +1449,11 @@ function inspectCaptureLiveness(
     // auto-capture rows: a hand-typed `memesh learn` is not evidence that the
     // automatic layer is alive, which is the mistake an earlier version of
     // the hook-activity count made.
+    //
+    // The session handoff is left out: it is ONE row per project that each
+    // Stop rewrites in place, so its `created_at` never moves and it would
+    // read as "stopped" from the eighth day on. `handoff-capture` has its own
+    // row in the hook table above.
     const rows = db.prepare(
       `SELECT e.type AS type,
               SUM(CASE WHEN e.created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) AS last7,
@@ -1457,8 +1463,9 @@ function inspectCaptureLiveness(
          JOIN tags t ON t.entity_id = e.id
         WHERE t.tag = ?
           AND e.created_at > datetime('now', '-14 days')
+          AND e.type <> ?
         GROUP BY e.type`,
-    ).all(AUTO_CAPTURE_TAG) as Array<{ type: string; last7: number; prev7: number }>;
+    ).all(AUTO_CAPTURE_TAG, SESSION_HANDOFF_TYPE) as Array<{ type: string; last7: number; prev7: number }>;
     types = summarizeTypeTrends(rows.map((r) => ({
       type: String(r.type),
       last7: Number(r.last7) || 0,
