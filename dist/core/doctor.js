@@ -613,7 +613,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
         const h = verdict.silentHook;
         const reason = h.dominantSkipReason ?? 'no reason recorded';
         const fix = h.hook === 'handoff-capture' && reason === SKIP_REASONS.handoffArchived
-            ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name — `memesh remember --name "session-handoff:<project>" --obs "restart"`, with the exact name from `memesh recall --include-archived` — and the next Stop replaces it.'
+            ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name — `memesh remember --name "session-handoff:<project>" --type session-handoff --obs "restart"`, with the exact name from `memesh recall session-handoff --include-archived` — and the next Stop replaces it.'
             : 'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.';
         return {
             check: createCheck('capture-liveness', TITLE, 'warn', `${h.hook}: ${h.triggeredRuns} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, fix, { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.triggeredRuns, reason } }),

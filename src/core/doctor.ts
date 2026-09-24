@@ -1574,7 +1574,7 @@ function inspectCaptureLiveness(
     // Reinstalling cannot help here: the handoff was archived on purpose and
     // captureEntity leaves an archived memory alone.
     const fix = h.hook === 'handoff-capture' && reason === SKIP_REASONS.handoffArchived
-      ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name — `memesh remember --name "session-handoff:<project>" --obs "restart"`, with the exact name from `memesh recall --include-archived` — and the next Stop replaces it.'
+      ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name — `memesh remember --name "session-handoff:<project>" --type session-handoff --obs "restart"`, with the exact name from `memesh recall session-handoff --include-archived` — and the next Stop replaces it.'
       : 'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.';
     return {
       check: createCheck('capture-liveness', TITLE, 'warn',

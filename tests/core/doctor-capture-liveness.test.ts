@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { spawnSync } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -330,9 +331,34 @@ describe('doctor: capture-liveness', () => {
     const check = result.checks.find((c) => c.id === 'capture-liveness')!;
     expect(check.code).toBe('capture-liveness.silent-hook');
     expect(check.params?.hook).toBe('handoff-capture');
-    expect(check.fix).toContain('memesh remember --name');
     expect(check.fix).not.toContain('install-hooks');
-  });
+
+    // The advice is only worth giving if it works: run the advised command,
+    // as written, against a graph holding an archived handoff.
+    const advised = /`(memesh remember [^`]+)`/.exec(check.fix ?? '')?.[1];
+    expect(advised, 'the fix names no memesh remember command').toBeDefined();
+    const name = 'session-handoff:acme';
+    const args = (advised!.match(/"[^"]*"|\S+/g) ?? []).slice(1)
+      .map((a) => a.replace(/^"|"$/g, '').replace('session-handoff:<project>', name));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-advice-'));
+    tempRoots.push(home);
+    const dbFile = path.join(home, 'knowledge-graph.db');
+    try { closeDatabase(); } catch { /* none open */ }
+    openDatabase(dbFile);
+    const db = getDatabase();
+    const id = db.prepare("INSERT INTO entities (name, type, status) VALUES (?, 'session-handoff', 'archived')").run(name).lastInsertRowid;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'the old handoff');
+    closeDatabase();
+
+    const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbFile };
+    delete env.MEMESH_DIR;
+    const r = spawnSync('node', [path.resolve('dist/transports/cli/cli.js'), ...args], { env, encoding: 'utf8', timeout: 30_000 });
+    expect(r.status, `the advised command failed: ${r.stderr}`).toBe(0);
+    openDatabase(dbFile);
+    const row = getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(name) as { status: string };
+    closeDatabase();
+    expect(row.status, 'the advised command did not re-activate the handoff').toBe('active');
+  }, 60_000);
 
   it('post-commit silence counts commits, not Bash calls, and quotes the commit reason', async () => {
     // The #321 shape inside a busy window: most runs are not commits, and
