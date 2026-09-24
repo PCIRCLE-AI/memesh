@@ -36,6 +36,7 @@ import {
   gitRepoRoot,
 } from './_generated/core-paths.js';
 import { autoCaptureDecision } from './_generated/capture-flag.js';
+import { SESSION_HANDOFF_TYPE } from './_generated/session-handoff.js';
 export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, hasBriefingContent, projectLabel, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP } from './_generated/work-topology.js';
 export { readRepoState, repoStateLines } from './_generated/repo-state.js';
 export { matchingGuards, guardFromMetadata } from './_generated/guards.js';
@@ -416,7 +417,7 @@ export const AUTO_CAPTURE_TAG = 'source:auto-capture';
  * include `commit` (and some include `session_keypoint`, `workflow_checkpoint`
  * etc.), which this exclusion must NOT touch.
  */
-export const SESSION_SNAPSHOT_TYPES = new Set(['session-insight', 'session-summary']);
+export const SESSION_SNAPSHOT_TYPES = new Set(['session-insight', 'session-summary', SESSION_HANDOFF_TYPE]);
 
 const VALID_AUTO_UPDATE_POLICIES = new Set(['off', 'patch', 'minor', 'major']);
 

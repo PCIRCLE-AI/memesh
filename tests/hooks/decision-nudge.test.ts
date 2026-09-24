@@ -101,6 +101,7 @@ describe('Feature: decision-nudge hook (PostToolUse ExitPlanMode|AskUserQuestion
     expect(ctx).toContain('remember');
     expect(ctx).toContain('type:decision or type:lesson');
     expect(ctx).toContain('project:<name>');
+    expect(ctx).toContain('`task_state` tool');
     // Not memory content — must NOT ride the buildReferenceContext fence
     // that recalled/guard content uses (see the hook's own comment on why).
     expect(ctx).not.toContain('background data');

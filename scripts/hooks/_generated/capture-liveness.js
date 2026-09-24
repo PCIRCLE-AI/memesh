@@ -95,6 +95,7 @@ export const CAPTURE_HOOKS = [
     'session-start',
     'note-ingest',
     'remember-nudge',
+    'handoff-capture',
 ];
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
 export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact'];
@@ -142,6 +143,9 @@ export const SKIP_REASONS = {
     noDecisionMove: 'no decision-shaped move since the last Stop',
     memoryWritten: 'a memory was written since the last Stop',
     noteFileChanged: 'a note file changed since the last Stop',
+    noAssistantText: 'the Stop payload and the transcript held no assistant message',
+    handoffTooShort: 'the last assistant message was too short to be a handoff — the previous one is kept',
+    handoffArchived: 'the handoff memory was archived by forget — left alone',
 };
 const KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
 export const UNRECOGNISED_REASON = 'unrecognised reason';
@@ -212,6 +216,7 @@ export const NOT_TRIGGERED_SKIP_REASONS = {
     'session-summary': [SKIP_REASONS.alreadyCaptured],
     'note-ingest': [SKIP_REASONS.noNoteChanged],
     'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
+    'handoff-capture': [SKIP_REASONS.handoffTooShort],
 };
 export const UNCLASSIFIED_SKIP_HOOKS = [
     'pre-compact',

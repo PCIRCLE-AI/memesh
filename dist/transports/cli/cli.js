@@ -23893,7 +23893,7 @@ function groupTopology(entities, projectName) {
   const global2 = [];
   const foreign = [];
   for (const e of entities) {
-    if (e.type === "task-state")
+    if (e.type === "task-state" || e.type === "session-handoff")
       continue;
     if (e.global) {
       global2.push(e);
@@ -24346,6 +24346,16 @@ var init_agent_message_inbox = __esm({
   }
 });
 
+// dist/core/session-handoff.js
+var SESSION_HANDOFF_TYPE, HANDOFF_TRANSCRIPT_TAIL_BYTES;
+var init_session_handoff = __esm({
+  "dist/core/session-handoff.js"() {
+    "use strict";
+    SESSION_HANDOFF_TYPE = "session-handoff";
+    HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+  }
+});
+
 // dist/core/briefing-index.js
 function isIndexableType(type) {
   return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
@@ -24478,13 +24488,14 @@ var init_briefing_index = __esm({
     "use strict";
     init_paths();
     init_work_topology();
+    init_session_handoff();
     INDEX_MAX_LINES = 40;
     INDEX_MAX_BYTES = 3072;
     INDEX_STALE_DAYS = 180;
     INDEX_LINE_MAX_CHARS = 120;
     INDEX_SNIPPET_FETCH_CHARS = 4e3;
     INDEX_CANDIDATE_CAP = 2e3;
-    INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state"];
+    INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state", SESSION_HANDOFF_TYPE];
     DAY_MS = 24 * 60 * 60 * 1e3;
   }
 });
@@ -53554,6 +53565,7 @@ var NOISE_TYPES, RADAR_AXES;
 var init_analytics = __esm({
   "dist/core/analytics.js"() {
     "use strict";
+    init_session_handoff();
     NOISE_TYPES = /* @__PURE__ */ new Set([
       "session_keypoint",
       "commit",
@@ -53561,7 +53573,8 @@ var init_analytics = __esm({
       "session-insight",
       "session-summary",
       "session_identity",
-      "session-identity"
+      "session-identity",
+      SESSION_HANDOFF_TYPE
     ]);
     RADAR_AXES = [
       { axis: "lessons", types: ["lesson_learned", "lesson", "mistake"] },
@@ -55627,7 +55640,8 @@ var init_capture_liveness = __esm({
       "guard-check",
       "session-start",
       "note-ingest",
-      "remember-nudge"
+      "remember-nudge",
+      "handoff-capture"
     ];
     FAIL_ELIGIBLE_HOOKS = ["session-summary"];
     SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact"];
@@ -55674,7 +55688,10 @@ var init_capture_liveness = __esm({
       trivialTurn: "trivial turn \u2014 too few tool calls since the last Stop",
       noDecisionMove: "no decision-shaped move since the last Stop",
       memoryWritten: "a memory was written since the last Stop",
-      noteFileChanged: "a note file changed since the last Stop"
+      noteFileChanged: "a note file changed since the last Stop",
+      noAssistantText: "the Stop payload and the transcript held no assistant message",
+      handoffTooShort: "the last assistant message was too short to be a handoff \u2014 the previous one is kept",
+      handoffArchived: "the handoff memory was archived by forget \u2014 left alone"
     };
     KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
     UNRECOGNISED_REASON = "unrecognised reason";
@@ -55682,7 +55699,8 @@ var init_capture_liveness = __esm({
       "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
       "session-summary": [SKIP_REASONS.alreadyCaptured],
       "note-ingest": [SKIP_REASONS.noNoteChanged],
-      "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove]
+      "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
+      "handoff-capture": [SKIP_REASONS.handoffTooShort]
     };
     NEVER_RAN_GRACE_HOURS = 72;
     RECORD_TEXT_MAX = 200;

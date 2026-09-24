@@ -1,12 +1,13 @@
 import { redactSecrets, redactUserPaths } from './paths.js';
 import { EVIDENCE_LAYER_TYPES, isAutoInjectable, projectLabel, topologyLine } from './work-topology.js';
+import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 export const INDEX_MAX_LINES = 40;
 export const INDEX_MAX_BYTES = 3072;
 export const INDEX_STALE_DAYS = 180;
 export const INDEX_LINE_MAX_CHARS = 120;
 export const INDEX_SNIPPET_FETCH_CHARS = 4000;
 export const INDEX_CANDIDATE_CAP = 2000;
-export const INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, 'task-state'];
+export const INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, 'task-state', SESSION_HANDOFF_TYPE];
 export function isIndexableType(type) {
     return !INDEX_EXCLUDED_TYPES.includes(type || 'memory');
 }

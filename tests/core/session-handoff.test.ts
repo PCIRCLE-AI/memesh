@@ -1,0 +1,127 @@
+import { describe, it, expect } from 'vitest';
+import {
+  cleanHandoffText,
+  HANDOFF_MAX_CHARS,
+  lastAssistantText,
+  SESSION_HANDOFF_TYPE,
+  sessionHandoffName,
+} from '../../src/core/session-handoff.js';
+import { groupTopology } from '../../src/core/work-topology.js';
+import { INDEX_EXCLUDED_TYPES } from '../../src/core/briefing-index.js';
+import { NOISE_TYPES } from '../../src/core/analytics.js';
+
+const line = (entry: object) => JSON.stringify(entry);
+const asst = (content: unknown, extra: object = {}) =>
+  line({ type: 'assistant', message: { role: 'assistant', content }, ...extra });
+const text = (t: string) => [{ type: 'text', text: t }];
+
+describe('cleanHandoffText', () => {
+  it('drops fenced code and keeps the prose around it', () => {
+    const out = cleanHandoffText('Fixed the parser.\n\n```ts\nconst secretLooking = 1;\n```\n\nNext: run the suite.');
+    expect(out).toBe('Fixed the parser.\n\nNext: run the suite.');
+  });
+
+  it('drops a fence that was never closed, to the end of the message', () => {
+    expect(cleanHandoffText('Done with the change.\n```bash\nrm -rf build')).toBe('Done with the change.');
+  });
+
+  it('collapses runs of blank lines and trailing spaces', () => {
+    expect(cleanHandoffText('one  \n\n\n\n\ntwo\t')).toBe('one\n\ntwo');
+  });
+
+  it('keeps the END of a long message, so the next step survives', () => {
+    const long = `${'background sentence. '.repeat(200)}\nNEXT STEP: rebase and open the PR.`;
+    const out = cleanHandoffText(long);
+    expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS + 1);
+    expect(out.startsWith('…')).toBe(true);
+    expect(out.endsWith('NEXT STEP: rebase and open the PR.')).toBe(true);
+  });
+
+  it('starts on a line break when one is near, not mid-sentence', () => {
+    // The cut lands inside the run of x's; the first line break after it is
+    // 178 characters in, so the fragment is dropped and the kept text starts
+    // on a whole line.
+    const body = `${'x'.repeat(300)}\nWhole line one kept.\n${'filler line\n'.repeat(50)}`;
+    const out = cleanHandoffText(body);
+    expect(out.startsWith('…Whole line one kept.')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS + 1);
+  });
+
+  it('never starts on half of a surrogate pair', () => {
+    // 1002 UTF-16 units; the last 800 begin exactly on the LOW half of an
+    // emoji, which the cut has to step over rather than keep.
+    const out = cleanHandoffText(`x${'😀'.repeat(500)}y`);
+    const body = out.slice(1);
+    expect(out.startsWith('…')).toBe(true);
+    const first = body.charCodeAt(0);
+    expect(first >= 0xdc00 && first <= 0xdfff, 'the kept text starts on a lone low surrogate').toBe(false);
+  });
+
+  it('returns an empty string when only code is left', () => {
+    expect(cleanHandoffText('```js\nconsole.log(1)\n```')).toBe('');
+    expect(cleanHandoffText('')).toBe('');
+  });
+});
+
+describe('lastAssistantText', () => {
+  it('walks back past tool-only lines to the newest line with text', () => {
+    const jsonl = [
+      asst(text('An older message that is not the last one.')),
+      asst([{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }]),
+      asst(text('The final words.')),
+      asst([{ type: 'tool_use', id: 't2', name: 'Read', input: {} }]),
+    ].join('\n');
+    expect(lastAssistantText(jsonl)).toBe('The final words.');
+  });
+
+  it('joins the text blocks of one line and ignores non-text blocks', () => {
+    const jsonl = asst([{ type: 'thinking', thinking: 'hidden' }, { type: 'text', text: 'part one' }, { type: 'text', text: 'part two' }]);
+    expect(lastAssistantText(jsonl)).toBe('part one\npart two');
+  });
+
+  it('accepts string content', () => {
+    expect(lastAssistantText(asst('plain string content'))).toBe('plain string content');
+  });
+
+  it('skips sub-agent lines', () => {
+    const jsonl = [asst(text('the main agent said this')), asst(text('a sub-agent said this'), { isSidechain: true })].join('\n');
+    expect(lastAssistantText(jsonl)).toBe('the main agent said this');
+  });
+
+  it('skips the synthetic lines Claude Code writes for API errors', () => {
+    const jsonl = [
+      asst(text('the real last message')),
+      line({ type: 'assistant', isApiErrorMessage: true, message: { content: text('API Error: 529 overloaded') } }),
+      line({ type: 'assistant', message: { model: '<synthetic>', content: text('No response requested.') } }),
+    ].join('\n');
+    expect(lastAssistantText(jsonl)).toBe('the real last message');
+  });
+
+  it('ignores user lines and torn lines, and returns null when there is nothing', () => {
+    expect(lastAssistantText([line({ type: 'user', message: { content: 'hi' } }), '{"type":"assis'].join('\n'))).toBeNull();
+    expect(lastAssistantText('')).toBeNull();
+    expect(lastAssistantText(asst(text('   \n  ')))).toBeNull();
+  });
+});
+
+describe('the handoff is one entity per project and nobody else lists it', () => {
+  it('is named per project', () => {
+    expect(sessionHandoffName('acme')).toBe(`${SESSION_HANDOFF_TYPE}:acme`);
+    expect(sessionHandoffName('a')).not.toBe(sessionHandoffName('b'));
+  });
+
+  it('groupTopology drops it, in the project pool and as a foreign one', () => {
+    const sections = groupTopology([
+      { name: 'session-handoff:acme', type: SESSION_HANDOFF_TYPE, title: 'Where the last session left off' },
+      { name: 'session-handoff:other', type: SESSION_HANDOFF_TYPE, title: 'Where the last session left off', foreign: true },
+      { name: 'decision-1', type: 'decision', title: 'use sqlite' },
+    ], 'acme');
+    const listed = sections.flatMap((s) => s.entities.map((e) => e.name));
+    expect(listed).toEqual(['decision-1']);
+  });
+
+  it('is kept out of the durable index and the knowledge radar', () => {
+    expect(INDEX_EXCLUDED_TYPES).toContain(SESSION_HANDOFF_TYPE);
+    expect(NOISE_TYPES.has(SESSION_HANDOFF_TYPE)).toBe(true);
+  });
+});

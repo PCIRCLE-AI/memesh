@@ -74,6 +74,7 @@ import {
   INDEX_EXCLUDED_TYPES,
   INDEX_SNIPPET_FETCH_CHARS,
 } from './_generated/briefing-index.js';
+import { SESSION_HANDOFF_TYPE } from './_generated/session-handoff.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1164,8 +1165,10 @@ process.stdin.on('end', async () => {
       // Shared with the briefing surface via the leaf, so the two sides'
       // candidate windows cannot drift apart.
       const CANDIDATE_CAP = TOPOLOGY_CANDIDATE_CAP;
+      // The handoff is not a ranked memory and must not take one of the
+      // project's slots: it has its own block.
       const projectOnly = db.prepare(projectQuery).all(projectTag, CANDIDATE_CAP)
-        .filter(entity => isTrustedForAutoContext(entity.metadata));
+        .filter(entity => entity.type !== SESSION_HANDOFF_TYPE && isTrustedForAutoContext(entity.metadata));
 
       // The `global` namespace is the documented way to store something that
       // is not tied to one project — and the injection selected purely by

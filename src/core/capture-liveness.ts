@@ -262,6 +262,10 @@ export const CAPTURE_HOOKS = [
   // turn made no decision), so "ran and did not write" is their normal state.
   'note-ingest',
   'remember-nudge',
+  // The agent's own last message, kept as the project's handoff
+  // (scripts/hooks/_stop-handoff.js). Not SILENT_ELIGIBLE: a turn that ends on
+  // an acknowledgement correctly keeps the previous handoff.
+  'handoff-capture',
 ] as const;
 
 /**
@@ -386,6 +390,10 @@ export const SKIP_REASONS = {
   noDecisionMove: 'no decision-shaped move since the last Stop',
   memoryWritten: 'a memory was written since the last Stop',
   noteFileChanged: 'a note file changed since the last Stop',
+  // handoff-capture
+  noAssistantText: 'the Stop payload and the transcript held no assistant message',
+  handoffTooShort: 'the last assistant message was too short to be a handoff — the previous one is kept',
+  handoffArchived: 'the handoff memory was archived by forget — left alone',
 } as const;
 
 const KNOWN_SKIP_REASONS: ReadonlySet<string> = new Set(Object.values(SKIP_REASONS));
@@ -548,6 +556,10 @@ export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string
   //     them. Same stance as session-summary's low-signal skips.
   'note-ingest': [SKIP_REASONS.noNoteChanged],
   'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
+  // Also per Stop: a turn that ends on "done" or "ok" is not a handoff, and
+  // keeping the previous one is the point. noAssistantText stays counted — a
+  // payload and transcript that never hold a message is a broken extractor.
+  'handoff-capture': [SKIP_REASONS.handoffTooShort],
 };
 
 /**

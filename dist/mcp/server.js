@@ -28571,7 +28571,7 @@ function groupTopology(entities, projectName) {
   const global = [];
   const foreign = [];
   for (const e of entities) {
-    if (e.type === "task-state")
+    if (e.type === "task-state" || e.type === "session-handoff")
       continue;
     if (e.global) {
       global.push(e);
@@ -29011,6 +29011,10 @@ var AGENT_MESSAGE_SCOPE_COLUMNS = [
 ];
 var AGENT_MESSAGE_PROJECT_TABLES = AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes("project")).map((e) => e.table);
 
+// dist/core/session-handoff.js
+var SESSION_HANDOFF_TYPE = "session-handoff";
+var HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+
 // dist/core/briefing-index.js
 var INDEX_MAX_LINES = 40;
 var INDEX_MAX_BYTES = 3072;
@@ -29018,7 +29022,7 @@ var INDEX_STALE_DAYS = 180;
 var INDEX_LINE_MAX_CHARS = 120;
 var INDEX_SNIPPET_FETCH_CHARS = 4e3;
 var INDEX_CANDIDATE_CAP = 2e3;
-var INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state"];
+var INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state", SESSION_HANDOFF_TYPE];
 function isIndexableType(type) {
   return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
 }

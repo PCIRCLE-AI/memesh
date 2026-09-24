@@ -50,7 +50,7 @@ function glyph(type: string): keyof typeof GLYPHS {
     case 'commit':
       return 'commit';
     case 'session_keypoint': case 'session_identity':
-    case 'session-insight': case 'session-summary': case 'session-identity':
+    case 'session-insight': case 'session-summary': case 'session-identity': case 'session-handoff':
       return 'session';
     case 'workflow_checkpoint':
       return 'milestone';
