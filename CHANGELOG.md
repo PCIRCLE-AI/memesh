@@ -4,85 +4,24 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
-Draft notes for the next release; these behaviors are not in the published v4.10.4 package.
+## [4.10.5] — 2026-09-24
 
 ### Added
 
-- Claude Code's Stop hook keeps the latest qualifying assistant reply as one
-  replaceable handoff per project (`session-handoff:<project>`). Known credential
-  shapes are redacted, fenced code is dropped, and the stored text is at most
-  800 characters. A skipped capture leaves the previous note in place. An
-  eligible handoff appears ahead of ranked memories in the next Claude Code
-  session and in the `briefing` tool/CLI at every level: normal through 72
-  hours, marked stale through 14 days, then omitted. Imported or archived
-  handoffs are not injected automatically. Codex and MCP-only clients still
-  call `briefing` themselves; this does not add Codex capture hooks.
-- The reminder shown after an approved plan or an answered question now also
-  asks the agent to record the goal and next step with `task_state`.
-- The dashboard's Settings tab now has a "Session start briefing" control
-  (Minimal / Standard / Full), the same setting as
-  `memesh config set briefing` (#360). It saves as soon as you pick a level
-  and only says "Saved." after re-reading the value from the server. A stored
-  value that is not a known level is shown as unrecognised instead of being
-  displayed as a real level, and picking a level replaces it. New sessions use
-  the new level; the `briefing` tool and `memesh briefing` use it on their next
-  call.
+- When auto-capture is enabled, Claude Code can save one handoff per project from the latest qualifying reply: at most 800 characters, with fenced code removed and known credential patterns redacted (not every secret). A trusted handoff appears through 72 hours, stale through 14 days, then is omitted from briefings. Imported or archived handoffs are not injected. Codex and MCP-only clients call `briefing` manually; Codex gains no capture hook.
+- Dashboard Settings confirms Minimal/Standard/Full briefing; unknown levels are flagged. Plan/question reminders request goal and next when work changes.
 
 ### Changed
 
-- Session-start and `briefing` now put the newest eligible project decisions ahead of routine activity and select up to five project lessons separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit; the standalone `briefing --index` keeps its own caps and may show more lines. Long task state is shortened only in the briefing; `memesh task` still shows the stored record.
-- `message discover` now returns a named, actionable `router_unreachable` error
-  (naming `memesh-router` or the managed host's launch step) instead of a raw
-  connection error when the local agent router can't be reached.
-- The MCP server now notices when the code on disk has moved past what it
-  loaded at startup (e.g. a plugin-marketplace upgrade while the session was
-  still open) and appends a one-line notice telling you to restart the
-  session, instead of silently continuing to run stale code with no signal.
-- `memesh agent setup`, `memesh briefing`, `memesh config set`, and
-  `memesh dream accept` now have more complete `--help` text (the exact
-  `briefing` levels and how to set them, which `agent setup` hosts require it
-  vs. auto-register, and what `dream accept` actually does per proposal kind).
-- `memesh delegation record` now takes a required `--source <name>` instead of
-  always tagging the record `deepseek-worker`. Any delegate worker can record
-  a delegation, not only the DeepSeek worker. The record's identity now folds
-  in `--source`, so the same prompt+envelope recorded under two different
-  sources are stored as two records instead of the second silently colliding
-  with the first. One side effect: re-recording a pre-upgrade envelope now
-  creates a new record instead of the usual no-op, since the naming scheme
-  changed; existing records are unaffected and `delegation verify` still
-  works on them.
+- Briefings prioritize recent decisions and select up to five lessons. Handoff, task state, inbox notices, ranked/global memories, and injected index share a 4000-character limit; the standalone index can show more.
+- `message discover` reports an actionable router error. MCP prompts restart when loaded code is stale. Help for `agent setup`, `briefing`, `config set`, and `dream accept` is clearer.
+- `delegation record` requires `--source <name>` and includes it in record identity. Re-recording an older envelope creates a new record; existing records remain verifiable.
 
 ### Fixed
 
-- When `handoff-capture` repeatedly skips because its handoff was archived,
-  `memesh doctor` offers a restore command only if the recent outcome records
-  identify one complete, shell-safe name. Otherwise it gives an archived-memory
-  lookup command rather than guessing a name. The Dashboard Doctor banner
-  shows the corresponding guidance. Doctor's bounded outcome window does not
-  diagnose every historical handoff.
-
-- `POST /v1/config` no longer answers 400 for a change it has already saved
-  when the stored `briefing` is not a known level: changing another setting
-  (for example `autoUpdate`) in that state used to write the change and then
-  report a failure. The stored `briefing` value is left as it was.
-- **`npm run qa:pre-release`'s `verify:artifact` step (the full isolated test
-  suite plus two packaged-artifact runs — several minutes) no longer re-runs
-  back to back for an unchanged tree, when called from `finish-release.mjs`.**
-  `finish-release.mjs --dry-run` immediately followed by the real run used to
-  pay for it twice. It now writes a tree-hash receipt to
-  `.qa/verify-artifact-receipt.json` on a pass and reuses it the next run if
-  the tree still matches, but only when `finish-release.mjs`'s
-  `MEMESH_FINISH_RELEASE_TAGGING` marker is set — that step's result also
-  depends on the current branch, local git tags and the live npm advisory
-  database, none of which a tree hash covers, so a bare `npm run
-  qa:pre-release` (no marker: CI, a manual run) never reads or writes this
-  cache and always runs fresh. A failing run is never cached either way.
-  `qa:ui-review` and `audit:memory` stay uncached regardless — the first
-  already binds itself to the exact commit, and the second reads this
-  machine's live, mutable graph, which a git tree hash cannot see.
-- `dream accept`'s and `agent setup`'s help text previously said things that
-  weren't true for several cases (e.g. claiming every proposal kind archives
-  its sources, or that setup is optional for the managed Codex runner).
+- Doctor offers a handoff restore command only for one complete, shell-safe archived name; otherwise it directs a lookup. Its recent window cannot cover every historical handoff.
+- Changing another setting no longer reports HTTP 400 after saving when the stored briefing level is unrecognized.
+- For unchanged trees, consecutive release-finish runs reuse passing artifact verification. Standalone QA and failures run fresh; UI-review evidence is rechecked; the live-memory audit runs fresh.
 
 ## [4.10.4] — 2026-09-23
 

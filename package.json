@@ -1,6 +1,6 @@
 {
   "name": "@pcircle/memesh",
-  "version": "4.10.4",
+  "version": "4.10.5",
   "description": "MeMesh — local collaboration for AI coding agents. Share memory across sessions, exchange task messages, and preserve work context. One SQLite file; no cloud required.",
   "main": "dist/index.js",
   "type": "module",
