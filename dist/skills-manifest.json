@@ -118,8 +118,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "b6441e0a5b93ba865221236056c27665924db40229ad83e65f1a3ea3941fb4ba",
-      "bytes": 100910
+      "sha256": "00a959a603d88dbcaf90e556b9cb2b2aaa1633f773c127f1cc415d961d4ce9d2",
+      "bytes": 101444
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",

@@ -1438,7 +1438,7 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
     .prepare('INSERT OR IGNORE INTO entities (name, type, metadata, title) VALUES (?, ?, ?, ?)')
     .run(name, type, JSON.stringify(insertMetadata), title ?? null);
   const isNew = insertResult.changes > 0;
-  const row = db.prepare('SELECT id, title, status, metadata FROM entities WHERE name = ?').get(name);
+  const row = db.prepare('SELECT id, type, title, status, metadata FROM entities WHERE name = ?').get(name);
   if (!row) return null;
   const id = row.id;
 
@@ -1466,6 +1466,15 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
   // this branch preserves the separate whole-entity archive contract.
   if (replace && !isNew && row.status === 'archived') {
     return { id, isNew: false, archived: true };
+  }
+
+  // The handoff's name is `session-handoff:<project>`, and nothing stops a user
+  // from storing a different kind of memory under it. The Stop hook must not
+  // overwrite that memory (nor clear its trust marks): refuse BEFORE anything
+  // is changed. The throw rolls back the transaction, the hook records an
+  // error, and the row stays exactly as it was.
+  if (localHandoff && !isNew && row.type !== type) {
+    throw new Error(`"${name}" is stored as type ${row.type}, not ${type}; the Stop hook leaves it alone`);
   }
 
   // Title update on an EXISTING entity — INSERT OR IGNORE never touches

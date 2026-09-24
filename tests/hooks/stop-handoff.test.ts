@@ -461,6 +461,51 @@ describe('Stop hook: the session handoff', () => {
       expect(after.ftsNew).toEqual([]);
     }, 60_000);
 
+    it('heals unreadable metadata on a real local replacement, and says so on stderr', () => {
+      runStop({ last_assistant_message: 'CORRUPT-OLD: a first handoff whose metadata is about to become unreadable garbage.' });
+      const db = new MemeshDatabase(dbPath());
+      db.prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('garbage{', entityName);
+      db.close();
+      expect(start()).not.toContain('CORRUPT-OLD');
+
+      const r = runStop({ last_assistant_message: 'CORRUPT-NEW: the next local Stop replaces the text, so the handoff can be trusted again.' });
+      expect(r.stderr).toMatch(/healed corrupted metadata for entity \d+/);
+      expect(metadata()).toEqual({});
+      expect(start()).toContain('CORRUPT-NEW');
+    }, 90_000);
+
+    it('leaves a memory of another type that happens to use the handoff\'s name alone', () => {
+      // Make the database with another project's Stop, then store a NOTE
+      // under this project's handoff name, imported and untrusted.
+      const other = path.join(home, 'work', 'gamma');
+      fs.mkdirSync(other, { recursive: true });
+      runStop({ last_assistant_message: 'A first Stop in another project, only here to create the database and its schema.', cwd: other });
+      const db = new MemeshDatabase(dbPath());
+      const id = db.prepare('INSERT INTO entities (name, type, metadata) VALUES (?, ?, ?)')
+        .run(entityName, 'note', JSON.stringify(IMPORT_MARKS)).lastInsertRowid as number;
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'USER-NOTE: the user stored this themselves.');
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'user-tag');
+      db.close();
+      const before = { ...handoffRows(), metadata: metadata() };
+
+      runStop({ last_assistant_message: 'A normal handoff message, long enough to be stored, that must not replace the user note.' });
+      expect(outcomes().at(-1)).toMatchObject({ outcome: 'error' });
+      const after = { ...handoffRows(), metadata: metadata() };
+      expect(after.entities).toEqual(before.entities);
+      expect(after.entities[0]).toMatchObject({ type: 'note', status: 'active' });
+      expect(after.observations).toEqual(['USER-NOTE: the user stored this themselves.']);
+      expect([...after.tags].sort()).toEqual([...before.tags].sort());
+      expect(after.metadata).toEqual(before.metadata);
+
+      // Archived keeps precedence: an archived note under that name is a skip, not an error.
+      const db2 = new MemeshDatabase(dbPath());
+      db2.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(id);
+      db2.close();
+      runStop({ last_assistant_message: 'Another normal handoff message; the archived note must be skipped exactly as forget left it.' });
+      expect(outcomes().at(-1)?.reason).toMatch(/archived by forget/);
+      expect(handoffRows().observations).toEqual(['USER-NOTE: the user stored this themselves.']);
+    }, 90_000);
+
     it('survives a real export and import into a fresh home, then a local Stop shows it', () => {
       runStop({ last_assistant_message: 'EXPORTED-TEXT: written on the first machine before the move, with a next step at the end.' });
       const bundle = path.join(home, 'bundle.json');
