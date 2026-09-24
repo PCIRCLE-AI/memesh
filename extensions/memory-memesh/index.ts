@@ -243,7 +243,7 @@ interface RecallCooldown {
 export default {
   id: "memory-memesh",
   name: "Memory (MeMesh)",
-  description: "MeMesh HTTP API-backed memory with auto-recall/capture",
+  description: "MeMesh HTTP API-backed memory with automatic recall and explicit memory tools; no automatic capture",
   kind: "memory" as const,
   configSchema: memeshConfigSchema,
 
@@ -430,7 +430,7 @@ export default {
       return {
         name: "memory_forget",
         label: "Memory Forget",
-        description: "Delete memories matching a search query. Use to remove outdated information.",
+        description: "Archive up to 20 matching agent-scoped memories immediately; no preview or confirmation.",
         parameters: Type.Object({
           query: Type.String({ description: "Search query for memories to forget" }),
         }),

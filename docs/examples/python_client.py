@@ -6,6 +6,11 @@ NOT a maintained package. Covers recall/remember/forget/health against the docum
 {success, data} / {success: false, errorCode, error} envelope. Loopback-only by default
 (memesh serve on 127.0.0.1); set bearer_token for remote instances.
 
+Running the __main__ example writes a persistent memory named python-example
+to the server's active database. Use a disposable server data directory
+(MEMESH_DIR and MEMESH_DB_PATH), or archive it afterward with
+`memesh forget --name "python-example"` (archive is not permanent deletion).
+
 Requires: requests (pip install requests)
 API Reference: https://github.com/PCIRCLE-AI/memesh/blob/main/docs/api/API_REFERENCE.md
 """
@@ -33,7 +38,9 @@ class MemeshClient:
         return result['data']
 
     def recall(self, query: str = "", limit: int = 10) -> Dict[str, Any]:
-        """Recall memories by query. Returns {entities: [...], conflicts: [...]}."""
+        """Recall by local text search. Returns entities and retrieval metadata;
+        conflicts is present only when returned memories have a stated conflict.
+        """
         return self._post('/v1/recall', {'query': query, 'limit': limit})
 
     def remember(self, name: str, type: str, observations: List[str],
@@ -55,7 +62,7 @@ class MemeshClient:
         return r.json()['data']
 
 
-# Example usage (loopback, no auth)
+# Example usage (loopback, no auth). This writes python-example to the active DB.
 if __name__ == '__main__':
     client = MemeshClient()
 

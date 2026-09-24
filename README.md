@@ -3,7 +3,7 @@
 <p align="center">
   <h1 align="center">MeMesh</h1>
   <p align="center">
-    <strong>A memory for your AI coding agent that survives between sessions.</strong><br />
+    <strong>A local collaboration layer for AI coding agents.</strong><br />
     One SQLite file. No Docker. No cloud required.
   </p>
   <p align="center">
@@ -18,15 +18,16 @@
 
 ## What it does
 
-Each session, your AI coding agent starts from zero. It proposes the approach you rejected last month, trips over the same failing test, and asks you to explain the architecture it helped design.
+Switching sessions or coding agents can mean repeating a decision, explaining the same architecture, or revisiting a fix that was already found.
 
-MeMesh remembers for it. Claude Code hooks capture and restore routine context; supported clients share the same local SQLite database through their documented integration. It works with Claude Code, Codex, Cursor and other MCP clients.
+MeMesh lets agents share memory and exchange messages locally. Its main uses are carrying your preferences, decisions, and lessons across sessions; sending work, questions, progress, and results between agents; and keeping a handoff of where work stopped so a later session has context to check. Claude Code and Codex are primary examples; Cursor and other MCP clients can use the documented integrations. Automatic capture and delivery depend on the host integration below.
 
 ```
    you work with the agent
             |
             v
    +------------------+      +------------------+
+   |  Claude Code     |      |  Claude Code     |
    |  capture         |      |  recall          |
    |  sessions,       | ---> |  at session      |
    |  commits, fixes  |      |  start and       |
@@ -43,6 +44,7 @@ MeMesh remembers for it. Claude Code hooks capture and restore routine context; 
 - **Capture, recall, reminders, and safeguards at the right time.** MeMesh ships **9 hooks** (nine hook commands) across its Claude Code and Codex integrations: eight Claude Code hooks run at session start, before file edits, after `git commit`, after a plan is approved or a question answered, when Claude stops, before context compaction, when you say "remember this" (5 languages), and before a risky command that repeats an accepted lesson. The plan/question and "remember this" hooks only remind the agent to call `remember`; the ninth command handles both Codex SessionStart and SessionEnd to register and retire an eligible ordinary Codex CLI session.
 - **One memory for all your tools.** A decision stored from Claude Code is available to Codex or Cursor the next day.
 - **Agents can leave each other messages.** A durable inbox survives restarts; on macOS or Linux, an ordinary Codex CLI thread with the MeMesh plugin can keep a bounded post-turn native queue window and consume the accepted message when that same thread resumes.
+- **Keep a work handoff.** Claude Code can save its latest substantive reply for the next session in the same project. Use `task_state` to record a stated goal, next step, blocker, or completion, and `message` to send evidence locations or follow-up questions to an exact recipient.
 - **A dashboard** to browse it all: 4 tabs, 11 languages, at `http://localhost:3737/dashboard`.
 
 ---
@@ -60,7 +62,7 @@ MeMesh remembers for it. Claude Code hooks capture and restore routine context; 
 | Your own scripts and apps | HTTP API from `memesh serve` | [docs/platforms/universal.md](docs/platforms/universal.md) |
 | ChatGPT, Gemini web and other hosted chat | HTTP API through a local bridge you run | [docs/platforms/README.md](docs/platforms/README.md) |
 
-Claude Code's eight hooks provide automatic capture, recall, reminders, and safeguards. The Codex plugin wires its SessionStart integration and MCP tools automatically. MCP-only clients call `recall` and `briefing` themselves.
+Claude Code's eight hooks provide automatic capture, recall, reminders, and safeguards. The Codex plugin wires its SessionStart companion and MCP tools for eligible ordinary CLI threads; it does not provide Claude Code's full capture hook set or automatically load a briefing. In Codex, including with the plugin, and in MCP-only clients, call `briefing` at session start and `recall` for specific questions.
 
 Recall and capture are local and deterministic: SQLite FTS5 search, explicit memory tools, and rule-based hooks. This version does not configure or call an LLM, embedding, or vector provider. Retired provider settings from older versions stay on disk but are ignored; `memesh doctor` names the top-level keys without reading or printing their values.
 
@@ -130,6 +132,10 @@ Two things worth knowing once you have memories:
 - `forget` archives a memory instead of deleting it. A newer memory can replace an older one.
 - A running agent can call `work_package` to prepare one calendar digest or bounded visible turns from the newest eligible recent Claude Code transcript. Transcript mode requires the client's single matching MCP file root; missing or ambiguous roots and bounded scan failures fail closed. Submission retains redacted source turns and only stages pending human review; agents cannot apply or reject it, and MeMesh calls no provider. The exact discovery bounds are in the [API reference](docs/api/API_REFERENCE.md#work_package).
 
+For a handoff, Claude Code's Stop hook saves its latest substantive reply as a replaceable project note. A recent, trusted note appears ahead of ranked memories in the next Claude Code session and in `briefing` on any client; it is a reminder to check, not a guaranteed task restart. Record only the work state you actually know with `task_state`, and send evidence locations or follow-up questions with `message` ([agent messaging guide](docs/platforms/agent-messaging.md)). A stored message is available for recovery, but delivery, fetch, and native queue acceptance do not mean the recipient completed the task.
+
+In the briefing, recent project decisions get priority over routine activity, and up to five project lessons are selected separately. The handoff, displayed task state, ranked memories, global memory at `full`, and injected index share one 4000-character memory-block limit. If the index says more memories were omitted, use `recall`; `memesh briefing --index` shows the standalone index under its separate 40-line/3072-byte caps.
+
 Full command and tool reference: [docs/api/API_REFERENCE.md](docs/api/API_REFERENCE.md). How it is built: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
@@ -146,7 +152,7 @@ Full command and tool reference: [docs/api/API_REFERENCE.md](docs/api/API_REFERE
 | `import` | Import memories with merge strategies (skip / overwrite / append) |
 | `learn` | Record structured lessons from mistakes (error, root cause, fix, prevention) |
 | `task_state` | Read or record where the work stands — goal, next step, blocker, what was just finished |
-| `briefing` | The assembled work topology for any MCP client — this project's decisions, lessons, knowledge and recent activity by default (`minimal`); `standard` adds the fresh task state and closes with a capped index of the project's durable memories, `full` adds other projects and global memory (the `briefing` setting — `minimal` / `standard` / `full`); generic context stays quiet, while exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology for any MCP client — an eligible project handoff precedes ranked memories at every level; `minimal` then shows this project's decisions, lessons, knowledge and recent activity, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze your work patterns — schedule, tools, strengths, learning areas |
 | `improvement` | Stage an evidence-linked product improvement for human review, or read its status; agents cannot accept or reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages. Durable JSON payload max: 64 KiB; complete native envelope max: 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` failures. Native acceptance, discovery, poll, and fetch never imply acknowledgement or disposition |
@@ -160,7 +166,7 @@ Full command and tool reference: [docs/api/API_REFERENCE.md](docs/api/API_REFERE
 **Agent messaging, the exact rules** (full guide: [docs/platforms/agent-messaging.md](docs/platforms/agent-messaging.md)):
 
 - Works today: an MCP, HTTP, or CLI sender can durably send one untrusted JSON-encoded payload of at most 65,536 UTF-8 bytes (64 KiB) to one named local recipient. A receiver can fetch it separately, resume from an opaque cursor after restart, and record intake, acknowledgement, workflow disposition, and host activation as separate facts.
-- With the MeMesh Codex plugin enabled, each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity; no manual `agent setup` is required. SessionStart launches an owner-private detached companion because Codex reaps an async hook child when its CLI process exits. SessionEnd keeps a bounded 45-second idle queue window, resume replaces the prior exact generation, and expiry removes the registration. A message accepted during that idle window becomes model-visible when the same thread resumes; it is not a claim that a stopped UI was awakened. `memesh agent setup codex-session` remains available only when one workspace needs a stable named principal. The complete native envelope, including routing metadata and payload, is capped separately at 16,384 bytes (16 KiB). An exact-session send returns success only after that native queue accepts it; an oversized full envelope reports `native_message_too_large`, an unreachable local router reports `router_unreachable`, and other unavailable or rejected sessions report `recipient_unavailable`. Scoped recovery data remains durable for all sender-side and recipient-side failures. Principal targets retain durable store-and-forward behavior. Native acceptance is not acknowledgement or disposition, and native messages must contain no secrets.
+- With the MeMesh Codex plugin enabled, each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity; no manual `agent setup` is required. SessionStart launches an owner-private companion. SessionEnd keeps a bounded 45-second idle queue window, resume replaces the prior exact generation, and expiry removes the registration. A message accepted during that idle window becomes model-visible when the same thread resumes; it is not a claim that a stopped UI was awakened. `memesh agent setup codex-session` remains available only when one workspace needs a stable named principal. The complete native envelope, including routing metadata and payload, is capped separately at 16,384 bytes (16 KiB). An exact-session send returns success only after that native queue accepts it; an oversized full envelope reports `native_message_too_large`, an unreachable local router reports `router_unreachable`, and other unavailable or rejected sessions report `recipient_unavailable`. Scoped recovery data remains durable for all sender-side and recipient-side failures. Principal targets retain durable store-and-forward behavior. Native acceptance is not acknowledgement or disposition, and native messages must contain no secrets.
 - A stopped, missing, or disconnected Codex session is not woken up or replaced, and a failed exact-session native delivery is not replayed automatically; the sender must retry deliberately. Its scoped recovery data stays available; `memesh message storage report` shows what is stored. Native delivery works on macOS and Linux only.
 - This documented native path covers ordinary Codex CLI. Do not assume Codex Desktop or an unattached task registers unless that exact running session appears in `message discover`; this is an evidence boundary, not a claim that those hosts are universally incompatible.
 - When pairing Claude Channel with automatic Codex registration, pass the complete `project` value from `memesh briefing --json` to `memesh agent setup claude`; the repository basename is not the same routing scope.

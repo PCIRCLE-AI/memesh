@@ -26135,7 +26135,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_remember",
-        description: "Store knowledge as an entity with observations, tags, and relations. Pass only `note` to have title, observations and name derived from free text.",
+        description: 'Store knowledge as an entity with observations, tags, and relations. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict.',
         parameters: {
           type: "object",
           properties: {
@@ -26153,12 +26153,12 @@ function exportOpenAITools() {
                 type: "object",
                 properties: {
                   to: { type: "string", description: "Name of the target entity to link to" },
-                  type: { type: "string", description: "Relation type, e.g. depends-on, supersedes, relates-to" }
+                  type: { type: "string", description: 'Relation type. "supersedes" archives the target; "contradicts" marks a conflict when either memory is recalled. Other labels, such as "depends-on", are inert.' }
                 },
                 required: ["to", "type"]
               }
             },
-            namespace: { type: "string", enum: ["personal", "team", "global"], description: "Storage scope (default: personal)" }
+            namespace: { type: "string", enum: ["personal", "team", "global"], description: "Storage scope. New memories default to personal; omit for an existing memory to keep its current scope. Supplying a different scope moves it." }
           },
           anyOf: [
             { required: ["note"] },
@@ -26179,9 +26179,9 @@ function exportOpenAITools() {
             query: { type: "string", description: "Search query" },
             tag: { type: "string", description: "Filter by tag" },
             limit: { type: "number", description: "Max results (1-100, default: 20)" },
-            include_archived: { type: "boolean", description: "Include soft-archived (superseded) entities (default: false)" },
+            include_archived: { type: "boolean", description: "Include archived entities, including forgotten and superseded memories (default: false)" },
             namespace: { type: "string", enum: ["personal", "team", "global"], description: "Restrict to a storage scope" },
-            cross_project: { type: "boolean", description: "Search across all projects instead of only the current one (default: false)" }
+            cross_project: { type: "boolean", description: "Ignore the optional tag filter when true. False keeps a supplied tag filter; it does not implicitly restrict results to the current project." }
           }
         }
       }
@@ -26205,13 +26205,13 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_export",
-        description: "Export memories as a portable JSON snapshot for sharing or backup. Returns a structured object with entity data.",
+        description: "Export memories as portable JSON. The default 1000-entity limit may return a subset; check `truncated` and raise the limit before treating it as a complete backup.",
         parameters: {
           type: "object",
           properties: {
             tag: { type: "string", description: "Filter by tag (optional)" },
             namespace: { type: "string", description: "Filter by namespace: personal, team, or global (optional)" },
-            limit: { type: "number", description: "Max entities to export (default: 1000, max: 10000)" }
+            limit: { type: "number", description: "Max entities to export (default: 1000, max: 10000). Check `truncated` in the result before using this as a full backup." }
           }
         }
       }
@@ -26220,7 +26220,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_import",
-        description: "Import memories from a JSON export snapshot. Imported entities are tagged trust=untrusted until reviewed.",
+        description: "Import memories from a JSON export snapshot. Imported content is marked untrusted in metadata, not with a tag. Overwrite deletes an existing entity's previous observations and tags instead of archiving them.",
         parameters: {
           type: "object",
           properties: {
@@ -26232,7 +26232,7 @@ function exportOpenAITools() {
             merge_strategy: {
               type: "string",
               enum: ["skip", "overwrite", "append"],
-              description: "Required. How to handle existing entities: skip, overwrite (replace), or append (merge observations)."
+              description: "Required. How to handle existing entities: skip leaves them alone; append adds observations; overwrite deletes previous observations and tags, then replaces them. Overwrite is not an archive and cannot be undone."
             },
             restore_archived: {
               type: "boolean",
@@ -26265,7 +26265,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_task_state",
-        description: "Read or update where the work stands on this project (goal, next, blocked, done). Call with no arguments to read. Record only what the user actually stated \u2014 never infer it from files edited.",
+        description: "Read or update where the work stands on this project (goal, next, blocked, done). Call with no arguments to read. Fresh state appears in a standard or full briefing; stale or unknown-age state becomes a one-line flag at every level, and minimal omits fresh state. Record only what the user actually stated \u2014 never infer it from files edited.",
         parameters: {
           type: "object",
           properties: {
@@ -26282,7 +26282,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_briefing",
-        description: "The assembled work topology for a project: decisions, lessons, knowledge, recent activity \u2014 and, at briefing level `standard` or `full` (not the default, `minimal`), where the work was left off. Call once at the start of a session to load project context.",
+        description: "The assembled work topology for a project: an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. `standard` and `full` (not the default `minimal`) also include fresh task state. Handoffs older than 14 days, undatable, more than five minutes future-dated, archived, or imported without a fresh local replacement are not auto-injected. Call once at the start of a session to load project context.",
         parameters: {
           type: "object",
           properties: {
@@ -56458,6 +56458,26 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     }
   }
 }
+function archivedHandoffName(file2) {
+  if (!Object.hasOwn(file2.hooks, "handoff-capture"))
+    return null;
+  const names = /* @__PURE__ */ new Set();
+  for (const r of file2.hooks["handoff-capture"]) {
+    if (r.outcome === "skipped" && r.reason === SKIP_REASONS.handoffArchived && typeof r.entity === "string")
+      names.add(r.entity);
+  }
+  if (names.size !== 1)
+    return null;
+  const [name] = names;
+  return SAFE_HANDOFF_NAME.test(name) ? name : null;
+}
+function archivedHandoffCheck(title, runs, name) {
+  const summary = `handoff-capture: ${runs} runs, 0 writes \u2014 the session handoff was archived with \`forget\`, so it is not updated any more.`;
+  if (name) {
+    return createCheck("capture-liveness", title, "warn", summary, `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart\`; the next Stop replaces it.`, { code: "capture-liveness.handoff-archived", params: { runs, name } });
+  }
+  return createCheck("capture-liveness", title, "warn", summary, "To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.", { code: "capture-liveness.handoff-archived-unnamed", params: { runs } });
+}
 function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs18.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
   const TITLE = "Capture liveness";
   if (autoCaptureOffSource() !== null) {
@@ -56471,7 +56491,8 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   } catch {
     raw = null;
   }
-  const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
+  const outcomeFile = parseHookOutcomes(raw);
+  const hooks = summarizeHookOutcomes(outcomeFile);
   let db2 = null;
   let types;
   let neverRan;
@@ -56554,9 +56575,11 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   if (verdict.silentHook) {
     const h = verdict.silentHook;
     const reason = h.dominantSkipReason ?? "no reason recorded";
-    const fix = h.hook === "handoff-capture" && reason === SKIP_REASONS.handoffArchived ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name \u2014 `memesh remember --name "session-handoff:<project>" --type session-handoff --obs "restart"`, with the exact name from `memesh recall session-handoff --include-archived` \u2014 and the next Stop replaces it.' : "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.";
+    if (h.hook === "handoff-capture" && reason === SKIP_REASONS.handoffArchived) {
+      return { check: archivedHandoffCheck(TITLE, h.triggeredRuns, archivedHandoffName(outcomeFile)), report };
+    }
     return {
-      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, fix, { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
       report
     };
   }
@@ -57422,7 +57445,7 @@ function formatDoctorReport(result, packageVersion2) {
   }
   return lines;
 }
-var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, MCP_PLACEHOLDER;
+var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
 var init_doctor = __esm({
   "dist/core/doctor.js"() {
     "use strict";
@@ -57453,6 +57476,7 @@ var init_doctor = __esm({
     ];
     LOCALE_H2_TOLERANCE = 1;
     MCP_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
+    SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
   }
 });
 

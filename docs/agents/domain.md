@@ -31,12 +31,12 @@ The fourth row is the one the sweep misses, and it is why this table exists.
 
 For the root row, the scripts in `package.json` are the authority on which of
 those directories is first-class, and they disagree slightly, so read both:
-`lint` covers `src/ scripts/ tests/ dashboard/src/`, and `typecheck` runs
-`tsconfig.check.json`, whose `include` is `src/**/*.ts`, `tests/**/*.ts` and
-`*.config.ts`, and whose `exclude` carves `tests/dashboard/**` back out — 36
-files, so "tests are typechecked" is true of most of them, not all. That last
-`include` entry pulls in `vitest.config.ts` and nothing else —
-`tsc --listFiles` names exactly one root file. So `benchmarks/` is checked by
+`lint` selects tracked files under `src/ scripts/ tests/ dashboard/src/`, and
+`typecheck` runs both `tsconfig.check.json` and `tsconfig.check-dashboard.json`.
+The first covers root TypeScript source, `.ts` tests outside `tests/dashboard/`,
+and root `*.config.ts`; the second covers dashboard source, `.tsx` tests, and
+the dashboard's `.ts` tests. Read both configurations for the current file
+scope instead of relying on a fixed file count. `benchmarks/` is checked by
 neither script, and `eslint.config.js` is checked by neither either: it is
 `.js`, so the `*.config.ts` glob misses it, and `lint`'s path list never
 reaches the repository root. `dist/` holds the largest file count here and is

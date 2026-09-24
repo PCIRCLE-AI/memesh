@@ -9,7 +9,8 @@ host is recallable from all of them. Not installed yet? Follow
 
 1. **Session start — load, don't re-explore.** Call the `briefing` tool once
    (CLI: `memesh briefing`). It returns the assembled work topology for the
-   current project: decisions, lessons, knowledge and recent activity are
+   current project: an eligible handoff precedes ranked memories at every level
+   (repository facts may come first); decisions, lessons, knowledge and recent activity are
    always included; the stated goal / next / blocked / done and the capped
    durable-memory index (`memesh briefing --index` prints just that, one
    line each with its `[mem:id]` handle) are added at `standard` and up —
@@ -29,7 +30,7 @@ host is recallable from all of them. Not installed yet? Follow
    is missing/unreadable/implausibly future-dated, is not injected as
    current at any level — only one line saying so and how to see it
    (`memesh task`). Only `minimal` can be fully silent: when the project has
-   no ranked memories, no stale-state flag and no unread message (a fresh
+   no eligible handoff, ranked memories, stale-state flag or unread message (a fresh
    task state may exist — `minimal` does not show it — and there is no
    index to fall back to), nothing is injected at all, the repository state
    included — no empty framing; `standard`/`full` still show the index's
@@ -42,6 +43,13 @@ host is recallable from all of them. Not installed yet? Follow
    `[mem:id]`. Treat the index as "recent, capped" — when it says there is
    more, call `recall` rather than assuming the index already covers it.
    Read the index instead of re-reading the repo to reconstruct context.
+   Recent project decisions take priority over routine activity, and up to
+   five project lessons are selected separately. The handoff, displayed task
+   state, ranked memories, global memory at `full`, and injected index share
+   one 4000-character memory-block limit. The standalone `--index` output
+   keeps its own 40-line / 3072-byte caps, so it can list more than the index
+   inside a crowded briefing. Use `recall` for omitted memories; `memesh task`
+   shows the complete stored task state when its displayed lines are shortened.
 2. **When the user states a goal, a next step, or a blocker — record it.**
    Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`).
    Fresh state is injected at the start of the next session at
@@ -77,10 +85,11 @@ host is recallable from all of them. Not installed yet? Follow
    record, and it cannot reach an agent on a different host or one that is
    not running. Generic `briefing` has no recipient identity and stays quiet;
    so do the SessionStart and prompt hooks, unless the session declared who it
-   is by starting with `MEMESH_RECIPIENT=<id>`, in which case they say how many
-   messages wait for that recipient and in which project. Check an inbox with
-   the exact `project` and `recipient`; poll first, then fetch each returned
-   `message_id`, then record `intake` for it: fetching alone does not
+   is by starting with `MEMESH_RECIPIENT=<id>`, in which case they can show how
+   many messages wait for that recipient and in which project. A length-limited
+   briefing can omit some project notices; those messages remain pending.
+   Check a known inbox with the exact `project` and `recipient`; poll first,
+   then fetch each returned `message_id`, then record `intake` for it: fetching alone does not
    acknowledge and does not end the reminder.
 
 ## All 12 MCP tools
@@ -95,7 +104,7 @@ host is recallable from all of them. Not installed yet? Follow
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
 | `learn` | Record a structured lesson: error, root cause, fix, prevention |
 | `task_state` | Read or update where the work stands: goal / next / blocked / done |
-| `briefing` | The assembled work topology — this project's decisions, lessons, knowledge and recent activity by default (`minimal`); `standard` adds the fresh task state and closes with a capped index of the project's durable memories, `full` adds other projects and global memory (the `briefing` setting — `minimal` / `standard` / `full`); exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
 | `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition |
@@ -148,7 +157,7 @@ host is recallable from all of them. Not installed yet? Follow
 Under Claude Code with the MeMesh plugin, hooks capture automatically:
 
 - **SessionStart** injects the work topology (the same memory block
-  `briefing` returns, plus a work-package notice at `full` that `briefing`
+  `briefing` returns, with an eligible exact-project handoff ahead of ranked memories after optional repository facts, plus a work-package notice at `full` that `briefing`
   never includes) at the top of the session, whenever the configured level
   has something to show; an empty project at `minimal` injects nothing.
 - **PreToolUse (Edit|Write)** surfaces memories related to the file being
@@ -157,7 +166,7 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
 - **PostToolUse (ExitPlanMode|AskUserQuestion)** reminds you to `remember` a
   decision just made — once per tool per session. It only reminds; unlike
   the hooks above, it writes nothing to the graph itself.
-- **Stop** captures bounded session evidence, including observed error/fix signals.
+- **Stop** captures bounded session evidence, including observed error/fix signals, and replaces the exact project's handoff with the latest sufficiently long cleaned assistant reply. A skipped capture leaves the old handoff unchanged; it may describe a side question, so verify it before acting.
   It also ingests the project's Claude Code memory directory
   (`~/.claude/projects/<slug>/memory/*.md` — one memory per file with
   `name`/`description`/`metadata.type` frontmatter, tagged `source:note-file`;

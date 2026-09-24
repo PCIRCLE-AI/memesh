@@ -13,6 +13,7 @@ import {
 import type { UpdateCheck } from '../../src/core/version-check.js';
 import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
 import { AUTO_CAPTURE_TAG } from '../../src/core/types.js';
+import { getProjectName } from '../../src/core/paths.js';
 import type { InstallChannel } from '../../src/core/install-channel.js';
 
 /**
@@ -319,46 +320,101 @@ describe('doctor: capture-liveness', () => {
     }
   });
 
-  it('a forgotten handoff gets advice that can work, not "reinstall the hooks"', async () => {
-    memeshDirWith([
-      ...Array.from({ length: 6 }, (_, i) => ({
-        hook: 'session-summary', at: `2026-09-0${i + 1}T01:00:00.000Z`, host: 'claude-code' as const,
-        outcome: 'wrote' as const, entity: `session-s${i}-summary`,
-      })),
-      ...skips('handoff-capture', 6, SKIP_REASONS.handoffArchived),
-    ]);
-    const result = await run();
-    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
-    expect(check.code).toBe('capture-liveness.silent-hook');
-    expect(check.params?.hook).toBe('handoff-capture');
-    expect(check.fix).not.toContain('install-hooks');
+  describe('a forgotten (archived) session handoff (#436)', () => {
+    const LONG = 'Back on track: the parser tests pass and the next step is to open the pull request once CI is green.';
+    const healthySummary = () => Array.from({ length: 6 }, (_, i) => ({
+      hook: 'session-summary', at: `2026-09-0${i + 1}T01:00:00.000Z`, host: 'claude-code' as const,
+      outcome: 'wrote' as const, entity: `session-s${i}-summary`,
+    }));
+    const archivedSkips = (entity?: string) => Array.from({ length: 6 }, (_, i) => ({
+      hook: 'handoff-capture', at: `2026-09-0${i + 1}T02:00:00.000Z`, host: 'claude-code' as const,
+      outcome: 'skipped' as const, reason: SKIP_REASONS.handoffArchived, ...(entity ? { entity } : {}),
+    }));
+    const copyable = (fix: string | undefined) => [...(fix ?? '').matchAll(/`(memesh(?:\s+[^`]+)?)`/g)].map((m) => m[1]);
 
-    // The advice is only worth giving if it works: run the advised command,
-    // as written, against a graph holding an archived handoff.
-    const advised = /`(memesh remember [^`]+)`/.exec(check.fix ?? '')?.[1];
-    expect(advised, 'the fix names no memesh remember command').toBeDefined();
-    const name = 'session-handoff:acme';
-    const args = (advised!.match(/"[^"]*"|\S+/g) ?? []).slice(1)
-      .map((a) => a.replace(/^"|"$/g, '').replace('session-handoff:<project>', name));
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-advice-'));
-    tempRoots.push(home);
-    const dbFile = path.join(home, 'knowledge-graph.db');
-    try { closeDatabase(); } catch { /* none open */ }
-    openDatabase(dbFile);
-    const db = getDatabase();
-    const id = db.prepare("INSERT INTO entities (name, type, status) VALUES (?, 'session-handoff', 'archived')").run(name).lastInsertRowid;
-    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'the old handoff');
-    closeDatabase();
+    it('names the exact handoff, and the copied command plus the next Stop bring it back', async () => {
+      const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-advice-')));
+      tempRoots.push(home);
+      const proj = path.join(home, 'proj-safe');
+      fs.mkdirSync(proj);
+      const name = `session-handoff:${getProjectName(proj)}`;
+      const dbFile = path.join(home, 'knowledge-graph.db');
+      try { closeDatabase(); } catch { /* none open */ }
+      openDatabase(dbFile);
+      try {
+        const db = getDatabase();
+        const id = db.prepare("INSERT INTO entities (name, type, status) VALUES (?, 'session-handoff', 'archived')").run(name).lastInsertRowid;
+        db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'the old handoff');
+      } finally {
+        closeDatabase();
+      }
 
-    const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbFile };
-    delete env.MEMESH_DIR;
-    const r = spawnSync('node', [path.resolve('dist/transports/cli/cli.js'), ...args], { env, encoding: 'utf8', timeout: 30_000 });
-    expect(r.status, `the advised command failed: ${r.stderr}`).toBe(0);
-    openDatabase(dbFile);
-    const row = getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(name) as { status: string };
-    closeDatabase();
-    expect(row.status, 'the advised command did not re-activate the handoff').toBe('active');
-  }, 60_000);
+      // A later, unrelated skip (an acknowledgement turn) must not hide the
+      // name the archived records carry.
+      memeshDirWith([...healthySummary(), ...archivedSkips(name), {
+        hook: 'handoff-capture', at: '2026-09-09T03:00:00.000Z', host: 'claude-code', outcome: 'skipped', reason: SKIP_REASONS.handoffTooShort,
+      }]);
+      const result = await run();
+      const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+      expect(check.code).toBe('capture-liveness.handoff-archived');
+      expect(check.params?.name).toBe(name);
+      expect(check.fix).not.toContain('install-hooks');
+      const commands = copyable(check.fix);
+      expect(commands, 'exactly one copyable command').toHaveLength(1);
+
+      const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbFile };
+      delete env.MEMESH_DIR;
+      const args = commands[0].split(/\s+/).slice(1);
+      const r = spawnSync('node', [path.resolve('dist/transports/cli/cli.js'), ...args], { env, encoding: 'utf8', timeout: 30_000 });
+      expect(r.status, `the copied command failed: ${r.stderr}`).toBe(0);
+
+      const stop = spawnSync('node', [path.resolve('scripts/hooks/session-summary.js')], {
+        input: JSON.stringify({ session_id: 's-restore', cwd: proj, hook_event_name: 'Stop', last_assistant_message: LONG }),
+        env, encoding: 'utf8', timeout: 30_000,
+      });
+      expect(stop.status).toBe(0);
+
+      openDatabase(dbFile);
+      try {
+        const db = getDatabase();
+        const row = db.prepare('SELECT id, status FROM entities WHERE name = ?').get(name) as { id: number; status: string };
+        expect(row.status, 'the copied command did not re-activate the handoff').toBe('active');
+        const texts = (db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(row.id) as Array<{ content: string }>).map((o) => o.content);
+        expect(texts, 'the next Stop did not replace the handoff').toEqual([LONG]);
+      } finally {
+        closeDatabase();
+      }
+      const outcomes = fs.readFileSync(path.join(home, 'hook-outcomes.jsonl'), 'utf8').split('\n').filter(Boolean)
+        .map((l) => JSON.parse(l)).filter((o) => o.hook === 'handoff-capture');
+      expect(outcomes.at(-1)).toMatchObject({ outcome: 'wrote', entity: name });
+    }, 60_000);
+
+    it.each([
+      ['no name recorded', undefined],
+      ['a label a shell would misread', 'session-handoff:my proj$(x)~' + 'a'.repeat(32)],
+      ['a name cut short by the record limit', 'session-handoff:' + 'p'.repeat(183)],
+      ['handoffs of two projects archived', ['session-handoff:proj-a~' + 'a'.repeat(32), 'session-handoff:proj-b~' + 'b'.repeat(32)]],
+    ])('offers no copyable remember command for %s, only the safe lookup', async (_label, entity) => {
+      const records = Array.isArray(entity)
+        ? [...archivedSkips(entity[0]).slice(0, 3), ...archivedSkips(entity[1]).slice(3)]
+        : archivedSkips(entity);
+      memeshDirWith([...healthySummary(), ...records]);
+      const result = await run();
+      const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+      expect(check.code).toBe('capture-liveness.handoff-archived-unnamed');
+      expect(check.params?.name).toBeUndefined();
+      expect(copyable(check.fix)).toEqual(['memesh recall session-handoff --include-archived']);
+      expect(check.fix).not.toContain('install-hooks');
+    });
+
+    it('any other silent hook keeps its reinstall advice', async () => {
+      memeshDirWith([...skips('session-summary', 6, SKIP_REASONS.tooLittleActivity)]);
+      const result = await run();
+      const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+      expect(check.code).toBe('capture-liveness.silent-hook');
+      expect(check.fix).toContain('memesh install-hooks');
+    });
+  });
 
   it('post-commit silence counts commits, not Bash calls, and quotes the commit reason', async () => {
     // The #321 shape inside a busy window: most runs are not commits, and

@@ -23,11 +23,13 @@ memesh status
 # Get all recent memories (structured output for analysis)
 memesh recall --limit 50 --json
 
-# Get memories by type for quality analysis
-memesh recall --tag "type:decision" --json
-memesh recall --tag "type:lesson_learned" --json
-memesh recall --tag "type:session_keypoint" --json
+# `--tag` filters actual tags; inspect each returned entity's `type` to group decisions, lessons, and session records.
 ```
+
+Recall is a bounded window, not a whole-database count. For an exact health
+score and factor totals, use the Dashboard Analytics view after `memesh serve`
+or its local `GET /v1/analytics` endpoint. If it is unavailable, omit the
+score and label any counts from recall as sample counts.
 
 If MCP `user_patterns` tool is available, also run it for work pattern analysis:
 ```json
@@ -36,7 +38,8 @@ user_patterns: {}
 
 ### Step 2: Analyze and report
 
-From the recalled data, compute and present:
+Use the analytics result for graph-wide totals and health factors; use recalled
+memories to illustrate findings. Present only fields you actually obtained:
 
 ```markdown
 ## Memory Health Report
@@ -47,10 +50,10 @@ From the recalled data, compute and present:
 - Knowledge types: N decisions, N patterns, N lessons, N auto-tracked
 
 ### Health Score: N/100
-- Activity: N% (accessed in last 30 days)
-- Quality: N% (high confidence, well-tagged)
-- Freshness: N% (new this week)
-- Self-Improvement: N% (lessons learned ratio)
+- Activity: N/30 points (active entities accessed in the last 30 days / all active entities)
+- Quality: N/30 points (active entities with confidence > 0.7 / all active entities)
+- Freshness: N/20 points (entities created in the last 7 days / all active entities, capped at 1)
+- Lessons: N/20 points (`lesson_learned` entity count / 5, capped at 1)
 
 ### Quality Issues Found
 
@@ -92,33 +95,9 @@ memesh remember --name "missing-knowledge" --type decision --obs "..."
 memesh recall --limit 5 --json    # confirm changes took effect
 ```
 
-## Documentation & Code Quality Checks
-
-**For comprehensive documentation synchronization and lint checks**, use:
-```bash
-@sa:comprehensive-code-review
-```
-
-This skill includes:
-- **Dim 17: Documentation Synchronization** — version consistency, API docs, architecture docs, feature docs, deprecated terms, breaking changes
-- **Dim 18: Code Style & Lint** — lint errors/warnings, security rules, disabled rules, style consistency
-
-**MeMesh-specific automation**:
-```bash
-# Quick verification (memesh-specific checks)
-node scripts/check-doc-claims.mjs
-# Exit code 0 = all checks pass
-
-# Lint check
-npm run lint  # 0 errors expected, ~83 warnings (technical debt)
-```
-
----
-
 ## Tips
 
 - Run every 1-2 weeks to keep memory healthy
-- Health score < 50 → too many stale or low-quality memories
+- Health score < 50 → inspect the four factor scores before recommending a cause
 - Noise > 80% → encourage deliberate `memesh remember` for decisions
 - Dashboard available at: http://localhost:3737/dashboard (run `memesh serve` first)
-- **Before merge**: Run documentation sync checklist above to prevent drift

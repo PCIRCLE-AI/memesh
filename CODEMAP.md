@@ -148,8 +148,8 @@ The same `operations.ts` memory functions run identically from all three transpo
   upgrade path it proves from `package.json` and the registry (`scripts/lib/upgrade-matrix.mjs`)
   instead of pinning a version pair. `npm run release:finish` (`scripts/finish-release.mjs`) runs
   `qa:pre-release` itself and blocks on its exit code, and requires a `qa:live-journey` receipt
-  under `.qa/` (named `<host>-report.json` — codex or claude, either satisfies it) that is
-  `PASS`, clean-tree, and names the exact commit being released
+  under `.qa/` for both Codex and Claude (separate `<host>-report.json` files), each
+  `PASS`, clean-tree, and naming the exact commit being released
   (`scripts/lib/release-preconditions.mjs`'s
   `findUsableLiveJourneyReceipt`) — real-credential checks CI cannot run, now required rather
   than merely available. After publishing, `npm run qa:post-release`

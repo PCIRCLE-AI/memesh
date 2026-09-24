@@ -6,7 +6,7 @@ user-invocable: true
 
 # MeMesh — AI Memory Management
 
-Persistent memory for AI agents. The point is continuity: the next session starts where this one stopped, instead of re-spending thousands of tokens re-discovering project state — and the human never has to re-explain it.
+Persistent memory for AI agents. Load the saved project context at session start so decisions and relevant work history need less rediscovery; verify any handoff against current files and the user's request.
 
 ## How to Access (auto-detect)
 
@@ -35,7 +35,7 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 | `import` | Import a JSON export with the required skip, append, or overwrite strategy |
 | `learn` | Record a structured lesson with error, fix, root cause, and prevention |
 | `task_state` | Read or update user-stated goal, next step, blocker, and finished work |
-| `briefing` | Assemble the current project's work topology — its decisions, lessons, knowledge and recent activity by default (`minimal`); `standard` adds the fresh task state and closes with a capped index of its durable memories, `full` adds other projects and global memory (the `briefing` setting — `minimal` / `standard` / `full`) |
+| `briefing` | Assemble the current project's work topology — an eligible handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows decisions, lessons, knowledge and recent activity, `standard` adds fresh task state and a capped durable-memory index, and `full` adds other projects and global memory |
 | `user_patterns` | Analyze work schedule, tool preferences, and focus areas |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept or reject it |
 | `message` | Discover live agents in one project, then contact one exact recipient with a bounded, untrusted payload. Native size and availability failures are distinct; acceptance, discovery, polling, and fetching do not acknowledge |
@@ -97,14 +97,22 @@ different discovery and native-routing scopes.
 Durable audit does not mean unbounded silent growth. Owners can inspect it with `memesh message storage report --cutoff <ISO timestamp>`, preview bounded terminal-payload tombstones with `memesh message storage prune --cutoff <ISO timestamp>`, and explicitly add `--apply`. Never prune unresolved/offline-pending work. `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES` is an optional owner policy; there is no default quota or automatic pruning.
 
 **SESSION START → load the briefing (once).**
-Call the `briefing` MCP tool or run `memesh briefing`. It returns the assembled
-work topology: this project's decisions and direction, lessons not to repeat,
+Call the `briefing` MCP tool or run `memesh briefing`. An eligible handoff from
+the same project appears ahead of ranked memories at every level, after optional
+repository facts; check its age and verify its
+claims before acting. The rest of the work topology covers decisions and direction, lessons not to repeat,
 what is known, and recent activity always; where the work was left off (goal /
 next / blocked / done) too at `standard`/`full` (not at the `briefing`
 setting's default, `minimal`).
 One call is cheaper than re-exploring the repo to reconstruct the same picture.
 `memesh briefing --index` returns only the index of durable memories — what is
-known here, one line each, without the ranked sections.
+known here, one line each, without the ranked sections. Recent project decisions
+take priority over routine activity, and up to five project lessons are selected
+separately. The handoff, displayed task state, ranked memories, global memory at
+`full`, and injected index share a 4000-character memory-block limit. The
+standalone index keeps its own 40-line / 3072-byte caps and can show more than
+the index inside a crowded briefing; use `recall` for omitted memories and
+`memesh task` for the complete stored task state.
 Generic briefing does not report unread durable messages: it has no recipient
 identity. The session-start hook and each prompt do report them, but only when
 the session declared who it is by starting with `MEMESH_RECIPIENT=<id>`. If you
@@ -112,9 +120,10 @@ already know the exact logical recipient, pass `recipient` with `project` (MCP) 
 `memesh briefing --project <name> --recipient <id>`. The scoped line names the
 project and recipient and directs you to `message poll` first, then `message
 fetch` each returned `message_id`, then record `intake` for it (the session-start
-and prompt reminders repeat until you do; fetching alone does not acknowledge).
-At zero
-unread it also says so explicitly if that exact recipient id has never been
+and prompt reminders can repeat until you do; fetching alone does not acknowledge).
+Length-limited briefing reminders can omit some project notices; the messages
+remain pending. For a known inbox, poll with its exact project and recipient.
+When shown at zero unread, it also says so explicitly if that exact recipient id has never been
 seen in this project at all — treat that as a probable typo in `--recipient`,
 not as an empty, healthy inbox.
 Exception: under Claude Code the session-start hook has ALREADY injected this
@@ -160,12 +169,12 @@ With the Claude Code plugin, the first eight rows happen **without any action fr
 
 | Hook | When | What it does |
 |------|------|-------------|
-| **SessionStart** | Every session begins | Injects the briefing when the configured level has something to show (an empty project at `minimal` injects nothing) — decisions, lessons and recent activity always; task state and the durable-memory index too at `standard`/`full` (not at the default, `minimal`) |
+| **SessionStart** | Every session begins | Injects one briefing block when there is content: an eligible project handoff precedes ranked memories at every level, after optional repository facts; fresh task state and the durable-memory index appear at `standard`/`full`, not at the default `minimal` |
 | **PreToolUse (Edit/Write)** | Before editing files | Injects memories related to the file or project |
 | **UserPromptSubmit** | When you submit a prompt | Detects "remember this" intent (5 languages) and reminds Claude to use memesh |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
 | **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision if it's worth keeping — once per tool per session |
-| **Stop** | Session ends | Auto-captures session knowledge, ingests the project's Claude Code memory directory (frontmatter notes → `source:note-file` memories), shows one line when the turn made a decision-shaped move and stored no memory, and applies the configured update policy. The two writes (session capture, note-directory ingestion) stop when auto-capture is off (`memesh config set autoCapture false` / `MEMESH_AUTO_CAPTURE=false`); the advisory line still runs |
+| **Stop** | Session ends | Auto-captures session knowledge, replaces the same project's handoff with the latest sufficiently long cleaned assistant reply, ingests the project's Claude Code memory directory (frontmatter notes → `source:note-file` memories), shows a decision reminder when appropriate, and applies the configured update policy. These writes stop when auto-capture is off (`memesh config set autoCapture false` / `MEMESH_AUTO_CAPTURE=false`); the advisory line still runs. A skipped handoff capture does not erase the prior note |
 | **PreCompact** | Before context compaction | Saves important knowledge before history is compressed |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
 | **SessionStart/SessionEnd (Codex)** | An ordinary Codex CLI plugin session starts, resumes, or ends | Launches the detached exact-thread companion, replaces its generation on resume, and retires it after the bounded idle queue window; a matching owner-private config may override its project/principal |

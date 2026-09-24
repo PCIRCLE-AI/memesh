@@ -4,7 +4,7 @@ Native memory-capability plugin that integrates MeMesh's HTTP API as a first-par
 
 ## Status
 
-**Contract confirmed, NOT yet tested live.** This implementation follows the confirmed plugin contract from upstream OpenClaw docs and the `@openclaw/memory-lancedb` reference plugin. Unlike the Hermes Agent integration (which was built, deployed to dgx94, and verified end-to-end), this has not been tested against a running OpenClaw instance.
+**Source implementation only; not published or live-tested.** It follows the documented OpenClaw plugin contract and the `@openclaw/memory-lancedb` reference shape, but installation and behavior in a running OpenClaw host remain unverified.
 
 ## Installation
 
@@ -33,10 +33,10 @@ npm run build
 {
   "plugins": {
     "slots": {
-      "memory": "memesh"
+      "memory": "memory-memesh"
     },
     "entries": {
-      "memesh": {
+      "memory-memesh": {
         "config": {
           "baseUrl": "http://localhost:3737",
           "autoRecall": true,
@@ -54,12 +54,12 @@ npm run build
 |-------|------|---------|-------------|
 | `baseUrl` | string | `http://localhost:3737` | MeMesh HTTP API base URL |
 | `autoRecall` | boolean | `true` | Enable automatic recall on `before_prompt_build` |
-| `autoCapture` | boolean | `false` | Enable automatic capture (EXPERIMENTAL) |
+| `autoCapture` | boolean | `false` | Reserved configuration field; no capture hook reads it in this source plugin |
 | `recallResultCap` | number | `3` | Max memories injected on auto-recall |
 | `recallTimeoutMs` | number | `15000` | Recall operation timeout |
 | `recallCooldownMs` | number | `60000` | Cooldown after recall failure |
 
-**IMPORTANT**: Set `autoCapture: false` initially. Test with auto-recall only first, then run an A/B comparison (plugin on vs off, same query) to verify no unintended mutations to OpenClaw's built-in memory files before enabling auto-capture.
+Keep `autoCapture: false`. Automatic after-turn capture is not implemented; use `memory_store` for explicit writes. This source plugin has not been verified in a live OpenClaw runtime.
 
 ## Prerequisites
 
@@ -85,7 +85,7 @@ The plugin imports from `openclaw/plugin-sdk/*` — these are part of the main `
   - Maps to: `POST /v1/remember`
   - Guards: Prompt injection defense (rejects suspicious patterns)
 
-- **`memory_forget`** - Delete memories
+- **`memory_forget`** - Archive up to 20 matching, agent-scoped memories immediately; no preview or confirmation
   - Params: `query` (string)
   - Maps to: `POST /v1/forget`
 
@@ -99,7 +99,7 @@ Fires on `before_prompt_build`:
 
 ## Differences from Hermes Agent Integration
 
-1. **Auto-capture is threshold-gated** (max 3/turn when triggered), not every-turn like Hermes's `sync_turn()`
+1. **Automatic capture is not implemented**; only explicit `memory_store` writes memories
 2. **TypeScript** instead of Python
 3. **HTTP client** instead of direct database access
 4. **No system_prompt_block()** — tools are exposed, auto-recall happens silently (matches LanceDB reference)
@@ -119,7 +119,7 @@ npm run clean
 
 ## Safety Notes
 
-1. **Test A/B before enabling auto-capture** — run the same query with the plugin fully disabled and verify no OpenClaw built-in memory files are mutated
+1. **Inspect before forgetting** — `memory_forget` recalls up to 20 matches and archives each immediately, without a preview or confirmation step
 2. **Prompt injection defense is active** — `memory_store` rejects text matching suspicious patterns
 3. **Cooldown on failure** — if recall times out, auto-recall is disabled for 60s to avoid stalling subsequent turns
 

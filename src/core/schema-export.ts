@@ -28,7 +28,7 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_remember',
-        description: 'Store knowledge as an entity with observations, tags, and relations. Pass only `note` to have title, observations and name derived from free text.',
+        description: 'Store knowledge as an entity with observations, tags, and relations. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict.',
         parameters: {
           type: 'object',
           properties: {
@@ -46,12 +46,12 @@ export function exportOpenAITools(): object[] {
                 type: 'object',
                 properties: {
                   to: { type: 'string', description: 'Name of the target entity to link to' },
-                  type: { type: 'string', description: 'Relation type, e.g. depends-on, supersedes, relates-to' },
+                  type: { type: 'string', description: 'Relation type. "supersedes" archives the target; "contradicts" marks a conflict when either memory is recalled. Other labels, such as "depends-on", are inert.' },
                 },
                 required: ['to', 'type'],
               },
             },
-            namespace: { type: 'string', enum: ['personal', 'team', 'global'], description: 'Storage scope (default: personal)' },
+            namespace: { type: 'string', enum: ['personal', 'team', 'global'], description: 'Storage scope. New memories default to personal; omit for an existing memory to keep its current scope. Supplying a different scope moves it.' },
           },
           // Three complete forms, not one list of required fields. When
           // `note` arrived, `required: ['name','type']` was removed and
@@ -81,9 +81,9 @@ export function exportOpenAITools(): object[] {
             query: { type: 'string', description: 'Search query' },
             tag: { type: 'string', description: 'Filter by tag' },
             limit: { type: 'number', description: 'Max results (1-100, default: 20)' },
-            include_archived: { type: 'boolean', description: 'Include soft-archived (superseded) entities (default: false)' },
+            include_archived: { type: 'boolean', description: 'Include archived entities, including forgotten and superseded memories (default: false)' },
             namespace: { type: 'string', enum: ['personal', 'team', 'global'], description: 'Restrict to a storage scope' },
-            cross_project: { type: 'boolean', description: 'Search across all projects instead of only the current one (default: false)' },
+            cross_project: { type: 'boolean', description: 'Ignore the optional tag filter when true. False keeps a supplied tag filter; it does not implicitly restrict results to the current project.' },
           },
         },
       },
@@ -107,13 +107,13 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_export',
-        description: 'Export memories as a portable JSON snapshot for sharing or backup. Returns a structured object with entity data.',
+        description: 'Export memories as portable JSON. The default 1000-entity limit may return a subset; check `truncated` and raise the limit before treating it as a complete backup.',
         parameters: {
           type: 'object',
           properties: {
             tag: { type: 'string', description: 'Filter by tag (optional)' },
             namespace: { type: 'string', description: 'Filter by namespace: personal, team, or global (optional)' },
-            limit: { type: 'number', description: 'Max entities to export (default: 1000, max: 10000)' },
+            limit: { type: 'number', description: 'Max entities to export (default: 1000, max: 10000). Check `truncated` in the result before using this as a full backup.' },
           },
         },
       },
@@ -122,7 +122,7 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_import',
-        description: 'Import memories from a JSON export snapshot. Imported entities are tagged trust=untrusted until reviewed.',
+        description: 'Import memories from a JSON export snapshot. Imported content is marked untrusted in metadata, not with a tag. Overwrite deletes an existing entity\'s previous observations and tags instead of archiving them.',
         parameters: {
           type: 'object',
           properties: {
@@ -134,7 +134,7 @@ export function exportOpenAITools(): object[] {
             merge_strategy: {
               type: 'string',
               enum: ['skip', 'overwrite', 'append'],
-              description: 'Required. How to handle existing entities: skip, overwrite (replace), or append (merge observations).',
+              description: 'Required. How to handle existing entities: skip leaves them alone; append adds observations; overwrite deletes previous observations and tags, then replaces them. Overwrite is not an archive and cannot be undone.',
             },
             restore_archived: {
               type: 'boolean',
@@ -168,7 +168,7 @@ export function exportOpenAITools(): object[] {
       function: {
         name: 'memesh_task_state',
         description:
-          'Read or update where the work stands on this project (goal, next, blocked, done). Call with no arguments to read. Record only what the user actually stated — never infer it from files edited.',
+          'Read or update where the work stands on this project (goal, next, blocked, done). Call with no arguments to read. Fresh state appears in a standard or full briefing; stale or unknown-age state becomes a one-line flag at every level, and minimal omits fresh state. Record only what the user actually stated — never infer it from files edited.',
         parameters: {
           type: 'object',
           properties: {
@@ -186,7 +186,7 @@ export function exportOpenAITools(): object[] {
       function: {
         name: 'memesh_briefing',
         description:
-          'The assembled work topology for a project: decisions, lessons, knowledge, recent activity — and, at briefing level `standard` or `full` (not the default, `minimal`), where the work was left off. Call once at the start of a session to load project context.',
+          'The assembled work topology for a project: an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. `standard` and `full` (not the default `minimal`) also include fresh task state. Handoffs older than 14 days, undatable, more than five minutes future-dated, archived, or imported without a fresh local replacement are not auto-injected. Call once at the start of a session to load project context.',
         parameters: {
           type: 'object',
           properties: {

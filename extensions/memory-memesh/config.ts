@@ -25,15 +25,12 @@ export const memeshConfigSchema = Type.Object({
   ),
 
   /**
-   * Enable automatic capture (EXPERIMENTAL - test A/B before enabling)
-   *
-   * WARNING: Threshold-gated capture (max 3/turn) is different from
-   * Hermes's every-turn model. Test with autoCapture: false first.
+   * Reserved for a future capture integration; no current hook reads this.
    */
   autoCapture: Type.Optional(
     Type.Boolean({
       default: false,
-      description: "Enable automatic memory capture (EXPERIMENTAL)",
+      description: "Reserved; automatic capture is not implemented by this plugin",
     })
   ),
 

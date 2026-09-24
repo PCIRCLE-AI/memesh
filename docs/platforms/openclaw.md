@@ -1,49 +1,39 @@
 # MeMesh With OpenClaw
 
-OpenClaw has a **first-party, documented plugin system for memory capabilities** — `api.registerMemoryCapability()` with contract-based registration via `openclaw.json`, activated through `plugins.slots.memory`. This is not a generic HTTP/CLI bridge: OpenClaw ships with LanceDB as a reference memory provider (`@openclaw/memory-lancedb`), and MeMesh can be added as an alternative, with automatic per-turn recall/write — no core OpenClaw file needs editing.
+OpenClaw has a **first-party, documented plugin system for memory capabilities** — `api.registerMemoryCapability()` with contract-based registration via `openclaw.json`, activated through `plugins.slots.memory`. This is not a generic HTTP/CLI bridge: OpenClaw ships with LanceDB as a reference memory provider (`@openclaw/memory-lancedb`), and MeMesh can be added as an alternative, with automatic recall before prompt construction and explicit memory tools. The MeMesh plugin does not automatically capture turns.
 
-This guide accompanies the source implementation in `extensions/memory-memesh/` and is based on confirmed upstream OpenClaw documentation (docs.openclaw.ai) plus the shipping LanceDB reference plugin at `https://github.com/openclaw/openclaw/blob/main/extensions/memory-lancedb/index.ts`. The MeMesh plugin has not been installed or verified against a live OpenClaw runtime (unlike the Hermes Agent integration), so treat it as source ready for compatibility testing, not a battle-tested deployment guide.
+This guide describes the source plugin in `extensions/memory-memesh/`. It has not been published or verified in a live OpenClaw runtime. Treat the setup below as a compatibility-test starting point, not a verified installation path.
 
-## Why this is a good fit
+## Current integration
 
 - OpenClaw's `before_prompt_build` hook maps directly onto MeMesh's `POST /v1/recall` — auto-recall fires on the latest user message before the prompt is built, exactly like Hermes's `prefetch()`.
 - Tool surface (`memory_recall`, `memory_store`, `memory_forget`) maps cleanly onto `/v1/recall`, `/v1/remember`, `/v1/forget`.
 - MeMesh's loopback-only auth model (no bearer token required for `localhost`) matches OpenClaw's local-first deployment pattern with zero secret management.
-- Installation is npm-based (`openclaw plugins install <package>`), auto-assigns to the memory slot — same dev experience as OpenClaw's own first-party plugins.
 
-## Key difference from Hermes Agent: threshold-gated auto-capture
+## Capture boundary
 
-**CRITICAL**: OpenClaw's auto-capture is **trigger-phrase + character-threshold gated** (configured via `autoCapture`, caps at 3 memories/turn), NOT "every turn" like Hermes's `sync_turn()`.
+The source plugin registers a `before_prompt_build` auto-recall hook and explicit `memory_store` and `memory_forget` tools. Its `autoCapture` configuration field is reserved but unused: setting it to `true` does not enable after-turn capture. To save a memory, use `memory_store` explicitly. Do not assume the Hermes integration's capture behavior applies here.
 
-Do NOT blindly port the Hermes plugin's "write every turn" assumption — that exact pattern caused a real bug in the Hermes build, where an over-eager memory-management `system_prompt_block()` prompt caused the model to also rewrite Hermes's built-in `USER.md` file as an unintended side effect.
-
-For OpenClaw, decide deliberately:
-- **Mirror OpenClaw's threshold-gated model**: only capture when the user message meets `autoCapture` criteria (trigger phrase present + character threshold exceeded). Safer, matches LanceDB's behavior.
-- **Go for Hermes's every-turn model**: capture every turn unconditionally via a `POST /v1/remember` call. Riskier prompt-engineering surface — test A/B (plugin on vs off, same query) to verify you're not triggering unintended file rewrites in OpenClaw's built-in memory files.
-
-## The plugin shape
+## Source layout and behavior
 
 ```
-extensions/memory-memesh/   (published target: @pcircle/openclaw-memory-memesh)
+extensions/memory-memesh/   (source-only; not published)
 ├── index.ts                # Plugin entry, implements definePluginEntry()
-├── api.ts                  # OpenClaw plugin API types (if not importing from SDK)
 ├── config.ts               # Config schema, defaults
 ├── package.json            # npm package metadata
 └── README.md
 ```
 
-Minimum viable exports (all required by the OpenClaw plugin contract):
+The current source provides:
 
 | Component | MeMesh call | Notes |
 |---|---|---|
-| `definePluginEntry({ id, name, description, kind: "memory", configSchema, register })` | — | Entry point exported as `default`. `kind: "memory"` declares the memory-capability contract. |
-| `register(api: OpenClawPluginApi)` | — | Called at plugin load. Register tools, hooks, and call `api.registerMemoryCapability?.()`. |
-| **Config schema** (TypeBox `Type.Object()`) | — | At minimum: `baseUrl` (default `http://localhost:3737`), optionally `autoCapture`/`autoRecall` booleans. |
+| Plugin entry `memory-memesh` | — | Exports a memory-kind entry, registers tools and a hook, and calls `api.registerMemoryCapability?.({})` when available. |
+| **Config schema** (TypeBox `Type.Object()`) | — | `baseUrl` defaults to `http://localhost:3737`; `autoRecall` controls the registered hook. `autoCapture` is present but currently unused. |
 | **Tool: `memory_recall`** | `POST /v1/recall` | Search. Param: `query` (string), `limit` (optional int, default 5). Return: `{ content: [{type:"text", text:"..."}], details: {count: N} }`. On empty: `"No relevant memories found."` |
 | **Tool: `memory_store`** | `POST /v1/remember` | Persist. Params: `text` (required), `category` (optional, default `"note"`), `importance` (optional, 1-10). Reject if `looksLikePromptInjection(text)`. |
-| **Tool: `memory_forget`** | `POST /v1/forget` | Archive by stable entity name. Resolve and preview the target before sending the write. |
+| **Tool: `memory_forget`** | `POST /v1/forget` | Recalls up to 20 agent-scoped matches and immediately archives each by name. There is no preview or confirmation; inspect the target scope before calling it. |
 | **Hook: `api.on("before_prompt_build", ...)`** | `POST /v1/recall` | Automatic recall. Extract `extractLatestUserText(event.messages)`, normalize the query, run local FTS5 search, and inject a bounded top-N result. Guard on `autoRecall` config. Skip on cooldown after a timeout. |
-| *(Optional)* **Hook: after-turn capture** | `POST /v1/remember` | Only if mirroring OpenClaw's auto-capture. Gate on `autoCapture` config, trigger-phrase detection, character threshold. Cap at 3/turn. Sanitize (`sanitizeForMemoryCapture`, `dropMediaNoteLines`) before sending. |
 
 ## Configuration shape
 
@@ -53,10 +43,10 @@ Minimal example (user's `openclaw.json`):
 {
   "plugins": {
     "slots": {
-      "memory": "memesh"
+      "memory": "memory-memesh"
     },
     "entries": {
-      "memesh": {
+      "memory-memesh": {
         "config": {
           "baseUrl": "http://localhost:3737",
           "autoRecall": true,
@@ -68,71 +58,25 @@ Minimal example (user's `openclaw.json`):
 }
 ```
 
-- `plugins.slots.memory: "memesh"` selects this plugin as the exclusive active memory provider.
-- `plugins.entries.memesh.config` holds provider-specific settings.
-- Set `autoCapture: false` initially to avoid the over-eager-write pattern; enable only after A/B testing confirms no unintended side effects on OpenClaw's built-in memory files.
+- `plugins.slots.memory: "memory-memesh"` selects this plugin by its declared ID as the active memory provider.
+- `plugins.entries.memory-memesh.config` holds provider-specific settings.
+- `autoCapture` is currently unused; leave it `false`. Use `memory_store` for an explicit write.
 
-## Installation (once published as an npm package)
+## Installation status
 
-```bash
-openclaw plugins install @pcircle/openclaw-memory-memesh
-# Auto-assigns to the memory slot.
+The plugin is not available from npm. For a source compatibility test, use the instructions in the [extension README](../../extensions/memory-memesh/README.md) with a disposable OpenClaw environment and a local MeMesh server. Confirm that OpenClaw loads the `memory-memesh` entry, invokes `before_prompt_build`, and exposes all three tools before relying on it. The example configuration above has not been validated in a live OpenClaw host.
 
-# Verify:
-openclaw memory status   # (if OpenClaw CLI exposes this)
-```
+## Safety and limits
 
-Or manually: drop `extensions/memory-memesh/` into an OpenClaw checkout, add to `openclaw.json` as shown above.
+- `autoCapture` has no effect. Store deliberately with `memory_store`; its pattern-based prompt-injection guard is a baseline, not a guarantee that content is safe.
+- `memory_forget` performs agent-scoped query recall and archives up to 20 returned entities immediately. It has no preview or confirmation. Inspect the intended targets first and test with disposable data.
+- The agent ID tag is cooperative isolation inside one MeMesh instance, not cryptographic tenant isolation. Separate server instances are needed for hard isolation.
+- Recall times out and uses a temporary per-agent cooldown on timeout; a failed recall must not be treated as proof that no memory exists.
 
-## Tool implementation notes (from LanceDB reference)
+## Reference
 
-1. **Timeout + cooldown**: Recall should timeout after ~15s. On timeout, enter a cooldown (60s) to avoid stalling subsequent turns. LanceDB reference uses `runWithTimeout()` + `readMemoryRecallCooldown()` / `recordMemoryRecallCooldown()`.
-
-2. **Over-fetch + filter**: Auto-recall should over-fetch (e.g., 10 results) from MeMesh, filter out any contaminated memories (prompt injection, envelope sludge), then cap the surviving results (e.g., 3) before injecting into the prompt. This keeps prompt-budget impact bounded.
-
-3. **Prompt injection defense**: `memory_store` must reject if `looksLikePromptInjection(text)` returns true. LanceDB's definition: text that contains directives ("ignore previous", "disregard", "new instructions", etc.). Adapt or copy LanceDB's `looksLikePromptInjection()` implementation.
-
-4. **Sanitization**: Before calling `POST /v1/remember`, run `sanitizeForMemoryCapture(text)` and `dropMediaNoteLines(text)` (from LanceDB's `memory-capture-sanitization.ts`). These strip media annotations and other irrelevant noise that degrades recall quality.
-
-5. **Error handling**: If `POST /v1/recall` returns HTTP 500 or times out, return `{ content: [{type:"text", text:"Memory recall unavailable: <reason>"}] }` instead of throwing — a recall failure should not crash the turn.
-
-## Pitfalls
-
-1. **Don't over-encourage memory management in the prompt.** The LanceDB reference plugin does NOT inject a system_prompt_block() at all — tools are exposed, auto-recall happens silently, and the LLM only sees tool results when recall actually fires or when it explicitly calls a tool. If you do add a system prompt, keep it minimal and passive: "Memory recall happens automatically; explicit tools are a backstop for narrow lookups." Avoid "use the tools to manage memory" phrasing — that exact wording caused a real bug in the Hermes integration where the model also rewrote Hermes's built-in `USER.md` file as an unintended side effect.
-
-2. **Test auto-capture with A/B comparison.** If enabling `autoCapture`, run the SAME query with the plugin fully disabled and verify that no OpenClaw built-in memory files (`AGENTS.md`, `MEMORY.md`, `memory/YYYY-MM-DD.md`, `DREAMS.md`) are mutated. If they are, the capture logic or prompt is over-eager — dial it back or disable auto-capture entirely and rely only on auto-recall + explicit tools.
-
-3. **OpenClaw imports are monorepo-internal.** The plugin imports from `openclaw/plugin-sdk/runtime-env`, `openclaw/plugin-sdk/config-contracts`, etc. — these are NOT published as a separate `@openclaw/plugin-sdk` npm package. The SDK is part of the main `openclaw/openclaw` monorepo. If publishing your plugin externally, it must declare `openclaw` as a `peerDependency` so the imports resolve at runtime.
-
-4. **MeMesh HTTP API quirk (issue #159, CLOSED).** Early versions of MeMesh returned `POST /v1/recall` as `{success: true, data: [...]}` (a bare array) instead of the documented `{entities: [...]}` object envelope. This was fixed, but if supporting older MeMesh versions, add a defensive check: `const entities = response.entities ?? response.data ?? []`.
-
-## Recommended platform-table entry
-
-| Client | Best Mode | Setup | Guide |
-|--------|-----------|-------|-------|
-| **OpenClaw** | Native memory plugin | `openclaw plugins install @pcircle/openclaw-memory-memesh` (when published), or drop `extensions/memory-memesh/` into OpenClaw checkout; configure `plugins.slots.memory: "memesh"` in `openclaw.json` | This page |
-
-Unlike the HTTP-only platforms in this directory, OpenClaw is listed as a **native integration** because the source plugin implements OpenClaw's memory-provider contract. That describes the integration shape, not publication or live-runtime verification.
-
-## Reference implementation
-
-The official LanceDB memory plugin (`@openclaw/memory-lancedb`) is the canonical reference for the OpenClaw plugin lifecycle. Reuse its error handling, timeouts, cooldowns, sanitization, prompt-injection defense, and CLI structure while mapping storage calls to MeMesh's HTTP API.
+The [official LanceDB memory plugin](https://github.com/openclaw/openclaw/blob/main/extensions/memory-lancedb/index.ts) is a reference for the OpenClaw plugin lifecycle. Its behavior does not establish that this MeMesh source plugin has the same capture hooks or live-host compatibility.
 
 ## Status
 
-**Source implementation present and security-reviewed, NOT yet tested against live OpenClaw or published to npm.** A TypeScript implementation is available at `extensions/memory-memesh/` (index.ts + config schema + package.json + SECURITY.md). The plugin follows the confirmed contract from upstream OpenClaw docs and the LanceDB reference plugin.
-
-**Security fixes applied (2026-08-15)**:
-- Tenant isolation via agentId-tagged filtering
-- Query sanitization for prompt injection defense
-- Preview-before-delete for destructive operations
-- All CRITICAL and HIGH severity issues resolved
-
-Unlike the Hermes Agent integration (which was built, deployed to dgx94, and verified end-to-end with cross-session automatic recall), this has not been tested against a running OpenClaw instance. Treat as ready for testing, not yet battle-tested.
-
-The next implementer should:
-1. Build and install the existing plugin in a compatible OpenClaw checkout.
-2. Test with `autoCapture: false` first (auto-recall only, explicit tools as backstop).
-3. Run A/B comparison (plugin on vs off, same query) to verify no unintended mutations to OpenClaw's built-in memory files.
-4. Only enable `autoCapture` after confirming step 3 passes cleanly.
-5. Update this document with deployment notes, actual installation commands, and any discovered pitfalls.
+**Source implementation only; unpublished and unverified in a live OpenClaw host.** Its security boundaries and remaining preview gap are detailed in [SECURITY.md](../../extensions/memory-memesh/SECURITY.md). Installation, host acceptance, and model-visible recall remain to be checked in a disposable runtime.

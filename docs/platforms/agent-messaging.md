@@ -267,11 +267,7 @@ for active Codex-session delivery.
 
 ## Repeatable owner-run live checks
 
-Everything above is checked by the test suite against stubs and fakes. That
-proves the plumbing and nothing about a live model: a queue admission or a
-`host_accept` is a statement about a frame, not about cognition. Two checks
-close that gap by requiring evidence that could only have come out of a running
-model.
+These checks use a built candidate to distinguish message storage or host acceptance from a model-visible reply. They are optional for ordinary use; release requirements and receipt interpretation are in [CONTRIBUTING.md](../../CONTRIBUTING.md#cutting-a-release). An exit code or `host_accept` alone does not prove that the recipient model saw or acted on a message.
 
 ```bash
 TMPDIR=/private/tmp npm run qa:live-journey -- --core-only --out .qa/core-report.json
@@ -279,168 +275,15 @@ MEMESH_CODEX_QA_HOME="$(mktemp -d "$HOME"/.memesh-codex-qa.XXXXXX)"
 CODEX_HOME="$MEMESH_CODEX_QA_HOME" codex login
 TMPDIR=/private/tmp npm run qa:live-journey -- --host codex --codex-home "$MEMESH_CODEX_QA_HOME" --out .qa/codex-report.json
 TMPDIR=/private/tmp npm run qa:live-journey -- --host claude --out .qa/claude-report.json
-rm -rf "$MEMESH_CODEX_QA_HOME"
 ```
 
-`--codex-home` no longer needs to resolve under `TMPDIR` (measured 2026-09-23:
-codex-cli 0.155.1 itself refuses to fully start — "Refusing to create helper
-binaries under temporary dir" — when `CODEX_HOME` resolves under a recognised
-OS temporary directory, so `mktemp -d /private/tmp/...` for this one
-directory now fails; the check this repo's own code applied on top,
-`assertTaskOwnedCodexHome`, was a separate, narrower requirement and has been
-relaxed to match). Prepare it anywhere disposable outside the owner's real
-`~/.codex`, as above; `TMPDIR=/private/tmp` is still needed for the other two
-commands, whose `MEMESH_DIR` socket path is a separate, unrelated constraint.
+`--core-only` needs no host login and checks memory round trip, SessionStart briefing, quiet-commit capture, Stop capture, and packed upgrade against disposable state. It does not establish Codex or Claude delivery. The host modes require an interactive, authenticated owner environment and write private reports under gitignored `.qa/`. Keep `TMPDIR=/private/tmp` on macOS so the temporary router socket path fits the platform limit. Create the disposable `CODEX_HOME` outside an OS temporary directory: Codex CLI may refuse to start there.
 
-**This directory holds a real, logged-in Codex credential** (from `codex
-login` above) for as long as it exists. Because it no longer lives under
-`/private/tmp` (which macOS clears on its own), nothing removes it
-automatically — the `rm -rf` above is not optional cleanup, it is the only
-thing that stops a live credential from sitting in the home directory
-indefinitely. Run it even if a step earlier in the sequence fails.
+The disposable `CODEX_HOME` contains a real logged-in credential after `codex login`. When the run ends, including after failure, verify its path is the directory just created and remove that directory; do not leave it in your home folder or delete your normal `~/.codex`. The check's MeMesh data directory is temporary and removed on exit unless `--keep` is requested. It does not clean the disposable Codex login for you.
 
-The v4 report begins with five common product journeys before it reaches the
-host-specific delivery path:
+The Codex mode installs the candidate plugin into that disposable home and exercises one real CLI thread through SessionStart, native delivery, resume, and stopped-session fallback. A passing report needs model-visible readback, not only queue acceptance. The Claude mode is interactive: inspect `/mcp` and `/hooks` before confirming isolation, since `--setting-sources ""` does not guarantee installed MeMesh hooks are absent. Stop if you cannot identify an extra MeMesh integration: it could write to your real database. Follow the runner's trusted prompt and wait for the model's intake; a reminder after delivery or transport acceptance alone is not equivalent. Claude print mode (`claude -p`) is not supported by this check.
 
-| Journey | Exercised boundary | Required readback and failure |
-|---|---|---|
-| memory round trip | built CLI in a fresh process | the exact observation is recalled; an invalid write is rejected and an absent query stays empty |
-| SessionStart briefing | shipped SessionStart hook | seeded memory appears in `hookSpecificOutput`; an unusable database produces the visible failure banner |
-| quiet commit capture | real temporary Git repository plus shipped PostToolUse hook | `git commit -q` becomes a recallable commit entity; unchanged `HEAD` records a named skip |
-| Stop session insight | realistic JSONL transcript plus shipped Stop hook | the insight is recallable; a missing transcript records a named skip without a false entity |
-| packed upgrade | npm-packed candidate installed over public baseline versions | version and pre-existing memory survive success; a forced installer failure reports failure and preserves both package and data |
-
-Every row must also prove its temporary state was removed. `--core-only` is the
-credential-free entry point for this catalogue. It does not create a Codex or
-Claude registration and therefore cannot satisfy either host's release claim.
-
-`.qa/` is where `npm run release:finish` looks for release receipts. Codex and
-Claude are separate delivery claims, so **both** must PASS within 24 hours
-against the exact clean commit being released, with current `dist/`, ordered
-lifecycle steps, lease renewal, model-visible evidence, and the stopped-session
-failure path. The installed Codex receipt also requires actual plugin
-SessionStart loading and a resume that supersedes the prior generation.
-One host can never satisfy the other host's gate. The commands above produce
-`.qa/codex-report.json` and `.qa/claude-report.json`, respectively. The directory
-is gitignored; reports are owner-machine evidence, never shipped.
-
-`TMPDIR` is not decoration on macOS. The router's Unix socket lives beside the
-database inside the temporary directory, and `AF_UNIX` caps a socket path at
-104 bytes; the platform default `os.tmpdir()` spends about half of that before
-the check adds anything. The script measures its own socket path and refuses
-with this hint rather than starting a router that cannot bind.
-
-`scripts/qa/live-journey.mjs` refuses real-host modes when `CI` is set, because
-one needs the owner's Codex login and the other needs a person at an
-interactive Claude session. The isolated `--core-only` catalogue is designed
-to run unattended. Its argument
-parsing, its refusals, and every **pure** assertion it makes are unit-tested in
-`tests/qa/live-journey.test.ts`, which does run in CI against recorded
-fixtures; the orchestration around them is exercised only by a live run.
-
-Everything MeMesh writes goes into a fresh `mktemp` MEMESH_DIR that is deleted
-on exit (`--keep` retains it), against this repository's own `dist/`. The check
-refuses to start if that directory would resolve inside `$HOME/.memesh` — the
-comparison is made on **real** paths, before anything is created, so a
-symlinked `TMPDIR` cannot get past it — or if `dist/` has not been built. It
-reads no authentication file. Where that isolation stops is listed under
-limitations below, and the report records whether the working tree was dirty
-and whether `dist/` predates the newest file under `src/`.
-
-Shutdown order is part of the design rather than an afterthought. A connected
-host that sees the router socket disappear starts a **detached** packaged
-router inheriting its own environment — including this check's `MEMESH_DIR` —
-and the router recreates its data directory on start. The check therefore stops
-the companion, waits for live sessions to disconnect, stops the router, and
-only then removes the directory; if a session is still connected when the wait
-expires it keeps the directory rather than racing that spawn. The same sequence
-runs on failures and on `SIGINT`/`SIGTERM`.
-
-**`--host codex`** installs the candidate plugin into the caller-prepared
-authenticated `--codex-home`, verifies its cache, and creates a real Codex CLI
-thread. The installed plugin's SessionStart hook registers the thread; the
-runner never starts its companion. The check verifies lease renewal,
-exact-session delivery, resume-generation supersession, renewed lease, and a
-reply quoting the envelope's sentinel, `message_id`, and `delivery_id`.
-
-The proof rejects other command/tool activity except the narrowly allowed
-installed-skill read and failed work-package prepare probe; neither may contain
-proof identifiers. After SessionEnd retirement, the next send must return
-`recipient_unavailable` while the durable payload remains fetchable.
-Its v4 report requires registration from `codex_plugin_session_start` with
-`plugin_loader_verified: true`, including a renewed lease after resume supersedes
-the startup generation. `release:finish` requires separate current-candidate
-v4 receipts for both Codex and Claude; an old harness-injected report does not
-prove automatic installed-plugin registration and is rejected.
-
-**`--host claude`** starts the router, runs `memesh agent setup claude`, writes
-a temporary MCP config, and prints the exact interactive launch command — which
-includes `--setting-sources ""` to request no user, project, or local settings
-source. That option did not suppress all `[User]` hooks in a live Claude Code
-2.1.263 check, so it is not treated as plugin isolation. The operator runs
-the command, checks `/mcp` and `/hooks` for any installed MeMesh plugin hook or
-extra MeMesh MCP server, and types the exact isolation confirmation token in the
-runner terminal. Other non-MeMesh hooks are outside this check. The token records
-operator attestation, not programmatic inspection. The runner then prints one
-trusted owner prompt: the operator submits it in Claude and confirms only after
-Claude replies `READY_FOR_UNTRUSTED_INTAKE`. That second attestation must also
-precede nonce generation. Only then does the runner wait for
-`lease_expires_at_ms` to advance, send one inert exact-session payload containing
-only its purpose and nonce, and wait for an
-`intake` receipt on that message whose actor is that session — the model must
-call `intake` exactly once under the prior trusted instruction, using the
-documented `intake-<message_id>` idempotency key and only the six fields the
-strict intake schema accepts (`action`, `project`, `recipient`, `message_id`,
-`intake_state`, `idempotency_key`). This is what makes the proof
-model-visible rather than transport-visible without treating the untrusted
-payload as instructions. The operator is then asked to exit the session, and
-the same fail-closed assertion runs. A reminder entered only after delivery is
-diagnostic and cannot satisfy this release receipt.
-
-Print mode (`claude -p`) is **not supported** and is deliberately not
-exercised. A print-mode session does not surface `memesh-channel` notifications
-to the model even when the channel host reports the frame accepted, so it can
-never produce the receipt this check requires.
-
-Each run writes a JSON report: the repository revision, every `message_id` and
-`delivery_id`, the `native_delivery` receipts, the model-visible evidence, and
-a `limitations` list. The exit code is 0 only when every required step passed.
-The limitations these checks always declare:
-
-- The Codex journey installs the candidate plugin into a caller-created
-  disposable authenticated `CODEX_HOME`, verifies the installed cache bytes,
-  and exercises that plugin's SessionStart and SessionEnd hooks through a real
-  Codex thread. It does not mutate the owner's normal Codex configuration. The
-  bounded `--codex-session-auto-registration` mode remains a narrower
-  account-free packaged router → native queue check and is not a substitute for
-  this installed-plugin journey.
-- The interactive Claude session is **outside** this check's isolation.
-  `--setting-sources ""` is accepted by the CLI (an invalid source name is
-  rejected, an empty list is not), but it is not verified to exclude
-  plugin-provided hooks or MCP servers. A MeMesh plugin hook running in that
-  session inherits no `MEMESH_DIR` and would write the owner's real
-  `~/.memesh`. Before nonce generation or send, the runner requires the exact
-  confirmation token after the operator checks `/mcp` and `/hooks`. This is a
-  recorded human attestation, not a machine inspection; inability to identify
-  whether an entry comes from MeMesh means the operator must stop the run.
-- `--host codex` creates one throwaway thread in the owner's Codex rollout
-  store and queues one message into it. That is session state, not
-  configuration; nothing outside the temporary directory is otherwise written.
-- Before delivery, the Claude operator submits one exact trusted intake prompt
-  and attests that its READY reply was observed. The runner cannot inspect that
-  UI exchange. After delivery the operator is told to type nothing, but the
-  runner cannot observe whether that instruction was followed. The intake
-  receipt proves the model called `intake` in that session after native
-  notification; it does not prove the operator followed either instruction.
-- The Claude intake receipt is matched on its `actor`, which `intake` sets from
-  the caller's `recipient`. The model must intake under its own session id; an
-  intake recorded against the principal id would not match, and the check would
-  report no model-visible proof.
-- `recipient_unavailable` is a shared failure surface — the same string is
-  returned when the *sender* cannot reach the router. The fail-closed step
-  therefore also records that `message discover` still answered and that
-  `message fetch` still returned the payload. That pairing, not the string, is
-  what attributes the failure to the stopped recipient.
+For a stopped or disconnected exact session, `recipient_unavailable` must be paired with a healthy router discovery and a durable fetch: that error can also mean the sender could not reach the router. Neither case restarts a host or proves the workflow completed. Review the JSON report's `limitations` and visible evidence before relying on either host result.
 
 ## Scope identifiers
 
