@@ -28587,6 +28587,7 @@ var WORK_LAYER_TYPES = /* @__PURE__ */ new Set([
   "plan",
   "task-state"
 ]);
+var DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES].filter((type) => !LESSON_TYPES.has(type) && type !== "task-state");
 var EVIDENCE_LAYER_TYPES = /* @__PURE__ */ new Set([
   "commit",
   "session-insight",
@@ -28629,10 +28630,25 @@ function clip(text, maxChars) {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= maxChars)
     return flat;
-  const cut = flat.slice(0, maxChars);
+  const cut = sliceWholeChars(flat, maxChars);
   const lastSpace = cut.lastIndexOf(" ");
   const base = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
   return `${base.trimEnd()}\u2026`;
+}
+function sliceWholeChars(text, maxUnits) {
+  if (text.length <= maxUnits)
+    return text;
+  if (maxUnits <= 0)
+    return "";
+  const code = text.charCodeAt(maxUnits - 1);
+  return text.slice(0, code >= 55296 && code <= 56319 ? maxUnits - 1 : maxUnits);
+}
+function byRecency(a, b) {
+  const ar = a.recency ?? "";
+  const br = b.recency ?? "";
+  if (ar !== br)
+    return ar < br ? 1 : -1;
+  return bySignal(a, b);
 }
 function bySignal(a, b) {
   const av = typeof a.signalScore === "number" ? a.signalScore : -1;
@@ -28671,7 +28687,8 @@ function groupTopology(entities, projectName) {
     else
       decisions.push(e);
   }
-  for (const list of [decisions, lessons, knowledge, evidence, global, foreign])
+  decisions.sort(byRecency);
+  for (const list of [lessons, knowledge, evidence, global, foreign])
     list.sort(bySignal);
   const sections = [];
   if (decisions.length)
@@ -28726,7 +28743,7 @@ function buildTopologyLines(entities, projectName, budget) {
     lines.pop();
   return lines;
 }
-function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET) {
+function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET, { reserve = 0 } = {}) {
   const seen = /* @__PURE__ */ new Set();
   const candidates = [];
   const globalCandidates = [];
@@ -28742,22 +28759,73 @@ function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_
       }
     }
   }
-  const lines = [];
-  let stateChars = 0;
-  for (const line of stateLines) {
-    lines.push(line);
-    stateChars += line.length + 1;
-  }
-  const remaining = Math.max(0, budget.maxChars - stateChars);
-  const topologyLines = remaining > 0 ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: remaining }) : [];
-  const globalLines = buildTopologyLines(globalCandidates, projectName, GLOBAL_TOPOLOGY_BUDGET);
+  const lines = boundStateLines(stateLines);
+  const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+  const topologyLines = room() > 0 ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() }) : [];
   if (lines.length > 0 && topologyLines.length > 0)
     lines.push("");
   lines.push(...topologyLines);
+  const globalLines = room() > 0 ? buildTopologyLines(globalCandidates, projectName, {
+    ...budget,
+    maxChars: Math.min(room(), GLOBAL_TOPOLOGY_BUDGET.maxChars)
+  }) : [];
   if (lines.length > 0 && globalLines.length > 0)
     lines.push("");
   lines.push(...globalLines);
   return lines;
+}
+function joinedLength(lines) {
+  return lines.length === 0 ? 0 : lines.reduce((n, l) => n + l.length, 0) + lines.length - 1;
+}
+var STATE_MAX_CHARS = 2600;
+function boundStateLines(stateLines) {
+  if (joinedLength(stateLines) <= STATE_MAX_CHARS)
+    return [...stateLines];
+  const out = [];
+  for (let i = 0; i < stateLines.length; i++) {
+    const left = stateLines.length - i;
+    const cut = `- \u2026 (${left} more line${left === 1 ? "" : "s"} of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded)`;
+    if (joinedLength([...out, stateLines[i], cut]) > STATE_MAX_CHARS) {
+      out.push(cut);
+      return out;
+    }
+    out.push(stateLines[i]);
+  }
+  return out;
+}
+function prioritizeDecisions(decisions, ranked, cap) {
+  const chosen = [];
+  const ids = /* @__PURE__ */ new Set();
+  for (const row of [...decisions, ...ranked]) {
+    if (chosen.length >= cap)
+      break;
+    if (ids.has(row.id))
+      continue;
+    ids.add(row.id);
+    chosen.push(row);
+  }
+  return chosen;
+}
+var TASK_STATE_DISPLAY_MAX_CHARS = 1200;
+var TASK_STATE_LINE_MAX_CHARS = 320;
+function boundTaskStateLines(lines) {
+  const clipLine = (line) => line.length > TASK_STATE_LINE_MAX_CHARS ? `${sliceWholeChars(line, TASK_STATE_LINE_MAX_CHARS - 1)}\u2026` : line;
+  const clipped = lines.map(clipLine);
+  if (joinedLength(clipped) <= TASK_STATE_DISPLAY_MAX_CHARS)
+    return clipped;
+  const out = [];
+  const cut = "- \u2026 (task state shortened here \u2014 `memesh task` shows all of it)";
+  for (let i = 0; i < lines.length; i++) {
+    const line = clipLine(lines[i]);
+    const withLine = joinedLength([...out, line]);
+    const needsCutLine = i < lines.length - 1;
+    if (i > 0 && withLine + (needsCutLine ? cut.length + 1 : 0) > TASK_STATE_DISPLAY_MAX_CHARS) {
+      out.push(cut);
+      return out;
+    }
+    out.push(line);
+  }
+  return out;
 }
 function hasBriefingContent(lines) {
   return lines.length > 0;
@@ -29146,6 +29214,17 @@ function indexLine(candidate) {
   const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
   return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
 }
+function injectedIndexReserve(projectName) {
+  const worst = [
+    indexHeading(projectName),
+    moreLine(INDEX_CANDIDATE_CAP, true),
+    olderLine(INDEX_CANDIDATE_CAP, true),
+    footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
+  ];
+  const empty = [indexHeading(projectName), indexEmptyLine(projectName), footerLine(0, INDEX_MAX_BYTES, INDEX_MAX_BYTES)];
+  const len = (lines) => lines.reduce((n, l) => n + l.length, 0) + lines.length - 1;
+  return Math.max(len(worst), len(empty));
+}
 function indexHeading(projectName) {
   return `Index of durable memories for "${projectLabel(projectName)}" (newest first):`;
 }
@@ -29176,6 +29255,7 @@ function closeWithFooter(lines, shown) {
 }
 function buildBriefingIndex(candidates, projectName, now, options = {}) {
   const truncated = options.truncated === true;
+  const charAllowance = typeof options.maxChars === "number" ? options.maxChars : Infinity;
   const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
   const eligible = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata)).slice().sort(compareIndexCandidates);
   const current = [];
@@ -29198,9 +29278,11 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
     footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
   ]);
   const budget = INDEX_MAX_BYTES - reserve - sectionBytes([heading]);
+  const charBudget = charAllowance - injectedIndexReserve(projectName);
   const rendered = [];
   const ids = [];
   let used = 0;
+  let usedChars = 0;
   for (const c of current) {
     if (rendered.length >= INDEX_MAX_LINES)
       break;
@@ -29208,9 +29290,12 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
     const cost = byteLength(line) + 1;
     if (used + cost > budget)
       break;
+    if (usedChars + line.length + 1 > charBudget)
+      break;
     rendered.push(line);
     ids.push(c.id);
     used += cost;
+    usedChars += line.length + 1;
   }
   const more = current.length - rendered.length;
   const above = [heading, ...rendered];
@@ -29298,6 +29383,7 @@ function briefingLevelPolicy(level) {
 // dist/core/briefing.js
 var PROJECT_LIMIT = 30;
 var RECENT_LIMIT = 5;
+var LESSON_LIMIT = 5;
 var CANDIDATE_COLUMNS = "e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses";
 function parseMetadata(raw) {
   if (!raw)
@@ -29309,20 +29395,34 @@ function parseMetadata(raw) {
     return null;
   }
 }
-function selectPool(rows, cap) {
-  const withMeta = rows.map((row) => ({
+var RECENCY_SQL = `COALESCE(
+  (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
+    WHERE o.entity_id = e.id
+      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
+      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
+  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
+        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
+       THEN replace(e.created_at, 'T', ' ') END)`;
+function toPoolRow(row) {
+  const meta3 = parseMetadata(row.metadata);
+  return {
     id: row.id,
     name: row.name,
     type: row.type,
     title: row.title,
-    meta: parseMetadata(row.metadata),
+    meta: meta3,
+    autoInjectable: (row.metadata == null || meta3 !== null) && isAutoInjectable(meta3),
     access_count: row.access_count ?? void 0,
     last_accessed_at: row.last_accessed_at ?? void 0,
     confidence: row.confidence ?? void 0,
     recall_hits: row.recall_hits ?? void 0,
-    recall_misses: row.recall_misses ?? void 0
-  }));
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
+    recall_misses: row.recall_misses ?? void 0,
+    recency: row.recency ?? null
+  };
+}
+function selectPool(rows, cap) {
+  const withMeta = rows.map(toPoolRow);
+  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => row.autoInjectable).slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {
   const signal = row.meta?.signal_score;
@@ -29332,10 +29432,11 @@ function toTopologyEntity(row, snippet) {
     id: row.id,
     title: row.title,
     snippet,
-    signalScore: typeof signal === "number" ? signal : null
+    signalScore: typeof signal === "number" ? signal : null,
+    recency: row.recency ?? null
   };
 }
-function readBriefingIndex(db2, projectName, now = Date.now()) {
+function readIndexCandidates(db2, projectName) {
   const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
   const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
   const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
@@ -29358,7 +29459,7 @@ function readBriefingIndex(db2, projectName, now = Date.now()) {
     lastActivity: row.last_activity,
     metadata: row.metadata
   }));
-  return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
+  return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
 }
 function assembleBriefing(project, recipient) {
   const projectName = project ?? getProjectName();
@@ -29377,9 +29478,9 @@ function assembleBriefing(project, recipient) {
   const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
   let taskLines;
   try {
-    taskLines = briefingTaskStateLines(getTaskState(projectName).state, projectName, /* @__PURE__ */ new Date(), {
+    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName).state, projectName, /* @__PURE__ */ new Date(), {
       includeFresh: policy.taskState
-    });
+    }));
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError))
       throw err;
@@ -29408,7 +29509,18 @@ function assembleBriefing(project, recipient) {
      WHERE t.tag = ? AND e.status = 'active' AND e.type <> ?${nonGlobal}
      ORDER BY e.id DESC
      LIMIT ?`).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
-  const projectPool = selectPool(projectRows, PROJECT_LIMIT);
+  const decisionRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}, ${RECENCY_SQL} AS recency
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ? AND e.status = 'active' AND e.type IN (${DECISION_LAYER_TYPES.map(() => "?").join(",")})${nonGlobal}
+     ORDER BY recency IS NULL, recency DESC, e.id DESC
+     LIMIT ?`).all(`project:${projectName}`, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP);
+  const decisionPool = decisionRows.map(toPoolRow).filter((row) => row.autoInjectable);
+  const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
+  const lessonPool = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE e.type = 'lesson_learned' AND e.status = 'active'${nonGlobal} AND t.tag = ?
+     ORDER BY e.id DESC
+     LIMIT 50`).all(`project:${projectName}`).map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
   const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
        WHERE e.namespace = 'global' AND e.status = 'active'
@@ -29421,7 +29533,7 @@ function assembleBriefing(project, recipient) {
        ORDER BY e.id DESC
        LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) : [];
   const recentPool = selectPool(recentRows, RECENT_LIMIT);
-  const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
+  const survivorIds = [...new Set([...lessonPool, ...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
   const snippets = /* @__PURE__ */ new Map();
   if (survivorIds.length > 0) {
     const placeholders = survivorIds.map(() => "?").join(",");
@@ -29437,14 +29549,19 @@ function assembleBriefing(project, recipient) {
     }
   }
   const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
+  const indexReserve = policy.index ? injectedIndexReserve(projectName) + 2 : 0;
   const lines = assembleTopologyBlock(stateLines, [
+    { entities: toEntities(lessonPool), foreign: false },
     { entities: toEntities(projectPool), foreign: false },
     { entities: toEntities(globalPool), foreign: false, global: true },
     { entities: toEntities(recentPool), foreign: true }
-  ], projectName);
+  ], projectName, DEFAULT_TOPOLOGY_BUDGET, { reserve: indexReserve });
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
-  const index = readBriefingIndex(db2, projectName);
-  const indexLines = policy.index ? index.lines : [];
+  const now = Date.now();
+  const { candidates: indexCandidates, truncated } = readIndexCandidates(db2, projectName);
+  const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
+  const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
+  const indexLines = policy.index ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines : [];
   const block = withRepo.length > 0 && indexLines.length > 0 ? [...withRepo, "", ...indexLines] : [...withRepo, ...indexLines];
   const empty = !hasBriefingContent(block);
   return {

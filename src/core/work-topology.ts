@@ -44,6 +44,15 @@ export const WORK_LAYER_TYPES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * The "Decisions and direction" family: the work layer minus lessons and the
+ * task state. These are what a new session most needs and what mechanical
+ * capture (commits) must never crowd out, so both readers select them first,
+ * newest first, before filling the rest of the project's slots by score.
+ */
+export const DECISION_LAYER_TYPES: readonly string[] = [...WORK_LAYER_TYPES]
+  .filter((type) => !LESSON_TYPES.has(type) && type !== 'task-state');
+
+/**
  * The evidence layer: mechanical capture. Not noise — it is what the work
  * layer is derived FROM, and on a graph with no curated memories yet it is
  * the only thing there is. It ranks last and is shown only when the layers
@@ -113,6 +122,10 @@ export interface TopologyEntity {
   /** metadata.signal_score. Null for hook-captured rows, which never get
    *  scored (hooks are cheap always-on capture by design). */
   signalScore?: number | null;
+  /** Latest valid activity as SQLite UTC text ('YYYY-MM-DD HH:MM:SS'), set
+   *  for decision-layer rows. Orders the decisions section newest first;
+   *  canonical text compares correctly as a string. */
+  recency?: string | null;
   /** Applies to every project. Global memories render in their own bounded
    *  section so they cannot consume a project's section or character budget. */
   global?: boolean;
@@ -177,12 +190,28 @@ export function extractCitedMemoryIds(text: string): Set<number> {
 function clip(text: string, maxChars: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat.length <= maxChars) return flat;
-  const cut = flat.slice(0, maxChars);
+  const cut = sliceWholeChars(flat, maxChars);
   const lastSpace = cut.lastIndexOf(' ');
   // Only respect the boundary if it is not pathologically early (a single
   // very long token would otherwise collapse the line to nothing).
   const base = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
   return `${base.trimEnd()}…`;
+}
+
+/** The first `maxUnits` UTF-16 units, never ending on half of a surrogate pair. */
+export function sliceWholeChars(text: string, maxUnits: number): string {
+  if (text.length <= maxUnits) return text;
+  if (maxUnits <= 0) return '';
+  const code = text.charCodeAt(maxUnits - 1);
+  return text.slice(0, code >= 0xd800 && code <= 0xdbff ? maxUnits - 1 : maxUnits);
+}
+
+/** Newest decision first; rows without a known recency follow, by signal. */
+function byRecency(a: TopologyEntity, b: TopologyEntity): number {
+  const ar = a.recency ?? '';
+  const br = b.recency ?? '';
+  if (ar !== br) return ar < br ? 1 : -1;
+  return bySignal(a, b);
 }
 
 /** Highest signal first; unscored rows sort last but are never dropped. */
@@ -242,7 +271,8 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
     else decisions.push(e);
   }
 
-  for (const list of [decisions, lessons, knowledge, evidence, global, foreign]) list.sort(bySignal);
+  decisions.sort(byRecency);
+  for (const list of [lessons, knowledge, evidence, global, foreign]) list.sort(bySignal);
 
   const sections: TopologySection[] = [];
   if (decisions.length) sections.push({ heading: `Decisions and direction for "${projectLabel(projectName)}":`, entities: decisions });
@@ -275,9 +305,10 @@ export const DEFAULT_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>> = {
   maxChars: 4000,
   maxLineChars: 160,
 };
-/** Global context is additive: it has its own small selection window and
- *  render budget, so neither a crowded project nor global rules can starve
- *  the other. Both injection surfaces share these through this assembler. */
+/** Global context has its own small selection window. Its lines share the one
+ *  block budget with the project (#434 step 3), taking what is left after it,
+ *  capped at GLOBAL_TOPOLOGY_BUDGET. Both injection surfaces share these
+ *  through this assembler. */
 export const GLOBAL_TOPOLOGY_LIMIT = 3;
 const GLOBAL_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>> = {
   maxChars: 640,
@@ -345,16 +376,17 @@ export interface TopologyPool {
  * had two owners. Now each consumer owns only what the A1a design assigns
  * it: its database access and its row→TopologyEntity mapping.
  *
- * `stateLines` is the already-rendered task-state block (taskStateLines) —
- * taken as lines, not as state, so this leaf keeps its no-imports charter.
- * It is charged against the project topology budget: the stated block leads,
- * and whatever it uses the ranked project/foreign sections no longer have.
- * Global context has the independent additive budget described below.
+ * `stateLines` is the already-rendered state block — the session handoff, the
+ * task state, the inbox notice — taken as lines, not as state, so this leaf
+ * keeps its no-imports charter. It leads the block and is charged first.
  *
- * The project/foreign topology uses `budget`; global context is additive and
- * uses `GLOBAL_TOPOLOGY_BUDGET`. That separation is the enforcement behind
- * #242's promise that global rules neither displace project memory nor get
- * starved by it.
+ * Everything inside the fence shares ONE budget (`budget.maxChars`, measured
+ * as the lines joined by '\n'): the state lines, the project/foreign sections,
+ * the global section, and `reserve` — the room the caller keeps back for the
+ * durable-memory index it appends after this block. Global rules used to have
+ * a separate additive allowance (#242); they now take what the project leaves,
+ * still capped at their old size, so no category can push the total past the
+ * budget.
  *
  * Pools are claimed in order — an entity present in an earlier pool is not
  * re-added by a later one, which is how a project-scoped row avoids being
@@ -366,6 +398,7 @@ export function assembleTopologyBlock(
   pools: readonly TopologyPool[],
   projectName: string,
   budget: TopologyBudget = DEFAULT_TOPOLOGY_BUDGET,
+  { reserve = 0 }: { reserve?: number } = {},
 ): string[] {
   const seen = new Set<string>();
   const candidates: TopologyEntity[] = [];
@@ -382,24 +415,116 @@ export function assembleTopologyBlock(
     }
   }
 
-  const lines: string[] = [];
-  let stateChars = 0;
-  for (const line of stateLines) {
-    lines.push(line);
-    stateChars += line.length + 1;
-  }
-
-  const remaining = Math.max(0, budget.maxChars - stateChars);
-  const topologyLines = remaining > 0
-    ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: remaining })
+  // ONE budget for everything the caller will put inside the fence: these
+  // state lines, the project/foreign sections, the global section and
+  // `reserve` (what the caller keeps back for the index that follows).
+  // Measured the way the payload is measured — lines joined by '\n' — so the
+  // arithmetic here and the length of the final block cannot disagree.
+  const lines = boundStateLines(stateLines);
+  const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+  const topologyLines = room() > 0
+    ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() })
     : [];
-  const globalLines = buildTopologyLines(globalCandidates, projectName, GLOBAL_TOPOLOGY_BUDGET);
   // Spacers exist only between non-empty blocks — never at either edge.
   if (lines.length > 0 && topologyLines.length > 0) lines.push('');
   lines.push(...topologyLines);
+  // Global rules no longer have an additive allowance of their own: they
+  // share what is left, after the project, and are kept small by their own
+  // selection window (GLOBAL_TOPOLOGY_LIMIT).
+  const globalLines = room() > 0
+    ? buildTopologyLines(globalCandidates, projectName, {
+      ...budget,
+      maxChars: Math.min(room(), GLOBAL_TOPOLOGY_BUDGET.maxChars),
+    })
+    : [];
   if (lines.length > 0 && globalLines.length > 0) lines.push('');
   lines.push(...globalLines);
   return lines;
+}
+
+/** The length of `lines` joined by '\n' — how every budget here is measured. */
+export function joinedLength(lines: readonly string[]): number {
+  return lines.length === 0 ? 0 : lines.reduce((n, l) => n + l.length, 0) + lines.length - 1;
+}
+
+/** The most the state lines (handoff, task state, inbox notices) may take of
+ *  the block. The handoff (≤ ~910) and the displayed task state (≤ 1200) always
+ *  fit whole; what can overflow is the inbox notices, one per project with
+ *  unread messages, so a long recipient name cannot crowd out every memory. */
+const STATE_MAX_CHARS = 2600;
+
+/** Whole state lines in order while they fit STATE_MAX_CHARS; the rest are
+ *  counted in one closing line instead of vanishing. Lines are never cut in
+ *  half, so an instruction naming an exact recipient or project is either
+ *  shown whole or not at all. */
+function boundStateLines(stateLines: readonly string[]): string[] {
+  if (joinedLength(stateLines) <= STATE_MAX_CHARS) return [...stateLines];
+  const out: string[] = [];
+  for (let i = 0; i < stateLines.length; i++) {
+    const left = stateLines.length - i;
+    const cut = `- … (${left} more line${left === 1 ? '' : 's'} of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded)`;
+    if (joinedLength([...out, stateLines[i], cut]) > STATE_MAX_CHARS) {
+      out.push(cut);
+      return out;
+    }
+    out.push(stateLines[i]);
+  }
+  return out;
+}
+
+/**
+ * The project's slots, decisions first: the newest trusted decision-layer
+ * rows (already ordered by recency) take slots before the score-ordered
+ * candidates fill what is left. The cap is the caller's existing one; this
+ * adds no per-type limit.
+ */
+export function prioritizeDecisions<T extends { id: number }>(
+  decisions: readonly T[],
+  ranked: readonly T[],
+  cap: number,
+): T[] {
+  const chosen: T[] = [];
+  const ids = new Set<number>();
+  for (const row of [...decisions, ...ranked]) {
+    if (chosen.length >= cap) break;
+    if (ids.has(row.id)) continue;
+    ids.add(row.id);
+    chosen.push(row);
+  }
+  return chosen;
+}
+
+/** How much of a stated task state a briefing shows. The record itself is
+ *  not touched: `memesh task` still prints all of it. */
+export const TASK_STATE_DISPLAY_MAX_CHARS = 1200;
+const TASK_STATE_LINE_MAX_CHARS = 320;
+
+/**
+ * Bound the displayed task-state lines. Task-state fields are free text with
+ * no length limit on disk, so without this a long goal could take the whole
+ * memory budget. The first line (the heading, or the one-line stale or
+ * unreadable notice) is always kept; later lines are clipped per line and
+ * dropped from the end, with one line saying so.
+ */
+export function boundTaskStateLines(lines: readonly string[]): string[] {
+  const clipLine = (line: string) => (line.length > TASK_STATE_LINE_MAX_CHARS
+    ? `${sliceWholeChars(line, TASK_STATE_LINE_MAX_CHARS - 1)}…`
+    : line);
+  const clipped = lines.map(clipLine);
+  if (joinedLength(clipped) <= TASK_STATE_DISPLAY_MAX_CHARS) return clipped;
+  const out: string[] = [];
+  const cut = '- … (task state shortened here — `memesh task` shows all of it)';
+  for (let i = 0; i < lines.length; i++) {
+    const line = clipLine(lines[i]);
+    const withLine = joinedLength([...out, line]);
+    const needsCutLine = i < lines.length - 1;
+    if (i > 0 && withLine + (needsCutLine ? cut.length + 1 : 0) > TASK_STATE_DISPLAY_MAX_CHARS) {
+      out.push(cut);
+      return out;
+    }
+    out.push(line);
+  }
+  return out;
 }
 
 /**

@@ -40,18 +40,24 @@ import {
   INDEX_EXCLUDED_TYPES,
   INDEX_SNIPPET_FETCH_CHARS,
   buildBriefingIndex,
+  injectedIndexReserve,
   type BriefingIndex,
   type IndexCandidate,
 } from './briefing-index.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import {
+  DECISION_LAYER_TYPES,
+  DEFAULT_TOPOLOGY_BUDGET,
   GLOBAL_TOPOLOGY_LIMIT,
   SNIPPET_FETCH_CHARS,
   TOPOLOGY_CANDIDATE_CAP,
   assembleTopologyBlock,
+  boundTaskStateLines,
   buildReferenceContext,
   hasBriefingContent,
   isAutoInjectable,
+  joinedLength,
+  prioritizeDecisions,
   projectLabel,
   type TopologyEntity,
 } from './work-topology.js';
@@ -63,6 +69,7 @@ import {
 
 const PROJECT_LIMIT = 30;
 const RECENT_LIMIT = 5;
+const LESSON_LIMIT = 5;
 
 export interface BriefingResult {
   project: string;
@@ -110,6 +117,8 @@ interface CandidateRow {
   confidence: number | null;
   recall_hits: number | null;
   recall_misses: number | null;
+  /** Decision-layer rows only: latest valid activity (see RECENCY_SQL). */
+  recency?: string | null;
 }
 
 const CANDIDATE_COLUMNS =
@@ -137,20 +146,44 @@ interface PoolRow {
   type: string | null;
   title: string | null;
   meta: Record<string, unknown> | null;
+  /** The auto-injection gate, decided on the RAW column: an unreadable
+   *  column is refused, not read as absent (the hook's isTrustedForAutoContext). */
+  autoInjectable: boolean;
   access_count?: number;
   last_accessed_at?: string;
   confidence?: number;
   recall_hits?: number;
   recall_misses?: number;
+  recency?: string | null;
 }
 
-function selectPool(rows: CandidateRow[], cap: number): PoolRow[] {
-  const withMeta: PoolRow[] = rows.map((row) => ({
+/**
+ * A decision's latest VALID activity, as canonical SQLite UTC text: its newest
+ * observation, else its creation. A timestamp counts only if it round-trips
+ * through strftime unchanged (the same rule as time-utils' parseSqliteUtcMs:
+ * 'YYYY-MM-DD HH:MM:SS' or with a 'T', no zone suffix, a real calendar date)
+ * and is not more than 5 minutes in the future — so an impossible or future
+ * date can never make a decision look newest. NULL = unknown, sorted last.
+ * session-start.js carries the same expression (a hook cannot import this).
+ */
+const RECENCY_SQL = `COALESCE(
+  (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
+    WHERE o.entity_id = e.id
+      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
+      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
+  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
+        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
+       THEN replace(e.created_at, 'T', ' ') END)`;
+
+function toPoolRow(row: CandidateRow): PoolRow {
+  const meta = parseMetadata(row.metadata);
+  return {
     id: row.id,
     name: row.name,
     type: row.type,
     title: row.title,
-    meta: parseMetadata(row.metadata),
+    meta,
+    autoInjectable: (row.metadata == null || meta !== null) && isAutoInjectable(meta),
     // SQLite hands back null for absent scalars; rankEntities' generic wants
     // them undefined. Same values, one shape.
     access_count: row.access_count ?? undefined,
@@ -158,9 +191,14 @@ function selectPool(rows: CandidateRow[], cap: number): PoolRow[] {
     confidence: row.confidence ?? undefined,
     recall_hits: row.recall_hits ?? undefined,
     recall_misses: row.recall_misses ?? undefined,
-  }));
+    recency: row.recency ?? null,
+  };
+}
+
+function selectPool(rows: CandidateRow[], cap: number): PoolRow[] {
+  const withMeta: PoolRow[] = rows.map(toPoolRow);
   return rankEntities(withMeta, new Map())
-    .filter((row) => isAutoInjectable(row.meta))
+    .filter((row) => row.autoInjectable)
     .slice(0, cap);
 }
 
@@ -176,6 +214,7 @@ function toTopologyEntity(row: PoolRow, snippet: string | null): TopologyEntity 
     title: row.title,
     snippet,
     signalScore: typeof signal === 'number' ? signal : null,
+    recency: row.recency ?? null,
   };
 }
 
@@ -191,7 +230,19 @@ function toTopologyEntity(row: PoolRow, snippet: string | null): TopologyEntity 
  * includes them: only `global` is excluded, and only rows carrying this
  * project's tag are read, so the index is never cross-project.
  */
-export function readBriefingIndex(db: MemeshDatabase, projectName: string, now: number = Date.now()): BriefingIndex {
+export function readBriefingIndex(
+  db: MemeshDatabase,
+  projectName: string,
+  now: number = Date.now(),
+): BriefingIndex {
+  const { candidates, truncated } = readIndexCandidates(db, projectName);
+  return buildBriefingIndex(candidates, projectName, now, { truncated });
+}
+
+function readIndexCandidates(
+  db: MemeshDatabase,
+  projectName: string,
+): { candidates: IndexCandidate[]; truncated: boolean } {
   const hasNamespace = (db.prepare('PRAGMA table_info(entities)').all() as Array<{ name: string }>)
     .some((column) => column.name === 'namespace');
   const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : '';
@@ -223,7 +274,7 @@ export function readBriefingIndex(db: MemeshDatabase, projectName: string, now: 
     // (refused), and parsing here would collapse both to null.
     metadata: row.metadata,
   }));
-  return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
+  return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
 }
 
 /**
@@ -287,9 +338,9 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     // #360: briefingTaskStateLines downgrades a stale record to one line
     // (at every level) and, when fresh, honours the level's own
     // taskState flag — `minimal` omits it entirely.
-    taskLines = briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
+    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
       includeFresh: policy.taskState,
-    });
+    }));
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError)) throw err;
     taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
@@ -355,11 +406,34 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
      ORDER BY e.id DESC
      LIMIT ?`,
   ).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
-  const projectPool = selectPool(projectRows, PROJECT_LIMIT);
+  // Decisions first (#434 step 3): the project's newest trusted decision-layer
+  // rows take slots before the score-ordered candidates fill the rest, so a
+  // burst of commits can neither push them out of the candidate window nor
+  // out of the project's slots. Same cap as before; no per-type limit.
+  const decisionRows = db.prepare(
+    `SELECT DISTINCT ${CANDIDATE_COLUMNS}, ${RECENCY_SQL} AS recency
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ? AND e.status = 'active' AND e.type IN (${DECISION_LAYER_TYPES.map(() => '?').join(',')})${nonGlobal}
+     ORDER BY recency IS NULL, recency DESC, e.id DESC
+     LIMIT ?`,
+  ).all(`project:${projectName}`, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
+  const decisionPool = decisionRows.map(toPoolRow).filter((row) => row.autoInjectable);
+  const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
+  // The project's lessons: the same separate pool the SessionStart hook
+  // claims first (newest 50, trust gate, top 5), so a project whose slots are
+  // all taken by decisions still shows its lessons on both surfaces.
+  const lessonPool = (db.prepare(
+    `SELECT DISTINCT ${CANDIDATE_COLUMNS}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE e.type = 'lesson_learned' AND e.status = 'active'${nonGlobal} AND t.tag = ?
+     ORDER BY e.id DESC
+     LIMIT 50`,
+  ).all(`project:${projectName}`) as unknown as CandidateRow[])
+    .map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
 
-  // `global` is an explicit storage scope, not a project tag. It gets an
-  // additive bounded pool and the shared assembler gives it an independent
-  // render budget. Keeping it out of the project and recent queries below
+  // `global` is an explicit storage scope, not a project tag. It gets a
+  // bounded pool, and the shared assembler gives it what the project leaves of
+  // the one budget, capped at its old size. Keeping it out of the project and recent queries below
   // makes this the only selection path, so a tagged global row cannot appear
   // twice and overflow globals cannot sneak back through recency.
   //
@@ -395,7 +469,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // One snippet per survivor, one query — first observation per entity,
   // fetched a few line-widths long so clip() can still cut on a word
   // boundary. This is the survivors-only hydration the hook already uses.
-  const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
+  const survivorIds = [...new Set([...lessonPool, ...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
   const snippets = new Map<number, string>();
   if (survivorIds.length > 0) {
     const placeholders = survivorIds.map(() => '?').join(',');
@@ -414,14 +488,20 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   const toEntities = (pool: PoolRow[]) =>
     pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
 
+  // One memory budget for everything inside the fence; when this level shows
+  // the index, room for its heading and "N more" line is kept back first.
+  const indexReserve = policy.index ? injectedIndexReserve(projectName) + 2 : 0;
   const lines = assembleTopologyBlock(
     stateLines,
     [
+      { entities: toEntities(lessonPool), foreign: false },
       { entities: toEntities(projectPool), foreign: false },
       { entities: toEntities(globalPool), foreign: false, global: true },
       { entities: toEntities(recentPool), foreign: true },
     ],
     projectName,
+    DEFAULT_TOPOLOGY_BUDGET,
+    { reserve: indexReserve },
   );
 
   // Repository facts PREFIX a briefing; they never constitute one. Prepending
@@ -443,8 +523,15 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // documented, always-present field (other callers, e.g. the CLI's
   // `--index` flag, read it on its own) — but its lines only enter the
   // INJECTED block when the level includes it.
-  const index = readBriefingIndex(db, projectName);
-  const indexLines = policy.index ? index.lines : [];
+  const now = Date.now();
+  const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName);
+  const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
+  // The injected index gets what the block left of the shared budget; the
+  // standalone `index` above keeps its own caps (`memesh briefing --index`).
+  const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
+  const indexLines = policy.index
+    ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines
+    : [];
   const block = withRepo.length > 0 && indexLines.length > 0
     ? [...withRepo, '', ...indexLines]
     : [...withRepo, ...indexLines];

@@ -33,8 +33,8 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",
-      "sha256": "8ef7d272807ce6ed8f656c556dff7f7a700def324f9803434d6487c5216d5afe",
-      "bytes": 6174
+      "sha256": "f435055f83ef220e5ffc52d631ea0044f3af873a1430cb99e02e64cd9810c6e4",
+      "bytes": 7011
     },
     {
       "path": "scripts/hooks/_generated/briefing-level.js",
@@ -113,8 +113,8 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "1e333d54450f13b834b010f308316b2c2569b2fbfbfed1c8cb25c52e8b8196d0",
-      "bytes": 8257
+      "sha256": "106b8af575cacdeb197c7654716a7676c594567a895c85035dfe005055c3a22b",
+      "bytes": 11020
     },
     {
       "path": "scripts/hooks/_shared.js",
@@ -163,8 +163,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "29dab76f19fa2f4b3a5a352d54bb7d5717e4525606719c8e85b8f7c65767210f",
-      "bytes": 97733
+      "sha256": "afcce489ea178a9814d5fb49250a6152357194a21a6449ff9ade51fa4e859846",
+      "bytes": 100630
     },
     {
       "path": "scripts/hooks/session-summary.js",

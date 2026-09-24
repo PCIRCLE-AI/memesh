@@ -70,11 +70,18 @@ import {
 import { MemeshDatabase } from './_generated/sqlite.js';
 import {
   buildBriefingIndex,
+  injectedIndexReserve,
   INDEX_CANDIDATE_CAP,
   INDEX_EXCLUDED_TYPES,
   INDEX_SNIPPET_FETCH_CHARS,
 } from './_generated/briefing-index.js';
 import { handoffView, SESSION_HANDOFF_TYPE, sessionHandoffName } from './_generated/session-handoff.js';
+import {
+  boundTaskStateLines,
+  DECISION_LAYER_TYPES,
+  joinedLength,
+  prioritizeDecisions,
+} from './_generated/work-topology.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1193,7 +1200,44 @@ process.stdin.on('end', async () => {
           .filter(entity => isTrustedForAutoContext(entity.metadata))
           .slice(0, GLOBAL_TOPOLOGY_LIMIT);
       }
-      const projectEntities = projectOnly.slice(0, sessionLimit);
+      // Decisions first (#434 step 3): the project's newest trusted
+      // decision-layer rows take slots before the score-ordered candidates
+      // fill the rest, so a burst of commits can neither push them out of the
+      // candidate window nor out of the project's slots. Same cap as before.
+      // Recency is the latest VALID activity — the same expression as
+      // RECENCY_SQL in src/core/briefing.ts (a hook cannot import it): a
+      // timestamp counts only if it round-trips through strftime unchanged
+      // and is not more than 5 minutes in the future. NULL sorts last.
+      // A failed read is recorded and falls back to score order alone.
+      let decisionEntities = [];
+      try {
+        const recencySql = `COALESCE(
+          (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
+            WHERE o.entity_id = e.id
+              AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
+              AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
+          CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
+                AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
+               THEN replace(e.created_at, 'T', ' ') END)`;
+        decisionEntities = db.prepare(
+          `SELECT DISTINCT ${baseCols}, ${recencySql} AS recency
+           FROM entities e JOIN tags t ON t.entity_id = e.id
+           WHERE t.tag = ? ${notGlobal} ${statusFilter}
+             AND e.type IN (${DECISION_LAYER_TYPES.map(() => '?').join(',')})
+           ORDER BY recency IS NULL, recency DESC, e.id DESC
+           LIMIT ?`,
+        ).all(projectTag, ...DECISION_LAYER_TYPES, CANDIDATE_CAP)
+          .filter(entity => isTrustedForAutoContext(entity.metadata));
+      } catch (err) {
+        decisionEntities = [];
+        try { process.stderr.write(`[memesh session-start] decisions: ${err?.message || err}\n`); } catch {}
+        recordHookOutcome(process.env, {
+          hook: 'session-start',
+          outcome: 'error',
+          reason: `decisions: ${hookErrorReason(err)}`,
+        });
+      }
+      const projectEntities = prioritizeDecisions(decisionEntities, projectOnly, sessionLimit);
 
       // recentStatusFilter is "WHERE status = 'active'" or "" — the bare-column
       // form is fine when there's no JOIN, but we now alias the table as `e`,
@@ -1386,12 +1430,12 @@ process.stdin.on('end', async () => {
         // not a failed memory assembly: the rest of the context still ships.
         const stateLines = [
           ...handoffBlock,
-          ...briefingTaskStateLines(
+          ...boundTaskStateLines(briefingTaskStateLines(
             parseTaskState(parseEntityMetadata(taskRow?.metadata)),
             projectName,
             new Date(),
             { includeFresh: briefingPolicy.taskState },
-          ),
+          )),
           ...waitingMessageLines(db, resolveMessageRecipient(process.env), (err) =>
             recordHookOutcome(process.env, {
               hook: 'session-start',
@@ -1420,6 +1464,7 @@ process.stdin.on('end', async () => {
             title: e.title ?? null,
             snippet: snippets.get(e.id) ?? null,
             signalScore: meta && typeof meta.signal_score === 'number' ? meta.signal_score : null,
+            recency: e.recency ?? null,
           };
         };
         memoryLines.push(...assembleTopologyBlock(
@@ -1432,6 +1477,9 @@ process.stdin.on('end', async () => {
           ],
           projectName,
           DEFAULT_TOPOLOGY_BUDGET,
+          // Room for the index's heading and omission footer, kept before the
+          // ranked and global sections spend the shared budget.
+          { reserve: briefingPolicy.index ? injectedIndexReserve(projectName) + 2 : 0 },
         ));
       } catch (err) {
         // Snippet enrichment is best-effort. A failure here must not stop
@@ -1502,7 +1550,12 @@ process.stdin.on('end', async () => {
           })),
           projectName,
           Date.now(),
-          { truncated: indexRows.length >= INDEX_CANDIDATE_CAP },
+          {
+            truncated: indexRows.length >= INDEX_CANDIDATE_CAP,
+            // One shared cap: the index gets what the block above left of it.
+            maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars
+              - (memoryLines.length ? joinedLength(memoryLines) + 2 : 0),
+          },
         );
         indexLines = index.lines;
         const rendered = new Set(index.ids);
@@ -1555,8 +1608,8 @@ process.stdin.on('end', async () => {
       // ever been told can end up in an observation), so it must be
       // delimited the same way on every injection path — not hand-rolled
       // per hook. The lines arrive already budgeted — assembleTopologyBlock
-      // charges task state plus project/foreign sections against the main
-      // ceiling and global context against its small additive ceiling. It
+      // charges the state lines, project/foreign and global sections against
+      // one ceiling, keeping room for the index appended below. It
       // returns whole lines only, so the closing fence cannot be cut.
       // #360: the work-package notice is `full`-only boilerplate; at every
       // other level workPackageNotice is undefined and this is just the

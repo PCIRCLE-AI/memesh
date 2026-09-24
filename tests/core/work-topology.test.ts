@@ -30,8 +30,17 @@ import {
   buildTopologyLines,
   assembleTopologyBlock,
   buildReferenceContext,
+  boundTaskStateLines,
+  DEFAULT_TOPOLOGY_BUDGET,
+  DECISION_LAYER_TYPES,
+  prioritizeDecisions,
+  sliceWholeChars,
+  TASK_STATE_DISPLAY_MAX_CHARS,
   type TopologyEntity,
 } from '../../src/core/work-topology.js';
+
+/** A UTF-16 unit that is half of a surrogate pair with its other half missing. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 const entity = (over: Partial<TopologyEntity> & { type: string }): TopologyEntity => ({
   name: 'machine-key-name',
@@ -247,17 +256,24 @@ describe('work-topology', () => {
     expect(lines[0]).toBe('x'.repeat(90));
   });
 
-  it('gives global memory an additive budget without displacing project memory', () => {
+  it('gives global memory only what the project left of the one budget (#434 step 3)', () => {
     const pools = [
       { entities: [entity({ type: 'decision', name: 'project', title: 'project survives' })], foreign: false },
       { entities: [entity({ type: 'directive', name: 'global', title: 'global survives' })], foreign: false, global: true },
     ];
 
-    const lines = assembleTopologyBlock([], pools, 'p', { maxChars: 80, maxLineChars: 160 });
-    const text = lines.join('\n');
+    // Too small for both: the project keeps its line, global is not added on top.
+    const tight = assembleTopologyBlock([], pools, 'p', { maxChars: 80, maxLineChars: 160 });
+    expect(tight.join('\n')).toContain('project survives');
+    expect(tight.join('\n')).not.toContain('global survives');
+    expect(tight.join('\n').length).toBeLessThanOrEqual(80);
+
+    const roomy = assembleTopologyBlock([], pools, 'p', { maxChars: 400, maxLineChars: 160 });
+    const text = roomy.join('\n');
     expect(text).toContain('project survives');
     expect(text).toContain('global survives');
     expect(text).toContain('Global memory — applies across projects:');
+    expect(text.length).toBeLessThanOrEqual(400);
   });
 
   it('caps the global section independently, even with long fenced content', () => {
@@ -273,7 +289,7 @@ describe('work-topology', () => {
         },
       ],
       'p',
-      { maxChars: 0, maxLineChars: 160 },
+      { maxChars: 4000, maxLineChars: 160 },
     );
     const rendered = lines.join('\n');
     const block = buildReferenceContext(lines);
@@ -385,5 +401,118 @@ describe('projectLabel — the name a heading uses for a project', () => {
       'Recent activity in "memesh":',
     ]) expect(lines, heading).toContain(heading);
     expect(lines.join('\n')).not.toContain(HASH);
+  });
+
+  describe('decisions first, one budget (#434 step 3)', () => {
+    it('the decision layer is the work layer minus lessons and the task state', () => {
+      expect([...DECISION_LAYER_TYPES].sort()).toEqual(
+        ['decision', 'goal', 'milestone', 'pattern', 'plan', 'product_improvement', 'technical_pattern'],
+      );
+      for (const type of DECISION_LAYER_TYPES) expect(WORK_LAYER_TYPES.has(type), type).toBe(true);
+    });
+
+    it('prioritizeDecisions: decisions take slots first, each id once, same cap', () => {
+      const d = [{ id: 7 }, { id: 3 }];
+      const ranked = [{ id: 9 }, { id: 3 }, { id: 8 }, { id: 1 }];
+      expect(prioritizeDecisions(d, ranked, 4).map((r) => r.id)).toEqual([7, 3, 9, 8]);
+      expect(prioritizeDecisions(d, ranked, 1).map((r) => r.id)).toEqual([7]);
+      expect(prioritizeDecisions([], ranked, 2).map((r) => r.id)).toEqual([9, 3]);
+    });
+
+    it('renders the newest decision first, even when an older one has a higher score', () => {
+      const lines = assembleTopologyBlock([], [{
+        entities: [
+          entity({ type: 'decision', name: 'o', id: 1, title: 'OLDER-HIGH', signalScore: 0.95, recency: '2026-09-20 10:00:00' }),
+          entity({ type: 'decision', name: 'n', id: 2, title: 'NEWER-LOW', signalScore: 0.1, recency: '2026-09-23 10:00:00' }),
+          entity({ type: 'plan', name: 'u', id: 3, title: 'UNDATED', signalScore: 0.99, recency: null }),
+        ],
+        foreign: false,
+      }], 'p');
+      const at = (t: string) => lines.findIndex((l) => l.includes(t));
+      expect(at('NEWER-LOW')).toBeGreaterThan(-1);
+      expect(at('NEWER-LOW')).toBeLessThan(at('OLDER-HIGH'));
+      expect(at('OLDER-HIGH')).toBeLessThan(at('UNDATED'));
+    });
+
+    it('sliceWholeChars never ends on half of a surrogate pair', () => {
+      expect(sliceWholeChars('ab😀c', 3)).toBe('ab');
+      expect(sliceWholeChars('ab😀c', 4)).toBe('ab😀');
+      expect(sliceWholeChars('abc', 0)).toBe('');
+      expect(sliceWholeChars('abc', -2)).toBe('');
+      expect(sliceWholeChars('abc', 9)).toBe('abc');
+    });
+
+    it('a ranked line never splits an astral character, wherever the cut falls', () => {
+      let cutOnSurrogate = 0;
+      for (let k = 0; k < 40; k++) {
+        const title = 'a'.repeat(k) + '😀'.repeat(120);
+        const line = topologyLine(entity({ type: 'decision', id: 12, title }), 60);
+        expect(line, `offset ${k}`).not.toMatch(LONE_SURROGATE);
+        expect(line.endsWith(' [mem:12]'), `offset ${k}`).toBe(true);
+        const room = 60 - ' [mem:12]'.length;
+        const code = title.replace(/\s+/g, ' ').charCodeAt(room - 1);
+        if (code >= 0xd800 && code <= 0xdbff) cutOnSurrogate++;
+      }
+      expect(cutOnSurrogate, 'no offset put the cut on a high surrogate, so this proves nothing').toBeGreaterThan(0);
+    });
+
+    it('everything in the block, state lines included, fits one budget with the reserve kept back', () => {
+      const state = ['Task state:', `- goal: ${'g'.repeat(300)}`];
+      const many = (n: number, global = false) => Array.from({ length: n }, (_, i) =>
+        entity({ type: global ? 'directive' : 'decision', name: `${global ? 'g' : 'd'}${i}`, id: (global ? 500 : 1) + i, title: `${'long title '.repeat(12)}${i}` }));
+      for (const [maxChars, reserve] of [[4000, 0], [4000, 700], [1200, 300], [400, 0]] as const) {
+        const lines = assembleTopologyBlock(state, [
+          { entities: many(30), foreign: false },
+          { entities: many(3, true), foreign: false, global: true },
+        ], 'p', { maxChars, maxLineChars: 160 }, { reserve });
+        expect(lines.join('\n').length, `${maxChars}/${reserve}`).toBeLessThanOrEqual(maxChars - reserve);
+        expect(lines.slice(0, 2)).toEqual(state);
+      }
+    });
+
+    it('bounds the state lines as a group: the leading ones stay whole, the rest are counted in one line', () => {
+      const handoff = ['Where the last session left off (4 days ago — may be out of date): [mem:1]', 'h'.repeat(800)];
+      const task = ['Task state for "p":', ...Array.from({ length: 3 }, (_, i) => `- f${i}: ${'t'.repeat(300)}`)];
+      const inbox = Array.from({ length: 5 }, (_, i) => `- ${'r'.repeat(200)} has 1 message waiting in project-${i} — fetch it as ${'r'.repeat(200)}`);
+      const lines = assembleTopologyBlock([...handoff, ...task, ...inbox], [{
+        entities: [entity({ type: 'decision', name: 'd', id: 9, title: 'STILL-HERE' })], foreign: false,
+      }], 'p', DEFAULT_TOPOLOGY_BUDGET, { reserve: 300 });
+      const text = lines.join('\n');
+      expect(text.length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars - 300);
+      expect(lines.slice(0, handoff.length + task.length)).toEqual([...handoff, ...task]);
+      const cut = text.match(/- … \((\d+) more lines? of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded\)/);
+      expect(cut).not.toBeNull();
+      const shownInbox = lines.filter((l) => l.includes('message waiting')).length;
+      expect(shownInbox + Number(cut![1])).toBe(inbox.length);
+      expect(text).toContain('STILL-HERE');
+      // Under the cap nothing is touched.
+      expect(assembleTopologyBlock(task, [], 'p')).toEqual(task);
+    });
+
+    it('bounds the displayed task state, keeps its first line, and says where it was cut', () => {
+      const short = ['Task state for "p":', '- goal: ship', '- next: test'];
+      expect(boundTaskStateLines(short)).toEqual(short);
+      expect(boundTaskStateLines([])).toEqual([]);
+
+      const huge = ['Task state for "p":', `- goal: ${'😀'.repeat(2000)}`, ...Array.from({ length: 40 }, (_, i) => `- step ${i}: ${'x'.repeat(100)}`)];
+      const out = boundTaskStateLines(huge);
+      expect(out[0]).toBe(huge[0]);
+      expect(out.join('\n').length).toBeLessThanOrEqual(TASK_STATE_DISPLAY_MAX_CHARS);
+      expect(out.at(-1)).toContain('memesh task');
+      expect(out.join('\n')).not.toMatch(LONE_SURROGATE);
+      for (const line of out) expect(line.length).toBeLessThanOrEqual(320);
+
+      // A state that fits whole is shown whole: no room is held back for a cut line it does not need.
+      // The last line is shorter than the cut line would be, so reserving room for one drops it.
+      const fits = ['Task state for "p":', ...Array.from({ length: 4 }, (_, i) => `- f${i}: ${'z'.repeat(284)}`), '- x'];
+      expect(fits.join('\n').length).toBeLessThanOrEqual(TASK_STATE_DISPLAY_MAX_CHARS);
+      expect(fits.slice(0, -1).join('\n').length + 70).toBeGreaterThan(TASK_STATE_DISPLAY_MAX_CHARS);
+      expect(boundTaskStateLines(fits)).toEqual(fits);
+
+      // A single long line after the heading is clipped, not dropped.
+      const one = boundTaskStateLines(['Task state for "p":', `- goal: ${'y'.repeat(900)}`]);
+      expect(one).toHaveLength(2);
+      expect(one[1].endsWith('…')).toBe(true);
+    });
   });
 });

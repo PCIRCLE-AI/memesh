@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import os from 'os';
 import {
   buildBriefingIndex,
+  injectedIndexReserve,
   INDEX_EXCLUDED_TYPES,
   INDEX_MAX_BYTES,
   INDEX_MAX_LINES,
@@ -278,5 +279,44 @@ describe('buildBriefingIndex', () => {
   it('an id with no hash (an older project name) is printed as it is', () => {
     expect(buildBriefingIndex([], 'plain-name', NOW).lines[0])
       .toBe('Index of durable memories for "plain-name" (newest first):');
+  });
+});
+
+describe('the injected index shares the block budget (#434 step 3)', () => {
+  const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const all = Array.from({ length: 30 }, (_, i) => candidate(i + 1));
+
+  it('with an allowance it stays inside it and says exactly how many it left out', () => {
+    for (const maxChars of [0, 150, 600, 1500]) {
+      const index = buildBriefingIndex(all, PROJECT, NOW, { maxChars });
+      const text = index.lines.join('\n');
+      expect(text.length, `maxChars ${maxChars}`).toBeLessThanOrEqual(Math.max(maxChars, injectedIndexReserve(PROJECT)));
+      expect(index.ids.length).toBeLessThan(all.length);
+      expect(text, `maxChars ${maxChars}`).toContain(`- ${all.length - index.ids.length} more`);
+      // Every id reported as shown is a line in the block, and nothing else is.
+      const shown = [...text.matchAll(/ \[mem:(\d+)\]$/gm)].map((m) => Number(m[1]));
+      expect(shown).toEqual(index.ids);
+    }
+    expect(buildBriefingIndex(all, PROJECT, NOW, { maxChars: 1500 }).ids.length).toBeGreaterThan(0);
+  });
+
+  it('the reserve covers the heading and the worst-case trailers', () => {
+    const none = buildBriefingIndex(all, PROJECT, NOW, { maxChars: 0, truncated: true });
+    expect(none.ids).toEqual([]);
+    expect(none.lines.join('\n').length).toBeLessThanOrEqual(injectedIndexReserve(PROJECT));
+    const empty = buildBriefingIndex([], PROJECT, NOW, { maxChars: 0 });
+    expect(empty.lines.join('\n').length).toBeLessThanOrEqual(injectedIndexReserve(PROJECT));
+  });
+
+  it('without an allowance nothing changes', () => {
+    expect(buildBriefingIndex(all, PROJECT, NOW, {}).lines).toEqual(buildBriefingIndex(all, PROJECT, NOW).lines);
+    expect(buildBriefingIndex(all, PROJECT, NOW, { maxChars: 1e9 }).lines).toEqual(buildBriefingIndex(all, PROJECT, NOW).lines);
+  });
+
+  it('an index line never splits an astral character, wherever the cut falls', () => {
+    for (let k = 0; k < 170; k++) {
+      const index = buildBriefingIndex([candidate(1, { title: 'a'.repeat(k) + '😀'.repeat(200) })], PROJECT, NOW);
+      expect(index.lines.join('\n'), `offset ${k}`).not.toMatch(LONE_SURROGATE);
+    }
   });
 });
