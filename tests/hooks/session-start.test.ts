@@ -4,6 +4,7 @@ import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { pathToFileURL } from 'node:url';
 import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 // The cap the hook itself imports — a literal here would drift from it.
@@ -1808,7 +1809,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     project = mirrorProjectName(cwd);
     // The real schema, the way the hooks and core create it.
     const out = spawnSync('node', ['--input-type=module', '-e',
-      `import { openDatabase, closeDatabase } from ${JSON.stringify(path.resolve('dist/db.js'))}; openDatabase(${JSON.stringify(dbFile)}); closeDatabase();`],
+      `import { openDatabase, closeDatabase } from ${JSON.stringify(pathToFileURL(path.resolve('dist/db.js')).href)}; openDatabase(${JSON.stringify(dbFile)}); closeDatabase();`],
     { encoding: 'utf8', env: { ...process.env, HOME: dir, MEMESH_DB_PATH: dbFile } });
     expect(out.status, out.stderr).toBe(0);
   });
