@@ -3,7 +3,7 @@
 <p align="center">
   <h1 align="center">MeMesh</h1>
   <p align="center">
-    <strong>Ein Gedächtnis für deinen KI-Coding-Assistenten, das von Sitzung zu Sitzung bleibt.</strong><br />
+    <strong>Eine lokale Zusammenarbeitsebene für KI-Coding-Agenten.</strong><br />
     Eine SQLite-Datei. Kein Docker, keine Cloud.
   </p>
   <p align="center">
@@ -18,15 +18,16 @@
 
 ## Was es tut
 
-Mit jeder neuen Sitzung fängt dein KI-Coding-Assistent (Agent) bei null an. Er schlägt wieder den Ansatz vor, den du letzten Monat verworfen hast, scheitert wieder am selben Test und lässt sich die Architektur erklären, die er selbst mit entworfen hat.
+Beim Wechsel zwischen Sitzungen oder Coding-Agenten musst du mitunter frühere Entscheidungen erneut erklären, dieselbe Architektur beschreiben oder eine schon behobene Ursache wiederfinden.
 
-MeMesh merkt sich das für ihn. Claude-Code-Hooks erfassen und laden den laufenden Arbeitskontext; unterstützte Clients teilen sich über ihre dokumentierte Integration dieselbe lokale SQLite-Datenbank. Funktioniert mit Claude Code, Codex, Cursor und anderen MCP-Clients.
+MeMesh lässt Agenten lokal Erinnerungen teilen und Nachrichten austauschen. Die wichtigsten Anwendungen: Präferenzen, Entscheidungen und Erfahrungen über Sitzungen hinweg aufbewahren; Aufgaben, Fragen, Fortschritt und Ergebnisse zwischen Agenten senden; und den Arbeitsstand für eine spätere Sitzung festhalten. Claude Code und Codex sind die wichtigsten Beispiele; Cursor und andere MCP-Clients nutzen ihre dokumentierten Integrationen. Automatische Erfassung und Zustellung hängen von der jeweiligen Host-Integration ab.
 
 ```
    du arbeitest mit dem Agenten
             |
             v
    +------------------+      +------------------+
+   |  Claude Code     |      |  Claude Code     |
    |  festhalten      |      |  erinnern        |
    |  Sitzungen,      | ---> |  beim Start und  |
    |  Commits, Fixes  |      |  vor jeder       |
@@ -43,6 +44,7 @@ MeMesh merkt sich das für ihn. Claude-Code-Hooks erfassen und laden den laufend
 - **Erfassen, Erinnern, Hinweise und Schutz im richtigen Moment.** MeMesh liefert **9 Hook-Befehle** über seine Claude-Code- und Codex-Integrationen: Acht Claude-Code-Hooks laufen beim Sitzungsstart, vor Dateiänderungen, nach `git commit`, nach einem freigegebenen Plan oder einer beantworteten Frage, wenn Claude aufhört, vor dem Kürzen des Kontexts, bei „remember this“ (in 5 Sprachen, Deutsch nicht darunter) und vor einem riskanten Befehl, der eine bestätigte Lektion wiederholen würde. Die Plan-/Frage- und „remember this“-Hooks erinnern den Agenten nur an `remember`; der neunte Befehl verarbeitet sowohl Codex SessionStart als auch SessionEnd und registriert beziehungsweise beendet eine geeignete gewöhnliche Codex-CLI-Sitzung kontrolliert.
 - **Ein Gedächtnis für alle Tools.** Was du heute in Claude Code speicherst, steht morgen auch Codex oder Cursor zur Verfügung.
 - **Agenten können sich Nachrichten hinterlassen.** Der dauerhafte lokale Posteingang übersteht Neustarts; unter macOS oder Linux kann auch eine exakt adressierte, aktive gewöhnliche Codex-CLI-Sitzung mit MeMesh-Plugin die begrenzte Nachricht über ihre native Queue erhalten.
+- **Arbeitsübergaben festhalten.** Claude Code kann seine letzte aussagekräftige Antwort für die nächste Sitzung desselben Projekts speichern. Mit `task_state` hältst du ein ausdrücklich genanntes Ziel, den nächsten Schritt, ein Hindernis oder einen Abschluss fest; mit `message` sendest du Belegstellen oder offene Fragen an einen exakten Empfänger.
 - **Ein Dashboard** zum Stöbern: 4 Tabs, 11 Sprachen, unter `http://localhost:3737/dashboard`.
 
 ---
@@ -60,7 +62,7 @@ MeMesh merkt sich das für ihn. Claude-Code-Hooks erfassen und laden den laufend
 | Eigene Skripte und Apps | HTTP-API aus `memesh serve` | [docs/platforms/universal.md](docs/platforms/universal.md) |
 | ChatGPT, Gemini im Browser und andere gehostete Chats | HTTP-API über eine lokale Brücke, die du selbst betreibst | [docs/platforms/README.md](docs/platforms/README.md) |
 
-Die acht Claude-Code-Hooks übernehmen automatisches Erfassen, Erinnern, Hinweise und Schutz. Das Codex-Plugin richtet seine SessionStart-Integration und die MCP-Tools automatisch ein. Reine MCP-Clients rufen `recall` und `briefing` selbst auf.
+Die acht Claude-Code-Hooks übernehmen automatisches Erfassen, Erinnern, Hinweise und Schutz. Das Codex-Plugin richtet seinen SessionStart-Companion und die MCP-Tools für geeignete gewöhnliche CLI-Threads ein; es bietet weder die vollständigen Erfassungs-Hooks von Claude Code noch lädt es ein Briefing automatisch. In Codex, auch mit Plugin, und in reinen MCP-Clients rufst du `briefing` zum Sitzungsbeginn selbst auf und nutzt `recall` für gezielte Fragen.
 
 Abruf und Erfassung bleiben lokal und deterministisch: SQLite-FTS5-Suche, explizite Memory-Tools und regelbasierte Hooks. Diese Version konfiguriert oder kontaktiert keinen LLM-, Embedding- oder Vektor-Provider. Veraltete Provider-Einstellungen früherer Versionen bleiben auf der Festplatte, werden aber ignoriert; `memesh doctor` nennt nur die Namen der obersten Felder, ohne ihre Werte zu lesen oder auszugeben.
 
@@ -130,6 +132,10 @@ Zwei Dinge, die du kennen solltest, sobald Erinnerungen da sind:
 - `forget` archiviert eine Erinnerung, statt sie zu löschen. Eine neuere Erinnerung kann eine ältere ablösen.
 - Ein laufender Agent kann mit `work_package` einen Kalender-Digest oder begrenzte sichtbare Züge aus dem neuesten geeigneten aktuellen Claude-Code-Transkript vorbereiten. Der Transkriptmodus erfordert genau einen passenden MCP-Datei-Root des Clients; fehlende oder mehrdeutige Roots und begrenzte Scanfehler scheitern geschlossen. Die Einreichung bewahrt redigierte Quellzüge auf und stellt nur einen Vorschlag zur menschlichen Prüfung bereit; Agenten können ihn nicht anwenden oder ablehnen, und MeMesh kontaktiert keinen Provider. Die exakten Suchgrenzen stehen in der [API-Referenz](docs/api/API_REFERENCE.md#work_package).
 
+Für eine Übergabe speichert Claudes Stop-Hook die letzte aussagekräftige Antwort als ersetzbare Projektnotiz. Eine aktuelle, vertrauenswürdige Notiz erscheint vor den bewerteten Memories in der nächsten Claude-Code-Sitzung und in `briefing` auf jedem Client; sie ist ein Hinweis zum Prüfen, kein garantierter Neustart der Arbeit. Halte mit `task_state` nur den tatsächlich bekannten Arbeitsstand fest und sende Belegstellen oder offene Fragen mit `message` an einen exakten Empfänger ([Agenten-Nachrichten](docs/platforms/agent-messaging.md)). Gespeicherte Nachrichten lassen sich nachholen; Zustellung, Abruf und native Queue-Annahme bedeuten keinen erledigten Auftrag.
+
+Im Briefing haben aktuelle Projektentscheidungen Vorrang vor Routineaktivität; bis zu fünf Projektlektionen werden getrennt ausgewählt. Übergabe, angezeigter Aufgabenstand, bewertete Memories, globale Memories auf Stufe `full` und eingeblendeter Index teilen sich ein Limit von 4000 Zeichen für den Memory-Block. Wenn der Index weitere ausgelassene Memories meldet, nutze `recall`. `memesh briefing --index` zeigt den eigenständigen Index mit seinen eigenen Grenzen von 40 Zeilen und 3072 Bytes.
+
 Alle Befehle und Tools: [docs/api/API_REFERENCE.md](docs/api/API_REFERENCE.md). Aufbau: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Mitmachen: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
@@ -146,7 +152,7 @@ Alle Befehle und Tools: [docs/api/API_REFERENCE.md](docs/api/API_REFERENCE.md). 
 | `import` | Memories mit Merge-Strategien importieren (Skip / Overwrite / Append) |
 | `learn` | Strukturierte Lektionen aus Fehlern erfassen (Fehler, Grundursache, Behebung, Prävention) |
 | `task_state` | Arbeitsstand lesen oder festhalten — Ziel, nächster Schritt, Blocker, gerade Erledigtes |
-| `briefing` | Die Arbeitstopologie für jeden MCP-Client — standardmäßig (`minimal`) nur Entscheidungen, Lektionen, bekanntes Wissen und jüngste Aktivität dieses Projekts; `standard` ergänzt den aktuellen Aufgabenstatus und schließt mit einem begrenzten Index der dauerhaften Memories des Projekts ab, `full` ergänzt andere Projekte und globale Memories (die Einstellung `briefing`: `minimal` / `standard` / `full`); allgemeiner Kontext bleibt still, während exakte Angaben für `project` + `recipient` nur dessen noch nicht abgerufene Zustellungen anzeigen |
+| `briefing` | Die Arbeitstopologie für jeden MCP-Client — eine geeignete Projektübergabe steht auf jeder Stufe vor den bewerteten Memories; `minimal` zeigt danach Entscheidungen, Lektionen, Wissen und jüngste Aktivität dieses Projekts, `standard` ergänzt einen aktuellen Aufgabenstatus und einen begrenzten Memory-Index, `full` andere Projekte und globale Memories; nur exakte Angaben für `project` + `recipient` zeigen dessen noch nicht abgerufene Zustellungen |
 | `user_patterns` | Arbeitsmuster analysieren — Zeitplan, Tools, Stärken, Lernbereiche |
 | `improvement` | Evidenzverknüpfte Produktverbesserung zur menschlichen Prüfung vorschlagen oder ihren Status lesen; Agenten können sie nicht selbst annehmen oder ablehnen |
 | `message` | Aktive Agenten finden und nicht vertrauenswürdige Nachrichten mit exaktem Empfänger austauschen. Dauerhafter JSON-Payload: max. 64 KiB; vollständiger nativer Envelope: max. 16 KiB mit getrennten Fehlern `native_message_too_large` und `recipient_unavailable`. Native Annahme, Discovery, Poll und Fetch bedeuten weder Bestätigung noch Workflow-Status |
@@ -160,7 +166,7 @@ Alle Befehle und Tools: [docs/api/API_REFERENCE.md](docs/api/API_REFERENCE.md). 
 **Agenten-Nachrichten, die genauen Regeln** (ausführlich: [docs/platforms/agent-messaging.md](docs/platforms/agent-messaging.md)):
 
 - Heute verfügbar: Ein Sender über MCP, HTTP oder CLI kann einen nicht vertrauenswürdigen, JSON-kodierten Payload von höchstens 65.536 UTF-8-Bytes (64 KiB) dauerhaft an genau einen lokalen Empfänger senden. Der Empfänger kann ihn getrennt abrufen, nach einem Neustart mit einem opaken Cursor fortsetzen und Intake, Bestätigung, Workflow-Status und Host-Aktivierung getrennt protokollieren.
-- Mit aktiviertem MeMesh-Codex-Plugin registriert sich jeder gestartete oder fortgesetzte gewöhnliche Codex-CLI-Thread mit gültiger Thread-Identität und vorhandenem Arbeitsverzeichnis automatisch mit einer threadbezogenen Identität; ein manuelles `agent setup` ist nicht erforderlich. SessionStart startet einen benutzereigenen, abgekoppelten Companion, weil Codex beim Beenden des CLI-Prozesses ein asynchrones Hook-Kind beendet. SessionEnd lässt ein begrenztes 45-Sekunden-Fenster für die inaktive Queue offen; Resume ersetzt die vorherige exakte Generation, und nach Ablauf wird die Registrierung entfernt. Eine in diesem Fenster angenommene Nachricht wird beim Fortsetzen desselben Threads für das Modell sichtbar; dies ist keine Behauptung, dass eine gestoppte Oberfläche geweckt wurde. `memesh agent setup codex-session` bleibt optional, wenn ein Workspace einen stabil benannten Principal benötigt. Der vollständige native Envelope einschließlich Routing-Metadaten und Payload ist separat auf 16.384 Bytes (16 KiB) begrenzt. Ein Exact-Session-Send ist erst erfolgreich, wenn die native Queue ihn annimmt; ein zu großer Envelope meldet `native_message_too_large`, ein nicht erreichbarer lokaler Router meldet `router_unreachable`, andere nicht verfügbare oder abgelehnte Sessions melden `recipient_unavailable`. Eingegrenzte Recovery-Daten bleiben für alle Sender- und Empfängerfehler erhalten, und Principal-Ziele behalten Durable Store-and-Forward bei. Native Annahme bedeutet weder Bestätigung noch Workflow-Status; native Nachrichten dürfen keine Secrets enthalten.
+- Mit aktiviertem MeMesh-Codex-Plugin registriert sich jeder gestartete oder fortgesetzte gewöhnliche Codex-CLI-Thread mit gültiger Thread-Identität und vorhandenem Arbeitsverzeichnis automatisch mit einer threadbezogenen Identität; ein manuelles `agent setup` ist nicht erforderlich. SessionStart startet einen benutzereigenen Companion. SessionEnd lässt ein begrenztes 45-Sekunden-Fenster für die inaktive Queue offen; Resume ersetzt die vorherige exakte Generation, und nach Ablauf wird die Registrierung entfernt. Eine in diesem Fenster angenommene Nachricht wird beim Fortsetzen desselben Threads für das Modell sichtbar; dies ist keine Behauptung, dass eine gestoppte Oberfläche geweckt wurde. `memesh agent setup codex-session` bleibt optional, wenn ein Workspace einen stabil benannten Principal benötigt. Der vollständige native Envelope einschließlich Routing-Metadaten und Payload ist separat auf 16.384 Bytes (16 KiB) begrenzt. Ein Exact-Session-Send ist erst erfolgreich, wenn die native Queue ihn annimmt; ein zu großer Envelope meldet `native_message_too_large`, ein nicht erreichbarer lokaler Router meldet `router_unreachable`, andere nicht verfügbare oder abgelehnte Sessions melden `recipient_unavailable`. Eingegrenzte Recovery-Daten bleiben für alle Sender- und Empfängerfehler erhalten, und Principal-Ziele behalten Durable Store-and-Forward bei. Native Annahme bedeutet weder Bestätigung noch Workflow-Status; native Nachrichten dürfen keine Secrets enthalten.
 - Eine gestoppte, fehlende oder getrennte Codex-Session wird weder geweckt noch ersetzt; eine fehlgeschlagene native Exact-Session-Zustellung wird nicht automatisch wiederholt, der Absender muss bewusst erneut senden. Eingegrenzte Recovery-Daten bleiben verfügbar; `memesh message storage report` zeigt, was gespeichert ist. Native Zustellung gibt es nur unter macOS und Linux.
 - Dieser dokumentierte native Pfad gilt für die gewöhnliche Codex CLI. Nimm bei Codex Desktop oder einem nicht angehängten Task keine Registrierung an, solange die exakte laufende Session nicht in `message discover` erscheint; das ist eine Evidenzgrenze, keine pauschale Inkompatibilitätsaussage.
 

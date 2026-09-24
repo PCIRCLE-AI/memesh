@@ -8,11 +8,12 @@ import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agen
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
 import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
-import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, buildBriefingIndex, } from './briefing-index.js';
-import { GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, buildReferenceContext, hasBriefingContent, isAutoInjectable, projectLabel, } from './work-topology.js';
+import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, buildBriefingIndex, injectedIndexReserve, } from './briefing-index.js';
+import { DECISION_LAYER_TYPES, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, boundTaskStateLines, buildReferenceContext, hasBriefingContent, isAutoInjectable, joinedLength, prioritizeDecisions, projectLabel, } from './work-topology.js';
 import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
 const PROJECT_LIMIT = 30;
 const RECENT_LIMIT = 5;
+const LESSON_LIMIT = 5;
 const CANDIDATE_COLUMNS = 'e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses';
 function parseMetadata(raw) {
     if (!raw)
@@ -25,21 +26,35 @@ function parseMetadata(raw) {
         return null;
     }
 }
-function selectPool(rows, cap) {
-    const withMeta = rows.map((row) => ({
+const RECENCY_SQL = `COALESCE(
+  (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
+    WHERE o.entity_id = e.id
+      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
+      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
+  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
+        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
+       THEN replace(e.created_at, 'T', ' ') END)`;
+function toPoolRow(row) {
+    const meta = parseMetadata(row.metadata);
+    return {
         id: row.id,
         name: row.name,
         type: row.type,
         title: row.title,
-        meta: parseMetadata(row.metadata),
+        meta,
+        autoInjectable: (row.metadata == null || meta !== null) && isAutoInjectable(meta),
         access_count: row.access_count ?? undefined,
         last_accessed_at: row.last_accessed_at ?? undefined,
         confidence: row.confidence ?? undefined,
         recall_hits: row.recall_hits ?? undefined,
         recall_misses: row.recall_misses ?? undefined,
-    }));
+        recency: row.recency ?? null,
+    };
+}
+function selectPool(rows, cap) {
+    const withMeta = rows.map(toPoolRow);
     return rankEntities(withMeta, new Map())
-        .filter((row) => isAutoInjectable(row.meta))
+        .filter((row) => row.autoInjectable)
         .slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {
@@ -51,9 +66,14 @@ function toTopologyEntity(row, snippet) {
         title: row.title,
         snippet,
         signalScore: typeof signal === 'number' ? signal : null,
+        recency: row.recency ?? null,
     };
 }
 export function readBriefingIndex(db, projectName, now = Date.now()) {
+    const { candidates, truncated } = readIndexCandidates(db, projectName);
+    return buildBriefingIndex(candidates, projectName, now, { truncated });
+}
+function readIndexCandidates(db, projectName) {
     const hasNamespace = db.prepare('PRAGMA table_info(entities)').all()
         .some((column) => column.name === 'namespace');
     const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : '';
@@ -77,7 +97,7 @@ export function readBriefingIndex(db, projectName, now = Date.now()) {
         lastActivity: row.last_activity,
         metadata: row.metadata,
     }));
-    return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
+    return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
 }
 export function assembleBriefing(project, recipient) {
     const projectName = project ?? getProjectName();
@@ -97,9 +117,9 @@ export function assembleBriefing(project, recipient) {
         : [];
     let taskLines;
     try {
-        taskLines = briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
+        taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
             includeFresh: policy.taskState,
-        });
+        }));
     }
     catch (err) {
         if (!(err instanceof TaskStateUnreadableError))
@@ -132,7 +152,19 @@ export function assembleBriefing(project, recipient) {
      WHERE t.tag = ? AND e.status = 'active' AND e.type <> ?${nonGlobal}
      ORDER BY e.id DESC
      LIMIT ?`).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
-    const projectPool = selectPool(projectRows, PROJECT_LIMIT);
+    const decisionRows = db.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}, ${RECENCY_SQL} AS recency
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ? AND e.status = 'active' AND e.type IN (${DECISION_LAYER_TYPES.map(() => '?').join(',')})${nonGlobal}
+     ORDER BY recency IS NULL, recency DESC, e.id DESC
+     LIMIT ?`).all(`project:${projectName}`, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP);
+    const decisionPool = decisionRows.map(toPoolRow).filter((row) => row.autoInjectable);
+    const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
+    const lessonPool = db.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE e.type = 'lesson_learned' AND e.status = 'active'${nonGlobal} AND t.tag = ?
+     ORDER BY e.id DESC
+     LIMIT 50`).all(`project:${projectName}`)
+        .map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
     const globalRows = policy.global && hasNamespace
         ? db.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
@@ -149,7 +181,7 @@ export function assembleBriefing(project, recipient) {
        LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP)
         : [];
     const recentPool = selectPool(recentRows, RECENT_LIMIT);
-    const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
+    const survivorIds = [...new Set([...lessonPool, ...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
     const snippets = new Map();
     if (survivorIds.length > 0) {
         const placeholders = survivorIds.map(() => '?').join(',');
@@ -165,16 +197,23 @@ export function assembleBriefing(project, recipient) {
         }
     }
     const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
+    const indexReserve = policy.index ? injectedIndexReserve(projectName) + 2 : 0;
     const lines = assembleTopologyBlock(stateLines, [
+        { entities: toEntities(lessonPool), foreign: false },
         { entities: toEntities(projectPool), foreign: false },
         { entities: toEntities(globalPool), foreign: false, global: true },
         { entities: toEntities(recentPool), foreign: true },
-    ], projectName);
+    ], projectName, DEFAULT_TOPOLOGY_BUDGET, { reserve: indexReserve });
     const withRepo = lines.length > 0 && repoLines.length > 0
         ? [...repoLines, '', ...lines]
         : lines;
-    const index = readBriefingIndex(db, projectName);
-    const indexLines = policy.index ? index.lines : [];
+    const now = Date.now();
+    const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName);
+    const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
+    const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
+    const indexLines = policy.index
+        ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines
+        : [];
     const block = withRepo.length > 0 && indexLines.length > 0
         ? [...withRepo, '', ...indexLines]
         : [...withRepo, ...indexLines];

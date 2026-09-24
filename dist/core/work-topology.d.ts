@@ -1,4 +1,5 @@
 export declare const WORK_LAYER_TYPES: ReadonlySet<string>;
+export declare const DECISION_LAYER_TYPES: readonly string[];
 export declare const EVIDENCE_LAYER_TYPES: ReadonlySet<string>;
 export declare function isAutoInjectable(metadata: unknown): boolean;
 export type TopologyLayer = 'work' | 'knowledge' | 'evidence';
@@ -10,11 +11,13 @@ export interface TopologyEntity {
     title?: string | null;
     snippet?: string | null;
     signalScore?: number | null;
+    recency?: string | null;
     global?: boolean;
     foreign?: boolean;
 }
 export declare function topologyLine(entity: TopologyEntity, maxChars: number): string;
 export declare function extractCitedMemoryIds(text: string): Set<number>;
+export declare function sliceWholeChars(text: string, maxUnits: number): string;
 export interface TopologySection {
     heading: string;
     entities: TopologyEntity[];
@@ -34,7 +37,15 @@ export interface TopologyPool {
     foreign: boolean;
     global?: boolean;
 }
-export declare function assembleTopologyBlock(stateLines: readonly string[], pools: readonly TopologyPool[], projectName: string, budget?: TopologyBudget): string[];
+export declare function assembleTopologyBlock(stateLines: readonly string[], pools: readonly TopologyPool[], projectName: string, budget?: TopologyBudget, { reserve }?: {
+    reserve?: number;
+}): string[];
+export declare function joinedLength(lines: readonly string[]): number;
+export declare function prioritizeDecisions<T extends {
+    id: number;
+}>(decisions: readonly T[], ranked: readonly T[], cap: number): T[];
+export declare const TASK_STATE_DISPLAY_MAX_CHARS = 1200;
+export declare function boundTaskStateLines(lines: readonly string[]): string[];
 export declare function hasBriefingContent(lines: readonly string[]): boolean;
 export declare function buildReferenceContext(memoryLines: ReadonlyArray<string | null | undefined>): string;
 export declare function projectLabel(projectId: string): string;

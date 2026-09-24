@@ -18,7 +18,7 @@ import { handleTool } from '../../src/mcp/tools.js';
 import { assembleBriefing, readBriefingIndex } from '../../src/core/briefing.js';
 import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
 import { recipientEverSeen, unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
-import { setTaskState } from '../../src/core/task-state-store.js';
+import { getTaskState, setTaskState } from '../../src/core/task-state-store.js';
 
 // Lets one test make getTaskState fail with an error that is NOT the
 // corrupted-record error, to prove the briefing's catch is narrow.
@@ -1543,4 +1543,305 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
     expect(result.hasHandoff).toBe(true);
     expect(result.entityCount).toBe(without);
   });
+});
+
+describe('decisions first, one budget — both readers (#434 step 3)', () => {
+  const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+  const ts = (daysAgo: number) => new Date(Date.now() - daysAgo * 86_400_000).toISOString().replace('T', ' ').slice(0, 19);
+  const tsT = (daysAgo: number) => ts(daysAgo).replace(' ', 'T');
+  let cwd: string;
+  let project: string;
+
+  beforeEach(() => {
+    cwd = path.join(tmpDir, 'proj-s3');
+    fs.mkdirSync(cwd, { recursive: true });
+    project = getProjectName(cwd);
+  });
+
+  /** One row, straight into the tables, so timestamps and metadata can be anything. */
+  function add(
+    name: string, type: string, title: string,
+    opts: { created?: string; obs?: string[]; metadata?: string | null; status?: string; tag?: string | null; namespace?: string } = {},
+  ): number {
+    const db = getDatabase();
+    const id = db.prepare('INSERT INTO entities (name, type, title, status, metadata, namespace) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(name, type, title, opts.status ?? 'active', opts.metadata ?? null, opts.namespace ?? null).lastInsertRowid as number;
+    if (opts.created) db.prepare('UPDATE entities SET created_at = ? WHERE id = ?').run(opts.created, id);
+    for (const at of opts.obs ?? []) {
+      db.prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)').run(id, `${title} detail`, at);
+    }
+    const tag = opts.tag === undefined ? `project:${project}` : opts.tag;
+    if (tag) db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
+    return id;
+  }
+
+  /** The hook's injected context and its session record, on the same database. */
+  function runHook(level: string, sessionLimit: number, extraEnv: Record<string, string> = {}) {
+    closeDatabase();
+    const out = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: level, MEMESH_SESSION_LIMIT: String(sessionLimit), ...extraEnv },
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    openDatabase(dbPath);
+    const context: string = JSON.parse(out.trim().split('\n').filter(Boolean).at(-1)!).hookSpecificOutput.additionalContext;
+    const sessionsDir = path.join(tmpDir, 'sessions');
+    const newest = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json'))
+      .map((f) => path.join(sessionsDir, f)).sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs)[0];
+    const record = JSON.parse(fs.readFileSync(newest, 'utf8')) as { entityIds: number[] };
+    return { context, record };
+  }
+
+  const core = (level: string) => {
+    vi.stubEnv('MEMESH_BRIEFING', level);
+    return assembleBriefing(project).text;
+  };
+  /** Everything inside the fence: the part the one budget governs. */
+  const fenceBody = (text: string) => {
+    const lines = text.split('\n');
+    const open = lines.findIndex((l) => /^`{3,}/.test(l));
+    const close = lines.findIndex((l, i) => i > open && l === lines[open].match(/^`+/)![0]);
+    return lines.slice(open + 1, close).join('\n');
+  };
+  const ranked = (text: string) => text.split('Index of durable memories for')[0];
+
+  it('F1: one decision under 450 newer commits reaches the ranked block on both readers', () => {
+    add('lone-decision', 'decision', 'LONE-DECISION keep one SQLite file', { obs: [ts(3)] });
+    const db = getDatabase();
+    db.exec('BEGIN');
+    for (let i = 0; i < TOPOLOGY_CANDIDATE_CAP + 50; i++) add(`commit-${i}`, 'commit', `fix: commit ${i}`, { obs: [ts(1)] });
+    db.exec('COMMIT');
+
+    expect(ranked(core('minimal'))).toContain('LONE-DECISION');
+    expect(ranked(core('standard'))).toContain('LONE-DECISION');
+    for (const env of [{}, { MEMESH_TEST_FORCE_LEGACY_SCORING_SQL: '1' }]) {
+      Object.assign(process.env, env);
+      try {
+        expect(ranked(runHook('standard', 1).context), JSON.stringify(env)).toContain('LONE-DECISION');
+      } finally {
+        delete process.env.MEMESH_TEST_FORCE_LEGACY_SCORING_SQL;
+      }
+    }
+  }, 60_000);
+
+  it('F2/F3: the newest ELIGIBLE decision takes the slot; blocked, archived, foreign and global ones never do', () => {
+    add('eligible', 'decision', 'ELIGIBLE-DECISION', { obs: [ts(5)] });
+    add('untrusted', 'decision', 'UNTRUSTED-DECISION', { obs: [ts(1)], metadata: JSON.stringify({ trust: 'untrusted' }) });
+    add('imported', 'decision', 'IMPORTED-DECISION', { obs: [ts(1)], metadata: JSON.stringify({ provenance: { source: 'import' } }) });
+    add('broken-meta', 'decision', 'BROKEN-META-DECISION', { obs: [ts(1)], metadata: '{not json' });
+    add('archived', 'decision', 'ARCHIVED-DECISION', { obs: [ts(1)], status: 'archived' });
+    add('foreign', 'decision', 'FOREIGN-DECISION', { obs: [ts(1)], tag: 'project:elsewhere~' + 'e'.repeat(32) });
+    add('global', 'decision', 'GLOBAL-DECISION', { obs: [ts(1)], namespace: 'global' });
+    for (let i = 0; i < 12; i++) add(`tied-${i}`, 'commit', `fix: tied ${i}`, { obs: [ts(0.5)] });
+
+    const hook = ranked(runHook('minimal', 3).context);
+    const text = ranked(core('minimal'));
+    for (const block of [hook, text]) {
+      expect(block).toContain('ELIGIBLE-DECISION');
+      for (const blocked of ['UNTRUSTED', 'IMPORTED', 'BROKEN-META', 'ARCHIVED', 'FOREIGN', 'GLOBAL']) {
+        expect(block, blocked).not.toContain(`${blocked}-DECISION`);
+      }
+    }
+    // Decisions consume slots; the commits fill what is left (limit 3).
+    expect((hook.match(/- \[commit\]/g) ?? [])).toHaveLength(2);
+  });
+
+  it('F4: renders by latest valid activity — a newer lower-score decision before an older higher-score one', () => {
+    add('touched', 'decision', 'OLD-BUT-TOUCHED', { created: ts(1500), obs: [ts(1500), ts(0.01)] });
+    add('newer-low', 'decision', 'NEWER-LOW', { created: ts(10), obs: [ts(10)], metadata: JSON.stringify({ signal_score: 0.1 }) });
+    const high = add('older-high', 'decision', 'OLDER-HIGH', { created: ts(20), obs: [ts(20)], metadata: JSON.stringify({ signal_score: 0.95 }) });
+    getDatabase().prepare("UPDATE entities SET access_count = 50, last_accessed_at = datetime('now') WHERE id = ?").run(high);
+    add('t-form', 'decision', 'T-FORM', { created: ts(1095), obs: [tsT(365)] });
+    add('honest', 'decision', 'HONEST', { created: ts(730), obs: [ts(730)] });
+    const order = ['OLD-BUT-TOUCHED', 'NEWER-LOW', 'OLDER-HIGH', 'T-FORM', 'HONEST'];
+
+    for (const [label, block] of [['core', core('minimal')], ['hook', runHook('minimal', 30).context]] as const) {
+      const at = order.map((t) => block.indexOf(`] ${t}`));
+      expect(at.every((i) => i > -1), `${label}: ${at}`).toBe(true);
+      expect([...at].sort((a, b) => a - b), label).toEqual(at);
+    }
+  });
+
+  it('F4: an impossible, suffixed or future timestamp never makes a decision look newest', () => {
+    const now = new Date();
+    // An impossible date that still sorts after HONEST as text, so accepting it would show.
+    const feb30 = `${now.getUTCMonth() >= 2 ? now.getUTCFullYear() : now.getUTCFullYear() - 1}-02-30 10:00:00`;
+    add('honest', 'decision', 'HONEST', { created: ts(730), obs: [ts(730)] });
+    const bad: Array<[string, { created?: string; obs?: string[] }]> = [
+      ['OBS-FEB30', { created: ts(1095), obs: [feb30] }],
+      ['OBS-ZULU', { created: ts(1095), obs: [`${ts(1)}Z`] }],
+      ['OBS-OFFSET', { created: ts(1095), obs: [`${tsT(1)}+08:00`] }],
+      ['OBS-FUTURE', { created: ts(1095), obs: [ts(-2)] }],
+      ['CREATED-FEB30', { created: feb30 }],
+      ['CREATED-ZULU', { created: `${ts(1)}Z` }],
+      ['CREATED-FUTURE', { created: ts(-2) }],
+    ];
+    for (const [title, opts] of bad) add(title.toLowerCase(), 'decision', title, opts);
+
+    for (const [label, block] of [['core', core('minimal')], ['hook', runHook('minimal', 30).context]] as const) {
+      const honest = block.indexOf('] HONEST');
+      expect(honest, label).toBeGreaterThan(-1);
+      for (const [title] of bad) {
+        const at = block.indexOf(`] ${title}`);
+        expect(at, `${label}: ${title} not rendered`).toBeGreaterThan(-1);
+        expect(at, `${label}: ${title} ranked above HONEST`).toBeGreaterThan(honest);
+      }
+    }
+  });
+
+  it('an astral character exactly at the cut is never split, in ranked or index lines, on either reader', () => {
+    // Offsets 0..3 put the cut on each position of the surrogate pairs, so at
+    // least one line per surface is clipped exactly between the two halves.
+    for (let k = 0; k < 4; k++) add(`astral-${k}`, 'decision', `${'a'.repeat(k)}${'😀'.repeat(120)}`, { obs: [ts(k + 1)] });
+    for (const [label, text] of [['core', core('standard')], ['hook', runHook('standard', 30).context]] as const) {
+      expect(ranked(text), `${label} ranked`).toContain('😀');
+      expect(text.split('Index of durable memories for')[1] ?? '', `${label} index`).toContain('😀');
+      expect(text, label).not.toMatch(LONE_SURROGATE);
+    }
+  });
+
+  it('N2: with 30+ decisions the project keeps its top 5 trusted lessons on both readers; decoys never show', () => {
+    for (let i = 0; i < 35; i++) add(`d-${i}`, 'decision', `decision ${i}`, { obs: [ts(i + 1)] });
+    for (let i = 0; i < 6; i++) add(`lesson-${i}`, 'lesson_learned', `LESSON-${i}`, { obs: [ts(i + 1)] });
+    add('lesson-untrusted', 'lesson_learned', 'LESSON-UNTRUSTED', { obs: [ts(1)], metadata: JSON.stringify({ trust: 'untrusted' }) });
+    add('lesson-broken', 'lesson_learned', 'LESSON-BROKEN', { obs: [ts(1)], metadata: '{"trust": ' });
+    add('lesson-archived', 'lesson_learned', 'LESSON-ARCHIVED', { obs: [ts(1)], status: 'archived' });
+    add('lesson-foreign', 'lesson_learned', 'LESSON-FOREIGN', { obs: [ts(1)], tag: 'project:elsewhere~' + 'f'.repeat(32) });
+    add('lesson-global', 'lesson_learned', 'LESSON-GLOBAL', { obs: [ts(1)], namespace: 'global' });
+    for (const level of ['minimal', 'full']) {
+      const hook = runHook(level, 30).context;
+      const text = core(level);
+      // Only the lessons section: at full a foreign lesson rightly appears under "From your other projects".
+      const lessons = (t: string) => { const from = t.indexOf('Lessons from'); return from < 0 ? '' : t.slice(from).split('\n\n')[0]; };
+      for (const [label, block] of [['core', lessons(ranked(text))], ['hook', lessons(ranked(hook))]] as const) {
+        // Newest five by id: lessons 1..5; lesson 0 is the sixth.
+        for (let i = 1; i < 6; i++) expect(block, `${level} ${label} LESSON-${i}`).toContain(`] LESSON-${i} [`);
+        expect(block, `${level} ${label}`).not.toContain('] LESSON-0 [');
+        for (const decoy of ['UNTRUSTED', 'BROKEN', 'ARCHIVED', 'FOREIGN', 'GLOBAL']) expect(block, `${level} ${label} ${decoy}`).not.toContain(`LESSON-${decoy}`);
+        expect((block.match(/\] LESSON-\d \[/g) ?? []), `${level} ${label}: each lesson once`).toHaveLength(5);
+      }
+      for (const [label, t] of [['core', ranked(text)], ['hook', ranked(hook)]] as const) {
+        expect(t, `${level} ${label}: decisions still take the project slots`).toContain('] decision 0 [');
+        for (const decoy of ['UNTRUSTED', 'BROKEN', 'ARCHIVED']) expect(t, `${level} ${label} ${decoy}`).not.toContain(`LESSON-${decoy}`);
+      }
+    }
+  });
+
+  it('N1: malformed metadata is refused in the ranked, global and recent pools on both readers; absent metadata is not', () => {
+    add('ok-decision', 'decision', 'OK-DECISION', { obs: [ts(2)] });
+    add('bad-decision', 'decision', 'BAD-DECISION', { obs: [ts(1)], metadata: '{"trust": ' });
+    add('ok-global', 'directive', 'OK-GLOBAL', { obs: [ts(2)], namespace: 'global', tag: null });
+    add('bad-global', 'directive', 'BAD-GLOBAL', { obs: [ts(1)], namespace: 'global', tag: null, metadata: 'not json' });
+    add('ok-recent', 'note', 'OK-RECENT', { obs: [ts(2)], tag: 'project:elsewhere~' + 'a'.repeat(32) });
+    add('bad-recent', 'note', 'BAD-RECENT', { obs: [ts(1)], tag: 'project:elsewhere~' + 'a'.repeat(32), metadata: '[' });
+    for (const [label, block] of [['core', ranked(core('full'))], ['hook', ranked(runHook('full', 30).context)]] as const) {
+      for (const ok of ['OK-DECISION', 'OK-GLOBAL', 'OK-RECENT']) expect(block, `${label} ${ok}`).toContain(ok);
+      for (const bad of ['BAD-DECISION', 'BAD-GLOBAL', 'BAD-RECENT']) expect(block, `${label} ${bad}`).not.toContain(bad);
+    }
+  });
+
+  it('many long inbox notices cannot push the block past 4000 or crowd every decision out, on either reader', () => {
+    const { newestDecision } = seedCrowded(6, 0);
+    // Five projects with a waiting message for a 200-character recipient: five long notice lines.
+    const recipient = 'r'.repeat(200);
+    const db = getDatabase();
+    for (let p = 0; p < 5; p++) {
+      const proj = `project-name-number-${p}-with-a-normal-length`;
+      db.prepare("INSERT INTO agent_messages (message_id, project, sender, recipient, content_type, privacy, payload_json, provenance_json) VALUES (?, ?, 'sender', ?, 'text', 'private', '{}', '{}')")
+        .run(`msg-${p}`, proj, recipient);
+      db.prepare('INSERT INTO agent_message_deliveries (delivery_id, message_id, project, recipient) VALUES (?, ?, ?, ?)')
+        .run(`d-${p}`, `msg-${p}`, proj, recipient);
+    }
+    vi.stubEnv('MEMESH_BRIEFING', 'full');
+    const briefing = assembleBriefing(project, recipient).text;
+    const { context } = runHook('full', 30, { MEMESH_RECIPIENT: recipient });
+    for (const [label, text] of [['core', briefing], ['hook', context.slice(0, context.indexOf(WORK_PACKAGE_NOTICE))]] as const) {
+      const body = fenceBody(text);
+      expect(body.length, label).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
+      expect(body, label).toContain('may be out of date');                    // the handoff is kept whole
+      // The hook lists unread messages from every project; core's briefing only the current one's.
+      if (label === 'hook') expect(body, label).toMatch(/- … \(\d+ more lines? of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded\)/);
+      expect(body, label).toContain(newestDecision);                          // decisions still get room
+    }
+  }, 60_000);
+
+  it('entityCount counts the ranked lines actually shown when the state lines were capped (core)', () => {
+    const { newestDecision } = seedCrowded(6, 0);
+    // A long exact recipient with an unread message in THIS project: core's one notice line
+    // pushes max handoff + max task state over the state cap.
+    const recipient = `r"q\\${'r'.repeat(190)}`;
+    const db = getDatabase();
+    for (const field of ['next', 'blocked', 'done']) {
+      db.prepare(`UPDATE entities SET metadata = json_set(metadata, '$.task_state.${field}', ?) WHERE name = ?`)
+        .run(`${field} ${'狀態😀 '.repeat(200)}`, taskStateName(project));
+    }
+    db.prepare("INSERT INTO agent_messages (message_id, project, sender, recipient, content_type, privacy, payload_json, provenance_json) VALUES ('m1', ?, 'sender', ?, 'text', 'private', '{}', '{}')")
+      .run(project, recipient);
+    db.prepare("INSERT INTO agent_message_deliveries (delivery_id, message_id, project, recipient) VALUES ('d1', 'm1', ?, ?)")
+      .run(project, recipient);
+    vi.stubEnv('MEMESH_BRIEFING', 'full');
+    const result = assembleBriefing(project, recipient);
+    const body = fenceBody(result.text);
+    expect(body.length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
+    expect(body, 'fixture did not reach the state cap').toMatch(/more lines? of session state not shown here/);
+    expect(body).toContain(newestDecision);
+    const shownRanked = ranked(body).split('\n').filter((l) => l.startsWith('- [')).length;
+    expect(shownRanked).toBeGreaterThan(0);
+    expect(result.entityCount).toBe(shownRanked);
+  }, 60_000);
+
+  /** Stale Unicode handoff, oversized RAW task state, long Unicode titles in every section. */
+  function seedCrowded(decisions: number, notes: number) {
+    const emoji = '決策😀';
+    add('session-handoff-row', SESSION_HANDOFF_TYPE, 'handoff', { obs: [ts(100 / 24)] });
+    const db = getDatabase();
+    db.prepare('UPDATE entities SET name = ? WHERE name = ?').run(sessionHandoffName(project), 'session-handoff-row');
+    db.prepare('UPDATE observations SET content = ? WHERE entity_id = (SELECT id FROM entities WHERE name = ?)')
+      .run(`${'交接😀 '.repeat(200)}`.slice(0, HANDOFF_MAX_CHARS), sessionHandoffName(project));
+    setTaskState({ project, patch: { goal: 'placeholder', next: 'Run both readers' } });
+    // Written past every write-side check.
+    const hugeGoal = `${'目標😀 '.repeat(1500)}END`;
+    db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.task_state.goal', ?) WHERE name = ?")
+      .run(hugeGoal, taskStateName(project));
+    for (let i = 0; i < decisions; i++) add(`d-${i}`, 'decision', `${emoji.repeat(30)} ${i}`, { obs: [ts(i + 1)] });
+    for (let i = 0; i < 4; i++) add(`l-${i}`, 'lesson_learned', `lesson ${i} ${emoji.repeat(20)}`, { obs: [ts(i + 1)] });
+    for (let i = 0; i < 4; i++) add(`g-${i}`, 'directive', `global rule ${i} ${emoji.repeat(20)}`, { obs: [ts(i + 1)], namespace: 'global', tag: null });
+    for (let i = 0; i < notes; i++) add(`n-${i}`, 'note', `note ${i} ${emoji.repeat(10)}`, { obs: [ts(i + 1)] });
+    return { hugeGoal, newestDecision: `${emoji.repeat(30)} 0` };
+  }
+
+  it('F5: at full, a crowded project fits one 4000-character block on each reader, warnings kept, state untouched', () => {
+    const { hugeGoal, newestDecision } = seedCrowded(40, 60);
+    const { context } = runHook('full', 30);
+    const hookBlock = context.slice(0, context.indexOf(WORK_PACKAGE_NOTICE));
+    for (const [label, text] of [['core', core('full')], ['hook', hookBlock]] as const) {
+      const body = fenceBody(text);
+      expect(body.length, label).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
+      expect(text, label).not.toMatch(LONE_SURROGATE);
+      expect(body, label).toContain('may be out of date');     // stale handoff warning kept
+      expect(body, label).toContain('目標😀');                   // oversized goal shown shortened…
+      expect(body, label).not.toContain('END');
+      expect(body, label).toContain('Run both readers');        // …and the rest of the state still shows
+      expect(body, label).toMatch(/- \d+\+? more — memesh recall/); // the index says what it left out
+      expect(body, label).toContain(newestDecision);
+    }
+    // Display-only: the stored task state is untouched.
+    expect(getTaskState(project).state.goal).toBe(hugeGoal.trim());
+  }, 60_000);
+
+  it('F6/F7: on a crowded project hook (sessionLimit 30) and core agree byte for byte, and the hook credits exactly what it rendered', () => {
+    seedCrowded(40, 60);
+    const briefing = core('full');
+    const { context, record } = runHook('full', 30);
+    expect(fenceBody(briefing).length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
+    const noticeAt = context.indexOf(WORK_PACKAGE_NOTICE);
+    expect(noticeAt).toBeGreaterThan(-1);
+    expect(context.slice(0, noticeAt).replace(/\n\n$/, '')).toBe(briefing);
+    // Lessons survive 40 decisions on both readers (the hook's separate lesson pool, now in core too).
+    expect(ranked(briefing)).toContain('Lessons from');
+    const handles = new Set([...context.matchAll(/ \[mem:(\d{1,10})\]$/gm)].map((m) => Number(m[1])));
+    expect(handles.size).toBeGreaterThan(10);
+    expect(new Set(record.entityIds)).toEqual(handles);
+  }, 60_000);
 });

@@ -10,6 +10,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { setLocale, t, type Locale } from '../../dashboard/src/lib/i18n';
 import { trSummary, trFix, trLabel, isBannerWorthy } from '../../dashboard/src/components/DoctorBanner';
+import { terminalCommands } from '../../dashboard/src/lib/external-handoffs';
 
 afterEach(() => setLocale('en'));
 
@@ -83,6 +84,70 @@ describe('doctor banner i18n', () => {
     setLocale('zh-TW');
     const c = { ...codedCheck, code: undefined };
     expect(trSummary(c)).toBe(codedCheck.summary);
+  });
+});
+
+describe('doctor banner i18n: archived session handoff (#436)', () => {
+  // Before #436, doctor shared the generic `capture-liveness.silent-hook`
+  // code for an archived handoff, whose dashboard translation says "run
+  // `memesh install-hooks`" — wrong advice, since re-installing the hooks
+  // cannot revive a memory `forget` archived on purpose.
+  const name = 'session-handoff:proj-safe~' + 'a1b2c3d4e5f60718293a4b5c6d7e8f90';
+
+  it('offers exactly the named remember command, with the real name, in en and zh-TW', () => {
+    for (const locale of ['en', 'zh-TW'] as const) {
+      setLocale(locale);
+      const check = {
+        id: 'capture-liveness', label: 'Capture liveness', status: 'warn' as const,
+        summary: 'x', fix: 'x',
+        code: 'capture-liveness.handoff-archived',
+        params: { runs: 6, name },
+      };
+      const fix = trFix(check)!;
+      expect(fix).toContain(name);
+      expect(terminalCommands(fix)).toEqual([
+        `memesh remember --name ${name} --type session-handoff --obs restart`,
+      ]);
+    }
+    setLocale('en');
+  });
+
+  it('offers only the recall command for the unnamed variant — no remember command', () => {
+    for (const locale of ['en', 'zh-TW'] as const) {
+      setLocale(locale);
+      const check = {
+        id: 'capture-liveness', label: 'Capture liveness', status: 'warn' as const,
+        summary: 'x', fix: 'x',
+        code: 'capture-liveness.handoff-archived-unnamed',
+        params: { runs: 6 },
+      };
+      const fix = trFix(check)!;
+      expect(terminalCommands(fix)).toEqual(['memesh recall session-handoff --include-archived']);
+    }
+    setLocale('en');
+  });
+
+  it('control: the generic silent-hook code still shows the install-hooks advice', () => {
+    setLocale('en');
+    const check = {
+      id: 'capture-liveness', label: 'Capture liveness', status: 'warn' as const,
+      summary: 'x', fix: 'x',
+      code: 'capture-liveness.silent-hook',
+      params: { hook: 'session-handoff', runs: 6, reason: 'nothing to save' },
+    };
+    expect(terminalCommands(trFix(check)!)).toContain('memesh install-hooks');
+  });
+
+  it('falls back to the server English when the catalogue misses the code', () => {
+    setLocale('en');
+    const serverFix = 'To turn it back on, run `memesh remember --name made-up --type session-handoff --obs restart`; the next Stop replaces it.';
+    const check = {
+      id: 'capture-liveness', label: 'Capture liveness', status: 'warn' as const,
+      summary: 'x', fix: serverFix,
+      code: 'capture-liveness.not-a-real-code',
+      params: { runs: 6, name: 'made-up' },
+    };
+    expect(trFix(check)).toBe(serverFix);
   });
 });
 

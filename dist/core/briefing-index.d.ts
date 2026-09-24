@@ -24,7 +24,9 @@ export interface BriefingIndex {
     tokens: number;
     ids: number[];
 }
+export declare function injectedIndexReserve(projectName: string): number;
 export declare function buildBriefingIndex(candidates: readonly IndexCandidate[], projectName: string, now: number, options?: {
     truncated?: boolean;
+    maxChars?: number;
 }): BriefingIndex;
 //# sourceMappingURL=briefing-index.d.ts.map

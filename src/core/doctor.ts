@@ -1405,6 +1405,50 @@ function inspectHookActivity(
  * every hook looks busy — that is the shape of a capture path that broke
  * downstream of the hook.
  */
+/**
+ * The session handoff's exact name, taken from the `handoff-capture` records
+ * in the same window the diagnosis was made from — or null.
+ *
+ * Null unless those records name exactly ONE handoff: when several projects'
+ * handoffs were archived, no single command fixes them all, and the unnamed
+ * advice (which says how to look each one up) is the honest one.
+ *
+ * The name goes into a command the dashboard offers to copy, so it is used
+ * only when it is COMPLETE (outcome records cut an entity at 200 characters;
+ * a cut name ends before the 32-hex project hash) and SAFE to paste into a
+ * shell unquoted (the project label is a raw folder name and can hold spaces,
+ * quotes, `$` or backticks).
+ */
+const SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
+
+function archivedHandoffName(file: ReturnType<typeof parseHookOutcomes>): string | null {
+  if (!Object.hasOwn(file.hooks, 'handoff-capture')) return null;
+  const names = new Set<string>();
+  for (const r of file.hooks['handoff-capture']) {
+    if (r.outcome === 'skipped' && r.reason === SKIP_REASONS.handoffArchived && typeof r.entity === 'string') names.add(r.entity);
+  }
+  if (names.size !== 1) return null;
+  const [name] = names;
+  return SAFE_HANDOFF_NAME.test(name) ? name : null;
+}
+
+/**
+ * Reinstalling the hooks cannot help an archived handoff: captureEntity
+ * leaves an archived memory alone on purpose. Re-remembering it under the
+ * same name makes it active again, and the next Stop replaces its text.
+ */
+function archivedHandoffCheck(title: string, runs: number, name: string | null): DoctorCheck {
+  const summary = `handoff-capture: ${runs} runs, 0 writes — the session handoff was archived with \`forget\`, so it is not updated any more.`;
+  if (name) {
+    return createCheck('capture-liveness', title, 'warn', summary,
+      `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart\`; the next Stop replaces it.`,
+      { code: 'capture-liveness.handoff-archived', params: { runs, name } });
+  }
+  return createCheck('capture-liveness', title, 'warn', summary,
+    'To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.',
+    { code: 'capture-liveness.handoff-archived-unnamed', params: { runs } });
+}
+
 function inspectCaptureLiveness(
   openDatabaseImpl: typeof openDatabase,
   closeDatabaseImpl: typeof closeDatabase,
@@ -1433,7 +1477,8 @@ function inspectCaptureLiveness(
     // never-ran branch below refuses to treat it as such.
     raw = null;
   }
-  const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
+  const outcomeFile = parseHookOutcomes(raw);
+  const hooks = summarizeHookOutcomes(outcomeFile);
 
   let db: DatabaseLike | null = null;
   let types: TypeTrend[];
@@ -1571,15 +1616,13 @@ function inspectCaptureLiveness(
   if (verdict.silentHook) {
     const h = verdict.silentHook;
     const reason = h.dominantSkipReason ?? 'no reason recorded';
-    // Reinstalling cannot help here: the handoff was archived on purpose and
-    // captureEntity leaves an archived memory alone.
-    const fix = h.hook === 'handoff-capture' && reason === SKIP_REASONS.handoffArchived
-      ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name — `memesh remember --name "session-handoff:<project>" --type session-handoff --obs "restart"`, with the exact name from `memesh recall session-handoff --include-archived` — and the next Stop replaces it.'
-      : 'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.';
+    if (h.hook === 'handoff-capture' && reason === SKIP_REASONS.handoffArchived) {
+      return { check: archivedHandoffCheck(TITLE, h.triggeredRuns, archivedHandoffName(outcomeFile)), report };
+    }
     return {
       check: createCheck('capture-liveness', TITLE, 'warn',
         `${h.hook}: ${h.triggeredRuns} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`,
-        fix,
+        'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.',
         { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
       report,
     };

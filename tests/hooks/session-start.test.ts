@@ -703,9 +703,10 @@ describe('Feature: Session Start Hook', () => {
   }, 30000);
 
   it('#323: a failed index read says so and records an error — never the empty-state line', () => {
-    // An observations table without created_at: every ranked query still
-    // works (none reads that column), only the index's last-activity read
-    // fails — which isolates the index's catch.
+    // An observations table without created_at: the score-ranked queries
+    // still work (they do not read that column); the index's last-activity
+    // read fails, and so does the decisions-first read (#434 step 3), which
+    // records its own error and falls back to score order.
     const db = new Database(dbPath);
     db.exec(`
       CREATE TABLE entities (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL,
@@ -740,6 +741,9 @@ describe('Feature: Session Start Hook', () => {
     // its own labelled error, and this test is about the index's.
     const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error' && String(o.reason).startsWith('briefing-index:'));
     expect(outcomes.some((o) => o.hook === 'session-start' && o.outcome === 'error' && /^handoff: uncaught /.test(String(o.reason)))).toBe(true);
+    expect(outcomes.some((o) => o.hook === 'session-start' && o.outcome === 'error' && /^decisions: uncaught /.test(String(o.reason))),
+      'a failed decisions-first read must be recorded, not silent').toBe(true);
+    expect(run.stderr).toContain('[memesh session-start] decisions:');
     // The locus plus a LABEL, never the exception's message. This file is
     // permanent, exportable and meant to be pasteable into an issue, and the
     // message SQLite produced here quotes the failing statement; `reason`

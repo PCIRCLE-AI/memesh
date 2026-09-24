@@ -23875,10 +23875,25 @@ function clip(text, maxChars) {
   const flat = text.replace(/\s+/g, " ").trim();
   if (flat.length <= maxChars)
     return flat;
-  const cut = flat.slice(0, maxChars);
+  const cut = sliceWholeChars(flat, maxChars);
   const lastSpace = cut.lastIndexOf(" ");
   const base = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
   return `${base.trimEnd()}\u2026`;
+}
+function sliceWholeChars(text, maxUnits) {
+  if (text.length <= maxUnits)
+    return text;
+  if (maxUnits <= 0)
+    return "";
+  const code = text.charCodeAt(maxUnits - 1);
+  return text.slice(0, code >= 55296 && code <= 56319 ? maxUnits - 1 : maxUnits);
+}
+function byRecency(a, b) {
+  const ar = a.recency ?? "";
+  const br = b.recency ?? "";
+  if (ar !== br)
+    return ar < br ? 1 : -1;
+  return bySignal(a, b);
 }
 function bySignal(a, b) {
   const av = typeof a.signalScore === "number" ? a.signalScore : -1;
@@ -23917,7 +23932,8 @@ function groupTopology(entities, projectName) {
     else
       decisions.push(e);
   }
-  for (const list of [decisions, lessons, knowledge, evidence, global2, foreign])
+  decisions.sort(byRecency);
+  for (const list of [lessons, knowledge, evidence, global2, foreign])
     list.sort(bySignal);
   const sections = [];
   if (decisions.length)
@@ -23960,7 +23976,7 @@ function buildTopologyLines(entities, projectName, budget) {
     lines.pop();
   return lines;
 }
-function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET) {
+function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET, { reserve = 0 } = {}) {
   const seen = /* @__PURE__ */ new Set();
   const candidates = [];
   const globalCandidates = [];
@@ -23976,22 +23992,70 @@ function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_
       }
     }
   }
-  const lines = [];
-  let stateChars = 0;
-  for (const line of stateLines) {
-    lines.push(line);
-    stateChars += line.length + 1;
-  }
-  const remaining = Math.max(0, budget.maxChars - stateChars);
-  const topologyLines = remaining > 0 ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: remaining }) : [];
-  const globalLines = buildTopologyLines(globalCandidates, projectName, GLOBAL_TOPOLOGY_BUDGET);
+  const lines = boundStateLines(stateLines);
+  const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+  const topologyLines = room() > 0 ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() }) : [];
   if (lines.length > 0 && topologyLines.length > 0)
     lines.push("");
   lines.push(...topologyLines);
+  const globalLines = room() > 0 ? buildTopologyLines(globalCandidates, projectName, {
+    ...budget,
+    maxChars: Math.min(room(), GLOBAL_TOPOLOGY_BUDGET.maxChars)
+  }) : [];
   if (lines.length > 0 && globalLines.length > 0)
     lines.push("");
   lines.push(...globalLines);
   return lines;
+}
+function joinedLength(lines) {
+  return lines.length === 0 ? 0 : lines.reduce((n, l) => n + l.length, 0) + lines.length - 1;
+}
+function boundStateLines(stateLines) {
+  if (joinedLength(stateLines) <= STATE_MAX_CHARS)
+    return [...stateLines];
+  const out = [];
+  for (let i = 0; i < stateLines.length; i++) {
+    const left = stateLines.length - i;
+    const cut = `- \u2026 (${left} more line${left === 1 ? "" : "s"} of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded)`;
+    if (joinedLength([...out, stateLines[i], cut]) > STATE_MAX_CHARS) {
+      out.push(cut);
+      return out;
+    }
+    out.push(stateLines[i]);
+  }
+  return out;
+}
+function prioritizeDecisions(decisions, ranked, cap) {
+  const chosen = [];
+  const ids = /* @__PURE__ */ new Set();
+  for (const row of [...decisions, ...ranked]) {
+    if (chosen.length >= cap)
+      break;
+    if (ids.has(row.id))
+      continue;
+    ids.add(row.id);
+    chosen.push(row);
+  }
+  return chosen;
+}
+function boundTaskStateLines(lines) {
+  const clipLine = (line) => line.length > TASK_STATE_LINE_MAX_CHARS ? `${sliceWholeChars(line, TASK_STATE_LINE_MAX_CHARS - 1)}\u2026` : line;
+  const clipped = lines.map(clipLine);
+  if (joinedLength(clipped) <= TASK_STATE_DISPLAY_MAX_CHARS)
+    return clipped;
+  const out = [];
+  const cut = "- \u2026 (task state shortened here \u2014 `memesh task` shows all of it)";
+  for (let i = 0; i < lines.length; i++) {
+    const line = clipLine(lines[i]);
+    const withLine = joinedLength([...out, line]);
+    const needsCutLine = i < lines.length - 1;
+    if (i > 0 && withLine + (needsCutLine ? cut.length + 1 : 0) > TASK_STATE_DISPLAY_MAX_CHARS) {
+      out.push(cut);
+      return out;
+    }
+    out.push(line);
+  }
+  return out;
 }
 function hasBriefingContent(lines) {
   return lines.length > 0;
@@ -24018,7 +24082,7 @@ function projectLabel(projectId) {
   const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, "");
   return label === "" ? projectId : label;
 }
-var LESSON_TYPES, WORK_LAYER_TYPES, EVIDENCE_LAYER_TYPES, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, PROJECT_ID_HASH_SUFFIX;
+var LESSON_TYPES, WORK_LAYER_TYPES, DECISION_LAYER_TYPES, EVIDENCE_LAYER_TYPES, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, STATE_MAX_CHARS, TASK_STATE_DISPLAY_MAX_CHARS, TASK_STATE_LINE_MAX_CHARS, PROJECT_ID_HASH_SUFFIX;
 var init_work_topology = __esm({
   "dist/core/work-topology.js"() {
     "use strict";
@@ -24034,6 +24098,7 @@ var init_work_topology = __esm({
       "plan",
       "task-state"
     ]);
+    DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES].filter((type) => !LESSON_TYPES.has(type) && type !== "task-state");
     EVIDENCE_LAYER_TYPES = /* @__PURE__ */ new Set([
       "commit",
       "session-insight",
@@ -24057,6 +24122,9 @@ var init_work_topology = __esm({
     };
     TOPOLOGY_CANDIDATE_CAP = 400;
     SNIPPET_FETCH_CHARS = DEFAULT_TOPOLOGY_BUDGET.maxLineChars * 4;
+    STATE_MAX_CHARS = 2600;
+    TASK_STATE_DISPLAY_MAX_CHARS = 1200;
+    TASK_STATE_LINE_MAX_CHARS = 320;
     PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
   }
 });
@@ -24480,6 +24548,17 @@ function indexLine(candidate) {
   const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
   return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
 }
+function injectedIndexReserve(projectName) {
+  const worst = [
+    indexHeading(projectName),
+    moreLine(INDEX_CANDIDATE_CAP, true),
+    olderLine(INDEX_CANDIDATE_CAP, true),
+    footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
+  ];
+  const empty = [indexHeading(projectName), indexEmptyLine(projectName), footerLine(0, INDEX_MAX_BYTES, INDEX_MAX_BYTES)];
+  const len = (lines) => lines.reduce((n, l) => n + l.length, 0) + lines.length - 1;
+  return Math.max(len(worst), len(empty));
+}
 function indexHeading(projectName) {
   return `Index of durable memories for "${projectLabel(projectName)}" (newest first):`;
 }
@@ -24510,6 +24589,7 @@ function closeWithFooter(lines, shown) {
 }
 function buildBriefingIndex(candidates, projectName, now, options = {}) {
   const truncated = options.truncated === true;
+  const charAllowance = typeof options.maxChars === "number" ? options.maxChars : Infinity;
   const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
   const eligible = candidates.filter((c) => isIndexableType(c.type) && candidateIsAutoInjectable(c.metadata)).slice().sort(compareIndexCandidates);
   const current = [];
@@ -24532,9 +24612,11 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
     footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
   ]);
   const budget = INDEX_MAX_BYTES - reserve - sectionBytes([heading]);
+  const charBudget = charAllowance - injectedIndexReserve(projectName);
   const rendered = [];
   const ids = [];
   let used = 0;
+  let usedChars = 0;
   for (const c of current) {
     if (rendered.length >= INDEX_MAX_LINES)
       break;
@@ -24542,9 +24624,12 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
     const cost = byteLength(line) + 1;
     if (used + cost > budget)
       break;
+    if (usedChars + line.length + 1 > charBudget)
+      break;
     rendered.push(line);
     ids.push(c.id);
     used += cost;
+    usedChars += line.length + 1;
   }
   const more = current.length - rendered.length;
   const above = [heading, ...rendered];
@@ -24663,20 +24748,26 @@ function parseMetadata(raw) {
     return null;
   }
 }
-function selectPool(rows, cap) {
-  const withMeta = rows.map((row) => ({
+function toPoolRow(row) {
+  const meta3 = parseMetadata(row.metadata);
+  return {
     id: row.id,
     name: row.name,
     type: row.type,
     title: row.title,
-    meta: parseMetadata(row.metadata),
+    meta: meta3,
+    autoInjectable: (row.metadata == null || meta3 !== null) && isAutoInjectable(meta3),
     access_count: row.access_count ?? void 0,
     last_accessed_at: row.last_accessed_at ?? void 0,
     confidence: row.confidence ?? void 0,
     recall_hits: row.recall_hits ?? void 0,
-    recall_misses: row.recall_misses ?? void 0
-  }));
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
+    recall_misses: row.recall_misses ?? void 0,
+    recency: row.recency ?? null
+  };
+}
+function selectPool(rows, cap) {
+  const withMeta = rows.map(toPoolRow);
+  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => row.autoInjectable).slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {
   const signal = row.meta?.signal_score;
@@ -24686,10 +24777,15 @@ function toTopologyEntity(row, snippet) {
     id: row.id,
     title: row.title,
     snippet,
-    signalScore: typeof signal === "number" ? signal : null
+    signalScore: typeof signal === "number" ? signal : null,
+    recency: row.recency ?? null
   };
 }
 function readBriefingIndex(db2, projectName, now = Date.now()) {
+  const { candidates, truncated } = readIndexCandidates(db2, projectName);
+  return buildBriefingIndex(candidates, projectName, now, { truncated });
+}
+function readIndexCandidates(db2, projectName) {
   const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
   const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
   const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
@@ -24712,7 +24808,7 @@ function readBriefingIndex(db2, projectName, now = Date.now()) {
     lastActivity: row.last_activity,
     metadata: row.metadata
   }));
-  return buildBriefingIndex(candidates, projectName, now, { truncated: rows.length >= INDEX_CANDIDATE_CAP });
+  return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
 }
 function assembleBriefing(project, recipient) {
   const projectName = project ?? getProjectName();
@@ -24731,9 +24827,9 @@ function assembleBriefing(project, recipient) {
   const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
   let taskLines;
   try {
-    taskLines = briefingTaskStateLines(getTaskState(projectName).state, projectName, /* @__PURE__ */ new Date(), {
+    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName).state, projectName, /* @__PURE__ */ new Date(), {
       includeFresh: policy.taskState
-    });
+    }));
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError))
       throw err;
@@ -24762,7 +24858,18 @@ function assembleBriefing(project, recipient) {
      WHERE t.tag = ? AND e.status = 'active' AND e.type <> ?${nonGlobal}
      ORDER BY e.id DESC
      LIMIT ?`).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
-  const projectPool = selectPool(projectRows, PROJECT_LIMIT);
+  const decisionRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}, ${RECENCY_SQL} AS recency
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag = ? AND e.status = 'active' AND e.type IN (${DECISION_LAYER_TYPES.map(() => "?").join(",")})${nonGlobal}
+     ORDER BY recency IS NULL, recency DESC, e.id DESC
+     LIMIT ?`).all(`project:${projectName}`, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP);
+  const decisionPool = decisionRows.map(toPoolRow).filter((row) => row.autoInjectable);
+  const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
+  const lessonPool = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE e.type = 'lesson_learned' AND e.status = 'active'${nonGlobal} AND t.tag = ?
+     ORDER BY e.id DESC
+     LIMIT 50`).all(`project:${projectName}`).map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
   const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
        WHERE e.namespace = 'global' AND e.status = 'active'
@@ -24775,7 +24882,7 @@ function assembleBriefing(project, recipient) {
        ORDER BY e.id DESC
        LIMIT ?`).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) : [];
   const recentPool = selectPool(recentRows, RECENT_LIMIT);
-  const survivorIds = [...new Set([...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
+  const survivorIds = [...new Set([...lessonPool, ...projectPool, ...globalPool, ...recentPool].map((row) => row.id))];
   const snippets = /* @__PURE__ */ new Map();
   if (survivorIds.length > 0) {
     const placeholders = survivorIds.map(() => "?").join(",");
@@ -24791,14 +24898,19 @@ function assembleBriefing(project, recipient) {
     }
   }
   const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
+  const indexReserve = policy.index ? injectedIndexReserve(projectName) + 2 : 0;
   const lines = assembleTopologyBlock(stateLines, [
+    { entities: toEntities(lessonPool), foreign: false },
     { entities: toEntities(projectPool), foreign: false },
     { entities: toEntities(globalPool), foreign: false, global: true },
     { entities: toEntities(recentPool), foreign: true }
-  ], projectName);
+  ], projectName, DEFAULT_TOPOLOGY_BUDGET, { reserve: indexReserve });
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
-  const index = readBriefingIndex(db2, projectName);
-  const indexLines = policy.index ? index.lines : [];
+  const now = Date.now();
+  const { candidates: indexCandidates, truncated } = readIndexCandidates(db2, projectName);
+  const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
+  const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
+  const indexLines = policy.index ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines : [];
   const block = withRepo.length > 0 && indexLines.length > 0 ? [...withRepo, "", ...indexLines] : [...withRepo, ...indexLines];
   const empty = !hasBriefingContent(block);
   return {
@@ -24812,7 +24924,7 @@ function assembleBriefing(project, recipient) {
     empty
   };
 }
-var PROJECT_LIMIT, RECENT_LIMIT, CANDIDATE_COLUMNS;
+var PROJECT_LIMIT, RECENT_LIMIT, LESSON_LIMIT, CANDIDATE_COLUMNS, RECENCY_SQL;
 var init_briefing = __esm({
   "dist/core/briefing.js"() {
     "use strict";
@@ -24831,7 +24943,16 @@ var init_briefing = __esm({
     init_briefing_level();
     PROJECT_LIMIT = 30;
     RECENT_LIMIT = 5;
+    LESSON_LIMIT = 5;
     CANDIDATE_COLUMNS = "e.id, e.name, e.type, e.title, e.metadata, e.access_count, e.last_accessed_at, e.confidence, e.recall_hits, e.recall_misses";
+    RECENCY_SQL = `COALESCE(
+  (SELECT MAX(replace(o.created_at, 'T', ' ')) FROM observations o
+    WHERE o.entity_id = e.id
+      AND replace(o.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', o.created_at)
+      AND replace(o.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')),
+  CASE WHEN replace(e.created_at, 'T', ' ') = strftime('%Y-%m-%d %H:%M:%S', e.created_at)
+        AND replace(e.created_at, 'T', ' ') <= strftime('%Y-%m-%d %H:%M:%S', 'now', '+5 minutes')
+       THEN replace(e.created_at, 'T', ' ') END)`;
   }
 });
 
@@ -26014,7 +26135,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_remember",
-        description: "Store knowledge as an entity with observations, tags, and relations. Pass only `note` to have title, observations and name derived from free text.",
+        description: 'Store knowledge as an entity with observations, tags, and relations. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict.',
         parameters: {
           type: "object",
           properties: {
@@ -26032,12 +26153,12 @@ function exportOpenAITools() {
                 type: "object",
                 properties: {
                   to: { type: "string", description: "Name of the target entity to link to" },
-                  type: { type: "string", description: "Relation type, e.g. depends-on, supersedes, relates-to" }
+                  type: { type: "string", description: 'Relation type. "supersedes" archives the target; "contradicts" marks a conflict when either memory is recalled. Other labels, such as "depends-on", are inert.' }
                 },
                 required: ["to", "type"]
               }
             },
-            namespace: { type: "string", enum: ["personal", "team", "global"], description: "Storage scope (default: personal)" }
+            namespace: { type: "string", enum: ["personal", "team", "global"], description: "Storage scope. New memories default to personal; omit for an existing memory to keep its current scope. Supplying a different scope moves it." }
           },
           anyOf: [
             { required: ["note"] },
@@ -26058,9 +26179,9 @@ function exportOpenAITools() {
             query: { type: "string", description: "Search query" },
             tag: { type: "string", description: "Filter by tag" },
             limit: { type: "number", description: "Max results (1-100, default: 20)" },
-            include_archived: { type: "boolean", description: "Include soft-archived (superseded) entities (default: false)" },
+            include_archived: { type: "boolean", description: "Include archived entities, including forgotten and superseded memories (default: false)" },
             namespace: { type: "string", enum: ["personal", "team", "global"], description: "Restrict to a storage scope" },
-            cross_project: { type: "boolean", description: "Search across all projects instead of only the current one (default: false)" }
+            cross_project: { type: "boolean", description: "Ignore the optional tag filter when true. False keeps a supplied tag filter; it does not implicitly restrict results to the current project." }
           }
         }
       }
@@ -26084,13 +26205,13 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_export",
-        description: "Export memories as a portable JSON snapshot for sharing or backup. Returns a structured object with entity data.",
+        description: "Export memories as portable JSON. The default 1000-entity limit may return a subset; check `truncated` and raise the limit before treating it as a complete backup.",
         parameters: {
           type: "object",
           properties: {
             tag: { type: "string", description: "Filter by tag (optional)" },
             namespace: { type: "string", description: "Filter by namespace: personal, team, or global (optional)" },
-            limit: { type: "number", description: "Max entities to export (default: 1000, max: 10000)" }
+            limit: { type: "number", description: "Max entities to export (default: 1000, max: 10000). Check `truncated` in the result before using this as a full backup." }
           }
         }
       }
@@ -26099,7 +26220,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_import",
-        description: "Import memories from a JSON export snapshot. Imported entities are tagged trust=untrusted until reviewed.",
+        description: "Import memories from a JSON export snapshot. Imported content is marked untrusted in metadata, not with a tag. Overwrite deletes an existing entity's previous observations and tags instead of archiving them.",
         parameters: {
           type: "object",
           properties: {
@@ -26111,7 +26232,7 @@ function exportOpenAITools() {
             merge_strategy: {
               type: "string",
               enum: ["skip", "overwrite", "append"],
-              description: "Required. How to handle existing entities: skip, overwrite (replace), or append (merge observations)."
+              description: "Required. How to handle existing entities: skip leaves them alone; append adds observations; overwrite deletes previous observations and tags, then replaces them. Overwrite is not an archive and cannot be undone."
             },
             restore_archived: {
               type: "boolean",
@@ -26144,7 +26265,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_task_state",
-        description: "Read or update where the work stands on this project (goal, next, blocked, done). Call with no arguments to read. Record only what the user actually stated \u2014 never infer it from files edited.",
+        description: "Read or update where the work stands on this project (goal, next, blocked, done). Call with no arguments to read. Fresh state appears in a standard or full briefing; stale or unknown-age state becomes a one-line flag at every level, and minimal omits fresh state. Record only what the user actually stated \u2014 never infer it from files edited.",
         parameters: {
           type: "object",
           properties: {
@@ -26161,7 +26282,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_briefing",
-        description: "The assembled work topology for a project: decisions, lessons, knowledge, recent activity \u2014 and, at briefing level `standard` or `full` (not the default, `minimal`), where the work was left off. Call once at the start of a session to load project context.",
+        description: "The assembled work topology for a project: an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. `standard` and `full` (not the default `minimal`) also include fresh task state. Handoffs older than 14 days, undatable, more than five minutes future-dated, archived, or imported without a fresh local replacement are not auto-injected. Call once at the start of a session to load project context.",
         parameters: {
           type: "object",
           properties: {
@@ -56337,6 +56458,26 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     }
   }
 }
+function archivedHandoffName(file2) {
+  if (!Object.hasOwn(file2.hooks, "handoff-capture"))
+    return null;
+  const names = /* @__PURE__ */ new Set();
+  for (const r of file2.hooks["handoff-capture"]) {
+    if (r.outcome === "skipped" && r.reason === SKIP_REASONS.handoffArchived && typeof r.entity === "string")
+      names.add(r.entity);
+  }
+  if (names.size !== 1)
+    return null;
+  const [name] = names;
+  return SAFE_HANDOFF_NAME.test(name) ? name : null;
+}
+function archivedHandoffCheck(title, runs, name) {
+  const summary = `handoff-capture: ${runs} runs, 0 writes \u2014 the session handoff was archived with \`forget\`, so it is not updated any more.`;
+  if (name) {
+    return createCheck("capture-liveness", title, "warn", summary, `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart\`; the next Stop replaces it.`, { code: "capture-liveness.handoff-archived", params: { runs, name } });
+  }
+  return createCheck("capture-liveness", title, "warn", summary, "To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.", { code: "capture-liveness.handoff-archived-unnamed", params: { runs } });
+}
 function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs18.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
   const TITLE = "Capture liveness";
   if (autoCaptureOffSource() !== null) {
@@ -56350,7 +56491,8 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   } catch {
     raw = null;
   }
-  const hooks = summarizeHookOutcomes(parseHookOutcomes(raw));
+  const outcomeFile = parseHookOutcomes(raw);
+  const hooks = summarizeHookOutcomes(outcomeFile);
   let db2 = null;
   let types;
   let neverRan;
@@ -56433,9 +56575,11 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   if (verdict.silentHook) {
     const h = verdict.silentHook;
     const reason = h.dominantSkipReason ?? "no reason recorded";
-    const fix = h.hook === "handoff-capture" && reason === SKIP_REASONS.handoffArchived ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name \u2014 `memesh remember --name "session-handoff:<project>" --type session-handoff --obs "restart"`, with the exact name from `memesh recall session-handoff --include-archived` \u2014 and the next Stop replaces it.' : "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.";
+    if (h.hook === "handoff-capture" && reason === SKIP_REASONS.handoffArchived) {
+      return { check: archivedHandoffCheck(TITLE, h.triggeredRuns, archivedHandoffName(outcomeFile)), report };
+    }
     return {
-      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, fix, { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
       report
     };
   }
@@ -57301,7 +57445,7 @@ function formatDoctorReport(result, packageVersion2) {
   }
   return lines;
 }
-var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, MCP_PLACEHOLDER;
+var EXPECTED_HOOK_TYPES, AGENT_MESSAGE_STORAGE_QUOTA_ENV2, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, MCP_PLACEHOLDER, SAFE_HANDOFF_NAME;
 var init_doctor = __esm({
   "dist/core/doctor.js"() {
     "use strict";
@@ -57332,6 +57476,7 @@ var init_doctor = __esm({
     ];
     LOCALE_H2_TOLERANCE = 1;
     MCP_PLACEHOLDER = "${CLAUDE_PLUGIN_ROOT}";
+    SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
   }
 });
 

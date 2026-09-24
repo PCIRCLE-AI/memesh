@@ -4,14 +4,19 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+Draft notes for the next release; these behaviors are not in the published v4.10.4 package.
+
 ### Added
 
-- At every Stop, MeMesh now keeps the agent's last message as the project's
-  session handoff (`session-handoff:<project>`, one per project, replaced each
-  turn, known credential shapes redacted, code blocks dropped, at most 800
-  characters). It costs no extra model turn. New sessions do not show it yet;
-  `recall` and the dashboard can find it. `memesh doctor` reports it as its own
-  `handoff-capture` hook and warns if it keeps failing to store one.
+- Claude Code's Stop hook keeps the latest qualifying assistant reply as one
+  replaceable handoff per project (`session-handoff:<project>`). Known credential
+  shapes are redacted, fenced code is dropped, and the stored text is at most
+  800 characters. A skipped capture leaves the previous note in place. An
+  eligible handoff appears ahead of ranked memories in the next Claude Code
+  session and in the `briefing` tool/CLI at every level: normal through 72
+  hours, marked stale through 14 days, then omitted. Imported or archived
+  handoffs are not injected automatically. Codex and MCP-only clients still
+  call `briefing` themselves; this does not add Codex capture hooks.
 - The reminder shown after an approved plan or an answered question now also
   asks the agent to record the goal and next step with `task_state`.
 - The dashboard's Settings tab now has a "Session start briefing" control
@@ -25,6 +30,7 @@ All notable changes to MeMesh are documented here.
 
 ### Changed
 
+- Session-start and `briefing` now put the newest eligible project decisions ahead of routine activity and select up to five project lessons separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit; the standalone `briefing --index` keeps its own caps and may show more lines. Long task state is shortened only in the briefing; `memesh task` still shows the stored record.
 - `message discover` now returns a named, actionable `router_unreachable` error
   (naming `memesh-router` or the managed host's launch step) instead of a raw
   connection error when the local agent router can't be reached.
@@ -47,6 +53,13 @@ All notable changes to MeMesh are documented here.
   works on them.
 
 ### Fixed
+
+- When `handoff-capture` repeatedly skips because its handoff was archived,
+  `memesh doctor` offers a restore command only if the recent outcome records
+  identify one complete, shell-safe name. Otherwise it gives an archived-memory
+  lookup command rather than guessing a name. The Dashboard Doctor banner
+  shows the corresponding guidance. Doctor's bounded outcome window does not
+  diagnose every historical handoff.
 
 - `POST /v1/config` no longer answers 400 for a change it has already saved
   when the stored `briefing` is not a known level: changing another setting

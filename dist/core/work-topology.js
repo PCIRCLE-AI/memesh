@@ -10,6 +10,8 @@ export const WORK_LAYER_TYPES = new Set([
     'plan',
     'task-state',
 ]);
+export const DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES]
+    .filter((type) => !LESSON_TYPES.has(type) && type !== 'task-state');
 export const EVIDENCE_LAYER_TYPES = new Set([
     'commit',
     'session-insight',
@@ -59,10 +61,25 @@ function clip(text, maxChars) {
     const flat = text.replace(/\s+/g, ' ').trim();
     if (flat.length <= maxChars)
         return flat;
-    const cut = flat.slice(0, maxChars);
+    const cut = sliceWholeChars(flat, maxChars);
     const lastSpace = cut.lastIndexOf(' ');
     const base = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
     return `${base.trimEnd()}…`;
+}
+export function sliceWholeChars(text, maxUnits) {
+    if (text.length <= maxUnits)
+        return text;
+    if (maxUnits <= 0)
+        return '';
+    const code = text.charCodeAt(maxUnits - 1);
+    return text.slice(0, code >= 0xd800 && code <= 0xdbff ? maxUnits - 1 : maxUnits);
+}
+function byRecency(a, b) {
+    const ar = a.recency ?? '';
+    const br = b.recency ?? '';
+    if (ar !== br)
+        return ar < br ? 1 : -1;
+    return bySignal(a, b);
 }
 function bySignal(a, b) {
     const av = typeof a.signalScore === 'number' ? a.signalScore : -1;
@@ -101,7 +118,8 @@ export function groupTopology(entities, projectName) {
         else
             decisions.push(e);
     }
-    for (const list of [decisions, lessons, knowledge, evidence, global, foreign])
+    decisions.sort(byRecency);
+    for (const list of [lessons, knowledge, evidence, global, foreign])
         list.sort(bySignal);
     const sections = [];
     if (decisions.length)
@@ -156,7 +174,7 @@ export function buildTopologyLines(entities, projectName, budget) {
         lines.pop();
     return lines;
 }
-export function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET) {
+export function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET, { reserve = 0 } = {}) {
     const seen = new Set();
     const candidates = [];
     const globalCandidates = [];
@@ -173,24 +191,79 @@ export function assembleTopologyBlock(stateLines, pools, projectName, budget = D
             }
         }
     }
-    const lines = [];
-    let stateChars = 0;
-    for (const line of stateLines) {
-        lines.push(line);
-        stateChars += line.length + 1;
-    }
-    const remaining = Math.max(0, budget.maxChars - stateChars);
-    const topologyLines = remaining > 0
-        ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: remaining })
+    const lines = boundStateLines(stateLines);
+    const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+    const topologyLines = room() > 0
+        ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() })
         : [];
-    const globalLines = buildTopologyLines(globalCandidates, projectName, GLOBAL_TOPOLOGY_BUDGET);
     if (lines.length > 0 && topologyLines.length > 0)
         lines.push('');
     lines.push(...topologyLines);
+    const globalLines = room() > 0
+        ? buildTopologyLines(globalCandidates, projectName, {
+            ...budget,
+            maxChars: Math.min(room(), GLOBAL_TOPOLOGY_BUDGET.maxChars),
+        })
+        : [];
     if (lines.length > 0 && globalLines.length > 0)
         lines.push('');
     lines.push(...globalLines);
     return lines;
+}
+export function joinedLength(lines) {
+    return lines.length === 0 ? 0 : lines.reduce((n, l) => n + l.length, 0) + lines.length - 1;
+}
+const STATE_MAX_CHARS = 2600;
+function boundStateLines(stateLines) {
+    if (joinedLength(stateLines) <= STATE_MAX_CHARS)
+        return [...stateLines];
+    const out = [];
+    for (let i = 0; i < stateLines.length; i++) {
+        const left = stateLines.length - i;
+        const cut = `- … (${left} more line${left === 1 ? '' : 's'} of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded)`;
+        if (joinedLength([...out, stateLines[i], cut]) > STATE_MAX_CHARS) {
+            out.push(cut);
+            return out;
+        }
+        out.push(stateLines[i]);
+    }
+    return out;
+}
+export function prioritizeDecisions(decisions, ranked, cap) {
+    const chosen = [];
+    const ids = new Set();
+    for (const row of [...decisions, ...ranked]) {
+        if (chosen.length >= cap)
+            break;
+        if (ids.has(row.id))
+            continue;
+        ids.add(row.id);
+        chosen.push(row);
+    }
+    return chosen;
+}
+export const TASK_STATE_DISPLAY_MAX_CHARS = 1200;
+const TASK_STATE_LINE_MAX_CHARS = 320;
+export function boundTaskStateLines(lines) {
+    const clipLine = (line) => (line.length > TASK_STATE_LINE_MAX_CHARS
+        ? `${sliceWholeChars(line, TASK_STATE_LINE_MAX_CHARS - 1)}…`
+        : line);
+    const clipped = lines.map(clipLine);
+    if (joinedLength(clipped) <= TASK_STATE_DISPLAY_MAX_CHARS)
+        return clipped;
+    const out = [];
+    const cut = '- … (task state shortened here — `memesh task` shows all of it)';
+    for (let i = 0; i < lines.length; i++) {
+        const line = clipLine(lines[i]);
+        const withLine = joinedLength([...out, line]);
+        const needsCutLine = i < lines.length - 1;
+        if (i > 0 && withLine + (needsCutLine ? cut.length + 1 : 0) > TASK_STATE_DISPLAY_MAX_CHARS) {
+            out.push(cut);
+            return out;
+        }
+        out.push(line);
+    }
+    return out;
 }
 export function hasBriefingContent(lines) {
     return lines.length > 0;

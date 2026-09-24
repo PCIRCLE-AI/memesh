@@ -1,10 +1,10 @@
 # Security Considerations for OpenClaw MeMesh Plugin
 
-**Status**: This plugin is **built but NOT yet tested** against a live OpenClaw instance. Security issues identified in initial code review have been **FIXED** as of 2026-08-15.
+**Status**: This source plugin has **not been tested** against a live OpenClaw instance. The controls below are source-level findings; query-based `memory_forget` still lacks preview and confirmation.
 
 ---
 
-## Security Issues (FIXED)
+## Security Findings and Remaining Risk
 
 ### 1. Indirect Prompt Injection (MEDIUM) ✅ FIXED
 
@@ -40,19 +40,22 @@ MeMesh instance. `agentId` comes from the OpenClaw runtime and is not cryptograp
 verified; a hostile co-resident plugin could pass another agent's id. Hard isolation
 requires separate MeMesh instances (different `baseUrl`) per tenant.
 
-### 3. Unrestricted Destructive Action (MEDIUM) ✅ FIXED
+### 3. Query-Based Archival Without Preview (MEDIUM) ⚠️ OPEN
 
 **Location**: `index.ts` - `memory_forget` tool
 
-**Issue**: `memory_forget` deleted all memories matching a query with no preview or confirmation.
+**Issue**: `memory_forget` archived memories matching a query with no preview or confirmation.
 
-**Fix Applied**:
+**Current behavior**:
 - Query-based forgetting is composed from the server's real name-based contract:
-  recall the matches (agent-scoped), archive each by `POST /v1/forget {name}`,
+  recall up to 20 matches (agent-scoped), archive each by `POST /v1/forget {name}`,
   report the count the server actually confirmed
 - If no matches found, returns "No memories found matching that query."
 - MeMesh's forget is a soft-delete (archive) — entities are restorable server-side,
-  which is the undo mechanism the original finding asked for
+  but the plugin does not preview matches or ask for confirmation before archiving
+
+Inspect the intended target in `memory_recall` before invoking `memory_forget`.
+The agent-scoped filter and soft-delete reduce impact; neither is a preview.
 
 ### 4. Fail-Open Cooldown (LOW) ✅ REVIEWED
 
@@ -85,7 +88,7 @@ Before deploying to production:
 
 - [x] Tenant isolation with agentId-tagged filtering (FIXED)
 - [x] Query sanitization for recall (FIXED)
-- [x] Preview before `memory_forget` deletion (FIXED)
+- [ ] Preview or confirmation before query-based `memory_forget` archival (NOT IMPLEMENTED)
 - [x] Cooldown implementation reviewed (APPROPRIATE)
 - [ ] Test with live OpenClaw instance
 - [ ] Run A/B test (plugin on vs off) to verify no unintended side effects

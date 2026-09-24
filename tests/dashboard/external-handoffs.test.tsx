@@ -7,7 +7,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { DoctorBanner } from '../../dashboard/src/components/DoctorBanner';
 import { TerminalHandoff } from '../../dashboard/src/components/ExternalHandoff';
-import { DASHBOARD_EXTERNAL_HANDOFFS, openExternalWindow } from '../../dashboard/src/lib/external-handoffs';
+import { DASHBOARD_EXTERNAL_HANDOFFS, openExternalWindow, terminalCommands } from '../../dashboard/src/lib/external-handoffs';
 import { setLocale, t } from '../../dashboard/src/lib/i18n';
 import { HttpError } from '../../dashboard/src/lib/api';
 import { actionFailureMessage, failureMessage } from '../../dashboard/src/lib/failure';
@@ -109,6 +109,21 @@ describe('issue #235 — explicit external handoffs', () => {
     vi.spyOn(window, 'open').mockReturnValue(opened);
     expect(openExternalWindow('https://github.com/PCIRCLE-AI/memesh/issues/new')).toBe(true);
     expect(opened.opener).toBeNull();
+  });
+});
+
+describe('issue #436 — archived session handoff fix commands', () => {
+  it('extracts the named remember command intact from the English fix string', () => {
+    const name = 'session-handoff:proj-safe~a1b2c3d4e5f60718293a4b5c6d7e8f90';
+    const fix = `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart\`; the next Stop replaces it.`;
+    expect(terminalCommands(fix)).toEqual([
+      `memesh remember --name ${name} --type session-handoff --obs restart`,
+    ]);
+  });
+
+  it('extracts only the recall command from the unnamed fix string', () => {
+    const fix = 'To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.';
+    expect(terminalCommands(fix)).toEqual(['memesh recall session-handoff --include-archived']);
   });
 });
 

@@ -1,6 +1,6 @@
 {
   "name": "memesh",
-  "description": "MeMesh — agentic memory for coding agents.",
+  "description": "MeMesh — local collaboration for AI coding agents. Share memory across sessions and exchange task messages.",
   "version": "4.10.4",
   "mcpServers": "./.codex-plugin/mcp.json"
 }

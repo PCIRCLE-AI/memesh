@@ -232,7 +232,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
             };
             readonly cross_project: {
                 readonly type: "boolean";
-                readonly description: "Search across all project tags (ignores tag filter). Default: false.";
+                readonly description: "Ignore the optional tag filter and search across project tags. Default false keeps the supplied tag filter, if any; it does not implicitly limit results to the current project.";
             };
         };
         readonly additionalProperties: false;
@@ -257,7 +257,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "export";
-    readonly description: "Export memories as JSON for sharing or backup. Returns a portable snapshot of entities and their observations, tags, and relations.";
+    readonly description: "Export memories as portable JSON. The default limit of 1000 entities may return only a subset; check `truncated` and raise the limit before treating the result as a complete backup.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -279,7 +279,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "import";
-    readonly description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for handling existing entities. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.";
+    readonly description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite deletes their previous observations and tags instead of archiving them. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -338,7 +338,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "task_state";
-    readonly description: "Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Included in the next session's briefing when the `briefing` level is `standard` or `full` (not at the default, `minimal`), so record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: \"\" once a blocker is resolved).";
+    readonly description: "Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Fresh state is included in the next session's briefing when the `briefing` level is `standard` or `full` (not at the default, `minimal`); stale or unknown-age state becomes a one-line flag at every level. Record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: \"\" once a blocker is resolved).";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -367,7 +367,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "briefing";
-    readonly description: "The work topology for a project, assembled and ready to use — the same memory block Claude Code receives at session start (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). How much is assembled follows the `briefing` setting: `minimal` (the default) is only this project’s decisions and direction, lessons not to repeat, known facts and recent activity, with the live repository state in front of them, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds where the work was left off (goal / next / blocked / done) when it is fresh, and closes with a capped index of the project’s durable memories (one line each, newest first, with [mem:id] handles); `full` additionally includes memories from other projects and global memory. Whatever the level, the result’s `index` field carries the index’s structured counts and token cost. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.";
+    readonly description: "The work topology for a project, assembled and ready to use — assembled under the same rules as Claude Code’s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project’s decisions and direction, lessons, known facts and recent activity, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds a fresh goal / next / blocked / done and closes with a capped index of durable memories; `full` additionally includes other projects and global memory. Whatever the level, the result’s `index` field carries the standalone index, which can show more than the index inside a crowded briefing. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
