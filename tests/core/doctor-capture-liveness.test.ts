@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { spawnSync } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -297,6 +298,68 @@ describe('doctor: capture-liveness', () => {
     }
   });
 
+  it('handoff-capture is silence-eligible: repeated failures and a handoff that never arrives are seen, acknowledgements are not', () => {
+    const summary = (records: HookOutcomeRecord[]) => summarizeHookOutcomes(
+      parseHookOutcomes(records.map((r) => JSON.stringify(r)).join('\n')),
+    ).find((s) => s.hook === 'handoff-capture')!;
+    const errors: HookOutcomeRecord[] = Array.from({ length: 6 }, (_, i) => ({
+      hook: 'handoff-capture', at: `2026-09-0${i + 1}T00:00:00.000Z`, host: 'claude-code' as const,
+      outcome: 'error' as const, reason: 'uncaught ERR_SQLITE_ERROR',
+    }));
+    expect(summary(errors).silent, 'six failed Stops in a row went unremarked').toBe(true);
+    expect(summary(skips('handoff-capture', 6, SKIP_REASONS.noAssistantText)).silent).toBe(true);
+    expect(summary(skips('handoff-capture', 6, SKIP_REASONS.handoffArchived)).silent, 'a forgotten handoff is never written again').toBe(true);
+    // Acknowledgements ("Done.") are the ordinary case and must stay quiet,
+    // and so must an install where auto-capture is turned off on purpose.
+    for (const reason of [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff]) {
+      const quiet = summary(skips('handoff-capture', 30, reason));
+      expect(quiet.silent, reason).toBe(false);
+      expect(quiet.triggeredRuns).toBe(0);
+      expect(quiet.dominantSkipReason).toBeNull();
+    }
+  });
+
+  it('a forgotten handoff gets advice that can work, not "reinstall the hooks"', async () => {
+    memeshDirWith([
+      ...Array.from({ length: 6 }, (_, i) => ({
+        hook: 'session-summary', at: `2026-09-0${i + 1}T01:00:00.000Z`, host: 'claude-code' as const,
+        outcome: 'wrote' as const, entity: `session-s${i}-summary`,
+      })),
+      ...skips('handoff-capture', 6, SKIP_REASONS.handoffArchived),
+    ]);
+    const result = await run();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).toBe('capture-liveness.silent-hook');
+    expect(check.params?.hook).toBe('handoff-capture');
+    expect(check.fix).not.toContain('install-hooks');
+
+    // The advice is only worth giving if it works: run the advised command,
+    // as written, against a graph holding an archived handoff.
+    const advised = /`(memesh remember [^`]+)`/.exec(check.fix ?? '')?.[1];
+    expect(advised, 'the fix names no memesh remember command').toBeDefined();
+    const name = 'session-handoff:acme';
+    const args = (advised!.match(/"[^"]*"|\S+/g) ?? []).slice(1)
+      .map((a) => a.replace(/^"|"$/g, '').replace('session-handoff:<project>', name));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-advice-'));
+    tempRoots.push(home);
+    const dbFile = path.join(home, 'knowledge-graph.db');
+    try { closeDatabase(); } catch { /* none open */ }
+    openDatabase(dbFile);
+    const db = getDatabase();
+    const id = db.prepare("INSERT INTO entities (name, type, status) VALUES (?, 'session-handoff', 'archived')").run(name).lastInsertRowid;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'the old handoff');
+    closeDatabase();
+
+    const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbFile };
+    delete env.MEMESH_DIR;
+    const r = spawnSync('node', [path.resolve('dist/transports/cli/cli.js'), ...args], { env, encoding: 'utf8', timeout: 30_000 });
+    expect(r.status, `the advised command failed: ${r.stderr}`).toBe(0);
+    openDatabase(dbFile);
+    const row = getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(name) as { status: string };
+    closeDatabase();
+    expect(row.status, 'the advised command did not re-activate the handoff').toBe('active');
+  }, 60_000);
+
   it('post-commit silence counts commits, not Bash calls, and quotes the commit reason', async () => {
     // The #321 shape inside a busy window: most runs are not commits, and
     // the five that ARE commits printed no line. The sentence must count the
@@ -416,7 +479,7 @@ describe('doctor: capture-liveness on a real database', () => {
   const sqliteTs = (hoursAgo: number) =>
     new Date(Date.now() - hoursAgo * 3600_000).toISOString().replace('T', ' ').slice(0, 19);
 
-  function seed(opts: { stamped: Array<[string, number]>; sinceHours: number; commitsHoursAgo: number[] }) {
+  function seed(opts: { stamped: Array<[string, number]>; sinceHours: number; commitsHoursAgo: number[]; handoffHoursAgo?: number }) {
     const dir = process.env.MEMESH_DIR!;
     dbPath = path.join(dir, 'knowledge-graph.db');
     try { closeDatabase(); } catch { /* none open */ }
@@ -432,6 +495,11 @@ describe('doctor: capture-liveness on a real database', () => {
         .run(`commit-real${i}`, 'commit', sqliteTs(hoursAgo));
       db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(info.lastInsertRowid, AUTO_CAPTURE_TAG);
     });
+    if (opts.handoffHoursAgo !== undefined) {
+      const info = db.prepare('INSERT INTO entities (name, type, created_at) VALUES (?, ?, ?)')
+        .run('session-handoff:acme', 'session-handoff', sqliteTs(opts.handoffHoursAgo));
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(info.lastInsertRowid, AUTO_CAPTURE_TAG);
+    }
     closeDatabase();
   }
 
@@ -449,6 +517,22 @@ describe('doctor: capture-liveness on a real database', () => {
     const check = result.checks.find((c) => c.id === 'capture-liveness')!;
     expect(check.code).toBe('capture-liveness.type-stopped');
     expect(check.params?.prev).toBe(3);
+  });
+
+  it('does not read the session handoff as a type that stopped: it is ONE row whose created_at never moves', async () => {
+    // A project has a single handoff row that every Stop rewrites in place, so
+    // its created_at is the FIRST Stop's. Nine days on it looks exactly like a
+    // type that was captured last week and not this one. The commit row is the
+    // control: the query runs and returns rows, and only the handoff is left out.
+    memeshDirWith([
+      { hook: 'session-summary', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'session-s1-summary' },
+    ]);
+    seed({ stamped: [['session-summary', 1]], sinceHours: 720, commitsHoursAgo: [5], handoffHoursAgo: 9 * 24 });
+    const result = await real();
+    expect(result.capture?.types.find((t) => t.type === 'commit'), 'the trend query returned no rows at all').toBeDefined();
+    expect(result.capture?.types.find((t) => t.type === 'session-handoff')).toBeUndefined();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.code).not.toBe('capture-liveness.type-stopped');
   });
 
   it('runs the legacy-capture query for real: no outcome records + captures since tracking → version skew', async () => {

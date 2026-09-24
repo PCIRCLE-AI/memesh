@@ -77,7 +77,7 @@ export function groupTopology(entities, projectName) {
     const global = [];
     const foreign = [];
     for (const e of entities) {
-        if (e.type === 'task-state')
+        if (e.type === 'task-state' || e.type === 'session-handoff')
             continue;
         if (e.global) {
             global.push(e);

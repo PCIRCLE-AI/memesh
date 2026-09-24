@@ -72,6 +72,10 @@ const SOURCES = [
   // on what `minimal` / `standard` / `full` include, so the ONE policy table
   // is mirrored rather than re-decided per hook.
   { from: 'dist/core/briefing-level.js', to: 'briefing-level.js', src: 'src/core/briefing-level.ts' },
+  // The session handoff: the Stop hook that writes it, session-start (which
+  // keeps it out of its pools) and pre-edit recall must agree on its type, its
+  // entity name and its cleaning rules, so they are one mirrored leaf.
+  { from: 'dist/core/session-handoff.js', to: 'session-handoff.js', src: 'src/core/session-handoff.ts' },
   { from: 'dist/storage/fts-index.js', to: 'fts-index.js', src: 'src/storage/fts-index.ts' },
   { from: 'dist/storage/schema.js', to: 'schema.js', src: 'src/storage/schema.ts' },
   // The SQLite driver. A leaf by construction — it imports `node:module` and

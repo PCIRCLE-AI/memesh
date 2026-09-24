@@ -225,7 +225,12 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
     // arriving through a recent pool, or a stale `task-state:<old-name>`
     // left behind by a project rename, would otherwise render its goal
     // under "Decisions and direction" as though it were a decision.
-    if (e.type === 'task-state') continue;
+    //
+    // `session-handoff` is dropped the same way: it is never a ranked line
+    // (a later SessionStart block will be its sole renderer). A literal, not
+    // the constant in session-handoff.ts, so this leaf keeps importing
+    // nothing; a test pins the two together.
+    if (e.type === 'task-state' || e.type === 'session-handoff') continue;
     if (e.global) { global.push(e); continue; }
     // Scope is checked before layer: a memory from another project must never
     // land under a heading that names this one, whatever its type.

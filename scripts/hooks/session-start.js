@@ -74,6 +74,7 @@ import {
   INDEX_EXCLUDED_TYPES,
   INDEX_SNIPPET_FETCH_CHARS,
 } from './_generated/briefing-index.js';
+import { SESSION_HANDOFF_TYPE } from './_generated/session-handoff.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1164,8 +1165,11 @@ process.stdin.on('end', async () => {
       // Shared with the briefing surface via the leaf, so the two sides'
       // candidate windows cannot drift apart.
       const CANDIDATE_CAP = TOPOLOGY_CANDIDATE_CAP;
+      // The handoff is not a ranked memory. Nothing lists it yet, so it must
+      // not take a slot in the project pool or in the recent pool below.
+      const isRankable = (entity) => entity.type !== SESSION_HANDOFF_TYPE;
       const projectOnly = db.prepare(projectQuery).all(projectTag, CANDIDATE_CAP)
-        .filter(entity => isTrustedForAutoContext(entity.metadata));
+        .filter(entity => isRankable(entity) && isTrustedForAutoContext(entity.metadata));
 
       // The `global` namespace is the documented way to store something that
       // is not tied to one project — and the injection selected purely by
@@ -1201,7 +1205,7 @@ process.stdin.on('end', async () => {
         const recentWhere = recentConditions.length > 0 ? `WHERE ${recentConditions.join(' AND ')}` : '';
         const recentQuery = buildScoringQuery('', recentWhere);
         recentEntities = db.prepare(recentQuery).all(CANDIDATE_CAP)
-          .filter(entity => isTrustedForAutoContext(entity.metadata))
+          .filter(entity => isRankable(entity) && isTrustedForAutoContext(entity.metadata))
           .slice(0, 5);
       }
 

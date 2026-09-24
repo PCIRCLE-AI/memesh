@@ -23893,7 +23893,7 @@ function groupTopology(entities, projectName) {
   const global2 = [];
   const foreign = [];
   for (const e of entities) {
-    if (e.type === "task-state")
+    if (e.type === "task-state" || e.type === "session-handoff")
       continue;
     if (e.global) {
       global2.push(e);
@@ -24346,6 +24346,16 @@ var init_agent_message_inbox = __esm({
   }
 });
 
+// dist/core/session-handoff.js
+var SESSION_HANDOFF_TYPE, HANDOFF_TRANSCRIPT_TAIL_BYTES;
+var init_session_handoff = __esm({
+  "dist/core/session-handoff.js"() {
+    "use strict";
+    SESSION_HANDOFF_TYPE = "session-handoff";
+    HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+  }
+});
+
 // dist/core/briefing-index.js
 function isIndexableType(type) {
   return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
@@ -24478,13 +24488,14 @@ var init_briefing_index = __esm({
     "use strict";
     init_paths();
     init_work_topology();
+    init_session_handoff();
     INDEX_MAX_LINES = 40;
     INDEX_MAX_BYTES = 3072;
     INDEX_STALE_DAYS = 180;
     INDEX_LINE_MAX_CHARS = 120;
     INDEX_SNIPPET_FETCH_CHARS = 4e3;
     INDEX_CANDIDATE_CAP = 2e3;
-    INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state"];
+    INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state", SESSION_HANDOFF_TYPE];
     DAY_MS = 24 * 60 * 60 * 1e3;
   }
 });
@@ -24592,7 +24603,7 @@ function selectPool(rows, cap) {
     recall_hits: row.recall_hits ?? void 0,
     recall_misses: row.recall_misses ?? void 0
   }));
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
+  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta) && row.type !== SESSION_HANDOFF_TYPE).slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {
   const signal = row.meta?.signal_score;
@@ -24731,6 +24742,7 @@ var init_briefing = __esm({
     init_agent_message_inbox();
     init_agent_scope_id();
     init_task_state();
+    init_session_handoff();
     init_briefing_index();
     init_work_topology();
     init_briefing_level();
@@ -53344,7 +53356,8 @@ var AUTO_TYPES, LEARNING_TYPES;
 var init_patterns = __esm({
   "dist/core/patterns.js"() {
     "use strict";
-    AUTO_TYPES = ["session_keypoint", "commit", "session_identity", "workflow_checkpoint", "session-insight"];
+    init_session_handoff();
+    AUTO_TYPES = ["session_keypoint", "commit", "session_identity", "workflow_checkpoint", "session-insight", SESSION_HANDOFF_TYPE];
     LEARNING_TYPES = ["lesson_learned", "mistake", "bug_fix", "lesson"];
   }
 });
@@ -53554,6 +53567,7 @@ var NOISE_TYPES, RADAR_AXES;
 var init_analytics = __esm({
   "dist/core/analytics.js"() {
     "use strict";
+    init_session_handoff();
     NOISE_TYPES = /* @__PURE__ */ new Set([
       "session_keypoint",
       "commit",
@@ -53561,7 +53575,8 @@ var init_analytics = __esm({
       "session-insight",
       "session-summary",
       "session_identity",
-      "session-identity"
+      "session-identity",
+      SESSION_HANDOFF_TYPE
     ]);
     RADAR_AXES = [
       { axis: "lessons", types: ["lesson_learned", "lesson", "mistake"] },
@@ -53631,7 +53646,8 @@ function computeProjects(db2) {
       (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
     FROM entities e
     WHERE e.status = 'active'
-  `).all();
+      AND e.type <> ?
+  `).all(SESSION_HANDOFF_TYPE);
   const acc = /* @__PURE__ */ new Map();
   for (const row of rows) {
     let tagList = [];
@@ -53667,6 +53683,7 @@ var init_projects = __esm({
   "dist/core/projects.js"() {
     "use strict";
     init_lesson_engine();
+    init_session_handoff();
     PROJECT_TAG_PREFIX = "project:";
   }
 });
@@ -55627,10 +55644,11 @@ var init_capture_liveness = __esm({
       "guard-check",
       "session-start",
       "note-ingest",
-      "remember-nudge"
+      "remember-nudge",
+      "handoff-capture"
     ];
     FAIL_ELIGIBLE_HOOKS = ["session-summary"];
-    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact"];
+    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact", "handoff-capture"];
     SKIP_REASONS = {
       notBash: "not a Bash tool call",
       notGitCommit: "not a git commit command",
@@ -55674,7 +55692,10 @@ var init_capture_liveness = __esm({
       trivialTurn: "trivial turn \u2014 too few tool calls since the last Stop",
       noDecisionMove: "no decision-shaped move since the last Stop",
       memoryWritten: "a memory was written since the last Stop",
-      noteFileChanged: "a note file changed since the last Stop"
+      noteFileChanged: "a note file changed since the last Stop",
+      noAssistantText: "the Stop payload and the transcript held no assistant message",
+      handoffTooShort: "the last assistant message was too short to be a handoff \u2014 the previous one is kept",
+      handoffArchived: "the handoff memory was archived by forget \u2014 left alone"
     };
     KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
     UNRECOGNISED_REASON = "unrecognised reason";
@@ -55682,7 +55703,8 @@ var init_capture_liveness = __esm({
       "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
       "session-summary": [SKIP_REASONS.alreadyCaptured],
       "note-ingest": [SKIP_REASONS.noNoteChanged],
-      "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove]
+      "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
+      "handoff-capture": [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff]
     };
     NEVER_RAN_GRACE_HOURS = 72;
     RECORD_TEXT_MAX = 200;
@@ -56263,7 +56285,8 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
          JOIN tags t ON t.entity_id = e.id
         WHERE t.tag = ?
           AND e.created_at > datetime('now', '-14 days')
-        GROUP BY e.type`).all(AUTO_CAPTURE_TAG);
+          AND e.type <> ?
+        GROUP BY e.type`).all(AUTO_CAPTURE_TAG, SESSION_HANDOFF_TYPE);
     types = summarizeTypeTrends(rows.map((r) => ({
       type: String(r.type),
       last7: Number(r.last7) || 0,
@@ -56327,8 +56350,9 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   if (verdict.silentHook) {
     const h = verdict.silentHook;
     const reason = h.dominantSkipReason ?? "no reason recorded";
+    const fix = h.hook === "handoff-capture" && reason === SKIP_REASONS.handoffArchived ? 'The session handoff was archived with `forget`, so it is not updated any more. To turn it back on, remember anything under the same name \u2014 `memesh remember --name "session-handoff:<project>" --type session-handoff --obs "restart"`, with the exact name from `memesh recall session-handoff --include-archived` \u2014 and the next Stop replaces it.' : "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.";
     return {
-      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, "Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.", { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
+      check: createCheck("capture-liveness", TITLE, "warn", `${h.hook}: ${h.triggeredRuns} runs, 0 writes \u2014 '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, fix, { code: "capture-liveness.silent-hook", params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
       report
     };
   }
@@ -57210,6 +57234,7 @@ var init_doctor = __esm({
     init_fts_index();
     init_sqlite();
     init_types();
+    init_session_handoff();
     init_time_utils();
     init_capture_flag();
     init_capture_liveness();

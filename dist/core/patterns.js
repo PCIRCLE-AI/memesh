@@ -1,4 +1,5 @@
-const AUTO_TYPES = ['session_keypoint', 'commit', 'session_identity', 'workflow_checkpoint', 'session-insight'];
+import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
+const AUTO_TYPES = ['session_keypoint', 'commit', 'session_identity', 'workflow_checkpoint', 'session-insight', SESSION_HANDOFF_TYPE];
 const LEARNING_TYPES = ['lesson_learned', 'mistake', 'bug_fix', 'lesson'];
 export function computePatterns(db, categories) {
     const allCategories = !categories || categories.length === 0;

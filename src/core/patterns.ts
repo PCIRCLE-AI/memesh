@@ -4,6 +4,7 @@
 // =============================================================================
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
+import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -32,7 +33,7 @@ export interface PatternsResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const AUTO_TYPES = ['session_keypoint', 'commit', 'session_identity', 'workflow_checkpoint', 'session-insight'];
+const AUTO_TYPES = ['session_keypoint', 'commit', 'session_identity', 'workflow_checkpoint', 'session-insight', SESSION_HANDOFF_TYPE];
 const LEARNING_TYPES = ['lesson_learned', 'mistake', 'bug_fix', 'lesson'];
 
 // ---------------------------------------------------------------------------

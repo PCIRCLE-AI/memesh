@@ -28305,8 +28305,12 @@ function executeWorkPackage(db2, input, context = {}) {
   return input.action === "submit" ? db2.transaction(execute).immediate() : execute();
 }
 
+// dist/core/session-handoff.js
+var SESSION_HANDOFF_TYPE = "session-handoff";
+var HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
+
 // dist/core/patterns.js
-var AUTO_TYPES = ["session_keypoint", "commit", "session_identity", "workflow_checkpoint", "session-insight"];
+var AUTO_TYPES = ["session_keypoint", "commit", "session_identity", "workflow_checkpoint", "session-insight", SESSION_HANDOFF_TYPE];
 var LEARNING_TYPES = ["lesson_learned", "mistake", "bug_fix", "lesson"];
 function computePatterns(db2, categories) {
   const allCategories = !categories || categories.length === 0;
@@ -28571,7 +28575,7 @@ function groupTopology(entities, projectName) {
   const global = [];
   const foreign = [];
   for (const e of entities) {
-    if (e.type === "task-state")
+    if (e.type === "task-state" || e.type === "session-handoff")
       continue;
     if (e.global) {
       global.push(e);
@@ -29018,7 +29022,7 @@ var INDEX_STALE_DAYS = 180;
 var INDEX_LINE_MAX_CHARS = 120;
 var INDEX_SNIPPET_FETCH_CHARS = 4e3;
 var INDEX_CANDIDATE_CAP = 2e3;
-var INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state"];
+var INDEX_EXCLUDED_TYPES = [...EVIDENCE_LAYER_TYPES, "task-state", SESSION_HANDOFF_TYPE];
 function isIndexableType(type) {
   return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
 }
@@ -29246,7 +29250,7 @@ function selectPool(rows, cap) {
     recall_hits: row.recall_hits ?? void 0,
     recall_misses: row.recall_misses ?? void 0
   }));
-  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta)).slice(0, cap);
+  return rankEntities(withMeta, /* @__PURE__ */ new Map()).filter((row) => isAutoInjectable(row.meta) && row.type !== SESSION_HANDOFF_TYPE).slice(0, cap);
 }
 function toTopologyEntity(row, snippet) {
   const signal = row.meta?.signal_score;

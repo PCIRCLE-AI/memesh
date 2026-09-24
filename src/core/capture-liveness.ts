@@ -262,6 +262,12 @@ export const CAPTURE_HOOKS = [
   // turn made no decision), so "ran and did not write" is their normal state.
   'note-ingest',
   'remember-nudge',
+  // The agent's own last message, kept as the project's handoff
+  // (scripts/hooks/_stop-handoff.js). SILENT_ELIGIBLE: a turn that ends on an
+  // acknowledgement is a not-triggered skip, so what is left — errors, no
+  // message or transcript to read, a handoff `forget` archived — is a
+  // handoff that should have been kept and was not.
+  'handoff-capture',
 ] as const;
 
 /**
@@ -278,11 +284,13 @@ export const CAPTURE_HOOKS = [
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
 
 /**
- * The hooks whose silence can mean anything, and why it is these three.
+ * The hooks whose silence can mean anything, and why it is these four.
  *
  * "Ran N times and wrote nothing" is only a signal when running implies a
  * write is due. That holds for post-commit (a commit happened), pre-compact
- * (a compaction happened) and session-summary (a session ended). It does NOT
+ * (a compaction happened), session-summary (a session ended) and
+ * handoff-capture (a Stop that ended on a real message — the acknowledgement
+ * turns are classified as not-triggered before they can count). It does NOT
  * hold for guard-check and post-commit's PreToolUse/PostToolUse siblings,
  * which fire on every Bash call and skip almost every one of them BY DESIGN,
  * or for user-prompt-intent, which fires on every prompt and writes only
@@ -290,7 +298,7 @@ export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
  * install PASS_WITH_CONCERNS with a daily banner about a hook doing exactly
  * its job.
  */
-export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact'] as const;
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact', 'handoff-capture'] as const;
 
 /**
  * Skip reasons shared between the hooks that record them and the verdict
@@ -386,6 +394,10 @@ export const SKIP_REASONS = {
   noDecisionMove: 'no decision-shaped move since the last Stop',
   memoryWritten: 'a memory was written since the last Stop',
   noteFileChanged: 'a note file changed since the last Stop',
+  // handoff-capture
+  noAssistantText: 'the Stop payload and the transcript held no assistant message',
+  handoffTooShort: 'the last assistant message was too short to be a handoff — the previous one is kept',
+  handoffArchived: 'the handoff memory was archived by forget — left alone',
 } as const;
 
 const KNOWN_SKIP_REASONS: ReadonlySet<string> = new Set(Object.values(SKIP_REASONS));
@@ -548,6 +560,12 @@ export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string
   //     them. Same stance as session-summary's low-signal skips.
   'note-ingest': [SKIP_REASONS.noNoteChanged],
   'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
+  // Also per Stop: a turn that ends on "done" or "ok" is not a handoff, and
+  // keeping the previous one is the point; with auto-capture turned off
+  // there was never going to be one. noAssistantText, noTranscript and
+  // handoffArchived stay counted: with the hook in SILENT_ELIGIBLE_HOOKS, a
+  // Stop that never yields a handoff surfaces in doctor instead of hiding.
+  'handoff-capture': [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff],
 };
 
 /**
@@ -792,7 +810,7 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
     // `writes === 0` is unchanged, and `notified` deliberately does not
     // rescue a hook from it — a hook that only printed lines HAS written
     // nothing. Safe because no notifying hook is in SILENT_ELIGIBLE_HOOKS
-    // (post-commit, session-summary, pre-compact), so this cannot turn the
+    // (post-commit, session-summary, pre-compact, handoff-capture), so this cannot turn the
     // repair into a daily false alarm; the test file pins that pairing.
     silent: (SILENT_ELIGIBLE_HOOKS as readonly string[]).includes(hook)
       && triggeredRuns >= SILENT_HOOK_MIN_RUNS

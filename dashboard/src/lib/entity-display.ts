@@ -28,6 +28,7 @@ const TYPE_CLUSTER: Record<string, TypeCluster> = {
   commit: 'activity',
   session_keypoint: 'session', session_identity: 'session',
   'session-insight': 'session', 'session-summary': 'session', 'session-identity': 'session',
+  'session-handoff': 'session',
   weekly_summary: 'activity', 'weekly-summary': 'activity',
 
   // Reference: notes, plans, knowledge bases

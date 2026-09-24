@@ -19,9 +19,9 @@ export declare const HOOK_OUTCOMES_ROTATE_BYTES: number;
 export declare function serializeHookOutcome(record: HookOutcomeRecord): string;
 export declare function trimHookOutcomeLines(raw: string, max?: number, maxBytes?: number): string;
 export declare const SILENT_HOOK_MIN_RUNS = 5;
-export declare const CAPTURE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start", "note-ingest", "remember-nudge"];
+export declare const CAPTURE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start", "note-ingest", "remember-nudge", "handoff-capture"];
 export declare const FAIL_ELIGIBLE_HOOKS: readonly ["session-summary"];
-export declare const SILENT_ELIGIBLE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact"];
+export declare const SILENT_ELIGIBLE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "handoff-capture"];
 export declare const SKIP_REASONS: {
     readonly notBash: "not a Bash tool call";
     readonly notGitCommit: "not a git commit command";
@@ -66,6 +66,9 @@ export declare const SKIP_REASONS: {
     readonly noDecisionMove: "no decision-shaped move since the last Stop";
     readonly memoryWritten: "a memory was written since the last Stop";
     readonly noteFileChanged: "a note file changed since the last Stop";
+    readonly noAssistantText: "the Stop payload and the transcript held no assistant message";
+    readonly handoffTooShort: "the last assistant message was too short to be a handoff — the previous one is kept";
+    readonly handoffArchived: "the handoff memory was archived by forget — left alone";
 };
 export declare const UNRECOGNISED_REASON = "unrecognised reason";
 export declare function renderableSkipReason(reason: string | undefined): string;

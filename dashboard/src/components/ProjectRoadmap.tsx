@@ -178,6 +178,7 @@ const TYPE_PRIORITY: Record<string, number> = {
   'session-identity': 92,
   'session-insight': 93,
   'session-summary': 94,
+  'session-handoff': 95,
 };
 
 function priorityOf(type: string): number {

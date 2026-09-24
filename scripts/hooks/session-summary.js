@@ -30,6 +30,7 @@ import {
   spawnAutoUpdate,
   truncateTitle,
 } from './_shared.js';
+import { runStopHandoff } from './_stop-handoff.js';
 import { runStopNotes } from './_stop-notes.js';
 
 const require = createRequire(import.meta.url);
@@ -261,13 +262,19 @@ process.stdin.on('end', async () => {
     // "decided things, stored nothing" nudge. Records its own outcomes under
     // `note-ingest` / `remember-nudge`, never throws, and only ever yields
     // one line for exit0() to print.
+    const stopProject = inputData.cwd ? getProjectName(inputData.cwd) : undefined;
     const stopNotes = await runStopNotes(inputData, {
       captureEnabled,
-      project: inputData.cwd ? getProjectName(inputData.cwd) : undefined,
+      project: stopProject,
       metaUrl: import.meta.url,
     });
     pendingSystemMessage = stopNotes.message;
     settleNudge = stopNotes.settle;
+
+    // Keep the agent's last message as the project's handoff. Ahead of the
+    // early exits below on purpose: a short or read-only turn is still a place
+    // the work stopped, and this records its own outcome under `handoff-capture`.
+    runStopHandoff(inputData, { captureEnabled, project: stopProject });
 
     if (!captureEnabled) {
       record('skipped', SKIP_REASONS.autoCaptureOff);

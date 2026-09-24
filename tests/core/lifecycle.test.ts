@@ -215,6 +215,19 @@ describe('Noise Filter (compressWeeklyNoise)', () => {
     expect(result.weeksProcessed).toBe(0);
   });
 
+  it('never compresses the session handoff: an archived handoff is never written again', () => {
+    const db = getDatabase();
+    db.exec("DELETE FROM memesh_metadata WHERE key = 'last_noise_compress_at'");
+    insertOldNoiseEntities(db, 25, 'session_keypoint', 2);
+    const date = new Date(Date.now() - 2 * 7 * 24 * 60 * 60 * 1000).toISOString();
+    db.prepare('INSERT INTO entities (name, type, created_at) VALUES (?, ?, ?)').run('session-handoff:test', 'session-handoff', date);
+
+    const result = compressWeeklyNoise(db);
+    expect(result.compressed, 'the noise fixture was not compressed, so this test proves nothing').toBe(25);
+    const row = db.prepare("SELECT status FROM entities WHERE name = 'session-handoff:test'").get() as any;
+    expect(row.status).toBe('active');
+  });
+
   it('should NEVER compress preserved types (decisions, lessons, etc.)', () => {
     const db = getDatabase();
     db.exec("DELETE FROM memesh_metadata WHERE key = 'last_noise_compress_at'");

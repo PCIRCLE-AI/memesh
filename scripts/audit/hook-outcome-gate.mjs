@@ -79,6 +79,7 @@ export function readCaptureHooks() {
 const HELPER_OWNED_HOOKS = {
   'note-ingest': '_stop-notes.js',
   'remember-nudge': '_stop-notes.js',
+  'handoff-capture': '_stop-handoff.js',
 };
 
 /**
@@ -93,6 +94,7 @@ const HELPER_OWNED_HOOKS = {
  */
 const RETURNING_DECISION_FUNCTIONS = {
   '_stop-notes.js': ['runNoteIngestion', 'decideNudge'],
+  '_stop-handoff.js': ['captureHandoff'],
 };
 
 const EXIT_RE = /(?<![\w$.])(?:exit0|pass)\s*\(|(?<![\w$.])process\.exit\s*\(/;

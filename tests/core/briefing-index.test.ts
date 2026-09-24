@@ -69,7 +69,7 @@ describe('buildBriefingIndex', () => {
     expect(idx.lines[1]).toBe('- [decision] Use PKCE for the CLI [mem:1]');
   });
 
-  it('excludes exactly the evidence layer and task-state — pinned to the type constants', () => {
+  it('excludes exactly the evidence layer, task-state and the session handoff — pinned to the type constants', () => {
     // Written out, NOT derived from EVIDENCE_LAYER_TYPES: comparing the list
     // against the expression that defines it is an assertion that cannot
     // fail. Spelled out, adding an evidence type turns this red on purpose —
@@ -86,10 +86,11 @@ describe('buildBriefingIndex', () => {
       'weekly_summary',
       'workflow_checkpoint',
       'task-state',
+      'session-handoff',
     ]));
     const evidence = [...EVIDENCE_LAYER_TYPES].map((type, i) => candidate(100 + i, { type }));
     const idx = buildBriefingIndex(
-      [...evidence, candidate(1, { type: 'task-state' }), candidate(2, { type: 'lesson_learned' }), candidate(3, { type: 'reference' })],
+      [...evidence, candidate(1, { type: 'task-state' }), candidate(4, { type: 'session-handoff' }), candidate(2, { type: 'lesson_learned' }), candidate(3, { type: 'reference' })],
       PROJECT, NOW,
     );
     expect(idx.ids).toEqual([2, 3]);
