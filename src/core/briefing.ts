@@ -34,7 +34,7 @@ import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
+import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import {
   INDEX_CANDIDATE_CAP,
   INDEX_EXCLUDED_TYPES,
@@ -76,6 +76,10 @@ export interface BriefingResult {
    *  whose only state line is that reminder has `hasTaskState: false`. At
    *  `minimal` a FRESH state is not rendered at all, so it is `false` there. */
   hasTaskState: boolean;
+  /** Whether the block leads with the session handoff: where the last session
+   *  in this project left off. Shown at every level while it is under
+   *  HANDOFF_MAX_AGE_DAYS old. Not counted in `entityCount`. */
+  hasHandoff: boolean;
   /** The durable-memory index (#323) — counts, cost and the rendered lines,
    *  computed regardless of level (the `--index` CLI flag and callers that
    *  want the index on its own read this even when `level` excludes it from
@@ -155,10 +159,8 @@ function selectPool(rows: CandidateRow[], cap: number): PoolRow[] {
     recall_hits: row.recall_hits ?? undefined,
     recall_misses: row.recall_misses ?? undefined,
   }));
-  // The handoff has no renderer here yet and is dropped at grouping time, after
-  // the cut; it must not spend one of the pool's few slots first.
   return rankEntities(withMeta, new Map())
-    .filter((row) => isAutoInjectable(row.meta) && row.type !== SESSION_HANDOFF_TYPE)
+    .filter((row) => isAutoInjectable(row.meta))
     .slice(0, cap);
 }
 
@@ -313,7 +315,26 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   const everSeen = inboxRecipient !== undefined && unreadCount === 0
     ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
     : undefined;
+  // The session handoff leads everything: it is what the last session in this
+  // project said it was about to do. Exact project, active, and through the
+  // same trust gate as every other memory — except that metadata nobody can
+  // parse keeps it out (the ranked pool below lets such a row through).
+  const handoffRow = db.prepare(
+    `SELECT e.id, e.metadata, o.content, o.created_at
+     FROM entities e JOIN observations o ON o.entity_id = e.id
+     WHERE e.name = ? AND e.type = ? AND e.status = 'active'
+     ORDER BY o.id DESC
+     LIMIT 1`,
+  ).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE) as
+    { id: number; metadata: string | null; content: string; created_at: string } | undefined;
+  const handoffMeta = handoffRow ? parseMetadata(handoffRow.metadata) : null;
+  const handoffTrusted = !!handoffRow && (handoffRow.metadata === null || handoffMeta !== null) && isAutoInjectable(handoffMeta);
+  const handoff = handoffTrusted
+    ? handoffLines({ id: handoffRow.id, text: handoffRow.content, observedAt: handoffRow.created_at })
+    : [];
+
   const stateLines = [
+    ...handoff,
     ...taskLines,
     ...unreadInboxLines(
       unreadCount,
@@ -332,10 +353,10 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   const projectRows = db.prepare(
     `SELECT DISTINCT ${CANDIDATE_COLUMNS}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag = ? AND e.status = 'active'${nonGlobal}
+     WHERE t.tag = ? AND e.status = 'active' AND e.type <> ?${nonGlobal}
      ORDER BY e.id DESC
      LIMIT ?`,
-  ).all(`project:${projectName}`, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
+  ).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
   const projectPool = selectPool(projectRows, PROJECT_LIMIT);
 
   // `global` is an explicit storage scope, not a project tag. It gets an
@@ -366,10 +387,10 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     ? db.prepare(
       `SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
-       WHERE e.status = 'active'${nonGlobal}
+       WHERE e.status = 'active' AND e.type <> ?${nonGlobal}
        ORDER BY e.id DESC
        LIMIT ?`,
-    ).all(TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[]
+    ).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[]
     : [];
   const recentPool = selectPool(recentRows, RECENT_LIMIT);
 
@@ -451,6 +472,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
     // `taskLines`, not `stateLines`: the latter also carries the unread-inbox
     // reminder, which is not a task state.
     hasTaskState: taskLines.length > 0,
+    hasHandoff: handoff.length > 0,
     index,
     level,
     empty,

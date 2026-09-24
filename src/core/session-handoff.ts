@@ -1,12 +1,24 @@
 // The session handoff: the agent's own last words, kept per project so the
 // next session starts from where this one stopped.
 //
-// A leaf (no imports) on purpose: the Stop hook that writes the handoff cannot
-// import src/, so this file is mirrored to scripts/hooks/_generated/
-// (scripts/generate-hook-core.mjs). Everything here is pure; the hook owns the
-// reads, the write and the record.
+// A leaf on purpose: the Stop hook that writes the handoff and the
+// SessionStart hook that shows it cannot import src/, so this file is mirrored
+// to scripts/hooks/_generated/ (scripts/generate-hook-core.mjs). Its one import
+// is another mirrored leaf. Everything here is pure; the hooks and core own
+// the reads, the write and the record.
+
+import { parseSqliteUtcMs } from './time-utils.js';
 
 export const SESSION_HANDOFF_TYPE = 'session-handoff';
+
+/** Older than this, the handoff is shown with a warning that it may be out of date. */
+export const HANDOFF_STALE_HOURS = 72;
+
+/** Older than this, the handoff is not shown at all. */
+export const HANDOFF_MAX_AGE_DAYS = 14;
+
+/** A timestamp this far in the future is clock skew; beyond it, the age is unknown. */
+export const HANDOFF_FUTURE_SKEW_MINUTES = 5;
 
 /** Most characters kept, the leading ellipsis included. The tail of a final message is where "next" lives. */
 export const HANDOFF_MAX_CHARS = 800;
@@ -115,4 +127,50 @@ export function lastAssistantText(jsonl: string): string | null {
     if (text.trim()) return text;
   }
   return null;
+}
+
+export interface HandoffRecord {
+  /** Entity id — the citation handle. */
+  id: number;
+  /** The stored text: the handoff entity's newest observation. */
+  text: string;
+  /** That observation's `created_at` (SQLite UTC). The entity's own
+   *  `created_at` is the FIRST Stop's and never moves, so it cannot say how
+   *  old the text is. */
+  observedAt: string | null | undefined;
+}
+
+function ageText(hours: number): string {
+  if (hours < 1) return 'less than an hour ago';
+  if (hours < 24) {
+    const h = Math.floor(hours);
+    return `${h} hour${h === 1 ? '' : 's'} ago`;
+  }
+  const d = Math.floor(hours / 24);
+  return `${d} day${d === 1 ? '' : 's'} ago`;
+}
+
+/**
+ * The lines that lead a new session's context: where the last session in this
+ * project left off, and how long ago. The ONE renderer both the SessionStart
+ * hook and the `briefing` tool/CLI call, so they cannot disagree.
+ *
+ * Returns [] when there is nothing honest to show: no text, an age that cannot
+ * be read, a timestamp more than HANDOFF_FUTURE_SKEW_MINUTES in the future, or
+ * a handoff older than HANDOFF_MAX_AGE_DAYS. Past HANDOFF_STALE_HOURS the
+ * header says it may be out of date. The header ends in `[mem:<id>]` so a
+ * session that uses it can cite it like any other memory.
+ */
+export function handoffLines(record: HandoffRecord | null | undefined, now: Date = new Date()): string[] {
+  if (!record || !record.text || !record.text.trim()) return [];
+  const then = typeof record.observedAt === 'string' ? parseSqliteUtcMs(record.observedAt) : null;
+  if (then === null) return [];
+  const hours = (now.getTime() - then) / 3_600_000;
+  if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60) return [];
+  const age = Math.max(0, hours);
+  if (age > HANDOFF_MAX_AGE_DAYS * 24) return [];
+  const when = age > HANDOFF_STALE_HOURS
+    ? `${ageText(age)} — may be out of date; check it against the repository`
+    : ageText(age);
+  return [`Where the last session left off (${when}): [mem:${record.id}]`, ...record.text.trim().split('\n')];
 }

@@ -39,6 +39,7 @@ import { executeAgentMessageAction } from '../../src/transports/agent-messaging.
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
 import { getProjectName } from '../../src/core/paths.js';
+import { sessionHandoffName, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 // The hook-only work-package notice's literal text — single owner in
 // `_shared.js`, so this file never hardcodes a second copy to compare
@@ -1381,4 +1382,124 @@ describe('assembleBriefing', () => {
     for (let i = 1; i <= 5; i++) expect(text, `decision ${i} was pushed out by the handoff`).toContain(`Other project decision ${i}`);
     expect(text).not.toContain('Where the last session left off');
   });
+});
+
+describe('the session handoff leads every briefing (#434 step 2)', () => {
+  const HEADER = 'Where the last session left off';
+  const sqliteAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
+  function seedHandoff(project: string, text: string, opts: { hoursAgo?: number; status?: string; metadata?: string | null; name?: string } = {}) {
+    const db = getDatabase();
+    const id = db.prepare('INSERT INTO entities (name, type, status, metadata) VALUES (?, ?, ?, ?)')
+      .run(opts.name ?? sessionHandoffName(project), SESSION_HANDOFF_TYPE, opts.status ?? 'active', opts.metadata ?? null).lastInsertRowid as number;
+    db.prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)').run(id, text, sqliteAgo(opts.hoursAgo ?? 1));
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `project:${project}`);
+    return id;
+  }
+
+  it.each(['minimal', 'standard', 'full'])('at %s it comes first, once, with its age and handle — and counts as no ranked entity', (level) => {
+    vi.stubEnv('MEMESH_BRIEFING', level);
+    seed();
+    const without = assembleBriefing(PROJECT);
+    const id = seedHandoff(PROJECT, 'HANDOFF-TEXT: the parser tests pass; next, open the PR.');
+    const result = assembleBriefing(PROJECT);
+    expect(result.hasHandoff).toBe(true);
+    expect(result.entityCount).toBe(without.entityCount);
+    expect(result.hasTaskState).toBe(without.hasTaskState);
+    const body = result.text.slice(result.text.indexOf('```'));
+    expect(body.split(HEADER)).toHaveLength(2);
+    expect(body).toContain(`${HEADER} (1 hour ago): [mem:${id}]\nHANDOFF-TEXT: the parser tests pass; next, open the PR.`);
+    const firstContent = body.split('\n').slice(1).find((l) => l.trim() !== '');
+    expect(firstContent, 'the handoff is not the first thing in the fence').toContain(HEADER);
+  });
+
+  it('leads the stated task state too', () => {
+    atStandard();
+    setTaskState({ project: PROJECT, patch: { goal: 'TASK-GOAL: ship step 2' } });
+    seedHandoff(PROJECT, 'HANDOFF-BEFORE-TASK');
+    const { text } = assembleBriefing(PROJECT);
+    expect(text).toContain('TASK-GOAL');
+    expect(text.indexOf('HANDOFF-BEFORE-TASK')).toBeLessThan(text.indexOf('TASK-GOAL'));
+  });
+
+  it('never shows another project\'s handoff, an archived one, or one that fails the trust gate', () => {
+    vi.stubEnv('MEMESH_BRIEFING', 'full');
+    seed();
+    seedHandoff('other-project', 'OTHER-PROJECT-HANDOFF');
+    expect(assembleBriefing(PROJECT).hasHandoff).toBe(false);
+    for (const [label, opts] of [
+      ['archived', { status: 'archived' }],
+      ['untrusted', { metadata: JSON.stringify({ trust: 'untrusted' }) }],
+      ['imported', { metadata: JSON.stringify({ provenance: { source: 'import' } }) }],
+      ['unreadable metadata', { metadata: '{not json' }],
+    ] as const) {
+      getDatabase().prepare('DELETE FROM entities WHERE name = ?').run(sessionHandoffName(PROJECT));
+      seedHandoff(PROJECT, `GATED-${label}`, opts);
+      const result = assembleBriefing(PROJECT);
+      expect(result.hasHandoff, label).toBe(false);
+      expect(result.text, label).not.toContain(`GATED-${label}`);
+    }
+    expect(assembleBriefing(PROJECT).text).not.toContain('OTHER-PROJECT-HANDOFF');
+  });
+
+  it('says a handoff over 72 hours old may be out of date, and drops one over 14 days old', () => {
+    seedHandoff(PROJECT, 'OLDISH-HANDOFF', { hoursAgo: 80 });
+    expect(assembleBriefing(PROJECT).text).toContain(`${HEADER} (3 days ago — may be out of date; check it against the repository)`);
+    getDatabase().prepare("UPDATE observations SET created_at = ? WHERE content = 'OLDISH-HANDOFF'").run(sqliteAgo(15 * 24));
+    const result = assembleBriefing(PROJECT);
+    expect(result.hasHandoff).toBe(false);
+    expect(result.text).not.toContain('OLDISH-HANDOFF');
+  });
+
+  it('dates the handoff by its newest text, not by when the entity was first created', () => {
+    const id = seedHandoff(PROJECT, 'FIRST-TEXT', { hoursAgo: 20 * 24 });
+    getDatabase().prepare("UPDATE entities SET created_at = ? WHERE id = ?").run(sqliteAgo(20 * 24), id);
+    getDatabase().prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)').run(id, 'NEWEST-TEXT', sqliteAgo(2));
+    const { text } = assembleBriefing(PROJECT);
+    expect(text).toContain(`${HEADER} (2 hours ago): [mem:${id}]\nNEWEST-TEXT`);
+    expect(text).not.toContain('FIRST-TEXT');
+  });
+
+  it('a minimal briefing whose only content is the handoff is not empty, and the CLI gives no "nothing captured" hint', () => {
+    vi.stubEnv('MEMESH_BRIEFING', 'minimal');
+    seedHandoff(PROJECT, 'ONLY-THE-HANDOFF');
+    const result = assembleBriefing(PROJECT);
+    expect(result.empty).toBe(false);
+    expect(result.text).toContain('ONLY-THE-HANDOFF');
+
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-briefing-cli-'));
+    try {
+      fs.writeFileSync(path.join(home, 'config.json'), JSON.stringify({ updateCheck: false }));
+      const out = execFileSync('node', [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', PROJECT], {
+        env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: home, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_UPDATE: '0', MEMESH_BRIEFING: 'minimal' },
+        encoding: 'utf8', timeout: 15000,
+      });
+      expect(out).toContain('ONLY-THE-HANDOFF');
+      expect(out).not.toContain('Capture happens automatically');
+    } finally {
+      removeTempDir(home);
+    }
+  }, 30_000);
+
+  it('handoff rows cannot crowd real memories out of the candidate window (excluded before the LIMIT)', () => {
+    vi.stubEnv('MEMESH_BRIEFING', 'full');
+    remember({ name: 'crowd-decision', type: 'decision', title: 'CROWD-DECISION survives', observations: ['kept'], tags: [`project:${PROJECT}`] });
+    for (let i = 1; i <= 5; i++) {
+      remember({ name: `crowd-other-${i}`, type: 'decision', title: `CROWD-OTHER-${i}`, observations: ['elsewhere'], tags: ['project:crowd-elsewhere'] });
+    }
+    // More handoff rows than the whole candidate window, all NEWER than the
+    // memories above — a reader that filters after its LIMIT sees only these.
+    const db = getDatabase();
+    db.exec('BEGIN');
+    for (let i = 0; i < TOPOLOGY_CANDIDATE_CAP + 10; i++) {
+      const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(`session-handoff:old-name-${i}`, SESSION_HANDOFF_TYPE).lastInsertRowid;
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'an old handoff');
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `project:${PROJECT}`);
+    }
+    db.exec('COMMIT');
+    // The ranked sections only — the durable index below them lists the
+    // decision too, and would hide a ranked slot lost to handoff rows.
+    const ranked = assembleBriefing(PROJECT).text.split('Index of durable memories')[0];
+    expect(ranked).toContain('CROWD-DECISION survives');
+    for (let i = 1; i <= 5; i++) expect(ranked, `other project decision ${i}`).toContain(`CROWD-OTHER-${i}`);
+  }, 60_000);
 });

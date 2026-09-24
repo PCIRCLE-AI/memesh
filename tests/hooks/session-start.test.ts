@@ -8,6 +8,7 @@ import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 // The cap the hook itself imports — a literal here would drift from it.
 import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
+import { TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 const require = createRequire(import.meta.url);
@@ -734,7 +735,10 @@ describe('Feature: Session Start Hook', () => {
     expect(injected).not.toContain('No durable memories');
     const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l));
-    const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error');
+    // The broken table fails the session-handoff read too; each read records
+    // its own labelled error, and this test is about the index's.
+    const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error' && String(o.reason).startsWith('briefing-index:'));
+    expect(outcomes.some((o) => o.hook === 'session-start' && o.outcome === 'error' && /^handoff: uncaught /.test(String(o.reason)))).toBe(true);
     // The locus plus a LABEL, never the exception's message. This file is
     // permanent, exportable and meant to be pasteable into an issue, and the
     // message SQLite produced here quotes the failing statement; `reason`
@@ -1626,7 +1630,7 @@ describe('Feature: Session Start Hook', () => {
 
       const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
         .trim().split('\n').map((l) => JSON.parse(l));
-      const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error');
+      const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error' && String(o.reason).startsWith('memory-context:'));
       // The locus plus a label, never the exception's message (same rule as
       // the index read's error record).
       expect(err?.reason).toMatch(/^memory-context: uncaught [A-Za-z][\w-]*$/);
@@ -1787,4 +1791,128 @@ describe('Feature: Session Start Hook', () => {
       });
     });
   });
+});
+
+describe('SessionStart: the session handoff leads the injected context (#434 step 2)', () => {
+  const HEADER = 'Where the last session left off';
+  let dir: string;
+  let dbFile: string;
+  let cwd: string;
+  let project: string;
+
+  beforeEach(() => {
+    dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-hook-handoff-')));
+    dbFile = path.join(dir, 'knowledge-graph.db');
+    cwd = path.join(dir, 'proj-handoff');
+    fs.mkdirSync(cwd);
+    project = mirrorProjectName(cwd);
+    // The real schema, the way the hooks and core create it.
+    const out = spawnSync('node', ['--input-type=module', '-e',
+      `import { openDatabase, closeDatabase } from ${JSON.stringify(path.resolve('dist/db.js'))}; openDatabase(${JSON.stringify(dbFile)}); closeDatabase();`],
+    { encoding: 'utf8', env: { ...process.env, HOME: dir, MEMESH_DB_PATH: dbFile } });
+    expect(out.status, out.stderr).toBe(0);
+  });
+  afterEach(() => removeTempDir(dir));
+
+  const sqliteAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
+  function seed(fn: (db: Database) => void) {
+    const db = new Database(dbFile);
+    try { fn(db); } finally { db.close(); }
+  }
+  function addEntity(db: Database, name: string, type: string, text: string, tag: string, hoursAgo = 1): number {
+    const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, type).lastInsertRowid as number;
+    db.prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)').run(id, text, sqliteAgo(hoursAgo));
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
+    return id;
+  }
+  function start(level: string) {
+    const r = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd, hook_event_name: 'SessionStart', source: 'startup' }),
+      env: { ...process.env, HOME: dir, USERPROFILE: dir, MEMESH_DB_PATH: dbFile, MEMESH_DIR: undefined, MEMESH_BRIEFING: level },
+      encoding: 'utf8', timeout: 20_000,
+    });
+    expect(r.status, r.stderr).toBe(0);
+    const out = JSON.parse(r.stdout.trim().split('\n').filter(Boolean).at(-1)!);
+    return { context: String(out.hookSpecificOutput?.additionalContext ?? ''), banner: String(out.systemMessage ?? '') };
+  }
+
+  it.each(['minimal', 'standard', 'full'])('at %s the handoff is the first thing in the fence, once', (level) => {
+    let id = 0;
+    seed((db) => {
+      addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: we keep one SQLite file.', `project:${project}`);
+      id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'HANDOFF-TEXT: next, open the PR.', `project:${project}`);
+    });
+    const { context } = start(level);
+    const body = context.slice(context.indexOf('```'));
+    expect(body.split(HEADER)).toHaveLength(2);
+    const first = body.split('\n').slice(1).find((l) => l.trim() !== '');
+    expect(first).toBe(`${HEADER} (1 hour ago): [mem:${id}]`);
+    expect(body).toContain(`[mem:${id}]\nHANDOFF-TEXT: next, open the PR.`);
+  });
+
+  it('renders the same handoff block as the briefing tool', () => {
+    seed((db) => { addEntity(db, `session-handoff:${project}`, 'session-handoff', 'PARITY-TEXT: next, write the notes.', `project:${project}`, 80); });
+    const hookLines = start('standard').context.split('\n');
+    const cli = spawnSync('node', [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project, '--json'], {
+      env: { ...process.env, HOME: dir, USERPROFILE: dir, MEMESH_DB_PATH: dbFile, MEMESH_DIR: dir, MEMESH_AUTO_UPDATE: '0', MEMESH_BRIEFING: 'standard' },
+      encoding: 'utf8', timeout: 20_000,
+    });
+    expect(cli.status, cli.stderr).toBe(0);
+    const coreLines = String(JSON.parse(cli.stdout.trim()).text).split('\n');
+    const block = (lines: string[]) => { const i = lines.findIndex((l) => l.startsWith(HEADER)); return lines.slice(i, i + 2); };
+    expect(block(hookLines)[0]).toContain('may be out of date');
+    expect(block(hookLines)).toEqual(block(coreLines));
+  }, 40_000);
+
+  it('credits a cited handoff: its id is in the injected-set record', () => {
+    let id = 0;
+    seed((db) => { id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'CITE-TEXT: next, ship it.', `project:${project}`); });
+    start('minimal');
+    const sessionsDir = path.join(dir, 'sessions');
+    const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json'));
+    expect(files.length).toBeGreaterThan(0);
+    const rec = JSON.parse(fs.readFileSync(path.join(sessionsDir, files[0]), 'utf8'));
+    expect(rec.entityIds).toContain(id);
+  });
+
+  it('shows no handoff that fails the trust gate', () => {
+    seed((db) => {
+      const id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'UNTRUSTED-HANDOFF', `project:${project}`);
+      db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify({ trust: 'untrusted' }), id);
+      addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: kept.', `project:${project}`);
+    });
+    const { context } = start('standard');
+    expect(context, 'the positive control is missing').toContain('DECISION-TEXT');
+    expect(context).not.toContain('UNTRUSTED-HANDOFF');
+  });
+
+  it('shows neither another project\'s handoff nor one past 14 days', () => {
+    seed((db) => {
+      addEntity(db, 'session-handoff:someone-else~' + 'b'.repeat(32), 'session-handoff', 'FOREIGN-HANDOFF', 'project:someone-else~' + 'b'.repeat(32));
+      addEntity(db, `session-handoff:${project}`, 'session-handoff', 'EXPIRED-HANDOFF', `project:${project}`, 15 * 24);
+      addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: kept.', `project:${project}`);
+    });
+    for (const level of ['minimal', 'full']) {
+      const { context } = start(level);
+      expect(context, level).not.toContain(HEADER);
+      expect(context).not.toContain('FOREIGN-HANDOFF');
+      expect(context).not.toContain('EXPIRED-HANDOFF');
+    }
+  });
+
+  it('handoff rows cannot crowd real memories out of the hook\'s candidate windows', () => {
+    seed((db) => {
+      addEntity(db, 'crowd-decision', 'decision', 'CROWD-DECISION survives.', `project:${project}`);
+      for (let i = 1; i <= 5; i++) addEntity(db, `crowd-other-${i}`, 'decision', `CROWD-OTHER-${i}`, 'project:crowd-elsewhere~' + 'c'.repeat(32));
+      db.exec('BEGIN');
+      for (let i = 0; i < TOPOLOGY_CANDIDATE_CAP + 10; i++) {
+        addEntity(db, `session-handoff:old-name-${i}`, 'session-handoff', 'an old handoff', `project:${project}`);
+      }
+      db.exec('COMMIT');
+    });
+    // The ranked sections only — the durable index lists the decision too.
+    const ranked = start('full').context.split('Index of durable memories')[0];
+    expect(ranked).toContain('CROWD-DECISION survives.');
+    for (let i = 1; i <= 5; i++) expect(ranked, `other decision ${i}`).toContain(`CROWD-OTHER-${i}`);
+  }, 60_000);
 });

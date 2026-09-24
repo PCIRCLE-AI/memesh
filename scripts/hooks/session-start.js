@@ -74,7 +74,7 @@ import {
   INDEX_EXCLUDED_TYPES,
   INDEX_SNIPPET_FETCH_CHARS,
 } from './_generated/briefing-index.js';
-import { SESSION_HANDOFF_TYPE } from './_generated/session-handoff.js';
+import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './_generated/session-handoff.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1149,9 +1149,14 @@ process.stdin.on('end', async () => {
       const notGlobal = colNames.has('namespace')
         ? "AND (e.namespace IS NULL OR e.namespace <> 'global')"
         : '';
+      // The session handoff is not a ranked memory — it leads the block on its
+      // own (below). Excluded in SQL, before the LIMIT: excluded only after it,
+      // enough handoff rows ahead of real memories could fill the window.
+      // A constant, not user input, so it is safe inline.
+      const notHandoff = `AND e.type <> '${SESSION_HANDOFF_TYPE}'`;
       const projectQuery = buildScoringQuery(
         `JOIN tags t ON t.entity_id = e.id`,
-        `WHERE t.tag = ? ${notGlobal} ${statusFilter}`,
+        `WHERE t.tag = ? ${notGlobal} ${statusFilter} ${notHandoff}`,
       );
       // Over-fetch WIDE, then filter. The window used to be `sessionLimit * 3`
       // and the trust filter ran after it — so a class of entity that ranks
@@ -1165,11 +1170,8 @@ process.stdin.on('end', async () => {
       // Shared with the briefing surface via the leaf, so the two sides'
       // candidate windows cannot drift apart.
       const CANDIDATE_CAP = TOPOLOGY_CANDIDATE_CAP;
-      // The handoff is not a ranked memory. Nothing lists it yet, so it must
-      // not take a slot in the project pool or in the recent pool below.
-      const isRankable = (entity) => entity.type !== SESSION_HANDOFF_TYPE;
       const projectOnly = db.prepare(projectQuery).all(projectTag, CANDIDATE_CAP)
-        .filter(entity => isRankable(entity) && isTrustedForAutoContext(entity.metadata));
+        .filter(entity => isTrustedForAutoContext(entity.metadata));
 
       // The `global` namespace is the documented way to store something that
       // is not tied to one project — and the injection selected purely by
@@ -1201,13 +1203,41 @@ process.stdin.on('end', async () => {
         const recentConditions = [
           hasStatus ? "e.status = 'active'" : '',
           colNames.has('namespace') ? "(e.namespace IS NULL OR e.namespace <> 'global')" : '',
+          `e.type <> '${SESSION_HANDOFF_TYPE}'`,
         ].filter(Boolean);
         const recentWhere = recentConditions.length > 0 ? `WHERE ${recentConditions.join(' AND ')}` : '';
         const recentQuery = buildScoringQuery('', recentWhere);
         recentEntities = db.prepare(recentQuery).all(CANDIDATE_CAP)
-          .filter(entity => isRankable(entity) && isTrustedForAutoContext(entity.metadata))
+          .filter(entity => isTrustedForAutoContext(entity.metadata))
           .slice(0, 5);
       }
+
+      // Where the last session in THIS project left off — it leads the block
+      // at every level (same renderer as `briefing`). Exact name, active, and
+      // through the same trust gate as every memory. A failed read is its own
+      // recorded error, not a failed assembly: the rest of the context ships.
+      let handoffRow;
+      try {
+        handoffRow = db.prepare(
+          `SELECT e.id, e.name, e.metadata, o.content, o.created_at
+           FROM entities e JOIN observations o ON o.entity_id = e.id
+           WHERE e.name = ? AND e.type = ? ${statusFilter}
+           ORDER BY o.id DESC
+           LIMIT 1`,
+        ).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE);
+        if (handoffRow && !isTrustedForAutoContext(handoffRow.metadata)) handoffRow = undefined;
+      } catch (err) {
+        handoffRow = undefined;
+        try { process.stderr.write(`[memesh session-start] session handoff: ${err?.message || err}\n`); } catch {}
+        recordHookOutcome(process.env, {
+          hook: 'session-start',
+          outcome: 'error',
+          reason: `handoff: ${hookErrorReason(err)}`,
+        });
+      }
+      const handoffBlock = handoffLines(
+        handoffRow ? { id: handoffRow.id, text: handoffRow.content, observedAt: handoffRow.created_at } : null,
+      );
 
       // Lesson count (queried for summary, not listed individually).
       // Status-column gate matches the project/recent queries above —
@@ -1347,6 +1377,7 @@ process.stdin.on('end', async () => {
         // recorded as its own `error` (a label, like the two below), and is
         // not a failed memory assembly: the rest of the context still ships.
         const stateLines = [
+          ...handoffBlock,
           ...briefingTaskStateLines(
             parseTaskState(parseEntityMetadata(taskRow?.metadata)),
             projectName,
@@ -1580,7 +1611,8 @@ process.stdin.on('end', async () => {
       // candidates cannot be credited as shown.
       try {
         const renderedEntityIds = renderedHandles(memoryLines);
-        const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities, ...indexEntities];
+        const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities, ...indexEntities,
+          ...(handoffBlock.length > 0 ? [handoffRow] : [])];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
         // A memory can appear in the ranked block AND the index; it was
         // injected once.

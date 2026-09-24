@@ -1,4 +1,8 @@
+import { parseSqliteUtcMs } from './time-utils.js';
 export const SESSION_HANDOFF_TYPE = 'session-handoff';
+export const HANDOFF_STALE_HOURS = 72;
+export const HANDOFF_MAX_AGE_DAYS = 14;
+export const HANDOFF_FUTURE_SKEW_MINUTES = 5;
 export const HANDOFF_MAX_CHARS = 800;
 export const HANDOFF_MIN_CHARS = 80;
 export const HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
@@ -72,5 +76,32 @@ export function lastAssistantText(jsonl) {
             return text;
     }
     return null;
+}
+function ageText(hours) {
+    if (hours < 1)
+        return 'less than an hour ago';
+    if (hours < 24) {
+        const h = Math.floor(hours);
+        return `${h} hour${h === 1 ? '' : 's'} ago`;
+    }
+    const d = Math.floor(hours / 24);
+    return `${d} day${d === 1 ? '' : 's'} ago`;
+}
+export function handoffLines(record, now = new Date()) {
+    if (!record || !record.text || !record.text.trim())
+        return [];
+    const then = typeof record.observedAt === 'string' ? parseSqliteUtcMs(record.observedAt) : null;
+    if (then === null)
+        return [];
+    const hours = (now.getTime() - then) / 3_600_000;
+    if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60)
+        return [];
+    const age = Math.max(0, hours);
+    if (age > HANDOFF_MAX_AGE_DAYS * 24)
+        return [];
+    const when = age > HANDOFF_STALE_HOURS
+        ? `${ageText(age)} — may be out of date; check it against the repository`
+        : ageText(age);
+    return [`Where the last session left off (${when}): [mem:${record.id}]`, ...record.text.trim().split('\n')];
 }
 //# sourceMappingURL=session-handoff.js.map

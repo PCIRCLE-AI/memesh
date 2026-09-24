@@ -1277,7 +1277,7 @@ program
         return;
       }
       console.log(result.text);
-      if (result.entityCount === 0 && !result.hasTaskState && result.index.shown === 0 && result.index.older === 0) {
+      if (result.entityCount === 0 && !result.hasTaskState && !result.hasHandoff && result.index.shown === 0 && result.index.older === 0) {
         // Outside the fence: a hint to the human, not memory content. Still
         // reachable here (unlike the branch above) — e.g. `standard`/`full`
         // on an empty graph, where the index's own empty-state line keeps

@@ -83,8 +83,8 @@
     },
     {
       "path": "scripts/hooks/_generated/session-handoff.js",
-      "sha256": "505c9189808c0cf985c76a7c5b828e17f9ed784a1441950f65cf26eb6e7046f3",
-      "bytes": 3013
+      "sha256": "b1211abbc486e3959ad4ac0138669b9112c6602833c699fd0a59e38a58d66cb7",
+      "bytes": 4242
     },
     {
       "path": "scripts/hooks/_generated/sqlite.js",
@@ -163,8 +163,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "1911938a2b3a837039ad85fccc4fc5bc897a8684e7a5c3e20b0e9d6ad9d38833",
-      "bytes": 94882
+      "sha256": "54987070feabc4ffa73ae984936a091220e1b7ee2e6ebc8e400d19d35c791e6d",
+      "bytes": 96466
     },
     {
       "path": "scripts/hooks/session-summary.js",

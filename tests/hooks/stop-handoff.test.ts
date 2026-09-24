@@ -307,7 +307,7 @@ describe('Stop hook: the session handoff', () => {
     expect(outcomes().at(-1)).toMatchObject({ outcome: 'wrote' });
   }, 30_000);
 
-  it('is not shown to a new session yet: not in the ranked block, the index or another project\'s view, and it takes no slot', () => {
+  it('a Stop\'s handoff leads the next session at every level — this project\'s only, and it takes no ranked slot', () => {
     // Order matters. Another project's handoff makes the database first; the
     // decision is created next; THIS project's handoff is written last, so it
     // has the highest id and wins every score tie. With a single slot, a
@@ -335,9 +335,13 @@ describe('Stop hook: the session handoff', () => {
       });
       expect(r.status, `session-start at ${level}`).toBe(0);
       const context = String(JSON.parse(r.stdout.trim()).hookSpecificOutput?.additionalContext ?? '');
-      expect(context, `the positive control is missing at ${level}, so this test proves nothing`).toContain('DECISION-MARKER');
-      expect(context).not.toContain('HANDOFF-MARKER');
-      expect(context).not.toContain('Where the last session left off');
+      // The single ranked slot still goes to the decision: the handoff is not
+      // a ranked memory, it leads the block on its own.
+      expect(context, `the decision lost its slot at ${level}`).toContain('DECISION-MARKER');
+      expect(context.split('Where the last session left off')).toHaveLength(2);
+      expect(context).toContain('HANDOFF-MARKER: the last session stopped right before the release step');
+      expect(context.indexOf('HANDOFF-MARKER'), 'the handoff does not lead').toBeLessThan(context.indexOf('DECISION-MARKER'));
+      expect(context, 'another project\'s handoff leaked in').not.toContain('BETA-HANDOFF-MARKER');
     }
   }, 120_000);
 
@@ -368,7 +372,8 @@ describe('Stop hook: the session handoff', () => {
     const out = JSON.parse(r.stdout.trim());
     const context = String(out.hookSpecificOutput?.additionalContext ?? '');
     for (let i = 1; i <= 5; i++) expect(context, `other decision ${i} was pushed out of the recent pool`).toContain(`OTHER-DECISION-${i}`);
-    expect(context).not.toContain('HANDOFF-MARKER');
+    expect(context).toContain('HANDOFF-MARKER: this project stopped');
+    expect(context, 'the other project\'s handoff leaked into the recent pool').not.toContain('BETA-HANDOFF-MARKER');
     expect(String(out.systemMessage ?? '')).toMatch(/5 recent/);
   }, 120_000);
 });
