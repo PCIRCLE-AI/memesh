@@ -13,5 +13,10 @@ export interface HandoffRecord {
     text: string;
     observedAt: string | null | undefined;
 }
+export type HandoffStatus = 'shown' | 'stale' | 'expired' | 'undatable' | 'future' | 'empty';
+export declare function handoffView(record: HandoffRecord | null | undefined, now?: Date): {
+    lines: string[];
+    status: HandoffStatus;
+};
 export declare function handoffLines(record: HandoffRecord | null | undefined, now?: Date): string[];
 //# sourceMappingURL=session-handoff.d.ts.map

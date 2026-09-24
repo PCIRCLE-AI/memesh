@@ -150,27 +150,47 @@ function ageText(hours: number): string {
   return `${d} day${d === 1 ? '' : 's'} ago`;
 }
 
+/** Why a handoff is, or is not, shown. Everything but `shown`/`stale` hides it. */
+export type HandoffStatus = 'shown' | 'stale' | 'expired' | 'undatable' | 'future' | 'empty';
+
 /**
- * The lines that lead a new session's context: where the last session in this
- * project left off, and how long ago. The ONE renderer both the SessionStart
- * hook and the `briefing` tool/CLI call, so they cannot disagree.
+ * The lines that lead a new session's context — where the last session in this
+ * project left off, and how long ago — plus the reason when there are none.
+ * The ONE renderer both the SessionStart hook and the `briefing` tool/CLI
+ * call, so they cannot disagree.
  *
- * Returns [] when there is nothing honest to show: no text, an age that cannot
- * be read, a timestamp more than HANDOFF_FUTURE_SKEW_MINUTES in the future, or
- * a handoff older than HANDOFF_MAX_AGE_DAYS. Past HANDOFF_STALE_HOURS the
- * header says it may be out of date. The header ends in `[mem:<id>]` so a
- * session that uses it can cite it like any other memory.
+ * The text goes through cleanHandoffText again, whoever wrote it: the Stop
+ * hook bounds what it stores, but a handoff written through `remember` is not
+ * bounded, and an unbounded one would take the whole block's budget.
+ *
+ * Hidden when there is nothing honest to show: no text, an age that cannot be
+ * read, a timestamp more than HANDOFF_FUTURE_SKEW_MINUTES in the future, or a
+ * handoff older than HANDOFF_MAX_AGE_DAYS. Past HANDOFF_STALE_HOURS the header
+ * says it may be out of date. The header ends in `[mem:<id>]` so a session
+ * that uses it can cite it like any other memory.
  */
-export function handoffLines(record: HandoffRecord | null | undefined, now: Date = new Date()): string[] {
-  if (!record || !record.text || !record.text.trim()) return [];
+export function handoffView(
+  record: HandoffRecord | null | undefined,
+  now: Date = new Date(),
+): { lines: string[]; status: HandoffStatus } {
+  const text = record ? cleanHandoffText(record.text ?? '') : '';
+  if (!record || !text) return { lines: [], status: 'empty' };
   const then = typeof record.observedAt === 'string' ? parseSqliteUtcMs(record.observedAt) : null;
-  if (then === null) return [];
+  if (then === null) return { lines: [], status: 'undatable' };
   const hours = (now.getTime() - then) / 3_600_000;
-  if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60) return [];
+  if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60) return { lines: [], status: 'future' };
   const age = Math.max(0, hours);
-  if (age > HANDOFF_MAX_AGE_DAYS * 24) return [];
-  const when = age > HANDOFF_STALE_HOURS
+  if (age > HANDOFF_MAX_AGE_DAYS * 24) return { lines: [], status: 'expired' };
+  const stale = age > HANDOFF_STALE_HOURS;
+  const when = stale
     ? `${ageText(age)} — may be out of date; check it against the repository`
     : ageText(age);
-  return [`Where the last session left off (${when}): [mem:${record.id}]`, ...record.text.trim().split('\n')];
+  return {
+    lines: [`Where the last session left off (${when}): [mem:${record.id}]`, ...text.split('\n')],
+    status: stale ? 'stale' : 'shown',
+  };
+}
+
+export function handoffLines(record: HandoffRecord | null | undefined, now: Date = new Date()): string[] {
+  return handoffView(record, now).lines;
 }

@@ -1825,10 +1825,10 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
     return id;
   }
-  function start(level: string) {
+  function start(level: string, extraEnv: Record<string, string> = {}) {
     const r = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
       input: JSON.stringify({ cwd, hook_event_name: 'SessionStart', source: 'startup' }),
-      env: { ...process.env, HOME: dir, USERPROFILE: dir, MEMESH_DB_PATH: dbFile, MEMESH_DIR: undefined, MEMESH_BRIEFING: level },
+      env: { ...process.env, HOME: dir, USERPROFILE: dir, MEMESH_DB_PATH: dbFile, MEMESH_DIR: undefined, MEMESH_BRIEFING: level, ...extraEnv },
       encoding: 'utf8', timeout: 20_000,
     });
     expect(r.status, r.stderr).toBe(0);
@@ -1874,6 +1874,103 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     const rec = JSON.parse(fs.readFileSync(path.join(sessionsDir, files[0]), 'utf8'));
     expect(rec.entityIds).toContain(id);
   });
+
+  it('shows no archived (forgotten) handoff', () => {
+    seed((db) => {
+      const id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'ARCHIVED-HANDOFF', `project:${project}`);
+      db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(id);
+      addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: kept.', `project:${project}`);
+    });
+    for (const level of ['minimal', 'full']) {
+      const { context } = start(level);
+      expect(context).not.toContain('ARCHIVED-HANDOFF');
+    }
+    expect(start('standard').context, 'the positive control is missing').toContain('DECISION-TEXT');
+  });
+
+  it('the banner is honest about a handoff: shown alone, missing, expired, or another project\'s', () => {
+    // Handoff only.
+    seed((db) => { addEntity(db, `session-handoff:${project}`, 'session-handoff', 'ONLY-HANDOFF', `project:${project}`); });
+    let out = start('minimal');
+    expect(out.context).toContain('ONLY-HANDOFF');
+    expect(out.banner).not.toMatch(/no memories/);
+    expect(out.banner).toContain('handoff from the last session');
+    // Expired: nothing is shown, and the banner says so; the record says why.
+    seed((db) => { db.prepare("UPDATE observations SET created_at = ? WHERE content = 'ONLY-HANDOFF'").run(sqliteAgo(15 * 24)); });
+    out = start('minimal');
+    expect(out.context).not.toContain('ONLY-HANDOFF');
+    expect(out.banner).toMatch(/no memories/);
+    const records = fs.readFileSync(path.join(dir, 'hook-outcomes.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    expect(records.filter((r) => r.hook === 'session-start').at(-1)?.reason).toMatch(/session handoff not shown \(expired\)/);
+    expect(records.filter((r) => r.hook === 'session-start').at(-1)?.reason).not.toContain('ONLY-HANDOFF');
+    // Another project's handoff only.
+    seed((db) => {
+      db.prepare("DELETE FROM entities WHERE type = 'session-handoff'").run();
+      addEntity(db, 'session-handoff:elsewhere~' + 'd'.repeat(32), 'session-handoff', 'FOREIGN-ONLY', 'project:elsewhere~' + 'd'.repeat(32));
+    });
+    out = start('full');
+    expect(out.context).not.toContain('FOREIGN-ONLY');
+    expect(out.banner).not.toContain('handoff from the last session');
+  });
+
+  it('does not credit a [mem:N] that appears inside the handoff\'s own text', () => {
+    // Ten decisions in the pool, eight shown per section: the oldest is a
+    // candidate that was never rendered, and the handoff's text cites it.
+    let oldestId = 0;
+    let handoffId = 0;
+    seed((db) => {
+      for (let i = 0; i < 10; i++) {
+        const id = addEntity(db, `pool-decision-${i}`, 'decision', `POOL-DECISION-${i}`, `project:${project}`);
+        if (i === 0) oldestId = id;
+      }
+      handoffId = addEntity(db, `session-handoff:${project}`, 'session-handoff', `We relied on the earlier decision [mem:${oldestId}]`, `project:${project}`);
+    });
+    const { context } = start('minimal', { MEMESH_SESSION_LIMIT: '10' });
+    expect(context, 'the cited decision was rendered after all, so this test proves nothing').not.toContain('POOL-DECISION-0\n');
+    expect(context.split('\n').some((l) => l.endsWith(`[mem:${oldestId}]`) && !l.includes('earlier decision'))).toBe(false);
+    const sessionsDir = path.join(dir, 'sessions');
+    const rec = JSON.parse(fs.readFileSync(path.join(sessionsDir, fs.readdirSync(sessionsDir).find((f) => f.endsWith('.json'))!), 'utf8'));
+    expect(rec.entityIds).toContain(handoffId);
+    expect(rec.entityIds).not.toContain(oldestId);
+  });
+
+  it('credits rendered memories exactly once, whatever the handoff\'s own text cites', () => {
+    const latestInjected = (): number[] => {
+      const sessionsDir = path.join(dir, 'sessions');
+      const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json'))
+        .map((f) => ({ f, t: fs.statSync(path.join(sessionsDir, f)).mtimeMs })).sort((a, b) => b.t - a.t);
+      return JSON.parse(fs.readFileSync(path.join(sessionsDir, files[0].f), 'utf8')).entityIds;
+    };
+    let shownId = 0; let hiddenId = 0; let handoffId = 0;
+    seed((db) => {
+      for (let i = 0; i < 10; i++) {
+        const id = addEntity(db, `cite-decision-${i}`, 'decision', `CITE-DECISION-${i}`, `project:${project}`);
+        if (i === 0) hiddenId = id;
+        if (i === 9) shownId = id;
+      }
+      handoffId = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'placeholder', `project:${project}`);
+    });
+    const setBody = (body: string) => seed((db) => { db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run(body, handoffId); });
+    const run = () => { start('minimal', { MEMESH_SESSION_LIMIT: '10' }); return latestInjected(); };
+
+    // The handoff cites itself: the header still credits it, once.
+    setBody(`We should keep this handoff [mem:${handoffId}]`);
+    expect(run().filter((id) => id === handoffId)).toHaveLength(1);
+    // It cites a memory that IS rendered: still credited once.
+    setBody(`Relied on the newest decision [mem:${shownId}]`);
+    expect(run().filter((id) => id === shownId)).toHaveLength(1);
+    // It cites a rendered memory twice: still once.
+    setBody(`first mention [mem:${shownId}]\nsecond mention [mem:${shownId}]`);
+    expect(run().filter((id) => id === shownId)).toHaveLength(1);
+    // It cites a pool memory that was never rendered, twice: never credited.
+    setBody(`hidden one [mem:${hiddenId}]\nand again [mem:${hiddenId}]`);
+    expect(run()).not.toContain(hiddenId);
+    // The handoff is not shown at all (expired): nothing is subtracted, the rendered memory counts.
+    seed((db) => { db.prepare('UPDATE observations SET content = ?, created_at = ? WHERE entity_id = ?').run(`[mem:${shownId}]`, sqliteAgo(15 * 24), handoffId); });
+    const expired = run();
+    expect(expired).toContain(shownId);
+    expect(expired).not.toContain(handoffId);
+  }, 60_000);
 
   it('shows no handoff that fails the trust gate', () => {
     seed((db) => {

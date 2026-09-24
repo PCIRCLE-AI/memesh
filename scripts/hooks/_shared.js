@@ -1337,6 +1337,37 @@ function pathMentionMatches(text, matchStart, matchEnd, editedPath) {
 export { truncateTitle } from './_generated/title.js';
 
 /**
+ * `localHandoff` (the Stop hook's session handoff only): the replacement just
+ * restated every word the entity holds with text this machine's agent wrote,
+ * so marks that described OLDER text no longer apply. An `import` stamps
+ * `trust: 'untrusted'` and `provenance.source: 'import'`, and without this the
+ * handoff stays hidden from every later session although each Stop rewrites
+ * it. Only those two marks change; every other key (forgotten_observation_hashes
+ * among them) is kept. Runs inside captureEntity's transaction, so a failure
+ * rolls the replacement back with it. A replacement that stored nothing —
+ * every new line filtered as forgotten — throws, which also rolls back: the
+ * old text stays, and it keeps its marks.
+ */
+function refreshLocalHandoffTrust(db, id, type, replace, written) {
+  if (type !== SESSION_HANDOFF_TYPE || !replace) throw new Error('localHandoff applies only to replacing a session handoff');
+  if (written === 0) throw new Error('the handoff replacement stored no text');
+  const raw = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(id)?.metadata;
+  const parsed = parseEntityMetadata(raw);
+  const corrupt = !parsed && raw != null;
+  if (corrupt) {
+    // Same healing, and the same trace, as the title path above: unparseable
+    // metadata holds nothing that can be kept, and left alone it would hide
+    // the handoff from every session.
+    try { process.stderr.write(`MeMesh: healed corrupted metadata for entity ${id}. Original value was unparseable; replaced with {}.\n`); } catch { /* stderr gone */ }
+  }
+  const meta = parsed ?? {};
+  let changed = corrupt;
+  if (meta.trust === 'untrusted') { delete meta.trust; changed = true; }
+  if (meta.provenance?.source === 'import') { meta.provenance = { source_host: 'claude-code' }; changed = true; }
+  if (changed) db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), id);
+}
+
+/**
  * Single owner of the hook-side entity write dance: upsert entity, append
  * observations + tags, and — critically — keep the contentless `entities_fts`
  * index in sync so the memory is recallable via the FTS keyword hot path.
@@ -1368,7 +1399,7 @@ export { truncateTitle } from './_generated/title.js';
  *   could not be resolved; `archived: true` if `replace` was requested on an
  *   entity `forget` archived — nothing was written, by design
  */
-export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false }) {
+export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false, localHandoff = false }) {
   // One transaction, because this function performs six writes that only
   // mean anything together: the entity row, its observations, its tags, and
   // the contentless-FTS delete + insert that make them findable.
@@ -1387,10 +1418,10 @@ export function captureEntity(db, { name, type, observations = [], tags = [], ti
   // could not be resolved. `observationsWritten` may be lower than
   // `observations.length`: an observation whose exact content is already on
   // the entity is not stored again (see the dedupe in captureEntityInner).
-  return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace }))();
+  return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff }))();
 }
 
-function captureEntityInner(db, { name, type, observations, tags, title, metadata, replace }) {
+function captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff }) {
   // source_host provenance: these hooks only ever run under Claude Code (they
   // are wired into ~/.claude/settings.json), so a hook-captured entity is by
   // definition a claude-code capture. Stamped only on the INSERT — an OR
@@ -1586,6 +1617,8 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
     ? (title ?? null)
     : ((title !== undefined && title !== previousTitle) ? title : previousTitle);
   insertFtsRow(db, id, name, allObsText, currentTitle);
+
+  if (localHandoff) refreshLocalHandoffTrust(db, id, type, replace, freshObservations.length);
 
   // `observationsWritten` is what actually landed, which is no longer the same
   // as `observations.length` once the dedupe above can drop rows. A caller

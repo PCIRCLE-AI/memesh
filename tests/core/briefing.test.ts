@@ -37,9 +37,9 @@ import { taskStateName } from '../../src/core/task-state.js';
 import { remember } from '../../src/core/operations.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
-import { TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
+import { DEFAULT_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
 import { getProjectName } from '../../src/core/paths.js';
-import { sessionHandoffName, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
+import { HANDOFF_MAX_CHARS, sessionHandoffName, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 // The hook-only work-package notice's literal text — single owner in
 // `_shared.js`, so this file never hardcodes a second copy to compare
@@ -1502,4 +1502,45 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
     expect(ranked).toContain('CROWD-DECISION survives');
     for (let i = 1; i <= 5; i++) expect(ranked, `other project decision ${i}`).toContain(`CROWD-OTHER-${i}`);
   }, 60_000);
+
+  it('a handoff written through remember is capped like one written by Stop, so ranked memories keep their room', () => {
+    vi.stubEnv('MEMESH_BRIEFING', 'standard');
+    for (let i = 1; i <= 5; i++) {
+      remember({ name: `room-decision-${i}`, type: 'decision', title: `ROOM-DECISION-${i}`, observations: ['kept'], tags: [`project:${PROJECT}`] });
+    }
+    remember({
+      name: sessionHandoffName(PROJECT), type: SESSION_HANDOFF_TYPE,
+      observations: [`${'long remembered filler line. '.repeat(300)}\nHANDOFF-END: next, run the migration.`], tags: [`project:${PROJECT}`],
+    });
+    const result = assembleBriefing(PROJECT);
+    expect(result.hasHandoff).toBe(true);
+    expect(result.text).toContain('HANDOFF-END: next, run the migration.');
+    for (let i = 1; i <= 5; i++) expect(result.text, `decision ${i} lost its room`).toContain(`ROOM-DECISION-${i}`);
+    const block = result.text.slice(result.text.indexOf(HEADER));
+    const handoffText = block.slice(block.indexOf('\n') + 1, block.indexOf('\n\n'));
+    expect(handoffText.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
+  });
+
+  it.each(['minimal', 'standard'])('at %s the whole memory block stays within its budget with an oversized remembered handoff', (level) => {
+    vi.stubEnv('MEMESH_BRIEFING', level);
+    for (let i = 1; i <= 30; i++) {
+      remember({ name: `budget-decision-${i}`, type: 'decision', title: `Budget decision ${i} with a reasonably long title to use space`, observations: ['x'.repeat(150)], tags: [`project:${PROJECT}`] });
+    }
+    remember({ name: sessionHandoffName(PROJECT), type: SESSION_HANDOFF_TYPE, observations: ['y'.repeat(9_000)], tags: [`project:${PROJECT}`] });
+    const result = assembleBriefing(PROJECT);
+    expect(result.hasHandoff).toBe(true);
+    const inner = result.text.slice(result.text.indexOf('\n', result.text.indexOf('```')) + 1, result.text.lastIndexOf('\n```'));
+    const ranked = inner.split('Index of durable memories')[0];
+    expect(ranked.length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
+    expect(result.entityCount, 'the handoff took all the room').toBeGreaterThan(0);
+  });
+
+  it('counts ranked memories only: list-shaped lines inside the handoff are not entities', () => {
+    seed();
+    const without = assembleBriefing(PROJECT).entityCount;
+    seedHandoff(PROJECT, '- [x] parser tests\n- [ ] open the PR\n- [decision] something that looks ranked [mem:1]');
+    const result = assembleBriefing(PROJECT);
+    expect(result.hasHandoff).toBe(true);
+    expect(result.entityCount).toBe(without);
+  });
 });

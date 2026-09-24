@@ -5,6 +5,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -376,4 +377,108 @@ describe('Stop hook: the session handoff', () => {
     expect(context, 'the other project\'s handoff leaked into the recent pool').not.toContain('BETA-HANDOFF-MARKER');
     expect(String(out.systemMessage ?? '')).toMatch(/5 recent/);
   }, 120_000);
+
+  describe('a handoff that came in through an import (#434 step 2, trust)', () => {
+    const IMPORT_MARKS = { trust: 'untrusted', provenance: { source: 'import', imported_at: '2026-09-20T00:00:00Z' } };
+    function start(level = 'standard') {
+      const r = spawnSync('node', [START_HOOK], {
+        input: JSON.stringify({ cwd, hook_event_name: 'SessionStart', source: 'startup' }),
+        env: childEnv({ MEMESH_BRIEFING: level }), encoding: 'utf8', timeout: 20_000,
+      });
+      expect(r.status).toBe(0);
+      return String(JSON.parse(r.stdout.trim()).hookSpecificOutput?.additionalContext ?? '');
+    }
+    function metadata(): Record<string, unknown> {
+      const db = new MemeshDatabase(dbPath());
+      try {
+        return JSON.parse((db.prepare('SELECT metadata FROM entities WHERE name = ?').get(entityName) as { metadata: string }).metadata);
+      } finally { db.close(); }
+    }
+    /** A handoff as `memesh import` leaves it: imported text, import marks, plus a key that must survive. */
+    function seedImported(extra: Record<string, unknown> = {}) {
+      runStop({ last_assistant_message: 'IMPORTED-OLD-TEXT: this came from another machine and must not be shown as this session\'s handoff.' });
+      const db = new MemeshDatabase(dbPath());
+      db.prepare('UPDATE entities SET metadata = ? WHERE name = ?').run(JSON.stringify({ ...IMPORT_MARKS, ...extra }), entityName);
+      db.close();
+    }
+    function sessionStartRecords() {
+      return fs.readFileSync(path.join(home, '.memesh', 'hook-outcomes.jsonl'), 'utf8').split('\n').filter(Boolean)
+        .map((l) => JSON.parse(l)).filter((r) => r.hook === 'session-start');
+    }
+
+    it('stays hidden, says why, and shows again once a real local Stop replaces it', () => {
+      seedImported({ forgotten_observation_hashes: ['keep-me'] });
+      const before = start();
+      expect(before).not.toContain('IMPORTED-OLD-TEXT');
+      expect(sessionStartRecords().at(-1)?.reason).toMatch(/session handoff not shown \(untrusted\)/);
+
+      const fresh = 'LOCAL-NEW-TEXT: the local session finished the importer and the next step is the staging dry run.';
+      runStop({ last_assistant_message: fresh });
+      const meta = metadata();
+      expect(meta.trust).toBeUndefined();
+      expect(meta.provenance).toEqual({ source_host: 'claude-code' });
+      expect(meta.forgotten_observation_hashes, 'other keys must survive the refresh').toEqual(['keep-me']);
+      const after = start();
+      expect(after).toContain('LOCAL-NEW-TEXT');
+      expect(after).not.toContain('IMPORTED-OLD-TEXT');
+    }, 90_000);
+
+    it('is not healed by a Stop that stores nothing (too short, capture off, archived)', () => {
+      seedImported();
+      runStop({ last_assistant_message: 'Done.' });
+      runStop({ last_assistant_message: 'A long enough message that auto-capture being off must still refuse to store anywhere.' }, { MEMESH_AUTO_CAPTURE: 'false' });
+      expect(metadata()).toMatchObject(IMPORT_MARKS);
+      expect(start()).not.toContain('Where the last session left off');
+
+      const db = new MemeshDatabase(dbPath());
+      db.prepare("UPDATE entities SET status = 'archived' WHERE name = ?").run(entityName);
+      db.close();
+      runStop({ last_assistant_message: 'Another long message; the archived handoff must be left exactly as forget left it.' });
+      expect(metadata()).toMatchObject(IMPORT_MARKS);
+    }, 90_000);
+
+    it('rolls the replacement back, marks included, when every new line was forgotten', () => {
+      const fresh = 'FORGOTTEN-TEXT: the user removed exactly this line before, so it must never come back.';
+      seedImported({ forgotten_observation_hashes: [createHash('sha256').update(fresh).digest('hex')] });
+      const snapshot = () => {
+        const db = new MemeshDatabase(dbPath());
+        try {
+          const row = db.prepare('SELECT id, metadata FROM entities WHERE name = ?').get(entityName) as { id: number; metadata: string };
+          const fts = (term: string) => (db.prepare('SELECT rowid FROM entities_fts WHERE entities_fts MATCH ?').all(term) as Array<{ rowid: number }>).map((r) => r.rowid);
+          return { ...handoffRows(), metadata: row.metadata, ftsOld: fts('IMPORTED'), ftsNew: fts('FORGOTTEN') };
+        } finally { db.close(); }
+      };
+      const before = snapshot();
+      expect(before.ftsOld, 'the old text is not searchable before the Stop, so this proves nothing').not.toHaveLength(0);
+      runStop({ last_assistant_message: fresh });
+      expect(outcomes().at(-1)).toMatchObject({ outcome: 'error' });
+      expect(outcomes().at(-1)?.outcome).not.toBe('wrote');
+      const after = snapshot();
+      expect(after.observations).toEqual(before.observations);
+      expect([...after.tags].sort()).toEqual([...before.tags].sort());
+      expect(after.metadata).toBe(before.metadata);
+      expect(after.ftsOld).toEqual(before.ftsOld);
+      expect(after.ftsNew).toEqual([]);
+    }, 60_000);
+
+    it('survives a real export and import into a fresh home, then a local Stop shows it', () => {
+      runStop({ last_assistant_message: 'EXPORTED-TEXT: written on the first machine before the move, with a next step at the end.' });
+      const bundle = path.join(home, 'bundle.json');
+      const cli = path.resolve('dist/transports/cli/cli.js');
+      const exp = spawnSync('node', [cli, 'export', '--out', bundle], { env: childEnv(), encoding: 'utf8', timeout: 30_000 });
+      expect(exp.status, exp.stderr).toBe(0);
+
+      fs.rmSync(path.join(home, '.memesh'), { recursive: true, force: true });
+      fs.mkdirSync(path.join(home, '.memesh'), { recursive: true });
+      const imp = spawnSync('node', [cli, 'import', bundle], { env: childEnv(), encoding: 'utf8', timeout: 30_000 });
+      expect(imp.status, imp.stderr).toBe(0);
+      expect(metadata()).toMatchObject({ trust: 'untrusted' });
+      expect(start(), 'imported text must not be injected').not.toContain('EXPORTED-TEXT');
+
+      runStop({ last_assistant_message: 'AFTER-MOVE-TEXT: the first session on the new machine, with its own next step at the end.' });
+      const shown = start();
+      expect(shown).toContain('AFTER-MOVE-TEXT');
+      expect(shown).not.toContain('EXPORTED-TEXT');
+    }, 120_000);
+  });
 });

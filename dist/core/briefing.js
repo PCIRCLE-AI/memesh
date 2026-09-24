@@ -111,16 +111,14 @@ export function assembleBriefing(project, recipient) {
     const everSeen = inboxRecipient !== undefined && unreadCount === 0
         ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
         : undefined;
-    const handoffRow = db.prepare(`SELECT e.id, e.metadata, o.content, o.created_at
+    const handoffRow = db.prepare(`SELECT e.id, e.metadata, o.content AS text, o.created_at AS observedAt
      FROM entities e JOIN observations o ON o.entity_id = e.id
      WHERE e.name = ? AND e.type = ? AND e.status = 'active'
      ORDER BY o.id DESC
      LIMIT 1`).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE);
     const handoffMeta = handoffRow ? parseMetadata(handoffRow.metadata) : null;
     const handoffTrusted = !!handoffRow && (handoffRow.metadata === null || handoffMeta !== null) && isAutoInjectable(handoffMeta);
-    const handoff = handoffTrusted
-        ? handoffLines({ id: handoffRow.id, text: handoffRow.content, observedAt: handoffRow.created_at })
-        : [];
+    const handoff = handoffTrusted ? handoffLines(handoffRow) : [];
     const stateLines = [
         ...handoff,
         ...taskLines,
@@ -184,7 +182,7 @@ export function assembleBriefing(project, recipient) {
     return {
         project: projectName,
         text: empty ? '' : buildReferenceContext(block),
-        entityCount: lines.filter((l) => l.startsWith('- [')).length,
+        entityCount: lines.slice(stateLines.length).filter((l) => l.startsWith('- [')).length,
         hasTaskState: taskLines.length > 0,
         hasHandoff: handoff.length > 0,
         index,

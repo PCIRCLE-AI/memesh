@@ -74,7 +74,7 @@ import {
   INDEX_EXCLUDED_TYPES,
   INDEX_SNIPPET_FETCH_CHARS,
 } from './_generated/briefing-index.js';
-import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './_generated/session-handoff.js';
+import { handoffView, SESSION_HANDOFF_TYPE, sessionHandoffName } from './_generated/session-handoff.js';
 
 const require = createRequire(import.meta.url);
 
@@ -1216,16 +1216,23 @@ process.stdin.on('end', async () => {
       // at every level (same renderer as `briefing`). Exact name, active, and
       // through the same trust gate as every memory. A failed read is its own
       // recorded error, not a failed assembly: the rest of the context ships.
+      // `handoffHidden` names why an existing handoff is not shown (a bounded
+      // label, never its text), so session-start's own record can say so
+      // instead of reporting an empty project.
       let handoffRow;
+      let handoffHidden = null;
       try {
         handoffRow = db.prepare(
-          `SELECT e.id, e.name, e.metadata, o.content, o.created_at
+          `SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
            FROM entities e JOIN observations o ON o.entity_id = e.id
            WHERE e.name = ? AND e.type = ? ${statusFilter}
            ORDER BY o.id DESC
            LIMIT 1`,
         ).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE);
-        if (handoffRow && !isTrustedForAutoContext(handoffRow.metadata)) handoffRow = undefined;
+        if (handoffRow && !isTrustedForAutoContext(handoffRow.metadata)) {
+          handoffRow = undefined;
+          handoffHidden = 'untrusted';
+        }
       } catch (err) {
         handoffRow = undefined;
         try { process.stderr.write(`[memesh session-start] session handoff: ${err?.message || err}\n`); } catch {}
@@ -1235,9 +1242,9 @@ process.stdin.on('end', async () => {
           reason: `handoff: ${hookErrorReason(err)}`,
         });
       }
-      const handoffBlock = handoffLines(
-        handoffRow ? { id: handoffRow.id, text: handoffRow.content, observedAt: handoffRow.created_at } : null,
-      );
+      const handoffShown = handoffView(handoffRow);
+      const handoffBlock = handoffShown.lines;
+      if (handoffRow && handoffBlock.length === 0) handoffHidden = handoffShown.status;
 
       // Lesson count (queried for summary, not listed individually).
       // Status-column gate matches the project/recent queries above —
@@ -1279,10 +1286,11 @@ process.stdin.on('end', async () => {
       if (recentCount > 0) memoryFragments.push(`${recentCount} recent`);
 
       let summary;
-      if (memoryFragments.length === 0 && lessonCount === 0) {
+      if (memoryFragments.length === 0 && lessonCount === 0 && handoffBlock.length === 0) {
         summary = `◉ MeMesh ready · no memories for "${projectLabel(projectName)}" yet`;
       } else {
         const parts = ['◉ MeMesh'];
+        if (handoffBlock.length > 0) parts.push('handoff from the last session');
         if (memoryFragments.length > 0) {
           parts.push(`${memoryFragments.join(' + ')} memories`);
         }
@@ -1610,7 +1618,14 @@ process.stdin.on('end', async () => {
       // derived from rendered citation handles, so clipped or budgeted-away
       // candidates cannot be credited as shown.
       try {
+        // The handoff's text is the agent's own last message: a `[mem:N]` at
+        // the end of one of its lines is a citation it wrote, not a memory
+        // this hook rendered. One occurrence is removed per such line.
         const renderedEntityIds = renderedHandles(memoryLines);
+        for (const id of renderedHandles(handoffBlock.slice(1))) {
+          const at = renderedEntityIds.indexOf(id);
+          if (at >= 0) renderedEntityIds.splice(at, 1);
+        }
         const poolEntities = [...topLessons, ...projectEntities, ...globalEntities, ...recentEntities, ...indexEntities,
           ...(handoffBlock.length > 0 ? [handoffRow] : [])];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
@@ -1732,8 +1747,12 @@ process.stdin.on('end', async () => {
         // that failure has its own error record, and an empty result it
         // caused must not also be reported as an empty project.
         !memoryContext && !memoryAssemblyFailed
-          ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'no project content, no repository state, index excluded') }
-          : null,
+          ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, handoffHidden
+            ? `session handoff not shown (${handoffHidden}); no other project content, no repository state, index excluded`
+            : 'no project content, no repository state, index excluded') }
+          : handoffHidden
+            ? { outcome: 'notified', reason: `session handoff not shown (${handoffHidden})`, entity: memoryContext ? 'session-start-context' : 'session-start-banner' }
+            : null,
       );
       if (updateConsentContext) {
         finalizeUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion);
@@ -1877,7 +1896,7 @@ function output(text, memoryContext = undefined, recorded = null) {
   }
   console.log(JSON.stringify(payload));
   recordHookOutcome(process.env, recorded
-    ? { hook: 'session-start', outcome: recorded.outcome, reason: recorded.reason }
+    ? { hook: 'session-start', outcome: recorded.outcome, reason: recorded.reason, ...(recorded.entity ? { entity: recorded.entity } : {}) }
     : {
       hook: 'session-start',
       outcome: 'notified',

@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   cleanHandoffText,
   handoffLines,
+  handoffView,
   HANDOFF_FUTURE_SKEW_MINUTES,
   HANDOFF_MAX_AGE_DAYS,
   HANDOFF_MAX_CHARS,
@@ -208,5 +209,27 @@ describe('handoffLines (the one renderer both surfaces use)', () => {
     }
     expect(handoffLines({ id: 1, text: '   ', observedAt: sqlite(HOUR) }, NOW)).toEqual([]);
     expect(handoffLines(null, NOW)).toEqual([]);
+  });
+});
+
+describe('handoffView: the reason a handoff is hidden', () => {
+  const NOW = new Date('2026-09-24T12:00:00Z');
+  const at = (msAgo: number) => new Date(NOW.getTime() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
+  const HOUR = 3_600_000;
+  it('names each outcome', () => {
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(HOUR) }, NOW).status).toBe('shown');
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(80 * HOUR) }, NOW).status).toBe('stale');
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(15 * 24 * HOUR) }, NOW)).toEqual({ lines: [], status: 'expired' });
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: 'soon' }, NOW)).toEqual({ lines: [], status: 'undatable' });
+    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(-HOUR) }, NOW)).toEqual({ lines: [], status: 'future' });
+    expect(handoffView({ id: 1, text: '```\nonly code\n```', observedAt: at(HOUR) }, NOW)).toEqual({ lines: [], status: 'empty' });
+    expect(handoffView(null, NOW)).toEqual({ lines: [], status: 'empty' });
+  });
+
+  it('bounds the text whoever wrote it, keeping the end', () => {
+    const view = handoffView({ id: 1, text: `${'x '.repeat(5000)}\nNEXT: the last line survives.`, observedAt: at(HOUR) }, NOW);
+    const body = view.lines.slice(1).join('\n');
+    expect(body.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
+    expect(body.endsWith('NEXT: the last line survives.')).toBe(true);
   });
 });
