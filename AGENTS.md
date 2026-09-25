@@ -8,48 +8,36 @@ host is recallable from all of them. Not installed yet? Follow
 ## The loop that pays for itself
 
 1. **Session start — load, don't re-explore.** Call the `briefing` tool once
-   (CLI: `memesh briefing`). It returns the assembled work topology for the
-   current project: an eligible handoff precedes ranked memories at every level
-   (repository facts may come first); decisions, lessons, knowledge and recent activity are
-   always included; the stated goal / next / blocked / done and the capped
-   durable-memory index (`memesh briefing --index` prints just that, one
-   line each with its `[mem:id]` handle) are added at `standard` and up —
-   not at the default, `minimal`. How much is assembled depends on the
-   `briefing` setting — `minimal` (**default**: this project only:
-   decisions, lessons, knowledge, recent activity, with the repository state
-   in front whenever anything else is injected — nothing else), `standard`
-   (+ the task state when fresh, + the durable-memory index), `full` (+ global
-   memory + other projects' recent activity, the pre-#360 memory-block
-   behaviour — except when the task state itself is stale or of unknown
-   age, where the one-line replacement below applies at `full` too) — set
-   with `memesh config set briefing <level>`. The SessionStart hook
-   additionally appends a work-package notice at `full` (see below); that
-   notice is a host-agent instruction, not memory, and this tool never
-   includes it, at any level. A
-   goal/next/blocked/done stated more than 72 hours ago, or whose timestamp
-   is missing/unreadable/implausibly future-dated, is not injected as
-   current at any level — only one line saying so and how to see it
-   (`memesh task`). Only `minimal` can be fully silent: when the project has
-   no eligible handoff, ranked memories, stale-state flag or unread message (a fresh
-   task state may exist — `minimal` does not show it — and there is no
-   index to fall back to), nothing is injected at all, the repository state
-   included — no empty framing; `standard`/`full` still show the index's
-   own "no durable memories yet" line even then, because that line is
-   itself informative. The index is a recent
-   window, not everything: it holds at most 40 lines / 3072 bytes, memories
-   untouched for 180 days collapse into a single count line with no
-   `[mem:id]`, and whatever else is cut past those caps becomes an
-   `N more — memesh recall --tag "project:…"` line, also with no
-   `[mem:id]`. Treat the index as "recent, capped" — when it says there is
-   more, call `recall` rather than assuming the index already covers it.
-   Read the index instead of re-reading the repo to reconstruct context.
-   Recent project decisions take priority over routine activity, and up to
-   five project lessons are selected separately. The handoff, displayed task
-   state, ranked memories, global memory at `full`, and injected index share
-   one 4000-character memory-block limit. The standalone `--index` output
-   keeps its own 40-line / 3072-byte caps, so it can list more than the index
-   inside a crowded briefing. Use `recall` for omitted memories; `memesh task`
-   shows the complete stored task state when its displayed lines are shortened.
+   (CLI: `memesh briefing`) unless your host already injected the MeMesh
+   memory block (Claude Code does, and so does the Codex plugin once Codex
+   runs its hooks; see below).
+   It returns the current project's work topology; read it instead of
+   re-reading the repository to reconstruct context. The project's latest
+   eligible handoff comes first, after optional repository facts: check its
+   age and verify its claims against the files before acting on it. The rest
+   depends on the `briefing` setting (`memesh config set briefing <level>`):
+   - `minimal` (**default**): this project only — its decisions, lessons,
+     knowledge and recent activity, with the repository state in front
+     whenever anything else is shown. No task state, no index, nothing from
+     other projects. A project with nothing to show injects nothing at all.
+   - `standard`: adds the stated goal / next / blocked / done when fresh, and
+     a capped index of durable memories with `[mem:id]` handles
+     (`memesh briefing --index` prints just the index).
+   - `full`: adds other projects' recent activity and global memory. The
+     SessionStart hook also appends a work-package notice at `full`; that
+     notice is an instruction to the host agent, not memory, and `briefing`
+     never includes it.
+
+   A task state stated more than 72 hours ago, or with a missing or
+   implausible timestamp, is never shown as current at any level — only one
+   line pointing at `memesh task`. Recent project decisions take priority
+   over routine activity, and up to five project lessons are selected
+   separately. The handoff, task state, ranked memories, global memory and
+   injected index share one 4000-character limit (repository facts are
+   extra), so a crowded block shows fewer index lines than
+   `memesh briefing --index`, which has its own 40-line / 3072-byte caps.
+   The index is a recent, capped window: when it says there is more, call
+   `recall` instead of assuming it is complete.
 2. **When the user states a goal, a next step, or a blocker — record it.**
    Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`).
    Fresh state is injected at the start of the next session at
@@ -65,8 +53,9 @@ host is recallable from all of them. Not installed yet? Follow
      field out if it was not said.
 3. **"What do you remember?"** — call `briefing` and relay its content. Do
    not answer from your own conversation context.
-4. **When memory could be condensed from a calendar cluster or a recent Claude Code session** —
-   when the host supports interactive prompts, offer concise choices in the
+4. **When the SessionStart work-package notice appears (level `full`), or the
+   user asks to condense memory** — when the host supports interactive
+   prompts, offer concise choices in the
    user's conversation language, such as **Dispatch agent task**, **Later**, or
    **Don't suggest again this session**.
    The last choice suppresses only this session's prompt; it does not create a
@@ -98,7 +87,7 @@ host is recallable from all of them. Not installed yet? Follow
 |---|---|
 | `work_package` | Prepare one bounded untrusted digest (calendar-selected) or transcript package from the newest Claude Code session under the client's single matching MCP workspace root; submit one strictly validated result for pending human review or defer without durable change. Submission retains bounded redacted source turns for comparison; agents cannot apply or reject, and hashes identify freshness and workspace scope rather than authentication. |
 | `remember` | Store knowledge as an entity with observations, tags, and relations; or pass only `note` (free text) and the title, observations and name are derived; `replace: true` rewrites a named memory, keeping the old version as history |
-| `recall` | Search stored knowledge (words are OR-ed, ranked by relevance); empty query lists recent |
+| `recall` | Search stored knowledge: one or two words match any of them; three or more must all match, falling back to any-word matching only when nothing matches all; ranked by relevance. Empty query lists recent |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |
 | `export` | Export memories as portable JSON for sharing or backup |
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
@@ -115,6 +104,14 @@ host is recallable from all of them. Not installed yet? Follow
   each following paragraph → one observation, name derived from the text
   (the same text twice is one memory). Optional `type` (default `note`),
   `tags`, `name`. The response echoes the derived shape under `derived`.
+- **Tag project work with the exact project id.** Use `project:<id>`, where
+  `<id>` is the `project` field of the `briefing` result (CLI:
+  `memesh briefing --json`). The injected block shows only the readable name;
+  a tag with the plain repository name is a different scope that this
+  project's sessions never see.
+- **A mistake with a known cause and fix is a `learn` call** (it creates a
+  `lesson_learned`, which later sessions show as a lesson). A choice between
+  options is a `remember` with type `decision`.
 - **Reuse a stable `name` to append.** Calling `remember` with an existing
   name appends observations and dedupes tags. A fresh name for every update
   creates duplicates that recall must wade through.
@@ -142,11 +139,15 @@ host is recallable from all of them. Not installed yet? Follow
   without it** — never fabricate a memory, and never cite a `[mem:id]`
   handle that was not actually shown to you. A wrong "remembered" fact is
   worse than no memory: it arrives wearing the authority of the graph.
-- Recall windows are bounded (the `limit` parameter, 30 by default), so do
+- Recall windows are bounded (the `limit` parameter, 20 by default), so do
   not infer graph-wide counts or "there is no memory about X" from the
   number of hits one query returns. Absence of results is absence of
   results, not evidence of absence — vary the wording or narrow by tag
   before concluding anything.
+- When an injected or recalled memory actually changes what you do, cite it
+  once as `[mem:id]` in the sentence it affected. Do not cite memories you
+  only read past. Under Claude Code the Stop hook counts these citations,
+  which is how MeMesh learns which memories are worth their tokens.
 - Every recall answer carries a `retrieval` block that says how it was
   produced — read it instead of guessing: `truncated: true` means the
   window filled and more may exist. Recall is local FTS5 search; do not
@@ -196,11 +197,14 @@ fully manual, and it is worth running.
 
 Codex CLI can be either. Wired only as an MCP server it has no hooks, so call
 `briefing` yourself. Installed as a plugin
-(`codex plugin add memesh@pcircle-memesh`) it wires the MCP server and the
-separate SessionStart companion. On macOS or Linux, an eligible ordinary Codex
-CLI startup or resume registers that exact active thread for native delivery.
-The companion does not run Claude Code's eight capture/recall hooks or prove
-that topology was injected. Do not assume Codex Desktop or an unattached task
-registered; confirm the exact live session with `message discover`.
+(`codex plugin add memesh@pcircle-memesh`) it loads the same hook file; once
+Codex is allowed to run the plugin's hooks, its SessionStart hook injects the
+same memory block, so do not call `briefing`
+again at session start unless that block is missing. On macOS or Linux, an
+eligible ordinary Codex CLI startup or resume also registers that exact
+active thread for native delivery. Do not assume the capture hooks run
+there: record decisions, lessons and task state yourself as usual. Do not
+assume Codex Desktop or an unattached task registered; confirm the exact live
+session with `message discover`.
 `memesh doctor` reports installation and local integration health, but it does
 not prove host acceptance or model-visible delivery.

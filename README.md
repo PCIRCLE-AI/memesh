@@ -62,7 +62,7 @@ MeMesh lets agents share memory and exchange messages locally. Its main uses are
 | Your own scripts and apps | HTTP API from `memesh serve` | [docs/platforms/universal.md](docs/platforms/universal.md) |
 | ChatGPT, Gemini web and other hosted chat | HTTP API through a local bridge you run | [docs/platforms/README.md](docs/platforms/README.md) |
 
-Claude Code's eight hooks provide automatic capture, recall, reminders, and safeguards. The Codex plugin wires its SessionStart companion and MCP tools for eligible ordinary CLI threads; it does not provide Claude Code's full capture hook set or automatically load a briefing. In Codex, including with the plugin, and in MCP-only clients, call `briefing` at session start and `recall` for specific questions.
+Claude Code's eight hooks provide automatic capture, recall, reminders, and safeguards. The Codex plugin loads the same hook file: once Codex is allowed to run the plugin's hooks, its SessionStart hook injects the same memory block, and it starts the messaging companion for eligible ordinary CLI threads. Which of the other hooks fire under Codex is not yet verified. With the Codex plugin, call `briefing` only when that block is missing; in MCP-only clients, call `briefing` at session start. Use `recall` for specific questions.
 
 Recall and capture are local and deterministic: SQLite FTS5 search, explicit memory tools, and rule-based hooks. This version does not configure or call an LLM, embedding, or vector provider. Retired provider settings from older versions stay on disk but are ignored; `memesh doctor` names the top-level keys without reading or printing their values.
 

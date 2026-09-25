@@ -80,6 +80,7 @@ import {
   boundTaskStateLines,
   DECISION_LAYER_TYPES,
   joinedLength,
+  LESSON_TYPE_LIST,
   prioritizeDecisions,
 } from './_generated/work-topology.js';
 
@@ -1302,13 +1303,13 @@ process.stdin.on('end', async () => {
           SELECT DISTINCT e.id, e.name, e.type,${hasTitle ? ' e.title,' : ''} e.metadata
           FROM entities e
           JOIN tags t ON t.entity_id = e.id
-          WHERE e.type = 'lesson_learned'
+          WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')})
             ${hasStatus ? "AND e.status = 'active'" : ''}
             ${colNames.has('namespace') ? "AND (e.namespace IS NULL OR e.namespace <> 'global')" : ''}
             AND t.tag = ?
           ORDER BY e.id DESC
           LIMIT 50
-        `).all(projectTag).filter(entity => isTrustedForAutoContext(entity.metadata));
+        `).all(...LESSON_TYPE_LIST, projectTag).filter(entity => isTrustedForAutoContext(entity.metadata));
         lessonCount = lessonRows.length;
         lessonEntities = lessonRows;
       } catch (err) {

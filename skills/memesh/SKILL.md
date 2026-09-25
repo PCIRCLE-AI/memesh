@@ -42,7 +42,75 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 
 ## The Loop
 
-Four moments. Everything else in this file is detail.
+Five moments. Everything else in this file is detail.
+
+**SESSION START → load the briefing (once).**
+Call the `briefing` MCP tool or run `memesh briefing`. An eligible handoff from
+the same project appears ahead of ranked memories at every level, after optional
+repository facts; check its age and verify its
+claims before acting. The rest of the work topology covers decisions and direction, lessons not to repeat,
+what is known, and recent activity always; where the work was left off (goal /
+next / blocked / done) too at `standard`/`full` (not at the `briefing`
+setting's default, `minimal`).
+One call is cheaper than re-exploring the repo to reconstruct the same picture.
+`memesh briefing --index` returns only the index of durable memories — what is
+known here, one line each, without the ranked sections. Recent project decisions
+take priority over routine activity, and up to five project lessons are selected
+separately. The handoff, displayed task state, ranked memories, global memory at
+`full`, and injected index share a 4000-character memory-block limit. The
+standalone index keeps its own 40-line / 3072-byte caps and can show more than
+the index inside a crowded briefing; use `recall` for omitted memories and
+`memesh task` for the complete stored task state.
+Generic briefing does not report unread durable messages: it has no recipient
+identity. The session-start hook and each prompt do report them, but only when
+the session declared who it is by starting with `MEMESH_RECIPIENT=<id>`. If you
+already know the exact logical recipient, pass `recipient` with `project` (MCP) or use
+`memesh briefing --project <name> --recipient <id>`. The scoped line names the
+project and recipient and directs you to `message poll` first, then `message
+fetch` each returned `message_id`, then record `intake` for it (the session-start
+and prompt reminders can repeat until you do; fetching alone does not acknowledge).
+Length-limited briefing reminders can omit some project notices; the messages
+remain pending. For a known inbox, poll with its exact project and recipient.
+When shown at zero unread, it also says so explicitly if that exact recipient id has never been
+seen in this project at all — treat that as a probable typo in `--recipient`,
+not as an empty, healthy inbox.
+Exception: when a MeMesh session-start hook has already injected this block
+(Claude Code; the Codex plugin once Codex runs its hooks), do not call it again unless the block is
+missing from your context (see "What's Already Automatic").
+
+**USER STATES a goal, next step, or blocker → record it immediately.**
+```bash
+memesh task --goal "Ship the work-topology injection" --next "Open the PR once CI is green"
+memesh task --blocked "Waiting on the Windows runner"
+memesh task --blocked ""      # blocker resolved — empty string clears the field
+```
+Fields: `--goal` `--next` `--blocked` `--done` (MCP tool: `task_state`).
+Record ONLY what the user actually said. Fresh state is injected at the top
+of the next session at `standard`/`full` and read as fact — a goal you
+guessed from which files were edited reaches that session with nothing to
+correct it; the default, `minimal`, never shows a fresh state
+(`memesh config set briefing standard` turns it on), but a stale or
+unknown-age one still gets a one-line flag at every level. If it was not
+said, leave the field out.
+
+**SESSION END or milestone → make the task state match reality.**
+`memesh task` (no flags) always shows the complete stored state — not
+necessarily what the next session will be told, which depends on freshness
+and the `briefing` level. If "next" is now done, record what is actually
+next; if the blocker cleared, clear it.
+
+**USER ASKS "what do you remember / where were we" → briefing, then relay.**
+Run `memesh briefing` (or `--project <name>`) and answer from it. For specific
+follow-up questions, use `recall`.
+
+**MEMESH UNAVAILABLE or RECALL EMPTY → say so, never invent.** Report that
+memory is unavailable (or found nothing) and continue without it. Never
+fabricate a memory or cite a `[mem:id]` that was not actually returned.
+Recall is bounded by `limit` — a small hit count is not a graph-wide count,
+and an empty result is not proof nothing was stored: vary the wording or
+narrow by tag before concluding. Every recall answer includes a `retrieval`
+block — `truncated: true` means the window filled (more may exist). Retrieval
+uses the local FTS5 keyword index; it does not call a model or vector service.
 
 ## Durable messages and active-host delivery
 
@@ -96,73 +164,6 @@ different discovery and native-routing scopes.
 
 Durable audit does not mean unbounded silent growth. Owners can inspect it with `memesh message storage report --cutoff <ISO timestamp>`, preview bounded terminal-payload tombstones with `memesh message storage prune --cutoff <ISO timestamp>`, and explicitly add `--apply`. Never prune unresolved/offline-pending work. `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES` is an optional owner policy; there is no default quota or automatic pruning.
 
-**SESSION START → load the briefing (once).**
-Call the `briefing` MCP tool or run `memesh briefing`. An eligible handoff from
-the same project appears ahead of ranked memories at every level, after optional
-repository facts; check its age and verify its
-claims before acting. The rest of the work topology covers decisions and direction, lessons not to repeat,
-what is known, and recent activity always; where the work was left off (goal /
-next / blocked / done) too at `standard`/`full` (not at the `briefing`
-setting's default, `minimal`).
-One call is cheaper than re-exploring the repo to reconstruct the same picture.
-`memesh briefing --index` returns only the index of durable memories — what is
-known here, one line each, without the ranked sections. Recent project decisions
-take priority over routine activity, and up to five project lessons are selected
-separately. The handoff, displayed task state, ranked memories, global memory at
-`full`, and injected index share a 4000-character memory-block limit. The
-standalone index keeps its own 40-line / 3072-byte caps and can show more than
-the index inside a crowded briefing; use `recall` for omitted memories and
-`memesh task` for the complete stored task state.
-Generic briefing does not report unread durable messages: it has no recipient
-identity. The session-start hook and each prompt do report them, but only when
-the session declared who it is by starting with `MEMESH_RECIPIENT=<id>`. If you
-already know the exact logical recipient, pass `recipient` with `project` (MCP) or use
-`memesh briefing --project <name> --recipient <id>`. The scoped line names the
-project and recipient and directs you to `message poll` first, then `message
-fetch` each returned `message_id`, then record `intake` for it (the session-start
-and prompt reminders can repeat until you do; fetching alone does not acknowledge).
-Length-limited briefing reminders can omit some project notices; the messages
-remain pending. For a known inbox, poll with its exact project and recipient.
-When shown at zero unread, it also says so explicitly if that exact recipient id has never been
-seen in this project at all — treat that as a probable typo in `--recipient`,
-not as an empty, healthy inbox.
-Exception: under Claude Code the session-start hook has ALREADY injected this
-exact block — do not call it again (see "What's Already Automatic").
-
-**USER STATES a goal, next step, or blocker → record it immediately.**
-```bash
-memesh task --goal "Ship the work-topology injection" --next "Open the PR once CI is green"
-memesh task --blocked "Waiting on the Windows runner"
-memesh task --blocked ""      # blocker resolved — empty string clears the field
-```
-Fields: `--goal` `--next` `--blocked` `--done` (MCP tool: `task_state`).
-Record ONLY what the user actually said. Fresh state is injected at the top
-of the next session at `standard`/`full` and read as fact — a goal you
-guessed from which files were edited reaches that session with nothing to
-correct it; the default, `minimal`, never shows a fresh state
-(`memesh config set briefing standard` turns it on), but a stale or
-unknown-age one still gets a one-line flag at every level. If it was not
-said, leave the field out.
-
-**SESSION END or milestone → make the task state match reality.**
-`memesh task` (no flags) always shows the complete stored state — not
-necessarily what the next session will be told, which depends on freshness
-and the `briefing` level. If "next" is now done, record what is actually
-next; if the blocker cleared, clear it.
-
-**USER ASKS "what do you remember / where were we" → briefing, then relay.**
-Run `memesh briefing` (or `--project <name>`) and answer from it. For specific
-follow-up questions, use `recall`.
-
-**MEMESH UNAVAILABLE or RECALL EMPTY → say so, never invent.** Report that
-memory is unavailable (or found nothing) and continue without it. Never
-fabricate a memory or cite a `[mem:id]` that was not actually returned.
-Recall is bounded by `limit` — a small hit count is not a graph-wide count,
-and an empty result is not proof nothing was stored: vary the wording or
-narrow by tag before concluding. Every recall answer includes a `retrieval`
-block — `truncated: true` means the window filled (more may exist). Retrieval
-uses the local FTS5 keyword index; it does not call a model or vector service.
-
 ## What's Already Automatic (Plugin Hooks)
 
 With the Claude Code plugin, the first eight rows happen **without any action from you**. The final row is the separate Codex plugin SessionStart/SessionEnd companion lifecycle:
@@ -179,18 +180,19 @@ With the Claude Code plugin, the first eight rows happen **without any action fr
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
 | **SessionStart/SessionEnd (Codex)** | An ordinary Codex CLI plugin session starts, resumes, or ends | Launches the detached exact-thread companion, replaces its generation on resume, and retires it after the bounded idle queue window; a matching owner-private config may override its project/principal |
 
-Because of the SessionStart hook: **in Claude Code, do NOT call `briefing` at
-session start — whatever the configured level has to show is already in your
-context.** Call it only mid-session
-(context was compacted, or the user asks what you remember) or on hosts
-without these hooks (other MCP clients, shell-only agents). Double-injection
+Because of the SessionStart hook: **under Claude Code, and with the Codex
+plugin, do not call `briefing` at session start unless the block is missing —
+whatever the configured level has to show is already in your context.** The
+hook runs again after context compaction too. Call `briefing` when the user
+asks what you remember, when the block is missing, or on hosts without these
+hooks (other MCP clients, shell-only agents). Double-injection
 spends the very tokens this system exists to save.
 
 Hooks capture what *happened*. You still act manually for what they cannot
 know: what the user **meant** (task state), deliberate decisions and lessons,
 and retiring outdated info.
 
-## Proactive triggers — do these WITHOUT being asked
+## Proactive triggers — do these without being asked
 
 | Situation | Action |
 |-----------|--------|
@@ -248,8 +250,9 @@ memesh recall "authentication" --json
 memesh recall --tag "project:myapp" --limit 10
 memesh recall --cross-project                # search across all projects
 ```
-Query words are OR-ed and ranked by relevance — a naturally phrased question
-works; extra words narrow the ranking, not the result set.
+One or two words match any of them. Three or more must all match, with an
+any-word fallback only when nothing matches all — so search with a few
+specific keywords rather than a whole sentence. Results are ranked by relevance.
 
 ### Old info needs updating
 ```bash
@@ -290,5 +293,8 @@ memesh reindex --fts                         # rebuild the local keyword index
 4. **Prefer observation-level forgetting.** `forget --observation "…"` removes
    one wrong fact and keeps the entity. Plain `forget` archives the whole
    entity out of visibility — use it only when everything in it is dead.
-5. **Tag by project** (`project:<name>`) and **be specific** — "Use OAuth 2.0
-   with PKCE", not "auth stuff decided".
+5. **Tag by project** and **be specific** — "Use OAuth 2.0 with PKCE", not
+   "auth stuff decided". The project tag is `project:<id>`, where `<id>` is
+   the `project` field of the `briefing` result, from the CLI `memesh briefing --json` (`myapp` in the
+   examples above stands for it); a plain repository name is a different
+   scope that this project's sessions never see.

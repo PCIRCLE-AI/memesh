@@ -28576,6 +28576,7 @@ function repoStateLines(state) {
 
 // dist/core/work-topology.js
 var LESSON_TYPES = /* @__PURE__ */ new Set(["lesson_learned", "lesson", "mistake"]);
+var LESSON_TYPE_LIST = [...LESSON_TYPES];
 var WORK_LAYER_TYPES = /* @__PURE__ */ new Set([
   ...LESSON_TYPES,
   "decision",
@@ -29518,9 +29519,9 @@ function assembleBriefing(project, recipient) {
   const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
   const lessonPool = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE e.type = 'lesson_learned' AND e.status = 'active'${nonGlobal} AND t.tag = ?
+     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => "?").join(", ")}) AND e.status = 'active'${nonGlobal} AND t.tag = ?
      ORDER BY e.id DESC
-     LIMIT 50`).all(`project:${projectName}`).map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
+     LIMIT 50`).all(...LESSON_TYPE_LIST, `project:${projectName}`).map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
   const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
        WHERE e.namespace = 'global' AND e.status = 'active'
@@ -31696,7 +31697,7 @@ var TOOL_DEFINITIONS = [
         },
         type: {
           type: "string",
-          description: 'Entity type (e.g., "decision", "pattern", "lesson", "commit"). Required unless `note` is given (it then defaults to "note"), or `replace: true` is sent with the `name` of a memory that exists \u2014 that call keeps the stored type. Passing one on a `replace` reclassifies the memory.'
+          description: 'Entity type (e.g., "decision", "pattern", "lesson_learned"). Required unless `note` is given (it then defaults to "note"), or `replace: true` is sent with the `name` of a memory that exists \u2014 that call keeps the stored type. Passing one on a `replace` reclassifies the memory.'
         },
         note: {
           type: "string",
@@ -31718,7 +31719,7 @@ var TOOL_DEFINITIONS = [
         tags: {
           type: "array",
           items: { type: "string" },
-          description: 'Tags for filtering (e.g., "project:myapp", "type:decision")'
+          description: 'Tags for filtering (e.g., "project:<id>" where <id> is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), "topic:database"). A plain repository name is a different project scope.'
         },
         relations: {
           type: "array",
@@ -31762,7 +31763,7 @@ var TOOL_DEFINITIONS = [
         },
         tag: {
           type: "string",
-          description: 'Filter by tag (e.g., "project:myapp")'
+          description: 'Filter by tag (e.g., "project:<id>", where <id> is the `project` field of the `briefing` result (CLI: `memesh briefing --json`))'
         },
         limit: {
           type: "number",
@@ -31838,7 +31839,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "learn",
-    description: "Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention.",
+    description: "Record a structured lesson from a mistake or discovery. Creates a lesson_learned entity with error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; for a choice between options, use `remember` with type decision. The project's lessons are shown at the start of later sessions.",
     inputSchema: {
       type: "object",
       properties: {
@@ -31876,7 +31877,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "briefing",
-    description: "The work topology for a project, assembled and ready to use \u2014 assembled under the same rules as Claude Code\u2019s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool\u2019s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project\u2019s decisions and direction, lessons, known facts and recent activity, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds a fresh goal / next / blocked / done and closes with a capped index of durable memories; `full` additionally includes other projects and global memory. Whatever the level, the result\u2019s `index` field carries the standalone index, which can show more than the index inside a crowded briefing. Call once at the START of a session to load project context; use recall for specific questions after that. Content is wrapped as untrusted background data.",
+    description: "The work topology for a project, assembled and ready to use \u2014 assembled under the same rules as Claude Code\u2019s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool\u2019s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project\u2019s decisions and direction, lessons, known facts and recent activity, no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level) and no index, and may be empty; `standard` adds a fresh goal / next / blocked / done and closes with a capped index of durable memories; `full` additionally includes other projects and global memory. Whatever the level, the result\u2019s `index` field carries the standalone index, which can show more than the index inside a crowded briefing. Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does, under Claude Code and the Codex plugin, and again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.",
     inputSchema: {
       type: "object",
       properties: {
@@ -31894,7 +31895,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "user_patterns",
-    description: "Analyze user work patterns from existing memory. Returns: work schedule (peak hours/days), tool preferences, focus areas, workflow metrics (session duration, commits/session), knowledge strengths, and learning areas. Use at session start for context about the user.",
+    description: "Analyze user work patterns from existing memory. Returns: work schedule (peak hours/days), tool preferences, focus areas, workflow metrics (session duration, commits/session), knowledge strengths, and learning areas. Use it when the task needs context about how the user works, such as their schedule or tool preferences; it is not part of loading a session.",
     inputSchema: {
       type: "object",
       properties: {

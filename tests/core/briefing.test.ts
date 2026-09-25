@@ -1728,6 +1728,21 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     }
   });
 
+  it('#443: a lesson stored as type lesson or mistake still gets a lesson slot behind 30+ decisions, on both readers', () => {
+    // The display already groups lesson / mistake under "do not repeat these"; the reserved
+    // pools used to select lesson_learned only, so on a busy project these two never showed.
+    for (let i = 0; i < 35; i++) add(`d-${i}`, 'decision', `decision ${i}`, { obs: [ts(i + 1)] });
+    add('plain-lesson', 'lesson', 'PLAIN-LESSON', { obs: [ts(1)] });
+    add('plain-mistake', 'mistake', 'PLAIN-MISTAKE', { obs: [ts(1)] });
+    for (const level of ['minimal', 'full']) {
+      const lessons = (t: string) => { const from = t.indexOf('Lessons from'); return from < 0 ? '' : t.slice(from).split('\n\n')[0]; };
+      for (const [label, block] of [['core', lessons(ranked(core(level)))], ['hook', lessons(ranked(runHook(level, 30).context))]] as const) {
+        expect(block, `${level} ${label}`).toContain('] PLAIN-LESSON [');
+        expect(block, `${level} ${label}`).toContain('] PLAIN-MISTAKE [');
+      }
+    }
+  });
+
   it('N1: malformed metadata is refused in the ranked, global and recent pools on both readers; absent metadata is not', () => {
     add('ok-decision', 'decision', 'OK-DECISION', { obs: [ts(2)] });
     add('bad-decision', 'decision', 'BAD-DECISION', { obs: [ts(1)], metadata: '{"trust": ' });

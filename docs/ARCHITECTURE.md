@@ -383,7 +383,7 @@ Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecy
 | decision-nudge.js | PostToolUse (ExitPlanMode/AskUserQuestion) | Remind the model to `remember` a decision just made — once per tool per session |
 | session-summary.js | Stop | Auto-capture session knowledge + recall effectiveness tracking |
 | pre-compact.js | PreCompact | Save knowledge before compaction |
-| user-prompt-intent.js | UserPromptSubmit | Detect "remember" intent (5 languages: en, es, fr, pt, zh-TW) and remind Claude to use mcp__memesh__remember |
+| user-prompt-intent.js | UserPromptSubmit | Detect "remember" intent (5 languages: en, es, fr, pt, zh-TW) and remind the agent to use the memesh `remember` tool |
 | guard-check.js | PreToolUse (Bash) | Fire accepted lesson-guards against the command about to run (warn-only; fires counted) |
 | codex-session.js | Codex SessionStart (startup/resume) + SessionEnd | Launch an owner-private detached registration companion, retain a bounded 45-second idle queue window after SessionEnd, replace the exact generation on resume, and retire it at expiry; a matching owner-private config optionally overrides project/principal |
 
@@ -409,7 +409,7 @@ Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecy
 
 - **Trigger**: `SessionStart` event (every new Claude Code session)
 - **Matcher**: `*` (all sessions)
-- **Behavior**: Opens the database, ranks entities tagged with the current project (plus, at level `full`, recently-active entities across projects and global-namespace entities) and active `lesson_learned` entities, and emits **two separate channels**:
+- **Behavior**: Opens the database, ranks entities tagged with the current project (plus, at level `full`, recently-active entities across projects and global-namespace entities) and active lesson entities (`lesson_learned`, `lesson`, `mistake`), and emits **two separate channels**:
   - `systemMessage` — a one-line count banner (`◉ MeMesh · 4 project + 5 recent memories · 1 active lesson`) plus any deprecation / update-available banner. Claude Code renders this to the **human only**; `normalizeAttachmentForAPI` strips the `hook_system_message` attachment from the model's context. The fragments present reflect what was actually queried — at the default level (`minimal`), the cross-project pool is not queried at all, so no "N recent" fragment appears.
   - `hookSpecificOutput.additionalContext` (`hookEventName: "SessionStart"`) — the **model-facing** payload: the project handoff and bounded task state where eligible, newest trusted decisions before routine activity, up to five separately selected project lessons, then other ranked memories and the index where the level includes it. The saved-memory lines inside the fence share a 4000 UTF-16 code-unit limit, including global memory at `full`; repository facts, the fence/preface, and the hook-only work-package notice sit outside that limit. The injected index also respects its 40-line/3072-byte caps and may show fewer lines than the standalone index.
 
@@ -450,7 +450,7 @@ Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecy
 
 - **Trigger**: `UserPromptSubmit` event (every user prompt)
 - **Matcher**: `*` (all sessions)
-- **Behavior**: Detects explicit "remember/save/memorize" intent in the user's prompt via conservative regex. Supported languages: English ("remember this", "save to memesh"), Spanish ("recordar esto", "guardar en memesh"), French ("rappeler ceci", "sauvegarder dans memesh"), Portuguese ("lembrar isto", "salvar em memesh"), Traditional Chinese ("記下來", "存到 memesh"). On match, emits `additionalContext` JSON reminding the agent to call `mcp__memesh__remember` for cross-project recall. Polite-reminder design (not autonomous extraction): the user's intent is clear, but *what* to remember depends on conversation context the calling agent already has. Defensive: never blocks the prompt; malformed stdin and other errors surface to stderr without affecting submission. Opt-out via `MEMESH_AUTO_CAPTURE=false`
+- **Behavior**: Detects explicit "remember/save/memorize" intent in the user's prompt via conservative regex. Supported languages: English ("remember this", "save to memesh"), Spanish ("recordar esto", "guardar en memesh"), French ("rappeler ceci", "sauvegarder dans memesh"), Portuguese ("lembrar isto", "salvar em memesh"), Traditional Chinese ("記下來", "存到 memesh"). On match, emits `additionalContext` JSON reminding the agent to call the memesh `remember` tool for cross-project recall. Polite-reminder design (not autonomous extraction): the user's intent is clear, but *what* to remember depends on conversation context the calling agent already has. Defensive: never blocks the prompt; malformed stdin and other errors surface to stderr without affecting submission. Opt-out via `MEMESH_AUTO_CAPTURE=false`
 
 ### Hook outcome records (capture liveness)
 

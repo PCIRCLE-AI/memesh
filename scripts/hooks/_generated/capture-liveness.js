@@ -443,11 +443,15 @@ export function graceInEffect(state, nowMs) {
         return false;
     return nowMs - startedMs < GRACE_HOURS * 60 * 60 * 1000;
 }
-export function detectHookHost(payload, env = {}) {
+export function detectHookHost(payload, env = {}, options = {}) {
     if (env.MEMESH_HOOK_HOST === 'claude-code' || env.MEMESH_HOOK_HOST === 'codex') {
         return env.MEMESH_HOOK_HOST;
     }
     if (env.CODEX_HOME || env.CODEX_SANDBOX || env.CODEX_PLUGIN_ROOT)
+        return 'codex';
+    const codexPluginRoot = options.pluginRootIsHookRoot
+        ?? (!env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PLUGIN_ROOT === env.PLUGIN_ROOT);
+    if (env.PLUGIN_ROOT && codexPluginRoot)
         return 'codex';
     if (env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PROJECT_DIR || env.CLAUDECODE)
         return 'claude-code';

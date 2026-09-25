@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -746,6 +746,25 @@ export function sliceUtf16UnitsSurrogateSafe(s, maxUnits) {
   return s.slice(0, end);
 }
 
+/** The plugin root these hook scripts run from: scripts/hooks/ is two levels down. */
+const HOOK_PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/**
+ * Whether `PLUGIN_ROOT` names the plugin root these hooks run from — how the
+ * Codex plugin sets it. A value inherited from a shell or a parent process
+ * names some other directory, or none, and must not relabel a Claude Code hook
+ * as codex (#325). Real paths are compared so a symlinked cache path still
+ * matches; any failure to resolve counts as no match.
+ */
+export function pluginRootIsHookRoot(env) {
+  if (!env?.PLUGIN_ROOT) return false;
+  try {
+    return realpathSync(env.PLUGIN_ROOT) === realpathSync(HOOK_PLUGIN_ROOT);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Record what `hook` DID, on every exit path (issue #327).
  *
@@ -795,7 +814,7 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     const record = {
       hook,
       at: new Date().toISOString(),
-      host: detectHookHost(payload ?? null, env),
+      host: detectHookHost(payload ?? null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }),
       outcome,
     };
     // A hook's `reason` is, on the error path, the exception message — which

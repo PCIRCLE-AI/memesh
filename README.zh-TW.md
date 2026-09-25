@@ -64,7 +64,7 @@ MeMesh 讓代理在本機共用記憶與交換訊息。主要用途是跨 sessio
 | 你自己的程式或腳本 | `memesh serve` 提供的 HTTP API | [docs/platforms/universal.md](docs/platforms/universal.md) |
 | ChatGPT、Gemini 網頁版等線上聊天 | 透過你自己架的本機橋接走 HTTP API | [docs/platforms/README.md](docs/platforms/README.md) |
 
-Claude Code 的 8 個 hook 提供自動記錄、回想、提醒與防護。Codex plugin 會為符合資格的一般 CLI thread 接好 SessionStart companion 與 MCP 工具；它沒有 Claude Code 的完整擷取 hook，也不會自動載入 briefing。使用 Codex（包括安裝 plugin）或只有 MCP 的用戶端時，請在 session 開始時自行呼叫 `briefing`，需要特定資訊時再呼叫 `recall`。
+Claude Code 的 8 個 hook 提供自動記錄、回想、提醒與防護。Codex plugin 會載入同一份 hook 設定：在 Codex 允許執行這個 plugin 的 hook 之後，它的 SessionStart hook 會注入同樣的記憶區塊，並為符合資格的一般 CLI thread 啟動傳訊 companion。其他 hook 在 Codex 下是否會執行，目前尚未驗證。使用 Codex plugin 時，只有在沒看到這個區塊時才呼叫 `briefing`；只有 MCP 的用戶端請在 session 開始時呼叫 `briefing`。需要特定資訊時再呼叫 `recall`。
 
 回想與擷取維持本機且可預測：SQLite FTS5 搜尋、明確的記憶工具與規則式 hooks。這個版本不設定也不呼叫 LLM、embedding 或 vector provider。舊版留下的 provider 設定仍保留在磁碟上但會被忽略；`memesh doctor` 只會列出頂層欄位名稱，不會讀取或印出它們的值。
 

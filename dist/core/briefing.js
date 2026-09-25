@@ -9,7 +9,7 @@ import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
 import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, buildBriefingIndex, injectedIndexReserve, } from './briefing-index.js';
-import { DECISION_LAYER_TYPES, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, boundTaskStateLines, buildReferenceContext, hasBriefingContent, isAutoInjectable, joinedLength, prioritizeDecisions, projectLabel, } from './work-topology.js';
+import { DECISION_LAYER_TYPES, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, LESSON_TYPE_LIST, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, assembleTopologyBlock, boundTaskStateLines, buildReferenceContext, hasBriefingContent, isAutoInjectable, joinedLength, prioritizeDecisions, projectLabel, } from './work-topology.js';
 import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
 const PROJECT_LIMIT = 30;
 const RECENT_LIMIT = 5;
@@ -161,9 +161,9 @@ export function assembleBriefing(project, recipient) {
     const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
     const lessonPool = db.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE e.type = 'lesson_learned' AND e.status = 'active'${nonGlobal} AND t.tag = ?
+     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')}) AND e.status = 'active'${nonGlobal} AND t.tag = ?
      ORDER BY e.id DESC
-     LIMIT 50`).all(`project:${projectName}`)
+     LIMIT 50`).all(...LESSON_TYPE_LIST, `project:${projectName}`)
         .map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
     const globalRows = policy.global && hasNamespace
         ? db.prepare(`SELECT ${CANDIDATE_COLUMNS}

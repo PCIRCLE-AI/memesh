@@ -60,12 +60,12 @@ The note is cleaned before anything is derived from it: control characters (othe
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Unless `note` | Unique entity name (e.g., `"auth-decision"`, `"jwt-pattern"`). Derived from the text when `note` is given without one |
-| `type` | string | Unless `note` | Entity type (e.g., `"decision"`, `"pattern"`, `"lesson"`, `"commit"`). Defaults to `"note"` with `note` |
+| `type` | string | Unless `note` | Entity type (e.g., `"decision"`, `"pattern"`, `"lesson_learned"`). Defaults to `"note"` with `note` |
 | `note` | string | No | Free text instead of `title` + `observations` (see above) |
 | `replace` | boolean | No | Rewrite the named memory instead of appending (see above). Default `false` |
 | `title` | string | No | Short human-readable label shown wherever the memory is listed (e.g. `"Why we dropped JWT"`), max 200 characters — longer is **rejected**, not truncated, so the caller can shorten it themselves. On an entity that already exists, supplying this replaces the title; omitting it leaves the title it already has. Whitespace-only counts as omitted. |
 | `observations` | string[] | No | Key facts or observations about this entity |
-| `tags` | string[] | No | Tags for filtering (e.g., `"project:myapp"`, `"type:decision"`) |
+| `tags` | string[] | No | Tags for filtering (e.g., `"project:<id>"`, where `<id>` is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), `"topic:database"`). A plain repository name is a different project scope |
 | `relations` | object[] | No | Relations to other entities |
 | `namespace` | string | No | Namespace scope: `"personal"` (default), `"team"`, or `"global"`. On an entity that already exists, supplying this **moves** it; omitting it leaves the namespace it already has. |
 
@@ -169,7 +169,7 @@ A query that is not empty but contains nothing searchable — `???`, `@#$%` — 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `query` | string | No | Search query (FTS5 full-text search; one- and two-term queries use OR, three or more terms use strict all-term matching with OR fallback, and the first 32 surviving terms are used). Leave empty to list recent entities. |
-| `tag` | string | No | Filter by tag (e.g., `"project:myapp"`) |
+| `tag` | string | No | Filter by tag (e.g., `"project:<id>"`, where `<id>` is the `project` field of the `briefing` result (CLI: `memesh briefing --json`)) |
 | `limit` | number | No | Max results (default: 20, max: 100) |
 | `include_archived` | boolean | No | Include archived (forgotten) entities in results (default: false) |
 | `namespace` | string | No | Filter to a specific namespace (`"personal"`, `"team"`, `"global"`) |
@@ -392,7 +392,7 @@ Export memories to a portable JSON bundle. Use for personal backup, migrating be
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `namespace` | string | No | Export only entities from this namespace (`"personal"`, `"team"`, `"global"`). Omit to export all namespaces. |
-| `tag` | string | No | Export only entities matching this tag (e.g., `"project:myapp"`) |
+| `tag` | string | No | Export only entities matching this tag (e.g., `"project:<id>"`, where `<id>` is the `project` field of the `briefing` result) |
 | `limit` | number | No | Maximum number of entities to export, archived ones included (default: 1000). The default is a **subset**, not a backup: a graph larger than the limit exports the newest `limit` memories and sets `truncated: true`. For a full backup, pass a limit above your graph size. |
 
 **Response**:
@@ -550,7 +550,7 @@ and only `errors` makes the CLI exit non-zero.
 
 ### learn
 
-Record a structured lesson from a mistake or discovery. Creates a `lesson_learned` entity with structured observations for error, root cause, fix, and prevention.
+Record a structured lesson from a mistake or discovery. Creates a `lesson_learned` entity with structured observations for error, root cause, fix, and prevention. Use it when something went wrong and the cause and fix are known; a choice between options is a `remember` with type `decision`. The project's lessons are shown at the start of later sessions.
 
 **Input Schema**:
 
@@ -653,7 +653,7 @@ Passing an **empty string** clears a field — that is how a blocker is removed 
 
 ### briefing
 
-The `briefing` tool returns an eligible project handoff ahead of ranked memories, together with project decisions, lessons, knowledge, recent activity, and (at `standard` or `full`) a fresh task state and capped durable-memory index with `[mem:id]` handles. Repository facts can prefix the block. The Claude Code SessionStart hook injects a memory block under the same assembly rules; its candidate window can differ from the tool's. At `full` the hook adds a separate work-package notice that the tool and CLI do not include. In Codex, including with the MeMesh plugin, call `briefing` at session start to load topology: its companion registers the thread for messaging but does not inject the briefing. MCP-only clients likewise call `briefing` themselves.
+The `briefing` tool returns an eligible project handoff ahead of ranked memories, together with project decisions, lessons, knowledge, recent activity, and (at `standard` or `full`) a fresh task state and capped durable-memory index with `[mem:id]` handles. Repository facts can prefix the block. The Claude Code SessionStart hook injects a memory block under the same assembly rules; its candidate window can differ from the tool's. At `full` the hook adds a separate work-package notice that the tool and CLI do not include. The Codex plugin loads the same hook file; once Codex is allowed to run the plugin's hooks, its SessionStart hook injects the same memory block; its companion separately registers the thread for messaging. Which other hooks fire under Codex is not yet verified. With the Codex plugin, call `briefing` only when that block is missing; MCP-only clients call `briefing` at session start.
 
 The returned text is fenced as untrusted background data; stored memory content must not be treated as instructions.
 
@@ -667,7 +667,7 @@ The returned text is fenced as untrusted background data; stored memory content 
 
 An eligible handoff leads the saved-memory portion at every level; repository facts, when present, prefix the block. `minimal` otherwise includes this project's decisions, lessons, knowledge, and recent activity. `standard` adds fresh task state and the capped durable-memory index. `full` also adds global memory and other projects' recent activity. The work-package notice at `full` belongs only to the Claude Code SessionStart hook, not to the MCP tool or CLI.
 
-The saved-memory lines inside the fence share one 4000 UTF-16 code-unit limit across the eligible handoff, displayed task state and unread-inbox notice (when addressed to an exact recipient), ranked memories, global memory at `full`, and injected index. Repository facts before the saved-memory lines, the fence/preface, and the hook-only work-package notice are outside that limit. The displayed task state is shortened to at most 1200 code units (320 per line); `memesh task` still reads the complete stored record. Recent trusted project decisions take the project's slots first, newest valid activity first (unknown dates last); remaining slots follow relevance ranking. A separate pool selects up to five trusted active `lesson_learned` memories for the project, even if decisions occupy its other slots. Memory lines may be omitted when the shared limit fills.
+The saved-memory lines inside the fence share one 4000 UTF-16 code-unit limit across the eligible handoff, displayed task state and unread-inbox notice (when addressed to an exact recipient), ranked memories, global memory at `full`, and injected index. Repository facts before the saved-memory lines, the fence/preface, and the hook-only work-package notice are outside that limit. The displayed task state is shortened to at most 1200 code units (320 per line); `memesh task` still reads the complete stored record. Recent trusted project decisions take the project's slots first, newest valid activity first (unknown dates last); remaining slots follow relevance ranking. A separate pool selects up to five trusted active lesson memories (`lesson_learned`, `lesson` or `mistake`) for the project, even if decisions occupy its other slots. Memory lines may be omitted when the shared limit fills.
 
 Claude Code's Stop hook replaces one `session-handoff` memory for the exact project with its latest assistant reply, after credential-shaped redaction and removal of fenced code. Capture needs at least 80 cleaned characters and obeys `autoCapture`; a skipped capture leaves the previous handoff untouched. Display uses only an active, trusted exact-project handoff's newest observation, limited to 800 characters even if the memory was written manually. Up to 72 hours old it appears normally; after 72 hours through 14 days it carries a stale warning; older than 14 days, undatable, or more than five minutes future-dated it is omitted. Imported handoffs are not injected merely because they have the right name. The handoff is background context, not an inferred task list or a guarantee that work resumes.
 
@@ -733,7 +733,7 @@ At `minimal` on a project with nothing to show, the response has `text: ""` and 
 
 ### user_patterns
 
-Analyze user work patterns from existing memory. Returns work schedule (peak hours/days), tool preferences, focus areas, workflow metrics (session duration, commits/session), knowledge strengths, and learning areas. Use at session start for context about the user.
+Analyze user work patterns from existing memory. Returns work schedule (peak hours/days), tool preferences, focus areas, workflow metrics (session duration, commits/session), knowledge strengths, and learning areas. Use it when the task needs context about how the user works, such as their schedule or tool preferences; it is not part of loading a session.
 
 **Input Schema**:
 

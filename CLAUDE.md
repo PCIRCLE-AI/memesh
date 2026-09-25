@@ -1,12 +1,9 @@
 # MeMesh — instructions for AI coding assistants
 
-This file is a **pointer**, on purpose. It used to carry its own copy of the
-module tree, the dependency list and the development standards, and a copy is a
-thing that drifts. It was the last file in the repository still quoting a
-benchmark figure (95.40% R@5) that release 4.2.11 was spent proving wrong, and
-its test count was 44 behind. It was also untracked, so no reviewer ever saw it
-change. Both problems had one cause: it duplicated documents that already
-exist, are already public, and are already checked by CI.
+This file is a **pointer**, on purpose: a copy of documents that already
+exist, are public and are checked by CI drifts. This file once carried such a
+copy, and it ended up quoting a benchmark figure and a test count that were
+both wrong.
 
 So — **read the real documents.** Do not restate them here.
 
@@ -110,14 +107,10 @@ have passed while the thing they guarded was removed.
 
 ### The graph is the product — check the data, not only the diff
 
-v4.8.2 was reviewed seven times before release (two whole-diff reviews, a
-security review, a replay review, a contract review, a loop-closure pass and
-a guard sweep). Dogfooding then found three memory-layer defects that every
-one of them had missed — #240, #241, #242 — because all seven reviewed the
-DIFF, and the defects sat in code the release never touched. A diff review
-cannot find a defect in code the diff does not contain, at any coverage.
-
-Each of those defects is a one-line SQL question against the knowledge graph.
+A diff review cannot find a defect in code the diff does not contain. Three
+memory-layer defects (#240, #241, #242) passed seven diff reviews and were
+found only by dogfooding, and each of them is a one-line SQL question against
+the knowledge graph:
 
 ```bash
 npm run audit:memory                       # your ~/.memesh, read-only
@@ -133,25 +126,35 @@ the data itself. `tests/audit/memory-invariants.test.ts` seeds each defect
 into a throwaway graph and requires exit 1, so a detector that stops
 detecting goes red.
 
-Two more rules from the same night, both measured:
+Two more rules:
 
-- **Every independent reviewer gets the same whole diff and Bash.** Of the
-  seven, five were scoped by the orchestrator — one excluded a directory,
-  one replayed commands without reading code, one read four files, one
-  probed one pair, one was void because its probe hit the real database. A
-  specialist angle narrows the QUESTIONS asked, never the FILES given.
+- **Every independent reviewer gets the same whole diff and Bash.** A
+  specialist angle narrows the questions asked, never the files given: most of
+  the reviews that missed those defects had been handed a narrowed scope.
 - **Any probe that runs vitest goes through `scripts/run-tests-isolated.mjs`
-  and `--maxWorkers=1`.** An `eg prove --all` sweep of 47 guards ran for 53
-  minutes and produced zero valid verdicts: the bare `npx vitest` probe hit
-  the maintainer's real graph instead of an isolated fixture and was red on
-  the unmodified tree. Whole-tree `eg prove` is also not a release gate:
-  781 guards × ~113 s per isolated run is a day. Probe the guards in the
-  files a change touched, with the test file that covers each.
+  and `--maxWorkers=1`.** A bare `npx vitest` probe reads the maintainer's real
+  graph instead of an isolated fixture. Probe the tests that cover the files a
+  change touched, not the whole tree.
+
+### Traps when changing these files
+
+- **`scripts/audit/baseline.json` keys C4 and C5 findings by `file:line`.**
+  Adding lines above one of those hits makes `verify:release` report it as new and the old
+  key as stale. Confirm it is the same code, then move the key to the new line
+  (`node scripts/audit/verification-audit.mjs` must exit 0).
+- **An MCP tool description in `src/transports/mcp/handlers.ts` is locked by
+  `scripts/mcp-doc-contract.json`.** After changing one, review the tool
+  tables in every listed document, then set the hashes that
+  `node scripts/check-readme-tool-parity.mjs` prints.
+- **`scripts/check-generated-mirror.mjs` compares a fresh build with the git
+  index.** Run `npm run build`, stage the regenerated `dist/`,
+  `scripts/hooks/_generated/` and `dashboard/dist/`, then run `npm run verify`.
 
 ### Working policy
 
 How much process a change deserves is decided by its blast radius, not by
-habit. Two modes:
+habit. Two modes (if your own instructions define stricter review tiers, the
+stricter rule wins):
 
 - **Lightweight** — the change is confined to one module or one clear path,
   needs no multi-surface verification, and touches nothing security-sensitive
@@ -187,16 +190,8 @@ Rules that hold in both modes:
 ### Git
 
 - **Short-lived branch → PR → `main`. Never push directly to `main`.** That is
-  the whole flow, and `main` is the only long-lived branch. This used to read
-  "`main` ← `develop`", which described git-flow: a model for software with
-  several release lines under support at once, and one whose own author now
-  warns against using it for continuously delivered projects. Nothing here has
-  release lines, and the branch proved it — `develop` sat 58 commits behind
-  `main` and 0 ahead, through four releases, while every PR went straight to
-  `main`. It was kept briefly as a passive mirror and then deleted: a branch
-  that only ever receives a copy of `main` answers no question that a tag or
-  `CHANGELOG.md` does not already answer, and it cost a full matrix re-run on
-  every sync.
+  the whole flow, and `main` is the only long-lived branch; there are no
+  release lines to maintain, so there is no `develop` branch.
 - Releases are tags on `main`. "Merged but not yet published" is answered by
   `CHANGELOG.md`'s `[Unreleased]` section, which is why a branch does not need
   to answer it.

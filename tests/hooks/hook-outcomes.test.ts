@@ -141,6 +141,17 @@ describe('hook outcome records', () => {
     expect(rows[0].reason).toBe(SKIP_REASONS.commitHeadUnresolvable);
   });
 
+  // #325 round trip: the host label is written by the real hook process and read
+  // back through parseHookOutcomes, the same reader doctor's per-host figures use.
+  it('records host codex when PLUGIN_ROOT is the plugin root the hook runs from, and not for a stray one', () => {
+    const neutral = { CODEX_HOME: '', CODEX_SANDBOX: '', CODEX_PLUGIN_ROOT: '', MEMESH_HOOK_HOST: '' };
+    const skip = { tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'cat CHANGELOG.md' } };
+    runHook('post-commit', skip, { ...neutral, PLUGIN_ROOT: path.resolve('.'), CLAUDE_PLUGIN_ROOT: '' });
+    runHook('post-commit', skip, { ...neutral, PLUGIN_ROOT: testDir, CLAUDE_PLUGIN_ROOT: '', CLAUDECODE: '1' });
+    const rows = records('post-commit');
+    expect(rows.map((r) => r.host)).toEqual(['codex', 'claude-code']);
+  });
+
   it('post-commit records a SKIPPED with a reason on every other bail', () => {
     runHook('post-commit', { tool_name: 'Read', tool_input: {} });
     runHook('post-commit', { cwd: repoDir, tool_input: {} });

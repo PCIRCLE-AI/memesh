@@ -24082,11 +24082,12 @@ function projectLabel(projectId) {
   const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, "");
   return label === "" ? projectId : label;
 }
-var LESSON_TYPES, WORK_LAYER_TYPES, DECISION_LAYER_TYPES, EVIDENCE_LAYER_TYPES, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, STATE_MAX_CHARS, TASK_STATE_DISPLAY_MAX_CHARS, TASK_STATE_LINE_MAX_CHARS, PROJECT_ID_HASH_SUFFIX;
+var LESSON_TYPES, LESSON_TYPE_LIST, WORK_LAYER_TYPES, DECISION_LAYER_TYPES, EVIDENCE_LAYER_TYPES, MAX_PER_SECTION, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, GLOBAL_TOPOLOGY_BUDGET, TOPOLOGY_CANDIDATE_CAP, SNIPPET_FETCH_CHARS, STATE_MAX_CHARS, TASK_STATE_DISPLAY_MAX_CHARS, TASK_STATE_LINE_MAX_CHARS, PROJECT_ID_HASH_SUFFIX;
 var init_work_topology = __esm({
   "dist/core/work-topology.js"() {
     "use strict";
     LESSON_TYPES = /* @__PURE__ */ new Set(["lesson_learned", "lesson", "mistake"]);
+    LESSON_TYPE_LIST = [...LESSON_TYPES];
     WORK_LAYER_TYPES = /* @__PURE__ */ new Set([
       ...LESSON_TYPES,
       "decision",
@@ -24867,9 +24868,9 @@ function assembleBriefing(project, recipient) {
   const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
   const lessonPool = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE e.type = 'lesson_learned' AND e.status = 'active'${nonGlobal} AND t.tag = ?
+     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => "?").join(", ")}) AND e.status = 'active'${nonGlobal} AND t.tag = ?
      ORDER BY e.id DESC
-     LIMIT 50`).all(`project:${projectName}`).map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
+     LIMIT 50`).all(...LESSON_TYPE_LIST, `project:${projectName}`).map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
   const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
        WHERE e.namespace = 'global' AND e.status = 'active'
@@ -26140,7 +26141,7 @@ function exportOpenAITools() {
           type: "object",
           properties: {
             name: { type: "string", description: "Unique entity name. Required unless `note` is given (then derived from the text)." },
-            type: { type: "string", description: 'Entity type (decision, pattern, lesson, etc.). Required unless `note` is given (then defaults to "note").' },
+            type: { type: "string", description: 'Entity type (decision, pattern, lesson_learned, etc.). Required unless `note` is given (then defaults to "note").' },
             title: { type: "string", description: "Short human-readable label, distinct from name (a stable machine key)" },
             observations: { type: "array", items: { type: "string" }, description: "Key facts about this entity" },
             note: { type: "string", description: "Free text instead of title + observations: first line \u2192 title, each following paragraph \u2192 one observation" },
@@ -26247,7 +26248,7 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_learn",
-        description: "Record a structured lesson from a mistake or discovery.",
+        description: "Record a structured lesson from a mistake or discovery. Use it when something went wrong and the cause and fix are known; for a choice between options, use remember with type decision.",
         parameters: {
           type: "object",
           properties: {

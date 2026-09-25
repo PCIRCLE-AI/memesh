@@ -33,7 +33,7 @@ export function exportOpenAITools(): object[] {
           type: 'object',
           properties: {
             name: { type: 'string', description: 'Unique entity name. Required unless `note` is given (then derived from the text).' },
-            type: { type: 'string', description: 'Entity type (decision, pattern, lesson, etc.). Required unless `note` is given (then defaults to "note").' },
+            type: { type: 'string', description: 'Entity type (decision, pattern, lesson_learned, etc.). Required unless `note` is given (then defaults to "note").' },
             title: { type: 'string', description: 'Short human-readable label, distinct from name (a stable machine key)' },
             observations: { type: 'array', items: { type: 'string' }, description: 'Key facts about this entity' },
             note: { type: 'string', description: 'Free text instead of title + observations: first line → title, each following paragraph → one observation' },
@@ -149,7 +149,7 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_learn',
-        description: 'Record a structured lesson from a mistake or discovery.',
+        description: 'Record a structured lesson from a mistake or discovery. Use it when something went wrong and the cause and fix are known; for a choice between options, use remember with type decision.',
         parameters: {
           type: 'object',
           properties: {

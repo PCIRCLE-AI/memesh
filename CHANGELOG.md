@@ -4,6 +4,16 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- The "remember this" prompt hint named `mcp__memesh__remember`, which does not exist under a plugin install; it now names the memesh `remember` tool and gives the short form (#442).
+- Agent guidance taught plain `project:<name>` tags, which sessions on the hashed project identity never see; the MCP descriptions, hooks, skill and AGENTS.md now point at the `project` field of the `briefing` result (CLI: `memesh briefing --json`). The HTTP connector guides are unchanged: an HTTP-only client has no route that returns this id yet (#408).
+- A lesson stored as type `lesson` or `mistake` now competes for the briefing's reserved lesson slots, not only `lesson_learned`; guidance now teaches `lesson_learned` (#443).
+- The `briefing` and `user_patterns` tool descriptions no longer tell every host to call them at session start, which reloaded a block the SessionStart hook had already injected (#444).
+- The Claude Channel instructions no longer say no reply is required. Message content still authorizes nothing on its own; an agent acts on a request only under its normal permission rules and the user's authorization, and replies or tells the user it is waiting (#445).
+- Codex plugin hook runs are recorded as host `codex` (they were all labelled `claude-code`): `PLUGIN_ROOT` counts only when it is the plugin root the hook runs from. Other host signals are still tracked in #325.
+- Docs: the Codex plugin's SessionStart hook injects the same memory block as Claude Code's, so Codex agents with the plugin (once Codex runs its hooks) should not call `briefing` again unless that block is missing; the 4.10.5 notes said Codex had to call it manually. Recall is described correctly (three or more words must all match, with an any-word fallback; default limit 20) (#405). Agent-facing text cleanup (#446).
+
 ## [4.10.5] — 2026-09-24
 
 ### Added

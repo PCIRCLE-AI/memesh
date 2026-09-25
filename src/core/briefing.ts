@@ -49,6 +49,7 @@ import {
   DECISION_LAYER_TYPES,
   DEFAULT_TOPOLOGY_BUDGET,
   GLOBAL_TOPOLOGY_LIMIT,
+  LESSON_TYPE_LIST,
   SNIPPET_FETCH_CHARS,
   TOPOLOGY_CANDIDATE_CAP,
   assembleTopologyBlock,
@@ -425,10 +426,10 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   const lessonPool = (db.prepare(
     `SELECT DISTINCT ${CANDIDATE_COLUMNS}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE e.type = 'lesson_learned' AND e.status = 'active'${nonGlobal} AND t.tag = ?
+     WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')}) AND e.status = 'active'${nonGlobal} AND t.tag = ?
      ORDER BY e.id DESC
      LIMIT 50`,
-  ).all(`project:${projectName}`) as unknown as CandidateRow[])
+  ).all(...LESSON_TYPE_LIST, `project:${projectName}`) as unknown as CandidateRow[])
     .map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
 
   // `global` is an explicit storage scope, not a project tag. It gets a
