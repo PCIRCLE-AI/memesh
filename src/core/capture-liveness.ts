@@ -972,21 +972,41 @@ export function graceInEffect(state: CaptureGraceState, nowMs: number): boolean 
 /**
  * Which agent host a hook payload came from.
  *
- * Pure so both the hook writer and any test can call it. The payload shape is
- * the primary signal — Claude Code sends `transcript_path` / `hook_event_name`,
- * Codex identifies itself in the environment — and `unknown` is returned
- * rather than guessed, because a wrong host label on a liveness record is
- * worse than an absent one (#325/#326 want these figures PER HOST).
+ * Pure so both the hook writer and any test can call it. Codex identifies
+ * itself in the environment; Claude Code by its own variables or payload
+ * shape. `unknown` is returned rather than guessed, because a wrong host label
+ * on a liveness record is worse than an absent one (#325/#326 want these
+ * figures PER HOST).
+ *
+ * Codex runs the same `hooks/hooks.json`, and its payloads carry
+ * `hook_event_name` too, so the payload fallback below alone labels a Codex
+ * run `claude-code`; every Codex hook run was recorded that way (#325).
+ * `PLUGIN_ROOT` is the variable the Codex session companion
+ * (src/host-runtime/codex-session.ts) already requires to recognise a Codex
+ * hook, so it is checked before any Claude signal. It is a generic name that a
+ * shell or a parent process could leak into a Claude Code hook, so it counts
+ * only as the Codex plugin sets it: to the plugin root the hook itself runs
+ * from. The hook writer passes `pluginRootIsHookRoot` (scripts/hooks/_shared.js
+ * compares real paths); without it, a `PLUGIN_ROOT` that contradicts a Claude
+ * plugin root is ignored. When the writer reports that `PLUGIN_ROOT` is NOT its
+ * own plugin root and no Claude signal is present, the answer is `unknown`:
+ * the payload fallback would otherwise guess `claude-code` for what may be a
+ * Codex run (#447). `MEMESH_HOOK_HOST` overrides everything.
  */
 export function detectHookHost(
   payload: Record<string, unknown> | null | undefined,
   env: Record<string, string | undefined> = {},
+  options: { pluginRootIsHookRoot?: boolean } = {},
 ): HookHost {
   if (env.MEMESH_HOOK_HOST === 'claude-code' || env.MEMESH_HOOK_HOST === 'codex') {
     return env.MEMESH_HOOK_HOST;
   }
   if (env.CODEX_HOME || env.CODEX_SANDBOX || env.CODEX_PLUGIN_ROOT) return 'codex';
+  const codexPluginRoot = options.pluginRootIsHookRoot
+    ?? (!env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PLUGIN_ROOT === env.PLUGIN_ROOT);
+  if (env.PLUGIN_ROOT && codexPluginRoot) return 'codex';
   if (env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PROJECT_DIR || env.CLAUDECODE) return 'claude-code';
+  if (env.PLUGIN_ROOT && options.pluginRootIsHookRoot === false) return 'unknown';
   if (payload && typeof payload === 'object') {
     if (typeof payload.transcript_path === 'string' || typeof payload.hook_event_name === 'string') {
       return 'claude-code';

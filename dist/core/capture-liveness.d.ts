@@ -136,5 +136,7 @@ export interface CaptureGraceState {
 export declare function parseGraceState(raw: string | null | undefined): CaptureGraceState | null;
 export declare function advanceGraceState(previous: CaptureGraceState | null, version: string, nowMs: number): CaptureGraceState;
 export declare function graceInEffect(state: CaptureGraceState, nowMs: number): boolean;
-export declare function detectHookHost(payload: Record<string, unknown> | null | undefined, env?: Record<string, string | undefined>): HookHost;
+export declare function detectHookHost(payload: Record<string, unknown> | null | undefined, env?: Record<string, string | undefined>, options?: {
+    pluginRootIsHookRoot?: boolean;
+}): HookHost;
 //# sourceMappingURL=capture-liveness.d.ts.map

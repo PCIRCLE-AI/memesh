@@ -1,4 +1,5 @@
 const LESSON_TYPES = new Set(['lesson_learned', 'lesson', 'mistake']);
+export const LESSON_TYPE_LIST = [...LESSON_TYPES];
 export const WORK_LAYER_TYPES = new Set([
     ...LESSON_TYPES,
     'decision',

@@ -141,6 +141,17 @@ describe('hook outcome records', () => {
     expect(rows[0].reason).toBe(SKIP_REASONS.commitHeadUnresolvable);
   });
 
+  // #325 round trip: the host label is written by the real hook process and read
+  // back through parseHookOutcomes, the same reader doctor's per-host figures use.
+  it('records host codex when PLUGIN_ROOT is the plugin root the hook runs from, and not for a stray one', () => {
+    const neutral = { CODEX_HOME: '', CODEX_SANDBOX: '', CODEX_PLUGIN_ROOT: '', MEMESH_HOOK_HOST: '' };
+    const skip = { tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'cat CHANGELOG.md' } };
+    runHook('post-commit', skip, { ...neutral, PLUGIN_ROOT: path.resolve('.'), CLAUDE_PLUGIN_ROOT: '' });
+    runHook('post-commit', skip, { ...neutral, PLUGIN_ROOT: testDir, CLAUDE_PLUGIN_ROOT: '', CLAUDECODE: '1' });
+    const rows = records('post-commit');
+    expect(rows.map((r) => r.host)).toEqual(['codex', 'claude-code']);
+  });
+
   it('post-commit records a SKIPPED with a reason on every other bail', () => {
     runHook('post-commit', { tool_name: 'Read', tool_input: {} });
     runHook('post-commit', { cwd: repoDir, tool_input: {} });
@@ -338,6 +349,15 @@ describe('hook outcome records', () => {
     const rows = records('session-start');
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows[0].outcome).toBe('notified');
+  });
+
+  it('session-start records its host from the payload like every other hook (#447)', () => {
+    const noHost = { CLAUDECODE: '', CLAUDE_PLUGIN_ROOT: '', CLAUDE_PROJECT_DIR: '', PLUGIN_ROOT: '',
+      CODEX_HOME: '', CODEX_SANDBOX: '', CODEX_PLUGIN_ROOT: '', MEMESH_HOOK_HOST: '' };
+    runHook('session-start', { hook_event_name: 'SessionStart', session_id: 'ss-host', cwd: repoDir }, noHost);
+    const rows = records('session-start');
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.map((r) => r.host)).toEqual(rows.map(() => 'claude-code'));
   });
 
   it('session-start records exactly one ERROR, and still emits one JSON document, when recall throws', () => {

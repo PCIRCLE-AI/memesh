@@ -163,6 +163,28 @@ describe('doctor: capture-liveness', () => {
     expect(result.capture?.status).toBe('PASS');
   });
 
+  it('the PASS summary names the hosts the records came from (#447)', async () => {
+    // The per-hook `hosts` figure rode only `--json`; the sentence a person reads
+    // never said which agent host the runs came from.
+    memeshDirWith([
+      { hook: 'post-commit', at: '2026-09-09T00:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'commit-abc1234' },
+      { hook: 'post-commit', at: '2026-09-09T00:30:00.000Z', host: 'codex', outcome: 'wrote', entity: 'commit-def5678' },
+      { hook: 'session-summary', at: '2026-09-09T01:00:00.000Z', host: 'unknown', outcome: 'wrote', entity: 'session-s1-summary' },
+    ]);
+    const result = await run({ typeTrends: [{ type: 'commit', last7: 12, prev7: 9 }] });
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('pass');
+    expect(check.summary).toContain('Hosts recorded: claude-code, codex, unknown.');
+  });
+
+  it('a warning names the hosts too — that is when a mislabelled host matters most (#447)', async () => {
+    memeshDirWith(skips('post-commit', 48, SKIP_REASONS.commitLineMissing).map((r) => ({ ...r, host: 'codex' as const })));
+    const result = await run();
+    const check = result.checks.find((c) => c.id === 'capture-liveness')!;
+    expect(check.status).toBe('warn');
+    expect(check.summary).toContain('Hosts recorded: codex.');
+  });
+
   it('the PASS summary does not say a hook that only PRINTS wrote something (#324)', async () => {
     // remember-nudge records `wrote` for a line it printed to the user; it
     // never touches the graph. A summary claiming it "wrote something" would

@@ -242,8 +242,16 @@ describe('Feature: User Prompt Intent Hook', () => {
     // missing memesh tool call instruction, a missing scope decision tree) should.
     const hint = buildHint();
 
-    it('mentions mcp__memesh__remember tool', () => {
-      expect(hint).toMatch(/mcp__memesh__remember/);
+    it('names the memesh remember tool without a host-specific prefix (#442)', () => {
+      // Under the Claude Code plugin the tool is mcp__plugin_memesh_memesh__remember;
+      // a hard-coded mcp__memesh__ name is not in the agent's tool list.
+      expect(hint).toMatch(/memesh `remember` tool/);
+      expect(hint).not.toMatch(/mcp__memesh__/);
+    });
+
+    it('points project tags at the exact briefing project id, not a plain name (#408)', () => {
+      expect(hint).toMatch(/memesh briefing --json/);
+      expect(hint).not.toMatch(/tag:project:memesh/);
     });
 
     it('describes the scope decision tree (personal / project / global)', () => {

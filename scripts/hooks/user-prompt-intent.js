@@ -4,7 +4,7 @@
 //
 // Detects when the user explicitly asks Claude to remember / save / memorize
 // content from the current session, and injects a context hint reminding Claude
-// to use `mcp__memesh__remember` for cross-project recall.
+// to use the memesh `remember` tool for cross-project recall.
 //
 // Why a hint instead of autonomous capture? The user's intent is clear, but
 // "what to remember" usually depends on the surrounding conversation —
@@ -180,25 +180,17 @@ export function detectRememberIntent(prompt) {
 export function buildHint() {
   return [
     '<memesh-remember-intent>',
-    'The user just asked you to save / remember content. Use memesh for cross-project recall:',
-    '',
-    '1. Decide WHAT to remember from the conversation context. Be specific — pick observations',
-    '   that will be useful in *future* sessions, not session-local state.',
-    '',
-    '2. Decide the SCOPE for a NEW memory (this drives namespace + tags):',
-    '   • Machine-level / cross-project / preferences  → memesh namespace=personal',
-    '   • Project-internal decision / pattern / lesson → memesh + project tag (e.g. tag:project:memesh)',
-    '   • Universal / public best practice             → memesh namespace=global (rare)',
-    '',
-    '3. Call `mcp__memesh__remember` with:',
-    '   • name: descriptive entity name (e.g., "aws-cdk-stack-pattern")',
-    '   • type: one of (decision, pattern, lesson_learned, bug, process, preference, etc.)',
-    '   • observations: array of specific facts / steps / rationale',
-    '   • tags: relevant tags (programming language, framework, domain)',
-    '   • namespace: personal | team | global — OMIT for a memory that already exists.',
-    '     Supplying it MOVES that memory out of the scope it is in.',
-    '',
-    '4. Confirm to the user with: entity name + memesh ID returned by the tool.',
+    'The user asked you to save something. Store it with the memesh `remember` tool, keeping',
+    'the facts a future session will need rather than session-local state. The simplest call',
+    'is `note:` with the text (it accepts tags: too); for a structured memory pass name: (stable,',
+    'descriptive), type: (such as decision, pattern, lesson_learned or preference), observations:',
+    'and tags:.',
+    'Scope: project work gets a project tag, project:<id>, where <id> is the `project` field of the',
+    '`briefing` result (CLI: `memesh briefing --json`); a plain repository name is a different scope',
+    'that this project\'s sessions never see. Machine-wide preferences use namespace=personal, memory',
+    'shared with a team namespace=team, public best practice namespace=global. Leave namespace: out',
+    'for a memory that already exists, because supplying it moves that memory.',
+    'Then tell the user the entity name and id the tool returned.',
     '</memesh-remember-intent>',
   ].join('\n');
 }

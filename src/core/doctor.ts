@@ -1449,6 +1449,22 @@ function archivedHandoffCheck(title: string, runs: number, name: string | null):
     { code: 'capture-liveness.handoff-archived-unnamed', params: { runs } });
 }
 
+/**
+ * Name the agent hosts the outcome records came from, on every capture-liveness
+ * verdict that has records (#447). The per-hook figure rides `--json`; the
+ * sentence a person reads names them too, and a warning is where a mislabelled
+ * host matters most.
+ */
+function withRecordedHosts(
+  result: { check: DoctorCheck; report?: CaptureLivenessReport },
+): { check: DoctorCheck; report?: CaptureLivenessReport } {
+  // No report (capture off, or the read failed) means no records to name.
+  if (!result.report) return result;
+  const hostsSeen = [...new Set(result.report.hooks.flatMap((h) => h.hosts))].sort();
+  if (hostsSeen.length === 0) return result;
+  return { ...result, check: { ...result.check, summary: `${result.check.summary} Hosts recorded: ${hostsSeen.join(', ')}.` } };
+}
+
 function inspectCaptureLiveness(
   openDatabaseImpl: typeof openDatabase,
   closeDatabaseImpl: typeof closeDatabase,
@@ -3410,7 +3426,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // Next to hook-activity on purpose: "did it run" and "did it write" are
   // read together, and separating them is what let a green heartbeat cover
   // an empty graph for two days (#327).
-  const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired);
+  const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
   checks.push(captureLiveness.check);
   // The figures behind the capture-liveness row, surfaced on the result so
   // `--json` carries the evidence and not only the verdict.

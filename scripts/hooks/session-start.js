@@ -80,6 +80,7 @@ import {
   boundTaskStateLines,
   DECISION_LAYER_TYPES,
   joinedLength,
+  LESSON_TYPE_LIST,
   prioritizeDecisions,
 } from './_generated/work-topology.js';
 
@@ -819,6 +820,16 @@ function nothingToInjectReason(level, detail) {
 }
 
 let input = '';
+// The parsed hook payload, for the outcome records: detectHookHost falls back
+// to its shape when no host variable is set, as it does for every other hook.
+let hookPayload = null;
+
+/** Record this hook's outcome, always with its payload (#447). Named `record`
+ *  like the other hooks' helpers, which is what scripts/audit/hook-outcome-gate.mjs
+ *  recognises as an outcome record. */
+function record(info) {
+  recordHookOutcome(process.env, { hook: 'session-start', payload: hookPayload, ...info });
+}
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', async () => {
@@ -841,6 +852,7 @@ process.stdin.on('end', async () => {
   try {
     try {
     const data = JSON.parse(input);
+    hookPayload = data;
     const projectName = getProjectName(data.cwd);
 
     // #360 — resolve the briefing level ONCE, before any exit path, so every
@@ -860,8 +872,7 @@ process.stdin.on('end', async () => {
           `[memesh session-start] invalid ${source} briefing level ${value} — using "${briefingLevel}"\n`,
         );
       } catch { /* stderr gone */ }
-      recordHookOutcome(process.env, {
-        hook: 'session-start',
+      record({
         outcome: 'notified',
         reason: `briefing-level: invalid ${source} value ${value}, using ${briefingLevel}`,
       });
@@ -877,8 +888,7 @@ process.stdin.on('end', async () => {
     // of which settings would have been affected, since the whole document
     // was unusable, not one field.
     if (configRead.state === 'unreadable') {
-      recordHookOutcome(process.env, {
-        hook: 'session-start',
+      record({
         outcome: 'notified',
         reason: HOOK_CONFIG_UNREADABLE_REASON,
       });
@@ -1231,8 +1241,7 @@ process.stdin.on('end', async () => {
       } catch (err) {
         decisionEntities = [];
         try { process.stderr.write(`[memesh session-start] decisions: ${err?.message || err}\n`); } catch {}
-        recordHookOutcome(process.env, {
-          hook: 'session-start',
+        record({
           outcome: 'error',
           reason: `decisions: ${hookErrorReason(err)}`,
         });
@@ -1280,8 +1289,7 @@ process.stdin.on('end', async () => {
       } catch (err) {
         handoffRow = undefined;
         try { process.stderr.write(`[memesh session-start] session handoff: ${err?.message || err}\n`); } catch {}
-        recordHookOutcome(process.env, {
-          hook: 'session-start',
+        record({
           outcome: 'error',
           reason: `handoff: ${hookErrorReason(err)}`,
         });
@@ -1302,13 +1310,13 @@ process.stdin.on('end', async () => {
           SELECT DISTINCT e.id, e.name, e.type,${hasTitle ? ' e.title,' : ''} e.metadata
           FROM entities e
           JOIN tags t ON t.entity_id = e.id
-          WHERE e.type = 'lesson_learned'
+          WHERE e.type IN (${LESSON_TYPE_LIST.map(() => '?').join(', ')})
             ${hasStatus ? "AND e.status = 'active'" : ''}
             ${colNames.has('namespace') ? "AND (e.namespace IS NULL OR e.namespace <> 'global')" : ''}
             AND t.tag = ?
           ORDER BY e.id DESC
           LIMIT 50
-        `).all(projectTag).filter(entity => isTrustedForAutoContext(entity.metadata));
+        `).all(...LESSON_TYPE_LIST, projectTag).filter(entity => isTrustedForAutoContext(entity.metadata));
         lessonCount = lessonRows.length;
         lessonEntities = lessonRows;
       } catch (err) {
@@ -1437,8 +1445,7 @@ process.stdin.on('end', async () => {
             { includeFresh: briefingPolicy.taskState },
           )),
           ...waitingMessageLines(db, resolveMessageRecipient(process.env), (err) =>
-            recordHookOutcome(process.env, {
-              hook: 'session-start',
+            record({
               outcome: 'error',
               reason: `inbox: ${hookErrorReason(err)}`,
             })),
@@ -1492,8 +1499,7 @@ process.stdin.on('end', async () => {
         // project: at `minimal` the index read is skipped, and this is the
         // only place the fault can surface.
         memoryAssemblyFailed = true;
-        recordHookOutcome(process.env, {
-          hook: 'session-start',
+        record({
           outcome: 'error',
           reason: `memory-context: ${hookErrorReason(err)}`,
         });
@@ -1563,8 +1569,7 @@ process.stdin.on('end', async () => {
       } catch (err) {
         const reason = String(err?.message || err);
         try { process.stderr.write(`[memesh session-start] briefing-index: ${reason}\n`); } catch {}
-        recordHookOutcome(process.env, {
-          hook: 'session-start',
+        record({
           outcome: 'error',
           // The locus, plus a LABEL for the exception — never its message.
           // `hook-outcomes.jsonl` is permanent, exportable and meant to be
@@ -1948,11 +1953,7 @@ function output(text, memoryContext = undefined, recorded = null) {
     };
   }
   console.log(JSON.stringify(payload));
-  recordHookOutcome(process.env, recorded
-    ? { hook: 'session-start', outcome: recorded.outcome, reason: recorded.reason, ...(recorded.entity ? { entity: recorded.entity } : {}) }
-    : {
-      hook: 'session-start',
-      outcome: 'notified',
-      entity: memoryContext ? 'session-start-context' : 'session-start-banner',
-    });
+  record(recorded
+    ? { outcome: recorded.outcome, reason: recorded.reason, ...(recorded.entity ? { entity: recorded.entity } : {}) }
+    : { outcome: 'notified', entity: memoryContext ? 'session-start-context' : 'session-start-banner' });
 }

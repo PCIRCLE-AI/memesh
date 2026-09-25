@@ -1,3 +1,4 @@
+export declare const LESSON_TYPE_LIST: readonly string[];
 export declare const WORK_LAYER_TYPES: ReadonlySet<string>;
 export declare const DECISION_LAYER_TYPES: readonly string[];
 export declare const EVIDENCE_LAYER_TYPES: ReadonlySet<string>;

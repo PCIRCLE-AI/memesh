@@ -99,8 +99,10 @@ describe('Feature: decision-nudge hook (PostToolUse ExitPlanMode|AskUserQuestion
     const ctx = parsed.hookSpecificOutput.additionalContext as string;
     expect(ctx).toContain('ExitPlanMode');
     expect(ctx).toContain('remember');
-    expect(ctx).toContain('type:decision or type:lesson');
-    expect(ctx).toContain('project:<name>');
+    // The documented lesson type, lesson_learned, rather than the undocumented shorthand (#443).
+    expect(ctx).toContain('type decision or lesson_learned');
+    // The exact project id, not a plain name that hashed-identity sessions never see (#408).
+    expect(ctx).toContain('memesh briefing --json');
     expect(ctx).toContain('`task_state` tool');
     // Not memory content — must NOT ride the buildReferenceContext fence
     // that recalled/guard content uses (see the hook's own comment on why).

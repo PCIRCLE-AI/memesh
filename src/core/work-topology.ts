@@ -28,8 +28,14 @@
 /** The lesson-ish subset of the work layer — the types groupTopology files
  *  under "do not repeat these" rather than "decisions and direction". Stated
  *  once and composed into the whitelist, so a future lesson-ish type cannot
- *  join the layer without also choosing its section. */
+ *  join the layer without also choosing its section. The briefing's and the
+ *  SessionStart hook's reserved lesson pools select from this same set, so a
+ *  memory shown under "do not repeat these" also competes for the lesson
+ *  slots (#443). */
 const LESSON_TYPES: ReadonlySet<string> = new Set(['lesson_learned', 'lesson', 'mistake']);
+
+/** LESSON_TYPES as a list, for SQL `IN (…)` placeholders. */
+export const LESSON_TYPE_LIST: readonly string[] = [...LESSON_TYPES];
 
 export const WORK_LAYER_TYPES: ReadonlySet<string> = new Set([
   ...LESSON_TYPES,
