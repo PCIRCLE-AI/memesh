@@ -1,0 +1,25 @@
+# gitleaks configuration for this repository.
+#
+# The default rules stay on. Each allowlist below says which values it lets
+# through and why they are not credentials; anything else, including a real
+# secret on the same line as an allowed value, is still reported.
+#
+# gitleaks loads this file automatically. Run it from the repository root
+# (`gitleaks dir .` or `gitleaks git`): the path allowlists match
+# repository-relative paths. No CI job runs gitleaks.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "SHA-256 checksums that lock the MCP tool documentation (scripts/check-readme-tool-parity.mjs); they are content hashes, not credentials"
+paths = ['''^scripts/mcp-doc-contract\.json$''']
+
+[[allowlists]]
+description = "Synthetic credentials that exercise the redaction code; each test asserts the value is masked"
+paths = ['''^tests/core/redact-secrets\.test\.ts$''']
+
+[[allowlists]]
+description = "Message idempotency keys written as lowercase literals (used in tests) are plain identifiers, not credentials; only the matched key is allowed, not the rest of its line"
+regexTarget = "match"
+regexes = ["idempotency_key: '[a-z0-9-]+'"]

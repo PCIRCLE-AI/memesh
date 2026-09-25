@@ -455,6 +455,8 @@ export function detectHookHost(payload, env = {}, options = {}) {
         return 'codex';
     if (env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PROJECT_DIR || env.CLAUDECODE)
         return 'claude-code';
+    if (env.PLUGIN_ROOT && options.pluginRootIsHookRoot === false)
+        return 'unknown';
     if (payload && typeof payload === 'object') {
         if (typeof payload.transcript_path === 'string' || typeof payload.hook_event_name === 'string') {
             return 'claude-code';

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { detectHookHost } from '../../src/core/capture-liveness.js';
@@ -56,6 +56,16 @@ describe('detectHookHost', () => {
   });
 });
 
+describe('detectHookHost with a PLUGIN_ROOT that is not the hook root (#447)', () => {
+  it('reads unknown rather than guessing claude-code from the payload', () => {
+    expect(detectHookHost({ hook_event_name: 'Stop' }, { PLUGIN_ROOT: '/x' }, { pluginRootIsHookRoot: false })).toBe('unknown');
+  });
+
+  it('still reads claude-code when a Claude signal is present', () => {
+    expect(detectHookHost({ hook_event_name: 'Stop' }, { PLUGIN_ROOT: '/x', CLAUDECODE: '1' }, { pluginRootIsHookRoot: false })).toBe('claude-code');
+  });
+});
+
 describe('pluginRootIsHookRoot', () => {
   it('is true when PLUGIN_ROOT is the directory the hooks run from', () => {
     expect(pluginRootIsHookRoot({ PLUGIN_ROOT: repoRoot })).toBe(true);
@@ -65,5 +75,18 @@ describe('pluginRootIsHookRoot', () => {
     expect(pluginRootIsHookRoot({ PLUGIN_ROOT: path.join(repoRoot, 'src') })).toBe(false);
     expect(pluginRootIsHookRoot({ PLUGIN_ROOT: '/no/such/dir/for/memesh' })).toBe(false);
     expect(pluginRootIsHookRoot({})).toBe(false);
+  });
+
+  it('says on stderr when PLUGIN_ROOT cannot be resolved, once per run, instead of failing silently (#447)', () => {
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const env = { PLUGIN_ROOT: '/no/such/dir/for/memesh-stderr-probe' };
+      expect(pluginRootIsHookRoot(env)).toBe(false);
+      expect(pluginRootIsHookRoot(env)).toBe(false);
+      const lines = spy.mock.calls.map((c) => String(c[0])).filter((line) => line.includes('PLUGIN_ROOT'));
+      expect(lines).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

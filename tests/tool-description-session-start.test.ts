@@ -18,7 +18,7 @@ describe('session-start guidance in MCP tool descriptions (#444)', () => {
     const text = description('briefing');
     expect(text).not.toMatch(/Call once at the START of a session/i);
     expect(text).toMatch(/only when the host has not already injected this block/);
-    expect(text).toMatch(/Codex plugin/);
+    expect(text).toMatch(/Codex plugin once Codex runs its hooks/);
   });
 
   it('user_patterns is not part of loading a session', () => {

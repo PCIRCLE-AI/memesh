@@ -56479,6 +56479,14 @@ function archivedHandoffCheck(title, runs, name) {
   }
   return createCheck("capture-liveness", title, "warn", summary, "To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.", { code: "capture-liveness.handoff-archived-unnamed", params: { runs } });
 }
+function withRecordedHosts(result) {
+  if (!result.report)
+    return result;
+  const hostsSeen = [...new Set(result.report.hooks.flatMap((h) => h.hosts))].sort();
+  if (hostsSeen.length === 0)
+    return result;
+  return { ...result, check: { ...result.check, summary: `${result.check.summary} Hosts recorded: ${hostsSeen.join(", ")}.` } };
+}
 function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyncImpl = fs18.readFileSync, memeshDirImpl = getMemeshDirFromDbPath, captureWired = true) {
   const TITLE = "Capture liveness";
   if (autoCaptureOffSource() !== null) {
@@ -57398,7 +57406,7 @@ async function runDoctor(options) {
     checks.push(codexSessionSetup);
   const captureWired = wiring.status === "pass" && (wiring.params === void 0 || wiring.params.captureWired === 1);
   checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
-  const captureLiveness = inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired);
+  const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
   checks.push(captureLiveness.check);
   const captureReport = captureLiveness.report;
   checks.push(inspectDashboardArtifact(packageRoot3, existsSyncImpl));

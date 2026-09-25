@@ -988,7 +988,10 @@ export function graceInEffect(state: CaptureGraceState, nowMs: number): boolean 
  * only as the Codex plugin sets it: to the plugin root the hook itself runs
  * from. The hook writer passes `pluginRootIsHookRoot` (scripts/hooks/_shared.js
  * compares real paths); without it, a `PLUGIN_ROOT` that contradicts a Claude
- * plugin root is ignored. `MEMESH_HOOK_HOST` overrides everything.
+ * plugin root is ignored. When the writer reports that `PLUGIN_ROOT` is NOT its
+ * own plugin root and no Claude signal is present, the answer is `unknown`:
+ * the payload fallback would otherwise guess `claude-code` for what may be a
+ * Codex run (#447). `MEMESH_HOOK_HOST` overrides everything.
  */
 export function detectHookHost(
   payload: Record<string, unknown> | null | undefined,
@@ -1003,6 +1006,7 @@ export function detectHookHost(
     ?? (!env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PLUGIN_ROOT === env.PLUGIN_ROOT);
   if (env.PLUGIN_ROOT && codexPluginRoot) return 'codex';
   if (env.CLAUDE_PLUGIN_ROOT || env.CLAUDE_PROJECT_DIR || env.CLAUDECODE) return 'claude-code';
+  if (env.PLUGIN_ROOT && options.pluginRootIsHookRoot === false) return 'unknown';
   if (payload && typeof payload === 'object') {
     if (typeof payload.transcript_path === 'string' || typeof payload.hook_event_name === 'string') {
       return 'claude-code';

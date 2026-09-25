@@ -48,8 +48,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "d25cc83ce1c6f5fd7c909d3ee27f3b9e009518a1cbf86dae71fc625de69d7f49",
-      "bytes": 18103
+      "sha256": "ff9834d74c4570d162371aec253d76c80b6b40c0bfc790b955c0ccf9778aa206",
+      "bytes": 18196
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -118,8 +118,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "29fce3ce7f63d0b419c2961a67a2e48f94b15a1f7094d9ca7e7a5ba1a82dd7a7",
-      "bytes": 102263
+      "sha256": "feecf73869a286d1e1f1b947c667a8a2ed2a964b851e6032387a715b87e6d82d",
+      "bytes": 102849
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -163,8 +163,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "700c19bb15ecadaf27a4e7816363cd13e338abe66af03d8b9b8ba40cf5a8ce17",
-      "bytes": 100703
+      "sha256": "37f54ba734d3f7acdfd2cc5ae2ba5b46e763a84f0b6e02dd6b8cb0985c7aa06f",
+      "bytes": 100740
     },
     {
       "path": "scripts/hooks/session-summary.js",

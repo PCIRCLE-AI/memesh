@@ -754,15 +754,24 @@ const HOOK_PLUGIN_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..
  * Codex plugin sets it. A value inherited from a shell or a parent process
  * names some other directory, or none, and must not relabel a Claude Code hook
  * as codex (#325). Real paths are compared so a symlinked cache path still
- * matches; any failure to resolve counts as no match.
+ * matches. A failure to resolve counts as no match and is said once on stderr
+ * rather than dropped (#447): these hooks exit 0, and a hook that exits 0 does
+ * not show its stderr to the model. The answer is kept per PLUGIN_ROOT value,
+ * so a run that records several outcomes resolves and reports it once.
  */
+const pluginRootAnswers = new Map();
 export function pluginRootIsHookRoot(env) {
-  if (!env?.PLUGIN_ROOT) return false;
+  const root = env?.PLUGIN_ROOT;
+  if (!root) return false;
+  if (pluginRootAnswers.has(root)) return pluginRootAnswers.get(root);
+  let answer = false;
   try {
-    return realpathSync(env.PLUGIN_ROOT) === realpathSync(HOOK_PLUGIN_ROOT);
-  } catch {
-    return false;
+    answer = realpathSync(root) === realpathSync(HOOK_PLUGIN_ROOT);
+  } catch (err) {
+    try { process.stderr.write(`[memesh] PLUGIN_ROOT could not be resolved (${err?.code ?? 'error'}); host recorded as not codex\n`); } catch {}
   }
+  pluginRootAnswers.set(root, answer);
+  return answer;
 }
 
 /**

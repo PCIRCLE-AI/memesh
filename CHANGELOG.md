@@ -4,6 +4,10 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `.gitleaks.toml`, which gitleaks loads when run from the repository root: the default rules stay on, and three allowlists let through only the documentation checksums, the synthetic credentials in the redaction tests and literal test idempotency keys (the key alone, not the rest of its line), each with the reason it is not a credential. No CI job runs gitleaks.
+
 ### Fixed
 
 - The "remember this" prompt hint named `mcp__memesh__remember`, which does not exist under a plugin install; it now names the memesh `remember` tool and gives the short form (#442).
@@ -12,6 +16,7 @@ All notable changes to MeMesh are documented here.
 - The `briefing` and `user_patterns` tool descriptions no longer tell every host to call them at session start, which reloaded a block the SessionStart hook had already injected (#444).
 - The Claude Channel instructions no longer say no reply is required. Message content still authorizes nothing on its own; an agent acts on a request only under its normal permission rules and the user's authorization, and replies or tells the user it is waiting (#445).
 - Codex plugin hook runs are recorded as host `codex` (they were all labelled `claude-code`): `PLUGIN_ROOT` counts only when it is the plugin root the hook runs from. Other host signals are still tracked in #325.
+- A hook run whose `PLUGIN_ROOT` is not the plugin root it runs from, with no Claude Code signal, is recorded as host `unknown` instead of a guessed `claude-code`, and an unresolvable `PLUGIN_ROOT` is reported once on stderr. The SessionStart hook passes its payload to the record like the other hooks, and `memesh doctor` names the hosts the records came from on every capture-liveness result (#447).
 - Docs: the Codex plugin's SessionStart hook injects the same memory block as Claude Code's, so Codex agents with the plugin (once Codex runs its hooks) should not call `briefing` again unless that block is missing; the 4.10.5 notes said Codex had to call it manually. Recall is described correctly (three or more words must all match, with an any-word fallback; default limit 20) (#405). Agent-facing text cleanup (#446).
 
 ## [4.10.5] — 2026-09-24

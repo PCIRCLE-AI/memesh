@@ -351,6 +351,15 @@ describe('hook outcome records', () => {
     expect(rows[0].outcome).toBe('notified');
   });
 
+  it('session-start records its host from the payload like every other hook (#447)', () => {
+    const noHost = { CLAUDECODE: '', CLAUDE_PLUGIN_ROOT: '', CLAUDE_PROJECT_DIR: '', PLUGIN_ROOT: '',
+      CODEX_HOME: '', CODEX_SANDBOX: '', CODEX_PLUGIN_ROOT: '', MEMESH_HOOK_HOST: '' };
+    runHook('session-start', { hook_event_name: 'SessionStart', session_id: 'ss-host', cwd: repoDir }, noHost);
+    const rows = records('session-start');
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.map((r) => r.host)).toEqual(rows.map(() => 'claude-code'));
+  });
+
   it('session-start records exactly one ERROR, and still emits one JSON document, when recall throws', () => {
     // A database file that is not a database: the recall flow throws, and
     // the catch must go through output() — one stdout document, one record,
