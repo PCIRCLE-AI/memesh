@@ -445,6 +445,14 @@ function buildImportedMetadata(
      * (`importMemories`) already has this as `Boolean(existing)`.
      */
     isNewEntity: boolean;
+    /**
+     * `--trust` (CLI only; never reachable from MCP or HTTP — see
+     * `importMemories`'s second argument). Stamps a fresh or overwritten
+     * entity `trusted`/`trusted-import` instead of `untrusted`/`import`. On
+     * an `append` to an entity that already existed, it does neither —
+     * see `preserveTrust` below.
+     */
+    trust: boolean;
   }
 ): EntityMetadata {
   const bundled = (args.bundled ?? {}) as Record<string, unknown>;
@@ -509,6 +517,17 @@ function buildImportedMetadata(
     ? validateFreshReplacedHistory(bundled.replaced_history)
     : null;
 
+  // `--trust` on an `append` to an entity that already existed: the owner
+  // decision (#407) is "leave the existing entity's trust exactly as it
+  // was — do not promote, and do not demote". `mergeStrategy === 'append'`
+  // together with `!isNewEntity` is exactly that case (a fresh entity under
+  // `append` falls through to the create path below instead, same as
+  // `overwrite`). Omitting `trust`/`provenance` from the returned object
+  // leaves whatever `existingMetadata` already spread in at the top
+  // untouched — including an entity with no `trust` key at all, which must
+  // stay keyless, not gain `trust: 'trusted'`.
+  const preserveTrust = args.trust && !args.isNewEntity && args.mergeStrategy === 'append';
+
   return {
     ...(existingMetadata ?? {}),
     ...bundledSafe,
@@ -516,15 +535,17 @@ function buildImportedMetadata(
     ...(freshSignalScore !== null ? { signal_score: freshSignalScore } : {}),
     ...(freshPin ? { pin: true } : {}),
     ...(freshReplacedHistory ? { replaced_history: freshReplacedHistory } : {}),
-    trust: 'untrusted',
-    provenance: {
-      ...(existingMetadata?.provenance ?? {}),
-      source: 'import',
-      imported_at: new Date().toISOString(),
-      exported_at: args.exportedAt,
-      export_version: args.importVersion,
-      merge_strategy: args.mergeStrategy,
-    },
+    ...(preserveTrust ? {} : {
+      trust: args.trust ? 'trusted' : 'untrusted',
+      provenance: {
+        ...(existingMetadata?.provenance ?? {}),
+        source: args.trust ? 'trusted-import' : 'import',
+        imported_at: new Date().toISOString(),
+        exported_at: args.exportedAt,
+        export_version: args.importVersion,
+        merge_strategy: args.mergeStrategy,
+      },
+    }),
   };
 }
 
@@ -665,7 +686,15 @@ function describeInvalidEntity(entity: unknown, index: number): string | null {
   return null;
 }
 
-export function importMemories(args: ImportInput): ImportResult {
+/**
+ * `options.trust` is a SECOND argument, never a field of `ImportInput` or
+ * its Zod schema (`ImportSchema` stays `.strict()`) — so MCP `import` and
+ * `POST /v1/import`, which both call this with exactly one argument, cannot
+ * reach it. Only the CLI's `--trust` (a restore-your-own-backup path,
+ * confirmed before it writes anything) passes `{ trust: true }`.
+ */
+export function importMemories(args: ImportInput, options?: { trust?: boolean }): ImportResult {
+  const trust = options?.trust === true;
   if (!(MERGE_STRATEGIES as readonly string[]).includes(args.merge_strategy)) {
     throw new Error(
       `Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(', ')}. ` +
@@ -793,6 +822,7 @@ export function importMemories(args: ImportInput): ImportResult {
           importVersion: args.data.version,
           mergeStrategy: args.merge_strategy,
           isNewEntity: !existing,
+          trust,
         });
 
         if (existing) {
@@ -848,6 +878,19 @@ export function importMemories(args: ImportInput): ImportResult {
           tags: entity.tags,
           metadata: importedMetadata,
           namespace,
+          // Always 'untrusted', `--trust` included. `trustOverride` is never
+          // itself stored — the entity's stored `trust` comes from
+          // `importedMetadata` above — but 'trusted' opens two createEntity
+          // side paths meant only for a user's own `remember`: it lets a
+          // `session-*-summary`/`-files` reactivation restore text `forget`
+          // marked removed (knowledge-graph.ts ~585-595) WHILE
+          // `updateEntityMetadata` two lines below writes the OLD
+          // `forgotten_observation_hashes` back — the text becomes visible
+          // on a row `forgotten_observation_hashes` still calls forgotten,
+          // now trusted and auto-injected; and it lifts confidence by 0.05
+          // on every trusted overwrite. `npm run audit:memory`'s
+          // `forgotten-session-observations-stay-removed` (#346) exists to
+          // catch exactly the first one.
           trustOverride: 'untrusted',
         });
         if (existing) {

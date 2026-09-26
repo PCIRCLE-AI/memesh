@@ -104,6 +104,7 @@ function buildImportedMetadata(existingMetadata, args) {
     const freshReplacedHistory = args.isNewEntity
         ? validateFreshReplacedHistory(bundled.replaced_history)
         : null;
+    const preserveTrust = args.trust && !args.isNewEntity && args.mergeStrategy === 'append';
     return {
         ...(existingMetadata ?? {}),
         ...bundledSafe,
@@ -111,15 +112,17 @@ function buildImportedMetadata(existingMetadata, args) {
         ...(freshSignalScore !== null ? { signal_score: freshSignalScore } : {}),
         ...(freshPin ? { pin: true } : {}),
         ...(freshReplacedHistory ? { replaced_history: freshReplacedHistory } : {}),
-        trust: 'untrusted',
-        provenance: {
-            ...(existingMetadata?.provenance ?? {}),
-            source: 'import',
-            imported_at: new Date().toISOString(),
-            exported_at: args.exportedAt,
-            export_version: args.importVersion,
-            merge_strategy: args.mergeStrategy,
-        },
+        ...(preserveTrust ? {} : {
+            trust: args.trust ? 'trusted' : 'untrusted',
+            provenance: {
+                ...(existingMetadata?.provenance ?? {}),
+                source: args.trust ? 'trusted-import' : 'import',
+                imported_at: new Date().toISOString(),
+                exported_at: args.exportedAt,
+                export_version: args.importVersion,
+                merge_strategy: args.mergeStrategy,
+            },
+        }),
     };
 }
 export function exportMemories(args) {
@@ -176,7 +179,8 @@ function describeInvalidEntity(entity, index) {
     }
     return null;
 }
-export function importMemories(args) {
+export function importMemories(args, options) {
+    const trust = options?.trust === true;
     if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
         throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(', ')}. ` +
             'Nothing was imported — refusing rather than guessing, because the wrong guess overwrites existing memories.');
@@ -230,6 +234,7 @@ export function importMemories(args) {
                     importVersion: args.data.version,
                     mergeStrategy: args.merge_strategy,
                     isNewEntity: !existing,
+                    trust,
                 });
                 if (existing) {
                     if (args.merge_strategy === 'skip')

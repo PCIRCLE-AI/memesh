@@ -7,6 +7,7 @@ All notable changes to MeMesh are documented here.
 ### Added
 
 - `.gitleaks.toml`, which gitleaks loads when run from the repository root: the default rules stay on, and three allowlists let through only the documentation checksums, the synthetic credentials in the redaction tests and literal test idempotency keys (the key alone, not the rest of its line), each with the reason it is not a credential. No CI job runs gitleaks.
+- `memesh import` now prints how many imported memories are untrusted and how to trust them; `memesh import --trust`, behind a confirmation, marks them trusted for restoring your own backup (#407).
 
 ### Changed
 

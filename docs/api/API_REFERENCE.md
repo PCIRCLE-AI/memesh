@@ -450,7 +450,7 @@ Bundles written by earlier versions (`3.0.0`) import unchanged — every added f
 ### import
 
 Import memories from a JSON bundle produced by `export`. Three merge strategies control how conflicts with existing entities are resolved.
-Imported entities are marked with import provenance and treated as untrusted for automatic Claude hook injection until they are reviewed or re-stored locally.
+Imported entities are marked with import provenance and treated as untrusted for automatic Claude hook injection until they are reviewed or re-stored locally, or, for the CLI only, restored with `memesh import --trust` — for your own backup, never for a file someone else gave you.
 
 **Input Schema**:
 
@@ -1551,7 +1551,7 @@ memesh remember --name auth-choice --type decision --obs "PKCE, not implicit" --
 ### memesh import — a JSON bundle
 
 ```bash
-memesh import <file> [--merge skip|overwrite|append] [--namespace <ns>] [--restore-archived]
+memesh import <file> [--merge skip|overwrite|append] [--namespace <ns>] [--restore-archived] [--trust [--yes]]
 ```
 
 | Flag | Meaning |
@@ -1559,10 +1559,19 @@ memesh import <file> [--merge skip|overwrite|append] [--namespace <ns>] [--resto
 | `--merge <strategy>` | `skip` (default), `overwrite` or `append` — see `import` under Tools |
 | `--namespace <ns>` | Force imported entities into this namespace |
 | `--restore-archived` | Requires `--merge append` or `--merge overwrite` (an error with `skip`, the default): bring back a local memory you archived (forgot) when the file names it. Without it, that memory stays archived and untouched |
+| `--trust` | For restoring your OWN backup only — never for a file someone else gave you. Also marks every imported memory trusted, so it is injected into new sessions the way your own memories are. Behind a confirmation prompt (`[y/N]`) unless `--yes` is given; any other answer writes nothing (same convention as `memesh setup`). Refused together with `--notes`. On `append`, an entity that already existed keeps its own trust either way with `--trust` — without it, `append` marks it untrusted as it always has |
+| `--yes` | Skip the `--trust` confirmation prompt. Refused without `--trust`. Without a terminal and without `--yes`, `--trust` is refused (exit 1, nothing written) |
 
 The summary line is unchanged. When the file named archived memories that were
 left alone, a second line follows — `Kept archived: N (…)` — with the flag that
 brings them back. `--restore-archived` is refused together with `--notes`, and with `--merge skip`.
+
+Without `--trust`, a plain import names how many rows it imported as
+untrusted and, separately, how many existing memories it appended text to
+(also now untrusted). It suggests `memesh import <file> --merge overwrite
+--trust` only when nothing else was skipped or appended, since that would
+replace their local content too. With `--trust`, the summary adds only what
+a plain import wouldn't already show: how many appended rows kept their own trust.
 
 ### memesh import --notes — note-file directories
 

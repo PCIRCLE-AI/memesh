@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+export declare function isPromptAbort(err: unknown): boolean;
 export declare function createHostConfigAtomically(host: string, configPath: string, config: Record<string, unknown>): void;
 export declare function feedbackBrowserOpenCommand(platform: NodeJS.Platform, url: string): {
     command: string;

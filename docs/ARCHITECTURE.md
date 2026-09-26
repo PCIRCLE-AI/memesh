@@ -632,6 +632,14 @@ memesh export --namespace personal --output memesh-backup.json
 memesh import memesh-backup.json --merge skip
 ```
 
+Imported rows are untrusted by default (recallable, but not auto-injected).
+For your own backup — never a file someone else gave you — `memesh import
+memesh-backup.json --merge overwrite --trust` marks them trusted, behind a
+confirmation, so they are injected like the originals. `import` suggests
+that command only when nothing else in the file was skipped or appended;
+`--merge overwrite` would replace THEIR local content too, so the notice
+explains that instead.
+
 ---
 
 ## Rule-Guided Memory (v3.1.0)
