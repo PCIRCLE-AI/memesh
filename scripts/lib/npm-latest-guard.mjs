@@ -72,7 +72,7 @@ export function checkLatestUnmoved({ prerelease, stableBefore, stableAfter }) {
         stream: 'error',
         text:
           `  UNKNOWN: could not read npm latest after the publish attempt (was ${stableBefore}). ` +
-          'An unreadable answer is not evidence latest held still — reconcile the dist-tags by hand before trusting either channel.',
+          'An unreadable answer is not evidence latest held still — stop and report to the owner; npm is only changed through the release workflow.',
       }],
     };
   }
@@ -86,7 +86,7 @@ export function checkLatestUnmoved({ prerelease, stableBefore, stableAfter }) {
       exitCode: 1,
       lines: [{
         stream: 'error',
-        text: `  WRONG DIST-TAG: npm latest changed from ${stableBefore} to ${stableAfter}. Reconcile the dist-tags before continuing.`,
+        text: `  WRONG DIST-TAG: npm latest changed from ${stableBefore} to ${stableAfter}. Stop and report to the owner; npm is only changed through the release workflow.`,
       }],
     };
   }

@@ -92,10 +92,25 @@ export function evaluateRegistry(packument, version, distTag = 'latest') {
   }
   const taggedVersion = packument?.['dist-tags']?.[distTag];
   if (taggedVersion !== version) {
+    // #452: npm changes, including promotion, go only through the release
+    // workflow — never a local `npm dist-tag add`. A `latest` mismatch has
+    // two routes depending on where the release currently sits: while it is
+    // still a prerelease, `gh release edit --prerelease=false` fires the
+    // `promote` job; once it is already a full release, that job already
+    // ran (or should have) on its own `released` event, so the fix is to
+    // re-run that same publish-npm run and read the promote job's log, not
+    // to guess which route applies. A `next` mismatch is different: the
+    // version this function was given is already confirmed published
+    // (checked above), so re-running the publish workflow would just try to
+    // publish an already-published version and fail — the only safe move is
+    // to stop and have the owner look, never to move the tag by hand.
+    const fix = distTag === 'latest'
+      ? `While v${version} is still a prerelease: \`gh release edit v${version} --prerelease=false\`. Once it is a full release, re-run its publish-npm run instead: \`gh run list --workflow publish-npm.yml\`, then \`gh run rerun <id>\`, and read the promote job's log.`
+      : `${packageName}@${version} is already published; re-running the publish run cannot move ${distTag} for an already-published version. Stop and report it to the owner — do not move the tag by hand.`;
     return {
       ok: false,
       detail: `${packageName}@${version} is published but the ${distTag} dist-tag is ${taggedVersion ?? 'missing'}, so \`npm install ${packageName}@${distTag}\` does not get it`,
-      fix: `Move the tag deliberately: \`npm dist-tag add ${packageName}@${version} ${distTag}\`.`,
+      fix,
     };
   }
   if (distTag === 'next' && packument?.['dist-tags']?.latest === version) {

@@ -61,7 +61,7 @@ describe('checkLatestUnmoved (the latest-only half)', () => {
       exitCode: 1,
       lines: [{
         stream: 'error',
-        text: '  WRONG DIST-TAG: npm latest changed from 4.9.4 to 4.10.0. Reconcile the dist-tags before continuing.',
+        text: '  WRONG DIST-TAG: npm latest changed from 4.9.4 to 4.10.0. Stop and report to the owner; npm is only changed through the release workflow.',
       }],
     });
   });
@@ -122,7 +122,7 @@ describe('decidePublishOutcome — the 8-row truth table, exact transcript (roun
       exitCode: 1,
       lines: [
         { stream: 'log', text: '  npm next serves 4.10.2; consumer and post-release checks remain required.' },
-        { stream: 'error', text: '  WRONG DIST-TAG: npm latest changed from 4.9.4 to 4.10.0. Reconcile the dist-tags before continuing.' },
+        { stream: 'error', text: '  WRONG DIST-TAG: npm latest changed from 4.9.4 to 4.10.0. Stop and report to the owner; npm is only changed through the release workflow.' },
       ],
     },
     {
@@ -133,7 +133,7 @@ describe('decidePublishOutcome — the 8-row truth table, exact transcript (roun
         { stream: 'log', text: '  npm next serves 4.10.2; consumer and post-release checks remain required.' },
         {
           stream: 'error',
-          text: '  UNKNOWN: could not read npm latest after the publish attempt (was 4.9.4). An unreadable answer is not evidence latest held still — reconcile the dist-tags by hand before trusting either channel.',
+          text: '  UNKNOWN: could not read npm latest after the publish attempt (was 4.9.4). An unreadable answer is not evidence latest held still — stop and report to the owner; npm is only changed through the release workflow.',
         },
       ],
     },
@@ -156,7 +156,7 @@ describe('decidePublishOutcome — the 8-row truth table, exact transcript (roun
         { stream: 'error', text: '  UNCONFIRMED: after ~5 minutes npm next still serves 4.10.1, not 4.10.2.' },
         { stream: 'error', text: '  The tag and the GitHub Release exist. Check the publish run above,' },
         { stream: 'error', text: '  then re-check with: npm view @pcircle/memesh@next version --prefer-online' },
-        { stream: 'error', text: '  WRONG DIST-TAG: npm latest changed from 4.9.4 to 4.10.0. Reconcile the dist-tags before continuing.' },
+        { stream: 'error', text: '  WRONG DIST-TAG: npm latest changed from 4.9.4 to 4.10.0. Stop and report to the owner; npm is only changed through the release workflow.' },
       ],
     },
     {
@@ -169,7 +169,7 @@ describe('decidePublishOutcome — the 8-row truth table, exact transcript (roun
         { stream: 'error', text: '  then re-check with: npm view @pcircle/memesh@next version --prefer-online' },
         {
           stream: 'error',
-          text: '  UNKNOWN: could not read npm latest after the publish attempt (was 4.9.4). An unreadable answer is not evidence latest held still — reconcile the dist-tags by hand before trusting either channel.',
+          text: '  UNKNOWN: could not read npm latest after the publish attempt (was 4.9.4). An unreadable answer is not evidence latest held still — stop and report to the owner; npm is only changed through the release workflow.',
         },
       ],
     },

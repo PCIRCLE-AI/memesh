@@ -3,9 +3,11 @@ import fs from 'node:fs';
 /**
  * Fail if the release tag and package.json disagree about the version.
  *
- * `publish-npm.yml` fires on `release: published` and publishes whatever
- * version package.json carries, with nothing comparing it to the tag the
- * release was cut from. Two ways that goes wrong:
+ * `publish-npm.yml`'s `publish` job fires on `release: published` and
+ * publishes whatever version package.json carries, with nothing comparing it
+ * to the tag the release was cut from. The same workflow's `promote` job
+ * reuses this exact check on `release: released` before moving the `latest`
+ * dist-tag, for the same reason. Two ways a mismatch goes wrong:
  *
  *   - Tag `v4.2.12` on a commit whose package.json says `4.3.0` publishes
  *     4.3.0 while the GitHub release advertises v4.2.12. Users install a

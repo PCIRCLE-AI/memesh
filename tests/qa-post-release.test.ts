@@ -60,10 +60,32 @@ describe('registry acceptance', () => {
     expect(result.fix).toMatch(/publish-npm/);
   });
 
-  it('fails when the version is published but latest points elsewhere', () => {
+  it('fails when the version is published but latest points elsewhere, and gives both promotion routes', () => {
     const result = evaluateRegistry(published, '4.8.2');
     expect(result.ok).toBe(false);
     expect(result.detail).toMatch(/latest dist-tag is 4\.8\.3/);
+    // #452: npm changes, including promotion, go only through the release
+    // workflow — never a local `npm dist-tag add`. Both routes, since the
+    // caller cannot tell from here whether v4.8.2 is still a prerelease.
+    expect(result.fix).toMatch(/gh release edit v4\.8\.2 --prerelease=false/);
+    expect(result.fix).toMatch(/gh run list --workflow publish-npm\.yml/);
+    expect(result.fix).toMatch(/gh run rerun/);
+    expect(result.fix).toMatch(/promote job's log/);
+    expect(result.fix).not.toMatch(/npm dist-tag add/);
+  });
+
+  it('points a wrong `next` dist-tag at stopping and reporting to the owner, not re-running publish or retagging', () => {
+    // Distinct remediation from the `latest` mismatch above: by the time
+    // this branch runs, the version is already confirmed published (checked
+    // earlier in evaluateRegistry), so re-running the publish workflow would
+    // just fail trying to publish an already-published version. The fix
+    // must say so, not send anyone to `gh release edit` or a local retag.
+    const result = evaluateRegistry(trial, '4.9.4', 'next');
+    expect(result.ok).toBe(false);
+    expect(result.fix).toMatch(/already published/);
+    expect(result.fix).not.toMatch(/re-run the publish/i);
+    expect(result.fix).not.toMatch(/npm dist-tag add/);
+    expect(result.fix).not.toMatch(/gh release edit/);
   });
 });
 

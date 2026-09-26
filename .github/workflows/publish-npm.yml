@@ -2,10 +2,18 @@ name: Publish to npm
 
 on:
   release:
-    types: [published]
+    types: [published, released]
 
 jobs:
   publish:
+    # A directly published full (non-prerelease) release fires BOTH
+    # `published` and `released` as two SEPARATE workflow runs. Without this
+    # guard this whole job — build, full test suite, both smoke tests, `npm
+    # publish` — would also run on the `released` delivery of that same
+    # release. `published` alone already covers every publish this job is
+    # for: a fresh prerelease (tagged `next`) and a fresh full release
+    # (tagged `latest`). The `promote` job below is what `released` is for.
+    if: github.event.action == 'published'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -95,3 +103,169 @@ jobs:
         env:
           MEMESH_NPM_DIST_TAG: ${{ github.event.release.prerelease && 'next' || 'latest' }}
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  promote:
+    # `released` fires both when a maintainer turns an existing prerelease
+    # into a full release (`gh release edit v<version> --prerelease=false`)
+    # — the actual promotion this job is for — and, a second time, for a
+    # release published directly as non-prerelease (the `publish` job above
+    # already handles that one on its own `published` run, concurrently with
+    # this one). This job decides purely from the registry's own state, in
+    # order: VERSION not on npm yet (exit 0 — the publish job is doing it,
+    # or it failed and needs looking at); already `latest` (exit 0, nothing
+    # to do); not newer than the current `latest` (exit 1, refuse to move
+    # `latest` backwards); not the current `next` (exit 1, this job only
+    # promotes `next`); otherwise, move the dist-tag.
+    if: github.event.action == 'released'
+    runs-on: ubuntu-latest
+    # ~5 minutes for checkout/setup/tag-check overhead, plus the readback
+    # poll's own 10-minute bound (below) = 15, with the poll itself as what
+    # times a stuck promotion out, not the job wrapper cutting it off mid-poll.
+    timeout-minutes: 15
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Release tag matches package.json
+        # Same gate, same reasoning, as the publish job's identical step
+        # above: the tag goes through `env:`, never `${{ }}` inside `run:`,
+        # because git accepts a tag such as `v4.2.12$(id)` and this job also
+        # holds NPM_TOKEN.
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: node scripts/check-tag-matches-version.mjs "$RELEASE_TAG"
+
+      - name: Promote npm dist-tag if this release is a next -> latest promotion
+        # VERSION and PACKAGE come from the checked-out package.json (already
+        # confirmed above to match the release tag), never from the tag or
+        # any other event field, so nothing webhook-controlled reaches `npm`.
+        #
+        # Every `npm view` here reads `--prefer-online` (npm's own metadata
+        # cache must not answer for a channel this job is about to act on)
+        # and none is wrapped in `|| true`: a real registry or network
+        # failure must fail the job, not be misread as one of the ordinary
+        # non-promotion outcomes below and leave `latest` unmoved with the
+        # job green.
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          PACKAGE="@pcircle/memesh"
+
+          # 1. Is VERSION published at all? A missing version is npm's own
+          #    E404, not a generic failure: `npm view <this package>@<a
+          #    version that does not exist> version --prefer-online` exits 1
+          #    and prints `npm error code E404` (npm 10 and 11 alike), which
+          #    is why this matches on it with a `case` rather than parsing
+          #    npm's prose. ONLY that signature means "not published
+          #    yet" — anything else (a genuine registry or network problem)
+          #    must still fail this job loud.
+          set +e
+          VERSION_ON_NPM_OUTPUT="$(npm view "$PACKAGE@$VERSION" version --prefer-online 2>&1)"
+          VERSION_ON_NPM_EXIT=$?
+          set -e
+          if [ "$VERSION_ON_NPM_EXIT" -ne 0 ]; then
+            case "$VERSION_ON_NPM_OUTPUT" in
+              *E404*)
+                echo "::notice::$PACKAGE@$VERSION is not on npm. If this is a direct full release, its publish run is doing that now; otherwise this release was never published — check its publish run."
+                exit 0
+                ;;
+              *)
+                echo "::error::npm view $PACKAGE@$VERSION failed and it was not a 404 (a registry or network problem, not \"unpublished\"): $VERSION_ON_NPM_OUTPUT" >&2
+                exit 1
+                ;;
+            esac
+          fi
+
+          LATEST="$(npm view "$PACKAGE" dist-tags.latest --prefer-online)"
+          NEXT="$(npm view "$PACKAGE" dist-tags.next --prefer-online)"
+
+          # 2. Nothing to promote.
+          if [ "$LATEST" = "$VERSION" ]; then
+            echo "::notice::$PACKAGE@$VERSION is already latest; nothing to promote"
+            exit 0
+          fi
+
+          # 3. Refuse to move latest backwards. A small inline comparator —
+          #    the repo carries no semver dependency and this does not add
+          #    one — that first rejects anything not a plain `X.Y.Z`, so an
+          #    unparseable version fails loud instead of comparing wrong.
+          #    Wrapped in the same set +e/-e toggle as step 1: `node -e`'s
+          #    own exit code decides which message to print, and a bare
+          #    `VAR=$(node -e ...)` assignment left under `set -e` would exit
+          #    the script here before that decision ever runs.
+          set +e
+          NEWER_THAN_LATEST_OUTPUT="$(node -e '
+            const isPlainSemver = (v) => /^\d+\.\d+\.\d+$/.test(v);
+            const [a, b] = process.argv.slice(1);
+            if (!isPlainSemver(a) || !isPlainSemver(b)) {
+              console.error(`not a plain X.Y.Z version: "${!isPlainSemver(a) ? a : b}"`);
+              process.exit(2);
+            }
+            const pa = a.split(".").map(Number);
+            const pb = b.split(".").map(Number);
+            const cmp = pa[0] !== pb[0] ? pa[0] - pb[0] : pa[1] !== pb[1] ? pa[1] - pb[1] : pa[2] - pb[2];
+            process.exit(cmp > 0 ? 0 : 1);
+          ' "$VERSION" "$LATEST" 2>&1)"
+          NEWER_THAN_LATEST_EXIT=$?
+          set -e
+          if [ "$NEWER_THAN_LATEST_EXIT" -eq 2 ]; then
+            echo "::error::$NEWER_THAN_LATEST_OUTPUT; refusing to compare $PACKAGE@$VERSION against latest" >&2
+            exit 1
+          fi
+          if [ "$NEWER_THAN_LATEST_EXIT" -ne 0 ]; then
+            echo "::error::$PACKAGE@$VERSION is not newer than the current latest (${LATEST:-<unset>}); refusing to move latest backwards" >&2
+            exit 1
+          fi
+
+          # 4. This job promotes the current `next` only; any other state is
+          #    one a human needs to look at, not one this job can decide.
+          if [ "$NEXT" != "$VERSION" ]; then
+            echo "::error::$PACKAGE@$VERSION is on npm and is newer than latest (${LATEST:-<unset>}), but the current next dist-tag is ${NEXT:-<unset>}, not $VERSION; this job cannot promote it. These are separate npm view reads, so a direct full release can still be propagating here — if its publish run is green, wait a few minutes and re-run this promote job." >&2
+            exit 1
+          fi
+
+          # 5. VERSION is published, newer than latest, and is the current
+          #    next — promote it, then confirm the move actually took.
+          npm dist-tag add "$PACKAGE@$VERSION" latest
+
+          # Registry propagation lags a dist-tag move by minutes —
+          # scripts/lib/npm-latest-guard.mjs documents ~9 minutes observed on
+          # the 4.10.1 cut. A single immediate read would report a false
+          # failure on a promotion that actually succeeded, so this polls —
+          # bounded, never `while true`: 20 attempts * 30s = 10 minutes, past
+          # which this really has not taken and must fail. Each `npm view`
+          # here is unguarded (no `|| true`): under the default `bash -e`
+          # this workflow runs with, a genuine registry/network error on any
+          # attempt fails the job immediately with npm's own error, rather
+          # than being retried as if it just meant "not yet".
+          POLL_INTERVAL_SECONDS=30
+          POLL_MAX_ATTEMPTS=20
+          LATEST=""
+          for attempt in $(seq 1 "$POLL_MAX_ATTEMPTS"); do
+            LATEST="$(npm view "$PACKAGE" dist-tags.latest --prefer-online)"
+            echo "attempt $attempt/$POLL_MAX_ATTEMPTS: npm dist-tags.latest is ${LATEST:-<unset>}"
+            if [ "$LATEST" = "$VERSION" ]; then
+              break
+            fi
+            if [ "$attempt" -lt "$POLL_MAX_ATTEMPTS" ]; then
+              sleep "$POLL_INTERVAL_SECONDS"
+            fi
+          done
+          if [ "$LATEST" != "$VERSION" ]; then
+            echo "::error::promotion did not take after $POLL_MAX_ATTEMPTS attempts (~$((POLL_MAX_ATTEMPTS * POLL_INTERVAL_SECONDS / 60)) minutes): dist-tags.latest is ${LATEST:-<unset>}, expected $VERSION" >&2
+            exit 1
+          fi
+          echo "promoted $PACKAGE@$VERSION to latest"

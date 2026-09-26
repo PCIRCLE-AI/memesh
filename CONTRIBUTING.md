@@ -62,11 +62,18 @@ ordinary npm installs continue using `latest`. The plugin marketplace follows
 
 Retain green post-release and core/live-host journey evidence for the same
 candidate, then observe at least one working day with the capture-liveness
-check passing. After owner authorization to promote, move the existing npm
-artifact with `npm dist-tag add @pcircle/memesh@<version> latest`, clear the
-GitHub prerelease flag with `gh release edit v<version> --prerelease=false`,
-read back both states, and rerun `npm run qa:post-release` in its default
-`latest` mode. Promotion does not publish the package again.
+check passing. After owner authorization to promote, clear the GitHub
+prerelease flag: `gh release edit v<version> --prerelease=false`. The release
+workflow's `promote` job then moves the npm `latest` dist-tag — npm is never
+changed from a local machine. Wait for that run to finish (up to about 15
+minutes, the job's timeout) before reading back both states — `gh release
+view v<version>` and
+`npm view @pcircle/memesh dist-tags` — then rerun `npm run qa:post-release`
+in its default `latest` mode.
+
+- A version can be promoted only while it is the current `next` dist-tag and newer than `latest`.
+- The `promote` job exists from the first release tagged after it was added — a release event runs the workflow file from the tagged commit, so an earlier release cannot be promoted this way.
+- If `latest` did not move, read the `promote` job's log, fix the cause, and re-run that run.
 
 Without `--prerelease`, `release:finish` retains the stable `latest` behavior;
 do not use that mode to skip trial observation for a new candidate.
