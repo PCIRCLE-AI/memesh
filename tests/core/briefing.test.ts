@@ -17,7 +17,7 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { handleTool } from '../../src/mcp/tools.js';
 import { assembleBriefing, readBriefingIndex } from '../../src/core/briefing.js';
 import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
-import { recipientEverSeen, unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
+import { recipientEverSeen, recipientEverSeenAnywhere, unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
 import { getTaskState, setTaskState } from '../../src/core/task-state-store.js';
 
 // Lets one test make getTaskState fail with an error that is NOT the
@@ -483,6 +483,62 @@ describe('assembleBriefing', () => {
         prepare() { throw new Error('no such table: agent_principals'); },
       };
       expect(recipientEverSeen(missingMessageTables, PROJECT, 'legacy-recipient')).toBeUndefined();
+    });
+  });
+
+  // The same five cases as `recipientEverSeen (D8)` above, for the no-project
+  // variant SessionStart uses (#402): each case here uses a DIFFERENT project
+  // than the delivery/principal/session-instance one to prove the query truly
+  // ignores `project`, not merely that it was never given one.
+  describe('recipientEverSeenAnywhere (#402)', () => {
+    it('true once the recipient has any delivery, in any project — unread or already intaken', async () => {
+      await executeAgentMessageAction(getDatabase(), {
+        action: 'send', project: 'some-other-project', sender: 'codex-reviewer', recipient: 'has-a-delivery-anywhere',
+        idempotency_key: 'd8-any-delivery', payload: { text: 'x' }, content_type: 'application/json',
+      }, { transport: 'mcp', sourceHost: 'test-host' });
+      expect(recipientEverSeenAnywhere(getDatabase(), 'has-a-delivery-anywhere')).toBe(true);
+    });
+
+    // Guards the `agent_principals` EXISTS clause of the query.
+    it('true when the recipient only ever registered a live connection, in any project (no deliveries)', () => {
+      getDatabase().prepare(
+        `INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES (?, ?, 0)`,
+      ).run('another-project', 'connected-but-no-mail-anywhere');
+      expect(recipientEverSeenAnywhere(getDatabase(), 'connected-but-no-mail-anywhere')).toBe(true);
+    });
+
+    // Guards the `agent_session_instances` EXISTS clause of the query.
+    it('true for a session instance id that connected in any project but has not received a delivery yet', () => {
+      getDatabase().prepare(
+        `INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES (?, ?, 0)`,
+      ).run('yet-another-project', 'owning-principal-anywhere');
+      getDatabase().prepare(
+        `INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind)
+         VALUES (?, ?, ?, 'codex')`,
+      ).run('yet-another-project', 'sess-connected-no-mail-anywhere', 'owning-principal-anywhere');
+      expect(recipientEverSeenAnywhere(getDatabase(), 'sess-connected-no-mail-anywhere')).toBe(true);
+    });
+
+    it('false when the recipient id has never appeared in any project', () => {
+      expect(recipientEverSeenAnywhere(getDatabase(), 'truly-unknown-recipient-anywhere')).toBe(false);
+    });
+
+    it('undefined (not false) on a pre-message database that cannot answer the question, without calling onError', () => {
+      const missingMessageTables = {
+        prepare() { throw new Error('no such table: agent_principals'); },
+      };
+      const onError = vi.fn();
+      expect(recipientEverSeenAnywhere(missingMessageTables, 'legacy-recipient', onError)).toBeUndefined();
+      expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('calls onError (and still returns undefined) for a failure that is not the tables-missing case', () => {
+      const brokenDb = {
+        prepare() { throw new Error('no such column: principal_id'); },
+      };
+      const onError = vi.fn();
+      expect(recipientEverSeenAnywhere(brokenDb, 'someone', onError)).toBeUndefined();
+      expect(onError).toHaveBeenCalledTimes(1);
     });
   });
 

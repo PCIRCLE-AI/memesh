@@ -78,7 +78,7 @@ interface PluginCacheDiscovery {
 }
 type MessageRouterStatusProbe = {
     socket_path: string;
-    socket: 'reachable' | 'missing' | 'insecure' | 'unreachable';
+    socket: 'reachable' | 'missing' | 'insecure' | 'unreachable' | 'path-too-long';
     active_registrations?: number;
     detail?: string;
 };

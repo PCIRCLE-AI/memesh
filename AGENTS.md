@@ -75,8 +75,18 @@ host is recallable from all of them. Not installed yet? Follow
    not running. Generic `briefing` has no recipient identity and stays quiet;
    so do the SessionStart and prompt hooks, unless the session declared who it
    is by starting with `MEMESH_RECIPIENT=<id>`, in which case they can show how
-   many messages wait for that recipient and in which project. A length-limited
-   briefing can omit some project notices; those messages remain pending.
+   many messages wait for that recipient and in which project. An id over 200
+   characters, or shaped like a filesystem path, is refused rather than
+   silently accepted, with no database required: a line on stderr, a record
+   in `hook-outcomes.jsonl`, and the same rejection text in SessionStart's own
+   visible output (a hook that exits 0 hides its stderr from both the user
+   and the model). Once a database with the messaging tables exists, if the
+   declared id has never been seen in any project, SessionStart also adds a
+   one-line hint to check it for a typo; worded as a hint, not a fact,
+   because a legitimately new id looks the same, and an id that was once seen
+   but has gone quiet gets no hint either — that would reveal someone else's
+   mail. A length-limited briefing can omit some project notices; those
+   messages remain pending.
    Check a known inbox with the exact `project` and `recipient`; poll first,
    then fetch each returned `message_id`, then record `intake` for it: fetching alone does not
    acknowledge and does not end the reminder.

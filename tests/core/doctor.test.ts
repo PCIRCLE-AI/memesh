@@ -4294,6 +4294,37 @@ describe('doctor rows that had no assertion', () => {
       expect(check.summary).toContain('No active host is registered');
       expect(check.summary).toContain('will not wake a stopped or missing session');
     });
+
+    // #404 — a socket path over the 103-byte limit also has no file on disk,
+    // so the plain lstat-based probe reported it identically to "missing" and
+    // sent the owner to restart a router that fails on the exact same path.
+    // This exercises the real probe (no `messageRouterStatusProbeImpl`
+    // override), so the length check itself is covered, not only the check
+    // this test's stub would otherwise fabricate.
+    it('names a too-long socket path instead of reporting a dead-end "missing"', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      isolateMemeshDir();
+      const previousSocket = process.env.MEMESH_ROUTER_SOCKET;
+      const longSocket = `/tmp/${'x'.repeat(150)}.sock`;
+      process.env.MEMESH_ROUTER_SOCKET = longSocket;
+
+      try {
+        const check = row(await runDoctorImpl(options(packageRoot, {
+          probeMessageRouterStatus: true,
+        })), 'message-router-status');
+
+        expect(check.status).toBe('fail');
+        expect(check.code).toBe('message-router.socket-path-too-long');
+        expect(check.summary).toContain(String(Buffer.byteLength(longSocket)));
+        expect(check.summary).toContain('103-byte limit');
+        expect(check.fix).toContain('MEMESH_ROUTER_SOCKET');
+        expect(check.fix).toMatch(/HOME|MEMESH_DIR/);
+      } finally {
+        if (previousSocket === undefined) delete process.env.MEMESH_ROUTER_SOCKET;
+        else process.env.MEMESH_ROUTER_SOCKET = previousSocket;
+      }
+    });
   });
 
   describe('install_id', () => {

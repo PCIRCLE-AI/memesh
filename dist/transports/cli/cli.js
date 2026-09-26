@@ -24506,17 +24506,28 @@ function unreadDeliveryCount(db2, project, recipient) {
     return 0;
   }
 }
-function recipientEverSeen(db2, project, recipient) {
+function recipientSeenQuery(db2, recipient, project, onError) {
   try {
+    const scope = project !== void 0 ? "project = ? AND " : "";
+    const params = project !== void 0 ? [project, recipient, project, recipient, project, recipient] : [recipient, recipient, recipient];
     const row = db2.prepare(`SELECT (
-         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
-         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
-         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
-       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
+         EXISTS(SELECT 1 FROM agent_principals WHERE ${scope}principal_id = ?)
+         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE ${scope}recipient = ?)
+         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE ${scope}session_instance_id = ?)
+       ) AS seen`).get(...params);
     return row?.seen === void 0 ? void 0 : Boolean(row.seen);
-  } catch {
+  } catch (err) {
+    if (!isMissingMessageTableError(err))
+      onError?.(err);
     return void 0;
   }
+}
+function isMissingMessageTableError(err) {
+  const message = err && typeof err === "object" && "message" in err ? String(err.message) : "";
+  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(message);
+}
+function recipientEverSeen(db2, project, recipient) {
+  return recipientSeenQuery(db2, recipient, project);
 }
 function unreadInboxLines(count, project, recipient, everSeen) {
   if (!recipient)
@@ -25568,21 +25579,22 @@ function isSelectionCard(value, project) {
   return typeof value.session_id === "string" && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
 }
 function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path14.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > 103) {
-    throw new AgentRouterProtocolError("invalid_socket_path", "Router socket path must be absolute and at most 103 bytes.");
+  if (typeof socketPath !== "string" || !path14.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+    throw new AgentRouterProtocolError("invalid_socket_path", `Router socket path must be absolute and at most ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES} bytes.`);
   }
   return socketPath;
 }
 function isPlainObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var AGENT_ROUTER_PROTOCOL_VERSION, AGENT_ROUTER_MAX_FRAME_BYTES, MAX_LEASE_MS, DEFAULT_CLIENT_TIMEOUT_MS, MAX_FIELD_LENGTH, MAX_ADAPTER_RECEIPT_BYTES, AgentRouterError, AgentRouterProtocolError;
+var AGENT_ROUTER_PROTOCOL_VERSION, AGENT_ROUTER_MAX_FRAME_BYTES, AGENT_ROUTER_SOCKET_PATH_MAX_BYTES, MAX_LEASE_MS, DEFAULT_CLIENT_TIMEOUT_MS, MAX_FIELD_LENGTH, MAX_ADAPTER_RECEIPT_BYTES, AgentRouterError, AgentRouterProtocolError;
 var init_agent_router = __esm({
   "dist/core/agent-router.js"() {
     "use strict";
     init_agent_messaging();
     AGENT_ROUTER_PROTOCOL_VERSION = 2;
     AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
+    AGENT_ROUTER_SOCKET_PATH_MAX_BYTES = 103;
     MAX_LEASE_MS = 5 * 6e4;
     DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
     MAX_FIELD_LENGTH = 200;
@@ -57312,6 +57324,10 @@ function inspectMessageCapability(packageRoot3, enabled, probe) {
 }
 async function defaultMessageRouterStatusProbe() {
   const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
+  const socketPathBytes = Buffer.byteLength(socketPath);
+  if (socketPathBytes > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+    return { socket_path: socketPath, socket: "path-too-long", detail: `${socketPathBytes} bytes` };
+  }
   let stat;
   try {
     stat = fs18.lstatSync(socketPath);
@@ -57351,6 +57367,8 @@ async function inspectMessageRouterStatus(enabled, probe) {
       return createCheck("message-router-status", "Live message router / host registration", "pass", `Owner-private Local router socket is reachable at ${result.socket_path}. This proves only router availability; it does not prove an active host registration, native delivery, host_accept, ACK, or stopped-session wake-up.`);
     case "missing":
       return createCheck("message-router-status", "Live message router / host registration", "warn", `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`, "Start the owner-configured router with `memesh-router`, then run this opt-in probe again.", { code: "message-router.socket-missing", params: { path: result.socket_path } });
+    case "path-too-long":
+      return createCheck("message-router-status", "Live message router / host registration", "fail", `The router socket path is ${result.detail} \u2014 over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`, "Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.", { code: "message-router.socket-path-too-long", params: { path: result.socket_path, bytes: result.detail ?? "unknown" } });
     case "insecure":
       return createCheck("message-router-status", "Live message router / host registration", "fail", `Router socket at ${result.socket_path} is not an owner-private Unix socket.`, "Stop the router, remove the unsafe socket, and restart `memesh-router` under the owning user.", { code: "message-router.socket-insecure", params: { path: result.socket_path } });
     case "unreachable":
@@ -57589,6 +57607,7 @@ var init_doctor = __esm({
     init_install_id();
     init_citation_rule();
     init_paths();
+    init_agent_router();
     init_install_hooks();
     init_fts_index();
     init_sqlite();

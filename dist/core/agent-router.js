@@ -6,6 +6,7 @@ import { fetchAgentMessage, } from './agent-messaging.js';
 export const AGENT_ROUTER_PROTOCOL_VERSION = 2;
 export const AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
 export const AGENT_ROUTER_MAX_HOPS = 4;
+export const AGENT_ROUTER_SOCKET_PATH_MAX_BYTES = 103;
 const DEFAULT_RATE_LIMIT = 120;
 const DEFAULT_RATE_WINDOW_MS = 60_000;
 const DEFAULT_LEASE_MS = 60_000;
@@ -1171,8 +1172,9 @@ function unlinkPathIfSame(targetPath, expected) {
     fs.unlinkSync(targetPath);
 }
 function validateSocketPath(socketPath) {
-    if (typeof socketPath !== 'string' || !path.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > 103) {
-        throw new AgentRouterProtocolError('invalid_socket_path', 'Router socket path must be absolute and at most 103 bytes.');
+    if (typeof socketPath !== 'string' || !path.isAbsolute(socketPath)
+        || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+        throw new AgentRouterProtocolError('invalid_socket_path', `Router socket path must be absolute and at most ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES} bytes.`);
     }
     return socketPath;
 }

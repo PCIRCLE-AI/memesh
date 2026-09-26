@@ -85,6 +85,17 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
     expect(prompt({ MEMESH_RECIPIENT: 'claude-implementer' }).stdout).toBe('');
   });
 
+  it('SessionStart never reveals a message addressed to someone else', async () => {
+    await send('gemini-reviewer');
+
+    const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
+      MEMESH_RECIPIENT: 'claude-implementer',
+    });
+
+    expect(start.stdout).not.toContain('gemini-reviewer');
+    expect(start.stdout).not.toContain('message waiting');
+  });
+
   it('keeps reminding after a fetch, says which action ends it, and stops once intake is recorded', async () => {
     const messageId = await send('claude-implementer');
     const scope = { project: 'team-room', recipient: 'claude-implementer', message_id: messageId };
@@ -128,6 +139,53 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
 
     expect(result.stdout).toBe('');
     expect(result.stderr).toContain('MEMESH_RECIPIENT ignored');
+  });
+
+  it('rejects a filesystem-path recipient the same way the message tool does, with a record and stderr', async () => {
+    await send('claude-implementer');
+
+    const result = prompt({ MEMESH_RECIPIENT: '/Users/x' });
+
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('MEMESH_RECIPIENT ignored');
+    expect(result.stderr).toContain('filesystem path');
+    expect(ledger('user-prompt-intent')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ outcome: 'notified', reason: expect.stringContaining('filesystem path') }),
+      ]),
+    );
+  });
+
+  it('rejects a filesystem-path recipient at SessionStart even with no database yet', () => {
+    const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
+      MEMESH_RECIPIENT: '/Users/x',
+      MEMESH_DB_PATH: path.join(tmp, 'no-such-graph.db'),
+    });
+
+    expect(start.stderr).toContain('MEMESH_RECIPIENT ignored');
+    expect(start.stderr).toContain('filesystem path');
+    expect(ledger('session-start')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ outcome: 'notified', reason: expect.stringContaining('filesystem path') }),
+      ]),
+    );
+    // A hook that exits 0 hides its stderr from the user and the model —
+    // the rejection must also reach the JSON the model actually receives.
+    expect(context(start.stdout)).toContain('MEMESH_RECIPIENT ignored');
+    expect(context(start.stdout)).toContain('filesystem path');
+  });
+
+  // Same requirement on the ordinary has-database path, and on the
+  // user-visible systemMessage, not just additionalContext.
+  it('rejects a filesystem-path recipient at SessionStart with a database present, visibly on both channels', () => {
+    const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
+      MEMESH_RECIPIENT: '/Users/x',
+    });
+
+    const payload = JSON.parse(start.stdout) as { systemMessage: string; hookSpecificOutput?: { additionalContext: string } };
+    expect(payload.systemMessage).toContain('MEMESH_RECIPIENT ignored');
+    expect(payload.systemMessage).toContain('filesystem path');
+    expect(payload.hookSpecificOutput?.additionalContext).toContain('MEMESH_RECIPIENT ignored');
   });
 
   it('still reminds when autoCapture is off, and does not send the remember hint then', async () => {
@@ -190,5 +248,79 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
 
     expect(context(declared.stdout)).toContain('1 message waiting for "claude-implementer" in project "team-room"');
     expect(anonymous.stdout).not.toContain('message waiting');
+  });
+
+  it('hints at SessionStart when the declared recipient has never been seen in any project', () => {
+    const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
+      MEMESH_RECIPIENT: 'typo-nobody',
+    });
+
+    expect(context(start.stdout)).toContain('"typo-nobody"');
+    expect(context(start.stdout)).toContain('never been seen in any project');
+    expect(ledger('session-start')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ outcome: 'notified', reason: expect.stringContaining('never seen') }),
+      ]),
+    );
+  });
+
+  it('stays quiet at SessionStart once the declared recipient has been seen, even with an empty inbox', async () => {
+    const messageId = await send('claude-implementer');
+    await executeAgentMessageAction(getDatabase(), {
+      action: 'intake', project: 'team-room', recipient: 'claude-implementer', message_id: messageId,
+      intake_state: 'fetched', idempotency_key: 'intake-quiet',
+    }, { transport: 'mcp', sourceHost: 'test-host' });
+
+    const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
+      MEMESH_RECIPIENT: 'claude-implementer',
+    });
+
+    expect(start.stdout).not.toContain('never been seen');
+    // Proves this ran the inbox/recipient-seen check rather than skipping it
+    // via an early return (no database, or no entities table) or a silent
+    // failure: neither reason appears, and nothing recorded an error.
+    expect(ledger('session-start').some((record) =>
+      record.reason?.includes('no database yet') || record.reason?.includes('no entities table'))).toBe(false);
+    expect(ledger('session-start').some((record) => record.outcome === 'error')).toBe(false);
+  });
+
+  // The messaging tables not existing yet is the ONE expected
+  // shape of "cannot answer"; it must stay quiet and record no error, unlike
+  // any other failure (see the next test).
+  it('shows no hint at SessionStart when the messaging tables do not exist yet, and records no error', () => {
+    getDatabase().exec('ALTER TABLE agent_principals RENAME TO agent_principals_gone');
+    getDatabase().exec('ALTER TABLE agent_message_deliveries RENAME TO agent_message_deliveries_gone');
+    getDatabase().exec('ALTER TABLE agent_session_instances RENAME TO agent_session_instances_gone');
+
+    const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
+      MEMESH_RECIPIENT: 'nobody-yet',
+    });
+
+    expect(start.stdout).not.toContain('never been seen');
+    expect(ledger('session-start').some((record) =>
+      record.outcome === 'error' && record.reason?.startsWith('recipient-seen:'))).toBe(false);
+  });
+
+  // The hint is shown only for `everSeen === false`; an unanswerable lookup
+  // (undefined) must not show it.
+  it('records an error, and shows no hint, when the recipient-seen lookup fails for a reason other than missing tables', () => {
+    getDatabase().exec('ALTER TABLE agent_principals RENAME COLUMN principal_id TO principal_id_gone');
+
+    const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
+      MEMESH_RECIPIENT: 'nobody-yet',
+    });
+
+    expect(start.stdout).not.toContain('never been seen');
+    expect(ledger('session-start')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ outcome: 'error', reason: expect.stringContaining('recipient-seen:') }),
+      ]),
+    );
+  });
+
+  it('never hints on UserPromptSubmit — the hint is SessionStart-only', () => {
+    const result = prompt({ MEMESH_RECIPIENT: 'typo-nobody' });
+
+    expect(result.stdout).toBe('');
   });
 });
