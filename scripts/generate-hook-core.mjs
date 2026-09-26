@@ -52,6 +52,9 @@ const SOURCES = [
   { from: 'dist/core/repo-state.js', to: 'repo-state.js', src: 'src/core/repo-state.ts' },
   { from: 'dist/core/guards.js', to: 'guards.js', src: 'src/core/guards.ts' },
   { from: 'dist/core/time-utils.js', to: 'time-utils.js', src: 'src/core/time-utils.ts' },
+  // Recipient-id validation: the hooks refuse a path-shaped MEMESH_RECIPIENT
+  // by the same rule the `message` tool applies.
+  { from: 'dist/core/agent-scope-id.js', to: 'agent-scope-id.js', src: 'src/core/agent-scope-id.ts' },
   // The capture-liveness verdict (issue #327): SessionStart must reach the
   // same "capture has gone quiet" verdict `memesh doctor` reaches, and a hook
   // cannot import src/. One definition, mirrored, or the banner and the

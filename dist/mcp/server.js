@@ -29138,17 +29138,28 @@ function unreadDeliveryCount(db2, project, recipient) {
     return 0;
   }
 }
-function recipientEverSeen(db2, project, recipient) {
+function recipientSeenQuery(db2, recipient, project, onError) {
   try {
+    const scope = project !== void 0 ? "project = ? AND " : "";
+    const params = project !== void 0 ? [project, recipient, project, recipient, project, recipient] : [recipient, recipient, recipient];
     const row = db2.prepare(`SELECT (
-         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
-         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
-         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
-       ) AS seen`).get(project, recipient, project, recipient, project, recipient);
+         EXISTS(SELECT 1 FROM agent_principals WHERE ${scope}principal_id = ?)
+         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE ${scope}recipient = ?)
+         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE ${scope}session_instance_id = ?)
+       ) AS seen`).get(...params);
     return row?.seen === void 0 ? void 0 : Boolean(row.seen);
-  } catch {
+  } catch (err) {
+    if (!isMissingMessageTableError(err))
+      onError?.(err);
     return void 0;
   }
+}
+function isMissingMessageTableError(err) {
+  const message = err && typeof err === "object" && "message" in err ? String(err.message) : "";
+  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(message);
+}
+function recipientEverSeen(db2, project, recipient) {
+  return recipientSeenQuery(db2, recipient, project);
 }
 function unreadInboxLines(count, project, recipient, everSeen) {
   if (!recipient)
@@ -30630,6 +30641,7 @@ import net from "node:net";
 import path6 from "node:path";
 var AGENT_ROUTER_PROTOCOL_VERSION = 2;
 var AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
+var AGENT_ROUTER_SOCKET_PATH_MAX_BYTES = 103;
 var MAX_LEASE_MS = 5 * 6e4;
 var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
 var MAX_FIELD_LENGTH = 200;
@@ -30787,8 +30799,8 @@ function isSelectionCard(value, project) {
   return typeof value.session_id === "string" && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
 }
 function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path6.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > 103) {
-    throw new AgentRouterProtocolError("invalid_socket_path", "Router socket path must be absolute and at most 103 bytes.");
+  if (typeof socketPath !== "string" || !path6.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+    throw new AgentRouterProtocolError("invalid_socket_path", `Router socket path must be absolute and at most ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES} bytes.`);
   }
   return socketPath;
 }

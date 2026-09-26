@@ -182,6 +182,7 @@ export {
 } from './_generated/briefing-level.js';
 import { resolveBriefingLevel as resolveBriefingLevelValue } from './_generated/briefing-level.js';
 import { unreadInboxLinesFor } from './_generated/agent-message-inbox.js';
+import { agentScopeIdRejection } from './_generated/agent-scope-id.js';
 
 // The hook-only work-package notice's literal text — ONE declaration,
 // exported so both `session-start.js` (which appends it) and the test
@@ -516,17 +517,34 @@ export const HOOK_BUSY_TIMEOUT_MS = 2000;
  * The id is compared exactly (after Unicode NFC, trimmed, 1-200 characters),
  * the same rule the `message` tool applies to a recipient, so any id a sender
  * can address can be declared here. It is shown JSON-quoted, which is what
- * makes odd characters safe to print. An empty value counts as unset; one over
- * 200 characters is ignored with a line on stderr rather than silently.
+ * makes odd characters safe to print. An empty value counts as unset.
+ *
+ * Two shapes are rejected rather than accepted: one over 200 characters, and
+ * one shaped like a filesystem path (`agentScopeIdRejection`, mirrored from
+ * src/core/agent-scope-id.ts — the same rule the `message` tool applies).
+ * Both write one line to stderr; `onRejected(label, detail)` (`label` is
+ * `'too long'` or `'filesystem path'`, `detail` is the same text written to
+ * stderr) additionally lets the caller record the rejection in its own
+ * outcome ledger, or show it somewhere a human or model will actually see it
+ * — a hook that exits 0 has its stderr hidden from both. `onRejected`
+ * throwing does not affect resolution.
  */
-export function resolveMessageRecipient(env = process.env) {
+export function resolveMessageRecipient(env = process.env, onRejected) {
   const raw = env.MEMESH_RECIPIENT;
   if (raw === undefined) return undefined;
   const id = String(raw).normalize('NFC').trim();
   if (id === '') return undefined;
-  if (id.length > 200) {
-    try { process.stderr.write('[memesh] MEMESH_RECIPIENT ignored: a recipient id is at most 200 characters\n'); } catch { /* stderr gone */ }
+  const reject = (label, detail) => {
+    try { process.stderr.write(`[memesh] MEMESH_RECIPIENT ignored: ${detail}\n`); } catch { /* stderr gone */ }
+    try { onRejected?.(label, detail); } catch { /* a caller's recorder must not break resolution */ }
     return undefined;
+  };
+  if (id.length > 200) {
+    return reject('too long', 'a recipient id is at most 200 characters');
+  }
+  const pathRejection = agentScopeIdRejection('recipient', id);
+  if (pathRejection) {
+    return reject('filesystem path', pathRejection);
   }
   return id;
 }
@@ -565,10 +583,11 @@ export function waitingMessageLines(db, recipient, recordFailure) {
  * The reminder lines for messages waiting for this session's declared
  * recipient. No `MEMESH_RECIPIENT` or no database: no lines, and the database
  * is not opened. Read-only, and it never throws (given a `recordFailure` that
- * does not, see `waitingMessageLines`).
+ * does not, see `waitingMessageLines`). `onRecipientRejected`, if given, is
+ * `resolveMessageRecipient`'s own rejection callback — see there.
  */
-export function unreadMessageLines(env = process.env, recordFailure) {
-  const recipient = resolveMessageRecipient(env);
+export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected) {
+  const recipient = resolveMessageRecipient(env, onRecipientRejected);
   if (!recipient) return [];
   const dbPath = env.MEMESH_DB_PATH ?? getDbPath();
   if (!existsSync(dbPath)) return [];

@@ -28,8 +28,13 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "bd954eb3898239941f02501caf5f0f6bc9b254792a56437233cdde1df1acebc7",
-      "bytes": 3614
+      "sha256": "ddc0076ee9874950dfd47099acd024877adafc91164492b562d6cddd1710fb84",
+      "bytes": 4589
+    },
+    {
+      "path": "scripts/hooks/_generated/agent-scope-id.js",
+      "sha256": "e709faac2eeae749d7be971d9a2997b2451c637bba859e5bbe85dd8530719a97",
+      "bytes": 2439
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",
@@ -118,8 +123,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "feecf73869a286d1e1f1b947c667a8a2ed2a964b851e6032387a715b87e6d82d",
-      "bytes": 102849
+      "sha256": "9a7bec94d38dd993145dbbba8910d408b180af78f7e5a344c74a94dda768736e",
+      "bytes": 103981
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -163,8 +168,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "37f54ba734d3f7acdfd2cc5ae2ba5b46e763a84f0b6e02dd6b8cb0985c7aa06f",
-      "bytes": 100740
+      "sha256": "06ee5355a69cb6db6a7701df51aec7d6788e9d233fb2ff339e31a14cec1bf81d",
+      "bytes": 103141
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -173,8 +178,8 @@
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "8a87d15dbae331d46a3fec152cac523c6d9e56da5ba78e1f2791c1cdf8d12060",
-      "bytes": 15383
+      "sha256": "3abd3e058e1ef7093872548db5b67dee36909bbdb9d6c37112c043e619a59369",
+      "bytes": 15567
     },
     {
       "path": "skills/memesh-review/SKILL.md",

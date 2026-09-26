@@ -76,6 +76,7 @@ import {
   INDEX_SNIPPET_FETCH_CHARS,
 } from './_generated/briefing-index.js';
 import { handoffView, SESSION_HANDOFF_TYPE, sessionHandoffName } from './_generated/session-handoff.js';
+import { recipientEverSeenAnywhere, unknownRecipientHint } from './_generated/agent-message-inbox.js';
 import {
   boundTaskStateLines,
   DECISION_LAYER_TYPES,
@@ -849,6 +850,11 @@ process.stdin.on('end', async () => {
     // of ANY line instead.
     return `${captureWarning}\n${msg.replace(/^◉ MeMesh ready · /m, '◉ MeMesh · ')}`;
   };
+  // Also hoisted above both try blocks, same reason: a rejected
+  // MEMESH_RECIPIENT must reach the recall-failure catch's own output() too.
+  let recipientRejectionLine;
+  const withRecipientRejectionWarning = (msg) =>
+    recipientRejectionLine ? `${recipientRejectionLine}\n${msg}` : msg;
   try {
     try {
     const data = JSON.parse(input);
@@ -877,6 +883,19 @@ process.stdin.on('end', async () => {
         reason: `briefing-level: invalid ${source} value ${value}, using ${briefingLevel}`,
       });
     }
+    // Resolved before any early return, so a rejected id is reported even
+    // with no database yet or no entities table. A hook that exits 0 has its
+    // stderr hidden from both the user and the model, so the rejection also
+    // needs a place in the same visible channel the "never seen" hint uses —
+    // `recipientRejectionLine` (hoisted above, with `withCaptureWarning`) is
+    // shown in every exit path below.
+    const recipient = resolveMessageRecipient(process.env, (label, detail) => {
+      recipientRejectionLine = `MEMESH_RECIPIENT ignored: ${detail}`;
+      record({
+        outcome: 'notified',
+        reason: `recipient: MEMESH_RECIPIENT ignored (${label})`,
+      });
+    });
     // The check above only catches an unusable VALUE for one known key
     // (`briefing`) inside an otherwise-parseable config object. A config.json
     // that is not even that — truncated JSON, a bare array/string/number/null
@@ -997,11 +1016,10 @@ process.stdin.on('end', async () => {
         captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work',
         { skipUpdateBanner: alreadyNoticed },
       );
-      const noDbContext = consent
-        ? [consent.context, workPackageNotice].filter(Boolean).join('\n\n')
-        : workPackageNotice;
+      const noDbContext = [recipientRejectionLine, consent ? consent.context : null, workPackageNotice]
+        .filter(Boolean).join('\n\n') || undefined;
       output(
-        consent ? `${consent.system}\n${emptySummary}` : emptySummary,
+        withRecipientRejectionWarning(consent ? `${consent.system}\n${emptySummary}` : emptySummary),
         noDbContext,
         // Nothing was injected (no notice at this level, no database to read
         // from) — record why, the same as the schema-present empty path
@@ -1039,13 +1057,14 @@ process.stdin.on('end', async () => {
         "SELECT name FROM sqlite_master WHERE type='table' AND name='entities'"
       ).get();
       if (!tableCheck) {
+        const noEntitiesContext = [recipientRejectionLine, workPackageNotice].filter(Boolean).join('\n\n') || undefined;
         output(
-          combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet'),
-          workPackageNotice,
+          withRecipientRejectionWarning(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet')),
+          noEntitiesContext,
           // Same reason mechanism as the no-database exit above and the
           // schema-present exit below — see `nothingToInjectReason`'s own
           // comment for why this is not `minimal`-gated explicitly.
-          !workPackageNotice ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'database has no entities table yet') } : null,
+          !noEntitiesContext ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'database has no entities table yet') } : null,
         );
         return;
       }
@@ -1424,10 +1443,10 @@ process.stdin.on('end', async () => {
         const taskRow = db
           .prepare('SELECT metadata FROM entities WHERE name = ?')
           .get(taskStateName(projectName));
-        // Who this session is comes from `MEMESH_RECIPIENT` (see
-        // resolveMessageRecipient). Without it there is no exact recipient
-        // and the shared leaf returns no lines, so a session never sees a
-        // message addressed to anyone else.
+        // Who this session is comes from `MEMESH_RECIPIENT` (`recipient`,
+        // resolved above). Without it there is no exact recipient and the
+        // shared leaf returns no lines, so a session never sees a message
+        // addressed to anyone else.
         // #360: briefingTaskStateLines downgrades a stale record to one line
         // at EVERY level, and only consults `briefingPolicy.taskState` for a
         // fresh one — `minimal` omits a fresh state entirely, never a stale
@@ -1436,6 +1455,29 @@ process.stdin.on('end', async () => {
         // memory", it is addressed to it. An inbox that cannot be read is
         // recorded as its own `error` (a label, like the two below), and is
         // not a failed memory assembly: the rest of the context still ships.
+        const inboxLines = waitingMessageLines(db, recipient, (err) =>
+          record({
+            outcome: 'error',
+            reason: `inbox: ${hookErrorReason(err)}`,
+          }));
+        // A rejected MEMESH_RECIPIENT is mutually exclusive with a resolved
+        // `recipient`, so this never collides with the hint below.
+        if (recipientRejectionLine) inboxLines.unshift(recipientRejectionLine);
+        // At SessionStart only, and only when there is nothing else to say
+        // about this recipient: a hint, not a fact (see unknownRecipientHint).
+        // A lookup that fails for any reason other than the tables not
+        // existing yet is recorded as its own `error`, not shown as a hint.
+        if (recipient && inboxLines.length === 0) {
+          const everSeen = recipientEverSeenAnywhere(db, recipient, (err) =>
+            record({
+              outcome: 'error',
+              reason: `recipient-seen: ${hookErrorReason(err)}`,
+            }));
+          if (everSeen === false) {
+            inboxLines.push(unknownRecipientHint(recipient));
+            record({ outcome: 'notified', reason: 'recipient: never seen in any project' });
+          }
+        }
         const stateLines = [
           ...handoffBlock,
           ...boundTaskStateLines(briefingTaskStateLines(
@@ -1444,11 +1486,7 @@ process.stdin.on('end', async () => {
             new Date(),
             { includeFresh: briefingPolicy.taskState },
           )),
-          ...waitingMessageLines(db, resolveMessageRecipient(process.env), (err) =>
-            record({
-              outcome: 'error',
-              reason: `inbox: ${hookErrorReason(err)}`,
-            })),
+          ...inboxLines,
         ];
 
         // The pools overlap by construction (a lesson tagged to this project
@@ -1792,7 +1830,7 @@ process.stdin.on('end', async () => {
       // — guard the concat so an empty injection does not become the LITERAL
       // string "undefined" glued onto a real consent prompt.
       output(
-        withCaptureWarning(finalMessage),
+        withRecipientRejectionWarning(withCaptureWarning(finalMessage)),
         updateConsentContext
           ? (memoryContext ? `${updateConsentContext}\n\n${memoryContext}` : updateConsentContext)
           : memoryContext,
@@ -1886,8 +1924,8 @@ process.stdin.on('end', async () => {
       // stdout write lies inside output()", and output() records exactly one
       // outcome — here an error, not the default `wrote`.
       output(
-        withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`),
-        null,
+        withRecipientRejectionWarning(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`)),
+        recipientRejectionLine ?? null,
         { outcome: 'error', reason: hookErrorReason(err) },
       );
     }

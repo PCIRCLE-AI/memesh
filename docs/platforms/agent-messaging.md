@@ -24,8 +24,25 @@ each project with a waiting message is named, up to five, most waiting first),
 until the session records the `intake` action for them (fetching alone does not
 end it). An ordinary Claude Code session started without the channel flag
 has no other identity a sender could address, so without this variable it only
-sees messages it polls for itself. A value over 200 characters is ignored with
-a line on stderr. If the inbox cannot be read (its receipts table will not
+sees messages it polls for itself. A value over 200 characters, or shaped like
+a filesystem path (the same rule the `message` tool refuses a recipient by —
+`/root`, `C:\work`, `\\host\share`), is refused rather than silently accepted,
+with no database required: one line on stderr (`MEMESH_RECIPIENT ignored: ...`),
+one `notified` record in `hook-outcomes.jsonl`, and — since a hook that exits 0
+never shows its stderr to the user or the model — the same rejection text in
+SessionStart's own visible output, every session start.
+If the declared recipient's inbox is empty everywhere, that reads exactly like
+a typo'd id — so SessionStart (only; not every prompt), once a database with
+the messaging tables exists, additionally checks whether the id has ever been
+addressed in ANY project at all, and if not, adds one hint line:
+`MEMESH_RECIPIENT "<id>" has never been seen in any project —
+check it for a typo (or ignore this if it is a genuinely new recipient id)`.
+It is worded as a hint, not a fact — a legitimately new recipient id answers
+the same "never seen" question a typo does, and this cannot tell them apart.
+An id that was once seen but has gone quiet since gets no hint either: telling
+them apart would mean revealing that some OTHER recipient is still getting
+mail, which this hint must never do.
+If the inbox cannot be read (its receipts table will not
 load, for example), the prompt or session start goes ahead without the
 reminder, says so on stderr, and records an `error` in `hook-outcomes.jsonl`
 (`inbox: uncaught <code>`), so a run that could not look is not mistaken for
@@ -86,6 +103,13 @@ start:
 umask 077
 memesh-router
 ```
+
+The socket path — `MEMESH_ROUTER_SOCKET` if set, otherwise derived from your
+MeMesh database location — must fit in the 103-byte limit a Unix domain
+socket allows. A long `HOME` or `MEMESH_DIR` can push the default path over
+that limit; `memesh-router` then refuses to start, and `memesh doctor` names
+the path and its byte count. Set `MEMESH_ROUTER_SOCKET` to a shorter absolute
+path, or move `HOME`/`MEMESH_DIR` somewhere shorter, to fix it.
 
 If you start it yourself, leave that process running. In a second terminal,
 verify only the installed adapter imports and the live router socket separately:
