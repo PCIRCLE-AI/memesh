@@ -246,6 +246,28 @@ describe('Feature: Session Start Hook', () => {
       expect(injected).toContain('do not repeat these');
     });
 
+    it('strips an ANSI escape, a C1 byte and a bidi override from injected memory (#374)', () => {
+      // End-to-end guard on the real hook's output, not one function in
+      // isolation: this payload passes through both topologyLine's and
+      // buildReferenceContext's strip on the way to additionalContext, so it
+      // only goes red once neither is stripping any more.
+      const db = createScoringDb();
+      const insert = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+      const addObs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+      const addTag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+      const decision = insert.run('ansi-decision', 'decision').lastInsertRowid as number;
+      addObs.run(decision, 'before \x1b[31mred\x1b[0m\x9b after\u202e MARKER');
+      addTag.run(decision, projTag('myproject'));
+      db.close();
+
+      const output = runHook({ cwd: '/tmp/myproject' });
+      const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+      expect(injected).not.toMatch(/[\x1b\x9b\u202e]/);
+      // The full injected block passes through buildReferenceContext,
+      // which collapses the double space topologyLine's own strip left behind.
+      expect(injected).toContain('before [31mred [0m after MARKER');
+    });
+
     it('leads with what was stated, attributed not asserted, and says it only once', () => {
       // The one line in this block someone stated on purpose. Everything else
       // is ranked, and ranking cannot know what you meant to do next — so it

@@ -426,6 +426,10 @@ function rememberInTransaction(
  * `search()` returned them in), recency (0.25), access frequency (0.18),
  * confidence (0.17), recall-effectiveness impact (0.10).
  * Empty query returns recent entities.
+ *
+ * Deliberately NOT run through `stripControlChars` (#374): an
+ * explicit recall returns stored content as-is by design, so the caller who
+ * asked for a memory sees exactly what is stored in it.
  */
 export function recall(args: RecallInput): Entity[] {
   const { entities, relevanceMap } = searchAndScore(args);
