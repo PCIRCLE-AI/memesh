@@ -154,6 +154,69 @@ describe('assembleBriefing', () => {
     expect(t.trimEnd().endsWith('```')).toBe(true);
   });
 
+  it('strips ESC, a C1 byte and a bidi override from every string an agent receives, including index.lines (#374)', () => {
+    // The MCP `briefing` tool and `briefing --json` return this whole object
+    // to the agent, through a path that never passes through
+    // buildReferenceContext's fence: assembleBriefing's own `index` field.
+    // topologyLine (work-topology.ts) is the shared per-line builder both
+    // the fenced `text` and the raw `index.lines` go through, so both are
+    // sanitised the same way for MCP, `briefing --json`,
+    // `briefing --index --json` and the HTTP /v1/briefing-index route.
+    atStandard();
+    const payload = 'before \x1b[31mred\x1b[0m\x9b after\u202e MARKER';
+    remember({
+      name: 'ansi-decision', type: 'decision', title: payload,
+      observations: ['x'], tags: [`project:${PROJECT}`],
+    });
+
+    const result = assembleBriefing(PROJECT);
+    // Fails loudly, not vacuously, if the memory never reached the index.
+    expect(result.index.shown).toBeGreaterThanOrEqual(1);
+
+    const forbidden = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/;
+    const seen: string[] = [];
+    const walk = (v: unknown): void => {
+      if (typeof v === 'string') {
+        seen.push(v);
+      } else if (Array.isArray(v)) {
+        v.forEach(walk);
+      } else if (v && typeof v === 'object') {
+        Object.values(v as Record<string, unknown>).forEach(walk);
+      }
+    };
+    walk(result);
+    for (const s of seen) {
+      expect(s, `forbidden control/bidi character survived in: ${JSON.stringify(s)}`).not.toMatch(forbidden);
+    }
+
+    expect(result.index.lines.join('\n')).toContain('before  [31mred [0m  after  MARKER');
+    // result.text passes through buildReferenceContext a second time,
+    // which collapses the double space topologyLine's own strip left behind.
+    expect(result.text).toContain('before [31mred [0m after MARKER');
+  });
+
+  it('a JWT-shaped token split by a C1 byte never comes out joined into the original (#374)', () => {
+    // Synthetic test fixture, not a real credential: three fake segments of
+    // the repeated word "TESTONLY", shaped like a JWT (eyJ + '.' + '.') only
+    // so redactSecrets' JWT pattern is the one this exercises. The
+    // regression this guards: redact() sees the two halves as broken
+    // (neither matches the secret pattern) and lets both through; an
+    // unconditional removal used to reconnect them into the one token. A
+    // space keeps them apart instead.
+    atStandard();
+    const joinedFake = 'eyJTESTONLYTESTONLYTESTONLY.TESTONLYTESTONLYTESTONLY.TESTONLYTESTONLYTESTONLY';
+    const splitFake = 'eyJTESTONLYTESTONLYTESTONLY.TESTONLYTEST\x9bONLYTESTONLY.TESTONLYTESTONLYTESTONLY';
+    remember({
+      name: 'fake-token-decision', type: 'decision', title: `token: ${splitFake}`,
+      observations: ['x'], tags: [`project:${PROJECT}`],
+    });
+
+    const result = assembleBriefing(PROJECT);
+    expect(result.index.shown).toBeGreaterThanOrEqual(1);
+    expect(result.index.lines.join('\n')).not.toContain(joinedFake);
+    expect(result.text).not.toContain(joinedFake);
+  });
+
   it('keeps generic briefing quiet and scopes unread guidance to one recipient', async () => {
     atStandard(); // asserts the unread line's place relative to the task-state block
     seed();

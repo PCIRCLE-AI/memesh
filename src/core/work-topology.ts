@@ -176,6 +176,9 @@ export interface TopologyEntity {
  * Titles are usually derived from the first observation, so emitting title
  * AND snippet sent the same sentence twice — that redundancy, plus the name,
  * is most of what this format removes.
+ *
+ * The whole returned line goes through `stripControlChars` — see its own
+ * doc comment for why (#374).
  */
 export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   const title = entity.title?.trim();
@@ -189,7 +192,7 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   // space; the handle is never cut in half.
   const handle = Number.isInteger(entity.id) && (entity.id as number) > 0 ? ` [mem:${entity.id}]` : '';
   const room = Math.max(8, maxChars - handle.length);
-  return `- [${entity.type}] ${clip(text, room)}${handle}`;
+  return stripControlChars(`- [${entity.type}] ${clip(text, room)}${handle}`);
 }
 
 /**
@@ -605,9 +608,10 @@ export function hasBriefingContent(lines: readonly string[]): boolean {
  *      four. They are collapsed explicitly.
  *   2. The fence is one backtick longer than the longest backtick run in the
  *      content, so a line that IS a fence is too short to close ours.
+ *   3. Other control characters go through `stripControlChars` (below) — see its own doc comment (#374).
  *
  * Pinned by `tests/hooks/reference-context-fence.test.ts`, which fails if
- * either half is removed.
+ * any of the three is removed.
  */
 export function buildReferenceContext(memoryLines: ReadonlyArray<string | null | undefined>): string {
   // The control characters below ARE the point: U+001C-U+001E and U+0085 are
@@ -615,10 +619,11 @@ export function buildReferenceContext(memoryLines: ReadonlyArray<string | null |
   // that has to guarantee no memory can introduce a line break. Matching them
   // is the fix, not an oversight — hence the disable on the next line.
   const safeLines = memoryLines.map((line) =>
-    String(line ?? '')
-      // eslint-disable-next-line no-control-regex
-      .replace(/[\s\u0085\u001c-\u001e]+/g, ' ')
-      .trim()
+    stripControlChars(
+      String(line ?? '')
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\s\u0085\u001c-\u001e]+/g, ' ')
+    ).trim()
   );
 
   let longestRun = 0;
@@ -674,4 +679,37 @@ const PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
 export function projectLabel(projectId: string): string {
   const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, '');
   return label === '' ? projectId : label;
+}
+
+/**
+ * Remove control characters a terminal or renderer acts on but never
+ * displays: C0 controls other than \t \n \r, DEL, the C1 range
+ * (U+0080-U+009F), and the bidi override/isolate characters
+ * (U+202A-U+202E, U+2066-U+2069) — replacing each maximal run with ONE
+ * space, never nothing.
+ *
+ * \t, \n and \r are deliberately left alone: both current callers already
+ * collapse whitespace of their own — `buildReferenceContext`'s own
+ * `\s`-based collapse, `topologyLine`'s `clip()` — so this function is never
+ * the one place responsible for those three.
+ *
+ * A space, not an unconditional removal, because removing outright can GLUE
+ * two halves of text that were never adjacent into something new: a
+ * credential split across one of these bytes reads as broken until the
+ * removal silently rejoins the halves into the original, complete, valid
+ * secret — reproduced end to end with a JWT carrying a C1 byte inside one
+ * segment. A space keeps the two sides apart, so the result is never LESS
+ * broken than the input. The same fix means NEL, FS and RS between two
+ * words turn into a space instead of gluing the words, since both already
+ * sit inside this character class. A double space where one already
+ * existed is an accepted cost.
+ *
+ * Exported (#374) so a memory-derived string reaches an agent through
+ * exactly one definition of "safe to render" whichever surface hands it
+ * over — the fenced block, or a raw field such as `BriefingResult.index.lines`
+ * that never passes through the fence at all.
+ */
+export function stripControlChars(s: string): string {
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, ' ');
 }
