@@ -8,6 +8,10 @@ All notable changes to MeMesh are documented here.
 
 - `.gitleaks.toml`, which gitleaks loads when run from the repository root: the default rules stay on, and three allowlists let through only the documentation checksums, the synthetic credentials in the redaction tests and literal test idempotency keys (the key alone, not the rest of its line), each with the reason it is not a credential. No CI job runs gitleaks.
 
+### Changed
+
+- Promoting a release from `next` to `latest` now runs through the release workflow (#452).
+
 ### Fixed
 
 - The "remember this" prompt hint named `mcp__memesh__remember`, which does not exist under a plugin install; it now names the memesh `remember` tool and gives the short form (#442).

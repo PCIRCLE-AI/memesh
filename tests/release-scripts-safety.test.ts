@@ -583,6 +583,436 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(read('.github/workflows/publish-npm.yml')).not.toMatch(/cd dashboard && npm ci/);
   });
 
+  describe('promoting a trial to latest happens only through the release workflow (#452)', () => {
+    // Before this: `release: published` was the only trigger, so turning an
+    // existing prerelease into a full release (`gh release edit v<version>
+    // --prerelease=false`) fired `released`, which nothing listened for, and
+    // CONTRIBUTING.md filled the gap with a manual `npm dist-tag add` run
+    // from a local machine — bypassing CI and needing a maintainer's npm
+    // credentials outside it.
+    const workflow = read('.github/workflows/publish-npm.yml');
+
+    /** The named top-level job's block, keyed by its 2-space-indented `name:` under `jobs:`. */
+    function jobBlock(name: string): string {
+      const match = workflow.match(new RegExp(`\\n {2}${name}:\\n[\\s\\S]*?(?=\\n {2}[A-Za-z0-9_-]+:\\n|$)`));
+      // A guard on an ABSENT job would otherwise pass vacuously — every
+      // `.not.toMatch(...)` below is true of an empty string.
+      expect(match, `no job named "${name}" in publish-npm.yml`).not.toBeNull();
+      return match?.[0] ?? '';
+    }
+
+    /**
+     * Every `run:` command body in a job block, single-line and `run: |`
+     * block forms alike — a mutation that moved the tag interpolation into a
+     * multi-line block would otherwise hide from a check that only looked at
+     * `run:\s+(.*)`.
+     */
+    function runBodies(block: string): string[] {
+      const bodies: string[] = [];
+      const lines = block.split('\n');
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const singleLine = line.match(/^\s*run:\s+(?!\|)(.*)$/);
+        if (singleLine) {
+          bodies.push(singleLine[1]);
+          continue;
+        }
+        if (/^\s*run:\s*\|/.test(line)) {
+          const indent = line.match(/^(\s*)run:/)?.[1].length ?? 0;
+          const blockLines: string[] = [];
+          let j = i + 1;
+          while (j < lines.length && (lines[j].trim() === '' || (lines[j].match(/^\s*/)?.[0].length ?? 0) > indent)) {
+            blockLines.push(lines[j]);
+            j++;
+          }
+          bodies.push(blockLines.join('\n'));
+        }
+      }
+      return bodies;
+    }
+
+    /**
+     * Every non-comment, non-blank line across a set of run bodies. Several
+     * checks below must not trip on prose inside a `#` comment — this step
+     * legitimately says things like "npm view is not wrapped in `|| true`"
+     * and "every npm view here reads --prefer-online" in its own commentary.
+     */
+    function commandLines(bodies: string[]): string[] {
+      return bodies
+        .flatMap((b) => b.split('\n'))
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0 && !l.startsWith('#'));
+    }
+
+    it('fires on both published and released', () => {
+      expect(workflow).toMatch(/release:\s*\n\s*types:\s*\[\s*published\s*,\s*released\s*\]/);
+    });
+
+    it('the publish job runs only for a `published` action, so it never runs twice for one release', () => {
+      // A directly published full release fires BOTH `published` and
+      // `released` as two separate workflow runs. Without this guard the
+      // publish job — build, full suite, both smoke tests, `npm publish` —
+      // would also run on the `released` delivery of that same release.
+      //
+      // Anchored to the whole job-level property line (4-space indent, `^`
+      // to `$`): a bare `.toMatch(/if: ... == 'published'/)` substring check
+      // survives a mutant that WIDENS the guard (`|| ... == 'released'`) or
+      // MOVES it down from the job onto a single step, since both leave that
+      // substring intact somewhere in the block.
+      expect(jobBlock('publish')).toMatch(/^ {4}if: github\.event\.action == 'published'$/m);
+    });
+
+    it('the promote job runs only for a `released` action', () => {
+      expect(jobBlock('promote')).toMatch(/^ {4}if: github\.event\.action == 'released'$/m);
+    });
+
+    it('neither job hides a failure behind continue-on-error', () => {
+      expect(jobBlock('publish')).not.toMatch(/continue-on-error/);
+      expect(jobBlock('promote')).not.toMatch(/continue-on-error/);
+    });
+
+    it('the promote job checks the release tag against package.json, through env: like the publish job', () => {
+      const promoteJob = jobBlock('promote');
+      expect(promoteJob).toMatch(/RELEASE_TAG:\s*\$\{\{\s*github\.event\.release\.tag_name\s*\}\}/);
+      expect(promoteJob).toContain('check-tag-matches-version.mjs "$RELEASE_TAG"');
+    });
+
+    it('the promote job never interpolates ${{ }} inside a run: body', () => {
+      // The tag must go through `env:`, never `${{ }}` inside `run:` — the
+      // same reasoning the publish job's identical step documents: git
+      // accepts `$(...)` inside a tag name, and this job also holds
+      // NPM_TOKEN.
+      const bodies = runBodies(jobBlock('promote'));
+      expect(bodies.length).toBeGreaterThan(0);
+      for (const body of bodies) {
+        expect(body).not.toMatch(/\$\{\{/);
+      }
+    });
+
+    it('the promote job moves the dist-tag to exactly `latest`, then polls the readback within a bound, failing unless it eventually matches', () => {
+      const promoteJob = jobBlock('promote');
+      // Pinned to the exact target — a mutant that pointed this at `next`
+      // (or any other tag) fails this line specifically, not just a
+      // substring check that `npm dist-tag add` appears somewhere.
+      expect(promoteJob).toContain('npm dist-tag add "$PACKAGE@$VERSION" latest');
+      expect(promoteJob).toMatch(/dist-tags\.latest/);
+      // At least four real registry reads: the version-on-npm check, the
+      // latest/next reads that decide whether this is a promotion at all,
+      // and at least one readback attempt after the move.
+      const npmViewCalls = promoteJob.match(/npm view /g) ?? [];
+      expect(npmViewCalls.length).toBeGreaterThanOrEqual(4);
+      // Registry propagation lags a dist-tag move by minutes
+      // (scripts/lib/npm-latest-guard.mjs documents ~9 minutes observed on
+      // the 4.10.1 cut), so the readback must be a POLL — but a BOUNDED one,
+      // never an open-ended retry that could hang the job. Anchored to end
+      // of line so `POLL_MAX_ATTEMPTS=20` cannot pass a mutant that widens
+      // it to `2000` (which still contains the substring "20").
+      expect(promoteJob).toMatch(/POLL_MAX_ATTEMPTS=20$/m);
+      expect(promoteJob).toMatch(/POLL_INTERVAL_SECONDS=30$/m);
+      expect(promoteJob).toMatch(/for attempt in \$\(seq 1 "\$POLL_MAX_ATTEMPTS"\); do/);
+      expect(promoteJob).toContain('sleep "$POLL_INTERVAL_SECONDS"');
+      expect(promoteJob).not.toMatch(/while\s+(true|:)\s*;?\s*do/);
+      // The final failure check must sit AFTER the loop closes (`done`), not
+      // inside it — a check inside the loop would fail on attempt 1 even
+      // when a later attempt goes on to succeed.
+      const doneAt = promoteJob.search(/\n\s*done\s*\n/);
+      expect(doneAt, 'no `done` closing the poll loop').toBeGreaterThan(-1);
+      const afterLoop = promoteJob.slice(doneAt);
+      expect(afterLoop).toMatch(/if \[ "\$LATEST" != "\$VERSION" \]; then/);
+      expect(afterLoop).toContain('::error::');
+      expect(afterLoop).toMatch(/exit 1/);
+    });
+
+    it('every `npm view` in the promote step reads --prefer-online, including the very first one', () => {
+      const npmViewLines = commandLines(runBodies(jobBlock('promote'))).filter((l) => /\$\(npm view |^npm view /.test(l));
+      expect(npmViewLines.length).toBeGreaterThanOrEqual(4);
+      for (const line of npmViewLines) {
+        expect(line, line).toContain('--prefer-online');
+      }
+    });
+
+    it('no `npm view` in the promote step is wrapped with `|| true` (a real registry/network error must fail loud)', () => {
+      const npmViewLines = commandLines(runBodies(jobBlock('promote'))).filter((l) => /\$\(npm view |^npm view /.test(l));
+      expect(npmViewLines.length).toBeGreaterThan(0);
+      for (const line of npmViewLines) {
+        expect(line, line).not.toMatch(/\|\|\s*true/);
+      }
+    });
+
+    it('case 1: distinguishes E404 (not published yet) from a real registry/network error, and drops the now-false "publish job handles this release" text', () => {
+      const promoteJob = jobBlock('promote');
+      expect(promoteJob).toContain('case "$VERSION_ON_NPM_OUTPUT" in');
+      expect(promoteJob).toContain('*E404*)');
+      expect(promoteJob).toMatch(/::notice::\$PACKAGE@\$VERSION is not on npm/);
+      // `set -e` must be restored (not left off) before the exit-code
+      // decision runs, or a later failure in this same step would be
+      // silently unguarded.
+      expect(promoteJob).toMatch(/set \+e[\s\S]{0,200}VERSION_ON_NPM_EXIT=\$\?[\s\S]{0,40}set -e[\s\S]{0,60}if \[ "\$VERSION_ON_NPM_EXIT" -ne 0 \]/);
+      expect(promoteJob).toContain('::error::');
+      // The old blanket claim no longer holds once cases 2-4 exist below —
+      // a next-mismatch is not "the publish job handles this release".
+      expect(workflow).not.toMatch(/not a promotion, the publish job handles this release/);
+    });
+
+    it('case 2: exits 0 with a notice when latest already equals VERSION', () => {
+      const promoteJob = jobBlock('promote');
+      expect(promoteJob).toMatch(/if \[ "\$LATEST" = "\$VERSION" \]; then/);
+      expect(promoteJob).toMatch(/::notice::\$PACKAGE@\$VERSION is already latest/);
+    });
+
+    it('case 3: refuses to move latest backwards with exit 1, comparing semver with an inline node snippet (no new dependency)', () => {
+      const promoteJob = jobBlock('promote');
+      expect(promoteJob).toMatch(/isPlainSemver/);
+      expect(promoteJob).toMatch(/::error::\$PACKAGE@\$VERSION is not newer than the current latest/);
+      expect(promoteJob).toContain('refusing to move latest backwards');
+      const compareAt = promoteJob.indexOf('NEWER_THAN_LATEST_EXIT=$?');
+      expect(compareAt, 'no comparator exit code captured').toBeGreaterThan(-1);
+      expect(promoteJob.slice(compareAt)).toMatch(/exit 1/);
+      // The repo carries no semver dependency for this — it must not gain one.
+      const pkg = JSON.parse(read('package.json'));
+      expect({ ...pkg.dependencies, ...pkg.devDependencies }).not.toHaveProperty('semver');
+    });
+
+    it('case 4: VERSION newer than latest but not the current next exits 1 (not 0), naming both values', () => {
+      const promoteJob = jobBlock('promote');
+      const guardAt = promoteJob.indexOf('if [ "$NEXT" != "$VERSION" ]; then');
+      expect(guardAt, 'no next-mismatch guard').toBeGreaterThan(-1);
+      const guardEnd = promoteJob.indexOf('\n          fi\n', guardAt);
+      expect(guardEnd, 'next-mismatch guard has no closing fi').toBeGreaterThan(guardAt);
+      const guardBlock = promoteJob.slice(guardAt, guardEnd);
+      expect(guardBlock).toContain('::error::');
+      expect(guardBlock).toMatch(/exit 1/);
+      expect(guardBlock).not.toMatch(/exit 0/);
+      expect(guardBlock).toContain('this job cannot promote it');
+      expect(guardBlock).toContain('${LATEST');
+      expect(guardBlock).toContain('${NEXT');
+    });
+
+    it('CONTRIBUTING.md no longer instructs a manual `npm dist-tag add`', () => {
+      expect(read('CONTRIBUTING.md')).not.toMatch(/npm dist-tag add/);
+    });
+
+    it('the promote job authenticates to npm the same way the publish job does', () => {
+      const promoteJob = jobBlock('promote');
+      expect(promoteJob).toMatch(/registry-url:\s*'https:\/\/registry\.npmjs\.org'/);
+      expect(promoteJob).toMatch(/NODE_AUTH_TOKEN:\s*\$\{\{\s*secrets\.NPM_TOKEN\s*\}\}/);
+    });
+
+    it('the promote job declares minimal permissions and pins every action by full sha', () => {
+      const promoteJob = jobBlock('promote');
+      expect(promoteJob).toMatch(/permissions:\s*\n\s*contents:\s*read/);
+      expect(promoteJob).not.toMatch(/id-token:\s*write/);
+      const usesLines = [...promoteJob.matchAll(/uses:\s*(\S+)/g)].map((m) => m[1]);
+      expect(usesLines.length).toBeGreaterThan(0);
+      for (const usesLine of usesLines) {
+        expect(usesLine).toMatch(/@[0-9a-f]{40}$/);
+      }
+    });
+
+    // Everything above reads the YAML as TEXT. None of it can catch a
+    // mutation that keeps every keyword in place but inverts what they mean
+    // — flip a `!=` to `=`, flip which branch breaks a loop — because the
+    // mutated text still satisfies every substring/regex check above. This
+    // runs the step's ACTUAL `run: |` body, under the same shell GitHub
+    // Actions uses (`bash --noprofile --norc -eo pipefail`), against a stub
+    // `npm` (and a no-op `sleep`) on PATH. No network, no real npm.
+    describe.skipIf(process.platform === 'win32')('behavioural: runs the real promote script against a stub npm', () => {
+      // The workflow itself only ever runs on `ubuntu-latest`; a real POSIX
+      // bash execution is representative, and Windows has no bearing here.
+      const promoteBody = runBodies(jobBlock('promote')).find((b) => b.includes('PACKAGE='));
+
+      it('the promote step body was extracted', () => {
+        expect(promoteBody, 'could not find the promote step\'s run: | body').toBeDefined();
+      });
+
+      // Reads FAKE_NPM_STATE (JSON) and answers `npm view`/`npm dist-tag add`
+      // from it; never touches the network. Fails loud (exit 1) on any
+      // unrecognised call, and on any `view` missing `--prefer-online`, so a
+      // regression in the SCRIPT's own call shape breaks these tests too.
+      const NPM_STUB = [
+        '#!/usr/bin/env node',
+        "'use strict';",
+        "const fs = require('fs');",
+        'const state = JSON.parse(fs.readFileSync(process.env.FAKE_NPM_STATE, "utf8"));',
+        'const args = process.argv.slice(2);',
+        'function fail(message) { process.stderr.write(message + "\\n"); process.exit(1); }',
+        "if (args[0] === 'view') {",
+        "  if (!args.includes('--prefer-online')) fail('fake npm: missing --prefer-online');",
+        '  const spec = args[1];',
+        '  const field = args[2];',
+        "  if (field === 'version') {",
+        '    if (state.versionError) fail(state.versionError);',
+        "    if (!state.versionOnNpm) fail('npm error code E404\\nnpm error 404 No match found for version');",
+        "    process.stdout.write(spec.slice(spec.lastIndexOf('@') + 1) + '\\n');",
+        '    process.exit(0);',
+        '  }',
+        "  if (field === 'dist-tags.latest') {",
+        '    state.latestReadCount = (state.latestReadCount || 0) + 1;',
+        // Each `npm view` invocation is a SEPARATE node process — an
+        // in-memory increment alone is lost the instant this process exits.
+        // Persisting it back into the same state file is what lets the
+        // poll loop's later reads see progress from its earlier ones (and
+        // lets the harness see the count even on the read that fails).
+        '    fs.writeFileSync(process.env.FAKE_NPM_STATE, JSON.stringify(state));',
+        // `latestErrorAtRead` fails only that one 1-indexed read (across the
+        // pre-poll check AND every poll attempt); omitting it fails every
+        // read, unconditionally, from the first one.
+        '    if (state.latestError && (state.latestErrorAtRead === undefined || state.latestReadCount === state.latestErrorAtRead)) fail(state.latestError);',
+        '    const seq = state.latestSequence;',
+        '    const idx = Math.min(state.latestReadCount - 1, seq.length - 1);',
+        "    process.stdout.write((seq[idx] ?? '') + '\\n');",
+        '    process.exit(0);',
+        '  }',
+        "  if (field === 'dist-tags.next') {",
+        '    if (state.nextError) fail(state.nextError);',
+        "    process.stdout.write((state.next ?? '') + '\\n');",
+        '    process.exit(0);',
+        '  }',
+        "  fail('fake npm: unhandled view field ' + field);",
+        "} else if (args[0] === 'dist-tag' && args[1] === 'add') {",
+        "  fs.appendFileSync(process.env.FAKE_NPM_ADD_LOG, args[2] + ' ' + args[3] + '\\n');",
+        '  process.exit(0);',
+        '} else {',
+        "  fail('fake npm: unhandled command ' + args.join(' '));",
+        '}',
+        '',
+      ].join('\n');
+
+      function runPromoteStep(state: Record<string, unknown>, version: string) {
+        const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'promote-behavioural-'));
+        try {
+          const binDir = path.join(tmp, 'bin');
+          fs.mkdirSync(binDir);
+          fs.writeFileSync(path.join(binDir, 'npm'), NPM_STUB);
+          fs.chmodSync(path.join(binDir, 'npm'), 0o755);
+          // A no-op sleep: the "poll never propagates" case below runs its
+          // full 20 attempts in milliseconds instead of 10 real minutes,
+          // without editing the script's own POLL_INTERVAL_SECONDS.
+          fs.writeFileSync(path.join(binDir, 'sleep'), '#!/bin/sh\nexit 0\n');
+          fs.chmodSync(path.join(binDir, 'sleep'), 0o755);
+
+          const work = path.join(tmp, 'work');
+          fs.mkdirSync(work);
+          fs.writeFileSync(path.join(work, 'package.json'), JSON.stringify({ version }));
+
+          const statePath = path.join(tmp, 'state.json');
+          fs.writeFileSync(statePath, JSON.stringify(state));
+          const addLogPath = path.join(tmp, 'dist-tag-add.log');
+          const scriptPath = path.join(tmp, 'step.sh');
+          fs.writeFileSync(scriptPath, promoteBody!);
+
+          // The exact shell GitHub Actions uses for an unspecified `run:`
+          // shell on a Linux runner — not a plain `bash -c`, which has no
+          // `-e` and so cannot exercise the set +e/-e toggle at all.
+          const result = spawnSync(
+            'bash',
+            ['--noprofile', '--norc', '-eo', 'pipefail', scriptPath],
+            {
+              cwd: work,
+              env: {
+                ...process.env,
+                PATH: `${binDir}:${process.env.PATH}`,
+                FAKE_NPM_STATE: statePath,
+                FAKE_NPM_ADD_LOG: addLogPath,
+              },
+              encoding: 'utf8',
+              timeout: 30000,
+            },
+          );
+          const distTagAddLog = fs.existsSync(addLogPath) ? fs.readFileSync(addLogPath, 'utf8').trim() : '';
+          const finalState = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+          const latestReads = finalState.latestReadCount ?? 0;
+          return { ...result, distTagAddLog, latestReads };
+        } finally {
+          fs.rmSync(tmp, { recursive: true, force: true });
+        }
+      }
+
+      it('case 1: VERSION not on npm (E404) exits 0 with a notice, and never calls dist-tag add', () => {
+        const r = runPromoteStep({ versionOnNpm: false, next: '4.11.0', latestSequence: ['4.10.4'] }, '4.11.0');
+        expect(r.status, r.stderr).toBe(0);
+        expect(r.stdout).toMatch(/not on npm/);
+        expect(r.distTagAddLog).toBe('');
+      });
+
+      it('a real registry error on the version check exits 1, never a false "not on npm" notice', () => {
+        const r = runPromoteStep({ versionError: 'npm error code ECONNRESET', next: '4.11.0', latestSequence: ['4.10.4'] }, '4.11.0');
+        expect(r.status).toBe(1);
+        expect(r.stdout).not.toMatch(/::notice::/);
+        expect(r.distTagAddLog).toBe('');
+      });
+
+      it('proves set -e is restored after the toggle: a failure on the latest read (after the version check passes) still exits 1', () => {
+        const r = runPromoteStep({ versionOnNpm: true, latestError: 'npm error code ECONNRESET', next: '4.11.0', latestSequence: ['4.10.4'] }, '4.11.0');
+        expect(r.status).toBe(1);
+        expect(r.distTagAddLog).toBe('');
+      });
+
+      it('case 2: latest already equals VERSION exits 0 with a notice, and never calls dist-tag add', () => {
+        const r = runPromoteStep({ versionOnNpm: true, next: '4.11.0', latestSequence: ['4.11.0'] }, '4.11.0');
+        expect(r.status, r.stderr).toBe(0);
+        expect(r.stdout).toMatch(/already latest/);
+        expect(r.distTagAddLog).toBe('');
+      });
+
+      it('case 3: VERSION not newer than latest exits 1, refusing to move latest backwards, and never calls dist-tag add', () => {
+        const r = runPromoteStep({ versionOnNpm: true, next: '4.9.0', latestSequence: ['4.11.0'] }, '4.9.0');
+        expect(r.status).toBe(1);
+        expect(r.stderr).toMatch(/refusing to move latest backwards/);
+        expect(r.distTagAddLog).toBe('');
+      });
+
+      it('case 4: VERSION newer than latest but not the current next exits 1 (not 0), and never calls dist-tag add', () => {
+        const r = runPromoteStep({ versionOnNpm: true, next: '4.10.5', latestSequence: ['4.10.4'] }, '4.11.0');
+        expect(r.status).toBe(1);
+        expect(r.stderr).toMatch(/this job cannot promote it/);
+        expect(r.distTagAddLog).toBe('');
+      });
+
+      it('case 5: promotes and the poll confirms it once the registry propagates (3rd read)', () => {
+        const r = runPromoteStep({ versionOnNpm: true, next: '4.11.0', latestSequence: ['4.10.4', '4.10.4', '4.11.0'] }, '4.11.0');
+        expect(r.status, r.stderr).toBe(0);
+        expect(r.stdout).toMatch(/promoted @pcircle\/memesh@4\.11\.0 to latest/);
+        expect(r.distTagAddLog).toBe('@pcircle/memesh@4.11.0 latest');
+        expect(r.latestReads).toBe(3);
+      });
+
+      it('case 5 (worst case): the poll exhausts its 20-attempt bound and fails if latest never propagates', () => {
+        const r = runPromoteStep({ versionOnNpm: true, next: '4.11.0', latestSequence: ['4.10.4'] }, '4.11.0');
+        expect(r.status).toBe(1);
+        expect(r.stderr).toMatch(/promotion did not take after 20 attempts/);
+        expect(r.distTagAddLog).toBe('@pcircle/memesh@4.11.0 latest');
+        // 1 pre-poll read (case 2/3's own `dist-tags.latest` check) + the
+        // poll's full 20 attempts = 21 total reads of that field.
+        expect(r.latestReads).toBe(21);
+      });
+
+      it('a real registry error on the poll\'s 2nd attempt fails immediately, not after exhausting the poll', () => {
+        // The pre-poll check (case 2/3) and every poll attempt are SEPARATE
+        // `npm view` requests. A registry error on any one of them must
+        // stop the job right there, not be swallowed and retried as if it
+        // just meant "not yet propagated" until the poll runs out on its
+        // own and prints the unrelated "did not take" exhaustion message.
+        //
+        // Read #1 = the pre-poll check, read #2 = poll attempt 1, read #3 =
+        // poll attempt 2 — where this fails.
+        const r = runPromoteStep(
+          {
+            versionOnNpm: true,
+            next: '4.11.0',
+            latestSequence: ['4.10.4', '4.10.4'],
+            latestError: 'npm error code ECONNRESET',
+            latestErrorAtRead: 3,
+          },
+          '4.11.0',
+        );
+        expect(r.status).not.toBe(0);
+        expect(r.latestReads).toBe(3);
+        expect(r.stderr).not.toMatch(/did not take/);
+      });
+    });
+  });
+
   it('the test runner it shares with prepublishOnly also isolates HOME', () => {
     // Same guarantee, other entry point. `prepublishOnly` reaches the suite
     // through run-tests-isolated.mjs rather than this script, and it had the
