@@ -30,7 +30,7 @@ describe('memesh config list', () => {
     return execFileSync('node', [path.resolve('dist/transports/cli/cli.js'), 'config', 'list'], {
       // An ambient level would beat what the config file says (`list` shows the
       // level in effect), so it is dropped.
-      env: { ...process.env, HOME: home, MEMESH_DB_PATH: path.join(home, '.memesh', 'kg.db'), MEMESH_BRIEFING: undefined },
+      env: { ...process.env, HOME: home, MEMESH_DB_PATH: path.join(home, '.memesh', 'kg.db'), MEMESH_BRIEFING: undefined, MEMESH_SESSION_LIMIT: undefined },
       encoding: 'utf8',
     });
   }
@@ -93,8 +93,9 @@ function runCli(home: string, args: string[], config: object | null, env: Record
       ...process.env,
       HOME: home,
       MEMESH_DB_PATH: path.join(home, '.memesh', 'kg.db'),
-      // An ambient level would beat whatever this test stores.
+      // An ambient level/limit would beat whatever this test stores.
       MEMESH_BRIEFING: undefined,
+      MEMESH_SESSION_LIMIT: undefined,
       ...env,
     },
   });
@@ -144,6 +145,84 @@ describe('memesh config list: the briefing level in effect', () => {
     expect(r.stdout).toContain('sessionLimit: 42');
     expect(r.stdout).toContain('autoCapture: false');
     expect(r.stdout).toContain('autoUpdate: patch');
+  });
+});
+
+// `sessionLimit` gets the same "value in effect" treatment as `briefing`
+// above, from `memesh config list` AND `memesh config get sessionLimit`
+// (unlike `briefing`, where only `list` does — sessionLimit has no separate
+// "what was actually written" question worth asking, since the write path
+// already refuses anything out of range).
+describe('memesh config list / get: the sessionLimit in effect (#431)', () => {
+  let home: string;
+  beforeEach(() => { home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cfg-sessionlimit-')); });
+  afterEach(() => { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); });
+
+  const sessionLimitLines = (out: string) => out.split('\n').filter((l) => /^\s*sessionLimit:/.test(l));
+
+  it('a valid stored value is shown plainly, unchanged from before', () => {
+    const r = runCli(home, ['config', 'list'], { sessionLimit: 42 });
+    expect(sessionLimitLines(r.stdout)).toEqual(['  sessionLimit: 42']);
+    expect(runCli(home, ['config', 'get', 'sessionLimit'], { sessionLimit: 42 }).stdout).toBe('42\n');
+  });
+
+  it('nothing stored: the default is shown and says so, in both list and get', () => {
+    const r = runCli(home, ['config', 'list'], {});
+    expect(sessionLimitLines(r.stdout)).toEqual(['  sessionLimit: 10 (default)']);
+    expect(runCli(home, ['config', 'get', 'sessionLimit'], {}).stdout).toBe('10 (default)\n');
+  });
+
+  it('a stored value above the max shows what the hook actually uses', () => {
+    const r = runCli(home, ['config', 'list'], { sessionLimit: 500 });
+    expect(sessionLimitLines(r.stdout)).toEqual(['  sessionLimit: 500 (above 100; the SessionStart hook uses 100)']);
+    expect(runCli(home, ['config', 'get', 'sessionLimit'], { sessionLimit: 500 }).stdout)
+      .toBe('500 (above 100; the SessionStart hook uses 100)\n');
+  });
+
+  it('a stored value below the min shows the default the hook falls back to', () => {
+    const r = runCli(home, ['config', 'list'], { sessionLimit: 0 });
+    expect(sessionLimitLines(r.stdout)).toEqual(['  sessionLimit: 0 (below 1; the SessionStart hook uses the default 10)']);
+  });
+
+  it('a stored non-integer is treated the same as any other invalid value', () => {
+    const r = runCli(home, ['config', 'list'], { sessionLimit: 2.5 });
+    expect(sessionLimitLines(r.stdout)).toEqual(['  sessionLimit: 2.5 (not a whole number; the SessionStart hook uses the default 10)']);
+  });
+
+  it('MEMESH_SESSION_LIMIT overrides a valid stored value and is named as the source', () => {
+    const r = runCli(home, ['config', 'list'], { sessionLimit: 42 }, { MEMESH_SESSION_LIMIT: '30' });
+    expect(sessionLimitLines(r.stdout)).toEqual(['  sessionLimit: 30 (env MEMESH_SESSION_LIMIT)']);
+  });
+
+  // Edge case: nothing is stored in config.json, but the env var alone
+  // resolves to something other than the plain default — `list`/`get` must
+  // still say what is actually in effect, not "not set" or "10 (default)".
+  it('MEMESH_SESSION_LIMIT alone (nothing stored) is shown and named as the source', () => {
+    const r = runCli(home, ['config', 'list'], {}, { MEMESH_SESSION_LIMIT: '30' });
+    expect(sessionLimitLines(r.stdout)).toEqual(['  sessionLimit: 30 (env MEMESH_SESSION_LIMIT)']);
+    expect(runCli(home, ['config', 'get', 'sessionLimit'], {}, { MEMESH_SESSION_LIMIT: '30' }).stdout)
+      .toBe('30 (env MEMESH_SESSION_LIMIT)\n');
+  });
+
+  it('an out-of-range MEMESH_SESSION_LIMIT is named as the source, and the clamp still applies', () => {
+    const r = runCli(home, ['config', 'list'], { sessionLimit: 42 }, { MEMESH_SESSION_LIMIT: '500' });
+    expect(sessionLimitLines(r.stdout)).toEqual(['  sessionLimit: 500 from MEMESH_SESSION_LIMIT (above 100; the SessionStart hook uses 100)']);
+  });
+
+  // A non-numeric env value shows plainly, not quoted, and still falls
+  // through to config for the effective value.
+  it('a non-numeric MEMESH_SESSION_LIMIT shows the raw text plainly and falls through to config', () => {
+    const r = runCli(home, ['config', 'list'], { sessionLimit: 25 }, { MEMESH_SESSION_LIMIT: 'abc' });
+    expect(sessionLimitLines(r.stdout)).toEqual(['  sessionLimit: abc from MEMESH_SESSION_LIMIT (not a whole number; the SessionStart hook uses 25)']);
+  });
+
+  // Both env and config were out of range: both are named, briefly, ending
+  // on the one effective value the hook uses.
+  it('when both env and config are out of range, both are named briefly', () => {
+    const r = runCli(home, ['config', 'list'], { sessionLimit: 500 }, { MEMESH_SESSION_LIMIT: 'abc' });
+    expect(sessionLimitLines(r.stdout)).toEqual([
+      '  sessionLimit: abc from MEMESH_SESSION_LIMIT (not a whole number), then 500 (above 100; the SessionStart hook uses 100)',
+    ]);
   });
 });
 

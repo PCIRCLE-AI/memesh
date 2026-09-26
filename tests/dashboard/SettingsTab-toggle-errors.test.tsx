@@ -53,6 +53,26 @@ describe('SettingsTab behaviour toggles surface POST failures', () => {
     expect(within(container as HTMLElement).queryByRole('alert')).toBeNull();
   });
 
+  // #431 — an out-of-range stored sessionLimit must not disable the rest of
+  // this card; there is no sessionLimit control here yet, so the contract
+  // is just that the extra field is inert.
+  it('renders normally when the stored config carries an out-of-range sessionLimit (#431)', async () => {
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => String(input).includes('/v1/config')
+      ? jsonResponse({
+        success: true,
+        data: { config: { autoUpdate: 'minor', briefing: 'standard', sessionLimit: 500 } },
+      })
+      : jsonResponse({ success: true, data: {} }));
+    const { container } = render(<SettingsTab locale="en" onLocaleChange={() => {}} />);
+    const policy = within(container as HTMLElement).getByLabelText('Auto-update policy') as HTMLSelectElement;
+    const briefing = within(container as HTMLElement).getByLabelText('Session start briefing') as HTMLSelectElement;
+    await waitFor(() => expect(policy.disabled).toBe(false));
+    expect(policy.value).toBe('minor');
+    expect(briefing.disabled).toBe(false);
+    expect(briefing.value).toBe('standard');
+    expect(within(container as HTMLElement).queryByRole('alert')).toBeNull();
+  });
+
   it('keeps the read failure localized and announced after changing language', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => String(input).includes('/v1/config')
       ? new Response(JSON.stringify({ success: false, error: 'fixture read failure' }), { status: 500 })

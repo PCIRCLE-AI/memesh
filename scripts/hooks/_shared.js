@@ -347,23 +347,41 @@ export function isAutoCaptureEnabled(env = process.env) {
   return autoCaptureDecision(env.MEMESH_AUTO_CAPTURE, readHookConfig(env).autoCapture).enabled;
 }
 
+// #431 — the one sessionLimit policy (range, integer check, effective-value
+// resolver), shared with the CLI and HTTP server via src/core/session-limit.ts
+// (this is the generated mirror; see that file — a hook cannot import it
+// directly because core/config.ts, which owns the stored field, is not a
+// zero-import leaf).
+export {
+  SESSION_LIMIT_MIN,
+  SESSION_LIMIT_MAX,
+  SESSION_LIMIT_DEFAULT,
+  isSessionLimitInRange,
+  resolveSessionLimit as resolveSessionLimitCore,
+} from './_generated/session-limit.js';
+import { resolveSessionLimit as resolveSessionLimitValue } from './_generated/session-limit.js';
+
 /**
- * Resolve the session-start memory-injection top-N limit.
- * Precedence: env > config > default(10).
+ * Resolve the session-start memory-injection top-N limit, and every source
+ * whose own value was not used as given (env, then config — see
+ * SessionLimitResolution in core/session-limit.ts).
+ * @param {NodeJS.ProcessEnv} [env=process.env]
+ * @param {Record<string, any>} [config=readHookConfig(env)] - the settings
+ *   document, when the caller has already read it, so config.json is read
+ *   once (same pattern as resolveBriefingLevel above).
+ * @returns {{value: number, effectiveSource: 'env'|'config'|'default', adjustments: Array<{source: 'env'|'config', raw: string, cause: string}>}}
+ */
+export function resolveSessionLimitDetailed(env = process.env, config = readHookConfig(env)) {
+  return resolveSessionLimitValue(env.MEMESH_SESSION_LIMIT, config.sessionLimit);
+}
+
+/**
+ * The plain number every existing caller uses.
  * @param {NodeJS.ProcessEnv} [env=process.env]
  * @returns {number}
  */
 export function resolveSessionLimit(env = process.env) {
-  const envVal = env.MEMESH_SESSION_LIMIT;
-  if (envVal !== undefined) {
-    const n = parseInt(envVal, 10);
-    if (Number.isFinite(n) && n > 0) return n;
-  }
-  const cfg = readHookConfig(env);
-  if (typeof cfg.sessionLimit === 'number' && cfg.sessionLimit > 0) {
-    return cfg.sessionLimit;
-  }
-  return 10;
+  return resolveSessionLimitDetailed(env).value;
 }
 
 /**

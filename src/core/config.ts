@@ -1,9 +1,19 @@
 import fs from 'fs';
 import path from 'path';
 import { memeshDir } from './paths.js';
+// #431 — the sessionLimit range, the integer check and the effective-value
+// resolver live in the zero-import leaf below (mirrored verbatim for the
+// hooks by scripts/generate-hook-core.mjs); this file is not itself a leaf
+// (it touches fs/paths.ts), so a hook imports the generated copy directly,
+// never through this re-export.
+export { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, isSessionLimitInRange } from './session-limit.js';
 
 export interface MeMeshConfig {
   autoCapture?: boolean;
+  /** The SessionStart top-N memory-injection limit (#431) — see
+   * `core/session-limit.ts` for the range and what an out-of-range stored
+   * value resolves to. Enforced on write only; a read passes it through
+   * unfiltered, like `briefing` below. */
   sessionLimit?: number;
   autoUpdate?: 'off' | 'patch' | 'minor' | 'major';
   /** false = "never ask again": no first-use update notice, no refresh spawn. Default true. */

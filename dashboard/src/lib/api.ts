@@ -223,6 +223,8 @@ export interface ConfigData {
     setupCompleted?: boolean;
     autoCapture?: boolean;
     autoUpdate?: AutoUpdatePolicy;
+    /** GET passes the stored value through unvalidated (#431) — this bundle
+     *  has no sessionLimit control yet. */
     sessionLimit?: number;
     /** GET passes the stored value through unvalidated, so it may not be a known level. */
     briefing?: unknown;

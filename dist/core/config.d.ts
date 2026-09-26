@@ -1,3 +1,4 @@
+export { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, isSessionLimitInRange } from './session-limit.js';
 export interface MeMeshConfig {
     autoCapture?: boolean;
     sessionLimit?: number;

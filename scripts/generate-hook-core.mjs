@@ -72,6 +72,12 @@ const SOURCES = [
   // on what `minimal` / `standard` / `full` include, so the ONE policy table
   // is mirrored rather than re-decided per hook.
   { from: 'dist/core/briefing-level.js', to: 'briefing-level.js', src: 'src/core/briefing-level.ts' },
+  // The sessionLimit policy (#431): SessionStart must resolve the same
+  // effective value (and report the same reason when it had to clamp or
+  // fall back) that `config list`/`config get` and the HTTP config routes
+  // reason about, so the range, the clamp and the fall-back live in ONE
+  // leaf instead of a hand mirror.
+  { from: 'dist/core/session-limit.js', to: 'session-limit.js', src: 'src/core/session-limit.ts' },
   // The session handoff: the Stop hook that writes it, session-start (which
   // keeps it out of its pools) and pre-edit recall must agree on its type, its
   // entity name and its cleaning rules, so they are one mirrored leaf.

@@ -372,4 +372,50 @@ describe('F5 mirror parity: scripts/hooks/_shared.js vs src/core', () => {
     });
   });
 
+  // #431 — session-limit.ts is copied VERBATIM to _generated/session-limit.js
+  // (no hand-mirror, same as briefing-level.ts above), from dist/, one build
+  // step removed from src/. A mutation to src/core/session-limit.ts that is
+  // never rebuilt leaves the generated copy silently answering the OLD
+  // policy: the TS-importing side (`core`, below) sees the mutation
+  // immediately; the hook — which can only ever import the generated copy —
+  // does not. This closes that gap directly: compare the generated mirror's
+  // answer against the TS source's answer for the constants and for the
+  // resolver across every case that has mattered so far (valid, clamped
+  // above the max, fallen back below it or on a non-integer, and the
+  // env-then-config precedence), so a source edit landing without
+  // `npm run build` / generate-hook-core.mjs turns THIS file red.
+  describe('session-limit parity (#431)', () => {
+    it('the generated mirror agrees on the range and the default', async () => {
+      const core = await import('../../src/core/session-limit.js');
+      expect(shared.SESSION_LIMIT_MIN).toBe(core.SESSION_LIMIT_MIN);
+      expect(shared.SESSION_LIMIT_MAX).toBe(core.SESSION_LIMIT_MAX);
+      expect(shared.SESSION_LIMIT_DEFAULT).toBe(core.SESSION_LIMIT_DEFAULT);
+      for (const n of [0, 1, 50, 100, 101, -5, 2.5, NaN]) {
+        expect(shared.isSessionLimitInRange(n), `isSessionLimitInRange drift for ${n}`).toBe(core.isSessionLimitInRange(n));
+      }
+    });
+
+    it('the generated mirror resolves the same value and adjustments as core, for every case', async () => {
+      const core = await import('../../src/core/session-limit.js');
+      const cases: Array<[string | undefined, unknown]> = [
+        [undefined, undefined],
+        [undefined, 25],
+        [undefined, 500],
+        [undefined, 0],
+        [undefined, 2.5],
+        ['1e3', undefined],
+        ['150abc', 25],
+        ['50.9', 25],
+        ['500', 500],
+        ['50', 500],
+      ];
+      for (const [envRaw, configValue] of cases) {
+        expect(
+          shared.resolveSessionLimitCore(envRaw, configValue),
+          `resolveSessionLimit drift for env=${JSON.stringify(envRaw)} config=${JSON.stringify(configValue)}`,
+        ).toEqual(core.resolveSessionLimit(envRaw, configValue));
+      }
+    });
+  });
+
 });

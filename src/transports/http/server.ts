@@ -23,6 +23,7 @@ import {
   readConfig,
   updateConfig,
 } from '../../core/config.js';
+import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -834,12 +835,12 @@ app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => 
 // + a recorded reason), not "not set" (only the key being genuinely absent
 // means that; this schema's job is unchanged either way — accept the raw
 // value on read, whatever it is, and let the resolver decide validity) —
-// so GET can never throw on this field again, on any JSON type. EVERY
-// OTHER field below is UNCHANGED from `ConfigBody` — this is the one and
-// only field this schema loosens.
+// so GET can never throw on this field again, on any JSON type. `sessionLimit`
+// (#431) gets the same split just below it: a stored value is returned as
+// given, never re-validated on read.
 const ConfigReadBody = z.object({
   autoCapture: z.boolean().optional(),
-  sessionLimit: z.number().int().min(1).max(100).optional(),
+  sessionLimit: z.number().optional(),
   autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
   setupCompleted: z.boolean().optional(),
   briefing: z.unknown().optional(),
@@ -851,7 +852,8 @@ app.get('/v1/config', (_req, res) => handleGet(res, () => ({
 
 const ConfigBody = z.object({
   autoCapture: z.boolean().optional(),
-  sessionLimit: z.number().int().min(1).max(100).optional(),
+  // #431 — the documented range, enforced on write only.
+  sessionLimit: z.number().int().min(SESSION_LIMIT_MIN).max(SESSION_LIMIT_MAX).optional(),
   autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
   setupCompleted: z.boolean().optional(),
   // #360 — same key as `memesh config set briefing`. Strict here: this is
@@ -862,7 +864,8 @@ const ConfigBody = z.object({
 
 // The response is a READ of what `updateConfig` stored, so it is parsed with
 // the read schema: the write-side enum must not turn an already-saved change
-// into a 400 just because some other stored `briefing` is not a known level.
+// into a 400 just because some other stored `briefing` (or `sessionLimit`) is
+// invalid.
 app.post('/v1/config', (req, res) => handlePost(ConfigBody, req, res, (data) =>
   ConfigReadBody.parse(updateConfig(data))));
 

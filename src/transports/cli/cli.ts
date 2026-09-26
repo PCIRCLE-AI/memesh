@@ -10,6 +10,7 @@ import {
 } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { readConfig, updateConfig } from '../../core/config.js';
+import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, resolveSessionLimit } from '../../core/session-limit.js';
 import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
@@ -138,12 +139,17 @@ function proposalId(raw: string): number {
   return wholeNumber('<id>')(raw);
 }
 
-function wholeNumber(flag: string, min = 1): (value: string) => number {
+/** `max` is optional so existing callers keep their unchanged message;
+ * `sessionLimit` (#431) passes it to state the documented range. */
+function wholeNumber(flag: string, min = 1, max?: number): (value: string) => number {
   return (value: string): number => {
     const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed < min) {
+    const tooSmall = parsed < min;
+    const tooLarge = max !== undefined && parsed > max;
+    if (!Number.isInteger(parsed) || tooSmall || tooLarge) {
+      const range = max !== undefined ? `${min} to ${max}` : `${min} or more`;
       console.error(
-        `Error: ${flag} needs a whole number of ${min} or more, not "${value}".`,
+        `Error: ${flag} needs a whole number of ${range}, not "${value}".`,
       );
       process.exit(1);
     }
@@ -1569,10 +1575,15 @@ configCmd
   .description('Show current configuration')
   .action(() => {
     const config = readConfig();
+    const rawConfig = config as unknown as Record<string, unknown>;
     console.log('Configuration (~/.memesh/config.json):');
+    // `sessionLimit` (#431) is always shown by `buildConfigListing` now (the
+    // value in effect, not merely what's stored), so its row can no longer
+    // be used to detect "nothing stored" — check the raw config directly.
+    const anyStored = Array.from(ALLOWED_KEYS).some((key) => rawConfig[key] !== undefined);
+    if (!anyStored) console.log('  (nothing stored — all defaults)');
     // Iterate ALLOWED_KEYS so `list` and `set` cannot drift.
-    const stored = buildConfigListing(config as unknown as Record<string, unknown>);
-    if (stored.length === 0) console.log('  (nothing stored — all defaults)');
+    const stored = buildConfigListing(rawConfig);
     // `briefing` is the one setting whose default matters to what a session is
     // told, so it is always shown as the level actually in effect and where that
     // comes from. A stored `briefing` is replaced by that line, not repeated.
@@ -1628,11 +1639,46 @@ const KEY_VALIDATORS: Record<string, (value: string) => string | null> = {
 function buildConfigListing(config: Record<string, unknown>): Array<{ key: string; value: string }> {
   const rows: Array<{ key: string; value: string }> = [];
   for (const key of Array.from(ALLOWED_KEYS).sort()) {
+    // `sessionLimit` (#431) always shows the value actually in effect, the
+    // same as `briefing` below — both `list` and `get` read this row, so an
+    // env override or an out-of-range stored value is never invisible to
+    // either command.
+    if (key === 'sessionLimit') {
+      rows.push({ key, value: describeEffectiveSessionLimit(config.sessionLimit) });
+      continue;
+    }
     const raw = config[key];
     if (raw === undefined) continue;
     rows.push({ key, value: String(raw) });
   }
   return rows;
+}
+
+/**
+ * The sessionLimit the SessionStart hook would actually use, and why, when
+ * it differs from what's stored — env beats config beats the default,
+ * decided by the same `resolveSessionLimit` (core/session-limit.ts) the hook
+ * uses. Mirrors `describeEffectiveBriefing` below.
+ */
+function describeEffectiveSessionLimit(configValue: unknown): string {
+  const envRaw = process.env.MEMESH_SESSION_LIMIT;
+  const { value, effectiveSource, adjustments } = resolveSessionLimit(envRaw, configValue);
+  if (adjustments.length === 0) {
+    if (envRaw !== undefined) return `${value} (env MEMESH_SESSION_LIMIT)`;
+    return configValue === undefined ? `${value} (default)` : String(configValue);
+  }
+  const uses = effectiveSource === 'default' ? `uses the default ${value}` : `uses ${value}`;
+  // One adjusted source: name it if it was the env, state its own cause, and
+  // the effective value once. Two (env AND config both had to be adjusted):
+  // name both, briefly, ending on the one effective value.
+  const describe = (a: (typeof adjustments)[number]): string =>
+    a.source === 'env' ? `${a.displayValue} from MEMESH_SESSION_LIMIT` : a.displayValue;
+  if (adjustments.length === 1) {
+    const [a] = adjustments;
+    return `${describe(a)} (${a.shortCause}; the SessionStart hook ${uses})`;
+  }
+  const [envAdjustment, configAdjustment] = adjustments;
+  return `${describe(envAdjustment)} (${envAdjustment.shortCause}), then ${describe(configAdjustment)} (${configAdjustment.shortCause}; the SessionStart hook ${uses})`;
 }
 
 /**
@@ -1656,7 +1702,7 @@ function describeEffectiveBriefing(configValue: unknown): string {
 
 configCmd
   .command('get')
-  .description('Show one stored config value (for `briefing`, what is stored, not the level in effect that `config list` shows)')
+  .description('Show one stored config value (for `briefing`, what is stored, not the level in effect that `config list` shows; `sessionLimit` shows the value in effect, same as `config list`)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .action((key) => {
     requireAllowedKey(key);
@@ -1670,7 +1716,7 @@ configCmd
 
 configCmd
   .command('set')
-  .description('Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number), '
+  .description(`Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number, ${SESSION_LIMIT_MIN}-${SESSION_LIMIT_MAX}), `
     + 'autoUpdate (off|patch|minor|major), updateCheck (true|false), '
     + 'briefing (minimal|standard|full — controls what a session start gets; MEMESH_BRIEFING env var overrides this)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
@@ -1692,7 +1738,9 @@ configCmd
       // not reach: `parseInt('abc')` is NaN, the config writer stored null,
       // and `config list` then hid the key entirely — so the user's setting
       // vanished and nothing said why. Same predicate, same message.
-      coerced = wholeNumber('sessionLimit')(value);
+      //
+      // #431 — enforces the documented range, matching the HTTP write path.
+      coerced = wholeNumber('sessionLimit', SESSION_LIMIT_MIN, SESSION_LIMIT_MAX)(value);
     }
     if (key === 'autoCapture' || key === 'updateCheck') {
       coerced = value === 'true' || value === '1';

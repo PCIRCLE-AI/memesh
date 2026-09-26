@@ -101,6 +101,30 @@ describe('resolveSessionLimit — env > config > default(10)', () => {
     expect(resolveSessionLimit(envFor({ MEMESH_SESSION_LIMIT: '0' }))).toBe(10);
     expect(resolveSessionLimit(envFor({ MEMESH_SESSION_LIMIT: '-5' }))).toBe(10);
   });
+
+  // #431 — a value above the documented 100 max means "more", not "unset":
+  // it clamps to the max instead of falling back to the default.
+  it('config sessionLimit=500 (above the documented 100 max) clamps to 100', () => {
+    writeConfig({ sessionLimit: 500 });
+    expect(resolveSessionLimit(envFor())).toBe(100);
+  });
+
+  it('env=500 (above the documented 100 max) clamps to 100, even with a valid config set', () => {
+    writeConfig({ sessionLimit: 25 });
+    expect(resolveSessionLimit(envFor({ MEMESH_SESSION_LIMIT: '500' }))).toBe(100);
+  });
+
+  // Below the min is still unusable, not "very small" — falls back like a
+  // non-numeric value.
+  it('config sessionLimit=0 (below the min) falls back to the default, not to 0', () => {
+    writeConfig({ sessionLimit: 0 });
+    expect(resolveSessionLimit(envFor())).toBe(10);
+  });
+
+  it('config sessionLimit=100 (the documented upper bound) still takes effect', () => {
+    writeConfig({ sessionLimit: 100 });
+    expect(resolveSessionLimit(envFor())).toBe(100);
+  });
 });
 
 describe('resolveAutoUpdatePolicy — env > config > default(off)', () => {

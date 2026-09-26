@@ -23,6 +23,7 @@ All notable changes to MeMesh are documented here.
 - A hook run whose `PLUGIN_ROOT` is not the plugin root it runs from, with no Claude Code signal, is recorded as host `unknown` instead of a guessed `claude-code`, and an unresolvable `PLUGIN_ROOT` is reported once on stderr. The SessionStart hook passes its payload to the record like the other hooks, and `memesh doctor` names the hosts the records came from on every capture-liveness result (#447).
 - Docs: the Codex plugin's SessionStart hook injects the same memory block as Claude Code's, so Codex agents with the plugin (once Codex runs its hooks) should not call `briefing` again unless that block is missing; the 4.10.5 notes said Codex had to call it manually. Recall is described correctly (three or more words must all match, with an any-word fallback; default limit 20) (#405). Agent-facing text cleanup (#446).
 - Lessons use one type: `lesson` and `mistake` are stored as `lesson_learned`, existing ones are renamed once on upgrade, and `?type=lesson` still finds them (#451).
+- `memesh config set sessionLimit` rejects values outside 1–100; a stored value above 100 is used as 100 and `memesh config list` says so, and the dashboard Settings tab opens again (#431).
 
 ## [4.10.5] — 2026-09-24
 

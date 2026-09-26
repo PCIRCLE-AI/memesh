@@ -1137,4 +1137,59 @@ describe('HTTP Transport: agent-only workflows', () => {
       expect(got.body.data.config.briefing).toEqual(value);
     },
   );
+
+  // #431 — `sessionLimit` gets the same read-side treatment as `briefing`
+  // above: GET answers 200 with the raw stored value, unfiltered — the
+  // effective value and why live in `config list`/`get` (CLI) and the
+  // SessionStart hook's own record, not in this response. POST still
+  // rejects a new out-of-range value and never touches the value already
+  // stored.
+  it('#431: GET /v1/config survives a stored sessionLimit above 100 (200, raw value) — POST still rejects 101 (400), accepts 100', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ sessionLimit: 500 }));
+
+    const got = await req('GET', '/v1/config');
+    expect(got.status).toBe(200);
+    expect(got.body.data.config.sessionLimit).toBe(500);
+    expect(got.body.data.config).not.toHaveProperty('sessionLimitOutOfRange');
+
+    const posted = await req('POST', '/v1/config', { sessionLimit: 101 });
+    expect(posted.status).toBe(400);
+    expect(posted.body.errorCode).toBe('validation.bad-body');
+    // The rejected write must not have touched the value already stored.
+    const stillStored = await req('GET', '/v1/config');
+    expect(stillStored.body.data.config.sessionLimit).toBe(500);
+
+    // The documented upper bound is still accepted.
+    const fixed = await req('POST', '/v1/config', { sessionLimit: 100 });
+    expect(fixed.status).toBe(200);
+    expect(fixed.body.data.sessionLimit).toBe(100);
+    const after = await req('GET', '/v1/config');
+    expect(after.body.data.config.sessionLimit).toBe(100);
+  });
+
+  // The issue's second symptom: a stored out-of-range value used to make
+  // ANY write to config.json 500 on its readback, so changing an unrelated
+  // field (autoUpdate) looked like it failed even though the write itself
+  // succeeded. POST of another field must still succeed and leave the
+  // out-of-range sessionLimit exactly as it was.
+  it('#431: POST of an unrelated field succeeds when a stored sessionLimit is out of range, and leaves it alone', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ sessionLimit: 500 }));
+
+    const posted = await req('POST', '/v1/config', { autoUpdate: 'patch' });
+    expect(posted.status).toBe(200);
+    expect(posted.body.data.autoUpdate).toBe('patch');
+    expect(posted.body.data.sessionLimit).toBe(500);
+
+    const got = await req('GET', '/v1/config');
+    expect(got.status).toBe(200);
+    expect(got.body.data.config.autoUpdate).toBe('patch');
+    expect(got.body.data.config.sessionLimit).toBe(500);
+  });
+
+  it('#431: an in-range sessionLimit round-trips unchanged', async () => {
+    const saved = await req('POST', '/v1/config', { sessionLimit: 50 });
+    expect(saved.status).toBe(200);
+    const got = await req('GET', '/v1/config');
+    expect(got.body.data.config.sessionLimit).toBe(50);
+  });
 });

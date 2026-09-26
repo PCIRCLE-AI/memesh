@@ -1066,6 +1066,27 @@ Capability diagnosis belongs to `GET /v1/doctor`, not this response.
 Dashboard locale is browser-local UI state and is not part of this server
 configuration.
 
+`sessionLimit` (#431) — a whole number from 1 to 100, the top-N recent
+memories the SessionStart hook injects. `POST /v1/config` rejects anything
+outside 1-100 with `400`; `memesh config set sessionLimit` rejects it too,
+exiting 1. `GET /v1/config` does not re-check a stored value — it is a
+number an older/newer memesh, or a hand-edited config.json, could have left
+outside 1-100 — so it simply returns the stored number, unfiltered.
+
+The SessionStart hook resolves what it actually uses: above 100, it uses
+100; below 1, or not a whole number, it falls back to the default of 10
+(same as nothing being stored). Whenever it had to adjust the value, it
+records why (one `hook-outcome` entry per adjusted source, `memesh doctor`
+surfaces these). `memesh config list` and `memesh config get sessionLimit`
+show this same effective value and reason, e.g. `500 (above 100; the
+SessionStart hook uses 100)`, or `0 (below 1; the SessionStart hook uses the
+default 10)`. When `MEMESH_SESSION_LIMIT` is the adjusted source it is named
+plainly, unquoted, e.g. `1000 from MEMESH_SESSION_LIMIT (above 100; the
+SessionStart hook uses 100)` or `abc from MEMESH_SESSION_LIMIT (not a whole
+number; the SessionStart hook uses 25)`; when both the env value and the
+stored value are out of range, both are named, briefly, ending on the one
+effective value.
+
 `briefing` (#360) — `minimal` (default) | `standard` | `full` — controls how
 much of the SessionStart / `briefing` tool block is assembled; see the
 **briefing levels** table under the `briefing` MCP tool above. `MEMESH_BRIEFING`

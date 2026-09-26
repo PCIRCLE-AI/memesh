@@ -1609,6 +1609,70 @@ describe('Feature: Session Start Hook', () => {
       expect(record?.reason).toBe('briefing-level: invalid env value "banana", using minimal');
     });
 
+    // #431 — the SessionStart hook must not silently clamp or fall back:
+    // whenever the resolved sessionLimit differs from what was stored, it
+    // traces AND records why, the same discipline `briefing-level: invalid`
+    // above follows. Resolved before the database check (like the briefing
+    // level), so no database fixture is needed here — proving that is the
+    // point: a fresh install with an out-of-range sessionLimit already
+    // stored must still be told, on the very first session.
+    it('a stored sessionLimit above the max (500) is recorded and traced on stderr, using 100', () => {
+      const cfgDir = path.join(testDir, '.memesh-config-sessionlimit-above');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ sessionLimit: 500 }));
+      const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: '/tmp/sessionlimit-431-above' }),
+        env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_DIR: cfgDir, MEMESH_BRIEFING: undefined, MEMESH_SESSION_LIMIT: undefined },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      expect(run.status, `hook stderr: ${run.stderr}`).toBe(0);
+      expect(run.stderr).toContain('[memesh session-start] config sessionLimit 500 above max 100 — using 100\n');
+      const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+      const records = outcomes.filter((r) => typeof r.reason === 'string' && r.reason.startsWith('session-limit:'));
+      expect(records).toHaveLength(1);
+      expect(records[0].reason).toBe('session-limit: config value 500 above max 100, using 100');
+    });
+
+    it('a stored sessionLimit below the min (0) is recorded, falling back to the default 10', () => {
+      const cfgDir = path.join(testDir, '.memesh-config-sessionlimit-below');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ sessionLimit: 0 }));
+      const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: '/tmp/sessionlimit-431-below' }),
+        env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_DIR: cfgDir, MEMESH_BRIEFING: undefined, MEMESH_SESSION_LIMIT: undefined },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      expect(run.status, `hook stderr: ${run.stderr}`).toBe(0);
+      const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+        .trim().split('\n').map((l) => JSON.parse(l));
+      const records = outcomes.filter((r) => typeof r.reason === 'string' && r.reason.startsWith('session-limit:'));
+      expect(records).toHaveLength(1);
+      expect(records[0].reason).toBe('session-limit: config value 0 below min 1, using 10');
+    });
+
+    it('a valid stored sessionLimit (25) records nothing — no adjustment happened', () => {
+      const cfgDir = path.join(testDir, '.memesh-config-sessionlimit-valid');
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(path.join(cfgDir, 'config.json'), JSON.stringify({ sessionLimit: 25 }));
+      const run = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+        input: JSON.stringify({ cwd: '/tmp/sessionlimit-431-valid' }),
+        env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_DIR: cfgDir, MEMESH_BRIEFING: undefined, MEMESH_SESSION_LIMIT: undefined },
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      expect(run.status, `hook stderr: ${run.stderr}`).toBe(0);
+      expect(run.stderr).not.toContain('session-limit');
+      const outcomesPath = path.join(path.dirname(dbPath), 'hook-outcomes.jsonl');
+      const outcomes = fs.existsSync(outcomesPath)
+        ? fs.readFileSync(outcomesPath, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l))
+        : [];
+      const records = outcomes.filter((r) => typeof r.reason === 'string' && r.reason.startsWith('session-limit:'));
+      expect(records).toHaveLength(0);
+    });
+
     it('a failed memory assembly at minimal records an error — never the "nothing to inject" reason', () => {
       // One ranked entity with an observation, then the column the snippet
       // read selects is renamed: the snippet query throws inside the
