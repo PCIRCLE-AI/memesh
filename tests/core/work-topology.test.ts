@@ -30,6 +30,7 @@ import {
   buildTopologyLines,
   assembleTopologyBlock,
   buildReferenceContext,
+  stripControlChars,
   boundTaskStateLines,
   DEFAULT_TOPOLOGY_BUDGET,
   DECISION_LAYER_TYPES,
@@ -298,6 +299,43 @@ describe('work-topology', () => {
     expect(rendered).not.toContain(`${long}0`);
     expect(block).toContain('````');
     expect(block.trimEnd().endsWith('`````')).toBe(true);
+  });
+
+  it('strips an ANSI escape, a C1 byte and a bidi override from injected memory (#374)', () => {
+    // Imports src/core/work-topology.ts directly (not the scripts/hooks/
+    // mirror), so removing the strip from src fails HERE even while the
+    // generated mirror still has it. The mirror-side proof is in
+    // tests/hooks/reference-context-fence.test.ts.
+    const payload = 'before \x1b[31mred\x1b[0m\x9b after\u202e end';
+    const block = buildReferenceContext([`note: ${payload}`]);
+    expect(block).not.toMatch(/[\x1b\x9b\u202e]/);
+    expect(block).toContain('note: before  [31mred [0m  after  end');
+  });
+
+  it('stripControlChars replaces a run with one space, never removes it outright (#374)', () => {
+    // Both current callers already collapse whitespace of their own
+    // (buildReferenceContext's `\\s`-based collapse; topologyLine's clip()),
+    // so tab/newline/CR are never this function's job.
+    const withWhitespace = 'line one\ttabbed\nline two\rcr-end';
+    expect(stripControlChars(withWhitespace)).toBe(withWhitespace);
+
+    // A double space where the text already had one is an accepted cost.
+    const dangerous = 'before \x1b[31mred\x1b[0m\x9b after\u202e end\x7fDEL';
+    expect(stripControlChars(dangerous)).toBe('before  [31mred [0m  after  end DEL');
+  });
+
+  it('topologyLine strips ESC, a C1 byte and a bidi override — including in entity.type (#374)', () => {
+    // briefing-index.ts's indexLine() calls topologyLine() too, and its
+    // result reaches an agent as BriefingResult.index.lines without passing
+    // through buildReferenceContext's fence (MCP briefing tool,
+    // `briefing --json`, `briefing --index --json`, HTTP /v1/briefing-index).
+    const line = topologyLine(
+      entity({ type: 'decisi\x1bon', title: 'before \x1b[31mred\x1b[0m\x9b after\u202e end' }),
+      160,
+    );
+    expect(line).not.toMatch(/[\x1b\x9b\u202e]/);
+    expect(line).toContain('before  [31mred [0m  after  end');
+    expect(line).toContain('[decisi on]');
   });
 
   it('keeps one whitelist for the work layer', () => {

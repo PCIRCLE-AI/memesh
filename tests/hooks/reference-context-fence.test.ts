@@ -122,4 +122,49 @@ describe('Feature: injected-memory fence', () => {
     const line = '• db-choice (decision): Postgres over MySQL for window functions';
     expect(shared.buildReferenceContext([line])).toContain(`\n${line}\n`);
   });
+
+  it('strips an ANSI escape, a C1 byte and a bidi override, keeping the text around them (#374)', () => {
+    // The issue's exact repro: an SGR colour sequence (ESC [31m ... ESC [0m),
+    // a lone C1 byte, and U+202E RIGHT-TO-LEFT OVERRIDE, which a terminal or
+    // renderer acts on rather than displays. `[31m` and `[0m` are ordinary
+    // printable text once the ESC in front of them is gone — the contract
+    // strips control characters, not whole escape sequences.
+    const payload = 'before \x1b[31mred\x1b[0m\x9b after\u202e end';
+    const { content } = parts(shared.buildReferenceContext([`• note (memory): ${payload}`]));
+
+    expect(content).toHaveLength(1);
+    expect(content[0]).not.toMatch(/[\x1b\x9b\u202e]/);
+    expect(content[0]).toBe('• note (memory): before  [31mred [0m  after  end');
+  });
+
+  it.each([
+    ['NUL U+0000', '\u0000'],
+    ['BS U+0008', '\u0008'],
+    ['SO U+000E', '\u000e'],
+    ['ESC U+001B', '\u001b'],
+    ['US U+001F', '\u001f'],
+    ['DEL U+007F', '\u007f'],
+    ['C1 low U+0080', '\u0080'],
+    ['C1 high U+009F', '\u009f'],
+    ['LRE U+202A (bidi override, low end)', '\u202a'],
+    ['RLO U+202E (bidi override, high end)', '\u202e'],
+    ['LRI U+2066 (bidi isolate, low end)', '\u2066'],
+    ['PDI U+2069 (bidi isolate, high end)', '\u2069'],
+  ])('%s becomes a space at the edge of its range, never joining "left" to "right"', (_label, ch) => {
+    // See stripControlChars's own doc comment for why a space, not a removal.
+    const { content } = parts(shared.buildReferenceContext([`left${ch}right`]));
+    expect(content).toHaveLength(1);
+    expect(content[0]).toBe('left right');
+  });
+
+  it('a control character between two backtick runs is replaced by a space, never a merge', () => {
+    // stripControlChars inserts a space rather than gluing '``' + '``' into
+    // a longer '````' run that could threaten the fence-length calculation.
+    const { content } = parts(
+      shared.buildReferenceContext(['``\u202e``', 'still inside'])
+    );
+    expect(content).toContain('`` ``');
+    expect(content).not.toContain('````');
+    expect(content).toContain('still inside');
+  });
 });

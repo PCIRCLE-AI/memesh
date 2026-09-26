@@ -25109,7 +25109,7 @@ function topologyLine(entity, maxChars) {
   const text = title || snippet || `${entity.type} memory`;
   const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : "";
   const room = Math.max(8, maxChars - handle.length);
-  return `- [${entity.type}] ${clip(text, room)}${handle}`;
+  return stripControlChars(`- [${entity.type}] ${clip(text, room)}${handle}`);
 }
 function clip(text, maxChars) {
   const flat = text.replace(/\s+/g, " ").trim();
@@ -25316,7 +25316,7 @@ function hasBriefingContent(lines) {
   return lines.length > 0;
 }
 function buildReferenceContext(memoryLines) {
-  const safeLines = memoryLines.map((line) => String(line ?? "").replace(/[\s\u0085\u001c-\u001e]+/g, " ").trim());
+  const safeLines = memoryLines.map((line) => stripControlChars(String(line ?? "").replace(/[\s\u0085\u001c-\u001e]+/g, " ")).trim());
   let longestRun = 0;
   for (const line of safeLines) {
     for (const run of line.match(/`+/g) ?? []) {
@@ -25337,6 +25337,9 @@ var PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
 function projectLabel(projectId) {
   const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, "");
   return label === "" ? projectId : label;
+}
+function stripControlChars(s) {
+  return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, " ");
 }
 
 // dist/knowledge-graph.js

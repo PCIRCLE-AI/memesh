@@ -233,6 +233,27 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(result).toContain('Use OAuth 2.0');
   });
 
+  it('strips an ANSI escape, a C1 byte and a bidi override from an injected observation (#374)', () => {
+    // The issue's exact repro path: pre-edit-recall injects
+    // `obs.content.slice(0, 120)` through buildReferenceContext. JSON.stringify
+    // escapes ESC as literal "\u001b" text but leaves the C1 byte and the bidi
+    // override raw, so the assertion below parses the hook's JSON stdout
+    // first and checks the ACTUAL context string, not the raw JSON text.
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    const payload = 'before \x1b[31mred\x1b[0m\x9b after\u202e MARKER';
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, payload);
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const result = runHook({ tool_input: { file_path: '/src/auth.ts' } });
+    const context = JSON.parse(result).hookSpecificOutput.additionalContext;
+    expect(context).not.toMatch(/[\x1b\x9b\u202e]/);
+    expect(context).toContain('before  [31mred [0m  after  MARKER');
+  });
+
   it('should exclude untrusted imported memories from auto-injection', () => {
     const db = createTestDb();
     db.prepare('INSERT INTO entities (name, type, metadata) VALUES (?, ?, ?)').run(

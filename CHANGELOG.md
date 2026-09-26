@@ -15,6 +15,7 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- Injected memory context now replaces each run of ESC (so ANSI colour codes no longer take effect), other C0/C1 control characters, DEL, and bidi override/isolate characters with a single space, so a control byte can no longer glue two halves of text — including a secret split across one — back into their original form. This also covers the `briefing` result's durable-memory index lines (MCP `briefing`, `briefing --json`, `briefing --index --json`, `GET /v1/briefing-index`), which reached an agent without passing through the injected block's fence (#374).
 - The "remember this" prompt hint named `mcp__memesh__remember`, which does not exist under a plugin install; it now names the memesh `remember` tool and gives the short form (#442).
 - Agent guidance taught plain `project:<name>` tags, which sessions on the hashed project identity never see; the MCP descriptions, hooks, skill and AGENTS.md now point at the `project` field of the `briefing` result (CLI: `memesh briefing --json`). The HTTP connector guides are unchanged: an HTTP-only client has no route that returns this id yet (#408).
 - A lesson stored as type `lesson` or `mistake` now competes for the briefing's reserved lesson slots, not only `lesson_learned`; guidance now teaches `lesson_learned` (#443).
