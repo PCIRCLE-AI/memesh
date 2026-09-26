@@ -8,6 +8,9 @@
 // ============================================================================
 const LESSON_TYPES = new Set(['lesson_learned', 'lesson', 'mistake']);
 export const LESSON_TYPE_LIST = [...LESSON_TYPES];
+export function canonicalEntityType(type) {
+    return LESSON_TYPES.has(type) ? 'lesson_learned' : type;
+}
 export const WORK_LAYER_TYPES = new Set([
     ...LESSON_TYPES,
     'decision',

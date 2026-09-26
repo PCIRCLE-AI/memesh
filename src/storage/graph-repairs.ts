@@ -64,6 +64,7 @@ export const ZERO_EDIT_RETRACT_KEY = 'session_zero_edit_retract';
 export const FUSED_LESSON_SPLIT_KEY = 'fused_lesson_split';
 export const ARCHIVED_FTS_ROWS_KEY = 'archived_fts_rows';
 export const FUSED_LESSON_SHELL_HISTORY_RESET_KEY = 'fused_lesson_shell_history_reset';
+export const LESSON_TYPE_CANONICAL_KEY = 'lesson_type_canonical';
 
 /** The summary suffix the Stop hook wrote when it could not see Bash edits. */
 const ZERO_EDITS = ', 0 files edited';
@@ -647,4 +648,71 @@ export function repairFusedLessonShellHistory(db: MemeshDatabase): number {
     },
   });
   return retired;
+}
+
+/**
+ * #451 — one lesson type. `lesson` and `mistake` mean the same as
+ * `lesson_learned`; the write path canonicalizes every insert, and this
+ * one-time pass renames the rows written before that, archived ones included.
+ * It runs once, so a row an older plugin writes later keeps its type; the
+ * readers still accept all three, and `lesson-family-uses-one-type`
+ * (scripts/audit/memory-invariants.mjs) reports such rows.
+ *
+ * A renamed row's `metadata.signal_score` is recomputed for `lesson_learned`
+ * when it still equals what `computeSignalScore` gives its old type, which
+ * scores lower. A different score was set on purpose (import, dreamer) and is
+ * kept. NULL or unreadable metadata is left alone, as `backfillSignalScores`
+ * (src/db.ts) does. `type` is not in the FTS index, so nothing is reindexed.
+ *
+ * @returns number of entities renamed, or -1 if the pass did not run
+ */
+export function canonicalizeLessonTypes(db: MemeshDatabase): number {
+  let renamed = -1;
+  runOnceMigration(db, {
+    key: LESSON_TYPE_CANONICAL_KEY,
+    version: 1,
+    describe: 'lesson type canonicalization',
+    migrate: (conn) => {
+      // Read the about-to-be-renamed rows, WITH their old `type`, BEFORE the
+      // UPDATE: afterward their `type` column is already `lesson_learned`,
+      // a `WHERE type IN (...)` query could no longer find them by their old
+      // type, and the old-type default score below could no longer be
+      // reproduced from the row itself.
+      const rows = conn
+        .prepare(`SELECT id, name, type, metadata FROM entities WHERE type IN ('lesson', 'mistake')`)
+        .all() as unknown as Array<{ id: number; name: string; type: string; metadata: string | null }>;
+      renamed = rows.length;
+      if (renamed === 0) return;
+
+      conn.prepare(`UPDATE entities SET type = 'lesson_learned' WHERE type IN ('lesson', 'mistake')`).run();
+
+      const obsStmt = conn.prepare('SELECT content FROM observations WHERE entity_id = ?');
+      const tagStmt = conn.prepare('SELECT tag FROM tags WHERE entity_id = ?');
+      const updateMeta = conn.prepare('UPDATE entities SET metadata = ? WHERE id = ?');
+      let rescored = 0;
+      for (const row of rows) {
+        if (!row.metadata) continue; // no existing score to correct — see docstring
+        let metadata: Record<string, unknown>;
+        try {
+          const parsed: unknown = JSON.parse(row.metadata);
+          if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) continue;
+          metadata = parsed as Record<string, unknown>;
+        } catch {
+          continue; // malformed metadata is left alone, not partially overwritten
+        }
+        const observations = (obsStmt.all(row.id) as Array<{ content: string }>).map((o) => o.content);
+        const tags = (tagStmt.all(row.id) as Array<{ tag: string }>).map((t) => t.tag);
+        // Only rescore a score that still matches what the OLD type would
+        // have produced — a different number was set deliberately (import,
+        // dreamer) and is left exactly as it is.
+        const oldTypeDefault = computeSignalScore({ type: row.type, name: row.name, observations, tags });
+        if (metadata.signal_score !== oldTypeDefault) continue;
+        metadata.signal_score = computeSignalScore({ type: 'lesson_learned', name: row.name, observations, tags });
+        updateMeta.run(JSON.stringify(metadata), row.id);
+        rescored++;
+      }
+      note(`renamed ${renamed} entit${renamed === 1 ? 'y' : 'ies'} from \`lesson\`/\`mistake\` to \`lesson_learned\`, rescoring ${rescored} signal score${rescored === 1 ? '' : 's'} (#451).`);
+    },
+  });
+  return renamed;
 }

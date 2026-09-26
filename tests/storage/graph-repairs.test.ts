@@ -23,12 +23,15 @@ import {
   ARCHIVED_FTS_ROWS_KEY,
   FUSED_LESSON_SHELL_HISTORY_RESET_KEY,
   FUSED_LESSON_SPLIT_KEY,
+  LESSON_TYPE_CANONICAL_KEY,
   SESSION_DEDUPE_KEY,
   ZERO_EDIT_RETRACT_KEY,
   bashWritesFiles,
+  canonicalizeLessonTypes,
   dropArchivedIndexRows,
 } from '../../src/storage/graph-repairs.js';
 import { lessonSlug } from '../../src/core/lesson-slug.js';
+import { computeSignalScore } from '../../src/core/signal-scorer.js';
 
 const invariants = path.resolve('scripts/audit/memory-invariants.mjs');
 
@@ -51,13 +54,14 @@ function seed(fn: (db: Db) => void): void {
   const db = openDatabase(dbPath);
   fn(db);
   db.prepare(
-    'DELETE FROM memesh_metadata WHERE key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ?',
+    'DELETE FROM memesh_metadata WHERE key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ?',
   ).run(
     `${SESSION_DEDUPE_KEY}%`,
     `${ZERO_EDIT_RETRACT_KEY}%`,
     `${FUSED_LESSON_SPLIT_KEY}%`,
     `${ARCHIVED_FTS_ROWS_KEY}%`,
     `${FUSED_LESSON_SHELL_HISTORY_RESET_KEY}%`,
+    `${LESSON_TYPE_CANONICAL_KEY}%`,
   );
   closeDatabase();
 }
@@ -1011,6 +1015,190 @@ describe('the split path retires history on its own, not by leaning on the one-s
     expect(statusOf(db, legacy), 'setup: the legacy entity did not archive').toBe('archived');
     expect(recallOf(db, legacy)).toEqual({ hits: 0, misses: 0 });
     expect(metadataOf(db, legacy).retired_recall).toEqual({ hits: 2, misses: 11 });
+    closeDatabase();
+  });
+});
+
+function typeOf(db: Db, name: string): string {
+  return (db.prepare('SELECT type FROM entities WHERE name = ?').get(name) as { type: string }).type;
+}
+
+describe('#451 — lesson, mistake and lesson_learned become one type', () => {
+  it('renames lesson and mistake to lesson_learned, active and archived alike, and leaves everything else untouched', () => {
+    seed((db) => {
+      const ins = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+      const activeLesson = insertEntity(db, 'lesson-active', 'lesson');
+      ins.run(activeLesson, 'gate on exit codes');
+      const archivedLesson = insertEntity(db, 'lesson-archived', 'lesson', [], 'archived');
+      ins.run(archivedLesson, 'archived lesson text');
+      const mistake = insertEntity(db, 'mistake-one', 'mistake');
+      ins.run(mistake, 'piped grep hid the exit code');
+      const decision = insertEntity(db, 'decision-one', 'decision');
+      ins.run(decision, 'use sqlite over postgres');
+      const alreadyCanonical = insertEntity(db, 'lesson-learned-one', 'lesson_learned');
+      ins.run(alreadyCanonical, 'already the canonical type');
+    });
+
+    const db = repaired();
+    // The lesson family, whatever its spelling or status, is now one type.
+    expect(typeOf(db, 'lesson-active')).toBe('lesson_learned');
+    expect(statusOf(db, 'lesson-active')).toBe('active');
+    expect(typeOf(db, 'lesson-archived')).toBe('lesson_learned');
+    expect(statusOf(db, 'lesson-archived')).toBe('archived');
+    expect(typeOf(db, 'mistake-one')).toBe('lesson_learned');
+    // Not a lesson: untouched.
+    expect(typeOf(db, 'decision-one')).toBe('decision');
+    // Already canonical: untouched (and not double-counted below).
+    expect(typeOf(db, 'lesson-learned-one')).toBe('lesson_learned');
+
+    // The rename touches only `type` — observations are intact.
+    expect(observations(db, 'lesson-active')).toEqual(['gate on exit codes']);
+    expect(observations(db, 'lesson-archived')).toEqual(['archived lesson text']);
+    expect(observations(db, 'mistake-one')).toEqual(['piped grep hid the exit code']);
+    expect(observations(db, 'decision-one')).toEqual(['use sqlite over postgres']);
+
+    // No FTS rebuild is needed (`type` is not an indexed column) and none ran
+    // here — search still finds the renamed row by its untouched text.
+    const kg = new KnowledgeGraph(db);
+    expect(kg.search('gate').map((e) => e.name)).toEqual(['lesson-active']);
+
+    // Only the two actually-renamed rows counted.
+    expect(db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(LESSON_TYPE_CANONICAL_KEY)).toEqual({ value: '1' });
+    closeDatabase();
+
+    // The audit invariant this migration exists to clear reads clean now.
+    expect(runInvariants().status).toBe(0);
+    expect(runInvariants().stdout).toContain('ok   lesson-family-uses-one-type');
+  });
+
+  it('canonicalizeLessonTypes returns the number of rows it renamed, and reports it on stderr', () => {
+    seed((db) => {
+      insertEntity(db, 'lesson-count-a', 'lesson');
+      insertEntity(db, 'mistake-count-b', 'mistake');
+      insertEntity(db, 'decision-count-c', 'decision');
+    });
+    const db = openDatabase(dbPath);
+    // The automatic call inside migrateToCurrentSchema already ran once
+    // during the open above — the two lesson-family rows are already
+    // lesson_learned — but its return value is discarded internally there.
+    // Clear the marker and call the function directly, on one MORE raw
+    // `lesson` row, to read what it hands back.
+    db.prepare('DELETE FROM memesh_metadata WHERE key LIKE ?').run(`${LESSON_TYPE_CANONICAL_KEY}%`);
+    insertEntity(db, 'lesson-count-fresh', 'lesson');
+    const notes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { notes.push(String(chunk)); return true; });
+    let count: number;
+    try { count = canonicalizeLessonTypes(db); } finally { spy.mockRestore(); }
+    expect(count).toBe(1);
+    expect(notes.join('')).toContain('renamed 1 entity from `lesson`/`mistake` to `lesson_learned`');
+    expect(typeOf(db, 'lesson-count-fresh')).toBe('lesson_learned');
+    expect(typeOf(db, 'decision-count-c')).toBe('decision');
+    closeDatabase();
+  });
+
+  it('rescores a renamed row whose stored score still equals the old type default', () => {
+    const observationsText = ['Error: gate on exit codes'];
+    const oldScore = computeSignalScore({ type: 'lesson', name: 'lesson-rescored', observations: observationsText, tags: [] });
+    seed((db) => {
+      const id = insertEntity(db, 'lesson-rescored', 'lesson');
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, observationsText[0]);
+      db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify({ signal_score: oldScore }), id);
+    });
+    const db = repaired();
+    const expectedNew = computeSignalScore({ type: 'lesson_learned', name: 'lesson-rescored', observations: observationsText, tags: [] });
+    expect(metadataOf(db, 'lesson-rescored').signal_score).toBe(expectedNew);
+    expect(metadataOf(db, 'lesson-rescored').signal_score).not.toBe(oldScore);
+    expect(expectedNew).toBeGreaterThan(0.6);
+    closeDatabase();
+  });
+
+  it("leaves a renamed row's score alone when it does not match the old type default (import/dreamer set it deliberately)", () => {
+    seed((db) => {
+      const id = insertEntity(db, 'mistake-preserved-score', 'mistake');
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'Error: piped grep hid the exit code');
+      // 0.95 is not what computeSignalScore({type:'mistake', ...}) produces
+      // for this content (falls to the 0.5 "unknown type" default) — this
+      // simulates a score an import or the dreamer set deliberately, which
+      // this migration must not overwrite just because the type changed.
+      db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify({ signal_score: 0.95 }), id);
+    });
+    const db = repaired();
+    expect(typeOf(db, 'mistake-preserved-score'), 'still renamed').toBe('lesson_learned');
+    expect(metadataOf(db, 'mistake-preserved-score').signal_score, 'score is untouched').toBe(0.95);
+    closeDatabase();
+  });
+
+  it('a lesson-typed "-other" bucket is canonicalized and then split apart on the SAME open', () => {
+    // Models #241's own fusion-split fixture, but the bucket starts out
+    // typed `lesson`, not `lesson_learned` — the exact shape
+    // splitFusedLessons cannot see on its own, since its own query is
+    // `e.type = 'lesson_learned'` (above, this file). canonicalizeLessonTypes
+    // now runs BEFORE splitFusedLessons in src/db.ts precisely so a bucket
+    // an older build wrote as `lesson` is renamed in time to be split in
+    // this SAME open, not left fused until some unrelated later write
+    // happens to canonicalize it first.
+    seed((db) => {
+      const id = insertEntity(db, 'lesson-proj-other', 'lesson', ['project:proj', 'source:explicit']);
+      const ins = db.prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)');
+      for (const [i, line] of [...LESSON_A, ...LESSON_B].entries()) {
+        ins.run(id, line, `2026-08-0${1 + Math.floor(i / 4)} 10:00:0${i % 4}`);
+      }
+    });
+    const db = repaired();
+    expect(observations(db, 'lesson-proj-other')).toEqual([]);
+    expect(statusOf(db, 'lesson-proj-other')).toBe('archived');
+    expect(typeOf(db, 'lesson-proj-other')).toBe('lesson_learned');
+    expect(observations(db, nameA)).toEqual(LESSON_A);
+    expect(observations(db, nameB)).toEqual(LESSON_B);
+    expect(typeOf(db, nameA)).toBe('lesson_learned');
+    expect(typeOf(db, nameB)).toBe('lesson_learned');
+    const kg = new KnowledgeGraph(db);
+    expect(kg.search('shared').map((e) => e.name)).toEqual([nameB]);
+    closeDatabase();
+    expect(runInvariants().status).toBe(0);
+  });
+
+  it('running canonicalizeLessonTypes again, with the marker cleared, changes nothing (idempotent on already-canonical data)', () => {
+    const observationsText = ['Error: gate on exit codes'];
+    seed((db) => {
+      const id = insertEntity(db, 'lesson-twice', 'lesson');
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, observationsText[0]);
+      db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(
+        JSON.stringify({ signal_score: computeSignalScore({ type: 'lesson', name: 'lesson-twice', observations: observationsText, tags: [] }) }),
+        id,
+      );
+    });
+    const db = repaired();
+    expect(typeOf(db, 'lesson-twice')).toBe('lesson_learned');
+    const metaAfterFirst = metadataOf(db, 'lesson-twice');
+
+    // Reopening would prove nothing: the version marker stops the migration
+    // before it runs. Clearing the marker and calling the pass directly makes
+    // it run a second time over data it has already canonicalized.
+    db.prepare('DELETE FROM memesh_metadata WHERE key LIKE ?').run(`${LESSON_TYPE_CANONICAL_KEY}%`);
+    const secondRunCount = canonicalizeLessonTypes(db);
+
+    expect(secondRunCount, 'nothing left to rename the second time').toBe(0);
+    expect(typeOf(db, 'lesson-twice')).toBe('lesson_learned');
+    expect(metadataOf(db, 'lesson-twice')).toEqual(metaAfterFirst);
+    closeDatabase();
+  });
+
+  it('a lesson row inserted after the migration stays lesson — the migration runs once, the known case of an older plugin still writing', () => {
+    seed((db) => {
+      insertEntity(db, 'lesson-before-migration', 'lesson');
+    });
+    const first = repaired();
+    expect(typeOf(first, 'lesson-before-migration')).toBe('lesson_learned');
+    // Raw SQL, the same shape an older plugin's own INSERT would take —
+    // bypassing createEntity/canonicalEntityType entirely, and arriving AFTER
+    // the one-shot migration already stamped its marker.
+    insertEntity(first, 'lesson-after-migration', 'lesson');
+    closeDatabase();
+
+    const second = openDatabase(dbPath);
+    expect(typeOf(second, 'lesson-after-migration'), 'the migration is one-shot; it does not rerun on later writes').toBe('lesson');
+    expect(typeOf(second, 'lesson-before-migration')).toBe('lesson_learned');
     closeDatabase();
   });
 });

@@ -629,11 +629,15 @@ describe('note-ingest: the entity type follows the file — #324 C5', () => {
   });
 
   it('an unchanged type is not churned', () => {
-    const dir = makeDir({ 'b.md': note('note_b', 'Beta', 'lesson', 'Beta body.') });
+    // Type is `pattern`, not `lesson`: #451 canonicalizes every lesson-family
+    // type to `lesson_learned` on write, which would make "the type did not
+    // change between ingests" indistinguishable from that unrelated
+    // canonicalization. Any non-lesson type proves the same point.
+    const dir = makeDir({ 'b.md': note('note_b', 'Beta', 'pattern', 'Beta body.') });
     ingestNoteDirectory({ dir });
-    fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'lesson', 'Beta body changed.'));
+    fs.writeFileSync(path.join(dir, 'b.md'), note('note_b', 'Beta', 'pattern', 'Beta body changed.'));
     ingestNoteDirectory({ dir });
-    expect(kg().getEntity('note_b')!.type).toBe('lesson');
+    expect(kg().getEntity('note_b')!.type).toBe('pattern');
   });
 });
 

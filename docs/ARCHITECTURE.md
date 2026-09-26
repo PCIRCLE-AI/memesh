@@ -261,6 +261,7 @@ Tool call: remember({name, type, observations, tags, relations})
      -> KnowledgeGraph.clearEntityData(name)   # the snapshot must precede this
      -> stored type is kept unless a different `type` was passed
   -> KnowledgeGraph.createEntity(name, type, {observations, tags})
+     -> canonicalEntityType(type): `lesson` or `mistake` is stored as `lesson_learned` (#451)
   -> replace: true only: the snapshot -> metadata.replaced_history (after the write)
      -> INSERT OR IGNORE into entities
      -> INSERT observations

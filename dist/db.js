@@ -5,7 +5,7 @@ import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
-import { dedupeObservations, dropArchivedIndexRows, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
+import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, rebuildFtsIndex, runOnceMigration, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
@@ -77,6 +77,7 @@ function migrateToCurrentSchema(db, resolvedPath) {
     backfillAcceptedProposalTrust(db);
     dedupeObservations(db);
     retractZeroEditClaims(db);
+    canonicalizeLessonTypes(db);
     splitFusedLessons(db, { deriveTitle: deriveHeuristicTitle });
     repairFusedLessonShellHistory(db);
     ensureDreamProposalsTable(db);

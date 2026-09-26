@@ -597,6 +597,34 @@ describe('memory-invariants: read-only detector over a real graph', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('#451 — reports (does not fail on) an active lesson or mistake row not yet canonicalized to lesson_learned', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        insertEntity(db, 'old-lesson-row', 'lesson');
+        insertEntity(db, 'old-mistake-row', 'mistake');
+        insertEntity(db, 'canonical-row', 'lesson_learned');
+        // An ARCHIVED `lesson` row is not a violation of this invariant — the
+        // migration renames every status, so an archived one waiting on it
+        // is nothing an active-only reader could be misled by, and this
+        // report exists to flag rows that still LOOK like a live split
+        // concept, not every historical row. Status: 'active' is the query's
+        // own filter (scripts/audit/memory-invariants.mjs); this row is the
+        // guard that a change dropping that filter would be caught by.
+        insertEntity(db, 'archived-lesson-row', 'lesson', { status: 'archived' });
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain('note lesson-family-uses-one-type');
+      expect(r.stdout).toContain('old-lesson-row  type=lesson');
+      expect(r.stdout).toContain('old-mistake-row  type=mistake');
+      expect(r.stdout).not.toContain('canonical-row');
+      expect(r.stdout).not.toContain('archived-lesson-row');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
   /**
    * The write path refuses a shape, the repair rewrites it, and this script
    * watches it. Those three sets must name the same columns: a column the

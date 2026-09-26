@@ -85,9 +85,13 @@ describe('remember({ note }) — piece A', () => {
   });
 
   it('keeps tags, an explicit type and an explicit name', () => {
-    const r = remember({ note: 'Gate on exit codes', type: 'lesson', tags: ['project:x'], name: 'exit-code-lesson' });
+    // Type is `howto`, not `lesson`: #451 canonicalizes every lesson-family
+    // type to `lesson_learned` on write, which would make this test's own
+    // assertion (the TYPE PASSED IS THE TYPE STORED) indistinguishable from
+    // that unrelated behaviour. Any non-lesson type proves the same point.
+    const r = remember({ note: 'Gate on exit codes', type: 'howto', tags: ['project:x'], name: 'exit-code-lesson' });
     expect(r.name).toBe('exit-code-lesson');
-    expect(r.type).toBe('lesson');
+    expect(r.type).toBe('howto');
     expect(kg().getEntity('exit-code-lesson')!.tags).toContain('project:x');
   });
 

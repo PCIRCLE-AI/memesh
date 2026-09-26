@@ -354,6 +354,24 @@ const INVARIANTS = [
     reportOnly: true,
   },
   {
+    id: 'lesson-family-uses-one-type',
+    refs: '#451',
+    says: 'lesson and mistake are stored as lesson_learned (this invariant only reports; the write path and a one-shot migration canonicalize)',
+    // Reported, not failed: an active `lesson`/`mistake` row is legitimate
+    // right up until the one-shot migration (src/storage/graph-repairs.ts
+    // canonicalizeLessonTypes) reaches it, and an older plugin sharing this
+    // database can still write one after that — the same reason
+    // `global-namespace-reachable-by-injection` above is report-only. Active
+    // only: an archived row the migration has not yet reached says nothing
+    // about whether the write path or the migration are doing their job.
+    sql: `
+      SELECT e.name AS name, e.type AS type FROM entities e
+      WHERE e.status = 'active' AND e.type IN ('lesson', 'mistake')
+      ORDER BY e.id LIMIT ${MAX_ROWS + 1}`,
+    row: (r) => `${r.name}  type=${r.type}`,
+    reportOnly: true,
+  },
+  {
     id: 'agent-message-scope-ids-are-not-filesystem-paths',
     refs: 'message identity',
     says: 'no durable-message project, recipient or actor is spelled as a filesystem path',

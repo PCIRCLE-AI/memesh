@@ -4,6 +4,7 @@ import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
+import { canonicalEntityType } from './work-topology.js';
 function buildLocalMetadata(existingMetadata, overrides) {
     return {
         ...(existingMetadata ?? {}),
@@ -97,7 +98,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         throw new Error(`"${args.name}" was archived with forget; \`replace\` will not overwrite it. `
             + 'Remember it again without `replace` to bring it back, then replace it.');
     }
-    const entityType = args.type ?? existing?.type;
+    const entityType = args.type !== undefined ? canonicalEntityType(args.type) : existing?.type;
     if (entityType === undefined) {
         throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
             + 'so this call would create one with no type — pass `type` to create it.');
