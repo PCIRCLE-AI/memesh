@@ -3,6 +3,7 @@ import { type AgentJsonObject, type AgentMessagePayload, type AgentMessagePostCo
 export declare const AGENT_ROUTER_PROTOCOL_VERSION = 2;
 export declare const AGENT_ROUTER_MAX_FRAME_BYTES: number;
 export declare const AGENT_ROUTER_MAX_HOPS = 4;
+export declare const AGENT_ROUTER_SOCKET_PATH_MAX_BYTES = 103;
 export interface AgentHostRegistration {
     project: string;
     principal_id: string;

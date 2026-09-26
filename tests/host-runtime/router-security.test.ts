@@ -19,7 +19,7 @@ function privateDirectory(): string {
   return directory;
 }
 
-function runRouter(directory: string, tokenFile: string) {
+function runRouter(directory: string, tokenFile: string, envOverride: Record<string, string> = {}) {
   return spawnSync(process.execPath, [path.resolve('dist/host-runtime/router.js')], {
     cwd: process.cwd(),
     env: {
@@ -27,6 +27,7 @@ function runRouter(directory: string, tokenFile: string) {
       MEMESH_DB_PATH: path.join(directory, 'knowledge-graph.db'),
       MEMESH_ROUTER_SOCKET: path.join(directory, 'router.sock'),
       MEMESH_ROUTER_TOKEN_FILE: tokenFile,
+      ...envOverride,
     },
     encoding: 'utf8',
     timeout: 3_000,
@@ -56,6 +57,56 @@ describe.skipIf(process.platform === 'win32')('router token boundary', () => {
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('8192-byte limit');
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('router socket path validation', () => {
+  it('reports a clear error and no raw stack trace when the socket path exceeds the 103-byte limit', () => {
+    const directory = privateDirectory();
+    const longSocket = path.join(directory, `${'x'.repeat(200)}.sock`);
+
+    const result = runRouter(directory, path.join(directory, 'router.token'), { MEMESH_ROUTER_SOCKET: longSocket });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('MeMesh router failed');
+    expect(result.stderr).toContain('103 bytes');
+    expect(result.stderr).not.toMatch(/\n\s+at /);
+    // The error code, and — since the path came from MEMESH_ROUTER_SOCKET
+    // here — that env var, are both named so the owner knows exactly what to
+    // change.
+    expect(result.stderr).toContain('code=invalid_socket_path');
+    expect(result.stderr).toContain('MEMESH_ROUTER_SOCKET');
+    expect(result.stderr).toContain(String(Buffer.byteLength(longSocket)));
+  });
+});
+
+// The mkdir/chmod/token-file setup that runs BEFORE the constructor also
+// throws synchronously. A failure there is a raw, unhandled stack trace
+// unless the whole startup shares one reported path.
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('router pre-constructor failures', () => {
+  it('reports a clear error, not a raw stack trace, when the data directory cannot be created', () => {
+    const directory = privateDirectory();
+    fs.chmodSync(directory, 0o500); // no write bit: mkdirSync for a nested dir below fails with EACCES
+    const nestedDbPath = path.join(directory, 'nested', 'knowledge-graph.db');
+
+    const result = spawnSync(process.execPath, [path.resolve('dist/host-runtime/router.js')], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        MEMESH_DB_PATH: nestedDbPath,
+        MEMESH_ROUTER_SOCKET: path.join(directory, 'router.sock'),
+        MEMESH_ROUTER_TOKEN_FILE: path.join(directory, 'router.token'),
+      },
+      encoding: 'utf8',
+      timeout: 3_000,
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('MeMesh router failed');
+    expect(result.stderr).toContain('EACCES');
+    expect(result.stderr).not.toMatch(/\n\s+at /);
   });
 });
 

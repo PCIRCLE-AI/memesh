@@ -406,10 +406,10 @@
       "reason": "entity.observations can be genuinely undefined for a raw import bundle — describeInvalidEntity (this file) explicitly permits the field to be absent, only rejecting it if present-and-not-an-array. The ?? [] covers that documented-optional case, not a hidden failure.",
       "triaged": "2026-08-24; re-keyed 2026-09-07 after per-entity transaction refactor shifted the unchanged statement; re-keyed 2026-09-20 318→784 (#359/#361: the import metadata allow-list and its validators were added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 784→796 (#363: the archived-import guard was added above it; statement byte-identical, classification unchanged); re-keyed 2026-09-21 796→808 (#363: the restore_archived-with-skip refusal was added above; statement byte-identical, classification unchanged); re-keyed 2026-09-21 808→818 (#363: the non-boolean restore_archived refusal was added above; statement byte-identical, classification unchanged)"
     },
-    "C5 src/core/agent-router.ts:843": {
+    "C5 src/core/agent-router.ts:848": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "A host adapter may accept a delivery without optional transport metadata. The empty receipt is still validated and persisted as an explicit host_accept fact; accepted itself is required and no ACK, read, or workflow state is inferred from the missing receipt.",
-      "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-08-28 after bounded backlog drain and the Windows fail-closed guard moved the unchanged statement; re-keyed 2026-09-01 after live-directory code shifted the unchanged statement; re-keyed 2026-09-06 after router protocol constants shifted the unchanged statement"
+      "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-08-28 after bounded backlog drain and the Windows fail-closed guard moved the unchanged statement; re-keyed 2026-09-01 after live-directory code shifted the unchanged statement; re-keyed 2026-09-06 after router protocol constants shifted the unchanged statement; re-keyed 2026-09-26 843→848 after AGENT_ROUTER_SOCKET_PATH_MAX_BYTES was added above (#402/#404); statement byte-identical, classification unchanged"
     },
     "C5 src/host-adapters/acp-client.ts:771": {
       "class": "SAFE-BY-CONSTRUCTION",

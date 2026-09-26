@@ -100,20 +100,72 @@ export function unreadDeliveryCount(db: InboxDb, project: string, recipient?: st
  * error). Asserting "no such recipient" from a table this process could not
  * read would be a new way to lie; staying silent, as the quiet-inbox case
  * already does, is the honest answer here too.
+ *
+ * {@link recipientEverSeen} (project-scoped) and {@link recipientEverSeenAnywhere}
+ * (any project) both answer through this one query, so their WHERE clauses
+ * cannot drift apart the way two hand-written copies did. A database that
+ * predates the message tables is the ONE expected shape of "cannot answer"
+ * (every fresh install passes through it); `onError`, if given, fires only
+ * for anything else, so a caller can tell an empty history apart from a
+ * broken one without this function ever throwing.
  */
-export function recipientEverSeen(db: InboxDb, project: string, recipient: string): boolean | undefined {
+function recipientSeenQuery(
+  db: InboxDb,
+  recipient: string,
+  project?: string,
+  onError?: (err: unknown) => void,
+): boolean | undefined {
   try {
+    const scope = project !== undefined ? 'project = ? AND ' : '';
+    const params: unknown[] = project !== undefined
+      ? [project, recipient, project, recipient, project, recipient]
+      : [recipient, recipient, recipient];
     const row = db.prepare(
       `SELECT (
-         EXISTS(SELECT 1 FROM agent_principals WHERE project = ? AND principal_id = ?)
-         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE project = ? AND recipient = ?)
-         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?)
+         EXISTS(SELECT 1 FROM agent_principals WHERE ${scope}principal_id = ?)
+         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE ${scope}recipient = ?)
+         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE ${scope}session_instance_id = ?)
        ) AS seen`,
-    ).get(project, recipient, project, recipient, project, recipient) as { seen?: number } | undefined;
+    ).get(...params) as { seen?: number } | undefined;
     return row?.seen === undefined ? undefined : Boolean(row.seen);
-  } catch {
+  } catch (err) {
+    if (!isMissingMessageTableError(err)) onError?.(err);
     return undefined;
   }
+}
+
+/** Is this the one expected shape of "cannot answer" — a database from before the message tables existed? */
+function isMissingMessageTableError(err: unknown): boolean {
+  const message = err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : '';
+  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(message);
+}
+
+export function recipientEverSeen(db: InboxDb, project: string, recipient: string): boolean | undefined {
+  return recipientSeenQuery(db, recipient, project);
+}
+
+/**
+ * Same question as {@link recipientEverSeen}, with no `project` filter: has
+ * `recipient` ever been addressed in ANY project? A hint question, not a
+ * certainty — a genuinely new recipient id also returns `false`. Same
+ * fail-silent contract: `undefined`, not `false`, when the tables cannot be
+ * read. `onError`, given, is called only when the read failed for a reason
+ * other than the tables not existing yet.
+ */
+export function recipientEverSeenAnywhere(
+  db: InboxDb,
+  recipient: string,
+  onError?: (err: unknown) => void,
+): boolean | undefined {
+  return recipientSeenQuery(db, recipient, undefined, onError);
+}
+
+/**
+ * The one-line hint for a declared recipient {@link recipientEverSeenAnywhere}
+ * answered `false` for. Worded as a hint ("check for a typo"), never a fact.
+ */
+export function unknownRecipientHint(recipient: string): string {
+  return `MEMESH_RECIPIENT ${JSON.stringify(recipient)} has never been seen in any project — check it for a typo (or ignore this if it is a genuinely new recipient id).`;
 }
 
 /**

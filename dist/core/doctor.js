@@ -13,6 +13,7 @@ import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, p
 import { getInstallRecord } from './install-id.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
+import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
@@ -1338,6 +1339,10 @@ function inspectMessageCapability(packageRoot, enabled, probe) {
 }
 async function defaultMessageRouterStatusProbe() {
     const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
+    const socketPathBytes = Buffer.byteLength(socketPath);
+    if (socketPathBytes > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+        return { socket_path: socketPath, socket: 'path-too-long', detail: `${socketPathBytes} bytes` };
+    }
     let stat;
     try {
         stat = fs.lstatSync(socketPath);
@@ -1378,6 +1383,8 @@ async function inspectMessageRouterStatus(enabled, probe) {
             return createCheck('message-router-status', 'Live message router / host registration', 'pass', `Owner-private Local router socket is reachable at ${result.socket_path}. This proves only router availability; it does not prove an active host registration, native delivery, host_accept, ACK, or stopped-session wake-up.`);
         case 'missing':
             return createCheck('message-router-status', 'Live message router / host registration', 'warn', `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`, 'Start the owner-configured router with `memesh-router`, then run this opt-in probe again.', { code: 'message-router.socket-missing', params: { path: result.socket_path } });
+        case 'path-too-long':
+            return createCheck('message-router-status', 'Live message router / host registration', 'fail', `The router socket path is ${result.detail} — over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`, 'Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.', { code: 'message-router.socket-path-too-long', params: { path: result.socket_path, bytes: result.detail ?? 'unknown' } });
         case 'insecure':
             return createCheck('message-router-status', 'Live message router / host registration', 'fail', `Router socket at ${result.socket_path} is not an owner-private Unix socket.`, 'Stop the router, remove the unsafe socket, and restart `memesh-router` under the owning user.', { code: 'message-router.socket-insecure', params: { path: result.socket_path } });
         case 'unreachable':

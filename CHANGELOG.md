@@ -24,6 +24,8 @@ All notable changes to MeMesh are documented here.
 - Docs: the Codex plugin's SessionStart hook injects the same memory block as Claude Code's, so Codex agents with the plugin (once Codex runs its hooks) should not call `briefing` again unless that block is missing; the 4.10.5 notes said Codex had to call it manually. Recall is described correctly (three or more words must all match, with an any-word fallback; default limit 20) (#405). Agent-facing text cleanup (#446).
 - Lessons use one type: `lesson` and `mistake` are stored as `lesson_learned`, existing ones are renamed once on upgrade, and `?type=lesson` still finds them (#451).
 - `memesh config set sessionLimit` rejects values outside 1–100; a stored value above 100 is used as 100 and `memesh config list` says so, and the dashboard Settings tab opens again (#431).
+- A `MEMESH_RECIPIENT` that looks like a file path or is over 200 characters is now refused and shown at session start, and session start hints when a recipient has never been seen (#402).
+- The router now prints a one-line error instead of a stack trace on any startup failure, and `memesh doctor` names a socket path that is too long instead of a dead-end "missing" (#404).
 
 ## [4.10.5] — 2026-09-24
 

@@ -19,6 +19,7 @@ import {
 import { getInstallRecord } from './install-id.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
+import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
@@ -207,7 +208,7 @@ interface ClaudePluginEntries {
 
 type MessageRouterStatusProbe = {
   socket_path: string;
-  socket: 'reachable' | 'missing' | 'insecure' | 'unreachable';
+  socket: 'reachable' | 'missing' | 'insecure' | 'unreachable' | 'path-too-long';
   active_registrations?: number;
   detail?: string;
 };
@@ -2904,6 +2905,14 @@ function inspectMessageCapability(
 
 async function defaultMessageRouterStatusProbe(): Promise<MessageRouterStatusProbe> {
   const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
+  // A path over the limit is why `memesh-router` never created the socket —
+  // reporting it as plain "missing" sent the owner to restart a router that
+  // will fail again on the exact same path, a dead-end (#404). Checked before
+  // `lstatSync` so this cause is never masked by an ENOENT for the same path.
+  const socketPathBytes = Buffer.byteLength(socketPath);
+  if (socketPathBytes > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
+    return { socket_path: socketPath, socket: 'path-too-long', detail: `${socketPathBytes} bytes` };
+  }
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(socketPath);
@@ -2963,6 +2972,15 @@ async function inspectMessageRouterStatus(
         `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`,
         'Start the owner-configured router with `memesh-router`, then run this opt-in probe again.',
         { code: 'message-router.socket-missing', params: { path: result.socket_path } },
+      );
+    case 'path-too-long':
+      return createCheck(
+        'message-router-status',
+        'Live message router / host registration',
+        'fail',
+        `The router socket path is ${result.detail} — over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`,
+        'Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.',
+        { code: 'message-router.socket-path-too-long', params: { path: result.socket_path, bytes: result.detail ?? 'unknown' } },
       );
     case 'insecure':
       return createCheck(
