@@ -27469,6 +27469,7 @@ function buildImportedMetadata(existingMetadata, args) {
   const freshPin = args.isNewEntity && bundled.pin === true;
   const freshSignalScore = args.isNewEntity ? validateFreshSignalScore(bundled.signal_score) : null;
   const freshReplacedHistory = args.isNewEntity ? validateFreshReplacedHistory(bundled.replaced_history) : null;
+  const preserveTrust = args.trust && !args.isNewEntity && args.mergeStrategy === "append";
   return {
     ...existingMetadata ?? {},
     ...bundledSafe,
@@ -27476,14 +27477,16 @@ function buildImportedMetadata(existingMetadata, args) {
     ...freshSignalScore !== null ? { signal_score: freshSignalScore } : {},
     ...freshPin ? { pin: true } : {},
     ...freshReplacedHistory ? { replaced_history: freshReplacedHistory } : {},
-    trust: "untrusted",
-    provenance: {
-      ...existingMetadata?.provenance ?? {},
-      source: "import",
-      imported_at: (/* @__PURE__ */ new Date()).toISOString(),
-      exported_at: args.exportedAt,
-      export_version: args.importVersion,
-      merge_strategy: args.mergeStrategy
+    ...preserveTrust ? {} : {
+      trust: args.trust ? "trusted" : "untrusted",
+      provenance: {
+        ...existingMetadata?.provenance ?? {},
+        source: args.trust ? "trusted-import" : "import",
+        imported_at: (/* @__PURE__ */ new Date()).toISOString(),
+        exported_at: args.exportedAt,
+        export_version: args.importVersion,
+        merge_strategy: args.mergeStrategy
+      }
     }
   };
 }
@@ -27541,7 +27544,8 @@ function describeInvalidEntity(entity, index) {
   }
   return null;
 }
-function importMemories(args) {
+function importMemories(args, options) {
+  const trust = options?.trust === true;
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
     throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(", ")}. Nothing was imported \u2014 refusing rather than guessing, because the wrong guess overwrites existing memories.`);
   }
@@ -27587,7 +27591,8 @@ function importMemories(args) {
           exportedAt: args.data.exported_at,
           importVersion: args.data.version,
           mergeStrategy: args.merge_strategy,
-          isNewEntity: !existing
+          isNewEntity: !existing,
+          trust
         });
         if (existing) {
           if (args.merge_strategy === "skip")

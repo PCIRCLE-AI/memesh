@@ -390,6 +390,40 @@ describe('HTTP Transport: POST /v1/import and archived memories (#363)', () => {
   });
 });
 
+// #407: `--trust` is a CLI-only second argument to `importMemories`, never a
+// field of `ImportInput`/`ImportSchema`. `POST /v1/import` parses the body
+// against `ImportSchema` (`.strict()`) and then calls `importMemories(parsed.data)`
+// with exactly one argument (`handlePost`), so there is no way for an HTTP
+// caller to reach the trusted path even by naming the field.
+describe('HTTP Transport: POST /v1/import cannot reach --trust (#407)', () => {
+  const metadataOf = (name: string) =>
+    JSON.parse((getDatabase().prepare('SELECT metadata FROM entities WHERE name = ?').get(name) as { metadata: string }).metadata) as Record<string, unknown>;
+  const bundleFor = (name: string) => ({
+    version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+    entities: [{ name, type: 'note', namespace: 'personal', observations: ['bundle text'], tags: [], relations: [] }],
+  });
+
+  it('refuses an extra `trust: true` field with the strict-schema 400, and writes nothing', async () => {
+    const res = await req('POST', '/v1/import', {
+      data: bundleFor('http-import-trust-refused'), merge_strategy: 'skip', trust: true,
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.errorCode).toBe('validation.bad-body');
+    expect(getDatabase().prepare('SELECT 1 FROM entities WHERE name = ?').get('http-import-trust-refused')).toBeUndefined();
+  });
+
+  it('a normal import over HTTP stays untrusted, exactly as the CLI does without --trust', async () => {
+    const res = await req('POST', '/v1/import', {
+      data: bundleFor('http-import-normal-untrusted'), merge_strategy: 'skip',
+    });
+    expect(res.status).toBe(200);
+    const meta = metadataOf('http-import-normal-untrusted');
+    expect(meta.trust).toBe('untrusted');
+    expect((meta.provenance as Record<string, unknown>).source).toBe('import');
+  });
+});
+
 describe('HTTP Transport: GET /v1/update-status', () => {
   it('returns cached update metadata when requested', async () => {
     const now = Date.now();

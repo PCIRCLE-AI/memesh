@@ -6280,6 +6280,7 @@ function buildImportedMetadata(existingMetadata, args) {
   const freshPin = args.isNewEntity && bundled.pin === true;
   const freshSignalScore = args.isNewEntity ? validateFreshSignalScore(bundled.signal_score) : null;
   const freshReplacedHistory = args.isNewEntity ? validateFreshReplacedHistory(bundled.replaced_history) : null;
+  const preserveTrust = args.trust && !args.isNewEntity && args.mergeStrategy === "append";
   return {
     ...existingMetadata ?? {},
     ...bundledSafe,
@@ -6287,14 +6288,16 @@ function buildImportedMetadata(existingMetadata, args) {
     ...freshSignalScore !== null ? { signal_score: freshSignalScore } : {},
     ...freshPin ? { pin: true } : {},
     ...freshReplacedHistory ? { replaced_history: freshReplacedHistory } : {},
-    trust: "untrusted",
-    provenance: {
-      ...existingMetadata?.provenance ?? {},
-      source: "import",
-      imported_at: (/* @__PURE__ */ new Date()).toISOString(),
-      exported_at: args.exportedAt,
-      export_version: args.importVersion,
-      merge_strategy: args.mergeStrategy
+    ...preserveTrust ? {} : {
+      trust: args.trust ? "trusted" : "untrusted",
+      provenance: {
+        ...existingMetadata?.provenance ?? {},
+        source: args.trust ? "trusted-import" : "import",
+        imported_at: (/* @__PURE__ */ new Date()).toISOString(),
+        exported_at: args.exportedAt,
+        export_version: args.importVersion,
+        merge_strategy: args.mergeStrategy
+      }
     }
   };
 }
@@ -6351,7 +6354,8 @@ function describeInvalidEntity(entity, index) {
   }
   return null;
 }
-function importMemories(args) {
+function importMemories(args, options) {
+  const trust = options?.trust === true;
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
     throw new Error(`Unknown merge strategy "${args.merge_strategy}". Use one of: ${MERGE_STRATEGIES.join(", ")}. Nothing was imported \u2014 refusing rather than guessing, because the wrong guess overwrites existing memories.`);
   }
@@ -6397,7 +6401,8 @@ function importMemories(args) {
           exportedAt: args.data.exported_at,
           importVersion: args.data.version,
           mergeStrategy: args.merge_strategy,
-          isNewEntity: !existing
+          isNewEntity: !existing,
+          trust
         });
         if (existing) {
           if (args.merge_strategy === "skip")
@@ -61735,6 +61740,23 @@ function requireOneOf(value, allowed, flag) {
   console.error(`Error: ${flag} "${value}" is not valid. Use one of: ${allowed.join(", ")}.`);
   process.exit(1);
 }
+function shellQuoteIfNeeded(value) {
+  return /^[A-Za-z0-9._/:@%+=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+function describeImportFlags(cmd, opts, merge2) {
+  const parts = [`--merge ${merge2}`];
+  if (cmd.getOptionValueSource("namespace") === "cli")
+    parts.push(`--namespace ${String(opts.namespace)}`);
+  if (cmd.getOptionValueSource("restoreArchived") === "cli")
+    parts.push("--restore-archived");
+  return ` ${parts.join(" ")}`;
+}
+function memories(n) {
+  return n === 1 ? "1 memory" : `${n} memories`;
+}
+function isPromptAbort(err) {
+  return err instanceof Error && err.name === "AbortError";
+}
 function isOnPath(tool) {
   const exts = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";").filter(Boolean) : [""];
   for (const dir of (process.env.PATH ?? "").split(path19.delimiter)) {
@@ -62025,13 +62047,13 @@ program2.command("export").description("Export memories as JSON. Defaults to std
     }
   });
 });
-program2.command("import").description("Import memories from a JSON export file, or a directory of note files (--notes)").argument("[file]", "Path to JSON export file").option("--namespace <ns>", "Override namespace for all imported entities").option("--merge <strategy>", "Merge strategy: skip | overwrite | append", "skip").option("--restore-archived", "Requires --merge append or overwrite (an error with skip, the default): bring back a local memory you archived (forgot) when the file names it. Without this it stays archived and untouched.").option("--notes <dir>", "Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.").option("--project <name>", "With --notes: the project tag for ingested memories (default: the current directory's project)").option("--json", "With --notes: output the ingestion result as JSON").action(async (file2, opts, cmd) => {
+program2.command("import").description("Import memories from a JSON export file, or a directory of note files (--notes)").argument("[file]", "Path to JSON export file").option("--namespace <ns>", "Override namespace for all imported entities").option("--merge <strategy>", "Merge strategy: skip | overwrite | append", "skip").option("--restore-archived", "Requires --merge append or overwrite (an error with skip, the default): bring back a local memory you archived (forgot) when the file names it. Without this it stays archived and untouched.").option("--notes <dir>", "Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.").option("--project <name>", "With --notes: the project tag for ingested memories (default: the current directory's project)").option("--json", "With --notes: output the ingestion result as JSON").option("--trust", "For restoring your OWN backup only: also mark every imported memory trusted, so it is injected into new sessions like your own. Behind a confirmation (or --yes). Not for a file you did not produce yourself.").option("--yes", "With --trust: skip the confirmation prompt").action(async (file2, opts, cmd) => {
   if (opts.notes !== void 0) {
     if (file2) {
       console.error("Error: pass either a JSON export file or --notes <dir>, not both.");
       process.exit(1);
     }
-    const ignored = ["namespace", "merge", "restoreArchived"].filter((k) => cmd.getOptionValueSource(k) === "cli");
+    const ignored = ["namespace", "merge", "restoreArchived", "trust", "yes"].filter((k) => cmd.getOptionValueSource(k) === "cli");
     if (ignored.length > 0) {
       console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(" or ")}. Note files always go to the personal namespace and a changed file replaces its memory.`);
       process.exit(1);
@@ -62065,12 +62087,16 @@ program2.command("import").description("Import memories from a JSON export file,
   }
   const notesOnly = ["project", "json"].filter((k) => cmd.getOptionValueSource(k) === "cli");
   if (notesOnly.length > 0) {
-    console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(" and ")} only appl${notesOnly.length > 1 ? "y" : "ies"} to --notes. A JSON export file is imported with --namespace, --merge and --restore-archived.`);
+    console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(" and ")} only appl${notesOnly.length > 1 ? "y" : "ies"} to --notes. A JSON export file is imported with --namespace, --merge, --restore-archived and --trust.`);
+    process.exit(1);
+  }
+  if (opts.yes && !opts.trust) {
+    console.error("Error: --yes only applies with --trust.");
     process.exit(1);
   }
   requireOneOf(opts.merge, ["skip", "overwrite", "append"], "--merge");
   requireOneOf(opts.namespace, NAMESPACES, "--namespace");
-  await withDatabase(() => {
+  await withDatabase(async () => {
     let raw;
     try {
       raw = fs21.readFileSync(file2, "utf8");
@@ -62099,6 +62125,34 @@ program2.command("import").description("Import memories from a JSON export file,
       console.error(`       Try: memesh export > my-export.json && memesh import my-export.json`);
       process.exit(1);
     }
+    if (opts.trust) {
+      const bundleEntities = data?.entities;
+      if (!Array.isArray(bundleEntities)) {
+        console.error(`Error: This file has no "entities" array (found ${bundleEntities === void 0 ? "nothing" : typeof bundleEntities}). Nothing was imported. memesh import expects a file produced by \`memesh export\`.`);
+        process.exit(1);
+      }
+      if (!opts.yes) {
+        if (!process.stdin.isTTY) {
+          console.error(`Not a terminal and --yes not given \u2014 nothing was changed. Re-run with: memesh import ${shellQuoteIfNeeded(file2)}${describeImportFlags(cmd, opts, String(opts.merge))} --trust --yes`);
+          process.exit(1);
+        }
+        const { createInterface } = await import("node:readline/promises");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        let answer = "";
+        try {
+          answer = (await rl.question(`Trust the ${memories(bundleEntities.length)} in ${file2}? They will be injected into new sessions like your own. Only do this for your own backup. [y/N] `)).trim().toLowerCase();
+        } catch (err) {
+          if (!isPromptAbort(err))
+            throw err;
+        } finally {
+          rl.close();
+        }
+        if (answer !== "y" && answer !== "yes") {
+          console.log("Not trusted \u2014 nothing was written.");
+          process.exit(1);
+        }
+      }
+    }
     let result;
     try {
       result = importMemories({
@@ -62106,13 +62160,33 @@ program2.command("import").description("Import memories from a JSON export file,
         namespace: opts.namespace,
         merge_strategy: opts.merge,
         restore_archived: opts.restoreArchived === true
-      });
+      }, { trust: opts.trust === true });
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
       process.exit(1);
     }
     const overwriteNote = result.overwritten > 0 ? ` (${result.overwritten} overwritten)` : "";
     console.log(`Imported: ${result.imported}${overwriteNote}, Skipped: ${result.skipped}, Appended: ${result.appended}`);
+    if (opts.trust) {
+      let line = `Trusted: ${result.imported}${overwriteNote}.`;
+      if (result.appended > 0)
+        line += ` ${memories(result.appended)} appended kept their own trust.`;
+      console.log(line);
+    } else {
+      if (result.imported > 0) {
+        let line = `${memories(result.imported)} imported as untrusted \u2014 recall works, auto-injection does not.`;
+        const wouldAlsoReplace = result.skipped + result.appended;
+        if (wouldAlsoReplace === 0) {
+          line += ` If this file is your own backup, run: memesh import ${shellQuoteIfNeeded(file2)}${describeImportFlags(cmd, opts, "overwrite")} --trust`;
+        } else {
+          line += ` (--trust --merge overwrite not suggested: it would also replace ${memories(wouldAlsoReplace)} already here.)`;
+        }
+        console.log(line);
+      }
+      if (result.appended > 0) {
+        console.log(`Marked untrusted because this file added text to them: ${memories(result.appended)} you already had.`);
+      }
+    }
     if (result.kept_archived > 0) {
       console.log(`Kept archived: ${result.kept_archived} (you archived these; the file names them, so they were left untouched). Add --restore-archived to bring them back.`);
     }
@@ -63597,6 +63671,7 @@ function isExecutedModule(entryPath, moduleUrl) {
 export {
   createHostConfigAtomically,
   feedbackBrowserOpenCommand,
+  isPromptAbort,
   resolveUpgradePluginScript,
   runCli
 };

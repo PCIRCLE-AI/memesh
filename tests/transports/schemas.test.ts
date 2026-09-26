@@ -199,6 +199,16 @@ describe('ImportSchema', () => {
       expect(ImportSchema.safeParse({ data: validData, merge_strategy: 'append', restore_archived: wrong }).success, String(wrong)).toBe(false);
     }
   });
+
+  // #407: `--trust` is a CLI-only second argument to `importMemories`, never
+  // a field of this schema — `.strict()` is what makes that true for MCP
+  // `import` and `POST /v1/import`, which both parse the request body
+  // against this exact schema before calling the core function with one
+  // argument.
+  it('refuses an extra `trust` field — MCP and HTTP cannot reach --trust (#407)', () => {
+    const result = ImportSchema.safeParse({ data: validData, merge_strategy: 'append', trust: true });
+    expect(result.success).toBe(false);
+  });
 });
 
 // ── MessageSchema scope identifiers ─────────────────────────────────────────

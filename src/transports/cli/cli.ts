@@ -174,6 +174,54 @@ function requireOneOf(value: string | undefined, allowed: readonly string[], fla
 }
 
 /**
+ * POSIX single-quoting for a path echoed back inside a suggested command —
+ * `import`'s untrusted-rows notice and its no-terminal refusal both print a
+ * runnable re-run naming the file the caller just gave. Unquoted, a path
+ * holding a space or a shell metacharacter would make the command run
+ * something other than what it displays. (The interactive confirmation
+ * PROMPT is not a command to paste, so it prints the raw path instead.)
+ */
+function shellQuoteIfNeeded(value: string): string {
+  return /^[A-Za-z0-9._/:@%+=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * The JSON-import flags a suggested re-run command should carry, rendered
+ * back as ` --merge <value>[ --namespace <ns>][ --restore-archived]`.
+ * `merge` is always printed — the caller decides what value: the
+ * no-terminal refusal passes the caller's own `opts.merge` (a straight
+ * re-run of what they typed, plus `--yes`), the untrusted-rows notice
+ * always passes `'overwrite'` (the only strategy that can flip an existing
+ * row's trust, never the caller's original value). Dropping `--merge`
+ * entirely used to default a re-run to `skip`, which SKIPS rows the
+ * caller's own `--merge overwrite` just created — the suggested re-run
+ * trusted nothing and said so only in its own now-unread output.
+ */
+function describeImportFlags(cmd: Command, opts: Record<string, unknown>, merge: string): string {
+  const parts = [`--merge ${merge}`];
+  if (cmd.getOptionValueSource('namespace') === 'cli') parts.push(`--namespace ${String(opts.namespace)}`);
+  if (cmd.getOptionValueSource('restoreArchived') === 'cli') parts.push('--restore-archived');
+  return ` ${parts.join(' ')}`;
+}
+
+/** `'1 memory'` or `'<n> memories'` — used so a sentence around it needs no verb or pronoun agreement. */
+function memories(n: number): string {
+  return n === 1 ? '1 memory' : `${n} memories`;
+}
+
+/**
+ * True only for the `AbortError` `rl.question()` throws when its input
+ * stream hits EOF (Ctrl-D) at the confirmation prompt — measured with a
+ * real pty. Exported as its own predicate so the catch around
+ * `rl.question()` can be unit-tested without a terminal: anything else
+ * rethrows, because swallowing an unrelated error there would silently
+ * exit as a declined confirmation instead of surfacing.
+ */
+export function isPromptAbort(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
+
+/**
  * True when `tool` resolves to an executable on the current PATH — the same
  * question the upgrade script's `command -v` checks ask, answered up front so
  * a missing prerequisite is one plain sentence before anything runs, not a
@@ -688,6 +736,8 @@ program
   .option('--notes <dir>', 'Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.')
   .option('--project <name>', 'With --notes: the project tag for ingested memories (default: the current directory\'s project)')
   .option('--json', 'With --notes: output the ingestion result as JSON')
+  .option('--trust', 'For restoring your OWN backup only: also mark every imported memory trusted, so it is injected into new sessions like your own. Behind a confirmation (or --yes). Not for a file you did not produce yourself.')
+  .option('--yes', 'With --trust: skip the confirmation prompt')
   .action(async (file, opts, cmd: Command) => {
     if (opts.notes !== undefined) {
       if (file) {
@@ -697,7 +747,7 @@ program
       // Both flags mean something for a JSON bundle and nothing here; taking
       // them silently would let a user believe notes went into "team", or
       // were merged some other way.
-      const ignored = ['namespace', 'merge', 'restoreArchived'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+      const ignored = ['namespace', 'merge', 'restoreArchived', 'trust', 'yes'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
       if (ignored.length > 0) {
         console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
         process.exit(1);
@@ -734,12 +784,16 @@ program
     // produce a machine-readable result.
     const notesOnly = ['project', 'json'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
     if (notesOnly.length > 0) {
-      console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(' and ')} only appl${notesOnly.length > 1 ? 'y' : 'ies'} to --notes. A JSON export file is imported with --namespace, --merge and --restore-archived.`);
+      console.error(`Error: ${notesOnly.map((k) => `--${k}`).join(' and ')} only appl${notesOnly.length > 1 ? 'y' : 'ies'} to --notes. A JSON export file is imported with --namespace, --merge, --restore-archived and --trust.`);
+      process.exit(1);
+    }
+    if (opts.yes && !opts.trust) {
+      console.error('Error: --yes only applies with --trust.');
       process.exit(1);
     }
     requireOneOf(opts.merge, ['skip', 'overwrite', 'append'], '--merge');
     requireOneOf(opts.namespace, NAMESPACES, '--namespace');
-    await withDatabase(() => {
+    await withDatabase(async () => {
       // DX: catch the failures new users hit first (missing file,
       // malformed JSON) and produce problem+cause+fix output instead
       // of a raw stack trace. The previous behaviour leaked
@@ -774,6 +828,46 @@ program
         process.exit(1);
       }
 
+      // `--trust` is for restoring your OWN backup, so it is confirmed before
+      // anything is written — after every check above that can fail (file,
+      // JSON, --merge, --namespace) has already passed.
+      if (opts.trust) {
+        const bundleEntities = (data as { entities?: unknown } | null)?.entities;
+        // Same failure importMemories itself would throw, surfaced here so a
+        // caller sees it BEFORE the confirmation prompt, not after answering
+        // `y` to a prompt that already misnamed the count (it defaulted to 0).
+        if (!Array.isArray(bundleEntities)) {
+          console.error(`Error: This file has no "entities" array (found ${bundleEntities === undefined ? 'nothing' : typeof bundleEntities}). Nothing was imported. memesh import expects a file produced by \`memesh export\`.`);
+          process.exit(1);
+        }
+        if (!opts.yes) {
+          if (!process.stdin.isTTY) {
+            console.error(`Not a terminal and --yes not given — nothing was changed. Re-run with: memesh import ${shellQuoteIfNeeded(file)}${describeImportFlags(cmd, opts, String(opts.merge))} --trust --yes`);
+            process.exit(1);
+          }
+          const { createInterface } = await import('node:readline/promises');
+          const rl = createInterface({ input: process.stdin, output: process.stdout });
+          let answer = '';
+          try {
+            answer = (await rl.question(
+              // Not "all N" — N is every row the file names, some of which
+              // this run may skip or leave archived rather than trust.
+              `Trust the ${memories(bundleEntities.length)} in ${file}? They will be injected into new sessions like your own. Only do this for your own backup. [y/N] `,
+            )).trim().toLowerCase();
+          } catch (err) {
+            if (!isPromptAbort(err)) throw err;
+            // Ctrl-D (EOF): read as "no answer", same as any typed non-y/yes
+            // reply — never any other error, which must surface instead.
+          } finally {
+            rl.close();
+          }
+          if (answer !== 'y' && answer !== 'yes') {
+            console.log('Not trusted — nothing was written.');
+            process.exit(1);
+          }
+        }
+      }
+
       let result;
       try {
         result = importMemories({
@@ -781,7 +875,7 @@ program
           namespace: opts.namespace,
           merge_strategy: opts.merge as MergeStrategy,
           restore_archived: opts.restoreArchived === true,
-        });
+        }, { trust: opts.trust === true });
       } catch (err) {
         // importMemories refuses a bundle it cannot read, and says why in one
         // sentence. Uncaught, that sentence arrived on top of a ten-frame Node
@@ -797,6 +891,39 @@ program
       // had happened from the output.
       const overwriteNote = result.overwritten > 0 ? ` (${result.overwritten} overwritten)` : '';
       console.log(`Imported: ${result.imported}${overwriteNote}, Skipped: ${result.skipped}, Appended: ${result.appended}`);
+      if (opts.trust) {
+        // Everything else about this run (skipped, kept archived, appended)
+        // is already on the lines above — this adds only what THOSE lines
+        // don't say: an appended row kept whatever trust it already had,
+        // never gained `trusted-import`.
+        let line = `Trusted: ${result.imported}${overwriteNote}.`;
+        if (result.appended > 0) line += ` ${memories(result.appended)} appended kept their own trust.`;
+        console.log(line);
+      } else {
+        // A plain `append` demotes an existing TRUSTED local memory to
+        // untrusted too (unrelated to `--trust`, true since before #407) —
+        // split so that clause never gets folded into "imported".
+        if (result.imported > 0) {
+          let line = `${memories(result.imported)} imported as untrusted — recall works, auto-injection does not.`;
+          // `--merge overwrite` REPLACES an existing entity's observations —
+          // safe only for a row this run just created or overwrote from
+          // nothing, where the file's content and the local content are
+          // identical. A `skipped` row is a local memory that predates this
+          // import; an `appended` row now holds local text the file never
+          // had. Suggesting the same command for those would offer to
+          // destroy data it never touched, in the name of trusting it.
+          const wouldAlsoReplace = result.skipped + result.appended;
+          if (wouldAlsoReplace === 0) {
+            line += ` If this file is your own backup, run: memesh import ${shellQuoteIfNeeded(file)}${describeImportFlags(cmd, opts, 'overwrite')} --trust`;
+          } else {
+            line += ` (--trust --merge overwrite not suggested: it would also replace ${memories(wouldAlsoReplace)} already here.)`;
+          }
+          console.log(line);
+        }
+        if (result.appended > 0) {
+          console.log(`Marked untrusted because this file added text to them: ${memories(result.appended)} you already had.`);
+        }
+      }
       // Said on stdout, with the way back: the entities are unchanged, so
       // nothing else in the output would tell the user the file named them.
       if (result.kept_archived > 0) {
