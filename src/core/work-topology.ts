@@ -37,6 +37,28 @@ const LESSON_TYPES: ReadonlySet<string> = new Set(['lesson_learned', 'lesson', '
 /** LESSON_TYPES as a list, for SQL `IN (…)` placeholders. */
 export const LESSON_TYPE_LIST: readonly string[] = [...LESSON_TYPES];
 
+/**
+ * #451 — the write-side half of "one lesson type". `lesson` and `mistake`
+ * mean the same thing as `lesson_learned` and split the concept across three
+ * spellings (see the header comment above `LESSON_TYPES`); this is where a
+ * caller-supplied type gets folded back to the one canonical name before it
+ * is ever written.
+ *
+ * Reuses `LESSON_TYPES` rather than a second list, so a type this file
+ * decides to treat as lesson-ish (a future addition to `LESSON_TYPES`) is
+ * canonicalized the same day it starts being read as one — the two cannot
+ * drift the way two independently-maintained lists could.
+ *
+ * Exact-match only: readers of the lesson family already tolerate exactly
+ * `lesson_learned`, `lesson` and `mistake` and nothing else, so `Lesson`
+ * (capitalised) and `lessons` (plural) — neither of which any writer in this
+ * repository produces — pass through unchanged rather than being folded into
+ * a family they were never read as members of.
+ */
+export function canonicalEntityType(type: string): string {
+  return LESSON_TYPES.has(type) ? 'lesson_learned' : type;
+}
+
 export const WORK_LAYER_TYPES: ReadonlySet<string> = new Set([
   ...LESSON_TYPES,
   'decision',

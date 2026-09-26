@@ -5,7 +5,7 @@ import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
-import { dedupeObservations, dropArchivedIndexRows, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
+import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import {
   SCHEMA_SQL,
   FTS_SQL,
@@ -178,6 +178,10 @@ function migrateToCurrentSchema(db: MemeshDatabase, resolvedPath: string): void 
   // row is re-derived, and a split-out lesson gets one the same way.
   dedupeObservations(db);
   retractZeroEditClaims(db);
+
+  // #451: rename `lesson`/`mistake` rows to `lesson_learned` once. Before
+  // splitFusedLessons, which only selects `lesson_learned` buckets.
+  canonicalizeLessonTypes(db);
 
   splitFusedLessons(db, { deriveTitle: deriveHeuristicTitle });
 

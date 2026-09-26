@@ -3,6 +3,7 @@ import { findConflicts, trackAccess } from './storage/conflicts.js';
 import { indexedObservationText, insertFtsRow, joinIndexedObservations, removeFromFts, tokenizeQuery, renderMatchExpression, registerNfcFunction, SQL_NFC_FUNCTION, } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
+import { canonicalEntityType } from './core/work-topology.js';
 const MAX_QUERY_TERMS = 32;
 function buildMatchExpression(db, query) {
     const terms = tokenizeQuery(query);
@@ -85,6 +86,7 @@ export class KnowledgeGraph {
         return this.db.transaction(() => this.createEntityInner(name, type, opts))();
     }
     createEntityInner(name, type, opts) {
+        type = canonicalEntityType(type);
         const incomingMetadata = (opts?.metadata && typeof opts.metadata === 'object') ? { ...opts.metadata } : {};
         if (incomingMetadata.signal_score === undefined) {
             incomingMetadata.signal_score = computeSignalScore({
@@ -496,6 +498,7 @@ export class KnowledgeGraph {
         return results;
     }
     listByType(type, limit, includeArchived, namespace) {
+        type = canonicalEntityType(type);
         const statusFilter = includeArchived ? '' : "AND status = 'active'";
         const namespaceFilter = namespace ? 'AND namespace = ?' : '';
         const params = [type];

@@ -113,8 +113,8 @@
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "1e522d2078c05fe5fe155094b2020c1b868a83135d000dc8fee43455ae58b197",
-      "bytes": 11071
+      "sha256": "475f4f42e61a4a013050dc47e02369b0d21f1e93a2ccd4bdaa4417668b8e3083",
+      "bytes": 11178
     },
     {
       "path": "scripts/hooks/_shared.js",

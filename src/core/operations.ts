@@ -15,6 +15,7 @@ import { rankEntities } from './scoring.js';
 import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
+import { canonicalEntityType } from './work-topology.js';
 import type {
   RememberInput,
   RememberResult,
@@ -230,7 +231,13 @@ function rememberInTransaction(
   // NOTE_DEFAULT_TYPE here is exactly the silent reclassification the
   // `typeGiven` guard below exists to prevent, so this refuses instead. This
   // layer is the one that knows whether the name exists; the schema does not.
-  const entityType = args.type ?? existing?.type;
+  //
+  // #451: an EXPLICIT `args.type` is canonicalized here — not the inherited
+  // `existing?.type` — so this is the value the retype check below compares
+  // against and the value this function echoes back. `createEntity` below
+  // canonicalizes again on the way to the INSERT; doing it twice is
+  // idempotent and this copy is what lets the retype branch fire.
+  const entityType = args.type !== undefined ? canonicalEntityType(args.type) : existing?.type;
   if (entityType === undefined) {
     throw new Error(
       `\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `

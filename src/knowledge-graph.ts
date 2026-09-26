@@ -15,6 +15,7 @@ import {
 } from './storage/fts-index.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
+import { canonicalEntityType } from './core/work-topology.js';
 
 /**
  * Cap on how many terms of a query reach the FTS5 MATCH expression. The broad
@@ -346,6 +347,14 @@ export class KnowledgeGraph {
     type: string,
     opts?: Parameters<KnowledgeGraph['createEntity']>[2],
   ): number {
+    // #451 — one lesson type. Every write of `lesson` or `mistake` becomes
+    // `lesson_learned` here, before the signal score reads `type` and before
+    // the INSERT — this is the ONE writer every surface that stores an entity
+    // goes through (remember, import, the memory tool, note ingest, demo,
+    // dreamer), so canonicalizing here covers all of them at once. A caller
+    // that already passed `lesson_learned` is unaffected.
+    type = canonicalEntityType(type);
+
     // Phase-1 of #39 (signal scorer): every entity gets a rule-based
     // signal_score at creation time so the dashboard can default-hide
     // empty session_keypoints, mechanical commits, and other captured
@@ -1061,8 +1070,12 @@ export class KnowledgeGraph {
    * to hand-roll — keeps the status/ordering semantics in one place and batch-
    * hydrates via getEntitiesByIds. Does NOT trackAccess (a type browse is a
    * catalogue read, matching the prior transport behavior).
+   *
+   * #451: `type` is canonicalized, so `?type=lesson` or `?type=mistake` still
+   * finds the rows the one-time repair renamed to `lesson_learned`.
    */
   listByType(type: string, limit?: number, includeArchived?: boolean, namespace?: string): Entity[] {
+    type = canonicalEntityType(type);
     const statusFilter = includeArchived ? '' : "AND status = 'active'";
     const namespaceFilter = namespace ? 'AND namespace = ?' : '';
     const params: (string | number)[] = [type];

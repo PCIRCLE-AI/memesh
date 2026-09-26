@@ -6,6 +6,7 @@ export const ZERO_EDIT_RETRACT_KEY = 'session_zero_edit_retract';
 export const FUSED_LESSON_SPLIT_KEY = 'fused_lesson_split';
 export const ARCHIVED_FTS_ROWS_KEY = 'archived_fts_rows';
 export const FUSED_LESSON_SHELL_HISTORY_RESET_KEY = 'fused_lesson_shell_history_reset';
+export const LESSON_TYPE_CANONICAL_KEY = 'lesson_type_canonical';
 const ZERO_EDITS = ', 0 files edited';
 const ZERO_EDITS_RETRACTED = ', files edited through Bash (count not recorded before 4.8.2)';
 function note(line) {
@@ -314,5 +315,50 @@ export function repairFusedLessonShellHistory(db) {
         },
     });
     return retired;
+}
+export function canonicalizeLessonTypes(db) {
+    let renamed = -1;
+    runOnceMigration(db, {
+        key: LESSON_TYPE_CANONICAL_KEY,
+        version: 1,
+        describe: 'lesson type canonicalization',
+        migrate: (conn) => {
+            const rows = conn
+                .prepare(`SELECT id, name, type, metadata FROM entities WHERE type IN ('lesson', 'mistake')`)
+                .all();
+            renamed = rows.length;
+            if (renamed === 0)
+                return;
+            conn.prepare(`UPDATE entities SET type = 'lesson_learned' WHERE type IN ('lesson', 'mistake')`).run();
+            const obsStmt = conn.prepare('SELECT content FROM observations WHERE entity_id = ?');
+            const tagStmt = conn.prepare('SELECT tag FROM tags WHERE entity_id = ?');
+            const updateMeta = conn.prepare('UPDATE entities SET metadata = ? WHERE id = ?');
+            let rescored = 0;
+            for (const row of rows) {
+                if (!row.metadata)
+                    continue;
+                let metadata;
+                try {
+                    const parsed = JSON.parse(row.metadata);
+                    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed))
+                        continue;
+                    metadata = parsed;
+                }
+                catch {
+                    continue;
+                }
+                const observations = obsStmt.all(row.id).map((o) => o.content);
+                const tags = tagStmt.all(row.id).map((t) => t.tag);
+                const oldTypeDefault = computeSignalScore({ type: row.type, name: row.name, observations, tags });
+                if (metadata.signal_score !== oldTypeDefault)
+                    continue;
+                metadata.signal_score = computeSignalScore({ type: 'lesson_learned', name: row.name, observations, tags });
+                updateMeta.run(JSON.stringify(metadata), row.id);
+                rescored++;
+            }
+            note(`renamed ${renamed} entit${renamed === 1 ? 'y' : 'ies'} from \`lesson\`/\`mistake\` to \`lesson_learned\`, rescoring ${rescored} signal score${rescored === 1 ? '' : 's'} (#451).`);
+        },
+    });
+    return renamed;
 }
 //# sourceMappingURL=graph-repairs.js.map
