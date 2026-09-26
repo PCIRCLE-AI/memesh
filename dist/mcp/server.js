@@ -25106,7 +25106,7 @@ function layerOf(type) {
 function topologyLine(entity, maxChars) {
   const title = entity.title?.trim();
   const snippet = entity.snippet?.trim();
-  const text = title || snippet || `${entity.type} memory`;
+  const text = (title || snippet || `${entity.type} memory`).replace(/~[0-9a-f]{32}\b/g, "");
   const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : "";
   const room = Math.max(8, maxChars - handle.length);
   return stripControlChars(`- [${entity.type}] ${clip(text, room)}${handle}`);

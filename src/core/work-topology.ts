@@ -183,7 +183,9 @@ export interface TopologyEntity {
 export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   const title = entity.title?.trim();
   const snippet = entity.snippet?.trim();
-  const text = title || snippet || `${entity.type} memory`;
+  // session-summary/pre-compact store titles as `<label>~<32 hex>: …` (the
+  // routing hash from getProjectName()); it means nothing in prose (#409).
+  const text = (title || snippet || `${entity.type} memory`).replace(/~[0-9a-f]{32}\b/g, '');
   // The citation handle. A line that carries the entity's id lets an agent
   // cite the memory it actually used — `[mem:42]` — so the Stop hook's
   // accounting can credit a hit without guessing from prose (literal

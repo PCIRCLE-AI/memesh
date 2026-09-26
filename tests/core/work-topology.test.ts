@@ -108,6 +108,22 @@ describe('work-topology', () => {
     expect(line.replace(/^- \[fact\] /, '').length).toBeLessThanOrEqual(40);
   });
 
+  it('strips the routing hash session-summary/pre-compact append to a label, but not a bare 32-hex string (#409)', () => {
+    const withHash = topologyLine(
+      entity({ type: 'session-insight', title: '2026-09-22 memesh~2c0fe491888c8efb9a4894828bbc2733: edited 12 file(s)' }),
+      150,
+    );
+    expect(withHash).toBe('- [session-insight] 2026-09-22 memesh: edited 12 file(s)');
+
+    // No `~` before the 32 hex chars (e.g. a commit sha after a colon) —
+    // leave it alone.
+    const bareHex = topologyLine(
+      entity({ type: 'commit', title: 'fixed by: 2c0fe491888c8efb9a4894828bbc2733' }),
+      150,
+    );
+    expect(bareHex).toBe('- [commit] fixed by: 2c0fe491888c8efb9a4894828bbc2733');
+  });
+
   describe('extractCitedMemoryIds — the read side of the handle', () => {
     it('collects and deduplicates explicit citations', () => {
       const cited = extractCitedMemoryIds('per [mem:42] we kept pkce; [mem:42] again, plus [mem:7]');

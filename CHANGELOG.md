@@ -28,6 +28,7 @@ All notable changes to MeMesh are documented here.
 - `memesh config set sessionLimit` rejects values outside 1–100; a stored value above 100 is used as 100 and `memesh config list` says so, and the dashboard Settings tab opens again (#431).
 - A `MEMESH_RECIPIENT` that looks like a file path or is over 200 characters is now refused and shown at session start, and session start hints when a recipient has never been seen (#402).
 - The router now prints a one-line error instead of a stack trace on any startup failure, and `memesh doctor` names a socket path that is too long instead of a dead-end "missing" (#404).
+- `Recent activity` no longer prints the routing hash session-summary and pre-compact titles carry after the project label (e.g. `memesh~2c0fe491…`); it renders as `memesh` (#409).
 
 ## [4.10.5] — 2026-09-24
 
