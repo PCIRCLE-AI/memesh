@@ -6803,6 +6803,77 @@ var init_operations = __esm({
   }
 });
 
+// dist/core/session-limit.js
+function isSessionLimitInRange(n) {
+  return Number.isInteger(n) && n >= SESSION_LIMIT_MIN && n <= SESSION_LIMIT_MAX;
+}
+function classify(n) {
+  if (!Number.isInteger(n))
+    return "invalid";
+  if (isSessionLimitInRange(n))
+    return "valid";
+  return n > SESSION_LIMIT_MAX ? "above" : "below";
+}
+function causeText(kind) {
+  if (kind === "above")
+    return `above max ${SESSION_LIMIT_MAX}`;
+  if (kind === "below")
+    return `below min ${SESSION_LIMIT_MIN}`;
+  return "not a whole number";
+}
+function shortCauseText(kind) {
+  if (kind === "above")
+    return `above ${SESSION_LIMIT_MAX}`;
+  if (kind === "below")
+    return `below ${SESSION_LIMIT_MIN}`;
+  return "not a whole number";
+}
+function envDisplayValue(envRaw, parsed) {
+  return Number.isNaN(parsed) ? envRaw : String(parsed);
+}
+function resolveSessionLimit(envRaw, configValue) {
+  const adjustments = [];
+  if (envRaw !== void 0) {
+    const n = Number(envRaw);
+    const kind = classify(n);
+    if (kind === "valid")
+      return { value: n, effectiveSource: "env", adjustments: [] };
+    adjustments.push({
+      source: "env",
+      raw: JSON.stringify(envRaw),
+      displayValue: envDisplayValue(envRaw, n),
+      cause: causeText(kind),
+      shortCause: shortCauseText(kind)
+    });
+    if (kind === "above")
+      return { value: SESSION_LIMIT_MAX, effectiveSource: "env", adjustments };
+  }
+  if (typeof configValue === "number") {
+    const kind = classify(configValue);
+    if (kind === "valid")
+      return { value: configValue, effectiveSource: "config", adjustments };
+    adjustments.push({
+      source: "config",
+      raw: String(configValue),
+      displayValue: String(configValue),
+      cause: causeText(kind),
+      shortCause: shortCauseText(kind)
+    });
+    if (kind === "above")
+      return { value: SESSION_LIMIT_MAX, effectiveSource: "config", adjustments };
+  }
+  return { value: SESSION_LIMIT_DEFAULT, effectiveSource: "default", adjustments };
+}
+var SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, SESSION_LIMIT_DEFAULT;
+var init_session_limit = __esm({
+  "dist/core/session-limit.js"() {
+    "use strict";
+    SESSION_LIMIT_MIN = 1;
+    SESSION_LIMIT_MAX = 100;
+    SESSION_LIMIT_DEFAULT = 10;
+  }
+});
+
 // dist/core/config.js
 import fs3 from "fs";
 import path3 from "path";
@@ -6906,6 +6977,7 @@ var init_config = __esm({
   "dist/core/config.js"() {
     "use strict";
     init_paths();
+    init_session_limit();
     CONFIG_KEYS = ["autoCapture", "sessionLimit", "autoUpdate", "updateCheck", "setupCompleted", "briefing"];
     RETIRED_CONFIG_KEYS = [
       "llm",
@@ -58979,6 +59051,7 @@ var init_server = __esm({
     init_operations();
     init_knowledge_graph();
     init_config();
+    init_session_limit();
     init_briefing_level();
     init_doctor_fixes();
     init_patterns();
@@ -59181,7 +59254,7 @@ var init_server = __esm({
     }));
     ConfigReadBody = external_exports.object({
       autoCapture: external_exports.boolean().optional(),
-      sessionLimit: external_exports.number().int().min(1).max(100).optional(),
+      sessionLimit: external_exports.number().optional(),
       autoUpdate: external_exports.enum(["off", "patch", "minor", "major"]).optional(),
       setupCompleted: external_exports.boolean().optional(),
       briefing: external_exports.unknown().optional()
@@ -59191,7 +59264,7 @@ var init_server = __esm({
     })));
     ConfigBody = external_exports.object({
       autoCapture: external_exports.boolean().optional(),
-      sessionLimit: external_exports.number().int().min(1).max(100).optional(),
+      sessionLimit: external_exports.number().int().min(SESSION_LIMIT_MIN).max(SESSION_LIMIT_MAX).optional(),
       autoUpdate: external_exports.enum(["off", "patch", "minor", "major"]).optional(),
       setupCompleted: external_exports.boolean().optional(),
       briefing: external_exports.enum(BRIEFING_LEVELS).optional()
@@ -60156,6 +60229,7 @@ var {
 init_db();
 init_operations();
 init_config();
+init_session_limit();
 import { createHash as createHash15 } from "crypto";
 import fs21 from "fs";
 import path19 from "path";
@@ -61623,11 +61697,14 @@ function nonEmpty(flag) {
 function proposalId(raw) {
   return wholeNumber("<id>")(raw);
 }
-function wholeNumber(flag, min = 1) {
+function wholeNumber(flag, min = 1, max) {
   return (value) => {
     const parsed = Number(value);
-    if (!Number.isInteger(parsed) || parsed < min) {
-      console.error(`Error: ${flag} needs a whole number of ${min} or more, not "${value}".`);
+    const tooSmall = parsed < min;
+    const tooLarge = max !== void 0 && parsed > max;
+    if (!Number.isInteger(parsed) || tooSmall || tooLarge) {
+      const range = max !== void 0 ? `${min} to ${max}` : `${min} or more`;
+      console.error(`Error: ${flag} needs a whole number of ${range}, not "${value}".`);
       process.exit(1);
     }
     return parsed;
@@ -62543,10 +62620,12 @@ Set it with:  memesh task --goal "\u2026" --next "\u2026"`);
 var configCmd = program2.command("config").description("Manage configuration");
 configCmd.command("list").description("Show current configuration").action(() => {
   const config2 = readConfig();
+  const rawConfig = config2;
   console.log("Configuration (~/.memesh/config.json):");
-  const stored = buildConfigListing(config2);
-  if (stored.length === 0)
+  const anyStored = Array.from(ALLOWED_KEYS).some((key) => rawConfig[key] !== void 0);
+  if (!anyStored)
     console.log("  (nothing stored \u2014 all defaults)");
+  const stored = buildConfigListing(rawConfig);
   const rows = [
     ...stored.filter(({ key }) => key !== "briefing"),
     { key: "briefing", value: describeEffectiveBriefing(config2.briefing) }
@@ -62571,12 +62650,33 @@ var KEY_VALIDATORS = {
 function buildConfigListing(config2) {
   const rows = [];
   for (const key of Array.from(ALLOWED_KEYS).sort()) {
+    if (key === "sessionLimit") {
+      rows.push({ key, value: describeEffectiveSessionLimit(config2.sessionLimit) });
+      continue;
+    }
     const raw = config2[key];
     if (raw === void 0)
       continue;
     rows.push({ key, value: String(raw) });
   }
   return rows;
+}
+function describeEffectiveSessionLimit(configValue) {
+  const envRaw = process.env.MEMESH_SESSION_LIMIT;
+  const { value, effectiveSource, adjustments } = resolveSessionLimit(envRaw, configValue);
+  if (adjustments.length === 0) {
+    if (envRaw !== void 0)
+      return `${value} (env MEMESH_SESSION_LIMIT)`;
+    return configValue === void 0 ? `${value} (default)` : String(configValue);
+  }
+  const uses = effectiveSource === "default" ? `uses the default ${value}` : `uses ${value}`;
+  const describe3 = (a) => a.source === "env" ? `${a.displayValue} from MEMESH_SESSION_LIMIT` : a.displayValue;
+  if (adjustments.length === 1) {
+    const [a] = adjustments;
+    return `${describe3(a)} (${a.shortCause}; the SessionStart hook ${uses})`;
+  }
+  const [envAdjustment, configAdjustment] = adjustments;
+  return `${describe3(envAdjustment)} (${envAdjustment.shortCause}), then ${describe3(configAdjustment)} (${configAdjustment.shortCause}; the SessionStart hook ${uses})`;
 }
 function describeEffectiveBriefing(configValue) {
   const envValue = process.env.MEMESH_BRIEFING;
@@ -62589,12 +62689,12 @@ function describeEffectiveBriefing(configValue) {
     return `${level} (env MEMESH_BRIEFING)`;
   return configValue !== void 0 ? `${level} (config.json)` : `${level} (default)`;
 }
-configCmd.command("get").description("Show one stored config value (for `briefing`, what is stored, not the level in effect that `config list` shows)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").action((key) => {
+configCmd.command("get").description("Show one stored config value (for `briefing`, what is stored, not the level in effect that `config list` shows; `sessionLimit` shows the value in effect, same as `config list`)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").action((key) => {
   requireAllowedKey(key);
   const row = buildConfigListing(readConfig()).find((r) => r.key === key);
   console.log(row ? row.value : `${key} is not set in config.json`);
 });
-configCmd.command("set").description("Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number), autoUpdate (off|patch|minor|major), updateCheck (true|false), briefing (minimal|standard|full \u2014 controls what a session start gets; MEMESH_BRIEFING env var overrides this)").argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value \u2014 see this command's description for each key's valid values").action((key, value) => {
+configCmd.command("set").description(`Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number, ${SESSION_LIMIT_MIN}-${SESSION_LIMIT_MAX}), autoUpdate (off|patch|minor|major), updateCheck (true|false), briefing (minimal|standard|full \u2014 controls what a session start gets; MEMESH_BRIEFING env var overrides this)`).argument("<key>", "Config key \u2014 see `memesh config list` for valid keys").argument("<value>", "Config value \u2014 see this command's description for each key's valid values").action((key, value) => {
   requireAllowedKey(key);
   const validate = KEY_VALIDATORS[key];
   if (validate) {
@@ -62606,7 +62706,7 @@ configCmd.command("set").description("Set an ordinary config value: autoCapture 
   }
   let coerced = value;
   if (key === "sessionLimit") {
-    coerced = wholeNumber("sessionLimit")(value);
+    coerced = wholeNumber("sessionLimit", SESSION_LIMIT_MIN, SESSION_LIMIT_MAX)(value);
   }
   if (key === "autoCapture" || key === "updateCheck") {
     coerced = value === "true" || value === "1";

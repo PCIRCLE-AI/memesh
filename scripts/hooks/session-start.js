@@ -51,7 +51,7 @@ import {
   isUpdateCheckEnabled,
   repoStateLines,
   resolvePluginRoot,
-  resolveSessionLimit,
+  resolveSessionLimitDetailed,
   briefingTaskStateLines,
   resolveBriefingLevel,
   resolveMessageRecipient,
@@ -893,6 +893,26 @@ process.stdin.on('end', async () => {
         reason: HOOK_CONFIG_UNREADABLE_REASON,
       });
     }
+    // #431 — resolve the session-start memory-injection limit ONCE, same
+    // reasoning as the briefing level above: this must run before every
+    // exit path (no-database and empty-database included), or a stored
+    // out-of-range value goes unreported on exactly the sessions that never
+    // reach the scoring query that uses it. Every source the resolver had
+    // to adjust (env, then config) is traced AND recorded, never silently
+    // clamped or defaulted.
+    const sessionLimitResolution = resolveSessionLimitDetailed(process.env, configRead.config);
+    const sessionLimit = sessionLimitResolution.value;
+    for (const { source, raw, cause } of sessionLimitResolution.adjustments) {
+      try {
+        process.stderr.write(
+          `[memesh session-start] ${source} sessionLimit ${raw} ${cause} — using ${sessionLimit}\n`,
+        );
+      } catch { /* stderr gone */ }
+      record({
+        outcome: 'notified',
+        reason: `session-limit: ${source} value ${raw} ${cause}, using ${sessionLimit}`,
+      });
+    }
     // The work-package notice is identical boilerplate every session (#360)
     // — only `full` still carries it. `undefined`, not a conditional string
     // literal at each call site: output()'s memoryContext parameter treats
@@ -1063,10 +1083,6 @@ process.stdin.on('end', async () => {
       // as `e` for both the project- and recent-pool queries, so the
       // bare-column `WHERE status = 'active'` form was replaced by the
       // qualified `WHERE e.status = 'active'` computed inline below.)
-
-      // Configurable limit: how many top-N entities to load per section.
-      // Env > config.sessionLimit > default 10.
-      const sessionLimit = resolveSessionLimit(process.env);
 
       // Scoring math is aligned to src/core/scoring.ts exactly:
       //   - confidence  weight 0.2833  (core 0.17 / 0.60 sub-total)

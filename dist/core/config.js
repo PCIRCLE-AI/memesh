@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { memeshDir } from './paths.js';
+export { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, isSessionLimitInRange } from './session-limit.js';
 const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'setupCompleted', 'briefing'];
 export const RETIRED_CONFIG_KEYS = [
     'llm',

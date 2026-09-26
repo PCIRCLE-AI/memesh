@@ -153,6 +153,24 @@ describe('CLI error envelopes: caller mistakes are one line, not a crash', () =>
     expect(listed.stdout).not.toContain('briefing: aggressive');
   });
 
+  // #431 — the CLI enforces the documented range, with a message that
+  // states it, and writes nothing when the value is rejected.
+  it('config set sessionLimit rejects a value above the documented range and writes nothing', () => {
+    const r = runCli(['config', 'set', 'sessionLimit', '101']);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('sessionLimit needs a whole number of 1 to 100');
+    expectNoStackTrace(r.stderr, 'config set sessionLimit');
+
+    const listed = runCli(['config', 'list']);
+    expect(listed.stdout).not.toContain('sessionLimit: 101');
+  });
+
+  it('config set sessionLimit 100 (the documented upper bound) is accepted and persists', () => {
+    expect(runCli(['config', 'set', 'sessionLimit', '100']).exitCode).toBe(0);
+    const listed = runCli(['config', 'list']);
+    expect(listed.stdout).toContain('sessionLimit: 100');
+  });
+
   it('remember --obs "   " is refused, not stored as a memory with nothing in it (M-05)', () => {
     // Dogfooded on the real v4.7.1 release: `--obs "   "` was accepted and
     // stored `"observations": ["   "]` — a memory with no actual content.

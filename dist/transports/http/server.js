@@ -7,6 +7,7 @@ import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
+import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -447,7 +448,7 @@ app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => 
 }));
 const ConfigReadBody = z.object({
     autoCapture: z.boolean().optional(),
-    sessionLimit: z.number().int().min(1).max(100).optional(),
+    sessionLimit: z.number().optional(),
     autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
     setupCompleted: z.boolean().optional(),
     briefing: z.unknown().optional(),
@@ -457,7 +458,7 @@ app.get('/v1/config', (_req, res) => handleGet(res, () => ({
 })));
 const ConfigBody = z.object({
     autoCapture: z.boolean().optional(),
-    sessionLimit: z.number().int().min(1).max(100).optional(),
+    sessionLimit: z.number().int().min(SESSION_LIMIT_MIN).max(SESSION_LIMIT_MAX).optional(),
     autoUpdate: z.enum(['off', 'patch', 'minor', 'major']).optional(),
     setupCompleted: z.boolean().optional(),
     briefing: z.enum(BRIEFING_LEVELS).optional(),
