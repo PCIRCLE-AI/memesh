@@ -50,11 +50,12 @@ try {
     return actual.length === expected.length && timingSafeEqual(actual, expected);
   };
 
+  const db = openDatabase();
   router = new AgentRouter({
-    db: openDatabase(),
+    db,
     socket_path: socketPath,
     adapters: [
-      createCodexCliQueueAdapter({ authenticate }),
+      createCodexCliQueueAdapter({ authenticate, release_watch: { db } }),
       ...['claude-channel', 'codex-app-server', 'acp'].map(kind => ({ kind, authenticate })),
     ],
   });

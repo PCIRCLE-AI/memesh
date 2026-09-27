@@ -279,6 +279,36 @@ disposition. Codex exposes message text only through its `--message` process
 argument, so same-user process inspection may observe it while the short-lived
 queue command runs; do not put secrets in native messages.
 
+Codex can leave an accepted message unstarted: an item queued while a turn
+runs stays in the thread queue if that turn is interrupted, and neither an
+empty Enter nor another `codex queue` starts it (#468). So after `codex queue`
+accepts a message, the router checks every 20 seconds, for up to 10 minutes,
+whether the recipient has recorded `intake`. Until it has, the router asks Codex
+to start exactly the submission that `codex queue` reported
+(`thread/queue/start` with its `queuedSubmissionId`, through
+`codex app-server proxy`). It starts nothing while input that MeMesh did not
+queue is also waiting in that thread, because Codex runs the rest of the queue
+after the started turn; it tries again while a turn is still running or other
+input is waiting. Intake ends the checks with no further record; otherwise the
+router records the final outcome once, as a `host_activation` receipt from
+actor `memesh-router` in `message receipts`:
+
+- `woken`: Codex started that submission, or had already taken it
+  (`codex_queue` in the receipt detail is `started` or `empty`). This is not
+  intake: the model may not have read or acted on the message.
+- `manual_resume_required`: other input stayed queued in the thread for the
+  whole window, so MeMesh started nothing; the queue runs when you send a
+  prompt.
+- `failed`: the thread stayed busy for the whole window, the app-server did not
+  answer or refused the request, or `codex queue` printed no submission id, in
+  which case nothing is started (`reason` in the receipt detail).
+- `unsupported`: Codex runs without its app-server daemon, for example a TUI
+  started with `--no-daemon`. A queued MeMesh message can then stay stuck after
+  an interrupted turn until you send a prompt.
+
+The checks live in the router process; a router restart drops the ones still
+pending.
+
 If the target Codex session is stopped, missing, disconnected, or no
 longer matches its configured workspace, MeMesh does not start or replace it.
 An exact-session send reports `recipient_unavailable`; durable scoped recovery
