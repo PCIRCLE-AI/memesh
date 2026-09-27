@@ -273,8 +273,9 @@ if (isMainModule) {
       const updateDecision = await recordUpdateConsent(data.session_id, prompt);
       const rememberIntent = detectRememberIntent(prompt);
       // Messages waiting for the recipient this session declared in
-      // MEMESH_RECIPIENT, or — under Claude Code with the channel configured
-      // — the owner-private hosts/claude.json fallback (resolveMessageRecipient).
+      // MEMESH_RECIPIENT, or — under Claude Code with the channel configured,
+      // or under Codex with no MEMESH_RECIPIENT at all — the owner-private
+      // host fallback (resolveMessageRecipient).
       // Read-only and not memory capture, so it is not gated by autoCapture.
       // Empty when neither source names a recipient. An inbox that cannot be
       // read is recorded as an `error` of its own (a label, never the
@@ -285,10 +286,7 @@ if (isMainModule) {
         process.env,
         (err) => record('error', `inbox: ${hookErrorReason(err)}`),
         (label) => record('notified', `recipient: MEMESH_RECIPIENT ignored (${label})`),
-        data.cwd,
-        // Ledger-only (#468): ties SessionStart, this hook and the Stop gate
-        // to the same recorded reason without a visible line.
-        () => record('skipped', SKIP_REASONS.fallbackProjectMismatch),
+        { sessionId: data.session_id, cwd: data.cwd },
       );
       if (!rememberIntent && !updateDecision && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.noPromptIntent);

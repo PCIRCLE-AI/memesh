@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
-      "sha256": "e709faac2eeae749d7be971d9a2997b2451c637bba859e5bbe85dd8530719a97",
-      "bytes": 2439
+      "sha256": "e57c9bbe0bac502f01ed722de8f9397b559b2013e830cb756d6ec6b7694c00ee",
+      "bytes": 2487
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",
@@ -58,13 +58,18 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "1a3e8fbc486693767fac595abe51aa7612dc607da26ac30fd2e9f3e16470691a",
-      "bytes": 18904
+      "sha256": "dc7eb01c945cbd003345ee5be07f862e3c8b993569fa330cabde096001b506c6",
+      "bytes": 18765
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
       "sha256": "754903707c63a2c9ad0e8307055a1c3abee2fccbd122c973d8177b22552b8fff",
       "bytes": 3743
+    },
+    {
+      "path": "scripts/hooks/_generated/codex-session-principal.js",
+      "sha256": "ff9fa8cad5d64655346409d53c4d49047eb0dab3fe55d2d84423b5fb67ea419c",
+      "bytes": 2203
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
@@ -133,8 +138,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "74b40bf1f9109d28fd8ca3e8d649bf5af74412e1dbcfcb288c8ae0713f702eaf",
-      "bytes": 113104
+      "sha256": "390d373e03fb712735602da59f169880f518df989fa933761b28b0dd63ccd4e6",
+      "bytes": 119282
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -178,8 +183,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "690c28e14ac9338f7bad6612622eb77552062056eb9a2f54282ebe8c44ae5d7e",
-      "bytes": 105308
+      "sha256": "5040ae4bc96b11f141880abc880b7ab6dfd5ba876eacd9209176aa5e9f2790af",
+      "bytes": 108086
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -188,13 +193,13 @@
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
-      "sha256": "7e3e922b6803591092bffe52248bbf64767e4897e07c3f1bcabce4c51f9245dd",
-      "bytes": 7397
+      "sha256": "cfde03fc70a10cbfedd8449c301e32d45f56e542803948f977fcc2164c9e1e0c",
+      "bytes": 7127
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "c551fffd3b37eb56a6725a024f347a1f3383d21d974622f658a607ea46ff85f4",
-      "bytes": 15955
+      "sha256": "aa5cd980c25a9a906a838400e88f57a267c0300f265bb9fe792136db1064a77a",
+      "bytes": 15824
     },
     {
       "path": "skills/memesh-review/SKILL.md",
@@ -203,8 +208,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "aea5cf11eb7268da10e962611d917b262a0b444a14dca5c0272e051863bb0c32",
-      "bytes": 23595
+      "sha256": "7b572ea03be16a91d89fee09e89d1d441177dc5b174099dbb03e72c37111fd00",
+      "bytes": 23553
     }
   ]
 }

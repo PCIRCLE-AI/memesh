@@ -115,8 +115,12 @@ describe('ordinary Codex session companion', () => {
     expect(connect).toHaveBeenCalledWith(expect.objectContaining({
       socket_path: config.router_socket,
       auth_token: 'test-token',
+      // #474: the project is derived from the matched workspace, never from
+      // the config's own `project` field ('project-a', ignored) — the same
+      // derivation the automatic path below uses, so this override's
+      // remaining purpose is only a stable PRINCIPAL for one workspace.
       identity: {
-        project: 'project-a', principal_id: 'principal-a',
+        project: getProjectName(config.workspace as string), principal_id: 'principal-a',
         session_instance_id: threadId, adapter_kind: 'codex-cli-queue',
         model: 'gpt-5.6-sol', work_summary: 'review MeMesh delivery',
       },

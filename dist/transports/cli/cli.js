@@ -7760,11 +7760,12 @@ function agentScopeIdRejection(field, value) {
   const example = suggestion === null ? "reviewer-agent" : suggestion;
   return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
 }
-var AGENT_SCOPE_ID_MAX_LENGTH, AGENT_MESSAGE_SCOPE_COLUMNS, AGENT_MESSAGE_PROJECT_TABLES;
+var AGENT_SCOPE_ID_MAX_LENGTH, HOST_CONFIG_MAX_BYTES, AGENT_MESSAGE_SCOPE_COLUMNS, AGENT_MESSAGE_PROJECT_TABLES;
 var init_agent_scope_id = __esm({
   "dist/core/agent-scope-id.js"() {
     "use strict";
     AGENT_SCOPE_ID_MAX_LENGTH = 200;
+    HOST_CONFIG_MAX_BYTES = 64 * 1024;
     AGENT_MESSAGE_SCOPE_COLUMNS = [
       { table: "agent_messages", columns: ["project", "recipient"] },
       { table: "agent_message_deliveries", columns: ["project", "recipient"] },
@@ -26000,7 +26001,7 @@ function assertSecureLocalHostRuntimeSupported() {
   }
 }
 function readHostConfigFile(configuredPath) {
-  const value = JSON.parse(readOwnerPrivateFile(configuredPath, "host config", MAX_HOST_CONFIG_FILE_BYTES));
+  const value = JSON.parse(readOwnerPrivateFile(configuredPath, "host config", HOST_CONFIG_MAX_BYTES));
   if (!isRecord(value))
     throw new Error("The host config must contain one JSON object.");
   return value;
@@ -26064,12 +26065,12 @@ function assertOwnerPrivate(stat, label) {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var MAX_HOST_CONFIG_FILE_BYTES, MAX_ROUTER_TOKEN_FILE_BYTES, SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED;
+var MAX_ROUTER_TOKEN_FILE_BYTES, SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED;
 var init_config2 = __esm({
   "dist/host-runtime/config.js"() {
     "use strict";
     init_paths();
-    MAX_HOST_CONFIG_FILE_BYTES = 64 * 1024;
+    init_agent_scope_id();
     MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
     SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED = "The secure local host runtime is not supported on Windows.";
   }
@@ -56050,8 +56051,7 @@ var init_capture_liveness = __esm({
       noRecipientForGate: "no recipient could be resolved for this session",
       noDatabaseForMessageGate: "no database yet \u2014 nothing to check for waiting messages",
       nothingWaitingForGate: "no messages are waiting for the resolved recipient",
-      alreadyBlockedForGate: "every waiting message id was already blocked for in this session",
-      fallbackProjectMismatch: "hosts/claude.json project does not match this project's id; use the full id from `memesh briefing --json`"
+      alreadyBlockedForGate: "every waiting message id was already blocked for in this session"
     };
     KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
     UNRECOGNISED_REASON = "unrecognised reason";
@@ -57135,7 +57135,7 @@ function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
   if (target) {
     try {
       const config2 = readHostConfigFile(target);
-      const required2 = ["router_socket", "token_file", "project", "principal_id"];
+      const required2 = ["router_socket", "token_file", "principal_id"];
       targetConfigValid = config2.server_name === "memesh-channel" && required2.every((key) => {
         const value = config2[key];
         return typeof value === "string" && value.length > 0 && Buffer.byteLength(value) <= 4096;
@@ -62441,7 +62441,7 @@ messageStorageCmd.command("prune").description("Dry-run one bounded terminal-pay
   });
 });
 var agentCmd = program2.command("agent").description("Set up reusable owner-private local host configuration");
-agentCmd.command("setup").description("Write this host's local config (a stable project + principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner \u2014 also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. See docs/platforms/agent-messaging.md.").argument("<host>", "codex-session | codex | claude | gemini").requiredOption("--project <name>", "Project scope used for exact routing").requiredOption("--principal <id>", "Stable logical recipient ID").option("--workspace <path>", "Managed Codex/Gemini workspace", process.cwd()).option("--model <id>", "Optional declared model identifier").option("--work-summary <text>", "Optional declared current work summary").option("--json", "Output machine-readable setup result").action((host, opts) => {
+agentCmd.command("setup").description("Write this host's local config (a stable principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner \u2014 also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. The routing project always comes from the host's own working directory (claude) or its --workspace (codex, codex-session, gemini) \u2014 no flag decides it. See docs/platforms/agent-messaging.md.").argument("<host>", "codex-session | codex | claude | gemini").option("--project <name>", "Ignored for routing (#474) \u2014 the project always comes from the host's own working directory or --workspace. Accepted only so an older script that still passes it does not fail; a given value is still written into the config for reference, never used to route.").requiredOption("--principal <id>", "Stable logical recipient ID").option("--workspace <path>", "Managed Codex/Gemini workspace", process.cwd()).option("--model <id>", "Optional declared model identifier").option("--work-summary <text>", "Optional declared current work summary").option("--json", "Output machine-readable setup result").action((host, opts) => {
   requireOneOf(host, ["codex-session", "codex", "claude", "gemini"], "<host>");
   assertSecureLocalHostRuntimeSupported();
   const messageDir = path19.dirname(getDbPath());
@@ -62458,8 +62458,8 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
   const common = {
     router_socket: getAgentRouterSocketPath(),
     token_file: routerTokenFile,
-    project: requireAgentScopeArg(opts.project, "project", "--project"),
     principal_id: requireAgentScopeArg(opts.principal, "recipient", "--principal"),
+    ...opts.project === void 0 ? {} : { project: requireAgentScopeArg(opts.project, "project", "--project") },
     ...opts.model === void 0 ? {} : { model: boundedCliDeclaration(opts.model, "--model", 200) },
     ...opts.workSummary === void 0 ? {} : { work_summary: boundedCliDeclaration(opts.workSummary, "--work-summary", 200) }
   };

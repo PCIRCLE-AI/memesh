@@ -4,7 +4,7 @@ import { connectRouterHost, type RouterHostConnection } from './router-client.js
 export interface CodexSessionHostConfig extends Record<string, unknown> {
     router_socket: unknown;
     token_file: unknown;
-    project: unknown;
+    project?: unknown;
     principal_id: unknown;
     workspace: unknown;
     model?: unknown;

@@ -415,6 +415,9 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         "const identity = { session_instance_id: session.threadId, adapter_kind: 'codex-cli-queue' };",
       ].join('\n'));
       write('dist/host-runtime/codex-session.js', codexSession);
+      const codexPrincipal = "CODEX_THREAD_ID codex-thread-${session.threadId}";
+      write('src/core/codex-session-principal.ts', codexPrincipal);
+      write('dist/core/codex-session-principal.js', codexPrincipal);
       write('tests/host-runtime/codex-session.test.ts', 'automatically registers an ordinary SessionStart without writing a host config accepts a resume SessionStart for automatic registration');
       write('tests/core/agent-router.test.ts', 'never reroutes or later replays an exact-session delivery and drains principal pending after router restart');
       write('src/host-runtime/acp.ts', 'session_update_file O_NOFOLLOW');

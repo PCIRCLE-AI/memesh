@@ -79,25 +79,27 @@ Three Claude-Code-only pieces close the gap where a live channel misconfiguratio
 left a session with no way to learn a message was waiting at all.
 
 **Recipient fallback.** When `MEMESH_RECIPIENT` is unset (not merely empty) and
-this hook run is Claude Code, SessionStart and the prompt hook read `project`
-and `principal_id` — never `auth_token` — from the owner-private
-`hosts/claude.json` the [Claude channel runner](#claude-channel-runner) setup
-below writes, and use `principal_id` as the recipient when the file's `project`
-equals the current session's project exactly. A missing or unreadable file, or
-a `principal_id` that fails the same length/path-shape rules above, is quiet:
-no recipient, exactly as an unset `MEMESH_RECIPIENT` is today. A `project`
-mismatch is recorded distinctly instead (ledger-only — no stderr, no visible
-line): it is the expected result of setting the file up with a typed label
-(`memesh agent setup claude --project my-project`) rather than the full id
-`memesh briefing --json` reports, so it must not read as "not configured at
-all" in `hook-outcomes.jsonl`; the match is never relaxed to the label alone,
-since two repos sharing a basename must not share a principal. This makes the
-reminder work even when the channel itself never
-connected — the config file only has to exist, independent of whether the
-launch flag below was actually honoured. Codex loads the same `hooks/hooks.json`
-and never uses this fallback: it has its own automatic thread-scoped
-registration and would otherwise silently adopt Claude's principal in a shared
-project.
+this hook run is Claude Code, SessionStart and the prompt hook read
+`principal_id` — never `auth_token`, and never `project` (below) — from the
+owner-private `hosts/claude.json` the [Claude channel runner](#claude-channel-runner)
+setup below writes, and use it as the recipient whenever the file is present
+and valid. A missing or unreadable file, or a `principal_id` that fails the
+same length/path-shape rules above, is quiet: no recipient, exactly as an
+unset `MEMESH_RECIPIENT` is today. This makes the reminder work even when the
+channel itself never connected — the config file only has to exist,
+independent of whether the launch flag below was actually honoured. Codex
+loads the same `hooks/hooks.json` and never uses this fallback: it has its own
+automatic thread-scoped registration and would otherwise silently adopt
+Claude's principal in a shared project.
+
+`hosts/claude.json` may still carry a `project` field from an older setup
+(#474 changed what the Claude channel host itself does with one — see the
+setup section below); this fallback ignores it, the same as the channel host
+does. `principal_id` is one stable identity for every Claude Code session on
+this machine, in every project — a reminder or a Stop-hook block for that
+principal can be about a message sent from a different project than the one
+the current session is in; `message discover --project <name>` and the
+reminder's own project line tell you which.
 
 **Stop gate.** A separate Claude Code Stop hook, registered after
 `session-summary.js`, resolves the recipient the same way (declared or
@@ -205,27 +207,25 @@ register automatically from the Codex thread identity supplied at SessionStart,
 using a distinct thread-scoped principal; no thread ID is copied by hand.
 
 ```bash
-memesh agent setup codex --project my-project~1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d --principal codex-reviewer --workspace "$PWD"
-memesh agent setup claude --project my-project~1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d --principal claude-reviewer
+memesh agent setup codex --principal codex-reviewer --workspace "$PWD"
+memesh agent setup claude --principal claude-reviewer
 ```
 
-The `--project` value above is illustrative, not a typed label: run
-`memesh briefing --json` in the workspace first and copy its `project` field
-exactly (a readable label plus a collision-resistant hash suffix, e.g.
-`my-project~1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d`). This is also what the
-`hosts/claude.json` recipient fallback (below) matches against exactly; a
-config written with the bare typed label instead never activates it, and the
-mismatch is recorded, not silently treated as "not configured".
+No `--project` is needed, or read, for routing (#474). Each host derives its
+own routing project the same way `message discover`'s automatic project
+already does: `claude` from its own process's working directory (the
+directory Claude Code was started in), `codex`/`codex-session`/`gemini` from
+their `--workspace`. Two hosts started in the same directory — a Claude
+session and a Codex thread in one repository, say — therefore land in the
+same project automatically; nothing has to be typed or copied between them.
+`--project` is still accepted, for a script written before this changed, and
+a given value is still written into the config file, but no host reads it
+back to decide where it registers.
 
 Optional declarations can be persisted with `--model <id>` and
 `--work-summary <text>` (each is capped at 200 characters); no defaults are guessed.
 For ordinary Codex only, `memesh agent setup codex-session ...` is an optional
 workspace-specific stable-principal override, not an activation prerequisite.
-When pairing Claude Channel with an automatically registered Codex session,
-use the complete `project` field returned by `memesh briefing --json` in the
-Claude setup command. A repository basename is not equivalent to the automatic
-collision-resistant project identity, and different project strings cannot
-discover or natively route to each other.
 
 ### Ordinary active Codex CLI session
 
@@ -246,11 +246,13 @@ letting two unrelated repos named `shared` discover or receive each other's
 messages. `memesh briefing --json` in that workspace reports the exact project value.
 
 If one workspace needs a stable named principal across different threads, run
-`memesh agent setup codex-session --project my-project --principal codex-reviewer
---workspace "$PWD"` there and restart Codex. The owner-private config overrides
-project and principal only when its exact real workspace matches. Another
-workspace still uses automatic identity; a malformed or insecure override fails
-closed rather than silently downgrading.
+`memesh agent setup codex-session --principal codex-reviewer --workspace "$PWD"`
+there and restart Codex. The owner-private config overrides the principal only
+when its exact real workspace matches; the project is always the automatic one
+above, the same as an ordinary thread there would get (#474 — an older config
+that still names a `--project` is ignored, not honoured). Another workspace
+still uses automatic identity; a malformed or insecure override fails closed
+rather than silently downgrading.
 
 This guide's supported documented path is ordinary Codex CLI `SessionStart`.
 Codex Desktop or an unattached task is not user-visible native-delivery
@@ -433,10 +435,11 @@ MeMesh does not treat any prefix as a namespace, so `claude-code:reviewer` and
 
 The same rule covers every surface that reads or writes that key, not only the
 `message` tool: `briefing` counts unfetched deliveries for one exact
-(`project`, `recipient`), and `memesh agent setup --project/--principal` writes
-the identity a host will register under. A path-shaped value is refused there
-too, at the moment the config is written, rather than surfacing later as an
-error about some other agent's send.
+(`project`, `recipient`), and `memesh agent setup --principal` writes the
+principal half of the identity a host will register under (the project half
+is derived automatically — see the setup section above, #474). A path-shaped
+value is refused there too, at the moment the config is written, rather than
+surfacing later as an error about some other agent's send.
 
 `sender` is not covered by any of this. It is provenance rather than routing —
 it keys no inbox, and it keys the send idempotency record — so it is stored

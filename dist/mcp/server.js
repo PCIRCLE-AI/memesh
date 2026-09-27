@@ -29186,6 +29186,7 @@ function unreadInboxLines(count, project, recipient, everSeen) {
 
 // dist/core/agent-scope-id.js
 var AGENT_SCOPE_ID_MAX_LENGTH = 200;
+var HOST_CONFIG_MAX_BYTES = 64 * 1024;
 function canonicalAgentScopeId(value) {
   return value.normalize("NFC").trim();
 }

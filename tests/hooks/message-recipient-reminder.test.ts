@@ -340,7 +340,7 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       fs.writeFileSync(path.join(dir, 'claude.json'), JSON.stringify(fields), { mode: 0o600 });
     }
 
-    it('falls back to the config file when the project matches, with the Claude Code host guard set', async () => {
+    it('falls back to the config file\'s principal_id, with the Claude Code host guard set', async () => {
       const project = getProjectName(tmp);
       await send('claude-fallback-principal', project);
       writeClaudeHostConfig({ project, principal_id: 'claude-fallback-principal' });
@@ -351,36 +351,34 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       expect(context(result.stdout)).toContain(`in project "${project}"`);
     });
 
-    it('does not fall back when the config file names a different project', async () => {
+    // #474: this used to be "does not fall back when the config file names a
+    // different project" — the file's `project` was compared against
+    // `getProjectName(cwd)` and refused on any mismatch. That field was
+    // always a bare typed label (`memesh agent setup claude --project
+    // my-project`), never the `<label>~<32 hex>` id `getProjectName`
+    // produces, so the comparison failed for every setup that followed the
+    // documented example and the fallback silently never activated. Neither
+    // side reads `project` for routing any more (the Claude channel host
+    // itself derives its own from cwd), so a stale or absent value in the
+    // file must not change whether `principal_id` is trusted.
+    it('falls back to the config file\'s principal_id even when it still names an unrelated (stale) project', async () => {
       const project = getProjectName(tmp);
       await send('claude-fallback-principal', project);
       writeClaudeHostConfig({ project: 'some-other-project', principal_id: 'claude-fallback-principal' });
 
       const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
 
-      expect(result.stdout).toBe('');
+      expect(context(result.stdout)).toContain('1 message waiting for "claude-fallback-principal"');
     });
 
-    // A file set up with the documented example (`memesh agent setup claude
-    // --project my-project`) writes the bare label the owner typed, never the
-    // `<label>~<32 hex>` id getProjectName actually produces — so this
-    // mismatch is the COMMON case, not an edge case, and must not read as
-    // "no fallback configured at all" in the ledger.
-    it('records a distinct reason for a project mismatch, not just silence', () => {
-      writeClaudeHostConfig({ project: 'some-other-project', principal_id: 'claude-fallback-principal' });
+    it('falls back to the config file\'s principal_id even with no project field at all', async () => {
+      const project = getProjectName(tmp);
+      await send('claude-fallback-principal', project);
+      writeClaudeHostConfig({ principal_id: 'claude-fallback-principal' });
 
       const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
 
-      expect(result.stdout).toBe('');
-      expect(ledger('user-prompt-intent')).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({ outcome: 'skipped', reason: expect.stringContaining('hosts/claude.json project does not match') }),
-        ]),
-      );
-      // Ledger-only: no stderr line, no visible reminder — a multi-project
-      // machine sharing one hosts/claude.json must not be warned on every
-      // OTHER project's sessions.
-      expect(result.stderr).not.toContain('hosts/claude.json');
+      expect(context(result.stdout)).toContain('1 message waiting for "claude-fallback-principal"');
     });
 
     it('does not fall back under Codex, even with a matching project and file', async () => {
@@ -448,7 +446,7 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       // appeared" alone cannot tell a refusal apart from an accepted id with
       // nothing waiting for it.
       const resolved = withRealDbPathEnv(() =>
-        resolveMessageRecipient({ MEMESH_HOOK_HOST: 'claude-code' }, undefined, tmp));
+        resolveMessageRecipient({ MEMESH_HOOK_HOST: 'claude-code' }, undefined));
       expect(resolved).toBeUndefined();
 
       const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
@@ -460,7 +458,7 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       writeClaudeHostConfig({ project, principal_id: 'x'.repeat(201) });
 
       const resolved = withRealDbPathEnv(() =>
-        resolveMessageRecipient({ MEMESH_HOOK_HOST: 'claude-code' }, undefined, tmp));
+        resolveMessageRecipient({ MEMESH_HOOK_HOST: 'claude-code' }, undefined));
       expect(resolved).toBeUndefined();
 
       const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
@@ -471,6 +469,172 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
 
       expect(result.stdout).toBe('');
+    });
+  });
+
+  // #474 follow-up (cross-host discovery): the Claude fallback above only
+  // ever fires under `isClaudeCodeHost`, so an ordinary Codex plugin session
+  // with no MEMESH_RECIPIENT never learned its own address, even though the
+  // router registers it as a principal (`src/host-runtime/codex-session.ts`).
+  // `resolveMessageRecipient`'s Codex fallback recomputes that SAME
+  // registration decision from `hosts/codex-session.json`, through the
+  // shared leaf `resolveCodexSessionPrincipal` both sides call.
+  // POSIX only, same reason as the Claude describe block above (the
+  // owner-private config read needs O_NOFOLLOW and a uid check).
+  describe.skipIf(process.platform === 'win32')('Feature: an ordinary Codex session learns its own messaging address', () => {
+    // Matches `CODEX_THREAD_ID` in both src/core/codex-session-principal.ts
+    // and src/host-runtime/codex-session.ts (8-4-4-4-12 hex groups) — an
+    // arbitrary id like 's-1' (used elsewhere in this file for Claude, which
+    // has no such shape requirement) would be refused as not Codex-shaped.
+    const codexSessionId = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+
+    function writeCodexSessionConfig(fields: Record<string, string>) {
+      const dir = path.join(tmp, 'hosts');
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(dir, 'codex-session.json'), JSON.stringify(fields), { mode: 0o600 });
+    }
+
+    it('prints the automatic codex-thread address with no MEMESH_RECIPIENT and no configured session', () => {
+      const start = run('session-start.js', { cwd: tmp, session_id: codexSessionId, source: 'startup' }, {
+        MEMESH_HOOK_HOST: 'codex',
+      });
+
+      expect(context(start.stdout)).toContain(`recipient "codex-thread-${codexSessionId}"`);
+      // A fresh, machine-generated thread id has necessarily never been
+      // "seen" before — the never-seen/typo hint must not fire for it (it
+      // would otherwise fire on EVERY automatic Codex session, forever).
+      expect(context(start.stdout)).not.toContain('never been seen');
+    });
+
+    it('the reviewer\'s exact repro: isolated HOME, PLUGIN_ROOT only, no MEMESH_HOOK_HOST, no database yet', () => {
+      const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-isolated-home-'));
+      const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-isolated-workspace-'));
+      try {
+        const result = spawnSync(process.execPath, [path.resolve('scripts/hooks', 'session-start.js')], {
+          input: JSON.stringify({
+            hook_event_name: 'SessionStart', source: 'startup', session_id: codexSessionId, cwd: workspace,
+          }),
+          env: {
+            ...process.env,
+            HOME: isolatedHome,
+            PLUGIN_ROOT: process.cwd(),
+            MEMESH_HOOK_HOST: undefined,
+            MEMESH_RECIPIENT: undefined,
+            MEMESH_DB_PATH: undefined,
+          },
+          encoding: 'utf8',
+          timeout: 15000,
+        });
+
+        expect(result.status, `exited ${result.status}\nstderr:\n${result.stderr}`).toBe(0);
+        const payload = JSON.parse(result.stdout) as { systemMessage: string };
+        expect(payload.systemMessage).toContain(`recipient "codex-thread-${codexSessionId}"`);
+      } finally {
+        fs.rmSync(isolatedHome, { recursive: true, force: true });
+        fs.rmSync(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it('prints the configured principal when hosts/codex-session.json names this exact workspace', () => {
+      writeCodexSessionConfig({ workspace: fs.realpathSync(tmp), principal_id: 'codex-configured-principal' });
+
+      const start = run('session-start.js', { cwd: tmp, session_id: codexSessionId, source: 'startup' }, {
+        MEMESH_HOOK_HOST: 'codex',
+      });
+
+      expect(context(start.stdout)).toContain('recipient "codex-configured-principal"');
+    });
+
+    // The companion reads host configs up to HOST_CONFIG_MAX_BYTES (64 KiB);
+    // the hook must accept the same file, or the address silently disappears.
+    it('prints the configured principal for a valid config larger than 16 KiB', () => {
+      writeCodexSessionConfig({ workspace: fs.realpathSync(tmp), principal_id: 'codex-configured-principal', note: 'x'.repeat(17_000) });
+
+      const start = run('session-start.js', { cwd: tmp, session_id: codexSessionId, source: 'startup' }, {
+        MEMESH_HOOK_HOST: 'codex',
+      });
+
+      expect(context(start.stdout)).toContain('recipient "codex-configured-principal"');
+    });
+
+    it('states no address for a config over 64 KiB, which the companion also refuses', () => {
+      writeCodexSessionConfig({ workspace: fs.realpathSync(tmp), principal_id: 'codex-configured-principal', note: 'x'.repeat(66_000) });
+
+      const start = run('session-start.js', { cwd: tmp, session_id: codexSessionId, source: 'startup' }, {
+        MEMESH_HOOK_HOST: 'codex',
+      });
+
+      expect(start.stdout).not.toContain('codex-configured-principal');
+      expect(start.stdout).not.toContain('MeMesh messaging address');
+    });
+
+    it('falls back to the automatic codex-thread address when the configured workspace names a different directory', () => {
+      const other = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-other-workspace-'));
+      try {
+        writeCodexSessionConfig({ workspace: fs.realpathSync(other), principal_id: 'codex-configured-principal' });
+
+        const start = run('session-start.js', { cwd: tmp, session_id: codexSessionId, source: 'startup' }, {
+          MEMESH_HOOK_HOST: 'codex',
+        });
+
+        expect(context(start.stdout)).toContain(`recipient "codex-thread-${codexSessionId}"`);
+        expect(start.stdout).not.toContain('codex-configured-principal');
+        expect(context(start.stdout)).not.toContain('never been seen');
+      } finally {
+        fs.rmSync(other, { recursive: true, force: true });
+      }
+    });
+
+    // A config file that EXISTS but cannot be trusted (bad permissions here;
+    // codex-session.ts's own reader also refuses a symlink or oversized file
+    // the same way) is not "no config" — over there, `readHostConfigFile`
+    // throws and the WHOLE companion registration fails. This must resolve to
+    // NO recipient, never a silent promotion to the automatic identity: no
+    // Codex principal was ever actually registered in that state.
+    it('reports no recipient — not the automatic identity — when the config file exists but cannot be trusted', () => {
+      const dir = path.join(tmp, 'hosts');
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const configFile = path.join(dir, 'codex-session.json');
+      fs.writeFileSync(configFile, JSON.stringify({
+        workspace: fs.realpathSync(tmp), principal_id: 'codex-configured-principal',
+      }));
+      // chmodSync, not a creation `mode`, so this is exact regardless of the
+      // process umask — group/world-readable, refused the same way
+      // hosts/claude.json's reader refuses one.
+      fs.chmodSync(configFile, 0o644);
+
+      const start = run('session-start.js', { cwd: tmp, session_id: codexSessionId, source: 'startup' }, {
+        MEMESH_HOOK_HOST: 'codex',
+      });
+
+      expect(start.stdout).not.toContain('codex-configured-principal');
+      expect(start.stdout).not.toContain(`codex-thread-${codexSessionId}`);
+    });
+
+    it('never fires under Claude Code, even with a matching codex-session config and a Codex-shaped session id — Claude behaviour is unchanged', () => {
+      writeCodexSessionConfig({ workspace: fs.realpathSync(tmp), principal_id: 'codex-configured-principal' });
+
+      // Uses `codexSessionId` (not the Claude-style 's-1' used elsewhere in
+      // this file) on purpose: an id that is ALSO valid Codex-thread-shaped is
+      // the strict check that this test guards the host gate specifically,
+      // not merely the session-id shape check the Codex tests above share.
+      const start = run('session-start.js', { cwd: tmp, session_id: codexSessionId, source: 'startup' }, {
+        MEMESH_HOOK_HOST: 'claude-code',
+      });
+
+      expect(start.stdout).not.toContain('codex-configured-principal');
+      expect(start.stdout).not.toContain('codex-thread-');
+    });
+
+    it('confirms the UserPromptSubmit inbox reminder follows the same resolver as the address line', async () => {
+      const automaticRecipient = `codex-thread-${codexSessionId}`;
+      await send(automaticRecipient, 'team-room');
+
+      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: codexSessionId, cwd: tmp }, {
+        MEMESH_HOOK_HOST: 'codex',
+      });
+
+      expect(context(result.stdout)).toContain(`1 message waiting for "${automaticRecipient}" in project "team-room"`);
     });
   });
 });

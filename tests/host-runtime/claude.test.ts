@@ -1,13 +1,20 @@
+import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { AgentMessagePayload } from '../../src/core/agent-messaging.js';
+import { canonicalAgentScopeId } from '../../src/core/agent-scope-id.js';
+import { getProjectName } from '../../src/core/paths.js';
 import {
   CLAUDE_CHANNEL_CAPABILITIES,
   type ClaudeChannelNotification,
 } from '../../src/host-adapters/claude-channel.js';
 import {
   startClaudeManagedSession,
+  type ClaudeManagedSessionConfig,
   type ClaudeManagedSessionDependencies,
 } from '../../src/host-runtime/claude.js';
 import type {
@@ -15,6 +22,18 @@ import type {
   RouterDelivery,
   RouterHostConnection,
 } from '../../src/host-runtime/router-client.js';
+
+// #474: a fixed, hermetic stand-in for the process's own working directory —
+// the Claude channel host derives its routing project from this instead of
+// any `project` field a config carries. A real (existing) directory so
+// `getProjectName`'s native-realpath fallback resolves it identically on
+// every platform.
+const FIXTURE_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-host-test-'));
+const FIXTURE_PROJECT = canonicalAgentScopeId(getProjectName(FIXTURE_CWD));
+
+afterAll(() => {
+  fs.rmSync(FIXTURE_CWD, { recursive: true, force: true });
+});
 
 type LifecycleEvent = 'SIGINT' | 'SIGTERM' | 'end' | 'close';
 
@@ -48,12 +67,11 @@ class FakeLifecycle {
   }
 }
 
-function config(sessionInstanceId?: string) {
+function config(sessionInstanceId?: string): ClaudeManagedSessionConfig {
   return {
     server_name: 'memesh-channel-test',
     router_socket: '/private/tmp/memesh-router-test.sock',
     auth_token: 'test-token',
-    project: 'project-a',
     principal_id: 'claude-a',
     model: 'claude-sonnet',
     work_summary: 'fresh-eyes review',
@@ -124,6 +142,7 @@ async function setup(overrides: ClaudeManagedSessionDependencies = {}) {
     lifecycle,
     generate_session_id: () => 'generated-session-a',
     connect_router: connectRouter,
+    cwd: () => FIXTURE_CWD,
     ...overrides,
   });
   return {
@@ -148,6 +167,7 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
       lifecycle: new FakeLifecycle(),
       generate_session_id: generated,
       connect_router: connectRouter,
+      cwd: () => FIXTURE_CWD,
     });
 
     expect(server.connect).toHaveBeenCalledTimes(1);
@@ -159,8 +179,10 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
     expect(generated).toHaveBeenCalledTimes(1);
     expect(session.session_instance_id).toBe('generated-session-stable');
     expect(connectRouter).toHaveBeenCalledTimes(1);
+    // #474: the project comes from `cwd`, never from a `project` field on
+    // the config (there is none any more — see ClaudeManagedSessionConfig).
     expect(connectRouter.mock.calls[0]![0].identity).toEqual({
-      project: 'project-a',
+      project: FIXTURE_PROJECT,
       principal_id: 'claude-a',
       session_instance_id: 'generated-session-stable',
       adapter_kind: 'claude-channel',
@@ -168,6 +190,40 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
       work_summary: 'fresh-eyes review',
     });
     await session.close();
+  });
+
+  // #474: fails on main (the identity used to come from `config.project`,
+  // here deliberately set to a stale value a real `hosts/claude.json` could
+  // hold) and passes once the host derives its project from `cwd` instead.
+  it('derives the registered project from cwd, ignoring any project the config still carries', async () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-host-repo-'));
+    execFileSync('git', ['init', '--quiet', repo]);
+    const expectedProject = canonicalAgentScopeId(getProjectName(repo));
+    try {
+      const server = fakeServer();
+      const connection = fakeConnection();
+      const connectRouter = vi.fn(async (_input: ConnectRouterHostInput) => connection);
+      const staleConfig = {
+        ...config('repo-session-a'),
+        project: 'memesh-llm-memory',
+      } as unknown as ClaudeManagedSessionConfig;
+      const session = await startClaudeManagedSession(staleConfig, {
+        server,
+        transport: {} as never,
+        lifecycle: new FakeLifecycle(),
+        connect_router: connectRouter,
+        cwd: () => repo,
+      });
+      server.oninitialized?.();
+      await session.registered;
+
+      const identity = connectRouter.mock.calls[0]![0].identity;
+      expect(identity.project).toBe(expectedProject);
+      expect(identity.project).not.toBe('memesh-llm-memory');
+      await session.close();
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it('uses an injected session identity without generating a replacement', async () => {
@@ -183,6 +239,7 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
         routerInput = input;
         return fakeConnection();
       },
+      cwd: () => FIXTURE_CWD,
     });
     server.oninitialized?.();
     await session.registered;
@@ -202,6 +259,7 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
       transport: serverTransport,
       lifecycle: new FakeLifecycle(),
       connect_router: connectRouter,
+      cwd: () => FIXTURE_CWD,
     });
     expect(connectRouter).not.toHaveBeenCalled();
 
@@ -251,6 +309,7 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
         routerInput = input;
         return connection;
       },
+      cwd: () => FIXTURE_CWD,
     });
     server.oninitialized?.();
     await session.registered;
@@ -295,6 +354,7 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
         routerInput = input;
         return fakeConnection();
       },
+      cwd: () => FIXTURE_CWD,
     });
     server.oninitialized?.();
     await session.registered;
@@ -393,6 +453,7 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
       lifecycle: new FakeLifecycle(),
       connect_router: async () => { throw new Error('router unavailable'); },
       on_fatal_error: fatal,
+      cwd: () => FIXTURE_CWD,
     });
     server.oninitialized?.();
 
