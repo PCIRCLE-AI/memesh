@@ -273,16 +273,22 @@ if (isMainModule) {
       const updateDecision = await recordUpdateConsent(data.session_id, prompt);
       const rememberIntent = detectRememberIntent(prompt);
       // Messages waiting for the recipient this session declared in
-      // MEMESH_RECIPIENT. Read-only and not memory capture, so it is not
-      // gated by autoCapture. Empty when the variable is unset. An inbox that
-      // cannot be read is recorded as an `error` of its own (a label, never
-      // the message), next to whatever this prompt's outcome turns out to be,
-      // so a skip below cannot be read as "nothing was waiting". A rejected
+      // MEMESH_RECIPIENT, or — under Claude Code with the channel configured
+      // — the owner-private hosts/claude.json fallback (resolveMessageRecipient).
+      // Read-only and not memory capture, so it is not gated by autoCapture.
+      // Empty when neither source names a recipient. An inbox that cannot be
+      // read is recorded as an `error` of its own (a label, never the
+      // message), next to whatever this prompt's outcome turns out to be, so
+      // a skip below cannot be read as "nothing was waiting". A rejected
       // MEMESH_RECIPIENT is also recorded, as `notified`.
       const inboxLines = unreadMessageLines(
         process.env,
         (err) => record('error', `inbox: ${hookErrorReason(err)}`),
         (label) => record('notified', `recipient: MEMESH_RECIPIENT ignored (${label})`),
+        data.cwd,
+        // Ledger-only (#468): ties SessionStart, this hook and the Stop gate
+        // to the same recorded reason without a visible line.
+        () => record('skipped', SKIP_REASONS.fallbackProjectMismatch),
       );
       if (!rememberIntent && !updateDecision && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.noPromptIntent);

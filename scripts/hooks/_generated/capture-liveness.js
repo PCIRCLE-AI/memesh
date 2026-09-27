@@ -96,6 +96,7 @@ export const CAPTURE_HOOKS = [
     'note-ingest',
     'remember-nudge',
     'handoff-capture',
+    'stop-message-gate',
 ];
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
 export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact', 'handoff-capture'];
@@ -146,6 +147,13 @@ export const SKIP_REASONS = {
     noAssistantText: 'the Stop payload and the transcript held no assistant message',
     handoffTooShort: 'the last assistant message was too short to be a handoff — the previous one is kept',
     handoffArchived: 'the handoff memory was archived by forget — left alone',
+    stopHookActive: 'stop_hook_active is true — Claude Code is already continuing from a previous block',
+    notClaudeCodeHost: 'this Stop is not running under Claude Code',
+    noRecipientForGate: 'no recipient could be resolved for this session',
+    noDatabaseForMessageGate: 'no database yet — nothing to check for waiting messages',
+    nothingWaitingForGate: 'no messages are waiting for the resolved recipient',
+    alreadyBlockedForGate: 'every waiting message id was already blocked for in this session',
+    fallbackProjectMismatch: 'hosts/claude.json project does not match this project\'s id; use the full id from `memesh briefing --json`',
 };
 const KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
 export const UNRECOGNISED_REASON = 'unrecognised reason';
@@ -225,6 +233,7 @@ export const UNCLASSIFIED_SKIP_HOOKS = [
     'decision-nudge',
     'guard-check',
     'session-start',
+    'stop-message-gate',
 ];
 export const NEVER_RAN_GRACE_HOURS = 72;
 export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {

@@ -168,6 +168,58 @@ export function unknownRecipientHint(recipient: string): string {
   return `MEMESH_RECIPIENT ${JSON.stringify(recipient)} has never been seen in any project — check it for a typo (or ignore this if it is a genuinely new recipient id).`;
 }
 
+/** Most waiting refs {@link unreadMessageRefsFor} returns in one call. */
+export const UNREAD_MESSAGE_REFS_LIMIT = 500;
+
+/** One waiting delivery's identity: which inbox it sits in, and its message. */
+export interface UnreadMessageRef {
+  readonly project: string;
+  readonly message_id: string;
+}
+
+/**
+ * The waiting message ids behind {@link unreadInboxLinesFor}'s counts (#468) — same
+ * "no intake receipt yet" definition, across every project, with no
+ * `host_accept` dependency: a delivery row exists whether or not native push
+ * ever ran, so this counts a message a stopped or disconnected exact session
+ * never received just as readily as one that did. Unlike
+ * {@link unreadInboxLinesFor}, this is not capped to the 5 busiest projects —
+ * the caller uses these ids to decide whether a specific message has already
+ * been accounted for, and a project outside that top-5 must still be able to
+ * trigger that decision.
+ */
+export function unreadMessageRefsFor(
+  db: InboxListDb,
+  recipient?: string,
+  limit: number = UNREAD_MESSAGE_REFS_LIMIT,
+): UnreadMessageRef[] {
+  if (!recipient) return [];
+  try {
+    const rows = db.prepare(
+      `SELECT d.project AS project, d.message_id AS message_id
+       FROM agent_message_deliveries d
+       WHERE d.recipient = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_message_receipts r
+           WHERE r.project = d.project
+             AND r.recipient = d.recipient
+             AND r.message_id = d.message_id
+             AND r.receipt_kind = 'intake'
+         )
+       ORDER BY d.project, d.message_id
+       LIMIT ?`,
+    ).all(recipient, limit) as Array<{ project?: string; message_id?: string }>;
+    return rows.filter(
+      (row): row is UnreadMessageRef => typeof row.project === 'string' && typeof row.message_id === 'string',
+    );
+  } catch (err) {
+    // A database from before the message tables existed has nothing to report.
+    // Any other failure is not "no messages": raise it so the caller can say so.
+    if (/no such table: agent_message_deliveries/.test(String((err as { message?: unknown })?.message))) return [];
+    throw err;
+  }
+}
+
 /**
  * The line(s) to place beside the task-state lines. Empty when nothing is
  * waiting AND the recipient is known (or unknowable) — a quiet, real inbox
@@ -183,7 +235,7 @@ export function unreadInboxLines(count: number, project: string, recipient?: str
   const displayRecipient = JSON.stringify(recipient);
   if (count > 0) {
     const noun = count === 1 ? 'message' : 'messages';
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record the intake action for it: fetching alone does not acknowledge, and only intake ends this line.`];
+    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record intake for each (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
   }
   if (everSeen === false) {
     return [`No messages waiting for ${displayRecipient} in project ${displayProject} — and this recipient id has never been seen in this project (check for a typo).`];

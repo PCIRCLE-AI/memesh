@@ -74,14 +74,20 @@ host is recallable from all of them. Not installed yet? Follow
    record, and it cannot reach an agent on a different host or one that is
    not running. Generic `briefing` has no recipient identity and stays quiet;
    so do the SessionStart and prompt hooks, unless the session declared who it
-   is by starting with `MEMESH_RECIPIENT=<id>`, in which case they can show how
+   is by starting with `MEMESH_RECIPIENT=<id>` — or, under Claude Code with the
+   memesh-channel already set up (`memesh agent setup claude`), the
+   owner-private `hosts/claude.json` config supplies `principal_id`
+   automatically whenever its `project` matches, so the reminder works even
+   before or without a live channel connection. Either way they can show how
    many messages wait for that recipient and in which project. An id over 200
    characters, or shaped like a filesystem path, is refused rather than
    silently accepted, with no database required: a line on stderr, a record
    in `hook-outcomes.jsonl`, and the same rejection text in SessionStart's own
    visible output (a hook that exits 0 hides its stderr from both the user
-   and the model). Once a database with the messaging tables exists, if the
-   declared id has never been seen in any project, SessionStart also adds a
+   and the model) — the fallback applies the same length/path-shape check to
+   `principal_id`, quietly, without that stderr line. Once a database with the
+   messaging tables exists, if the declared id has never been seen in any
+   project, SessionStart also adds a
    one-line hint to check it for a typo; worded as a hint, not a fact,
    because a legitimately new id looks the same, and an id that was once seen
    but has gone quiet gets no hint either — that would reveal someone else's
@@ -89,7 +95,11 @@ host is recallable from all of them. Not installed yet? Follow
    messages remain pending.
    Check a known inbox with the exact `project` and `recipient`; poll first,
    then fetch each returned `message_id`, then record `intake` for it: fetching alone does not
-   acknowledge and does not end the reminder.
+   acknowledge and does not end the reminder. Under Claude Code, a separate
+   Stop hook additionally BLOCKS the turn from ending — once per message id
+   with no intake receipt yet that this session has not already been blocked
+   for — asking you to poll, fetch and record intake before finishing; it does
+   not run under Codex (#468).
 
 ## All 12 MCP tools
 

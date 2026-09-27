@@ -5,6 +5,7 @@ import { spawn } from 'child_process';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, constants as fsConstants } from 'fs';
+import { findChannelFlagWarning } from './_claude-channel.js';
 import {
   buildReferenceContext,
   hasBriefingContent,
@@ -54,7 +55,9 @@ import {
   resolveSessionLimitDetailed,
   briefingTaskStateLines,
   resolveBriefingLevel,
+  isClaudeCodeHost,
   resolveMessageRecipient,
+  SKIP_REASONS,
   waitingMessageLines,
   briefingLevelPolicy,
   sessionStartAppendsWorkPackageNotice,
@@ -855,6 +858,21 @@ process.stdin.on('end', async () => {
   let recipientRejectionLine;
   const withRecipientRejectionWarning = (msg) =>
     recipientRejectionLine ? `${recipientRejectionLine}\n${msg}` : msg;
+  // Also hoisted above both try blocks, same reason: a launch missing the
+  // channel flag is a live-delivery problem this session already has,
+  // regardless of how the payload parses or whether a database exists yet.
+  // Depends on neither `data` nor the database, so it can run before both —
+  // and does, since the ancestry walk this can trigger is worth paying once
+  // per session, not once per exit path.
+  let channelFlagWarningLine = null;
+  try {
+    if (isClaudeCodeHost(process.env)
+      && existsSync(join(getMemeshDirFromDbPath(), 'hosts', 'claude.json'))) {
+      channelFlagWarningLine = findChannelFlagWarning();
+    }
+  } catch { /* diagnostics must never cost a session its banner */ }
+  const withChannelFlagWarning = (msg) =>
+    channelFlagWarningLine ? `${channelFlagWarningLine}\n${msg}` : msg;
   try {
     try {
     const data = JSON.parse(input);
@@ -895,6 +913,11 @@ process.stdin.on('end', async () => {
         outcome: 'notified',
         reason: `recipient: MEMESH_RECIPIENT ignored (${label})`,
       });
+    }, data.cwd, () => {
+      // Ledger-only (#468): a multi-project machine sharing one
+      // hosts/claude.json must not get a visible line on every OTHER
+      // project's sessions.
+      record({ outcome: 'skipped', reason: SKIP_REASONS.fallbackProjectMismatch });
     });
     // The check above only catches an unusable VALUE for one known key
     // (`briefing`) inside an otherwise-parseable config object. A config.json
@@ -1039,7 +1062,7 @@ process.stdin.on('end', async () => {
       const noDbContext = [recipientRejectionLine, consent ? consent.context : null, workPackageNotice]
         .filter(Boolean).join('\n\n') || undefined;
       output(
-        withRecipientRejectionWarning(consent ? `${consent.system}\n${emptySummary}` : emptySummary),
+        withChannelFlagWarning(withRecipientRejectionWarning(consent ? `${consent.system}\n${emptySummary}` : emptySummary)),
         noDbContext,
         // Nothing was injected (no notice at this level, no database to read
         // from) — record why, the same as the schema-present empty path
@@ -1079,7 +1102,7 @@ process.stdin.on('end', async () => {
       if (!tableCheck) {
         const noEntitiesContext = [recipientRejectionLine, workPackageNotice].filter(Boolean).join('\n\n') || undefined;
         output(
-          withRecipientRejectionWarning(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet')),
+          withChannelFlagWarning(withRecipientRejectionWarning(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet'))),
           noEntitiesContext,
           // Same reason mechanism as the no-database exit above and the
           // schema-present exit below — see `nothingToInjectReason`'s own
@@ -1846,7 +1869,7 @@ process.stdin.on('end', async () => {
       // — guard the concat so an empty injection does not become the LITERAL
       // string "undefined" glued onto a real consent prompt.
       output(
-        withRecipientRejectionWarning(withCaptureWarning(finalMessage)),
+        withChannelFlagWarning(withRecipientRejectionWarning(withCaptureWarning(finalMessage))),
         updateConsentContext
           ? (memoryContext ? `${updateConsentContext}\n\n${memoryContext}` : updateConsentContext)
           : memoryContext,
@@ -1940,7 +1963,7 @@ process.stdin.on('end', async () => {
       // stdout write lies inside output()", and output() records exactly one
       // outcome — here an error, not the default `wrote`.
       output(
-        withRecipientRejectionWarning(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`)),
+        withChannelFlagWarning(withRecipientRejectionWarning(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`))),
         recipientRejectionLine ?? null,
         { outcome: 'error', reason: hookErrorReason(err) },
       );

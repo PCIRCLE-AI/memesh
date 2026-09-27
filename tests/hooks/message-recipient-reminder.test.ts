@@ -6,6 +6,8 @@ import path from 'path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { buildHint } from '../../scripts/hooks/user-prompt-intent.js';
+import { getProjectName } from '../../src/core/paths.js';
+import { resolveMessageRecipient } from '../../scripts/hooks/_shared.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 // A Claude Code session that was not started with the channel flag has no
@@ -322,5 +324,153 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
     const result = prompt({ MEMESH_RECIPIENT: 'typo-nobody' });
 
     expect(result.stdout).toBe('');
+  });
+
+  // the owner-private hosts/claude.json fallback used when
+  // MEMESH_RECIPIENT is unset. `MEMESH_DB_PATH` is set to `dbPath` in every
+  // `run()` call above, so the "MeMesh data dir" these hooks resolve is
+  // `tmp` itself (dirname of dbPath) — the fallback config lives at
+  // `tmp/hosts/claude.json`, no `home/.memesh` involved.
+  // POSIX only: the owner-private read needs O_NOFOLLOW and a uid check, and
+  // the local host runtime that writes hosts/claude.json refuses Windows.
+  describe.skipIf(process.platform === 'win32')('Feature: the owner-private Claude channel config supplies the recipient when MEMESH_RECIPIENT is unset', () => {
+    function writeClaudeHostConfig(fields: Record<string, string>) {
+      const dir = path.join(tmp, 'hosts');
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(dir, 'claude.json'), JSON.stringify(fields), { mode: 0o600 });
+    }
+
+    it('falls back to the config file when the project matches, with the Claude Code host guard set', async () => {
+      const project = getProjectName(tmp);
+      await send('claude-fallback-principal', project);
+      writeClaudeHostConfig({ project, principal_id: 'claude-fallback-principal' });
+
+      const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
+
+      expect(context(result.stdout)).toContain('1 message waiting for "claude-fallback-principal"');
+      expect(context(result.stdout)).toContain(`in project "${project}"`);
+    });
+
+    it('does not fall back when the config file names a different project', async () => {
+      const project = getProjectName(tmp);
+      await send('claude-fallback-principal', project);
+      writeClaudeHostConfig({ project: 'some-other-project', principal_id: 'claude-fallback-principal' });
+
+      const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
+
+      expect(result.stdout).toBe('');
+    });
+
+    // A file set up with the documented example (`memesh agent setup claude
+    // --project my-project`) writes the bare label the owner typed, never the
+    // `<label>~<32 hex>` id getProjectName actually produces — so this
+    // mismatch is the COMMON case, not an edge case, and must not read as
+    // "no fallback configured at all" in the ledger.
+    it('records a distinct reason for a project mismatch, not just silence', () => {
+      writeClaudeHostConfig({ project: 'some-other-project', principal_id: 'claude-fallback-principal' });
+
+      const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
+
+      expect(result.stdout).toBe('');
+      expect(ledger('user-prompt-intent')).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ outcome: 'skipped', reason: expect.stringContaining('hosts/claude.json project does not match') }),
+        ]),
+      );
+      // Ledger-only: no stderr line, no visible reminder — a multi-project
+      // machine sharing one hosts/claude.json must not be warned on every
+      // OTHER project's sessions.
+      expect(result.stderr).not.toContain('hosts/claude.json');
+    });
+
+    it('does not fall back under Codex, even with a matching project and file', async () => {
+      const project = getProjectName(tmp);
+      await send('claude-fallback-principal', project);
+      writeClaudeHostConfig({ project, principal_id: 'claude-fallback-principal' });
+
+      const result = prompt({ MEMESH_HOOK_HOST: 'codex' });
+
+      expect(result.stdout).toBe('');
+    });
+
+    it('uses only project and principal_id from the file, and never exposes auth_token', async () => {
+      const project = getProjectName(tmp);
+      const secret = 'router-secret-should-never-leak-abc123';
+      await send('claude-fallback-principal', project);
+      writeClaudeHostConfig({ project, principal_id: 'claude-fallback-principal', auth_token: secret });
+
+      const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
+
+      expect(context(result.stdout)).toContain('1 message waiting for "claude-fallback-principal"');
+      expect(result.stdout).not.toContain(secret);
+      expect(result.stderr).not.toContain(secret);
+      expect(ledgerText()).not.toContain(secret);
+    });
+
+    it('stays quiet and never echoes a malformed file even if it holds a secret-shaped string', () => {
+      const secret = 'router-secret-should-never-leak-xyz789';
+      const dir = path.join(tmp, 'hosts');
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      // Truncated JSON — the parse fails, and on some engines the parse
+      // error message quotes the text it choked on.
+      fs.writeFileSync(path.join(dir, 'claude.json'), `{"auth_token":"${secret}","principal_id":`, { mode: 0o600 });
+
+      const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
+
+      expect(result.stdout).toBe('');
+      expect(result.stderr).not.toContain(secret);
+      expect(ledgerText()).not.toContain(secret);
+    });
+
+    // `resolveMessageRecipient` calls path helpers (getMemeshDirFromDbPath)
+    // that read `process.env.MEMESH_DB_PATH` directly rather than the `env`
+    // parameter — the same "path helpers read process.env directly" rule
+    // `openHookDb`'s own doc comment states. A direct unit-test call needs
+    // the REAL process.env set, restored in `finally`.
+    function withRealDbPathEnv<T>(fn: () => T): T {
+      const original = process.env.MEMESH_DB_PATH;
+      process.env.MEMESH_DB_PATH = dbPath;
+      try {
+        return fn();
+      } finally {
+        if (original === undefined) delete process.env.MEMESH_DB_PATH;
+        else process.env.MEMESH_DB_PATH = original;
+      }
+    }
+
+    it('refuses a path-shaped principal_id from the file, quietly, the same way the message tool would', () => {
+      const project = getProjectName(tmp);
+      writeClaudeHostConfig({ project, principal_id: '/etc/passwd' });
+
+      // Asserted directly on the resolver, not only on the end-to-end
+      // reminder: no legitimate message can ever be addressed to a refused
+      // id (the `message` tool applies the same rule), so "no reminder
+      // appeared" alone cannot tell a refusal apart from an accepted id with
+      // nothing waiting for it.
+      const resolved = withRealDbPathEnv(() =>
+        resolveMessageRecipient({ MEMESH_HOOK_HOST: 'claude-code' }, undefined, tmp));
+      expect(resolved).toBeUndefined();
+
+      const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
+      expect(result.stdout).toBe('');
+    });
+
+    it('refuses an over-200-character principal_id from the file, quietly', () => {
+      const project = getProjectName(tmp);
+      writeClaudeHostConfig({ project, principal_id: 'x'.repeat(201) });
+
+      const resolved = withRealDbPathEnv(() =>
+        resolveMessageRecipient({ MEMESH_HOOK_HOST: 'claude-code' }, undefined, tmp));
+      expect(resolved).toBeUndefined();
+
+      const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
+      expect(result.stdout).toBe('');
+    });
+
+    it('ignores a missing config file exactly like an unset MEMESH_RECIPIENT', () => {
+      const result = prompt({ MEMESH_HOOK_HOST: 'claude-code' });
+
+      expect(result.stdout).toBe('');
+    });
   });
 });

@@ -108,6 +108,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
 | `src/host-runtime/codex-session.ts` | SessionStart / SessionEnd | launch, supersede, and retire the detached exact-thread companion; apply a matching optional identity override |
 | `session-summary.js` | Stop | deterministic session capture |
+| `stop-message-gate.js` | Stop | Claude-Code-only: block the stop once per waiting agent-message id (#468) |
 | `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
 | `decision-nudge.js` | PostToolUse ExitPlanMode/AskUserQuestion | remind Claude to `remember` a decision just made, once per tool per session |

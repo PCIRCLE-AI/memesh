@@ -23,14 +23,16 @@ recipient and in which project to poll (senders choose the project string, so
 each project with a waiting message is named, up to five, most waiting first),
 until the session records the `intake` action for them (fetching alone does not
 end it). An ordinary Claude Code session started without the channel flag
-has no other identity a sender could address, so without this variable it only
-sees messages it polls for itself. A value over 200 characters, or shaped like
+has no other identity a sender could address, so without this variable — and
+without the owner-private fallback below — it only sees messages it polls for
+itself. A value over 200 characters, or shaped like
 a filesystem path (the same rule the `message` tool refuses a recipient by —
 `/root`, `C:\work`, `\\host\share`), is refused rather than silently accepted,
 with no database required: one line on stderr (`MEMESH_RECIPIENT ignored: ...`),
 one `notified` record in `hook-outcomes.jsonl`, and — since a hook that exits 0
 never shows its stderr to the user or the model — the same rejection text in
 SessionStart's own visible output, every session start.
+
 If the declared recipient's inbox is empty everywhere, that reads exactly like
 a typo'd id — so SessionStart (only; not every prompt), once a database with
 the messaging tables exists, additionally checks whether the id has ever been
@@ -70,6 +72,65 @@ unavailability.
 `poll`/`watch` are compatibility and diagnostic APIs. A queue admission or
 `host_accept` is not proof that an agent read the payload, acknowledged it, or
 accepted the work.
+
+## Claude Code recipient fallback, Stop gate, and channel-flag warning (#468)
+
+Three Claude-Code-only pieces close the gap where a live channel misconfiguration
+left a session with no way to learn a message was waiting at all.
+
+**Recipient fallback.** When `MEMESH_RECIPIENT` is unset (not merely empty) and
+this hook run is Claude Code, SessionStart and the prompt hook read `project`
+and `principal_id` — never `auth_token` — from the owner-private
+`hosts/claude.json` the [Claude channel runner](#claude-channel-runner) setup
+below writes, and use `principal_id` as the recipient when the file's `project`
+equals the current session's project exactly. A missing or unreadable file, or
+a `principal_id` that fails the same length/path-shape rules above, is quiet:
+no recipient, exactly as an unset `MEMESH_RECIPIENT` is today. A `project`
+mismatch is recorded distinctly instead (ledger-only — no stderr, no visible
+line): it is the expected result of setting the file up with a typed label
+(`memesh agent setup claude --project my-project`) rather than the full id
+`memesh briefing --json` reports, so it must not read as "not configured at
+all" in `hook-outcomes.jsonl`; the match is never relaxed to the label alone,
+since two repos sharing a basename must not share a principal. This makes the
+reminder work even when the channel itself never
+connected — the config file only has to exist, independent of whether the
+launch flag below was actually honoured. Codex loads the same `hooks/hooks.json`
+and never uses this fallback: it has its own automatic thread-scoped
+registration and would otherwise silently adopt Claude's principal in a shared
+project.
+
+**Stop gate.** A separate Claude Code Stop hook, registered after
+`session-summary.js`, resolves the recipient the same way (declared or
+fallback) and blocks the stop — `{"decision":"block","reason":"..."}`, printing
+the same waiting-message lines the prompt hook shows plus one instruction line
+— once per message id that has no intake receipt yet and that this session has
+not already been blocked for. Whether a `host_accept` row exists is irrelevant
+to this: `host_accept` is not proof of delivery (see above), so a message a
+stopped or disconnected exact session never actually received still blocks the
+stop just as readily as one that was pushed. `stop_hook_active: true` (Claude
+Code retrying the same turn after a prior block) is never blocked again, and
+this hook never runs under Codex. The per-session record of which ids it has
+already blocked for lives beside the database, keyed by `session_id`, next to
+the existing Stop-side per-session state files.
+
+**Channel-flag warning.** SessionStart also checks, only when
+`hosts/claude.json` exists (the channel is configured) and only under Claude
+Code, whether the launching `claude` process's own command line shows a
+MISTYPED attempt at the channel flag — walking a few levels up the process
+ancestry with `ps -o ppid=,command=` to find it. Deliberately narrow: most
+Claude Code sessions never opt into channels at all, including on a machine
+whose `hosts/claude.json` is left over from a past setup, so warning on every
+flag-less session would be noise for exactly that owner. It warns only when
+the line shows an INTENT to load the channel that the exact flag does not back
+up — the flag word `dangerously-load-development-channels` present but not as
+the exact double-hyphenated token (a dash silently autocorrected into an em
+dash, `—dangerously-load-development-channels`, is the observed real-world
+case), or `server:memesh-channel` present with no exact flag token anywhere on
+the line. A command line mentioning neither stays silent. Either mistyped
+shape leaves the channel MCP server running while every notification is
+dropped, with no other symptom; this is the one line of feedback for that
+failure mode. If the launching process cannot be identified at all, this says
+nothing — a false warning is worse than a missed one.
 
 ## One-time owner-private local-host setup
 
@@ -144,9 +205,17 @@ register automatically from the Codex thread identity supplied at SessionStart,
 using a distinct thread-scoped principal; no thread ID is copied by hand.
 
 ```bash
-memesh agent setup codex --project my-project --principal codex-reviewer --workspace "$PWD"
-memesh agent setup claude --project my-project --principal claude-reviewer
+memesh agent setup codex --project my-project~1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d --principal codex-reviewer --workspace "$PWD"
+memesh agent setup claude --project my-project~1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d --principal claude-reviewer
 ```
+
+The `--project` value above is illustrative, not a typed label: run
+`memesh briefing --json` in the workspace first and copy its `project` field
+exactly (a readable label plus a collision-resistant hash suffix, e.g.
+`my-project~1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d`). This is also what the
+`hosts/claude.json` recipient fallback (below) matches against exactly; a
+config written with the bare typed label instead never activates it, and the
+mismatch is recorded, not silently treated as "not configured".
 
 Optional declarations can be persisted with `--model <id>` and
 `--work-summary <text>` (each is capped at 200 characters); no defaults are guessed.
