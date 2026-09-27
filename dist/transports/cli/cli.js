@@ -24544,7 +24544,7 @@ function unreadInboxLines(count, project, recipient, everSeen) {
   const displayRecipient = JSON.stringify(recipient);
   if (count > 0) {
     const noun = count === 1 ? "message" : "messages";
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record the intake action for it: fetching alone does not acknowledge, and only intake ends this line.`];
+    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record intake for each (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
   }
   if (everSeen === false) {
     return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
@@ -55993,7 +55993,8 @@ var init_capture_liveness = __esm({
       "session-start",
       "note-ingest",
       "remember-nudge",
-      "handoff-capture"
+      "handoff-capture",
+      "stop-message-gate"
     ];
     FAIL_ELIGIBLE_HOOKS = ["session-summary"];
     SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact", "handoff-capture"];
@@ -56043,7 +56044,14 @@ var init_capture_liveness = __esm({
       noteFileChanged: "a note file changed since the last Stop",
       noAssistantText: "the Stop payload and the transcript held no assistant message",
       handoffTooShort: "the last assistant message was too short to be a handoff \u2014 the previous one is kept",
-      handoffArchived: "the handoff memory was archived by forget \u2014 left alone"
+      handoffArchived: "the handoff memory was archived by forget \u2014 left alone",
+      stopHookActive: "stop_hook_active is true \u2014 Claude Code is already continuing from a previous block",
+      notClaudeCodeHost: "this Stop is not running under Claude Code",
+      noRecipientForGate: "no recipient could be resolved for this session",
+      noDatabaseForMessageGate: "no database yet \u2014 nothing to check for waiting messages",
+      nothingWaitingForGate: "no messages are waiting for the resolved recipient",
+      alreadyBlockedForGate: "every waiting message id was already blocked for in this session",
+      fallbackProjectMismatch: "hosts/claude.json project does not match this project's id; use the full id from `memesh briefing --json`"
     };
     KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
     UNRECOGNISED_REASON = "unrecognised reason";

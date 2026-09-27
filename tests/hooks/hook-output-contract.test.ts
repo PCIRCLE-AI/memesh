@@ -205,6 +205,21 @@ const HOOK_CASES: HookCase[] = [
     },
   },
   {
+    // Empty output here (no MEMESH_HOOK_HOST override means the host
+    // resolves to neither claude-code nor codex, an early skip): the
+    // meaningful `{decision:"block",reason}` shape is validated against this
+    // same external contract directly in tests/hooks/stop-message-gate.test.ts,
+    // which seeds a real waiting message and a claude-code host override.
+    file: 'stop-message-gate.js',
+    boundEvent: 'Stop',
+    input: {
+      session_id: 'contract-9',
+      cwd: '/tmp/contract-project',
+      hook_event_name: 'Stop',
+      stop_hook_active: false,
+    },
+  },
+  {
     file: 'codex-session.js',
     commandPath: 'dist/host-runtime/codex-session.js',
     boundEvent: 'SessionStart',

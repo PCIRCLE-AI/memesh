@@ -43,7 +43,7 @@ MeMesh 讓代理在本機共用記憶與交換訊息。主要用途是跨 sessio
 
 左邊是自動記錄（對話、commit、修掉的錯誤），右邊是適時提醒（開新對話時、改檔案之前），中間是存放決定、教訓與關聯的那個檔案。
 
-- **在適當時機記錄、提醒與防護。** MeMesh 的 Claude Code 與 Codex 整合共提供 **9 個 hook command**：其中 8 個 Claude Code hook 分別在開新對話、改檔案前、`git commit` 後、計畫核准或你回答問題後、Claude 停下來時、對話被壓縮前、你說「記下來」時（聽得懂 5 種語言），以及執行可能重犯已接受教訓的危險指令前運作。計畫/問題與「記下來」hook 只會提醒 agent 呼叫 `remember`；第 9 個 command 同時處理 Codex SessionStart 與 SessionEnd，註冊並退場符合資格的一般 Codex CLI session。
+- **在適當時機記錄、提醒與防護。** MeMesh 的 Claude Code 與 Codex 整合共提供 **10 個 hook command**：其中 9 個 Claude Code hook 分別在開新對話、改檔案前、`git commit` 後、計畫核准或你回答問題後、Claude 停下來時（兩次：記錄這次對話內容，以及在還有訊息未讀時擋下結束）、對話被壓縮前、你說「記下來」時（聽得懂 5 種語言），以及執行可能重犯已接受教訓的危險指令前運作。計畫/問題與「記下來」hook 只會提醒 agent 呼叫 `remember`；第 10 個 command 同時處理 Codex SessionStart 與 SessionEnd，註冊並退場符合資格的一般 Codex CLI session。
 - **所有工具共用一份記憶。** 今天在 Claude Code 存的決定，明天 Codex 或 Cursor 也用得到。
 - **agent 之間可以留言。** 本機的耐久收件匣可跨重啟保存；在 macOS 或 Linux 上，確切且活動中的一般 Codex CLI session 裝有 MeMesh plugin 時，也能透過原生 queue 收到有界訊息。
 - **留下工作交接。** Claude Code 可把最後一則有實質內容的回覆留給同一專案的下個 session。用 `task_state` 記錄已明確說出的目標、下一步、阻礙或完成項目，再用 `message` 將證據位置或待處理問題送給確切收件者。
@@ -64,7 +64,7 @@ MeMesh 讓代理在本機共用記憶與交換訊息。主要用途是跨 sessio
 | 你自己的程式或腳本 | `memesh serve` 提供的 HTTP API | [docs/platforms/universal.md](docs/platforms/universal.md) |
 | ChatGPT、Gemini 網頁版等線上聊天 | 透過你自己架的本機橋接走 HTTP API | [docs/platforms/README.md](docs/platforms/README.md) |
 
-Claude Code 的 8 個 hook 提供自動記錄、回想、提醒與防護。Codex plugin 會載入同一份 hook 設定：在 Codex 允許執行這個 plugin 的 hook 之後，它的 SessionStart hook 會注入同樣的記憶區塊，並為符合資格的一般 CLI thread 啟動傳訊 companion。其他 hook 在 Codex 下是否會執行，目前尚未驗證。使用 Codex plugin 時，只有在沒看到這個區塊時才呼叫 `briefing`；只有 MCP 的用戶端請在 session 開始時呼叫 `briefing`。需要特定資訊時再呼叫 `recall`。
+Claude Code 的 9 個 hook 提供自動記錄、回想、提醒與防護。Codex plugin 會載入同一份 hook 設定：在 Codex 允許執行這個 plugin 的 hook 之後，它的 SessionStart hook 會注入同樣的記憶區塊，並為符合資格的一般 CLI thread 啟動傳訊 companion。其他 hook 在 Codex 下是否會執行，目前尚未驗證。使用 Codex plugin 時，只有在沒看到這個區塊時才呼叫 `briefing`；只有 MCP 的用戶端請在 session 開始時呼叫 `briefing`。需要特定資訊時再呼叫 `recall`。
 
 回想與擷取維持本機且可預測：SQLite FTS5 搜尋、明確的記憶工具與規則式 hooks。這個版本不設定也不呼叫 LLM、embedding 或 vector provider。舊版留下的 provider 設定仍保留在磁碟上但會被忽略；`memesh doctor` 只會列出頂層欄位名稱，不會讀取或印出它們的值。
 

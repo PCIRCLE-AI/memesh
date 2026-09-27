@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -54,6 +54,7 @@ export {
   advanceGraceState,
   captureLivenessNotice,
   captureLivenessVerdict,
+  detectHookHost,
   graceInEffect,
   parseGraceState,
   parseHookOutcomes,
@@ -181,7 +182,7 @@ export {
   sessionStartAppendsWorkPackageNotice,
 } from './_generated/briefing-level.js';
 import { resolveBriefingLevel as resolveBriefingLevelValue } from './_generated/briefing-level.js';
-import { unreadInboxLinesFor } from './_generated/agent-message-inbox.js';
+import { unreadInboxLinesFor, unreadMessageRefsFor } from './_generated/agent-message-inbox.js';
 import { agentScopeIdRejection } from './_generated/agent-scope-id.js';
 
 // The hook-only work-package notice's literal text — ONE declaration,
@@ -529,16 +530,23 @@ export const HOOK_BUSY_TIMEOUT_MS = 2000;
 
 /**
  * Who this session says it is, for the durable message inbox: the exact
- * recipient id in `MEMESH_RECIPIENT`, or undefined when it is unset. A Claude
- * Code session that was not started with the channel flag has no identity a
- * sender could address, so without this it is never told a message is waiting.
+ * recipient id in `MEMESH_RECIPIENT`, an owner-private Claude channel config
+ * fallback (`resolveClaudeHostFallbackRecipient`, below) when that env var is
+ * unset, or `undefined` when neither names one. Without either, an ordinary
+ * Claude Code session has no identity a sender could address, and is never
+ * told a message is waiting.
  * The id is compared exactly (after Unicode NFC, trimmed, 1-200 characters),
  * the same rule the `message` tool applies to a recipient, so any id a sender
  * can address can be declared here. It is shown JSON-quoted, which is what
- * makes odd characters safe to print. An empty value counts as unset.
+ * makes odd characters safe to print. An empty value counts as declared-but-
+ * blank and resolves to no recipient WITHOUT trying the fallback — only a
+ * truly unset (`undefined`) `MEMESH_RECIPIENT` does, so `MEMESH_RECIPIENT=`
+ * remains a way to force "no recipient" even when the fallback would
+ * otherwise have named one.
  *
- * Two shapes are rejected rather than accepted: one over 200 characters, and
- * one shaped like a filesystem path (`agentScopeIdRejection`, mirrored from
+ * Two shapes are rejected rather than accepted for an explicit
+ * `MEMESH_RECIPIENT`: one over 200 characters, and one shaped like a
+ * filesystem path (`agentScopeIdRejection`, mirrored from
  * src/core/agent-scope-id.ts — the same rule the `message` tool applies).
  * Both write one line to stderr; `onRejected(label, detail)` (`label` is
  * `'too long'` or `'filesystem path'`, `detail` is the same text written to
@@ -546,10 +554,16 @@ export const HOOK_BUSY_TIMEOUT_MS = 2000;
  * outcome ledger, or show it somewhere a human or model will actually see it
  * — a hook that exits 0 has its stderr hidden from both. `onRejected`
  * throwing does not affect resolution.
+ *
+ * `onFallbackProjectMismatch()`, if given, fires only from the fallback path
+ * below: the file was readable and named a `principal_id`, but its `project`
+ * did not match. Ledger-only by design (#468) — no stderr, no user-visible
+ * line — a multi-project machine sharing one `hosts/claude.json` would
+ * otherwise get a mismatch line on every session in every OTHER project.
  */
-export function resolveMessageRecipient(env = process.env, onRejected) {
+export function resolveMessageRecipient(env = process.env, onRejected, cwd, onFallbackProjectMismatch) {
   const raw = env.MEMESH_RECIPIENT;
-  if (raw === undefined) return undefined;
+  if (raw === undefined) return resolveClaudeHostFallbackRecipient(cwd, env, onFallbackProjectMismatch);
   const id = String(raw).normalize('NFC').trim();
   if (id === '') return undefined;
   const reject = (label, detail) => {
@@ -565,6 +579,105 @@ export function resolveMessageRecipient(env = process.env, onRejected) {
     return reject('filesystem path', pathRejection);
   }
   return id;
+}
+
+/** Generous bound on `hosts/claude.json` — the real file holds a handful of short fields. */
+const CLAUDE_HOST_CONFIG_MAX_BYTES = 16 * 1024;
+
+/**
+ * Read a small JSON object from an owner-private file, or `undefined` on ANY
+ * problem — missing, a symlink, group/world-accessible, owned by someone
+ * else, oversized, or not valid JSON. Never throws, and never surfaces the
+ * file's own bytes anywhere (not on stderr, not to a caller): a JSON parse
+ * error on some engines quotes the text it choked on, and this file can hold
+ * a router auth token in a sibling field, so even a malformed-file error path
+ * must stay silent rather than echo anything read from disk.
+ *
+ * Mirrors the O_NOFOLLOW + owner-private checks `readOwnerPrivateFile` in
+ * `src/host-runtime/config.ts` applies before trusting a host config file —
+ * duplicated by hand rather than imported, since that module is not a
+ * runtime-leaf a hook may reach for (the F5 boundary): this uses only the
+ * O_NOFOLLOW primitive `_shared.js` already relies on elsewhere in this file.
+ */
+function readOwnerPrivateJsonQuiet(filePath, maxBytes) {
+  if (typeof fsConstants.O_NOFOLLOW !== 'number') return undefined;
+  let fd;
+  try {
+    fd = openSync(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  } catch {
+    return undefined;
+  }
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile()) return undefined;
+    if ((stat.mode & 0o077) !== 0) return undefined;
+    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return undefined;
+    if (stat.size > maxBytes) return undefined;
+    const buf = Buffer.allocUnsafe(maxBytes + 1);
+    let read = 0;
+    while (read < buf.length) {
+      const n = readSync(fd, buf, read, buf.length - read, null);
+      if (n === 0) break;
+      read += n;
+    }
+    if (read > maxBytes) return undefined;
+    const parsed = JSON.parse(buf.subarray(0, read).toString('utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    try { closeSync(fd); } catch { /* already closed */ }
+  }
+}
+
+/**
+ * Fall back to the owner-private Claude channel config when no
+ * `MEMESH_RECIPIENT` is declared (#468).
+ *
+ * `memesh agent setup claude` writes `<data dir>/hosts/claude.json` with
+ * `project` and `principal_id` (plus a router token this never reads).
+ * SessionStart and the prompt hook get the same reminder a declared
+ * `MEMESH_RECIPIENT` would give them, without the owner repeating an id the
+ * config file already names — closing the exact gap that let a live channel
+ * misconfiguration (a mistyped launch flag) go unnoticed: the Stop gate below
+ * and these hooks had no identity to check against.
+ *
+ * Every check below fails CLOSED to "no recipient", exactly as an unset
+ * `MEMESH_RECIPIENT` does today — a missing file, an unreadable one, one
+ * naming a different project, or an invalid `principal_id`:
+ *   - Claude Code only. The Codex plugin loads the same hooks; a Codex
+ *     session in the same project must never adopt Claude's principal.
+ *   - the file's `project` must equal the CURRENT project exactly — computed
+ *     lazily, after the file is confirmed to exist and name a candidate
+ *     project, so a session with no fallback configured never pays for the
+ *     `getProjectName` git calls this would otherwise cost on every prompt.
+ *     `getProjectName` always returns a `<label>~<32 hex>` id, never the bare
+ *     label a user types with `memesh agent setup claude --project
+ *     <name>` — so a mismatch here is NOT rare, and is reported distinctly
+ *     (`onFallbackProjectMismatch`, ledger-only) rather than folded into
+ *     silent "not configured" (#468); this NEVER relaxes to a label-only
+ *     comparison, or two repos sharing a basename would share a principal.
+ *   - `principal_id` is refused by the same length and filesystem-path rules
+ *     `resolveMessageRecipient` applies to an explicit `MEMESH_RECIPIENT`
+ *     (#402) — quietly here, since a malformed config is not something the
+ *     env-var rejection path's "MEMESH_RECIPIENT ignored" wording describes.
+ */
+function resolveClaudeHostFallbackRecipient(cwd, env, onFallbackProjectMismatch) {
+  if (!cwd) return undefined;
+  if (!isClaudeCodeHost(env)) return undefined;
+  const configPath = join(getMemeshDirFromDbPath(), 'hosts', 'claude.json');
+  const parsed = readOwnerPrivateJsonQuiet(configPath, CLAUDE_HOST_CONFIG_MAX_BYTES);
+  if (!parsed) return undefined;
+  const fileProject = typeof parsed.project === 'string' ? parsed.project.normalize('NFC').trim() : '';
+  const principal = typeof parsed.principal_id === 'string' ? parsed.principal_id.normalize('NFC').trim() : '';
+  if (fileProject === '' || principal === '') return undefined;
+  if (fileProject !== getProjectName(cwd)) {
+    try { onFallbackProjectMismatch?.(); } catch { /* a caller's recorder must not break resolution */ }
+    return undefined;
+  }
+  if (principal.length > 200) return undefined;
+  if (agentScopeIdRejection('recipient', principal)) return undefined;
+  return principal;
 }
 
 /**
@@ -598,14 +711,34 @@ export function waitingMessageLines(db, recipient, recordFailure) {
 }
 
 /**
- * The reminder lines for messages waiting for this session's declared
- * recipient. No `MEMESH_RECIPIENT` or no database: no lines, and the database
- * is not opened. Read-only, and it never throws (given a `recordFailure` that
- * does not, see `waitingMessageLines`). `onRecipientRejected`, if given, is
- * `resolveMessageRecipient`'s own rejection callback — see there.
+ * The waiting message REFS behind those same lines — see
+ * {@link unreadMessageRefsFor}'s own doc for what "waiting" means and why it
+ * is not project-capped. Same never-throws contract as
+ * {@link waitingMessageLines}, and the same `recordFailure`.
  */
-export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected) {
-  const recipient = resolveMessageRecipient(env, onRecipientRejected);
+export function waitingMessageRefs(db, recipient, recordFailure) {
+  if (!recipient) return [];
+  try {
+    return unreadMessageRefsFor(db, recipient);
+  } catch (err) {
+    return inboxReadFailed(err, recordFailure);
+  }
+}
+
+/**
+ * The reminder lines for messages waiting for this session's declared
+ * recipient. No `MEMESH_RECIPIENT` (and no owner-private Claude channel
+ * fallback, see `resolveMessageRecipient`) or no database: no lines, and the
+ * database is not opened. Read-only, and it never throws (given a
+ * `recordFailure` that does not, see `waitingMessageLines`).
+ * `onRecipientRejected`, if given, is `resolveMessageRecipient`'s own
+ * rejection callback — see there. `cwd`, the payload's own working directory,
+ * is required only for the fallback path and is otherwise unused — passing
+ * it costs nothing when `MEMESH_RECIPIENT` is already set. `onFallbackProjectMismatch`
+ * is `resolveMessageRecipient`'s own fallback-mismatch callback — see there.
+ */
+export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected, cwd, onFallbackProjectMismatch) {
+  const recipient = resolveMessageRecipient(env, onRecipientRejected, cwd, onFallbackProjectMismatch);
   if (!recipient) return [];
   const dbPath = env.MEMESH_DB_PATH ?? getDbPath();
   if (!existsSync(dbPath)) return [];
@@ -809,6 +942,25 @@ export function pluginRootIsHookRoot(env) {
   }
   pluginRootAnswers.set(root, answer);
   return answer;
+}
+
+/**
+ * Is this hook run Claude Code, and only Claude Code?
+ *
+ * The Codex plugin loads the same `hooks/hooks.json` (README: "Codex is
+ * allowed to run the plugin's hooks"), so every hook in this directory can
+ * execute under either host on one machine. Two features gated on this —
+ * the `hosts/claude.json` recipient fallback and the Stop message gate — read
+ * an owner-private file that names a Claude-channel principal; without this
+ * guard, a Codex session in the SAME project would silently adopt that
+ * principal's identity and could record `intake` receipts on messages meant
+ * for Claude. Uses the same host classifier `recordHookOutcome` does
+ * (env-only: no payload is available at either call site before the
+ * decision to even open a file), so this can never disagree with what
+ * `memesh doctor` already reports the run as.
+ */
+export function isClaudeCodeHost(env = process.env) {
+  return detectHookHost(null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }) === 'claude-code';
 }
 
 /**

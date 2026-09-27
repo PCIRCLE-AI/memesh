@@ -374,17 +374,18 @@ Foreign key cascades: deleting an entity automatically deletes its observations,
 
 ## Hook Architecture
 
-Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions.
+Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions.
 
-### Hook Commands (9 hooks)
+### Hook Commands (10 hooks)
 
 | Hook | Event | Purpose |
 |------|-------|---------|
 | pre-edit-recall.js | PreToolUse (Edit/Write) | Continuous recall: inject relevant memories when editing files |
-| session-start.js | SessionStart | Auto-recall + record injected IDs + noise compression |
+| session-start.js | SessionStart | Auto-recall + record injected IDs + noise compression + channel-flag warning |
 | post-commit.js | PostToolUse (Bash) | Record git commits with diff stats |
 | decision-nudge.js | PostToolUse (ExitPlanMode/AskUserQuestion) | Remind the model to `remember` a decision just made — once per tool per session |
 | session-summary.js | Stop | Auto-capture session knowledge + recall effectiveness tracking |
+| stop-message-gate.js | Stop | Claude-Code-only: block the stop once per waiting agent-message id (#468) |
 | pre-compact.js | PreCompact | Save knowledge before compaction |
 | user-prompt-intent.js | UserPromptSubmit | Detect "remember" intent (5 languages: en, es, fr, pt, zh-TW) and remind the agent to use the memesh `remember` tool |
 | guard-check.js | PreToolUse (Bash) | Fire accepted lesson-guards against the command about to run (warn-only; fires counted) |
@@ -443,6 +444,17 @@ Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecy
 - **On the same Stop (#324)**, `scripts/hooks/_stop-notes.js` also ingests the project's memory directory as note files and, separately, prints a remember nudge. Only the ingestion is a write, and only it is gated on `MEMESH_AUTO_CAPTURE=false`; the nudge sits outside that check.
 - **Also on the same Stop**, `scripts/hooks/_stop-handoff.js` keeps the agent's own last message as the project's session handoff: one `session-handoff:<project>` entity, replaced on each qualifying Stop, redacted for known credential shapes, fenced code removed, at most 800 characters including a leading `…` (the end of the message is kept). It uses the payload's `last_assistant_message` and falls back to the newest assistant text in the last 256 KB of the transcript; the source is written into the `handoff-capture` outcome. A message under 80 characters after cleaning leaves the previous handoff in place. It costs no extra model turn and is gated on `MEMESH_AUTO_CAPTURE`. An active, trusted, exact-project handoff precedes ranked memories in SessionStart and core `briefing` at every level, after optional repository facts, using only its newest observation; the shared renderer caps even manually stored text at 800 characters. Content up to 72 hours old is shown normally, over 72 hours through 14 days is marked stale, and older, undatable, or more than five minutes future-dated content is omitted. Imported content remains outside auto-context unless a successful fresh local Stop replacement removes its import trust marks; archived or skipped replacements leave those marks untouched. The handoff stays outside the ranked block, recent and project pools, durable index, pre-edit recall, `memesh doctor`'s per-type trend, project list and patterns view (`recall` and the dashboard can still find it).
 
+### Stop Message Gate (`scripts/hooks/stop-message-gate.js`) (#468)
+
+- **Trigger**: `Stop` event, registered after `session-summary.js`
+- **Matcher**: `*` (all sessions)
+- **Behavior**: Claude Code has no live channel by default (docs/platforms/agent-messaging.md), so a session that never polls never learns a message is waiting. Resolves the recipient the same way SessionStart and the prompt hook do (`MEMESH_RECIPIENT`, or the `hosts/claude.json` fallback below) and, when at least one delivery for it has no intake receipt yet that this session has not already been blocked for, emits `{"decision":"block","reason":"..."}` — the same waiting-message lines the prompt hook shows, plus one instruction line — instead of exiting quietly. Whether a `host_accept` row exists is irrelevant: it is not proof of delivery. `stop_hook_active: true` (Claude Code already continuing from a prior block) is a no-op, and so is every run under Codex — this hook is Claude-Code-only, checked the same way `recordHookOutcome`'s own host classifier does. The blocked-for id set persists per `session_id` under the database directory's `stop-message-gate/` folder, pruned the same way `remember-nudge`'s own per-session state is.
+
+### Recipient fallback and channel-flag warning (`scripts/hooks/_claude-channel.js`, `_shared.js`) (#468)
+
+- Not a hook — `session-start.js`, `user-prompt-intent.js` and `stop-message-gate.js` all use these. When `MEMESH_RECIPIENT` is unset and the run is Claude Code, `resolveMessageRecipient` reads only `project` and `principal_id` (never `auth_token`) from the owner-private `hosts/claude.json` the [Claude channel runner](platforms/agent-messaging.md#claude-channel-runner) setup writes, and uses `principal_id` only when the file's `project` matches the current session's exactly. A missing/unreadable file or an over-length/filesystem-path-shaped `principal_id` is quiet, the same as an unset `MEMESH_RECIPIENT`. A `project` MISMATCH is different: it is the expected outcome for a file set up with a typed label (`memesh agent setup claude --project my-project`) rather than the full `getProjectName` id, so it records its own ledger-only reason (`fallbackProjectMismatch`, no stderr, no visible line) instead of reading as "not configured at all" — this NEVER relaxes to a label-only match, since two repos sharing a basename must not share a principal.
+- SessionStart additionally warns, only when `hosts/claude.json` exists, when the launching `claude` process's own command line — walked up a few levels of process ancestry via `ps -o ppid=,command=` — shows a MISTYPED channel flag: the flag word present but not as the exact double-hyphenated token (an autocorrected em dash is the observed case), or `server:memesh-channel` present with no exact flag token anywhere. A line mentioning neither stays silent, deliberately: most sessions never opt into channels, so warning on every flag-less session would be noise for an owner whose `hosts/claude.json` is left over from a past setup. A launcher that cannot be found means silence too, never a false warning.
+
 ### Pre-Compact (`scripts/hooks/pre-compact.js`)
 
 - **Trigger**: `PreCompact` event (before context compaction)
@@ -458,10 +470,10 @@ Hook commands are defined in `hooks/hooks.json`: eight run at Claude Code lifecy
 ### Hook outcome records (capture liveness)
 
 A heartbeat (`hook_runs`) proves a hook ran; it cannot tell a hook that decided
-there was nothing to save from a hook whose capture path is broken. So the eight
+there was nothing to save from a hook whose capture path is broken. So the nine
 capture hooks (`post-commit`, `session-summary`, `pre-compact`,
 `pre-edit-recall`, `user-prompt-intent`, `decision-nudge`, `guard-check`,
-`session-start`) also append one outcome record per run to
+`session-start`, `stop-message-gate`) also append one outcome record per run to
 `hook-outcomes.jsonl` beside the database, through `recordHookOutcome` in
 `scripts/hooks/_shared.js`:
 
@@ -532,7 +544,7 @@ MeMesh supports three integration tiers:
 
 | Tier | Client | Integration Method |
 |------|--------|--------------------|
-| **Native plugin** | Claude Code | Plugin (`.claude-plugin/plugin.json` + 8 lifecycle hooks) |
+| **Native plugin** | Claude Code | Plugin (`.claude-plugin/plugin.json` + 9 lifecycle hooks) |
 | | Hermes Agent | Native `MemoryProvider` plugin (Python ABC, convention-based discovery) |
 | | OpenClaw | Source-only native memory-capability plugin (TypeScript, `api.registerMemoryCapability()`); not published or runtime-verified |
 | **MCP server** | Claude Managed Agents | MCP connector (beta, via session config) |

@@ -6,6 +6,7 @@ All notable changes to MeMesh are documented here.
 
 ### Added
 
+- Claude Code sessions now learn about a waiting agent message without polling: SessionStart and the prompt hook fall back to the owner-private Claude channel config for the recipient when `MEMESH_RECIPIENT` is unset, a new Stop hook blocks the turn once per unfetched message id, and SessionStart warns when the launching command shows a mistyped channel flag (a dash silently autocorrected to an em dash) (#468).
 - `.gitleaks.toml`, which gitleaks loads when run from the repository root: the default rules stay on, and three allowlists let through only the documentation checksums, the synthetic credentials in the redaction tests and literal test idempotency keys (the key alone, not the rest of its line), each with the reason it is not a credential. No CI job runs gitleaks.
 - `memesh import` now prints how many imported memories are untrusted and how to trust them; `memesh import --trust`, behind a confirmation, marks them trusted for restoring your own backup (#407).
 

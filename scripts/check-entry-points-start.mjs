@@ -517,6 +517,11 @@ async function main() {
         hook_event_name: 'Stop', transcript_path: '',
       })),
     },
+    'scripts/hooks/stop-message-gate.js': {
+      run: (abs, env) => assertHookStarts(abs, env, 'Stop', hookPayload({
+        hook_event_name: 'Stop', transcript_path: '', stop_hook_active: false,
+      })),
+    },
     'scripts/hooks/pre-compact.js': {
       run: (abs, env) => assertHookStarts(abs, env, 'PreCompact', hookPayload({
         hook_event_name: 'PreCompact', transcript_path: '', reason: 'auto',

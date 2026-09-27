@@ -268,6 +268,14 @@ export const CAPTURE_HOOKS = [
   // message or transcript to read, a handoff `forget` archived — is a
   // handoff that should have been kept and was not.
   'handoff-capture',
+  // Claude Code's Stop gate (#468): blocks the stop once per waiting message
+  // id not yet blocked for in this session, so a session that never polls
+  // still learns a message is waiting. Fires on every Stop and correctly does
+  // nothing on almost all of them (fire-on-everything, same shape as
+  // guard-check/pre-edit-recall/user-prompt-intent/decision-nudge below),
+  // and writes no memory, so it is UNCLASSIFIED_SKIP_HOOKS, not
+  // SILENT_ELIGIBLE_HOOKS.
+  'stop-message-gate',
 ] as const;
 
 /**
@@ -398,6 +406,19 @@ export const SKIP_REASONS = {
   noAssistantText: 'the Stop payload and the transcript held no assistant message',
   handoffTooShort: 'the last assistant message was too short to be a handoff — the previous one is kept',
   handoffArchived: 'the handoff memory was archived by forget — left alone',
+  // stop-message-gate
+  stopHookActive: 'stop_hook_active is true — Claude Code is already continuing from a previous block',
+  notClaudeCodeHost: 'this Stop is not running under Claude Code',
+  noRecipientForGate: 'no recipient could be resolved for this session',
+  noDatabaseForMessageGate: 'no database yet — nothing to check for waiting messages',
+  nothingWaitingForGate: 'no messages are waiting for the resolved recipient',
+  alreadyBlockedForGate: 'every waiting message id was already blocked for in this session',
+  // Shared by every caller of the hosts/claude.json recipient fallback
+  // (session-start, user-prompt-intent, stop-message-gate): the file was
+  // readable and named a principal_id, but its `project` did not match this
+  // session's — a distinct outcome from "not configured at all", so the
+  // ledger can tell them apart (#468).
+  fallbackProjectMismatch: 'hosts/claude.json project does not match this project\'s id; use the full id from `memesh briefing --json`',
 } as const;
 
 const KNOWN_SKIP_REASONS: ReadonlySet<string> = new Set(Object.values(SKIP_REASONS));
@@ -580,9 +601,10 @@ export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string
  *
  * A hook belongs here when every skip it records is a real decision about a
  * trigger that DID apply — or, for the fire-on-everything hooks
- * (guard-check, pre-edit-recall, user-prompt-intent, decision-nudge), when
- * its silence is already discounted by leaving it out of
- * SILENT_ELIGIBLE_HOOKS and it writes no memory whose eviction would matter.
+ * (guard-check, pre-edit-recall, user-prompt-intent, decision-nudge,
+ * stop-message-gate), when its silence is already discounted by leaving it
+ * out of SILENT_ELIGIBLE_HOOKS and it writes no memory whose eviction would
+ * matter.
  */
 export const UNCLASSIFIED_SKIP_HOOKS = [
   'pre-compact',
@@ -591,6 +613,7 @@ export const UNCLASSIFIED_SKIP_HOOKS = [
   'decision-nudge',
   'guard-check',
   'session-start',
+  'stop-message-gate',
 ] as const;
 
 /**

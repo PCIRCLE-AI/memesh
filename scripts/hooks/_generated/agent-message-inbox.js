@@ -60,6 +60,31 @@ export function recipientEverSeenAnywhere(db, recipient, onError) {
 export function unknownRecipientHint(recipient) {
     return `MEMESH_RECIPIENT ${JSON.stringify(recipient)} has never been seen in any project — check it for a typo (or ignore this if it is a genuinely new recipient id).`;
 }
+export const UNREAD_MESSAGE_REFS_LIMIT = 500;
+export function unreadMessageRefsFor(db, recipient, limit = UNREAD_MESSAGE_REFS_LIMIT) {
+    if (!recipient)
+        return [];
+    try {
+        const rows = db.prepare(`SELECT d.project AS project, d.message_id AS message_id
+       FROM agent_message_deliveries d
+       WHERE d.recipient = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_message_receipts r
+           WHERE r.project = d.project
+             AND r.recipient = d.recipient
+             AND r.message_id = d.message_id
+             AND r.receipt_kind = 'intake'
+         )
+       ORDER BY d.project, d.message_id
+       LIMIT ?`).all(recipient, limit);
+        return rows.filter((row) => typeof row.project === 'string' && typeof row.message_id === 'string');
+    }
+    catch (err) {
+        if (/no such table: agent_message_deliveries/.test(String(err?.message)))
+            return [];
+        throw err;
+    }
+}
 export function unreadInboxLines(count, project, recipient, everSeen) {
     if (!recipient)
         return [];
@@ -67,7 +92,7 @@ export function unreadInboxLines(count, project, recipient, everSeen) {
     const displayRecipient = JSON.stringify(recipient);
     if (count > 0) {
         const noun = count === 1 ? 'message' : 'messages';
-        return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record the intake action for it: fetching alone does not acknowledge, and only intake ends this line.`];
+        return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record intake for each (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
     }
     if (everSeen === false) {
         return [`No messages waiting for ${displayRecipient} in project ${displayProject} — and this recipient id has never been seen in this project (check for a typo).`];
