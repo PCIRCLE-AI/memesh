@@ -3,7 +3,8 @@
     "memesh": {
       "command": "node",
       "args": ["./dist/mcp/server.js"],
-      "cwd": "."
+      "cwd": ".",
+      "env_vars": ["MEMESH_DIR", "MEMESH_DB_PATH"]
     }
   }
 }

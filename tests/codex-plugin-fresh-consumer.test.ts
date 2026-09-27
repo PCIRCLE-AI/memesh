@@ -201,7 +201,8 @@ describe('Codex plugin fresh consumer', () => {
       fs.readFileSync(path.join(repoRoot, plugin.mcpServers), 'utf8'),
     );
     expect(Object.keys(manifest)).toEqual(['mcpServers']);
-    expect(manifest.mcpServers.memesh).toEqual({
+    // The exact server entry is pinned in plugin-mcp-manifest.test.ts.
+    expect(manifest.mcpServers.memesh).toMatchObject({
       command: 'node',
       args: ['./dist/mcp/server.js'],
       cwd: '.',

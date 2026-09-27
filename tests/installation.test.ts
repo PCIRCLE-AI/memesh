@@ -65,7 +65,8 @@ describe('Installation Verification', () => {
       expect(plugin.mcpServers).toBe('./.codex-plugin/mcp.json');
       const mcp = JSON.parse(fs.readFileSync(plugin.mcpServers, 'utf8'));
       expect(Object.keys(mcp)).toEqual(['mcpServers']);
-      expect(mcp.mcpServers.memesh).toEqual({
+      // The exact server entry is pinned in plugin-mcp-manifest.test.ts.
+      expect(mcp.mcpServers.memesh).toMatchObject({
         command: 'node',
         args: ['./dist/mcp/server.js'],
         cwd: '.',
