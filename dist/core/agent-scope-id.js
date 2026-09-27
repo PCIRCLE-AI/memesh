@@ -1,4 +1,5 @@
 export const AGENT_SCOPE_ID_MAX_LENGTH = 200;
+export const HOST_CONFIG_MAX_BYTES = 64 * 1024;
 export function canonicalAgentScopeId(value) {
     return value.normalize('NFC').trim();
 }

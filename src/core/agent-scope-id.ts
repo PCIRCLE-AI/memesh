@@ -45,6 +45,9 @@
 /** The bound every message scope field already used. */
 export const AGENT_SCOPE_ID_MAX_LENGTH = 200;
 
+/** Size limit for a `hosts/*.json` config, shared by the host runtime and the hooks. */
+export const HOST_CONFIG_MAX_BYTES = 64 * 1024;
+
 /**
  * The canonical byte form of a scope identifier: NFC, then trimmed.
  *
@@ -116,8 +119,12 @@ export function agentScopeIdRejection(field: string, value: string): string | nu
  * The router and presence tables (`agent_principals`,
  * `agent_session_instances`, `agent_session_connections`,
  * `agent_presence_facts`, `agent_dispatch_attempts`) are deliberately absent:
- * their `project` comes from an owner-written host config through
- * `memesh agent setup`, not from `MessageSchema`.
+ * their `project` is not a `MessageSchema` field at all — each host process
+ * derives it itself, from its own working directory or `--workspace`
+ * (`getProjectName`, core/paths.ts), the same as an ordinary Codex thread
+ * does. It is never read back from the owner-written host config
+ * `memesh agent setup` writes (#474 — a `project` field there, if present,
+ * is inert, kept only for a script that still passes one).
  */
 export const AGENT_MESSAGE_SCOPE_COLUMNS: ReadonlyArray<{
   readonly table: string;

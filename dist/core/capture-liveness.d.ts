@@ -75,7 +75,6 @@ export declare const SKIP_REASONS: {
     readonly noDatabaseForMessageGate: "no database yet — nothing to check for waiting messages";
     readonly nothingWaitingForGate: "no messages are waiting for the resolved recipient";
     readonly alreadyBlockedForGate: "every waiting message id was already blocked for in this session";
-    readonly fallbackProjectMismatch: "hosts/claude.json project does not match this project's id; use the full id from `memesh briefing --json`";
 };
 export declare const UNRECOGNISED_REASON = "unrecognised reason";
 export declare function renderableSkipReason(reason: string | undefined): string;

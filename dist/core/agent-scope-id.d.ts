@@ -1,4 +1,5 @@
 export declare const AGENT_SCOPE_ID_MAX_LENGTH = 200;
+export declare const HOST_CONFIG_MAX_BYTES: number;
 export declare function canonicalAgentScopeId(value: string): string;
 export declare function isFilesystemPathScopeId(value: string): boolean;
 export declare function lastPathSegment(value: string): string | null;

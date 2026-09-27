@@ -6,11 +6,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
+import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessionPrincipal, } from '../core/codex-session-principal.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath, getProjectName } from '../core/paths.js';
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile, readHostConfigFile, readTokenFile, normalizeConfiguredRouterSocket, requiredString, } from './config.js';
 import { connectRouterHost } from './router-client.js';
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
-const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CONTROL_TIMEOUT_MS = 2_000;
 const SESSION_END_GRACE_MS = 45_000;
 function lifecycleDirectory(dataDir) {
@@ -41,7 +41,7 @@ function readCompanionState(statePath) {
             return null;
         const state = parsed;
         if (state.version !== 1 || typeof state.pid !== 'number' || !Number.isSafeInteger(state.pid) || state.pid <= 1
-            || typeof state.thread_id !== 'string' || !CODEX_THREAD_ID.test(state.thread_id)
+            || !isValidCodexThreadId(state.thread_id)
             || typeof state.workspace !== 'string' || !path.isAbsolute(state.workspace)
             || typeof state.token !== 'string' || !/^[0-9a-f]{32}$/.test(state.token)
             || typeof state.control_socket !== 'string' || !path.isAbsolute(state.control_socket))
@@ -286,7 +286,7 @@ function validateCodexSessionStart(hookInput, environment, realpath) {
     if (typeof environment.PLUGIN_ROOT !== 'string' || environment.PLUGIN_ROOT.length === 0)
         return null;
     const threadId = hookInput.session_id;
-    if (typeof threadId !== 'string' || !CODEX_THREAD_ID.test(threadId))
+    if (!isValidCodexThreadId(threadId))
         return null;
     return {
         threadId,
@@ -299,38 +299,24 @@ function validateCodexSessionEnd(hookInput, environment, realpath) {
     if (typeof environment.PLUGIN_ROOT !== 'string' || environment.PLUGIN_ROOT.length === 0)
         return null;
     const threadId = hookInput.session_id;
-    if (typeof threadId !== 'string' || !CODEX_THREAD_ID.test(threadId))
+    if (!isValidCodexThreadId(threadId))
         return null;
     return { threadId, workspace: requiredExistingDirectory(hookInput.cwd, 'cwd', realpath) };
 }
 function configuredCodexSessionConfig(config, session, realpath) {
-    const configuredWorkspace = resolveConfiguredWorkspace(config.workspace, realpath);
-    if (configuredWorkspace === null || configuredWorkspace !== session.workspace) {
+    const principal = resolveCodexSessionPrincipal(config, session, realpath);
+    if (principal.source === 'automatic') {
         return automaticCodexSessionConfig(session);
     }
     const resolved = {
         router_socket: normalizeConfiguredRouterSocket(config.router_socket),
         auth_token: readTokenFile(config.token_file),
-        project: requiredString(config.project, 'project'),
-        principal_id: requiredString(config.principal_id, 'principal_id'),
+        project: canonicalAgentScopeId(getProjectName(session.workspace)),
+        principal_id: requiredString(principal.principalId, 'principal_id'),
         ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
         ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
     };
     return resolved;
-}
-function resolveConfiguredWorkspace(value, realpath) {
-    const workspace = requiredAbsolutePath(value, 'workspace');
-    try {
-        const resolved = realpath(workspace);
-        if (!fs.statSync(resolved).isDirectory())
-            throw new Error('workspace must be a directory.');
-        return resolved;
-    }
-    catch (error) {
-        if (error.code === 'ENOENT')
-            return null;
-        throw error;
-    }
 }
 function automaticCodexSessionConfig(session) {
     assertSecureLocalHostRuntimeSupported();
@@ -340,7 +326,7 @@ function automaticCodexSessionConfig(session) {
         router_socket: getAgentRouterSocketPath(),
         auth_token: ensureRouterTokenFile(path.join(dataDir, 'agent-router.token')),
         project: canonicalAgentScopeId(getProjectName(session.workspace)),
-        principal_id: `codex-thread-${session.threadId}`,
+        principal_id: automaticCodexSessionPrincipal(session),
     };
 }
 function ensureOwnerPrivateDataDirectory(dataDir) {

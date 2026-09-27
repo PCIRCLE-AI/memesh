@@ -1,4 +1,4 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -183,7 +183,14 @@ export {
 } from './_generated/briefing-level.js';
 import { resolveBriefingLevel as resolveBriefingLevelValue } from './_generated/briefing-level.js';
 import { unreadInboxLinesFor, unreadMessageRefsFor } from './_generated/agent-message-inbox.js';
-import { agentScopeIdRejection } from './_generated/agent-scope-id.js';
+import { agentScopeIdRejection, HOST_CONFIG_MAX_BYTES } from './_generated/agent-scope-id.js';
+// The Codex-session principal decision, shared with codex-session.ts (#474).
+import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessionPrincipal } from './_generated/codex-session-principal.js';
+// Re-exported so session-start.js can recognise its OWN automatic Codex
+// identity without recomputing the decision by hand — see its use there for
+// why (suppressing the "never been seen" hint for a fresh, machine-generated
+// thread id that could never have been typed, let alone typo'd).
+export { automaticCodexSessionPrincipal };
 
 // The hook-only work-package notice's literal text — ONE declaration,
 // exported so both `session-start.js` (which appends it) and the test
@@ -555,15 +562,15 @@ export const HOOK_BUSY_TIMEOUT_MS = 2000;
  * — a hook that exits 0 has its stderr hidden from both. `onRejected`
  * throwing does not affect resolution.
  *
- * `onFallbackProjectMismatch()`, if given, fires only from the fallback path
- * below: the file was readable and named a `principal_id`, but its `project`
- * did not match. Ledger-only by design (#468) — no stderr, no user-visible
- * line — a multi-project machine sharing one `hosts/claude.json` would
- * otherwise get a mismatch line on every session in every OTHER project.
+ * With `MEMESH_RECIPIENT` unset, the fallback names the session's own
+ * registered principal: `hosts/claude.json`'s `principal_id` under Claude
+ * Code, or the Codex companion's principal under Codex (#474).
+ * @param {{ sessionId?: unknown, cwd?: unknown }} [hostContext] - the calling
+ *   hook's own `session_id`/`cwd`, consulted only for a Codex run.
  */
-export function resolveMessageRecipient(env = process.env, onRejected, cwd, onFallbackProjectMismatch) {
+export function resolveMessageRecipient(env = process.env, onRejected, hostContext) {
   const raw = env.MEMESH_RECIPIENT;
-  if (raw === undefined) return resolveClaudeHostFallbackRecipient(cwd, env, onFallbackProjectMismatch);
+  if (raw === undefined) return resolveHostFallbackRecipient(env, hostContext);
   const id = String(raw).normalize('NFC').trim();
   if (id === '') return undefined;
   const reject = (label, detail) => {
@@ -581,8 +588,16 @@ export function resolveMessageRecipient(env = process.env, onRejected, cwd, onFa
   return id;
 }
 
-/** Generous bound on `hosts/claude.json` — the real file holds a handful of short fields. */
-const CLAUDE_HOST_CONFIG_MAX_BYTES = 16 * 1024;
+/**
+ * Dispatch to whichever host fallback applies. `isClaudeCodeHost` and
+ * `isCodexHost` can never both be true for the same run (`detectHookHost`
+ * returns exactly one host), so at most one of these ever resolves — the `??`
+ * is for the third, always-possible outcome: neither host, or the matching
+ * one found nothing usable.
+ */
+function resolveHostFallbackRecipient(env, hostContext) {
+  return resolveClaudeHostFallbackRecipient(env) ?? resolveCodexHostFallbackRecipient(env, hostContext);
+}
 
 /**
  * Read a small JSON object from an owner-private file, or `undefined` on ANY
@@ -635,46 +650,141 @@ function readOwnerPrivateJsonQuiet(filePath, maxBytes) {
  * `MEMESH_RECIPIENT` is declared (#468).
  *
  * `memesh agent setup claude` writes `<data dir>/hosts/claude.json` with
- * `project` and `principal_id` (plus a router token this never reads).
- * SessionStart and the prompt hook get the same reminder a declared
- * `MEMESH_RECIPIENT` would give them, without the owner repeating an id the
- * config file already names — closing the exact gap that let a live channel
- * misconfiguration (a mistyped launch flag) go unnoticed: the Stop gate below
- * and these hooks had no identity to check against.
+ * `principal_id` (plus a router token this never reads, and possibly a
+ * legacy `project` field this never reads either — see below). SessionStart
+ * and the prompt hook get the same reminder a declared `MEMESH_RECIPIENT`
+ * would give them, without the owner repeating an id the config file already
+ * names — closing the exact gap that let a live channel misconfiguration (a
+ * mistyped launch flag) go unnoticed.
  *
- * Every check below fails CLOSED to "no recipient", exactly as an unset
- * `MEMESH_RECIPIENT` does today — a missing file, an unreadable one, one
- * naming a different project, or an invalid `principal_id`:
+ * The file's `project` is not compared (#474): hosts now derive their
+ * project from their working directory, and a typed label never matched
+ * the derived id. `principal_id` is one identity for every Claude Code
+ * session on the machine, in every project.
+ *
+ * Every check below still fails CLOSED to "no recipient", exactly as an
+ * unset `MEMESH_RECIPIENT` does today — a missing file, an unreadable one,
+ * or an invalid `principal_id`:
  *   - Claude Code only. The Codex plugin loads the same hooks; a Codex
- *     session in the same project must never adopt Claude's principal.
- *   - the file's `project` must equal the CURRENT project exactly — computed
- *     lazily, after the file is confirmed to exist and name a candidate
- *     project, so a session with no fallback configured never pays for the
- *     `getProjectName` git calls this would otherwise cost on every prompt.
- *     `getProjectName` always returns a `<label>~<32 hex>` id, never the bare
- *     label a user types with `memesh agent setup claude --project
- *     <name>` — so a mismatch here is NOT rare, and is reported distinctly
- *     (`onFallbackProjectMismatch`, ledger-only) rather than folded into
- *     silent "not configured" (#468); this NEVER relaxes to a label-only
- *     comparison, or two repos sharing a basename would share a principal.
+ *     session must never adopt Claude's principal.
  *   - `principal_id` is refused by the same length and filesystem-path rules
  *     `resolveMessageRecipient` applies to an explicit `MEMESH_RECIPIENT`
  *     (#402) — quietly here, since a malformed config is not something the
  *     env-var rejection path's "MEMESH_RECIPIENT ignored" wording describes.
  */
-function resolveClaudeHostFallbackRecipient(cwd, env, onFallbackProjectMismatch) {
-  if (!cwd) return undefined;
+function resolveClaudeHostFallbackRecipient(env) {
   if (!isClaudeCodeHost(env)) return undefined;
   const configPath = join(getMemeshDirFromDbPath(), 'hosts', 'claude.json');
-  const parsed = readOwnerPrivateJsonQuiet(configPath, CLAUDE_HOST_CONFIG_MAX_BYTES);
+  const parsed = readOwnerPrivateJsonQuiet(configPath, HOST_CONFIG_MAX_BYTES);
   if (!parsed) return undefined;
-  const fileProject = typeof parsed.project === 'string' ? parsed.project.normalize('NFC').trim() : '';
   const principal = typeof parsed.principal_id === 'string' ? parsed.principal_id.normalize('NFC').trim() : '';
-  if (fileProject === '' || principal === '') return undefined;
-  if (fileProject !== getProjectName(cwd)) {
-    try { onFallbackProjectMismatch?.(); } catch { /* a caller's recorder must not break resolution */ }
+  if (principal === '') return undefined;
+  if (principal.length > 200) return undefined;
+  if (agentScopeIdRejection('recipient', principal)) return undefined;
+  return principal;
+}
+
+/**
+ * Fall back to the SAME principal a Codex session's own companion process
+ * (`src/host-runtime/codex-session.ts`) registers with the router under, when
+ * no `MEMESH_RECIPIENT` is declared and this run is the Codex host (#474
+ * follow-up — cross-host discovery). That registration is a separate
+ * process this hook has no connection to, so it recomputes the identical
+ * decision from `hosts/codex-session.json` and the hook payload's own
+ * `sessionId`/`cwd` (`hostContext`), through the shared leaf
+ * `resolveCodexSessionPrincipal` (`src/core/codex-session-principal.ts`,
+ * copied to `_generated/codex-session-principal.js` — see that file for why
+ * the decision lives there instead of a second, drifting copy here).
+ *
+ * Fails CLOSED to "no recipient" on every problem, the same discipline
+ * {@link resolveClaudeHostFallbackRecipient} above uses:
+ *   - Codex only (`isCodexHost`) — a Claude Code session must never adopt a
+ *     Codex principal, and vice versa (the two are mutually exclusive; see
+ *     `resolveHostFallbackRecipient`).
+ *   - `hostContext.sessionId` must be shaped like a Codex thread id
+ *     (`isValidCodexThreadId`) — the same shape the router registration
+ *     itself requires. An id of any other shape could never have been
+ *     registered as `codex-thread-<id>` either.
+ *   - `hostContext.cwd` must resolve, via `realpathSync`, to a real path — a
+ *     `cwd` that cannot be resolved cannot be compared against a configured
+ *     `workspace`, and the real registration would fail identically.
+ *   - A malformed `hosts/codex-session.json` (a `workspace` of the wrong
+ *     type, or one that resolves but is not a directory) makes
+ *     `resolveCodexSessionPrincipal` THROW — matching `codex-session.ts`'s
+ *     own behaviour, where that same malformed field fails the WHOLE
+ *     companion registration rather than falling back to the automatic
+ *     identity. This function must never crash on that, but it also must
+ *     not assert an identity nothing actually registered, so it reports no
+ *     recipient rather than guessing "automatic".
+ *   - A configured `principal_id` that is not a usable id (the same length
+ *     and filesystem-path rules `resolveMessageRecipient` applies) is the
+ *     one other case `codex-session.ts` fails the WHOLE registration on
+ *     (`requiredString` throws there) — reported here as no recipient too,
+ *     for the same reason.
+ *   - No config file at all, or one that cannot even be read, is NOT an
+ *     error: it is `codex-session.ts`'s own `config === undefined` branch,
+ *     and `resolveCodexSessionPrincipal` returns the automatic
+ *     `codex-thread-<id>` identity for it without throwing — the common
+ *     case, an ordinary Codex session with no `codex-session` setup at all.
+ *
+ * @param {{ sessionId?: unknown, cwd?: unknown }} [hostContext]
+ */
+function resolveCodexHostFallbackRecipient(env, hostContext) {
+  if (!isCodexHost(env)) return undefined;
+  // `src/host-runtime/codex-session.ts` registers NOTHING with the router on
+  // Windows — `assertSecureLocalHostRuntimeSupported()` throws unconditionally,
+  // on both the automatic path (directly) and the configured path (through
+  // `readTokenFile`/`readOwnerPrivateFile`), with or without a config file.
+  // Unlike the Claude fallback above (which degrades to "no recipient" on its
+  // own, since `readOwnerPrivateJsonQuiet` already returns `undefined` when
+  // `O_NOFOLLOW` is unavailable), the automatic Codex identity is pure string
+  // formatting with no file read to fail — so it needs this explicit guard,
+  // or it would assert an identity the router can never actually hold there.
+  if (process.platform === 'win32') return undefined;
+  const sessionId = hostContext?.sessionId;
+  if (!isValidCodexThreadId(sessionId)) return undefined;
+  const cwd = hostContext?.cwd;
+  if (typeof cwd !== 'string' || cwd === '') return undefined;
+  let workspace;
+  try {
+    workspace = realpathSync(cwd);
+  } catch {
     return undefined;
   }
+  const configPath = join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
+  // Existence and readability are two DIFFERENT facts, and only one of them
+  // means "no config" — `codex-session.ts`'s own `readCodexSessionConfigIfPresent`
+  // draws the same line, with the same primitive (`lstatSync`, not `existsSync`,
+  // so a dangling symlink at this path counts as "exists" here exactly like it
+  // does there): ENOENT is `config === undefined` (the ordinary, unconfigured
+  // case — the automatic identity applies). Anything else at that path that
+  // cannot be read as owner-private JSON (bad permissions, a symlink, a
+  // corrupt document) is a file that DOES exist and, over there, makes
+  // `readHostConfigFile` throw and the WHOLE companion registration fail —
+  // this function's own no-false-identity rule (see its doc comment) means
+  // that must resolve to no recipient, never a silent promotion to automatic.
+  let configFileExists;
+  try {
+    lstatSync(configPath);
+    configFileExists = true;
+  } catch (err) {
+    if (err?.code === 'ENOENT') configFileExists = false;
+    else return undefined;
+  }
+  let config;
+  if (configFileExists) {
+    config = readOwnerPrivateJsonQuiet(configPath, HOST_CONFIG_MAX_BYTES);
+    if (config === undefined) return undefined;
+  }
+  let resolution;
+  try {
+    resolution = resolveCodexSessionPrincipal(config, { threadId: sessionId, workspace }, realpathSync);
+  } catch {
+    return undefined;
+  }
+  if (resolution.source === 'automatic') return resolution.principalId;
+  const principal = typeof resolution.principalId === 'string' ? resolution.principalId.normalize('NFC').trim() : '';
+  if (principal === '') return undefined;
   if (principal.length > 200) return undefined;
   if (agentScopeIdRejection('recipient', principal)) return undefined;
   return principal;
@@ -727,18 +837,16 @@ export function waitingMessageRefs(db, recipient, recordFailure) {
 
 /**
  * The reminder lines for messages waiting for this session's declared
- * recipient. No `MEMESH_RECIPIENT` (and no owner-private Claude channel
+ * recipient. No `MEMESH_RECIPIENT` (and no owner-private Claude or Codex
  * fallback, see `resolveMessageRecipient`) or no database: no lines, and the
  * database is not opened. Read-only, and it never throws (given a
  * `recordFailure` that does not, see `waitingMessageLines`).
  * `onRecipientRejected`, if given, is `resolveMessageRecipient`'s own
- * rejection callback — see there. `cwd`, the payload's own working directory,
- * is required only for the fallback path and is otherwise unused — passing
- * it costs nothing when `MEMESH_RECIPIENT` is already set. `onFallbackProjectMismatch`
- * is `resolveMessageRecipient`'s own fallback-mismatch callback — see there.
+ * rejection callback — see there. `hostContext` is passed straight through
+ * to `resolveMessageRecipient`'s Codex fallback — see its own doc.
  */
-export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected, cwd, onFallbackProjectMismatch) {
-  const recipient = resolveMessageRecipient(env, onRecipientRejected, cwd, onFallbackProjectMismatch);
+export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected, hostContext) {
+  const recipient = resolveMessageRecipient(env, onRecipientRejected, hostContext);
   if (!recipient) return [];
   const dbPath = env.MEMESH_DB_PATH ?? getDbPath();
   if (!existsSync(dbPath)) return [];
@@ -961,6 +1069,17 @@ export function pluginRootIsHookRoot(env) {
  */
 export function isClaudeCodeHost(env = process.env) {
   return detectHookHost(null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }) === 'claude-code';
+}
+
+/**
+ * Is this hook run Codex, and only Codex? The mirror of
+ * {@link isClaudeCodeHost} above, for the same reason: `resolveMessageRecipient`'s
+ * Codex fallback (`resolveCodexHostFallbackRecipient`) must never fire for a
+ * Claude Code session, and vice versa. Same host classifier, so this can
+ * never disagree with `isClaudeCodeHost` or with what `memesh doctor` reports.
+ */
+export function isCodexHost(env = process.env) {
+  return detectHookHost(null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }) === 'codex';
 }
 
 /**

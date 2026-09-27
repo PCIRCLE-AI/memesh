@@ -14,6 +14,8 @@ import {
   type CodexAppServerThread,
   type StartCodexAppServerThreadInput,
 } from '../host-adapters/codex-app-server.js';
+import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
+import { getProjectName } from '../core/paths.js';
 import {
   assertSecureLocalHostRuntimeSupported,
   normalizeConfiguredRouterSocket,
@@ -41,7 +43,12 @@ type StartManagedThread = (
 export interface ManagedCodexHostConfig extends Record<string, unknown> {
   router_socket: unknown;
   token_file: unknown;
-  project: unknown;
+  /** Ignored (#474) — `normalizeConfig` derives the routing project from
+   *  `workspace` instead, the same way `codex-session.ts`'s automatic path
+   *  does, so this host and a Claude session or Codex thread started in the
+   *  same directory always land in the same project. Kept only so an old
+   *  config file that still has this field does not fail to parse. */
+  project?: unknown;
   principal_id: unknown;
   /** A caller may supply the launcher-created session id; otherwise a new one is created once. */
   session_instance_id?: unknown;
@@ -224,7 +231,9 @@ function normalizeConfig(config: ManagedCodexHostConfig): NormalizedConfig {
   return {
     routerSocket: normalizeConfiguredRouterSocket(config.router_socket),
     tokenFile: config.token_file,
-    project: requiredString(config.project, 'project'),
+    // #474: same derivation as `codex-session.ts`'s automatic path and the
+    // Claude channel host — `config.project` never decides routing.
+    project: canonicalAgentScopeId(getProjectName(workspace)),
     principalId: requiredString(config.principal_id, 'principal_id'),
     sessionInstanceId: config.session_instance_id === undefined
       ? randomUUID()

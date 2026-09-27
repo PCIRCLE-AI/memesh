@@ -7,6 +7,11 @@ import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
+import {
+  automaticCodexSessionPrincipal,
+  isValidCodexThreadId,
+  resolveCodexSessionPrincipal,
+} from '../core/codex-session-principal.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath, getProjectName } from '../core/paths.js';
 import {
   assertSecureLocalHostRuntimeSupported,
@@ -19,12 +24,14 @@ import {
 import { connectRouterHost, type RouterHostConnection } from './router-client.js';
 
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
-const CODEX_THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface CodexSessionHostConfig extends Record<string, unknown> {
   router_socket: unknown;
   token_file: unknown;
-  project: unknown;
+  /** Ignored (#474) — `configuredCodexSessionConfig` derives the routing
+   *  project from `workspace` instead. Kept only so an old config file that
+   *  still has this field does not fail to parse. */
+  project?: unknown;
   principal_id: unknown;
   workspace: unknown;
   model?: unknown;
@@ -90,7 +97,7 @@ function readCompanionState(statePath: string): CodexCompanionState | null {
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null;
     const state = parsed as Partial<CodexCompanionState>;
     if (state.version !== 1 || typeof state.pid !== 'number' || !Number.isSafeInteger(state.pid) || state.pid <= 1
-      || typeof state.thread_id !== 'string' || !CODEX_THREAD_ID.test(state.thread_id)
+      || !isValidCodexThreadId(state.thread_id)
       || typeof state.workspace !== 'string' || !path.isAbsolute(state.workspace)
       || typeof state.token !== 'string' || !/^[0-9a-f]{32}$/.test(state.token)
       || typeof state.control_socket !== 'string' || !path.isAbsolute(state.control_socket)) return null;
@@ -356,7 +363,7 @@ function validateCodexSessionStart(
   if (typeof environment.PLUGIN_ROOT !== 'string' || environment.PLUGIN_ROOT.length === 0) return null;
 
   const threadId = hookInput.session_id;
-  if (typeof threadId !== 'string' || !CODEX_THREAD_ID.test(threadId)) return null;
+  if (!isValidCodexThreadId(threadId)) return null;
 
   return {
     threadId,
@@ -372,7 +379,7 @@ function validateCodexSessionEnd(
   if (hookInput.hook_event_name !== 'SessionEnd') return null;
   if (typeof environment.PLUGIN_ROOT !== 'string' || environment.PLUGIN_ROOT.length === 0) return null;
   const threadId = hookInput.session_id;
-  if (typeof threadId !== 'string' || !CODEX_THREAD_ID.test(threadId)) return null;
+  if (!isValidCodexThreadId(threadId)) return null;
   return { threadId, workspace: requiredExistingDirectory(hookInput.cwd, 'cwd', realpath) };
 }
 
@@ -390,34 +397,33 @@ function configuredCodexSessionConfig(
   session: ValidCodexSessionStart,
   realpath: typeof fs.realpathSync,
 ): ResolvedCodexSessionConfig {
-  const configuredWorkspace = resolveConfiguredWorkspace(config.workspace, realpath);
-  if (configuredWorkspace === null || configuredWorkspace !== session.workspace) {
+  // The workspace-match decision (does this config apply to THIS session, or
+  // does it fall back to the automatic identity) is the one piece the
+  // SessionStart hook needs too — factored into `resolveCodexSessionPrincipal`
+  // (src/core/codex-session-principal.ts) so the hook and the router
+  // registration can never disagree about a Codex session's principal.
+  const principal = resolveCodexSessionPrincipal(config, session, realpath);
+  if (principal.source === 'automatic') {
     return automaticCodexSessionConfig(session);
   }
   const resolved: ResolvedCodexSessionConfig = {
     router_socket: normalizeConfiguredRouterSocket(config.router_socket),
     auth_token: readTokenFile(config.token_file),
-    project: requiredString(config.project, 'project'),
-    principal_id: requiredString(config.principal_id, 'principal_id'),
+    // #474: same derivation `automaticCodexSessionConfig` below uses.
+    // `config.project` used to be taken verbatim here, so a workspace set up
+    // with the documented bare-label example (`agent setup codex-session
+    // --project my-project`) registered under a project no other host in
+    // the same directory would ever derive — the exact cross-host discovery
+    // gap this fix closes, just reached through this override instead of
+    // the Claude default. The override's real, remaining purpose is a
+    // STABLE PRINCIPAL for one workspace (see `principal_id` below); the
+    // project was always incidental to that.
+    project: canonicalAgentScopeId(getProjectName(session.workspace)),
+    principal_id: requiredString(principal.principalId, 'principal_id'),
     ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
     ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
   };
   return resolved;
-}
-
-function resolveConfiguredWorkspace(
-  value: unknown,
-  realpath: typeof fs.realpathSync,
-): string | null {
-  const workspace = requiredAbsolutePath(value, 'workspace');
-  try {
-    const resolved = realpath(workspace);
-    if (!fs.statSync(resolved).isDirectory()) throw new Error('workspace must be a directory.');
-    return resolved;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
-    throw error;
-  }
 }
 
 function automaticCodexSessionConfig(session: ValidCodexSessionStart): ResolvedCodexSessionConfig {
@@ -428,7 +434,7 @@ function automaticCodexSessionConfig(session: ValidCodexSessionStart): ResolvedC
     router_socket: getAgentRouterSocketPath(),
     auth_token: ensureRouterTokenFile(path.join(dataDir, 'agent-router.token')),
     project: canonicalAgentScopeId(getProjectName(session.workspace)),
-    principal_id: `codex-thread-${session.threadId}`,
+    principal_id: automaticCodexSessionPrincipal(session),
   };
 }
 

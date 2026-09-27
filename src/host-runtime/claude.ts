@@ -12,6 +12,8 @@ import {
   createClaudeChannelServer,
 } from '../host-adapters/claude-channel.js';
 import { serializeNativeAgentMessage } from '../core/agent-messaging.js';
+import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
+import { getProjectName } from '../core/paths.js';
 import {
   connectRouterHost,
   type ConnectRouterHostInput,
@@ -59,7 +61,18 @@ export interface ClaudeManagedSessionConfig {
   server_name: string;
   router_socket: string;
   auth_token: string;
-  project: string;
+  /**
+   * Ignored. #474: every Claude session in the same directory must land in
+   * the same routing project as a Codex thread started there, and a fixed
+   * config value cannot track "whichever directory this process's session
+   * happens to be in" — it is either wrong for every OTHER directory the
+   * same config is reused from, or (worse) a stale label an existing
+   * `hosts/claude.json` already holds. `register()` below derives the
+   * project the same way `codex-session.ts`'s automatic path does. Kept only
+   * so an old config file that still has this field does not fail to parse;
+   * a fresh `memesh agent setup claude` no longer writes it unless asked.
+   */
+  project?: string;
   principal_id: string;
   session_instance_id?: string;
   model?: string;
@@ -73,6 +86,14 @@ export interface ClaudeManagedSessionDependencies {
   generate_session_id?: () => string;
   lifecycle?: LifecycleBindings;
   on_fatal_error?: (error: unknown) => void;
+  /**
+   * Test seam for the process's own working directory — the identity this
+   * channel host registers under (#474). Defaults to `process.cwd()`, which
+   * is what Claude Code sets before spawning this stdio MCP server, so a
+   * live process always uses the real one; a test injects a fixed directory
+   * instead of mutating global process state.
+   */
+  cwd?: () => string;
 }
 
 export interface ClaudeManagedSession {
@@ -94,6 +115,12 @@ export async function startClaudeManagedSession(
   const transport = dependencies.transport ?? new StdioServerTransport();
   const connectRouter = dependencies.connect_router ?? connectRouterHost;
   const lifecycle = dependencies.lifecycle ?? processLifecycleBindings;
+  // #474: the same derivation `codex-session.ts`'s automatic path uses, so a
+  // Claude session and a Codex thread started in the same directory land in
+  // the same routing project. `config.project` never reaches this call —
+  // see the field's own doc comment.
+  const resolveCwd = dependencies.cwd ?? process.cwd;
+  const project = canonicalAgentScopeId(getProjectName(resolveCwd()));
   const sessionInstanceId = requiredString(
     config.session_instance_id ?? (dependencies.generate_session_id ?? randomUUID)(),
     'session_instance_id',
@@ -192,7 +219,7 @@ export async function startClaudeManagedSession(
       socket_path: normalizeConfiguredRouterSocket(config.router_socket),
       auth_token: requiredString(config.auth_token, 'router token'),
       identity: {
-        project: requiredString(config.project, 'project'),
+        project,
         principal_id: requiredString(config.principal_id, 'principal_id'),
         session_instance_id: sessionInstanceId,
         adapter_kind: 'claude-channel',
@@ -259,7 +286,6 @@ async function main(): Promise<void> {
     server_name: requiredString(config.server_name ?? 'memesh-channel', 'server_name'),
     router_socket: normalizeConfiguredRouterSocket(config.router_socket),
     auth_token: readTokenFile(config.token_file),
-    project: requiredString(config.project, 'project'),
     principal_id: requiredString(config.principal_id, 'principal_id'),
     ...(config.model === undefined ? {} : { model: requiredString(config.model, 'model') }),
     ...(config.work_summary === undefined ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),

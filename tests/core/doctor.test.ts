@@ -3804,6 +3804,30 @@ describe('Claude Channel registration diagnostic', () => {
     expect(row.summary).toMatch(/admission.*not verified/i);
   });
 
+  // #474: the Claude channel host no longer reads `project` to decide its
+  // routing project (it derives one from its own working directory), and
+  // `memesh agent setup claude` no longer writes the field unless asked —
+  // a config missing it entirely must still read as coherent, not as
+  // "missing, insecure, malformed, or incomplete".
+  it.skipIf(process.platform === 'win32')('reports a coherent registration as CONFIGURED even with no project field at all', async () => {
+    const target = channelTarget('configured-no-project.json');
+    const dir = path.dirname(target);
+    const result = await runChannelCase(
+      { mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args: ['--config', target] } } },
+      {
+        path: target,
+        content: JSON.stringify({
+          router_socket: path.join(dir, 'memesh-router.sock'),
+          token_file: path.join(dir, 'memesh-router.token'),
+          principal_id: 'claude-reviewer', server_name: 'memesh-channel',
+        }),
+      },
+    );
+    const row = channelRow(result)!;
+    expect(row).toMatchObject({ status: 'pass', informational: true });
+    expect(row.summary).toMatch(/CONFIGURED/);
+  });
+
   it.skipIf(process.platform === 'win32')('accepts an absolute executable named memesh-host-claude', async () => {
     const target = channelTarget('configured.json');
     const command = channelCommand('memesh-host-claude');

@@ -413,12 +413,6 @@ export const SKIP_REASONS = {
   noDatabaseForMessageGate: 'no database yet — nothing to check for waiting messages',
   nothingWaitingForGate: 'no messages are waiting for the resolved recipient',
   alreadyBlockedForGate: 'every waiting message id was already blocked for in this session',
-  // Shared by every caller of the hosts/claude.json recipient fallback
-  // (session-start, user-prompt-intent, stop-message-gate): the file was
-  // readable and named a principal_id, but its `project` did not match this
-  // session's — a distinct outcome from "not configured at all", so the
-  // ledger can tell them apart (#468).
-  fallbackProjectMismatch: 'hosts/claude.json project does not match this project\'s id; use the full id from `memesh briefing --json`',
 } as const;
 
 const KNOWN_SKIP_REASONS: ReadonlySet<string> = new Set(Object.values(SKIP_REASONS));

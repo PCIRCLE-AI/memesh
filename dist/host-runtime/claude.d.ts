@@ -18,7 +18,7 @@ export interface ClaudeManagedSessionConfig {
     server_name: string;
     router_socket: string;
     auth_token: string;
-    project: string;
+    project?: string;
     principal_id: string;
     session_instance_id?: string;
     model?: string;
@@ -31,6 +31,7 @@ export interface ClaudeManagedSessionDependencies {
     generate_session_id?: () => string;
     lifecycle?: LifecycleBindings;
     on_fatal_error?: (error: unknown) => void;
+    cwd?: () => string;
 }
 export interface ClaudeManagedSession {
     readonly session_instance_id: string;

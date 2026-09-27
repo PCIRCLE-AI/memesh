@@ -132,17 +132,19 @@ requireText('src/host-adapters/codex-cli-queue.ts', [
 requireText('dist/host-adapters/codex-cli-queue.js', [
   'dispatch(input', 'serializeNativeAgentMessage', "'queue', '--thread'", "'--message', message", 'shell: false',
 ]);
+requireText('src/core/codex-session-principal.ts', ['CODEX_THREAD_ID', 'codex-thread-${session.threadId}']);
+requireText('dist/core/codex-session-principal.js', ['CODEX_THREAD_ID', 'codex-thread-${session.threadId}']);
 requireText('src/host-runtime/codex-session.ts', [
-  'CODEX_THREAD_ID', "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
+  "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
   "hook_event_name !== 'SessionEnd'", 'launchDetachedCompanion', "detached: true",
   "requestExactCompanionControl(state, 'retire')", 'SESSION_END_GRACE_MS',
-  'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent', 'codex-thread-${session.threadId}',
+  'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent',
 ]);
 requireText('dist/host-runtime/codex-session.js', [
-  'CODEX_THREAD_ID', "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
+  "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
   "hook_event_name !== 'SessionEnd'", 'launchDetachedCompanion', 'detached: true',
   "requestExactCompanionControl(state, 'retire')", 'SESSION_END_GRACE_MS',
-  'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent', 'codex-thread-${session.threadId}',
+  'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent',
 ]);
 requirePattern(
   'src/host-runtime/codex-session.ts',

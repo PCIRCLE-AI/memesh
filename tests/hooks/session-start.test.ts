@@ -550,6 +550,32 @@ describe('Feature: Session Start Hook', () => {
     }
   });
 
+  // #474: SessionStart tells an agent its own messaging address whenever a
+  // recipient resolves, in both the model-visible field (so the agent can
+  // actually use it as `sender`) and the human-visible one (the same
+  // convention `recipientRejectionLine` already follows). No database is
+  // seeded — the no-database exit path is one of the four `output()` call
+  // sites the address line was wired into, and the cheapest to exercise.
+  it('states the session\'s own messaging address once a recipient resolves', () => {
+    const project = mirrorProjectName('/tmp/testproj');
+    const out = runHook({ cwd: '/tmp/testproj' }, { MEMESH_RECIPIENT: 'claude-implementer' });
+    const ctx = String((out.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '');
+    expect(ctx).toContain(`project "${project}"`);
+    expect(ctx).toContain('recipient "claude-implementer"');
+    expect(ctx).toContain('use "claude-implementer" as sender');
+    expect(ctx).toContain('message discover');
+    // Same line in the human-visible banner too, matching the existing
+    // recipientRejectionLine/channelFlagWarningLine convention.
+    expect(out.systemMessage as string).toContain('recipient "claude-implementer"');
+  });
+
+  it('states no messaging address when no recipient resolves', () => {
+    const out = runHook({ cwd: '/tmp/testproj' });
+    const ctx = String((out.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '');
+    expect(ctx).not.toContain('messaging address');
+    expect(out.systemMessage as string).not.toContain('messaging address');
+  });
+
   it('Regression: a graph without message tables injects nothing about messages', () => {
     const db = createTestDb();
     db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('proj-only', 'decision');

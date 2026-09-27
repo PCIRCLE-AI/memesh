@@ -55,9 +55,10 @@ import {
   resolveSessionLimitDetailed,
   briefingTaskStateLines,
   resolveBriefingLevel,
+  automaticCodexSessionPrincipal,
   isClaudeCodeHost,
+  isCodexHost,
   resolveMessageRecipient,
-  SKIP_REASONS,
   waitingMessageLines,
   briefingLevelPolicy,
   sessionStartAppendsWorkPackageNotice,
@@ -858,6 +859,12 @@ process.stdin.on('end', async () => {
   let recipientRejectionLine;
   const withRecipientRejectionWarning = (msg) =>
     recipientRejectionLine ? `${recipientRejectionLine}\n${msg}` : msg;
+  // #474: same hoisting reason — this session's own messaging address (set
+  // once a recipient resolves, below) must reach every exit path, including
+  // the recall-failure catch, not just the populated-database summary.
+  let addressLine = null;
+  const withAddressLine = (msg) =>
+    addressLine ? `${addressLine}\n${msg}` : msg;
   // Also hoisted above both try blocks, same reason: a launch missing the
   // channel flag is a live-delivery problem this session already has,
   // regardless of how the payload parses or whether a database exists yet.
@@ -913,12 +920,32 @@ process.stdin.on('end', async () => {
         outcome: 'notified',
         reason: `recipient: MEMESH_RECIPIENT ignored (${label})`,
       });
-    }, data.cwd, () => {
-      // Ledger-only (#468): a multi-project machine sharing one
-      // hosts/claude.json must not get a visible line on every OTHER
-      // project's sessions.
-      record({ outcome: 'skipped', reason: SKIP_REASONS.fallbackProjectMismatch });
-    });
+    }, { sessionId: data.session_id, cwd: data.cwd });
+    // Codex follow-up: an AUTOMATIC Codex identity (`codex-thread-<uuid>`) is
+    // a fresh, machine-generated id, unique to this one thread — nobody typed
+    // it, so it has necessarily never been "seen" anywhere before this exact
+    // session, on every single session, forever. Showing the "never seen —
+    // check it for a typo" hint (below) for it would be a permanent, useless
+    // warning a Codex user can never resolve. Recomputed from this session's
+    // own `session_id` rather than threaded through `resolveMessageRecipient`'s
+    // return value, so this can never disagree with what `recipient` actually
+    // is. Exact-match only: a CONFIGURED Codex principal (where "never seen"
+    // is exactly as meaningful as it is for Claude's fallback) is unaffected.
+    const isAutomaticCodexRecipient = Boolean(recipient) && isCodexHost(process.env)
+      && typeof data.session_id === 'string'
+      && recipient === automaticCodexSessionPrincipal({ threadId: data.session_id });
+    // #474: this session's own messaging address, stated once so the agent
+    // can use it as `sender` and knows `message discover` is scoped to this
+    // project. Mutually exclusive with a rejected MEMESH_RECIPIENT above (a
+    // rejection means no recipient resolved). Codex follow-up: `recipient`
+    // above now also resolves for an ordinary Codex plugin session with no
+    // MEMESH_RECIPIENT (`resolveMessageRecipient`'s Codex fallback), so this
+    // line is no longer Claude-only.
+    addressLine = recipient
+      ? `MeMesh messaging address: project "${projectName}", recipient "${recipient}" — use `
+        + `"${recipient}" as sender in \`message\` so replies reach you; \`message discover --project `
+        + `"${projectName}"\` lists other agents here.`
+      : null;
     // The check above only catches an unusable VALUE for one known key
     // (`briefing`) inside an otherwise-parseable config object. A config.json
     // that is not even that — truncated JSON, a bare array/string/number/null
@@ -1059,10 +1086,10 @@ process.stdin.on('end', async () => {
         captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work',
         { skipUpdateBanner: alreadyNoticed },
       );
-      const noDbContext = [recipientRejectionLine, consent ? consent.context : null, workPackageNotice]
+      const noDbContext = [addressLine, recipientRejectionLine, consent ? consent.context : null, workPackageNotice]
         .filter(Boolean).join('\n\n') || undefined;
       output(
-        withChannelFlagWarning(withRecipientRejectionWarning(consent ? `${consent.system}\n${emptySummary}` : emptySummary)),
+        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(consent ? `${consent.system}\n${emptySummary}` : emptySummary))),
         noDbContext,
         // Nothing was injected (no notice at this level, no database to read
         // from) — record why, the same as the schema-present empty path
@@ -1100,9 +1127,9 @@ process.stdin.on('end', async () => {
         "SELECT name FROM sqlite_master WHERE type='table' AND name='entities'"
       ).get();
       if (!tableCheck) {
-        const noEntitiesContext = [recipientRejectionLine, workPackageNotice].filter(Boolean).join('\n\n') || undefined;
+        const noEntitiesContext = [addressLine, recipientRejectionLine, workPackageNotice].filter(Boolean).join('\n\n') || undefined;
         output(
-          withChannelFlagWarning(withRecipientRejectionWarning(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet'))),
+          withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet')))),
           noEntitiesContext,
           // Same reason mechanism as the no-database exit above and the
           // schema-present exit below — see `nothingToInjectReason`'s own
@@ -1506,7 +1533,13 @@ process.stdin.on('end', async () => {
         // about this recipient: a hint, not a fact (see unknownRecipientHint).
         // A lookup that fails for any reason other than the tables not
         // existing yet is recorded as its own `error`, not shown as a hint.
-        if (recipient && inboxLines.length === 0) {
+        // Checked BEFORE `addressLine` is added below — that line is
+        // identity, not a waiting message, and must not make this "nothing
+        // waiting yet" check see a non-empty inbox that isn't there.
+        // `isAutomaticCodexRecipient` (resolved above): a fresh
+        // `codex-thread-<uuid>` id cannot be a typo, so it never reaches this
+        // check at all — see its own comment for why.
+        if (recipient && !isAutomaticCodexRecipient && inboxLines.length === 0) {
           const everSeen = recipientEverSeenAnywhere(db, recipient, (err) =>
             record({
               outcome: 'error',
@@ -1517,6 +1550,10 @@ process.stdin.on('end', async () => {
             record({ outcome: 'notified', reason: 'recipient: never seen in any project' });
           }
         }
+        // #474: mutually exclusive with `recipientRejectionLine` (a rejection
+        // means no recipient, so no address to state). Added last so it
+        // never affects the "nothing waiting yet" check above.
+        if (addressLine) inboxLines.unshift(addressLine);
         const stateLines = [
           ...handoffBlock,
           ...boundTaskStateLines(briefingTaskStateLines(
@@ -1869,7 +1906,7 @@ process.stdin.on('end', async () => {
       // — guard the concat so an empty injection does not become the LITERAL
       // string "undefined" glued onto a real consent prompt.
       output(
-        withChannelFlagWarning(withRecipientRejectionWarning(withCaptureWarning(finalMessage))),
+        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(finalMessage)))),
         updateConsentContext
           ? (memoryContext ? `${updateConsentContext}\n\n${memoryContext}` : updateConsentContext)
           : memoryContext,
@@ -1963,8 +2000,8 @@ process.stdin.on('end', async () => {
       // stdout write lies inside output()", and output() records exactly one
       // outcome — here an error, not the default `wrote`.
       output(
-        withChannelFlagWarning(withRecipientRejectionWarning(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`))),
-        recipientRejectionLine ?? null,
+        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`)))),
+        recipientRejectionLine ?? addressLine ?? null,
         { outcome: 'error', reason: hookErrorReason(err) },
       );
     }

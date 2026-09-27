@@ -77,8 +77,8 @@ host is recallable from all of them. Not installed yet? Follow
    is by starting with `MEMESH_RECIPIENT=<id>` — or, under Claude Code with the
    memesh-channel already set up (`memesh agent setup claude`), the
    owner-private `hosts/claude.json` config supplies `principal_id`
-   automatically whenever its `project` matches, so the reminder works even
-   before or without a live channel connection. Either way they can show how
+   automatically whenever the file is present and valid (#474), so the
+   reminder works even before or without a live channel connection. Either way they can show how
    many messages wait for that recipient and in which project. An id over 200
    characters, or shaped like a filesystem path, is refused rather than
    silently accepted, with no database required: a line on stderr, a record

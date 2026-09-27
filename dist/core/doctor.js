@@ -1094,7 +1094,7 @@ function inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl) {
     if (target) {
         try {
             const config = readHostConfigFile(target);
-            const required = ['router_socket', 'token_file', 'project', 'principal_id'];
+            const required = ['router_socket', 'token_file', 'principal_id'];
             targetConfigValid = config.server_name === 'memesh-channel'
                 && required.every((key) => {
                     const value = config[key];
