@@ -440,13 +440,15 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
               })}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
-            {/* Tree / mindmap toggle */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0, maxWidth: '100%' }}>
+            {/* Tree / mindmap toggle. Wraps on a phone-width screen, where a
+                long label (German "Entscheidungen") pushed it past the edge. */}
             <div
               role="tablist"
               aria-label={t('roadmap.viewToggle')}
               style={{
                 display: 'inline-flex',
+                flexWrap: 'wrap',
                 background: 'var(--border-subtle)',
                 borderRadius: 'var(--radius-xs)',
                 padding: 2,

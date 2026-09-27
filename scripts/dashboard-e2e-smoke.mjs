@@ -308,6 +308,17 @@ async function main() {
         assert.ok(header.rightLeft >= 0 && header.rightRight <= 375 && header.toggleLeft >= 0 && header.toggleRight <= 375,
           `${locale} header clips the controls: ${JSON.stringify(header)}`);
       }
+      // The Project tab's view toggle must also fit, in every locale.
+      for (const locale of ['en', 'zh-TW', 'zh-CN', 'ja', 'ko', 'pt', 'fr', 'de', 'vi', 'es', 'th']) {
+        await page.locator('#tab-Settings').click();
+        await languageSelect.selectOption(locale);
+        await page.locator('#tab-Project').click();
+        await page.locator('#panel-Project [role="tablist"]').waitFor({ state: 'visible', timeout: 10000 });
+        const projectOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+        assert.equal(projectOverflow, 0, `${locale} Project tab is ${projectOverflow}px wider than a 375px screen`);
+      }
+      await page.locator('#tab-Settings').click();
+      await languageSelect.selectOption('en');
       const signalToggle = page.locator('.signal-toggle');
       const initialSignalMode = await signalToggle.getAttribute('aria-pressed');
       await signalToggle.click();
