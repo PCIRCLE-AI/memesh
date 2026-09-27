@@ -268,6 +268,15 @@ async function main() {
       const languageSelect = page.locator('select:has(option[value="zh-TW"])');
       await languageSelect.waitFor({ state: 'visible', timeout: 10000 });
 
+      // A native select is as wide as its longest option; Settings must
+      // still fit a phone-width screen (#473). Until the config loads, each
+      // select holds only a short "Loading…" option, so wait for the real ones.
+      await page.locator('select option[value="full"]').waitFor({ state: 'attached', timeout: 10000 });
+      await page.setViewportSize({ width: 375, height: 812 });
+      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      assert.equal(overflow, 0, `Settings is ${overflow}px wider than a 375px screen`);
+      await page.setViewportSize({ width: 1280, height: 720 });
+
       await page.evaluate(() => {
         window.__memeshSmokeMarker = 'persist';
       });

@@ -112,6 +112,10 @@ function getInstallChannelGuidance(channel: UpdateStatusData['installChannel'] |
   }
 }
 
+// A native select is as wide as its longest option; maxWidth keeps it inside
+// its card on a narrow screen.
+const SELECT_STYLE = { fontSize: 16, padding: '6px 10px', maxWidth: '100%', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' };
+
 export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
   const [config, setConfig] = useState<ConfigData | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatusData | null>(null);
@@ -301,7 +305,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
   const briefingMessage = configMessage?.setting === 'briefing' ? configMessage : null;
 
   return (
-    <div style={{ display: 'grid', gap: 12 }}>
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
       <InstallationDetails />
       {/* Updates */}
       <div class="card">
@@ -428,7 +432,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
             value={config ? (config.config.autoUpdate ?? 'off') : ''}
             disabled={!config || configSaving}
             onChange={(e) => { void saveSetting({ autoUpdate: (e.target as HTMLSelectElement).value as AutoUpdatePolicy }); }}
-            style={{ fontSize: 16, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
+            style={SELECT_STYLE}
           >
             {!config && <option value="" disabled>{t(configLoading ? 'common.loading' : 'common.unknown')}</option>}
             <option value="off">{t('settings.autoUpdateOff')}</option>
@@ -451,7 +455,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
             value={briefingState && briefingState !== 'unrecognised' ? briefingState : ''}
             disabled={!config || configSaving}
             onChange={(e) => { void saveSetting({ briefing: (e.target as HTMLSelectElement).value as BriefingLevel }); }}
-            style={{ fontSize: 16, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
+            style={SELECT_STYLE}
           >
             {!config && <option value="" disabled>{t(configLoading ? 'common.loading' : 'common.unknown')}</option>}
             {briefingState === 'unrecognised' && <option value="" disabled>{t('settings.briefingUnrecognised')}</option>}
@@ -475,7 +479,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
       {/* Language */}
       <div class="card">
         <div class="card-title">{t('settings.language')}</div>
-        <div style={{ display: 'grid', gap: 12 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: 12 }}>
           <div>
             <label id="settings-interface-language-label" style={{ fontSize: 14, color: 'var(--text-2)', display: 'block', marginBottom: 4 }}>
               {t('settings.interfaceLanguage')}
@@ -484,7 +488,7 @@ export function SettingsTab({ locale, onLocaleChange }: SettingsTabProps) {
               aria-labelledby="settings-interface-language-label"
               value={locale}
               onChange={(e) => changeInterfaceLanguage((e.target as HTMLSelectElement).value as Locale)}
-              style={{ fontSize: 16, padding: '6px 10px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--border)', background: 'var(--bg-input)', color: 'var(--text-1)', cursor: 'pointer' }}
+              style={SELECT_STYLE}
             >
               {getLocales().map((l) => (
                 <option key={l.code} value={l.code}>{l.name}</option>

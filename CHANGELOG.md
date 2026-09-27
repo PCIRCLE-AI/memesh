@@ -18,6 +18,7 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- Dashboard Settings no longer scrolls sideways on a phone-width screen: the briefing select added in 4.10.5 made the page 584px wide at 375px, and every Settings select now stays inside its card (#473).
 - Codex: a MeMesh message left in the thread queue after an interrupted turn is now started. The router asks Codex to start exactly that submission every 20 seconds, for up to 10 minutes and until intake, never while other input is queued, and records the outcome as a `host_activation` receipt; without the app-server daemon it reports `unsupported`, and the message waits until you send a prompt (#468).
 - Injected memory and `briefing` index lines replace each run of control characters (including the ESC that starts an ANSI sequence, so colour codes no longer take effect), DEL and bidi overrides with a space, so a control byte can no longer rejoin split text (#374).
 - `Recent activity` no longer shows the routing hash that session-summary and pre-compact titles carry after the project label (#409).
