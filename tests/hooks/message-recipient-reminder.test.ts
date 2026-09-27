@@ -331,7 +331,9 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
   // `run()` call above, so the "MeMesh data dir" these hooks resolve is
   // `tmp` itself (dirname of dbPath) — the fallback config lives at
   // `tmp/hosts/claude.json`, no `home/.memesh` involved.
-  describe('Feature: the owner-private Claude channel config supplies the recipient when MEMESH_RECIPIENT is unset', () => {
+  // POSIX only: the owner-private read needs O_NOFOLLOW and a uid check, and
+  // the local host runtime that writes hosts/claude.json refuses Windows.
+  describe.skipIf(process.platform === 'win32')('Feature: the owner-private Claude channel config supplies the recipient when MEMESH_RECIPIENT is unset', () => {
     function writeClaudeHostConfig(fields: Record<string, string>) {
       const dir = path.join(tmp, 'hosts');
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
