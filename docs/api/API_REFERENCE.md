@@ -2198,7 +2198,7 @@ MeMesh runs as a stdio MCP server. Claude Code and Codex manage the connection a
 }
 ```
 
-The Codex manifest uses the plugin cache as its working directory:
+The Codex manifest uses the plugin cache as its working directory. Codex passes an MCP server only the environment variables its manifest names, so `env_vars` forwards a custom data directory or database:
 
 ```json
 {
@@ -2206,7 +2206,8 @@ The Codex manifest uses the plugin cache as its working directory:
     "memesh": {
       "command": "node",
       "args": ["./dist/mcp/server.js"],
-      "cwd": "."
+      "cwd": ".",
+      "env_vars": ["MEMESH_DIR", "MEMESH_DB_PATH"]
     }
   }
 }
