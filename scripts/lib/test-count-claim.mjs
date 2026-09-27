@@ -10,9 +10,7 @@
  * `tests/doc-claims-test-count.test.ts` is what makes it one.
  *
  * Two branches because the phrasings share no substring:
- *   - `tests` / `test cases`, case-insensitively. German's own word for this
- *     claim ("Tests") is an English loanword, so the `i` flag already covers
- *     README.de.md.
+ *   - `tests` / `test cases`, case-insensitively.
  *   - `項測試` — Chinese measure word + "test". Nothing in the English branch
  *     can see it.
  *

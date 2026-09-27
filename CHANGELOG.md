@@ -15,6 +15,7 @@ All notable changes to MeMesh are documented here.
 ### Changed
 
 - Promotion from `next` to `latest` runs through the release workflow (#452).
+- The README is kept in English and Traditional Chinese only; the German translation was removed.
 
 ### Fixed
 

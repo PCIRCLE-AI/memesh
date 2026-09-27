@@ -194,7 +194,6 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
   const readmeToolSections = [
     ['README.md', /## All (\d+) Memory and Coordination Tools/],
     ['README.zh-TW.md', /## 全部 (\d+) 個記憶與協作工具/],
-    ['README.de.md', /## Alle (\d+) Memory- und Koordinations-Tools/],
   ];
   for (const [doc, heading] of readmeToolSections) {
     const source = read(doc);
@@ -342,11 +341,10 @@ if (currentDocs.errors.length === 0) {
 // down. `npm test` prints the current one.
 //
 // The English pattern alone missed a live case: README.zh-TW.md carried "630
-// 項測試" (630, counter word, "tests") next to a plain `npm test` in the other
-// two READMEs — same stale claim, phrased so the English-only regex never saw
-// it. README.de.md's own word for the same claim ("Tests") is already an
-// English loanword the case-insensitive flag catches; 項測試 needed its own
-// branch because it shares no substring with "tests" at all.
+// 項測試" (630, counter word, "tests") next to a plain `npm test` in
+// README.md — same stale claim, phrased so the English-only regex never saw
+// it. 項測試 needed its own branch because it shares no substring with
+// "tests" at all.
 const readmes = fs.readdirSync(repoRoot).filter(f => /^README(\.[a-zA-Z-]+)?\.md$/.test(f));
 if (readmes.length === 0) fail('no README*.md found — this check stopped looking at anything');
 const withCounts = readmes.filter(f => statesTestCount(read(f)));

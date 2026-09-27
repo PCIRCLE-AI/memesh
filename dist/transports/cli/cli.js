@@ -56190,7 +56190,7 @@ function countH2Headings(content) {
 function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImpl) {
   const englishPath = path16.join(packageRoot3, "README.md");
   if (!existsSyncImpl(englishPath)) {
-    return createCheck("readme_locale_parity", "README locale parity", "pass", "README.md not present in this install (likely a packaged tarball without docs); locale-parity check skipped.");
+    return createCheck("readme_locale_parity", "README locale parity", "pass", "README.md not present in this install; locale-parity check skipped.");
   }
   let englishCount;
   try {
@@ -56198,18 +56198,14 @@ function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImp
   } catch (err) {
     return createCheck("readme_locale_parity", "README locale parity", "warn", `Could not read README.md: ${err instanceof Error ? err.message : String(err)}`, void 0, { code: "readme-parity.unreadable", params: { detail: err instanceof Error ? err.message : String(err) } });
   }
-  const missing = [];
+  const present = LOCALE_README_FILES.filter((filename) => existsSyncImpl(path16.join(packageRoot3, filename)));
+  if (present.length === 0) {
+    return createCheck("readme_locale_parity", "README locale parity", "pass", "No locale README in this install; locale-parity check skipped.");
+  }
   const drift = [];
-  let anyLocalePresent = false;
-  for (const filename of LOCALE_README_FILES) {
-    const localePath = path16.join(packageRoot3, filename);
-    if (!existsSyncImpl(localePath)) {
-      missing.push(filename);
-      continue;
-    }
-    anyLocalePresent = true;
+  for (const filename of present) {
     try {
-      const count = countH2Headings(readFileSyncImpl(localePath, "utf8"));
+      const count = countH2Headings(readFileSyncImpl(path16.join(packageRoot3, filename), "utf8"));
       if (Math.abs(count - englishCount) > LOCALE_H2_TOLERANCE) {
         drift.push({ name: filename, count });
       }
@@ -56217,21 +56213,12 @@ function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImp
       drift.push({ name: filename, count: -1 });
     }
   }
-  if (!anyLocalePresent) {
-    return createCheck("readme_locale_parity", "README locale parity", "pass", "Locale READMEs not present in this install (packaged installs ship README.md only); locale-parity check skipped.");
+  if (drift.length === 0) {
+    return createCheck("readme_locale_parity", "README locale parity", "pass", `${present.join(", ")} match the English H2 count (${englishCount}).`);
   }
-  if (missing.length === 0 && drift.length === 0) {
-    return createCheck("readme_locale_parity", "README locale parity", "pass", `All ${LOCALE_README_FILES.length} locale READMEs match English H2 count (${englishCount}).`);
-  }
-  const parts = [];
-  if (missing.length > 0) {
-    parts.push(`missing: ${missing.join(", ")}`);
-  }
-  if (drift.length > 0) {
-    const driftDetail = drift.map((d) => `${d.name}=${d.count === -1 ? "unreadable" : d.count}`).join(", ");
-    parts.push(`H2 count drift (English=${englishCount}): ${driftDetail}`);
-  }
-  return createCheck("readme_locale_parity", "README locale parity", "warn", parts.join("; "), `Re-sync the listed READMEs against README.md so section structure matches (\xB1${LOCALE_H2_TOLERANCE} H2 tolerated to absorb translation collapse).`, { code: "readme-parity.drift", params: { detail: parts.join("; "), tolerance: LOCALE_H2_TOLERANCE } });
+  const driftDetail = drift.map((d) => `${d.name}=${d.count === -1 ? "unreadable" : d.count}`).join(", ");
+  const detail = `H2 count drift (English=${englishCount}): ${driftDetail}`;
+  return createCheck("readme_locale_parity", "README locale parity", "warn", detail, `Re-sync the listed READMEs against README.md so section structure matches (\xB1${LOCALE_H2_TOLERANCE} H2 tolerated to absorb translation collapse).`, { code: "readme-parity.drift", params: { detail, tolerance: LOCALE_H2_TOLERANCE } });
 }
 function resolveDatabasePath() {
   return getDbPath();
@@ -57638,7 +57625,6 @@ var init_doctor = __esm({
     EXPECTED_HOOK_TYPES = ["PreToolUse", "SessionStart", "PostToolUse", "Stop", "PreCompact"];
     AGENT_MESSAGE_STORAGE_QUOTA_ENV2 = "MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES";
     LOCALE_README_FILES = [
-      "README.de.md",
       "README.zh-TW.md"
     ];
     LOCALE_H2_TOLERANCE = 1;

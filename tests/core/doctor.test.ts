@@ -2336,8 +2336,8 @@ describe('README locale parity (doctor sub-check)', () => {
     return lines.join('\n');
   }
   // Must mirror doctor.ts LOCALE_README_FILES — the locale set was reduced
-  // to en + zh-TW + de in commit bc6d8553.
-  const LOCALES = ['de', 'zh-TW'];
+  // to en + zh-TW + de in commit bc6d8553, and de was dropped in turn.
+  const LOCALES = ['zh-TW'];
 
   async function doctorOn(packageRoot: string) {
     return runDoctor({
@@ -2365,7 +2365,7 @@ describe('README locale parity (doctor sub-check)', () => {
     const check = result.checks.find(c => c.id === 'readme_locale_parity')!;
     expect(check).toBeDefined();
     expect(check.status).toBe('pass');
-    expect(check.summary).toContain('All 2 locale READMEs');
+    expect(check.summary).toContain('README.zh-TW.md match the English H2 count (15)');
   });
 
   it('tolerates ±1 H2 drift (locale translators sometimes collapse a heading)', async () => {
@@ -2384,37 +2384,18 @@ describe('README locale parity (doctor sub-check)', () => {
     tempRoots.push(root);
     fs.writeFileSync(path.join(root, 'README.md'), buildReadme(15));
     for (const loc of LOCALES) {
-      const count = loc === 'de' ? 12 : 15; // German is stale by 3 sections
+      const count = 12; // stale by 3 sections
       fs.writeFileSync(path.join(root, `README.${loc}.md`), buildReadme(count));
     }
 
     const result = await doctorOn(root);
     const check = result.checks.find(c => c.id === 'readme_locale_parity')!;
     expect(check.status).toBe('warn');
-    expect(check.summary).toMatch(/README\.de\.md=12/);
+    expect(check.summary).toMatch(/README\.zh-TW\.md=12/);
     expect(check.fix).toBeTruthy();
   });
 
-  it('warns when a locale README is missing while at least one sibling is present', async () => {
-    // A real dev checkout has every locale present. If it doesn't — a
-    // translation was dropped, or a new locale was added to the list and
-    // one file forgotten — the AT-LEAST-ONE-PRESENT signal below distinguishes
-    // that genuine drift from a packaged install, which has none at all.
-    const root = createPackageRoot();
-    tempRoots.push(root);
-    fs.writeFileSync(path.join(root, 'README.md'), buildReadme(15));
-    // omit 繁體中文
-    for (const loc of LOCALES.filter(l => l !== 'zh-TW')) {
-      fs.writeFileSync(path.join(root, `README.${loc}.md`), buildReadme(15));
-    }
-
-    const result = await doctorOn(root);
-    const check = result.checks.find(c => c.id === 'readme_locale_parity')!;
-    expect(check.status).toBe('warn');
-    expect(check.summary).toMatch(/missing: README\.zh-TW\.md/);
-  });
-
-  it('skips silently when README.md is not present (an even more minimal tarball)', async () => {
+  it('skips silently when README.md is not present', async () => {
     const root = createPackageRoot();
     tempRoots.push(root);
     // No README.md at all.
@@ -2424,21 +2405,16 @@ describe('README locale parity (doctor sub-check)', () => {
     expect(check.summary).toMatch(/check skipped/);
   });
 
-  it('skips silently when README.md is present but no locale READMEs are — the real shape of every npm install', async () => {
-    // npm always includes README.md in a published tarball (and this
-    // package's `files` lists it explicitly too), so it is NOT the signal
-    // for "packaged install without docs" the check above treats it as.
-    // The locale READMEs are the ones actually absent from `files` — this
-    // is what every real end-user's install looks like, and it must not
-    // warn "missing: README.de.md, README.zh-TW.md" at them.
+  it('skips silently when README.md is present but no locale README is', async () => {
+    // A missing translation is a repository problem, caught by the doc checks
+    // in CI; doctor must not warn users about it.
     const root = createPackageRoot();
     tempRoots.push(root);
     fs.writeFileSync(path.join(root, 'README.md'), buildReadme(15));
-    // No locale READMEs at all — the real packaged shape.
 
     const result = await doctorOn(root);
     const check = result.checks.find(c => c.id === 'readme_locale_parity')!;
-    expect(check.status, `a real npm install should never see: ${check.summary}`).toBe('pass');
+    expect(check.status, check.summary).toBe('pass');
     expect(check.summary).toMatch(/check skipped/);
   });
 });

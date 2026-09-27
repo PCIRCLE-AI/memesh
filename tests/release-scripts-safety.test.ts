@@ -461,14 +461,6 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         '完整 native envelope 不超過 16,384 bytes（16 KiB）；native_message_too_large 與 recipient_unavailable 分開回報。Principal target 保留 durable store-and-forward。',
         '具有有效 identity 並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊。失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試。不要假設 Codex Desktop 或未連接的 task 已註冊，除非確切 session 出現在 `message discover`。',
       ].join('\n'));
-      write('README.de.md', [
-        '# README',
-        '## Das Kleingedruckte',
-        'message registriert sich ein manuelles `agent setup` ist nicht erforderlich ohne Polling oder menschliche Erinnerung begrenztes 45-Sekunden-Fenster gestoppte, fehlende oder getrennte Codex-Session message storage report',
-        'Beim nicht vertrauenswürdigen, JSON-kodierten Payload gelten 65.536 UTF-8-Bytes (64 KiB); Intake, Bestätigung und Workflow-Status werden getrennt protokollieren.',
-        'Die vollständige native Envelope ist auf 16.384 Bytes (16 KiB) begrenzt; native_message_too_large und recipient_unavailable bleiben getrennt. Principal-Ziele behalten Durable Store-and-Forward.',
-        'Mit dem Plugin registriert sich jeder gestartete oder fortgesetzte gewöhnliche Codex-CLI-Thread mit gültiger Thread-Identität und vorhandenem Arbeitsverzeichnis automatisch mit einer threadbezogenen Identität, und eine fehlgeschlagene native Exact-Session-Zustellung wird nicht automatisch wiederholt, der Absender muss bewusst erneut senden. Nimm bei Codex Desktop oder einem nicht angehängten Task keine Registrierung an, sofern er nicht in `message discover` erscheint.',
-      ].join('\n'));
       write('.claude-plugin/mcp.json', 'memesh ${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js');
       write('.claude-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.claude-plugin/mcp.json"');
       write('.codex-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.codex-plugin/mcp.json"');

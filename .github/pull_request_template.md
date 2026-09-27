@@ -22,7 +22,7 @@
 - [ ] `docs/ARCHITECTURE.md` updated if module structure or counts changed (incl. version header)
 - [ ] `docs/api/API_REFERENCE.md` updated if MCP / HTTP / CLI surface changed (incl. version header)
 - [ ] `README.md` updated if user-facing features, installation, or collaboration framing changed
-- [ ] README locales (`README.de.md` / `README.zh-TW.md`) re-synced if `README.md` changed
+- [ ] README locale (`README.zh-TW.md`) re-synced if `README.md` changed
 - [ ] Version anchors listed in `CONTRIBUTING.md` updated consistently if bumping a version
 - [ ] `dist/skills-manifest.json` regenerated via `npm run build` (required after ANY change to `.claude-plugin/`, `scripts/hooks/`, `skills/`, or version files)
 - [ ] `memesh doctor` reports `Overall: PASS` (or `PASS_WITH_CONCERNS` only when the WARN is `Update status` — that's expected for an unreleased local version)
