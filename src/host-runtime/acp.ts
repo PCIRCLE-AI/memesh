@@ -12,6 +12,8 @@ import {
   type AcpSessionSelection,
   type AcpSessionUpdate,
 } from '../host-adapters/acp-client.js';
+import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
+import { getProjectName } from '../core/paths.js';
 import {
   assertSecureLocalHostRuntimeSupported,
   normalizeConfiguredRouterSocket,
@@ -308,7 +310,10 @@ export async function startManagedAcpHost(
     dependencies.create_session_instance_id ?? randomUUID,
   );
   const socketPath = normalizeConfiguredRouterSocket(config.router_socket);
-  const project = requiredString(config.project, 'project');
+  // #474: same derivation as `codex-session.ts`'s automatic path, the
+  // managed Codex app-server host and the Claude channel host —
+  // `config.project` never decides routing.
+  const project = canonicalAgentScopeId(getProjectName(launch.workspace));
   const authToken = readTokenFile(config.token_file);
   const model = config.model === undefined ? undefined : requiredString(config.model, 'model');
   const workSummary = config.work_summary === undefined ? undefined : requiredString(config.work_summary, 'work_summary');

@@ -7,7 +7,7 @@ type StartManagedThread = (input: StartCodexAppServerThreadInput, options?: Code
 export interface ManagedCodexHostConfig extends Record<string, unknown> {
     router_socket: unknown;
     token_file: unknown;
-    project: unknown;
+    project?: unknown;
     principal_id: unknown;
     session_instance_id?: unknown;
     control_socket: unknown;

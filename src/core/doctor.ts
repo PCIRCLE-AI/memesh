@@ -2404,7 +2404,10 @@ function inspectClaudeChannelRegistration(
   if (target) {
     try {
       const config = readHostConfigFile<JsonObject>(target);
-      const required = ['router_socket', 'token_file', 'project', 'principal_id'];
+      // #474: `project` is deliberately absent — the Claude channel host no
+      // longer reads it (it derives its routing project from its own
+      // working directory), so a config missing it is coherent, not broken.
+      const required = ['router_socket', 'token_file', 'principal_id'];
       targetConfigValid = config.server_name === 'memesh-channel'
         && required.every((key) => {
           const value = config[key];

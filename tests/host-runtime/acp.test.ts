@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { canonicalAgentScopeId } from '../../src/core/agent-scope-id.js';
+import { getProjectName } from '../../src/core/paths.js';
 import {
   AcpProcessExitError,
   AcpRemoteError,
@@ -240,8 +242,10 @@ describe('managed Gemini ACP runtime', () => {
       generation: 1,
       session: { kind: 'new' },
     });
+    // #474: the project is derived from `workspace`, never from the config's
+    // own `project` field ('managed-project', ignored — see `managedConfig`).
     expect(routerOptions?.identity).toEqual({
-      project: 'managed-project',
+      project: canonicalAgentScopeId(getProjectName(process.cwd())),
       principal_id: 'gemini-managed',
       session_instance_id: 'generated-managed-session',
       adapter_kind: 'acp',

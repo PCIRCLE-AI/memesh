@@ -85,6 +85,12 @@ const SOURCES = [
   // keeps it out of its pools) and pre-edit recall must agree on its type, its
   // entity name and its cleaning rules, so they are one mirrored leaf.
   { from: 'dist/core/session-handoff.js', to: 'session-handoff.js', src: 'src/core/session-handoff.ts' },
+  // The Codex session principal decision (#474 follow-up, cross-host
+  // discovery): SessionStart needs the SAME identity `codex-session.ts`
+  // registers with the router under, or the hook's address line and the
+  // router's actual registration could name two different principals for
+  // the same session.
+  { from: 'dist/core/codex-session-principal.js', to: 'codex-session-principal.js', src: 'src/core/codex-session-principal.ts' },
   { from: 'dist/storage/fts-index.js', to: 'fts-index.js', src: 'src/storage/fts-index.ts' },
   { from: 'dist/storage/schema.js', to: 'schema.js', src: 'src/storage/schema.ts' },
   // The SQLite driver. A leaf by construction — it imports `node:module` and

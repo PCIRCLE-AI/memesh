@@ -2316,7 +2316,6 @@ async function runClaude(journey, waitMs) {
 
   const setup = journey.cliJson([
     'agent', 'setup', 'claude',
-    '--project', journey.project,
     '--principal', 'claude-live-journey',
     '--json',
   ]);
@@ -2324,6 +2323,13 @@ async function runClaude(journey, waitMs) {
 
   const workspace = path.join(journey.dir, 'claude-workspace');
   fs.mkdirSync(workspace, { recursive: true });
+  // #474: the Claude channel host derives its routing project from its own
+  // working directory, not from `agent setup claude --project` (that flag no
+  // longer does anything for this host) — the interactive `claude` process
+  // launched below with `cd <workspace> && claude ...` is what actually
+  // determines it, so match that derivation here rather than the fixed
+  // `PROJECT` constant `journey.project` started as.
+  journey.project = getProjectName(fs.realpathSync(workspace));
   const mcpConfig = path.join(journey.dir, 'claude-mcp.json');
   fs.writeFileSync(mcpConfig, `${JSON.stringify({
     mcpServers: {

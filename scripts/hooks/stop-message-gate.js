@@ -81,11 +81,6 @@ process.stdin.on('end', () => {
 
     const recipient = resolveMessageRecipient(process.env, (label) => {
       record('notified', `recipient: MEMESH_RECIPIENT ignored (${label})`);
-    }, data.cwd, () => {
-      // Ledger-only (#468): no block, no visible line — a multi-project
-      // machine sharing one hosts/claude.json must not be blocked on
-      // every OTHER project's Stop.
-      record('skipped', SKIP_REASONS.fallbackProjectMismatch);
     });
     if (!recipient) {
       record('skipped', SKIP_REASONS.noRecipientForGate);

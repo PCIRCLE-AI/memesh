@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CodexAppServerDisconnectedError, CodexAppServerTimeoutError, createCodexAppServerAdapter, startCodexAppServerThread, } from '../host-adapters/codex-app-server.js';
+import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
+import { getProjectName } from '../core/paths.js';
 import { assertSecureLocalHostRuntimeSupported, normalizeConfiguredRouterSocket, readHostConfig, readTokenFile, requiredString, } from './config.js';
 import { runHostEntry } from './entry.js';
 import { connectRouterHost } from './router-client.js';
@@ -135,7 +137,7 @@ function normalizeConfig(config) {
     return {
         routerSocket: normalizeConfiguredRouterSocket(config.router_socket),
         tokenFile: config.token_file,
-        project: requiredString(config.project, 'project'),
+        project: canonicalAgentScopeId(getProjectName(workspace)),
         principalId: requiredString(config.principal_id, 'principal_id'),
         sessionInstanceId: config.session_instance_id === undefined
             ? randomUUID()

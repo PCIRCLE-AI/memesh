@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { normalizeAgentRouterSocketPath } from '../core/paths.js';
+import { HOST_CONFIG_MAX_BYTES as MAX_HOST_CONFIG_FILE_BYTES } from '../core/agent-scope-id.js';
 
-const MAX_HOST_CONFIG_FILE_BYTES = 64 * 1024;
 const MAX_ROUTER_TOKEN_FILE_BYTES = 8 * 1024;
 export const SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED =
   'The secure local host runtime is not supported on Windows.';

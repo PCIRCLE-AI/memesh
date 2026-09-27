@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AcpClientHostAdapter, } from '../host-adapters/acp-client.js';
+import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
+import { getProjectName } from '../core/paths.js';
 import { assertSecureLocalHostRuntimeSupported, normalizeConfiguredRouterSocket, optionalStringArray, readHostConfig, readTokenFile, requiredString, } from './config.js';
 import { runHostEntry } from './entry.js';
 export const ACP_SESSION_UPDATE_MAX_RECORD_BYTES = 64 * 1024;
@@ -197,7 +199,7 @@ export async function startManagedAcpHost(config, dependencies) {
     assertSecureLocalHostRuntimeSupported();
     const launch = resolveManagedAcpLaunch(config, dependencies.create_session_instance_id ?? randomUUID);
     const socketPath = normalizeConfiguredRouterSocket(config.router_socket);
-    const project = requiredString(config.project, 'project');
+    const project = canonicalAgentScopeId(getProjectName(launch.workspace));
     const authToken = readTokenFile(config.token_file);
     const model = config.model === undefined ? undefined : requiredString(config.model, 'model');
     const workSummary = config.work_summary === undefined ? undefined : requiredString(config.work_summary, 'work_summary');

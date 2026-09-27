@@ -207,9 +207,14 @@ describe('Installation Verification', () => {
       expect(guide).toContain('No manual `agent setup` is required');
       expect(guide).toContain('stopped, missing, disconnected, or replaced');
       for (const document of [install, guide]) {
-        expect(document).toContain('complete `project`');
+        // #474: `--project` no longer decides routing for any managed host —
+        // each derives it automatically from its own working directory or
+        // `--workspace`, so pairing Claude Channel with a Codex session in
+        // the same repository needs no value copied between the two setup
+        // commands any more.
+        expect(document).toContain('No `--project`');
+        expect(document).toContain('for routing (#474)');
         expect(document).toContain('memesh briefing --json');
-        expect(document).toContain('repository basename');
       }
     });
   });

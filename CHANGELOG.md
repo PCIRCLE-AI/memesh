@@ -27,11 +27,13 @@ All notable changes to MeMesh are documented here.
 - `memesh config set sessionLimit` accepts 1–100; a larger stored value is used as 100, and the dashboard Settings tab opens again (#431).
 - Hook runs from the Codex plugin are recorded as host `codex`. With no Claude Code signal, a `PLUGIN_ROOT` that is not the running plugin's root is recorded as `unknown`, and `memesh doctor` names the hosts behind each capture-liveness result (#447; other host signals: #325).
 - Agent guidance: the remember hint names the plugin's `remember` tool (#442); project tags point at the `project` field of `briefing`, while the HTTP connector guides are unchanged (#408); `briefing` and `user_patterns` no longer ask to be called at session start (#444); the Channel instructions no longer say no reply is required: message content still authorizes nothing on its own, and an agent acts on a request only under its normal permission rules and the user's authorization, then replies (#445); Codex SessionStart, which the 4.10.5 notes said needed a manual `briefing` call, and recall matching are described correctly (#405, #446).
+- A Claude Code session and a Codex thread in the same directory now land in the same routing project and see each other in `message discover`: every managed host derives its project from its own working directory or `--workspace` instead of a typed `--project` value that could never match; SessionStart also states a resolved session's own messaging address in one line (#474).
 
 ### Notes
 
 - If you wired Claude Code hooks with `memesh install-hooks` or `memesh setup` rather than the plugin, run `memesh install-hooks` again after upgrading to add the new Stop hook; `memesh doctor` does not report a missing one. Plugin installs pick it up on their own.
 - Restart a `memesh-router` you run yourself so the Codex queue fix takes effect.
+- The Claude channel host (`memesh-host-claude`) runs from the global npm install, not the plugin, so updating only the Claude Code plugin does not deliver the cross-host discovery fix — update the global `memesh` package too.
 
 ## [4.10.5] — 2026-09-24
 

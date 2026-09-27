@@ -1286,9 +1286,9 @@ const agentCmd = program
 
 agentCmd
   .command('setup')
-  .description('Write this host\'s local config (a stable project + principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner — also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. See docs/platforms/agent-messaging.md.')
+  .description('Write this host\'s local config (a stable principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner — also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. The routing project always comes from the host\'s own working directory (claude) or its --workspace (codex, codex-session, gemini) — no flag decides it. See docs/platforms/agent-messaging.md.')
   .argument('<host>', 'codex-session | codex | claude | gemini')
-  .requiredOption('--project <name>', 'Project scope used for exact routing')
+  .option('--project <name>', 'Ignored for routing (#474) — the project always comes from the host\'s own working directory or --workspace. Accepted only so an older script that still passes it does not fail; a given value is still written into the config for reference, never used to route.')
   .requiredOption('--principal <id>', 'Stable logical recipient ID')
   .option('--workspace <path>', 'Managed Codex/Gemini workspace', process.cwd())
   .option('--model <id>', 'Optional declared model identifier')
@@ -1312,14 +1312,18 @@ agentCmd
     const common = {
       router_socket: getAgentRouterSocketPath(),
       token_file: routerTokenFile,
-      // The fourth producer of a routing identity, after the MCP, HTTP and CLI
-      // message surfaces. `send` refuses a path-shaped project or recipient,
-      // so a host configured under one would register a principal that nothing
-      // can address: the failure would surface as an error about the SENDER's
-      // argument, hours later, rather than about this config. Refuse it here,
-      // with the same message, at the moment the config is written.
-      project: requireAgentScopeArg(opts.project, 'project', '--project'),
+      // `send` refuses a path-shaped recipient, so a host configured under
+      // one would register a principal that nothing can address: the
+      // failure would surface as an error about the SENDER's argument, hours
+      // later, rather than about this config. Refuse it here, with the same
+      // message, at the moment the config is written.
       principal_id: requireAgentScopeArg(opts.principal, 'recipient', '--principal'),
+      // #474: --project no longer decides routing for any host (see the
+      // flag's own help text above). Validate and keep it only when
+      // explicitly given, so an older script that still passes it does not
+      // fail, and the written config never claims a project value nobody
+      // asked for.
+      ...(opts.project === undefined ? {} : { project: requireAgentScopeArg(opts.project, 'project', '--project') }),
       ...(opts.model === undefined ? {} : { model: boundedCliDeclaration(opts.model, '--model', 200) }),
       ...(opts.workSummary === undefined ? {} : { work_summary: boundedCliDeclaration(opts.workSummary, '--work-summary', 200) }),
     };

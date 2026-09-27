@@ -153,7 +153,6 @@ export const SKIP_REASONS = {
     noDatabaseForMessageGate: 'no database yet — nothing to check for waiting messages',
     nothingWaitingForGate: 'no messages are waiting for the resolved recipient',
     alreadyBlockedForGate: 'every waiting message id was already blocked for in this session',
-    fallbackProjectMismatch: 'hosts/claude.json project does not match this project\'s id; use the full id from `memesh briefing --json`',
 };
 const KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
 export const UNRECOGNISED_REASON = 'unrecognised reason';

@@ -138,7 +138,7 @@ principal across different Codex threads, create this optional override and
 restart Codex in that workspace:
 
 ```bash
-memesh agent setup codex-session --project my-project --principal codex-recipient --workspace "$PWD"
+memesh agent setup codex-session --principal codex-recipient --workspace "$PWD"
 ```
 
 This stores the configured workspace realpath and principal in
@@ -146,12 +146,14 @@ This stores the configured workspace realpath and principal in
 `resume`), a short hook validates the Codex thread ID and cwd, then launches an
 owner-private detached companion. SessionEnd leaves a bounded 45-second idle
 queue window; resume replaces the prior generation, and expiry removes it. A
-matching valid override supplies its project and principal; another workspace
-keeps automatic thread-scoped registration. A malformed or insecure override
-fails closed. The authenticated router sends the exact registered thread one
-bounded full message through native `codex queue`; no second `message fetch`
-is required. A message accepted during the idle window becomes model-visible
-when the same thread resumes; a stopped UI is not awakened.
+matching valid override supplies its principal; the project is always the
+automatic one for that workspace, same as an ordinary thread there would get.
+Another workspace keeps automatic thread-scoped registration. A malformed or
+insecure override fails closed. The authenticated router sends the exact
+registered thread one bounded full message through native `codex queue`; no
+second `message fetch` is required. A message accepted during the idle window
+becomes model-visible when the same thread resumes; a stopped UI is not
+awakened.
 
 `host_accept` records only that the local Codex queue accepted that message. It
 does not prove an agent read the payload, acknowledged it, or accepted the
@@ -165,17 +167,19 @@ automatically after a later registration; the sender must retry deliberately.
 
 The following are separate managed-host paths:
 
-When pairing Claude Channel with an automatically registered Codex session,
-copy the complete `project` value from `memesh briefing --json` into the Claude
-setup command. Do not substitute the repository basename: automatic project
-identities include a collision-resistant suffix, and different project strings
-cannot discover or natively route to each other.
+No `--project` flag is needed, or read, for routing (#474). Each host derives
+its own routing project the same way the automatic Codex project above does:
+`codex` from its `--workspace`, `claude` from its own process's working
+directory (the directory Claude Code was started in). Pairing Claude Channel
+with an automatically registered Codex session in the same repository is
+therefore automatic too — start both from the same directory and they land in
+the same project with no value to copy between them.
 
 ```bash
-memesh agent setup codex --project my-project --principal codex-recipient --workspace "$PWD"
+memesh agent setup codex --principal codex-recipient --workspace "$PWD"
 memesh-host-codex --config "$HOME/.memesh/hosts/codex.json"
 
-memesh agent setup claude --project my-project --principal claude-recipient
+memesh agent setup claude --principal claude-recipient
 # Run the printed `registration_command` (`claude mcp add ... memesh-host-claude ...`) once.
 # Start each participating session with the printed research-preview launch command:
 claude --dangerously-load-development-channels server:memesh-channel

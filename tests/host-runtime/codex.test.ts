@@ -4,6 +4,8 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { canonicalAgentScopeId } from '../../src/core/agent-scope-id.js';
+import { getProjectName } from '../../src/core/paths.js';
 import {
   startManagedCodexHost,
   type ManagedCodexHostConfig,
@@ -107,8 +109,12 @@ describe.skipIf(process.platform === 'win32')('managed Codex host runtime', () =
         timeout_ms: 1_000,
       });
       expect(connectRouter).toHaveBeenCalledWith(expect.objectContaining({
+        // #474: the project is derived from the REALPATH'd `workspace`
+        // (`normalizeConfig` resolves it the same way), never from the
+        // config's own `project` field ('project-1', ignored — see `configFor`).
         identity: {
-          project: 'project-1', principal_id: 'principal-1',
+          project: canonicalAgentScopeId(getProjectName(fs.realpathSync(config.workspace as string))),
+          principal_id: 'principal-1',
           session_instance_id: 'session-exact-1', adapter_kind: 'codex-app-server',
           model: 'gpt-5.6-sol', work_summary: 'implement MeMesh runtime',
         },
