@@ -17,6 +17,7 @@ to npm. The previous public release is 4.10.5.
 
 - Dashboard Settings no longer scrolls sideways on a phone-width screen: the briefing select added in 4.10.5 made the page 584px wide at 375px, and every Settings select now stays inside its card (#473).
 - The dashboard header no longer overflows a phone-width screen in German: the version and memory count wrap inside it in every language (#475).
+- The Project tab's view toggle wraps on a phone-width screen; in German it made the page 12px wider than a 375px screen.
 - A Claude Code session and a Codex thread in the same directory now land in the same routing project and see each other in `message discover`: every managed host derives its project from its own working directory or `--workspace` instead of a typed `--project` value that could never match; SessionStart also states a resolved session's own messaging address in one line (#474).
 - The Codex plugin's MCP server now receives `MEMESH_DIR` and `MEMESH_DB_PATH`. With a custom data directory or database it used the default one, so Codex saw different memories and messages from the CLI and hooks (#482).
 
