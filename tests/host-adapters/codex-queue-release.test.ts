@@ -3,14 +3,15 @@ import fs from 'node:fs';
 import { createServer } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { releaseCodexQueue, type SpawnCodexProxy } from '../../src/host-adapters/codex-queue-release.js';
 
 // Stands in for `codex app-server proxy`: pipes stdio to a socket, exits 1, or
 // hangs silently ('stubborn' also ignores SIGTERM). It exits when its stdin
 // closes, so it cannot outlive the test. Like Codex, it gives up on a client
-// that sends frames before the 101.
+// that sends frames before the 101. It forwards stdin a moment late, as a pipe
+// on Linux may, so bytes written just before the client kills it can be lost.
 const FAKE_PROXY = `
 const target = process.argv[1];
 if (target === 'exit-1') process.exit(1);
@@ -28,7 +29,7 @@ if (target === 'hang' || target === 'stubborn') {
       const end = head.indexOf('\\r\\n\\r\\n');
       if (end >= 0 && head.length > end + 4) process.exit(3);
     }
-    socket.write(chunk);
+    setTimeout(() => socket.write(chunk), 20);
   });
   socket.on('data', (chunk) => { upgraded = true; process.stdout.write(chunk); });
   socket.on('close', () => process.exit(0));
@@ -85,11 +86,14 @@ describe('releaseCodexQueue', () => {
         webSocket.on('message', (data) => {
           const frame = JSON.parse(data.toString()) as Record<string, unknown>;
           frames.push(frame);
-          if (frame.method === 'initialize') webSocket.send(JSON.stringify({ id: frame.id, result: {} }));
+          if (frame.method === 'initialize') {
+            // A ping before the reply; the client's pong precedes its next request.
+            webSocket.ping();
+            webSocket.send(JSON.stringify({ id: frame.id, result: {} }));
+          }
           if (frame.method === 'thread/queue/start') webSocket.send(JSON.stringify({ id: frame.id, ...startAnswer }));
           if (frame.method !== 'thread/queue/list') return;
-          // A ping and a large notification in two fragments come before the reply.
-          webSocket.ping();
+          // A large notification in two fragments comes before the reply.
           const note = JSON.stringify({ method: 'thread/status/changed', params: { pad: 'x'.repeat(70_000) } });
           webSocket.send(note.slice(0, 100), { fin: false });
           webSocket.send(note.slice(100), { fin: true });
@@ -116,7 +120,7 @@ describe('releaseCodexQueue', () => {
       if (startAnswer) {
         expect(frames[3]).toMatchObject({ params: { threadId: 'thread-1', queuedSubmissionId: 'sub-1' } });
       }
-      await vi.waitFor(() => expect(pongs).toBe(1));
+      expect(pongs).toBe(1);
       await exitOf(calls[0].child);
     } finally {
       for (const client of webSocketServer.clients) client.terminate();
