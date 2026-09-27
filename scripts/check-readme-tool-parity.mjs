@@ -60,7 +60,6 @@ const checkLockedSurface = (file, surface) => {
 const tableDocs = [
   ['README.md', /## All (\d+)[^\n]*\n([\s\S]*?)\n---/m],
   ['README.zh-TW.md', /## [^\n]*?(\d+)[^\n]*(?:[Tt]ools|工具)\n([\s\S]*?)\n---/m],
-  ['README.de.md', /## [^\n]*?(\d+)[^\n]*(?:[Tt]ools|工具)\n([\s\S]*?)\n---/m],
   ['AGENTS.md', /## All (\d+) MCP tools\n([\s\S]*?)(?=\n## )/m],
   ['skills/memesh/SKILL.md', /## All (\d+) MCP tools\n([\s\S]*?)(?=\n## )/m],
 ];
@@ -116,4 +115,4 @@ if (errors.length) {
   process.exit(1);
 }
 
-process.stdout.write(`mcp-doc-parity: PASS (${names.length} tools across 7 agent-facing documents; contract sha256:${contractDigest})\n`);
+process.stdout.write(`mcp-doc-parity: PASS (${names.length} tools across 6 agent-facing documents; contract sha256:${contractDigest})\n`);

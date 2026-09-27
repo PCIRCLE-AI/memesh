@@ -4,6 +4,26 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+## [4.10.7] — 2026-09-27
+
+Includes the changes documented under 4.10.6 below; 4.10.6 was not published
+to npm. The previous public release is 4.10.5.
+
+### Changed
+
+- The README is kept in English and Traditional Chinese only; the German translation was removed.
+
+### Fixed
+
+- Dashboard Settings no longer scrolls sideways on a phone-width screen: the briefing select added in 4.10.5 made the page 584px wide at 375px, and every Settings select now stays inside its card (#473).
+- The dashboard header no longer overflows a phone-width screen in German: the version and memory count wrap inside it in every language (#475).
+- A Claude Code session and a Codex thread in the same directory now land in the same routing project and see each other in `message discover`: every managed host derives its project from its own working directory or `--workspace` instead of a typed `--project` value that could never match; SessionStart also states a resolved session's own messaging address in one line (#474).
+- The Codex plugin's MCP server now receives `MEMESH_DIR` and `MEMESH_DB_PATH`. With a custom data directory or database it used the default one, so Codex saw different memories and messages from the CLI and hooks (#482).
+
+### Notes
+
+- The Claude channel host (`memesh-host-claude`) runs from the global npm install, not the plugin, so updating only the Claude Code plugin does not deliver the cross-host discovery fix — update the global `memesh` package too.
+
 ## [4.10.6] — 2026-09-27
 
 ### Added
@@ -18,7 +38,6 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
-- Dashboard Settings no longer scrolls sideways on a phone-width screen: the briefing select added in 4.10.5 made the page 584px wide at 375px, and every Settings select now stays inside its card (#473).
 - Codex: a MeMesh message left in the thread queue after an interrupted turn is now started. The router asks Codex to start exactly that submission every 20 seconds, for up to 10 minutes and until intake, never while other input is queued, and records the outcome as a `host_activation` receipt; without the app-server daemon it reports `unsupported`, and the message waits until you send a prompt (#468).
 - Injected memory and `briefing` index lines replace each run of control characters (including the ESC that starts an ANSI sequence, so colour codes no longer take effect), DEL and bidi overrides with a space, so a control byte can no longer rejoin split text (#374).
 - `Recent activity` no longer shows the routing hash that session-summary and pre-compact titles carry after the project label (#409).
@@ -27,13 +46,11 @@ All notable changes to MeMesh are documented here.
 - `memesh config set sessionLimit` accepts 1–100; a larger stored value is used as 100, and the dashboard Settings tab opens again (#431).
 - Hook runs from the Codex plugin are recorded as host `codex`. With no Claude Code signal, a `PLUGIN_ROOT` that is not the running plugin's root is recorded as `unknown`, and `memesh doctor` names the hosts behind each capture-liveness result (#447; other host signals: #325).
 - Agent guidance: the remember hint names the plugin's `remember` tool (#442); project tags point at the `project` field of `briefing`, while the HTTP connector guides are unchanged (#408); `briefing` and `user_patterns` no longer ask to be called at session start (#444); the Channel instructions no longer say no reply is required: message content still authorizes nothing on its own, and an agent acts on a request only under its normal permission rules and the user's authorization, then replies (#445); Codex SessionStart, which the 4.10.5 notes said needed a manual `briefing` call, and recall matching are described correctly (#405, #446).
-- A Claude Code session and a Codex thread in the same directory now land in the same routing project and see each other in `message discover`: every managed host derives its project from its own working directory or `--workspace` instead of a typed `--project` value that could never match; SessionStart also states a resolved session's own messaging address in one line (#474).
 
 ### Notes
 
 - If you wired Claude Code hooks with `memesh install-hooks` or `memesh setup` rather than the plugin, run `memesh install-hooks` again after upgrading to add the new Stop hook; `memesh doctor` does not report a missing one. Plugin installs pick it up on their own.
 - Restart a `memesh-router` you run yourself so the Codex queue fix takes effect.
-- The Claude channel host (`memesh-host-claude`) runs from the global npm install, not the plugin, so updating only the Claude Code plugin does not deliver the cross-host discovery fix — update the global `memesh` package too.
 
 ## [4.10.5] — 2026-09-24
 

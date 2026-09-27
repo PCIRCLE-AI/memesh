@@ -293,12 +293,6 @@ requireText('README.zh-TW.md', [
   '不受信任', 'native_message_too_large', 'recipient_unavailable', 'Principal target', 'durable store-and-forward',
   'acknowledgement', 'workflow disposition',
 ]);
-requireText('README.de.md', [
-  'message', 'registriert sich', 'ein manuelles `agent setup` ist nicht erforderlich', '45-Sekunden-Fenster',
-  'gestoppte, fehlende oder getrennte Codex-Session', 'message storage report', '64 KiB', '16 KiB',
-  'nicht vertrauenswürdigen', 'native_message_too_large', 'recipient_unavailable', 'Principal-Ziele', 'Durable Store-and-Forward',
-  'Bestätigung', 'Workflow-Status',
-]);
 requirePattern(
   'README.md',
   /untrusted JSON-encoded payload[^\n]*65,536 UTF-8 bytes \(64 KiB\)[^\n]*acknowledgement[^\n]*workflow disposition[^\n]*separate facts[\s\S]{0,900}?complete native envelope[^\n]*16,384 bytes \(16 KiB\)[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal targets retain durable store-and-forward behavior/,
@@ -328,21 +322,6 @@ requireSectionText(
     '不要假設 Codex Desktop 或未連接的 task 已註冊',
   ],
   'qualified ordinary-CLI registration, no-replay, and Desktop evidence boundary in Traditional Chinese',
-);
-requirePattern(
-  'README.de.md',
-  /nicht vertrauenswürdigen, JSON-kodierten Payload[^\n]*65\.536 UTF-8-Bytes \(64 KiB\)[^\n]*Intake[^\n]*Bestätigung[^\n]*Workflow-Status[^\n]*getrennt protokollieren[\s\S]{0,1000}?vollständige native Envelope[^\n]*16\.384 Bytes \(16 KiB\)[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal-Ziele[^\n]*Durable Store-and-Forward/,
-  'durable=64 KiB, native=16 KiB, and separate lifecycle facts in the German collaboration narrative',
-);
-requireSectionText(
-  'README.de.md',
-  'Das Kleingedruckte',
-  [
-    'jeder gestartete oder fortgesetzte gewöhnliche Codex-CLI-Thread mit gültiger Thread-Identität und vorhandenem Arbeitsverzeichnis automatisch mit einer threadbezogenen Identität',
-    'eine fehlgeschlagene native Exact-Session-Zustellung wird nicht automatisch wiederholt, der Absender muss bewusst erneut senden',
-    'Nimm bei Codex Desktop oder einem nicht angehängten Task keine Registrierung an',
-  ],
-  'qualified ordinary-CLI registration, no-replay, and Desktop evidence boundary in German',
 );
 const packageJsonText = read('package.json');
 for (const token of ['">=22.13.0"', 'check-agent-message-sync.mjs', 'test:packaged']) {

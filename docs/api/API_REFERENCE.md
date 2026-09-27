@@ -1,7 +1,7 @@
 # MeMesh Plugin -- API Reference
 
 **Protocol**: Model Context Protocol (MCP) over stdio
-**Version**: 4.10.6
+**Version**: 4.10.7
 **Compatibility**: Works with Claude Code plugins, Claude Managed Agents (via MCP connector), and any MCP-compatible client.
 
 **Native Integrations**: Beyond MCP, MeMesh integrates as a native memory provider for Hermes Agent (Python `MemoryProvider` plugin). A source-only OpenClaw TypeScript memory-capability plugin is also included, but it is not published or live-tested. Neither path is an HTTP bridge. See [docs/platforms/](../platforms/) for platform-specific guides.
@@ -2198,7 +2198,7 @@ MeMesh runs as a stdio MCP server. Claude Code and Codex manage the connection a
 }
 ```
 
-The Codex manifest uses the plugin cache as its working directory:
+The Codex manifest uses the plugin cache as its working directory. Codex passes an MCP server only the environment variables its manifest names, so `env_vars` forwards a custom data directory or database:
 
 ```json
 {
@@ -2206,7 +2206,8 @@ The Codex manifest uses the plugin cache as its working directory:
     "memesh": {
       "command": "node",
       "args": ["./dist/mcp/server.js"],
-      "cwd": "."
+      "cwd": ".",
+      "env_vars": ["MEMESH_DIR", "MEMESH_DB_PATH"]
     }
   }
 }

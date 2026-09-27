@@ -238,10 +238,12 @@ assert.deepEqual(
   'Codex MCP manifest must use the loader mcpServers wrapper, not a direct server map',
 );
 const codexMcp = codexMcpManifest.mcpServers?.memesh;
+// env_vars: Codex passes an MCP server only the variables it names (#482).
 assert.deepEqual(codexMcp, {
   command: 'node',
   args: ['./dist/mcp/server.js'],
   cwd: '.',
+  env_vars: ['MEMESH_DIR', 'MEMESH_DB_PATH'],
 });
 assert.equal(
   codexMcp.args[0].replace(/^\.\//, ''),

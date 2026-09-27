@@ -221,10 +221,10 @@ const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTE
 const LOCALE_README_FILES = [
   // The locale set was reduced to English + 繁體中文 + Deutsch (commit
   // bc6d8553) — eleven hand-synced copies of a fast-moving front page
-  // drifted faster than they were read. This list must track that set:
-  // listing a removed locale here made every source-checkout doctor run
-  // WARN about eight files that are gone on purpose.
-  'README.de.md',
+  // drifted faster than they were read. Deutsch was dropped in turn,
+  // leaving English + 繁體中文. This list must track that set: listing a
+  // removed locale here made every source-checkout doctor run WARN about
+  // files that are gone on purpose.
   'README.zh-TW.md',
 ];
 
@@ -261,13 +261,12 @@ function inspectLocaleReadmeParity(
 ): DoctorCheck {
   const englishPath = path.join(packageRoot, 'README.md');
   if (!existsSyncImpl(englishPath)) {
-    // Most likely a packaged install where READMEs aren't shipped to the
-    // npm tarball. Not a problem for end-users — skip silently with pass.
+    // Nothing to compare against; not a problem for users — skip with pass.
     return createCheck(
       'readme_locale_parity',
       'README locale parity',
       'pass',
-      'README.md not present in this install (likely a packaged tarball without docs); locale-parity check skipped.',
+      'README.md not present in this install; locale-parity check skipped.',
     );
   }
   let englishCount: number;
@@ -284,27 +283,26 @@ function inspectLocaleReadmeParity(
     );
   }
 
-  // README.md alone is not the "packaged install" signal it looks like:
-  // npm always includes README.md in a published tarball (and this
-  // package's `files` lists it explicitly), so every real end-user install
-  // has it — while the locale READMEs are development-only translations,
-  // absent from `files` and never shipped. Without this, `missing` below
-  // named all of them on every real install, and a maintainer-only "keep
-  // the translations in sync" check reached ordinary users as a WARN in
-  // their own doctor output — noise in exactly the report someone pastes
-  // into a support issue.
-  const missing: string[] = [];
+  // npm packs every README.* file whatever `files` says, so the locale
+  // READMEs ship with the package and the plugin alike; one is missing only
+  // when someone removed it. That is skipped, not reported: a maintainer-only
+  // "keep the translations in sync" check must not reach ordinary users as a
+  // WARN in their own doctor output. The repository's doc checks fail when
+  // README.zh-TW.md is deleted.
+  const present = LOCALE_README_FILES.filter((filename) => existsSyncImpl(path.join(packageRoot, filename)));
+  if (present.length === 0) {
+    return createCheck(
+      'readme_locale_parity',
+      'README locale parity',
+      'pass',
+      'No locale README in this install; locale-parity check skipped.',
+    );
+  }
+
   const drift: Array<{ name: string; count: number }> = [];
-  let anyLocalePresent = false;
-  for (const filename of LOCALE_README_FILES) {
-    const localePath = path.join(packageRoot, filename);
-    if (!existsSyncImpl(localePath)) {
-      missing.push(filename);
-      continue;
-    }
-    anyLocalePresent = true;
+  for (const filename of present) {
     try {
-      const count = countH2Headings(readFileSyncImpl(localePath, 'utf8'));
+      const count = countH2Headings(readFileSyncImpl(path.join(packageRoot, filename), 'utf8'));
       if (Math.abs(count - englishCount) > LOCALE_H2_TOLERANCE) {
         drift.push({ name: filename, count });
       }
@@ -314,41 +312,26 @@ function inspectLocaleReadmeParity(
     }
   }
 
-  if (!anyLocalePresent) {
+  if (drift.length === 0) {
     return createCheck(
       'readme_locale_parity',
       'README locale parity',
       'pass',
-      'Locale READMEs not present in this install (packaged installs ship README.md only); locale-parity check skipped.',
+      `${present.join(', ')} match the English H2 count (${englishCount}).`,
     );
   }
 
-  if (missing.length === 0 && drift.length === 0) {
-    return createCheck(
-      'readme_locale_parity',
-      'README locale parity',
-      'pass',
-      `All ${LOCALE_README_FILES.length} locale READMEs match English H2 count (${englishCount}).`,
-    );
-  }
-
-  const parts: string[] = [];
-  if (missing.length > 0) {
-    parts.push(`missing: ${missing.join(', ')}`);
-  }
-  if (drift.length > 0) {
-    const driftDetail = drift
-      .map((d) => `${d.name}=${d.count === -1 ? 'unreadable' : d.count}`)
-      .join(', ');
-    parts.push(`H2 count drift (English=${englishCount}): ${driftDetail}`);
-  }
+  const driftDetail = drift
+    .map((d) => `${d.name}=${d.count === -1 ? 'unreadable' : d.count}`)
+    .join(', ');
+  const detail = `H2 count drift (English=${englishCount}): ${driftDetail}`;
   return createCheck(
     'readme_locale_parity',
     'README locale parity',
     'warn',
-    parts.join('; '),
+    detail,
     `Re-sync the listed READMEs against README.md so section structure matches (±${LOCALE_H2_TOLERANCE} H2 tolerated to absorb translation collapse).`,
-    { code: 'readme-parity.drift', params: { detail: parts.join('; '), tolerance: LOCALE_H2_TOLERANCE } },
+    { code: 'readme-parity.drift', params: { detail, tolerance: LOCALE_H2_TOLERANCE } },
   );
 }
 

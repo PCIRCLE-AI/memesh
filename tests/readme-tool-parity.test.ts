@@ -43,7 +43,7 @@ function fixture(): string {
   const sourceDigest = contractDigest(contract);
   const digest = (surface: string) => surfaceDigest(sourceDigest, surface);
   const table = ['| Tool | Description |', '|---|---|', ...names.map(name => `| \`${name}\` | ${name} documentation |`)].join('\n');
-  for (const file of ['README.md', 'README.zh-TW.md', 'README.de.md']) {
+  for (const file of ['README.md', 'README.zh-TW.md']) {
     write(root, file, `## All 12 Tools\n\n${table}\n\n---\n`);
   }
   write(root, 'AGENTS.md', `## All 12 MCP tools\n\n${table}\n\n## Next\n`);
@@ -58,7 +58,6 @@ function fixture(): string {
     surfaces: {
       'README.md': digest(table),
       'README.zh-TW.md': digest(table),
-      'README.de.md': digest(table),
       'AGENTS.md': digest(table),
       'skills/memesh/SKILL.md': digest(table),
       'docs/api/API_REFERENCE.md': digest(apiTools),
@@ -77,11 +76,11 @@ describe('MCP agent-facing documentation parity gate', () => {
     expect(names).toHaveLength(12);
     const result = run(fixture());
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('PASS (12 tools across 7 agent-facing documents');
+    expect(result.stdout).toContain('PASS (12 tools across 6 agent-facing documents');
   });
 
   it.each([
-    ['README translation row', 'README.de.md', (text: string) => text.replace(/^\| `message` .*\n/m, ''), 'README.de.md'],
+    ['README translation row', 'README.zh-TW.md', (text: string) => text.replace(/^\| `message` .*\n/m, ''), 'README.zh-TW.md'],
     ['skill row', 'skills/memesh/SKILL.md', (text: string) => text.replace(/^\| `improvement` .*\n/m, ''), 'skills/memesh/SKILL.md'],
     ['API section', 'docs/api/API_REFERENCE.md', (text: string) => text.replace(/### message\n\nmessage API description\.\n/m, ''), '### message'],
     ['architecture inventory', 'docs/ARCHITECTURE.md', (text: string) => text.replace('`briefing`, ', ''), 'overview omits MCP tool briefing'],

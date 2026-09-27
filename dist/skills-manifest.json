@@ -8,17 +8,17 @@
     },
     {
       "path": ".claude-plugin/plugin.json",
-      "sha256": "65d5293f80f8be6186251825054ade90ab3f5b37ceab6887c560dbce0ffdda88",
+      "sha256": "ca31074c3ab20d994e21c73b23baebd47764e149fceb34afe93ae7d555f068b0",
       "bytes": 590
     },
     {
       "path": ".codex-plugin/mcp.json",
-      "sha256": "e70805ffd8256df1dadbf5a4c743a1699c8e7be9ec56611924a8b65290ffcdaa",
-      "bytes": 130
+      "sha256": "76c471140774d0da42019a626eb7327da04c669fb03c5e77d3549636814dd512",
+      "bytes": 182
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "407b65346e7d3ea3178933cb0a881ed052222b9d09922decf17cab3976fc596c",
+      "sha256": "b1ead6e606d2798b56c20845b5b2801cd6d03b2fb4844097270b2b1136a019b5",
       "bytes": 220
     },
     {

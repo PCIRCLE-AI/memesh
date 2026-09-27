@@ -1276,7 +1276,6 @@ describe('message', () => {
       'AGENTS.md',
       'README.md',
       'README.zh-TW.md',
-      'README.de.md',
       'docs/api/API_REFERENCE.md',
       'docs/platforms/agent-messaging.md',
       'docs/ARCHITECTURE.md',
@@ -1290,7 +1289,6 @@ describe('message', () => {
     const localeNarratives = new Map<string, RegExp>([
       ['README.md', /untrusted JSON-encoded payload[^\n]*65,536 UTF-8 bytes \(64 KiB\)[^\n]*acknowledgement[^\n]*workflow disposition[^\n]*separate facts[\s\S]{0,900}?complete native envelope[^\n]*16,384 bytes \(16 KiB\)[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal targets retain durable store-and-forward behavior/],
       ['README.zh-TW.md', /JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload[^\n]*acknowledgement[^\n]*workflow disposition[^\n]*分開記錄[\s\S]{0,1000}?完整 native envelope[^\n]*16,384 bytes（16 KiB）[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal target[^\n]*durable store-and-forward/],
-      ['README.de.md', /nicht vertrauenswürdigen, JSON-kodierten Payload[^\n]*65\.536 UTF-8-Bytes \(64 KiB\)[^\n]*Intake[^\n]*Bestätigung[^\n]*Workflow-Status[^\n]*getrennt protokollieren[\s\S]{0,1000}?vollständige native Envelope[^\n]*16\.384 Bytes \(16 KiB\)[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal-Ziele[^\n]*Durable Store-and-Forward/],
     ]);
     for (const [file, narrative] of localeNarratives) {
       const content = fs.readFileSync(path.join(process.cwd(), file), 'utf8');

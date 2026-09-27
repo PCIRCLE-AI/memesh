@@ -1,4 +1,4 @@
-🌐 [English](README.md) | [繁體中文](README.zh-TW.md) | [Deutsch](README.de.md)
+🌐 [English](README.md) | [繁體中文](README.zh-TW.md)
 
 <p align="center">
   <h1 align="center">MeMesh</h1>
