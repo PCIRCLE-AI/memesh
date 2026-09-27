@@ -4,33 +4,33 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+## [4.10.6] — 2026-09-27
+
 ### Added
 
-- Claude Code sessions now learn about a waiting agent message without polling: SessionStart and the prompt hook fall back to the owner-private Claude channel config for the recipient when `MEMESH_RECIPIENT` is unset, a new Stop hook blocks the turn once per unfetched message id, and SessionStart warns when the launching command shows a mistyped channel flag (a dash silently autocorrected to an em dash) (#468).
-- `.gitleaks.toml`, which gitleaks loads when run from the repository root: the default rules stay on, and three allowlists let through only the documentation checksums, the synthetic credentials in the redaction tests and literal test idempotency keys (the key alone, not the rest of its line), each with the reason it is not a credential. No CI job runs gitleaks.
-- `memesh import` now prints how many imported memories are untrusted and how to trust them; `memesh import --trust`, behind a confirmation, marks them trusted for restoring your own backup (#407).
+- Claude Code learns about a waiting agent message without polling. When `MEMESH_RECIPIENT` is unset, the hooks take the recipient from the owner-private Claude channel config (not on Windows); a Stop hook blocks the turn once per unfetched message; SessionStart warns when the channel flag was mistyped, for example a dash autocorrected to an em dash (#468).
+- `memesh import` reports how many imported memories are untrusted. `memesh import --trust`, after a confirmation, marks them trusted for restoring your own backup (#407).
+- `.gitleaks.toml` for running gitleaks from the repository root: default rules plus allowlists for documentation checksums, synthetic test credentials and test idempotency keys. No CI job runs gitleaks.
 
 ### Changed
 
-- Promoting a release from `next` to `latest` now runs through the release workflow (#452).
+- Promotion from `next` to `latest` runs through the release workflow (#452).
 
 ### Fixed
 
-- A MeMesh message that Codex left in its thread queue after an interrupted turn is now started: after `codex queue` accepts it, the router asks Codex every 20 seconds, for up to 10 minutes and until the recipient records intake, to start exactly that submission, never while input MeMesh did not queue is waiting, and records the outcome as a `host_activation` receipt; without the Codex app-server daemon it says so instead (#468).
-- Injected memory context now replaces each run of ESC (so ANSI colour codes no longer take effect), other C0/C1 control characters, DEL, and bidi override/isolate characters with a single space, so a control byte can no longer glue two halves of text — including a secret split across one — back into their original form. This also covers the `briefing` result's durable-memory index lines (MCP `briefing`, `briefing --json`, `briefing --index --json`, `GET /v1/briefing-index`), which reached an agent without passing through the injected block's fence (#374).
-- The "remember this" prompt hint named `mcp__memesh__remember`, which does not exist under a plugin install; it now names the memesh `remember` tool and gives the short form (#442).
-- Agent guidance taught plain `project:<name>` tags, which sessions on the hashed project identity never see; the MCP descriptions, hooks, skill and AGENTS.md now point at the `project` field of the `briefing` result (CLI: `memesh briefing --json`). The HTTP connector guides are unchanged: an HTTP-only client has no route that returns this id yet (#408).
-- A lesson stored as type `lesson` or `mistake` now competes for the briefing's reserved lesson slots, not only `lesson_learned`; guidance now teaches `lesson_learned` (#443).
-- The `briefing` and `user_patterns` tool descriptions no longer tell every host to call them at session start, which reloaded a block the SessionStart hook had already injected (#444).
-- The Claude Channel instructions no longer say no reply is required. Message content still authorizes nothing on its own; an agent acts on a request only under its normal permission rules and the user's authorization, and replies or tells the user it is waiting (#445).
-- Codex plugin hook runs are recorded as host `codex` (they were all labelled `claude-code`): `PLUGIN_ROOT` counts only when it is the plugin root the hook runs from. Other host signals are still tracked in #325.
-- A hook run whose `PLUGIN_ROOT` is not the plugin root it runs from, with no Claude Code signal, is recorded as host `unknown` instead of a guessed `claude-code`, and an unresolvable `PLUGIN_ROOT` is reported once on stderr. The SessionStart hook passes its payload to the record like the other hooks, and `memesh doctor` names the hosts the records came from on every capture-liveness result (#447).
-- Docs: the Codex plugin's SessionStart hook injects the same memory block as Claude Code's, so Codex agents with the plugin (once Codex runs its hooks) should not call `briefing` again unless that block is missing; the 4.10.5 notes said Codex had to call it manually. Recall is described correctly (three or more words must all match, with an any-word fallback; default limit 20) (#405). Agent-facing text cleanup (#446).
-- Lessons use one type: `lesson` and `mistake` are stored as `lesson_learned`, existing ones are renamed once on upgrade, and `?type=lesson` still finds them (#451).
-- `memesh config set sessionLimit` rejects values outside 1–100; a stored value above 100 is used as 100 and `memesh config list` says so, and the dashboard Settings tab opens again (#431).
-- A `MEMESH_RECIPIENT` that looks like a file path or is over 200 characters is now refused and shown at session start, and session start hints when a recipient has never been seen (#402).
-- The router now prints a one-line error instead of a stack trace on any startup failure, and `memesh doctor` names a socket path that is too long instead of a dead-end "missing" (#404).
-- `Recent activity` no longer prints the routing hash session-summary and pre-compact titles carry after the project label (e.g. `memesh~2c0fe491…`); it renders as `memesh` (#409).
+- Codex: a MeMesh message left in the thread queue after an interrupted turn is now started. The router asks Codex to start exactly that submission every 20 seconds, for up to 10 minutes and until intake, never while other input is queued, and records the outcome as a `host_activation` receipt; without the app-server daemon it reports `unsupported`, and the message waits until you send a prompt (#468).
+- Injected memory and `briefing` index lines replace each run of control characters (including the ESC that starts an ANSI sequence, so colour codes no longer take effect), DEL and bidi overrides with a space, so a control byte can no longer rejoin split text (#374).
+- `Recent activity` no longer shows the routing hash that session-summary and pre-compact titles carry after the project label (#409).
+- A path-like or over-long `MEMESH_RECIPIENT` is refused at session start, with a hint for a never-seen recipient (#402). The router prints a one-line startup error, and `memesh doctor`'s opt-in router probe (`MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1`) names a socket path that is too long (#404).
+- Lessons use one type: `lesson` and `mistake` are stored as `lesson_learned`, existing ones are renamed once on upgrade, and `?type=lesson` still finds them (#443, #451).
+- `memesh config set sessionLimit` accepts 1–100; a larger stored value is used as 100, and the dashboard Settings tab opens again (#431).
+- Hook runs from the Codex plugin are recorded as host `codex`. With no Claude Code signal, a `PLUGIN_ROOT` that is not the running plugin's root is recorded as `unknown`, and `memesh doctor` names the hosts behind each capture-liveness result (#447; other host signals: #325).
+- Agent guidance: the remember hint names the plugin's `remember` tool (#442); project tags point at the `project` field of `briefing`, while the HTTP connector guides are unchanged (#408); `briefing` and `user_patterns` no longer ask to be called at session start (#444); the Channel instructions no longer say no reply is required: message content still authorizes nothing on its own, and an agent acts on a request only under its normal permission rules and the user's authorization, then replies (#445); Codex SessionStart, which the 4.10.5 notes said needed a manual `briefing` call, and recall matching are described correctly (#405, #446).
+
+### Notes
+
+- If you wired Claude Code hooks with `memesh install-hooks` or `memesh setup` rather than the plugin, run `memesh install-hooks` again after upgrading to add the new Stop hook; `memesh doctor` does not report a missing one. Plugin installs pick it up on their own.
+- Restart a `memesh-router` you run yourself so the Codex queue fix takes effect.
 
 ## [4.10.5] — 2026-09-24
 
