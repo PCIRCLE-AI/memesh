@@ -275,6 +275,49 @@ async function main() {
       await page.setViewportSize({ width: 375, height: 812 });
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.equal(overflow, 0, `Settings is ${overflow}px wider than a 375px screen`);
+
+      // Keep the header usable when translations lengthen its signal, status,
+      // and version labels. The version may wrap, but none of it may clip.
+      const versionPrefix = (await page.locator('.badge-version').innerText()).match(/^v\S+/)?.[0];
+      assert.ok(versionPrefix, 'header shows the full packaged version');
+      for (const locale of ['en', 'zh-TW', 'zh-CN', 'ja', 'ko', 'pt', 'fr', 'de', 'vi', 'es', 'th']) {
+        await languageSelect.selectOption(locale);
+        const header = await page.evaluate(() => {
+          const badge = document.querySelector('.badge-version');
+          const right = document.querySelector('.header-right');
+          const toggle = document.querySelector('.signal-toggle');
+          const badgeRect = badge.getBoundingClientRect();
+          const rightRect = right.getBoundingClientRect();
+          const toggleRect = toggle.getBoundingClientRect();
+          return {
+            overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+            badgeText: badge.textContent.trim(),
+            badgeOverflow: badge.scrollWidth - badge.clientWidth,
+            badgeLeft: badgeRect.left,
+            badgeRight: badgeRect.right,
+            rightLeft: rightRect.left,
+            rightRight: rightRect.right,
+            toggleLeft: toggleRect.left,
+            toggleRight: toggleRect.right,
+          };
+        });
+        assert.equal(header.overflow, 0, `${locale} header overflows a 375px screen: ${JSON.stringify(header)}`);
+        assert.ok(header.badgeText.startsWith(versionPrefix), `${locale} header lost the full version: ${JSON.stringify(header)}`);
+        assert.ok(header.badgeOverflow <= 1 && header.badgeLeft >= 0 && header.badgeRight <= 375,
+          `${locale} header clips the version badge: ${JSON.stringify(header)}`);
+        assert.ok(header.rightLeft >= 0 && header.rightRight <= 375 && header.toggleLeft >= 0 && header.toggleRight <= 375,
+          `${locale} header clips the controls: ${JSON.stringify(header)}`);
+      }
+      const signalToggle = page.locator('.signal-toggle');
+      const initialSignalMode = await signalToggle.getAttribute('aria-pressed');
+      await signalToggle.click();
+      assert.notEqual(await signalToggle.getAttribute('aria-pressed'), initialSignalMode,
+        'mobile header Signal Mode toggle changes state');
+      await signalToggle.click();
+      assert.equal(await signalToggle.getAttribute('aria-pressed'), initialSignalMode,
+        'mobile header Signal Mode toggle returns to its initial state');
+      assert.equal(await page.locator('.header-meta .dot-ok').isVisible(), true,
+        'mobile header still shows the connected status');
       await page.setViewportSize({ width: 1280, height: 720 });
 
       await page.evaluate(() => {
