@@ -56251,6 +56251,46 @@ function inspectAgentMessageStorage(db2, databasePath, policy) {
     return void 0;
   }
 }
+function noDaemonReason(detailJson) {
+  try {
+    return JSON.parse(detailJson)?.detail?.reason === "no_daemon";
+  } catch {
+    return false;
+  }
+}
+function inspectCodexQueueDaemon(db2) {
+  try {
+    const present = db2.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_receipts'").get();
+    if (!present?.present)
+      return void 0;
+    const rows = db2.prepare(`
+      SELECT project, recipient, detail_json, created_at FROM agent_message_receipts
+      WHERE receipt_kind = 'host_activation'
+        AND actor = 'memesh-router'
+        AND idempotency_key LIKE 'codex-queue-release-%'
+        AND created_at > datetime('now', '-7 days')
+      ORDER BY created_at DESC, rowid DESC
+    `).all();
+    if (rows.length === 0) {
+      return createInfo("codex-queue-daemon", "Codex stuck-message release", "No Codex host_activation receipts in the last 7 days. The Codex stuck-message release has not run recently, so its app-server-daemon dependency has not been exercised either way.");
+    }
+    const latestPerThread = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const key = `${row.project}\0${row.recipient}`;
+      if (!latestPerThread.has(key))
+        latestPerThread.set(key, row);
+    }
+    const stuck = [...latestPerThread.values()].filter((row) => noDaemonReason(row.detail_json));
+    if (stuck.length === 0) {
+      return createInfo("codex-queue-daemon", "Codex stuck-message release", `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`);
+    }
+    const named = stuck.slice(0, 3).map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(" ", "T")}Z)`).join(", ");
+    const more = stuck.length > 3 ? ` and ${stuck.length - 3} more` : "";
+    return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}${more}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`, "Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).");
+  } catch (err) {
+    return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.");
+  }
+}
 function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
   if (!codexPluginCacheDetected)
     return null;
@@ -57403,6 +57443,9 @@ async function runDoctor(options) {
     const messageStorage = inspectAgentMessageStorage(db2, databasePath, configuredAgentMessageStoragePolicy(agentMessageStoragePolicy));
     if (messageStorage)
       dbChecks.push(messageStorage);
+    const codexQueueDaemon = inspectCodexQueueDaemon(db2);
+    if (codexQueueDaemon)
+      dbChecks.push(codexQueueDaemon);
     const hasVocab = db2.prepare(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'fts_vocab'`).get();
     if (hasVocab?.present) {
       const unsegmented = db2.prepare(`SELECT COUNT(*) AS c FROM fts_vocab

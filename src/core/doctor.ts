@@ -434,6 +434,101 @@ function inspectAgentMessageStorage(
   }
 }
 
+/** Does this release receipt's detail say the app-server daemon was missing? */
+function noDaemonReason(detailJson: string): boolean {
+  try {
+    return (JSON.parse(detailJson) as { detail?: { reason?: unknown } } | null)?.detail?.reason === 'no_daemon';
+  } catch {
+    return false; // Malformed detail_json is not this check's problem to diagnose.
+  }
+}
+
+/**
+ * The Codex stuck-message release (#468, `watchCodexQueueRelease` in
+ * codex-cli-queue.ts) only works when Codex is running its app-server
+ * daemon. An ordinary `codex` CLI session — or any session started with
+ * `--no-daemon` — has no daemon for the router to ask, so the release
+ * records a `host_activation` receipt with `host_activation: 'unsupported'`
+ * and `detail.reason: 'no_daemon'` instead of starting the queued message.
+ * A message left in that thread's queue after an interrupted turn then
+ * stays queued until the next prompt, and nothing else surfaces that (#491).
+ *
+ * Read-only, same shape as `inspectAgentMessageStorage` immediately above:
+ * a raw `db.prepare` probe, `undefined` (not a row) when the table predates
+ * the message schema, and no `code:` — `inspectAgentMessageStorage`'s own
+ * `'warn'` branch a few lines up ships the same way, and adding one here
+ * would need a translated catalogue entry in all 11 dashboard locales for a
+ * server-diagnostic sentence (see DoctorBanner's sanctioned English
+ * fallback for an uncoded row).
+ */
+function inspectCodexQueueDaemon(db: MemeshDatabase): DoctorCheck | undefined {
+  try {
+    const present = db.prepare(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_receipts'",
+    ).get() as { present?: number } | undefined;
+    if (!present?.present) return undefined;
+
+    // Only the receipts the Codex release itself writes: any agent can record
+    // a host_activation receipt through the public `activation` action, and an
+    // `unsupported` from one of those says nothing about Codex's daemon.
+    const rows = db.prepare(`
+      SELECT project, recipient, detail_json, created_at FROM agent_message_receipts
+      WHERE receipt_kind = 'host_activation'
+        AND actor = 'memesh-router'
+        AND idempotency_key LIKE 'codex-queue-release-%'
+        AND created_at > datetime('now', '-7 days')
+      ORDER BY created_at DESC, rowid DESC
+    `).all() as Array<{ project: string; recipient: string; detail_json: string; created_at: string }>;
+
+    if (rows.length === 0) {
+      return createInfo(
+        'codex-queue-daemon',
+        'Codex stuck-message release',
+        'No Codex host_activation receipts in the last 7 days. The Codex stuck-message release has not run recently, so its app-server-daemon dependency has not been exercised either way.',
+      );
+    }
+
+    // The newest receipt per thread decides: a thread whose daemon has come
+    // back since, and whose release then ran, has nothing stuck.
+    const latestPerThread = new Map<string, (typeof rows)[number]>();
+    for (const row of rows) {
+      const key = `${row.project}\u0000${row.recipient}`;
+      if (!latestPerThread.has(key)) latestPerThread.set(key, row);
+    }
+    const stuck = [...latestPerThread.values()].filter((row) => noDaemonReason(row.detail_json));
+
+    if (stuck.length === 0) {
+      return createInfo(
+        'codex-queue-daemon',
+        'Codex stuck-message release',
+        `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`,
+      );
+    }
+
+    const named = stuck.slice(0, 3)
+      .map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(' ', 'T')}Z)`)
+      .join(', ');
+    const more = stuck.length > 3 ? ` and ${stuck.length - 3} more` : '';
+    return createCheck(
+      'codex-queue-daemon',
+      'Codex stuck-message release',
+      'warn',
+      `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}${more}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`,
+      'Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).',
+    );
+  } catch (err) {
+    // A failure here, the table probe included, is a real one: say so rather
+    // than leave the row out, which would read as "fine".
+    return createCheck(
+      'codex-queue-daemon',
+      'Codex stuck-message release',
+      'warn',
+      `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`,
+      'Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.',
+    );
+  }
+}
+
 /**
  * Report how ordinary Codex sessions choose their local routing identity.
  * A plugin cache copy is only evidence of cached source; live discovery is
@@ -3089,6 +3184,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       configuredAgentMessageStoragePolicy(agentMessageStoragePolicy),
     );
     if (messageStorage) dbChecks.push(messageStorage);
+
+    const codexQueueDaemon = inspectCodexQueueDaemon(db as unknown as MemeshDatabase);
+    if (codexQueueDaemon) dbChecks.push(codexQueueDaemon);
 
     // The stale-keyword-index state, which two comments claimed doctor detected
     // and nothing checked.

@@ -4,6 +4,10 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `memesh doctor` now reports a WARN naming each Codex thread whose latest stuck-message release (#468) found no app-server daemon: without it the release cannot run, and a MeMesh message queued after an interrupted turn stays in that thread's queue until the next prompt (#491).
+
 ## [4.10.8] — 2026-09-27
 
 Includes the changes documented under 4.10.7 and 4.10.6 below; neither was
