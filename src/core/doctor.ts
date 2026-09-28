@@ -505,15 +505,15 @@ function inspectCodexQueueDaemon(db: MemeshDatabase): DoctorCheck | undefined {
       );
     }
 
-    const named = stuck.slice(0, 3)
+    // Every stuck thread is named: the fix below asks for a prompt in each.
+    const named = stuck
       .map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(' ', 'T')}Z)`)
       .join(', ');
-    const more = stuck.length > 3 ? ` and ${stuck.length - 3} more` : '';
     return createCheck(
       'codex-queue-daemon',
       'Codex stuck-message release',
       'warn',
-      `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}${more}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`,
+      `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`,
       'Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).',
     );
   } catch (err) {

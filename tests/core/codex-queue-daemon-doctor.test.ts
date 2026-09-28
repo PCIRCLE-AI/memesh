@@ -116,4 +116,22 @@ describe('doctor codex queue-release daemon availability', () => {
     expect(warned?.summary).toContain('codex-thread-a in doctor-codex-queue');
     expect(warned?.summary).not.toContain('codex-thread-b');
   });
+
+  it('names every stuck thread, not only the first few', async () => {
+    for (const t of ['a', 'b', 'c', 'd']) {
+      releaseReceipt({ key: `many-${t}`, recipient: `codex-thread-${t}`, activation: 'unsupported', reason: 'no_daemon' });
+    }
+    const warned = await row();
+    expect(warned?.summary).toContain('4 Codex thread(s)');
+    for (const t of ['a', 'b', 'c', 'd']) expect(warned?.summary).toContain(`codex-thread-${t} in doctor-codex-queue`);
+  });
+
+  // A read failure is reported as a row with a fix, never a missing row.
+  it('warns with a fix when the receipts cannot be read', async () => {
+    getDatabase().exec('ALTER TABLE agent_message_receipts RENAME COLUMN detail_json TO detail_json_gone');
+    const found = await row();
+    expect(found?.status).toBe('warn');
+    expect(found?.summary).toContain('Could not read the Codex host_activation receipts');
+    expect(found?.fix).toBeTruthy();
+  });
 });

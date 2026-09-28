@@ -164,11 +164,10 @@ function inspectCodexQueueDaemon(db) {
         if (stuck.length === 0) {
             return createInfo('codex-queue-daemon', 'Codex stuck-message release', `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`);
         }
-        const named = stuck.slice(0, 3)
+        const named = stuck
             .map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(' ', 'T')}Z)`)
             .join(', ');
-        const more = stuck.length > 3 ? ` and ${stuck.length - 3} more` : '';
-        return createCheck('codex-queue-daemon', 'Codex stuck-message release', 'warn', `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}${more}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`, 'Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).');
+        return createCheck('codex-queue-daemon', 'Codex stuck-message release', 'warn', `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`, 'Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).');
     }
     catch (err) {
         return createCheck('codex-queue-daemon', 'Codex stuck-message release', 'warn', `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, 'Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.');
