@@ -138,13 +138,13 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "390d373e03fb712735602da59f169880f518df989fa933761b28b0dd63ccd4e6",
-      "bytes": 119282
+      "sha256": "2e3e2a683eee6389bed639dd115f9cbbab279be3e4de7115cd35f4df66ebf835",
+      "bytes": 120387
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
-      "sha256": "d340ef723532e05f64059a65db6e36c3ad876a7c3247b247e4099021685a7d90",
-      "bytes": 5460
+      "sha256": "a3fce2204cb9040f549ffd4116c658bbf840e1a9726e666eee65cf78ed06caac",
+      "bytes": 5526
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -168,13 +168,13 @@
     },
     {
       "path": "scripts/hooks/post-commit.js",
-      "sha256": "886673eb0b2d5fe563f1b9db419771e2dd036d0c266f6c35e7bdb7da8bfdbf2d",
-      "bytes": 18611
+      "sha256": "f149fd314889964b146c205d1259138c6ed3eba6229eebeb0b1f802a10d829c2",
+      "bytes": 18678
     },
     {
       "path": "scripts/hooks/pre-compact.js",
-      "sha256": "ae18b645bbd2220bc271d25fd0358673b8c118209933aa9bdacbbca820f8816a",
-      "bytes": 9898
+      "sha256": "8f1932ae750da85ce4bba80c41728de0a800bc79257a642ab22e3baad88b0407",
+      "bytes": 9972
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
@@ -188,8 +188,8 @@
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "3ad2d8924e078bb42bb72409c6604115535db2dc2fed60ab5e0a67c2c6153e66",
-      "bytes": 43136
+      "sha256": "3a493240582f685f15737fac5e9e68d0d6c00769975c85e74ad48e2330b5b5a2",
+      "bytes": 43204
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
@@ -208,8 +208,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "7b572ea03be16a91d89fee09e89d1d441177dc5b174099dbb03e72c37111fd00",
-      "bytes": 23553
+      "sha256": "f105303f71cd402fd6ab1a86ebfeffe991cfb186e3e52ff91dd8e78e534c5223",
+      "bytes": 23564
     }
   ]
 }

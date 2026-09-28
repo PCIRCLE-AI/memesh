@@ -2,7 +2,7 @@
 
 import { basename } from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, SKIP_REASONS, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, captureEntity, getProjectName, isAutoCaptureEnabled, openHookDb, hookErrorReason, hookSourceHost, SKIP_REASONS, recordHookOutcome, recordHookRun, truncateTitle } from './_shared.js';
 
 // There is no in-process timeout guard, and its absence is deliberate.
 //
@@ -139,6 +139,7 @@ process.stdin.on('end', () => {
         observations: obsLines,
         tags: [AUTO_CAPTURE_TAG, 'urgency:pre-compact', `project:${projectName}`],
         title,
+        sourceHost: hookSourceHost(payload, process.env),
       });
 
       // Heartbeat AFTER capture, so the stamp certifies "the capture loop

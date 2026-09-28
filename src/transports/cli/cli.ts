@@ -1305,12 +1305,15 @@ agentCmd
   .option('--project <name>', 'Ignored for routing (#474) — the project always comes from the host\'s own working directory or --workspace. Accepted only so an older script that still passes it does not fail; a given value is still written into the config for reference, never used to route.')
   .requiredOption('--principal <id>', 'Stable logical recipient ID')
   .option('--workspace <path>', 'Managed Codex/Gemini workspace', process.cwd())
-  .option('--model <id>', 'Optional declared model identifier')
+  .option('--model <id>', 'Ignored — no host tells MeMesh which model a session runs, so none is declared. Accepted only so an older script that still passes it does not fail; the value is not written.')
   .option('--work-summary <text>', 'Optional declared current work summary')
   .option('--json', 'Output machine-readable setup result')
   .action((host, opts) => {
     requireOneOf(host, ['codex-session', 'codex', 'claude', 'gemini'], '<host>');
     assertSecureLocalHostRuntimeSupported();
+    if (opts.model !== undefined) {
+      process.stderr.write('--model is ignored: no host tells MeMesh which model a session runs, so discovery shows none.\n');
+    }
     const messageDir = path.dirname(getDbPath());
     const hostsDir = path.join(messageDir, 'hosts');
     fs.mkdirSync(hostsDir, { recursive: true, mode: 0o700 });
@@ -1338,7 +1341,6 @@ agentCmd
       // fail, and the written config never claims a project value nobody
       // asked for.
       ...(opts.project === undefined ? {} : { project: requireAgentScopeArg(opts.project, 'project', '--project') }),
-      ...(opts.model === undefined ? {} : { model: boundedCliDeclaration(opts.model, '--model', 200) }),
       ...(opts.workSummary === undefined ? {} : { work_summary: boundedCliDeclaration(opts.workSummary, '--work-summary', 200) }),
     };
     const config = host === 'codex-session'

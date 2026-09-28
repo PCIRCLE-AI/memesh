@@ -23,7 +23,6 @@ export type ConnectRouterHost = (options: {
         principal_id: string;
         session_instance_id: string;
         adapter_kind: 'acp';
-        model?: string;
         work_summary?: string;
     };
     deliver: (delivery: RouterDelivery) => Promise<Record<string, unknown>>;

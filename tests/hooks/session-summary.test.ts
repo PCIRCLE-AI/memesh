@@ -7,6 +7,7 @@ import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { createRequire } from 'module';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { withoutHostIdentity } from '../helpers/host-env.js';
 import { HOOK_OUTCOMES_FILENAME, parseHookOutcomes, SKIP_REASONS } from '../../src/core/capture-liveness.js';
 
 const require = createRequire(import.meta.url);
@@ -41,7 +42,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     try {
       return execFileSync('node', [hookPath], {
         input: jsonInput,
-        env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: undefined, ...env },
+        env: { ...withoutHostIdentity(process.env), MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: undefined, ...env },
         encoding: 'utf8',
         timeout: 60000,
       });
@@ -364,6 +365,32 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     expect(entity.title).toMatch(/^\d{4}-\d{2}-\d{2} .+: edited 2 file\(s\)$/);
     expect(JSON.parse(entity.metadata).title_source).toBe('heuristic');
     db.close();
+  });
+
+  it('Scenario: a session-insight captured by a Codex hook run names codex as its source host', () => {
+    writeTranscript([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/tmp/proj/src/config.ts' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
+      { type: 'user', message: { content: [{ type: 'tool_result', content: 'All tests passed' }] } },
+    ]);
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-home-'));
+    try {
+      runHook({
+        session_id: 'codex-sess-001',
+        transcript_path: transcriptPath,
+        cwd: '/tmp/myproject',
+        stop_reason: 'end_turn',
+        was_in_agentic_loop: true,
+      }, { CODEX_HOME: codexHome });
+    } finally {
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+    const db = openDb();
+    const entity = db.prepare("SELECT metadata FROM entities WHERE name LIKE 'session-codex-se%'").get() as { metadata: string } | undefined;
+    db.close();
+    expect(entity, 'the Codex run must still capture').toBeTruthy();
+    expect(JSON.parse(entity!.metadata).provenance).toEqual({ source_host: 'codex' });
   });
 
   it('Regression: session-insight memory is FTS-recallable (was written but never indexed)', () => {

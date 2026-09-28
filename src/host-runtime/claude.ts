@@ -75,7 +75,6 @@ export interface ClaudeManagedSessionConfig {
   project?: string;
   principal_id: string;
   session_instance_id?: string;
-  model?: string;
   work_summary?: string;
 }
 
@@ -223,7 +222,6 @@ export async function startClaudeManagedSession(
         principal_id: requiredString(config.principal_id, 'principal_id'),
         session_instance_id: sessionInstanceId,
         adapter_kind: 'claude-channel',
-        ...(config.model === undefined ? {} : { model: requiredString(config.model, 'model') }),
         ...(config.work_summary === undefined ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
       },
       deliver,
@@ -287,7 +285,6 @@ async function main(): Promise<void> {
     router_socket: normalizeConfiguredRouterSocket(config.router_socket),
     auth_token: readTokenFile(config.token_file),
     principal_id: requiredString(config.principal_id, 'principal_id'),
-    ...(config.model === undefined ? {} : { model: requiredString(config.model, 'model') }),
     ...(config.work_summary === undefined ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
     session_instance_id: config.session_instance_id === undefined
       ? undefined

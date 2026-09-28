@@ -201,7 +201,6 @@ export async function startManagedAcpHost(config, dependencies) {
     const socketPath = normalizeConfiguredRouterSocket(config.router_socket);
     const project = canonicalAgentScopeId(getProjectName(launch.workspace));
     const authToken = readTokenFile(config.token_file);
-    const model = config.model === undefined ? undefined : requiredString(config.model, 'model');
     const workSummary = config.work_summary === undefined ? undefined : requiredString(config.work_summary, 'work_summary');
     const sessionUpdateSink = createAcpSessionUpdateSink(config.session_update_file);
     const connectAcpHost = dependencies.connect_acp_host
@@ -234,7 +233,6 @@ export async function startManagedAcpHost(config, dependencies) {
                             principal_id: registration.principal_id,
                             session_instance_id: registration.session_instance_id,
                             adapter_kind: 'acp',
-                            ...(model === undefined ? {} : { model }),
                             ...(workSummary === undefined ? {} : { work_summary: workSummary }),
                         },
                         async deliver(delivery) {

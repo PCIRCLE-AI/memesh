@@ -7,7 +7,6 @@ export interface CodexSessionHostConfig extends Record<string, unknown> {
     project?: unknown;
     principal_id: unknown;
     workspace: unknown;
-    model?: unknown;
     work_summary?: unknown;
 }
 export interface CodexSessionStartInput {
