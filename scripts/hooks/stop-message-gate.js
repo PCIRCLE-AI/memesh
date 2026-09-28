@@ -60,14 +60,17 @@ process.stdin.on('end', () => {
   payload = data;
 
   try {
-    // Claude Code sets this true on the extra Stop it fires when a PRIOR
-    // Stop hook already blocked — without this check, a block that the model
-    // acted on would immediately re-block on the very turn it was resolved.
-    if (data.stop_hook_active === true) {
-      record('skipped', SKIP_REASONS.stopHookActive);
-      return exit0();
-    }
-
+    // Claude Code sets `stop_hook_active: true` on the extra Stop it fires
+    // when A Stop hook already blocked the prior turn — but not necessarily
+    // THIS one (#492): an unrelated Stop hook (a verify-receipt gate, say)
+    // can be the one holding the block chain open, and a message that
+    // arrived during that window must still be surfaced once. So this is
+    // deliberately NOT checked here. The "do not re-block" guarantee this
+    // used to provide comes from the per-session blocked-id ledger further
+    // down (`SKIP_REASONS.alreadyBlockedForGate`): once THIS gate has blocked
+    // for a message id, every later Stop for that id skips — active or not,
+    // and regardless of which hook set the flag. The flag is consulted only
+    // when that ledger cannot be written.
     if (!isClaudeCodeHost(process.env)) {
       record('skipped', SKIP_REASONS.notClaudeCodeHost);
       return exit0();
@@ -151,36 +154,42 @@ process.stdin.on('end', () => {
       return exit0();
     }
 
+    const writeLedger = (ids) => {
+      const tmp = `${statePath}.${process.pid}.tmp`;
+      writePrivateJson(tmp, { blocked: ids });
+      renameSync(tmp, statePath);
+    };
+    const previous = [...blocked];
+    for (const id of newIds) blocked.add(id);
+    // Written BEFORE blocking: the ledger is the only thing that stops the
+    // next Stop re-blocking for the same ids, now that `stop_hook_active` is
+    // not honoured (#492). If it cannot be written (disk full, read-only
+    // directory), a Stop that is already continuing a block chain ends here
+    // rather than re-block on every Stop. Bounded to the newest ids so a
+    // long-lived recipient's file does not grow forever.
+    let ledgerWritten = true;
+    try {
+      writeLedger([...blocked].slice(-MAX_BLOCKED_IDS));
+    } catch (err) {
+      ledgerWritten = false;
+      record('error', `state: ${hookErrorReason(err)}`); // this run's outcome, also on the early return below
+      if (data.stop_hook_active === true) return exit0();
+    }
+
     const reason = `${lines.join(' ')} Poll, fetch and record intake for each before you stop.`;
-    let delivered = true;
     try {
       // writeSync, not console.log/process.stdout.write: stdout is a pipe,
       // and an async write can be cut off by process.exit (see
       // session-summary.js's own comment on the same point).
       writeSync(1, `${JSON.stringify({ decision: 'block', reason })}\n`);
     } catch {
-      delivered = false; // host closed stdout — the block was never shown.
-    }
-    if (!delivered) {
-      // Do NOT persist these ids as blocked-for: a block nobody saw must not
-      // be treated as delivered, or the next Stop would silently skip them.
+      // Host closed stdout — the block was never shown. Take these ids back
+      // out of the ledger: a block nobody saw must not count as delivered, or
+      // the next Stop would skip them.
       record('error', 'stdout: host closed the pipe before the block reason was delivered');
-      return exit0();
-    }
-
-    for (const id of newIds) blocked.add(id);
-    // Bound the ledger to the newest ids: a long-lived recipient with
-    // thousands of historical messages must not grow this file forever.
-    const boundedBlocked = [...blocked].slice(-MAX_BLOCKED_IDS);
-    try {
-      const tmp = `${statePath}.${process.pid}.tmp`;
-      writePrivateJson(tmp, { blocked: boundedBlocked });
-      renameSync(tmp, statePath);
-    } catch (err) {
-      // The block reason was already shown to the model — a failed persist
-      // only means a FUTURE Stop may re-block for the same ids, not that
-      // this one silently did nothing.
-      record('error', `state: ${hookErrorReason(err)}`);
+      if (ledgerWritten) {
+        try { writeLedger(previous); } catch (err) { record('error', `state: ${hookErrorReason(err)}`); }
+      }
       return exit0();
     }
 

@@ -139,7 +139,6 @@ export const SKIP_REASONS = {
     noAssistantText: 'the Stop payload and the transcript held no assistant message',
     handoffTooShort: 'the last assistant message was too short to be a handoff — the previous one is kept',
     handoffArchived: 'the handoff memory was archived by forget — left alone',
-    stopHookActive: 'stop_hook_active is true — Claude Code is already continuing from a previous block',
     notClaudeCodeHost: 'this Stop is not running under Claude Code',
     noRecipientForGate: 'no recipient could be resolved for this session',
     noDatabaseForMessageGate: 'no database yet — nothing to check for waiting messages',

@@ -24665,19 +24665,24 @@ function recipientSeenQuery(db2, recipient, project, onError) {
   }
 }
 function isMissingMessageTableError(err) {
-  const message = err && typeof err === "object" && "message" in err ? String(err.message) : "";
-  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(message);
+  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(errorMessage(err));
+}
+function errorMessage(err) {
+  return err && typeof err === "object" && "message" in err ? String(err.message) : "";
 }
 function recipientEverSeen(db2, project, recipient) {
   return recipientSeenQuery(db2, recipient, project);
 }
-function unreadInboxLines(count, project, recipient, everSeen) {
+function unreadInboxLines(count, project, recipient, everSeen, targetKind = "principal") {
   if (!recipient)
     return [];
   const displayProject = JSON.stringify(project);
   const displayRecipient = JSON.stringify(recipient);
   if (count > 0) {
     const noun = count === 1 ? "message" : "messages";
+    if (targetKind === "session") {
+      return [`${count} ${noun} waiting for the live session ${displayRecipient} in project ${displayProject} \u2014 that session is registered under your principal and connected right now. Poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id with target_kind "session" (fetch or intake using your own principal id instead of ${displayRecipient} will not match this session-targeted message), and record intake for each with recipient ${displayRecipient} (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
+    }
     return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record intake for each (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
   }
   if (everSeen === false) {
@@ -56181,7 +56186,6 @@ var init_capture_liveness = __esm({
       noAssistantText: "the Stop payload and the transcript held no assistant message",
       handoffTooShort: "the last assistant message was too short to be a handoff \u2014 the previous one is kept",
       handoffArchived: "the handoff memory was archived by forget \u2014 left alone",
-      stopHookActive: "stop_hook_active is true \u2014 Claude Code is already continuing from a previous block",
       notClaudeCodeHost: "this Stop is not running under Claude Code",
       noRecipientForGate: "no recipient could be resolved for this session",
       noDatabaseForMessageGate: "no database yet \u2014 nothing to check for waiting messages",
