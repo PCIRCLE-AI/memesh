@@ -8,6 +8,7 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { registerAgentSession, sendSessionTargetedMessage } from '../helpers/agent-session-fixture.js';
 
 // Claude Code has no live channel by default, so a session that never
 // polls never learns a message is waiting. This Stop hook blocks the stop
@@ -153,16 +154,38 @@ describe('Feature: the Claude Code Stop message gate blocks once per waiting mes
     expect(ledger().at(-1)?.outcome).toBe('skipped');
   });
 
-  it('does not block when stop_hook_active is true, and does not consume the id — a later real Stop still blocks', async () => {
+  // #492: stop_hook_active only means "a Stop hook blocked the prior turn" —
+  // it does not say THIS gate was the one that blocked it. A message that
+  // arrives while a DIFFERENT Stop hook (e.g. a verify-receipt gate) is
+  // holding the block chain open must still be surfaced once. (Contract
+  // change from the old behaviour, which skipped unconditionally whenever
+  // stop_hook_active was true — see the replaced test this one supersedes.)
+  it('blocks even when stop_hook_active is true, for a message this gate has never blocked for', async () => {
     const message = await send('gate-principal');
     seedHostAccept(message);
 
-    const activeRun = runGate({ stop_hook_active: true });
-    expect(activeRun.stdout).toBe('');
+    const result = runGate({ stop_hook_active: true });
 
-    const realRun = runGate({ stop_hook_active: false });
-    const parsed = JSON.parse(realRun.stdout) as { decision: string };
+    const parsed = JSON.parse(result.stdout) as { decision: string; reason: string };
     expect(parsed.decision).toBe('block');
+    expect(parsed.reason).toContain('1 message waiting for "gate-principal"');
+  });
+
+  // The "do not re-block" guarantee now comes from the per-session blocked-id
+  // ledger alone (not from stop_hook_active), so it must hold when
+  // stop_hook_active is true too — otherwise this case would be
+  // indistinguishable, from the ledger's own reason text, from the case above.
+  it('does not block again when stop_hook_active is true and this gate already blocked for these ids', async () => {
+    const message = await send('gate-principal');
+    seedHostAccept(message);
+    const firstBlock = runGate({ stop_hook_active: false });
+    expect(JSON.parse(firstBlock.stdout).decision).toBe('block');
+
+    const result = runGate({ stop_hook_active: true });
+
+    expect(result.stdout).toBe('');
+    expect(ledger().at(-1)?.outcome).toBe('skipped');
+    expect(ledger().at(-1)?.reason).toContain('already blocked');
   });
 
   it('does not block once intake has been recorded', async () => {
@@ -234,5 +257,88 @@ describe('Feature: the Claude Code Stop message gate blocks once per waiting mes
     const records = ledger();
     expect(records.some((r) => r.outcome === 'error' && r.reason?.startsWith('inbox:'))).toBe(true);
     expect(records.some((r) => r.outcome === 'skipped' && r.reason?.includes('no messages are waiting'))).toBe(false);
+  });
+
+  // #490's match joins agent_session_instances and agent_session_connections.
+  // A database with deliveries but without those tables is half-migrated, not
+  // empty: it is an error, never "nothing waiting".
+  it('records a half-migrated database (no session tables) as an error, never "nothing waiting"', async () => {
+    await send('gate-principal');
+    getDatabase().exec('DROP TABLE agent_session_connections; DROP TABLE agent_session_instances;');
+
+    const result = runGate();
+
+    expect(result.stdout).toBe('');
+    const records = ledger();
+    expect(records.some((r) => r.outcome === 'error' && r.reason?.startsWith('inbox:'))).toBe(true);
+    expect(records.some((r) => r.outcome === 'skipped' && r.reason?.includes('no messages are waiting'))).toBe(false);
+  });
+
+  // The ledger alone bounds re-blocking now that stop_hook_active is not a
+  // skip (#492), so it is written before the block. When it cannot be
+  // written, a Stop already continuing a block must not block again, or
+  // every Stop would block forever.
+  it('does not keep blocking when its ledger cannot be written', async () => {
+    const message = await send('gate-principal');
+    seedHostAccept(message);
+    // A non-empty directory where the ledger file goes: every write fails.
+    fs.mkdirSync(path.join(tmp, 'stop-message-gate', 's-gate-1.json', 'occupied'), { recursive: true });
+
+    const first = runGate({ stop_hook_active: false });
+    expect(JSON.parse(first.stdout).decision).toBe('block');
+
+    const continuing = runGate({ stop_hook_active: true });
+
+    expect(continuing.stdout).toBe('');
+    expect(ledger().filter((r) => r.outcome === 'error' && r.reason?.startsWith('state:'))).toHaveLength(2);
+  });
+
+  // A block nobody saw must not count as delivered: when the host has closed
+  // stdout, the ids written ahead to the ledger are taken back out, so the
+  // next Stop still blocks for them. (`| exit 0` closes the pipe's only
+  // reader long before node has started, so the gate's write fails with EPIPE.)
+  it.skipIf(process.platform === 'win32')('takes the ids back out of its ledger when the host closed stdout', async () => {
+    const message = await send('gate-principal');
+    seedHostAccept(message);
+    spawnSync('sh', ['-c', 'node "$0" | exit 0', path.resolve('scripts/hooks/stop-message-gate.js')], {
+      input: JSON.stringify({ session_id: 's-gate-1', cwd: tmp, hook_event_name: 'Stop', stop_hook_active: false }),
+      env: { ...process.env, HOME: tmp, MEMESH_DB_PATH: dbPath, MEMESH_RECIPIENT: 'gate-principal', MEMESH_HOOK_HOST: 'claude-code' },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    expect(ledger().at(-1)?.reason).toContain('host closed the pipe');
+
+    const next = runGate();
+
+    expect(JSON.parse(next.stdout).decision).toBe('block');
+  });
+
+  // #490: a `target_kind: "session"` delivery is addressed to the host's own
+  // session_instance_id, not the resolved principal (`MEMESH_RECIPIENT` here).
+  // The Stop gate must find it too, through the same widened lookup as the
+  // reminder hooks (tests/hooks/message-recipient-reminder.test.ts), and only
+  // while that session is live.
+  describe('Feature: #490 the Stop gate also blocks for a session-targeted message, only while live', () => {
+    it('blocks for a session-targeted message addressed to a LIVE session under the resolved principal', async () => {
+      const sessionId = registerAgentSession('gate-room', 'gate-principal');
+      sendSessionTargetedMessage('gate-room', sessionId, 'session-gate-k1');
+
+      const result = runGate({ session_id: 's-gate-session-1' });
+
+      const parsed = expectValidHookOutput(result.stdout, 'stop-message-gate').parsed as
+        { decision: string; reason: string } | undefined;
+      expect(parsed?.decision).toBe('block');
+      expect(parsed?.reason).toContain(`the live session ${JSON.stringify(sessionId)}`);
+      expect(parsed?.reason).toContain('target_kind "session"');
+    });
+
+    it('does NOT block for a session-targeted message once that session has disconnected', async () => {
+      const sessionId = registerAgentSession('gate-room', 'gate-principal', { disconnected: true });
+      sendSessionTargetedMessage('gate-room', sessionId, 'session-gate-k2');
+
+      const result = runGate({ session_id: 's-gate-session-2' });
+
+      expect(result.stdout).toBe('');
+    });
   });
 });

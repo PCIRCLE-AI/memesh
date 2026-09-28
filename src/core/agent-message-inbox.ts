@@ -136,8 +136,22 @@ function recipientSeenQuery(
 
 /** Is this the one expected shape of "cannot answer" — a database from before the message tables existed? */
 function isMissingMessageTableError(err: unknown): boolean {
-  const message = err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : '';
-  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(message);
+  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(errorMessage(err));
+}
+
+/**
+ * The unread queries' own "never messaged" shape: no deliveries table at all
+ * (SQLite names the outer FROM table first). A deliveries table WITHOUT the
+ * session tables {@link DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION} joins is a
+ * half-migrated database, not an empty inbox, so it is raised and the hook
+ * records an error instead of "nothing waiting".
+ */
+function isMissingDeliveriesTableError(err: unknown): boolean {
+  return /no such table: agent_message_deliveries\b/.test(errorMessage(err));
+}
+
+function errorMessage(err: unknown): string {
+  return err && typeof err === 'object' && 'message' in err ? String((err as { message: unknown }).message) : '';
 }
 
 export function recipientEverSeen(db: InboxDb, project: string, recipient: string): boolean | undefined {
@@ -178,6 +192,46 @@ export interface UnreadMessageRef {
 }
 
 /**
+ * WHERE-clause fragment shared by {@link unreadMessageRefsFor} and
+ * {@link unreadInboxLinesFor} (#490): a delivery `d` (aliased
+ * `agent_message_deliveries`) matches `recipient` either the ordinary way —
+ * addressed to it directly, the only case before #490 — OR when its
+ * `target_kind` is `'session'` and that session id (`d.recipient`, a
+ * `session_instance_id`) is registered, in the delivery's OWN project, under
+ * `recipient` as ITS principal, AND that session is LIVE right now: a row in
+ * `agent_session_connections` with no disconnect and an unexpired lease.
+ * `d.recipient` is compared to `si.session_instance_id` as a column
+ * (not a bound parameter) — the join is entirely within the delivery's own
+ * project, which is why `si.project = d.project` is required rather than a
+ * bare `session_instance_id` match: two different projects can reuse the
+ * same session id string.
+ *
+ * A session-targeted delivery whose session has since disconnected or let
+ * its lease expire is deliberately NOT matched — surfacing a message for a
+ * session that is no longer there would be nagging about a dead session, not
+ * a wakeup, and #490 asks for exactly the opposite. Callers of this fragment
+ * pass `recipient` twice and the current time in ms once, in that order,
+ * before any further `?` their own query adds.
+ */
+const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
+  d.recipient = ?
+  OR (
+    d.target_kind = 'session'
+    AND EXISTS (
+      SELECT 1
+      FROM agent_session_instances si
+      JOIN agent_session_connections c
+        ON c.project = si.project AND c.session_instance_id = si.session_instance_id
+      WHERE si.project = d.project
+        AND si.session_instance_id = d.recipient
+        AND si.principal_id = ?
+        AND c.disconnected_at IS NULL
+        AND c.lease_expires_at_ms > ?
+    )
+  )
+)`;
+
+/**
  * The waiting message ids behind {@link unreadInboxLinesFor}'s counts (#468) — same
  * "no intake receipt yet" definition, across every project, with no
  * `host_accept` dependency: a delivery row exists whether or not native push
@@ -186,7 +240,9 @@ export interface UnreadMessageRef {
  * {@link unreadInboxLinesFor}, this is not capped to the 5 busiest projects —
  * the caller uses these ids to decide whether a specific message has already
  * been accounted for, and a project outside that top-5 must still be able to
- * trigger that decision.
+ * trigger that decision. Also matches a delivery targeted at a LIVE session
+ * registered under `recipient` as its principal — see
+ * {@link DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION} (#490).
  */
 export function unreadMessageRefsFor(
   db: InboxListDb,
@@ -198,7 +254,7 @@ export function unreadMessageRefsFor(
     const rows = db.prepare(
       `SELECT d.project AS project, d.message_id AS message_id
        FROM agent_message_deliveries d
-       WHERE d.recipient = ?
+       WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -208,14 +264,14 @@ export function unreadMessageRefsFor(
          )
        ORDER BY d.project, d.message_id
        LIMIT ?`,
-    ).all(recipient, limit) as Array<{ project?: string; message_id?: string }>;
+    ).all(recipient, recipient, Date.now(), limit) as Array<{ project?: string; message_id?: string }>;
     return rows.filter(
       (row): row is UnreadMessageRef => typeof row.project === 'string' && typeof row.message_id === 'string',
     );
   } catch (err) {
     // A database from before the message tables existed has nothing to report.
     // Any other failure is not "no messages": raise it so the caller can say so.
-    if (/no such table: agent_message_deliveries/.test(String((err as { message?: unknown })?.message))) return [];
+    if (isMissingDeliveriesTableError(err)) return [];
     throw err;
   }
 }
@@ -224,9 +280,21 @@ export function unreadMessageRefsFor(
  * The line(s) to place beside the task-state lines. Empty when nothing is
  * waiting AND the recipient is known (or unknowable) — a quiet, real inbox
  * adds no noise. `everSeen === false` is the one case worth a line even at
- * zero unread: see {@link recipientEverSeen}.
+ * zero unread: see {@link recipientEverSeen}. `targetKind: 'session'` (#490)
+ * is the delivery's own `target_kind`, not the declared recipient's: it
+ * changes the instructions, because polling/fetching/intake for a
+ * session-targeted message must use that session's own id, not the
+ * principal — `recipient` here is already that session id when this is
+ * `'session'` (see {@link unreadInboxLinesFor}, the only caller that passes
+ * it as anything other than the default).
  */
-export function unreadInboxLines(count: number, project: string, recipient?: string, everSeen?: boolean): string[] {
+export function unreadInboxLines(
+  count: number,
+  project: string,
+  recipient?: string,
+  everSeen?: boolean,
+  targetKind: 'principal' | 'session' = 'principal',
+): string[] {
   if (!recipient) return [];
   // CLI callers bypass Zod and project/recipient values become model-facing
   // text. JSON quoting keeps quotes, control characters, and newlines from
@@ -235,6 +303,9 @@ export function unreadInboxLines(count: number, project: string, recipient?: str
   const displayRecipient = JSON.stringify(recipient);
   if (count > 0) {
     const noun = count === 1 ? 'message' : 'messages';
+    if (targetKind === 'session') {
+      return [`${count} ${noun} waiting for the live session ${displayRecipient} in project ${displayProject} — that session is registered under your principal and connected right now. Poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id with target_kind "session" (fetch or intake using your own principal id instead of ${displayRecipient} will not match this session-targeted message), and record intake for each with recipient ${displayRecipient} (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
+    }
     return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record intake for each (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
   }
   if (everSeen === false) {
@@ -246,21 +317,24 @@ export function unreadInboxLines(count: number, project: string, recipient?: str
 /**
  * The reminder lines for a session that has declared who it is
  * (`MEMESH_RECIPIENT`): every project in which deliveries addressed to that
- * exact recipient have no intake receipt yet, one line per project (at most
- * five, most waiting first). Senders pick the project string themselves, so
- * this does not assume the session's own project name; the line names the
- * project to poll with. The recipient must match exactly, so an agent still
- * never learns that a message exists for anyone else. No recipient, nothing
- * waiting, or a database from before the message tables existed all return no
- * lines; any other failure is raised, because it is not "no messages".
+ * exact recipient — OR to a session LIVE right now that is registered under
+ * it as its principal (#490) — have no intake receipt yet, one line per
+ * (project, actual delivery recipient) pair, at most five, most-waiting
+ * first. Senders pick the project string themselves, so this does not assume
+ * the session's own project name; the line names the project AND the exact
+ * recipient (the declared one, or the live session's own id) to poll with.
+ * The recipient must match exactly, so an agent still never learns that a
+ * message exists for anyone else. No recipient, nothing waiting, or a
+ * database from before the message tables existed all return no lines; any
+ * other failure is raised, because it is not "no messages".
  */
 export function unreadInboxLinesFor(db: InboxListDb, recipient?: string): string[] {
   if (!recipient) return [];
   try {
     const rows = db.prepare(
-      `SELECT d.project AS project, COUNT(*) AS n
+      `SELECT d.project AS project, d.recipient AS recipient, d.target_kind AS target_kind, COUNT(*) AS n
        FROM agent_message_deliveries d
-       WHERE d.recipient = ?
+       WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -268,19 +342,19 @@ export function unreadInboxLinesFor(db: InboxListDb, recipient?: string): string
              AND r.message_id = d.message_id
              AND r.receipt_kind = 'intake'
          )
-       GROUP BY d.project
-       ORDER BY n DESC, d.project
+       GROUP BY d.project, d.recipient, d.target_kind
+       ORDER BY n DESC, d.project, d.recipient
        LIMIT 5`,
-    ).all(recipient) as Array<{ project?: string; n?: number }>;
+    ).all(recipient, recipient, Date.now()) as Array<{ project?: string; recipient?: string; target_kind?: string; n?: number }>;
     return rows.flatMap((row) =>
-      typeof row.project === 'string' && typeof row.n === 'number' && row.n > 0
-        ? unreadInboxLines(row.n, row.project, recipient)
+      typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
+        ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')
         : [],
     );
   } catch (err) {
     // A database from before the message tables existed has nothing to report.
     // Any other failure is not "no messages": raise it so the caller can say so.
-    if (/no such table: agent_message_deliveries/.test(String((err as { message?: unknown })?.message))) return [];
+    if (isMissingDeliveriesTableError(err)) return [];
     throw err;
   }
 }
