@@ -254,9 +254,10 @@ input[type="text"], input[type="password"], input[type="search"], textarea {
 input:focus, textarea:focus { border-color: var(--border-focus); box-shadow: 0 0 0 3px var(--life-soft); }
 input::placeholder, textarea::placeholder { color: var(--text-3); }
 /* A placeholder can't wrap; on a narrow field a long one clips mid-word.
-   text-overflow only takes effect on overflow, so a placeholder that fits
-   is unaffected — this only changes what an overflowing one looks like. */
-input::placeholder { text-overflow: ellipsis; }
+   Chrome ignores text-overflow on ::placeholder, so it goes on the search
+   field itself (it also ends an overflowing typed query in … when the
+   field is not focused). */
+.search-bar input { text-overflow: ellipsis; }
 
 /* Buttons */
 .btn {

@@ -311,6 +311,9 @@ async function main() {
         .waitFor({ state: 'visible', timeout: 10000 });
       const memoriesOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.equal(memoriesOverflow, 0, `Memories tab is ${memoriesOverflow}px wider than a 375px screen`);
+      // #493: the search placeholder ends in … instead of clipping mid-word.
+      const searchOverflow = await page.evaluate(() => document.defaultView.getComputedStyle(document.querySelector('.search-bar input')).textOverflow);
+      assert.equal(searchOverflow, 'ellipsis', 'the Memories search field must end an overflowing placeholder in an ellipsis');
 
       // Back to Settings for the locale loops below — SettingsTab unmounts when
       // its tab isn't active (App.tsx), so `languageSelect` re-resolves against
