@@ -5,6 +5,7 @@ export declare const FUSED_LESSON_SPLIT_KEY = "fused_lesson_split";
 export declare const ARCHIVED_FTS_ROWS_KEY = "archived_fts_rows";
 export declare const FUSED_LESSON_SHELL_HISTORY_RESET_KEY = "fused_lesson_shell_history_reset";
 export declare const LESSON_TYPE_CANONICAL_KEY = "lesson_type_canonical";
+export declare const JUNK_FILE_TAGS_KEY = "junk_file_tags";
 export declare function dedupeObservations(db: MemeshDatabase): number;
 export declare function bashWritesFiles(command: string): boolean;
 export declare function retractZeroEditClaims(db: MemeshDatabase): number;
@@ -16,4 +17,5 @@ export declare function dropArchivedIndexRows(db: MemeshDatabase): {
 };
 export declare function repairFusedLessonShellHistory(db: MemeshDatabase): number;
 export declare function canonicalizeLessonTypes(db: MemeshDatabase): number;
+export declare function removeJunkFileTags(db: MemeshDatabase): number;
 //# sourceMappingURL=graph-repairs.d.ts.map
