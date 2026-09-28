@@ -335,6 +335,10 @@ function makeDatabase(
       if (sql.includes('e.created_at > ?')) {
         return { get: () => ({ c: opts.capturedSinceTracking ?? count }) };
       }
+      // The Codex queue-release receipts (#491): none recorded.
+      if (sql.includes("receipt_kind = 'host_activation'")) {
+        return { all: () => [] };
+      }
       // hook-activity counts entities carrying the auto-capture provenance
       // tag, so its statement is `COUNT(DISTINCT e.id)` over a join. This
       // stub cannot tell the two counts apart — it never runs the SQL. The
