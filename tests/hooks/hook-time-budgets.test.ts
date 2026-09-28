@@ -52,14 +52,10 @@ describe('every declared hook states its own budget', () => {
     expect(untimed, 'a hook with no timeout can hold up the user for the harness default').toEqual([]);
   });
 
-  it('keeps every SessionEnd hook within the Codex host timeout ceiling', () => {
-    // Two: the Codex session companion, and session-start.js for Claude's
-    // /clear pairing (#497). Codex loads the same manifest, so both are clamped.
+  it('keeps Codex SessionEnd within its host timeout ceiling', () => {
     const sessionEnd = declaredHooks().filter((hook) => hook.event === 'SessionEnd');
-    expect(sessionEnd, 'fixture: SessionEnd is not declared').toHaveLength(2);
-    for (const hook of sessionEnd) {
-      expect(hook.timeout, `Codex clamps SessionEnd hooks above 3 seconds (${hook.command})`).toBeLessThanOrEqual(3);
-    }
+    expect(sessionEnd, 'fixture: SessionEnd is not declared').toHaveLength(1);
+    expect(sessionEnd[0].timeout, 'Codex clamps SessionEnd hooks above 3 seconds').toBeLessThanOrEqual(3);
   });
 });
 

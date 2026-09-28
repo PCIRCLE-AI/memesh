@@ -23,23 +23,23 @@
     },
     {
       "path": "hooks/hooks.json",
-      "sha256": "c43eb07c6d5a3b7955d7a7ec0e1e2eedf73a88f9744f4d2d696994a324cbdeb7",
-      "bytes": 2963
+      "sha256": "314cabefc61b1a11fc735128b4e700ad0223d79dadca64dadb7eaf4d59c02a61",
+      "bytes": 2730
     },
     {
       "path": "scripts/hooks/_claude-channel.js",
-      "sha256": "feb2e4ad39eeca0fbcf84165788c11336f761aa5347982d07a0cacfdf350a477",
-      "bytes": 6997
+      "sha256": "c76412a0748f030190b02a651bd24582a99c9e3be1971caaa024eef85db549b0",
+      "bytes": 8558
     },
     {
       "path": "scripts/hooks/_clear-alias.js",
-      "sha256": "8448a1610d7c8a6313dbdaa56930cbbca8d9e26be8bda80f13cd16484a318747",
-      "bytes": 4848
+      "sha256": "804b472a1e4236054f1fdcf3a341dc78eebd54df338a89909026e8b2c9dca64d",
+      "bytes": 4338
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "f198a16f3bf917ab8cce74cf65ebf11d05f7460a49a5fcded1612e0d04deda52",
-      "bytes": 9118
+      "sha256": "a8010879f1dbfbdf2585e656c29aba0034517b6571a116ea5313c1a4b945dd6b",
+      "bytes": 9012
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
@@ -63,8 +63,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "31a722dca816bdc2ab48f2135d7b6987b0b7a981927c7c2870717a81f2509c13",
-      "bytes": 19260
+      "sha256": "e7e8cc08c4922c3558331b0bf38d2c82367032c67a3c4baba5cca199898d3b47",
+      "bytes": 19444
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -98,8 +98,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "603399be11e200244c6aaaf65e4eab42bb413823f3f86c27d8381f1ae90d61cb",
-      "bytes": 25857
+      "sha256": "5e4ca92ee2b2b27379005a136824c1c70e9f866aa07acefbff8c2d01c99c79d7",
+      "bytes": 25791
     },
     {
       "path": "scripts/hooks/_generated/session-handoff.js",
@@ -188,8 +188,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "2436189ba972f6cdcc7ef28badb7b9655d3290ef0fc013ef8e5927b39ff5e31e",
-      "bytes": 109849
+      "sha256": "5ce4f8a276a1d9948c30a72af54b9bc67ec36ad84bfbe3acb9445249e1919f00",
+      "bytes": 110271
     },
     {
       "path": "scripts/hooks/session-summary.js",

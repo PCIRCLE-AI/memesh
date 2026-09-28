@@ -448,22 +448,22 @@ export function migrateEntitiesSchema(db: MemeshDatabase): void {
   // and Bash, while its MCP servers keep the id they started with.
   // `agent_session_aliases` links the new id to the previous one (one link
   // per /clear, so both columns are unique and a chain is a plain list);
-  // `agent_session_clear_markers` holds each side of a /clear for the few
-  // seconds until the other side (SessionEnd with the old id, SessionStart
-  // with the new) arrives. Created before the messaging-table check below, so
-  // a hook-only database gets them too. Additive; nothing is backfilled.
+  // `agent_session_launchers` holds, per `claude` process (pid plus start
+  // time, since a pid can be reused), the session id it had at its last
+  // SessionStart — the previous id a /clear links to. Created before the
+  // messaging-table check below, so a hook-only database gets them too.
+  // Additive; nothing is backfilled.
   db.exec(
     `CREATE TABLE IF NOT EXISTS agent_session_aliases (
        session_id          TEXT PRIMARY KEY,
        previous_session_id TEXT NOT NULL UNIQUE,
        created_at_ms       INTEGER NOT NULL
      );
-     CREATE TABLE IF NOT EXISTS agent_session_clear_markers (
-       side           TEXT NOT NULL CHECK (side IN ('end', 'start')),
-       session_id     TEXT NOT NULL,
-       cwd            TEXT NOT NULL,
-       created_at_ms  INTEGER NOT NULL,
-       PRIMARY KEY (side, session_id)
+     CREATE TABLE IF NOT EXISTS agent_session_launchers (
+       launcher_pid    INTEGER PRIMARY KEY,
+       launcher_start  TEXT NOT NULL,
+       session_id      TEXT NOT NULL,
+       updated_at_ms   INTEGER NOT NULL
      );`,
   );
 

@@ -18,15 +18,14 @@ function intendedSessionFilter(db, session) {
         params: ids,
     };
 }
-export const SESSION_ALIAS_MAX_HOPS = 8;
-export function sessionAliasChain(db, session, maxHops = SESSION_ALIAS_MAX_HOPS) {
+export function sessionAliasChain(db, session) {
     const chain = new Set([session]);
     try {
         const previous = db.prepare('SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?');
         const next = db.prepare('SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?');
         for (const step of [previous, next]) {
             let current = session;
-            for (let hop = 0; hop < maxHops; hop++) {
+            for (;;) {
                 const row = step.get(current);
                 if (typeof row?.id !== 'string' || chain.has(row.id))
                     break;

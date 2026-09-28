@@ -65,6 +65,14 @@ export function commandNamesClaudeLauncher(command) {
  * walk exactly like reaching the top of the tree.
  */
 export function findClaudeLauncherCommand(startPpid, runPs, maxLevels = MAX_ANCESTRY_LEVELS) {
+  return findClaudeLauncher(startPpid, runPs, maxLevels)?.command ?? null;
+}
+
+/**
+ * The same walk as {@link findClaudeLauncherCommand}, returning the launcher's
+ * pid as well: `{ pid, command }`, or `null` on the same conditions.
+ */
+export function findClaudeLauncher(startPpid, runPs, maxLevels = MAX_ANCESTRY_LEVELS) {
   let pid = startPpid;
   for (let i = 0; i < maxLevels && Number.isInteger(pid) && pid > 1; i++) {
     let raw;
@@ -75,7 +83,7 @@ export function findClaudeLauncherCommand(startPpid, runPs, maxLevels = MAX_ANCE
     }
     const parsed = parsePsLine(raw);
     if (!parsed) return null;
-    if (commandNamesClaudeLauncher(parsed.command)) return parsed.command;
+    if (commandNamesClaudeLauncher(parsed.command)) return { pid, command: parsed.command };
     pid = parsed.ppid;
   }
   return null;
@@ -129,13 +137,47 @@ export function channelFlagWarningLine() {
     + `restart Claude with the exact \`${CHANNEL_FLAG} server:memesh-channel\` flag.`;
 }
 
-/** The only impure call in this module. `-p` scopes `ps` to one pid. */
-function runRealPs(pid) {
+/** The only impure calls in this module. `-p` scopes `ps` to one pid. */
+export function runRealPs(pid) {
   return execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
     encoding: 'utf8',
     timeout: 2000,
     stdio: ['ignore', 'pipe', 'ignore'],
   });
+}
+
+/**
+ * When `pid` started, as `ps -o lstart=` prints it (macOS and Linux both
+ * support it). A pid alone can be reused by a later process; pid plus start
+ * time names one process.
+ */
+export function runRealPsStart(pid) {
+  return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+    encoding: 'utf8',
+    timeout: 2000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+  });
+}
+
+/**
+ * The `claude` process this hook runs under: `{ pid, start, command }`, or
+ * `null` when there is none to find (not under Claude Code, no `ps` — Windows
+ * — or the walk failed). Never throws.
+ */
+export function resolveClaudeLauncher(startPpid = process.ppid, runPs = runRealPs, runPsStart = runRealPsStart) {
+  try {
+    const found = findClaudeLauncher(startPpid, runPs);
+    if (!found) return null;
+    const start = String(runPsStart(found.pid) ?? '').trim();
+    return start !== '' ? { ...found, start } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The channel-flag warning for an already-resolved launcher command line, or `null`. */
+export function channelFlagWarningFor(command) {
+  return typeof command === 'string' && commandLooksLikeMistypedChannelFlag(command) ? channelFlagWarningLine() : null;
 }
 
 /**

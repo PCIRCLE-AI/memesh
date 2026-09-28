@@ -4,10 +4,12 @@
  * keep the id they were started with. A message meant for the session must
  * still reach it, and still be intakeable, under either id.
  *
- * SessionEnd (reason "clear", the OLD id) and SessionStart (source "clear",
- * the NEW id) each leave a marker; whichever runs second pairs them and
- * writes the alias NEW -> OLD. Their order is not documented, so both orders
- * are tested.
+ * What links the two ids is the `claude` process both run under: every
+ * SessionStart records (launcher pid, launcher start time) -> session id, and
+ * a SessionStart with source "clear" links its new id to the one recorded for
+ * the same process before. These tests run session-start.js under a real
+ * stand-in `claude` process (a node script named `claude`), so the ancestry
+ * walk and `ps` are real.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
@@ -24,30 +26,56 @@ import { registerAgentSession } from '../helpers/agent-session-fixture.js';
 
 const require = createRequire(import.meta.url);
 // Plain JS helpers with no type declarations.
-const clearAlias = require('../../scripts/hooks/_clear-alias.js') as {
-  CLEAR_ALIAS_WINDOW_MS: number;
-  recordClearSide: (db: unknown, input: { side: 'end' | 'start'; sessionId: string; cwd: string; now?: number }) =>
-    { outcome: string; reason: string };
+const { recordSessionLauncher } = require('../../scripts/hooks/_clear-alias.js') as {
+  recordSessionLauncher: (openDb: () => unknown, input: {
+    sessionId: unknown; source: unknown; agentType?: unknown; launcher: { pid: number; start: string } | null; now?: number;
+  }) => { outcome: string; reason: string };
+};
+const { resolveClaudeLauncher } = require('../../scripts/hooks/_claude-channel.js') as {
+  resolveClaudeLauncher: (ppid: number, runPs: (pid: number) => string, runPsStart: (pid: number) => string) =>
+    { pid: number; start: string; command: string } | null;
 };
 const { MemeshDatabase } = require('../../scripts/hooks/_generated/sqlite.js') as {
-  MemeshDatabase: new (file: string) => { exec(sql: string): void; close(): void };
+  MemeshDatabase: new (file: string) => { close(): void };
 };
 
 const OLD = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NEW = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-const NEWER = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const SUBAGENT = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const OTHER = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+
+// A stand-in for the `claude` CLI: `ps` shows it as `node <dir>/claude ...`,
+// which is how the npm shim appears, so the hook's ancestry walk finds it.
+// It runs session-start.js once per payload, in order, as its own children.
+const FAKE_CLAUDE = `
+const { spawnSync } = require('child_process');
+const fs = require('fs');
+const [hook, payloadsFile, resultsFile] = process.argv.slice(2);
+const results = [];
+for (const payload of JSON.parse(fs.readFileSync(payloadsFile, 'utf8'))) {
+  const r = spawnSync(process.execPath, [hook], { input: JSON.stringify(payload), env: process.env, encoding: 'utf8', timeout: 15000 });
+  results.push({ status: r.status, stdout: r.stdout, stderr: r.stderr });
+}
+fs.writeFileSync(resultsFile, JSON.stringify(results));
+`;
+
+// The launcher mapping reads `ps`, which Windows does not have: there the
+// ids are not linked (documented), so the process-level cases run on POSIX.
+const posixOnly = it.skipIf(process.platform === 'win32');
 
 describe('Feature: #497 /clear keeps one session one session', () => {
   let tmp: string;
   let dbPath: string;
   let cwd: string;
+  let fakeClaude: string;
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-clear-alias-'));
     dbPath = path.join(tmp, 'graph.db');
     cwd = path.join(tmp, 'work');
     fs.mkdirSync(cwd);
+    fakeClaude = path.join(tmp, 'claude');
+    fs.writeFileSync(fakeClaude, FAKE_CLAUDE);
     openDatabase(dbPath);
   });
 
@@ -56,102 +84,126 @@ describe('Feature: #497 /clear keeps one session one session', () => {
     removeTempDir(tmp);
   });
 
-  function run(input: Record<string, unknown>, env: Record<string, string | undefined> = {}) {
-    const result = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
-      input: JSON.stringify({ cwd, ...input }),
-      env: {
-        ...process.env, HOME: tmp, MEMESH_DB_PATH: dbPath, MEMESH_HOOK_HOST: 'claude-code',
-        MEMESH_RECIPIENT: undefined, ...env,
-      },
-      encoding: 'utf8',
-      timeout: 15000,
+  const hookEnv = (extra: Record<string, string | undefined> = {}) => ({
+    ...process.env, HOME: tmp, MEMESH_DB_PATH: dbPath, MEMESH_HOOK_HOST: 'claude-code', MEMESH_RECIPIENT: undefined,
+    ...extra,
+  });
+
+  /** One `claude` process running these SessionStarts in order. */
+  function underOneClaude(starts: Array<Record<string, unknown>>) {
+    const payloads = path.join(tmp, `payloads-${Math.random()}.json`);
+    const results = path.join(tmp, `results-${Math.random()}.json`);
+    fs.writeFileSync(payloads, JSON.stringify(starts.map((s) => ({ hook_event_name: 'SessionStart', cwd, ...s }))));
+    const run = spawnSync(process.execPath, [fakeClaude, path.resolve('scripts/hooks/session-start.js'), payloads, results], {
+      env: hookEnv(), encoding: 'utf8', timeout: 60000,
     });
-    expect(result.status, `session-start exited ${result.status}\nstderr:\n${result.stderr}`).toBe(0);
-    return result;
+    expect(run.status, run.stderr).toBe(0);
+    const out = JSON.parse(fs.readFileSync(results, 'utf8')) as Array<{ status: number; stderr: string }>;
+    for (const r of out) expect(r.status, r.stderr).toBe(0);
+    return out;
   }
-  const end = (sessionId: string, env?: Record<string, string | undefined>) =>
-    run({ hook_event_name: 'SessionEnd', reason: 'clear', session_id: sessionId }, env);
-  const start = (sessionId: string, env?: Record<string, string | undefined>) =>
-    run({ hook_event_name: 'SessionStart', source: 'clear', session_id: sessionId }, env);
 
   const aliases = () => getDatabase().prepare(
     'SELECT session_id, previous_session_id FROM agent_session_aliases ORDER BY created_at_ms, session_id',
   ).all();
-  const markers = () => getDatabase().prepare('SELECT COUNT(*) AS n FROM agent_session_clear_markers').get();
-  const outcomes = () => fs.readFileSync(path.join(tmp, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n')
-    .map((line) => JSON.parse(line) as { hook: string; outcome: string; reason?: string })
-    .filter((record) => record.hook === 'session-start');
+  const reasons = () => fs.readFileSync(path.join(tmp, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n')
+    .map((line) => JSON.parse(line) as { hook: string; reason?: string })
+    .filter((record) => record.hook === 'session-start')
+    .map((record) => record.reason);
 
-  it('SessionEnd then SessionStart: aliases the new id to the old one, and consumes both markers', () => {
-    const endResult = end(OLD);
-    expect(endResult.stdout).toBe('');
-    start(NEW);
+  posixOnly('startup then /clear under one claude process: links the new id to the previous one', () => {
+    underOneClaude([{ source: 'startup', session_id: OLD }, { source: 'clear', session_id: NEW }]);
 
-    // Size pin: the empty-alias assertions below mean "nothing linked", not
-    // "nothing can be linked".
     expect(aliases()).toHaveLength(1);
     expect(aliases()).toEqual([{ session_id: NEW, previous_session_id: OLD }]);
-    expect(markers()).toEqual({ n: 0 });
   });
 
-  it('SessionStart then SessionEnd: the same alias', () => {
-    start(NEW);
-    end(OLD);
-
-    expect(aliases()).toEqual([{ session_id: NEW, previous_session_id: OLD }]);
-    expect(markers()).toEqual({ n: 0 });
-  });
-
-  it('two sessions clearing in the same directory: no alias, and the ambiguity is recorded', () => {
-    end(OLD);
-    end(OTHER);
-    start(NEW);
+  posixOnly('a /clear under a DIFFERENT claude process never links to another process\'s session', () => {
+    underOneClaude([{ source: 'startup', session_id: OLD }]);
+    underOneClaude([{ source: 'clear', session_id: NEW }]);
 
     expect(aliases()).toEqual([]);
-    expect(outcomes().map((record) => record.reason)).toContain(SKIP_REASONS.clearAliasAmbiguous);
+    expect(reasons()).toContain(SKIP_REASONS.clearAliasNoPrevious);
   });
 
-  it('ignores a marker older than the window', () => {
-    getDatabase().prepare(`
-      INSERT INTO agent_session_clear_markers (side, session_id, cwd, created_at_ms) VALUES ('end', ?, ?, ?)
-    `).run(OLD, fs.realpathSync(cwd), Date.now() - clearAlias.CLEAR_ALIAS_WINDOW_MS - 1000);
-
-    start(NEW);
-
-    expect(aliases()).toEqual([]);
-    expect(outcomes().map((record) => record.reason)).toContain(SKIP_REASONS.clearAliasWaiting);
-  });
-
-  it('two successive /clears chain: the newest id reaches both earlier ones', () => {
-    end(OLD);
-    start(NEW);
-    end(NEW);
-    start(NEWER);
-
-    expect(aliases()).toEqual([
-      { session_id: NEW, previous_session_id: OLD },
-      { session_id: NEWER, previous_session_id: NEW },
+  posixOnly('a subagent SessionStart does not become the session a later /clear links to', () => {
+    underOneClaude([
+      { source: 'startup', session_id: OLD },
+      { source: 'startup', session_id: SUBAGENT, agent_type: 'Explore' },
+      { source: 'clear', session_id: NEW },
     ]);
-    expect([...sessionAliasChain(getDatabase(), NEWER)].sort()).toEqual([OLD, NEW, NEWER].sort());
-    expect([...sessionAliasChain(getDatabase(), OLD)].sort()).toEqual([OLD, NEW, NEWER].sort());
+
+    // Linked to OLD, not to the subagent's id recorded in between.
+    expect(aliases()).toEqual([{ session_id: NEW, previous_session_id: OLD }]);
   });
 
-  it('records a skip, and writes nothing, when not running under Claude Code', () => {
-    end(OLD, { MEMESH_HOOK_HOST: 'codex' });
+  posixOnly('records why, and links nothing, when there is no ps to find the claude process', () => {
+    const noTools = path.join(tmp, 'empty-bin');
+    fs.mkdirSync(noTools);
+    const run = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'clear', session_id: NEW, cwd }),
+      env: hookEnv({ PATH: noTools }), encoding: 'utf8', timeout: 15000,
+    });
+    expect(run.status, run.stderr).toBe(0);
 
-    expect(markers()).toEqual({ n: 0 });
-    expect(outcomes().map((record) => record.reason)).toContain(SKIP_REASONS.notClaudeCodeHost);
+    expect(aliases()).toEqual([]);
+    expect(reasons()).toContain(SKIP_REASONS.sessionLauncherNotFound);
+    expect(resolveClaudeLauncher(123, () => { throw new Error('spawn ps ENOENT'); }, () => 'x')).toBeNull();
   });
 
-  it('records a skip when the database has no alias tables (not migrated)', () => {
-    const raw = new MemeshDatabase(path.join(tmp, 'unmigrated.db'));
-    try {
-      expect(clearAlias.recordClearSide(raw, { side: 'end', sessionId: OLD, cwd })).toEqual({
-        outcome: 'skipped', reason: SKIP_REASONS.clearAliasNoTable,
-      });
-    } finally {
-      raw.close();
-    }
+  describe('the mapping itself (recordSessionLauncher)', () => {
+    const launcher = { pid: 4242, start: 'Mon Sep 28 10:00:00 2026' };
+
+    it('does not record a subagent SessionStart as the process\'s session', () => {
+      recordSessionLauncher(() => getDatabase(), { sessionId: OLD, source: 'startup', launcher });
+      expect(recordSessionLauncher(() => getDatabase(), {
+        sessionId: SUBAGENT, source: 'startup', agentType: 'Explore', launcher,
+      })).toEqual({ outcome: 'skipped', reason: SKIP_REASONS.sessionLauncherSubagent });
+      expect(getDatabase().prepare('SELECT session_id FROM agent_session_launchers WHERE launcher_pid = ?').get(4242))
+        .toEqual({ session_id: OLD });
+    });
+
+    it('links only on /clear: a startup or resume in the same process just records the new session', () => {
+      recordSessionLauncher(() => getDatabase(), { sessionId: OLD, source: 'startup', launcher });
+      recordSessionLauncher(() => getDatabase(), { sessionId: NEW, source: 'resume', launcher });
+
+      expect(aliases()).toEqual([]);
+      expect(getDatabase().prepare('SELECT session_id FROM agent_session_launchers WHERE launcher_pid = ?').get(4242))
+        .toEqual({ session_id: NEW });
+    });
+
+    it('does not link across a reused pid (same pid, different start time)', () => {
+      recordSessionLauncher(() => getDatabase(), { sessionId: OLD, source: 'startup', launcher });
+
+      expect(recordSessionLauncher(() => getDatabase(), {
+        sessionId: NEW, source: 'clear', launcher: { pid: 4242, start: 'Tue Sep 29 09:00:00 2026' },
+      })).toEqual({ outcome: 'skipped', reason: SKIP_REASONS.clearAliasPidReused });
+      expect(aliases()).toEqual([]);
+    });
+
+    it('keeps the spawn-time id reachable through more than nine /clears', () => {
+      const ids = Array.from({ length: 12 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
+      recordSessionLauncher(() => getDatabase(), { sessionId: ids[0], source: 'startup', launcher });
+      for (const id of ids.slice(1)) recordSessionLauncher(() => getDatabase(), { sessionId: id, source: 'clear', launcher });
+
+      expect(aliases()).toHaveLength(11);
+      const chain = sessionAliasChain(getDatabase(), ids[11]);
+      expect(chain.has(ids[0])).toBe(true);
+      expect(chain.size).toBe(12);
+      expect(sessionAliasChain(getDatabase(), ids[0]).has(ids[11])).toBe(true);
+    });
+
+    it('records a skip when there is no claude process, and when the database has no tables', () => {
+      expect(recordSessionLauncher(() => getDatabase(), { sessionId: OLD, source: 'clear', launcher: null }))
+        .toEqual({ outcome: 'skipped', reason: SKIP_REASONS.sessionLauncherNotFound });
+      const raw = new MemeshDatabase(path.join(tmp, 'unmigrated.db'));
+      try {
+        expect(recordSessionLauncher(() => raw, { sessionId: OLD, source: 'clear', launcher }))
+          .toEqual({ outcome: 'skipped', reason: SKIP_REASONS.clearAliasNoTable });
+      } finally {
+        raw.close();
+      }
+    });
   });
 
   describe('after /clear, a message meant for the session', () => {
@@ -171,19 +223,18 @@ describe('Feature: #497 /clear keeps one session one session', () => {
       action: 'intake', project: 'team-room', recipient: 'claude-implementer', message_id: messageId,
       intake_state: 'ingested', idempotency_key: key,
     }, { transport: 'mcp', sourceHost: 'claude-code', hostSession });
+    const cleared = () => underOneClaude([{ source: 'startup', session_id: OLD }, { source: 'clear', session_id: NEW }]);
 
-    it('reminds the session under its new id, and not another session', async () => {
-      end(OLD);
-      start(NEW);
+    posixOnly('reminds the session under its new id of a message meant for its spawn-time id, and not another session', async () => {
+      cleared();
       await sendIntended(OLD, 'k-old');
 
       expect(prompt(NEW).stdout).toContain('1 message waiting for \\"claude-implementer\\"');
       expect(prompt(OTHER).stdout).not.toContain('message waiting');
     });
 
-    it('counts it as waiting under either id in core too (briefing, CLI), and not for another session', async () => {
-      end(OLD);
-      start(NEW);
+    posixOnly('counts it as waiting under either id in core too (briefing, CLI), and not for another session', async () => {
+      cleared();
       await sendIntended(OLD, 'k-core');
       const db = getDatabase();
 
@@ -192,9 +243,8 @@ describe('Feature: #497 /clear keeps one session one session', () => {
       expect(unreadMessageRefsFor(db, 'claude-implementer', OTHER)).toHaveLength(0);
     });
 
-    it('accepts intake from the MCP server holding the old id and from the CLI holding the new one', async () => {
-      end(OLD);
-      start(NEW);
+    posixOnly('accepts intake from the MCP server holding the old id and from the CLI holding the new one', async () => {
+      cleared();
       const forNew = await sendIntended(NEW, 'k-new');
       const forOld = await sendIntended(OLD, 'k-old-2');
 
@@ -204,12 +254,11 @@ describe('Feature: #497 /clear keeps one session one session', () => {
         .rejects.toMatchObject({ code: 'intended_for_other_session' });
     });
 
-    it('treats the new id as the same session for a session-targeted delivery to the old id', async () => {
+    posixOnly('treats the new id as the same session for a session-targeted delivery to the old id', async () => {
       // The channel host restarted and registered under the new id.
       registerAgentSession('team-room', 'claude-implementer', { sessionId: OLD, adapterKind: 'claude-channel' });
       registerAgentSession('team-room', 'claude-implementer', { sessionId: NEW, adapterKind: 'claude-channel' });
-      end(OLD);
-      start(NEW);
+      cleared();
       const sent = await executeAgentMessageAction(getDatabase(), {
         action: 'send', project: 'team-room', sender: 'codex-lead', recipient: OLD, target_kind: 'session',
         idempotency_key: 'k-session', payload: 'x', content_type: 'text/plain',

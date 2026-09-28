@@ -95,7 +95,7 @@ const HELPER_OWNED_HOOKS = {
 const RETURNING_DECISION_FUNCTIONS = {
   '_stop-notes.js': ['runNoteIngestion', 'decideNudge'],
   '_stop-handoff.js': ['captureHandoff'],
-  '_clear-alias.js': ['recordClearSide'],
+  '_clear-alias.js': ['recordSessionLauncher'],
 };
 
 const EXIT_RE = /(?<![\w$.])(?:exit0|pass)\s*\(|(?<![\w$.])process\.exit\s*\(/;

@@ -72,26 +72,26 @@ function intendedSessionFilter(db: InboxDb, session?: string): { sql: string; pa
   };
 }
 
-/** Most /clear links {@link sessionAliasChain} follows in each direction. */
-export const SESSION_ALIAS_MAX_HOPS = 8;
-
 /**
  * #497 /clear: every id one session has had. Claude Code gives a cleared
  * session a new id for its hooks and Bash, while its MCP servers keep the id
  * they started with, so a message meant for the session can name either.
  * `agent_session_aliases` links each new id to the previous one (both columns
- * unique, so it is a plain list); this walks it both ways, at most
- * {@link SESSION_ALIAS_MAX_HOPS} links each way. Always contains `session`.
- * A database without the table (not migrated yet) has no aliases.
+ * unique, so it is a plain list); this walks it both ways to its ends, with
+ * no hop limit: every /clear of a long session adds one link, and dropping
+ * the spawn-time id after some count would cut the session off from its own
+ * messages. The walk stops at an id already seen, so even a cycle ends.
+ * Always contains `session`. A database without the table (not migrated yet)
+ * has no aliases.
  */
-export function sessionAliasChain(db: InboxDb, session: string, maxHops: number = SESSION_ALIAS_MAX_HOPS): Set<string> {
+export function sessionAliasChain(db: InboxDb, session: string): Set<string> {
   const chain = new Set([session]);
   try {
     const previous = db.prepare('SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?');
     const next = db.prepare('SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?');
     for (const step of [previous, next]) {
       let current = session;
-      for (let hop = 0; hop < maxHops; hop++) {
+      for (;;) {
         const row = step.get(current) as { id?: unknown } | undefined;
         if (typeof row?.id !== 'string' || chain.has(row.id)) break;
         chain.add(row.id);

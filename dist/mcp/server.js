@@ -26481,12 +26481,11 @@ function migrateEntitiesSchema(db2) {
        previous_session_id TEXT NOT NULL UNIQUE,
        created_at_ms       INTEGER NOT NULL
      );
-     CREATE TABLE IF NOT EXISTS agent_session_clear_markers (
-       side           TEXT NOT NULL CHECK (side IN ('end', 'start')),
-       session_id     TEXT NOT NULL,
-       cwd            TEXT NOT NULL,
-       created_at_ms  INTEGER NOT NULL,
-       PRIMARY KEY (side, session_id)
+     CREATE TABLE IF NOT EXISTS agent_session_launchers (
+       launcher_pid    INTEGER PRIMARY KEY,
+       launcher_start  TEXT NOT NULL,
+       session_id      TEXT NOT NULL,
+       updated_at_ms   INTEGER NOT NULL
      );`);
   const deliveryTableExists = db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_deliveries'").get();
   if (!deliveryTableExists)
@@ -29157,15 +29156,14 @@ function intendedSessionFilter(db2, session) {
     params: ids
   };
 }
-var SESSION_ALIAS_MAX_HOPS = 8;
-function sessionAliasChain(db2, session, maxHops = SESSION_ALIAS_MAX_HOPS) {
+function sessionAliasChain(db2, session) {
   const chain = /* @__PURE__ */ new Set([session]);
   try {
     const previous = db2.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?");
     const next = db2.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?");
     for (const step of [previous, next]) {
       let current = session;
-      for (let hop = 0; hop < maxHops; hop++) {
+      for (; ; ) {
         const row = step.get(current);
         if (typeof row?.id !== "string" || chain.has(row.id))
           break;

@@ -98,10 +98,10 @@ and should record intake for both. For a message like this:
 
 After `/clear`, Claude Code gives the session a new id for its hooks and
 Bash, while the memesh MCP server and the channel host keep the one they
-started with. memesh links the two when the SessionEnd and SessionStart hooks
-of that `/clear` run, so a message meant for the session reaches it, and can
-be intaken, under either id. If two sessions clear in the same directory at
-the same moment, neither is linked.
+started with. On macOS and Linux, memesh links the two through the `claude`
+process both run under (its pid and start time, recorded at every
+SessionStart), so a message meant for the session reaches it, and can be
+intaken, under either id. On Windows (no `ps`) the ids are not linked.
 
 A message with no `intended_session` (every message sent before this
 existed, too) keeps reaching every session of the principal. The Claude

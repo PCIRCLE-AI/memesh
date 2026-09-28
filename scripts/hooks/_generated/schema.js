@@ -384,12 +384,11 @@ export function migrateEntitiesSchema(db) {
        previous_session_id TEXT NOT NULL UNIQUE,
        created_at_ms       INTEGER NOT NULL
      );
-     CREATE TABLE IF NOT EXISTS agent_session_clear_markers (
-       side           TEXT NOT NULL CHECK (side IN ('end', 'start')),
-       session_id     TEXT NOT NULL,
-       cwd            TEXT NOT NULL,
-       created_at_ms  INTEGER NOT NULL,
-       PRIMARY KEY (side, session_id)
+     CREATE TABLE IF NOT EXISTS agent_session_launchers (
+       launcher_pid    INTEGER PRIMARY KEY,
+       launcher_start  TEXT NOT NULL,
+       session_id      TEXT NOT NULL,
+       updated_at_ms   INTEGER NOT NULL
      );`);
     const deliveryTableExists = db
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_deliveries'")

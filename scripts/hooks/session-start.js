@@ -5,7 +5,7 @@ import { spawn } from 'child_process';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, constants as fsConstants } from 'fs';
-import { findChannelFlagWarning } from './_claude-channel.js';
+import { channelFlagWarningFor, resolveClaudeLauncher } from './_claude-channel.js';
 import {
   buildReferenceContext,
   hasBriefingContent,
@@ -60,7 +60,6 @@ import {
   isCodexHost,
   resolveMessageRecipient,
   waitingMessageLines,
-  openHookDb,
   SKIP_REASONS,
   hookMessageSessionId,
   SESSION_ID_MISMATCH_REASON,
@@ -75,7 +74,7 @@ import {
   writeAutoUpdateConsent,
   writePrivateJson,
 } from './_shared.js';
-import { recordClearSide } from './_clear-alias.js';
+import { recordSessionLauncher } from './_clear-alias.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import {
   buildBriefingIndex,
@@ -826,24 +825,24 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
 // carries no `reason`. One helper, not three copies of the template string,
 // so the wording cannot drift between call sites.
 /**
- * Which side of a /clear this run is: SessionEnd with reason "clear" holds
- * the old session id, SessionStart with source "clear" the new one.
- * (`exit_reason` / `startup_mode` are accepted as the same fields.)
+ * Record this SessionStart's session for its claude process (#497). Opens the
+ * database for writing only when it already exists — a first session with no
+ * database keeps its "no database yet" banner — and without migrating it
+ * (tables missing: recorded and skipped). The hook's own busy_timeout is set
+ * before any statement, so a held write lock costs at most that, not the
+ * 30s writer default. Returns the outcome.
  */
-function clearSideOf(data) {
-  if (data.hook_event_name === 'SessionEnd') return (data.reason ?? data.exit_reason) === 'clear' ? 'end' : null;
-  return (data.source ?? data.startup_mode) === 'clear' ? 'start' : null;
-}
-
-/** Run one side of the /clear pairing; returns the outcome to record. Claude Code only. */
-function runClearSide(side, data) {
-  if (!isClaudeCodeHost(process.env)) return { outcome: 'skipped', reason: SKIP_REASONS.notClaudeCodeHost };
+function recordLauncherSession(data, launcher) {
+  if (!existsSync(dbPath)) return { outcome: 'skipped', reason: SKIP_REASONS.clearAliasNoTable };
   let db;
   try {
-    ({ db } = openHookDb(process.env));
-    return recordClearSide(db, { side, sessionId: data.session_id, cwd: data.cwd });
+    return recordSessionLauncher(() => {
+      db = new MemeshDatabase(dbPath);
+      db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
+      return db;
+    }, { sessionId: data.session_id, source: data.source, agentType: data.agent_type, launcher });
   } catch (err) {
-    return { outcome: 'error', reason: `clear-alias: ${hookErrorReason(err)}` };
+    return { outcome: 'error', reason: `session-launcher: ${hookErrorReason(err)}` };
   } finally {
     try { db?.close(); } catch { /* already closed */ }
   }
@@ -900,11 +899,15 @@ process.stdin.on('end', async () => {
   // Depends on neither `data` nor the database, so it can run before both —
   // and does, since the ancestry walk this can trigger is worth paying once
   // per session, not once per exit path.
+  //
+  // The same walk finds the `claude` process (#497): its pid and start time
+  // name the session across /clear — see _clear-alias.js.
+  const onClaudeCode = isClaudeCodeHost(process.env);
+  const claudeLauncher = onClaudeCode ? resolveClaudeLauncher() : null;
   let channelFlagWarningLine = null;
   try {
-    if (isClaudeCodeHost(process.env)
-      && existsSync(join(getMemeshDirFromDbPath(), 'hosts', 'claude.json'))) {
-      channelFlagWarningLine = findChannelFlagWarning();
+    if (onClaudeCode && existsSync(join(getMemeshDirFromDbPath(), 'hosts', 'claude.json'))) {
+      channelFlagWarningLine = channelFlagWarningFor(claudeLauncher?.command);
     }
   } catch { /* diagnostics must never cost a session its banner */ }
   const withChannelFlagWarning = (msg) =>
@@ -914,13 +917,14 @@ process.stdin.on('end', async () => {
     const data = JSON.parse(input);
     hookPayload = data;
 
-    // #497 /clear: pair the session's old id (SessionEnd) with its new one
-    // (SessionStart) — see _clear-alias.js. A SessionEnd shows nothing.
-    const clearSide = clearSideOf(data);
-    if (clearSide) record(runClearSide(clearSide, data));
-    if (data.hook_event_name === 'SessionEnd') {
-      if (!clearSide) record({ outcome: 'skipped', reason: SKIP_REASONS.clearAliasNotClear });
-      return process.exit(0);
+    // #497: remember which session this claude process now has, and on
+    // /clear link the new id to the previous one (see _clear-alias.js).
+    // Recorded on /clear, where it decides something: a mapping a startup
+    // could not store shows up there as `clearAliasNoPrevious` (or
+    // `sessionLauncherNotFound`), not as a second outcome on every start.
+    if (onClaudeCode) {
+      const launcherOutcome = recordLauncherSession(data, claudeLauncher);
+      if (data.source === 'clear') record(launcherOutcome);
     }
 
     const projectName = getProjectName(data.cwd);

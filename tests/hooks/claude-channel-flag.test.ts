@@ -3,9 +3,11 @@ import {
   CHANNEL_FLAG,
   channelFlagWarningLine,
   commandNamesClaudeLauncher,
+  channelFlagWarningFor,
   findChannelFlagWarning,
   findClaudeLauncherCommand,
   parsePsLine,
+  resolveClaudeLauncher,
 } from '../../scripts/hooks/_claude-channel.js';
 
 // SessionStart warns once when the memesh-channel is configured but
@@ -129,5 +131,39 @@ describe('Feature: the channel-flag ancestry check never warns falsely', () => {
       expect(() => findChannelFlagWarning(1000, runPs)).not.toThrow();
       expect(findChannelFlagWarning(1000, runPs)).toBeNull();
     });
+  });
+});
+
+// #497: session-start resolves the launcher ONCE and uses it for both the
+// channel-flag warning and the /clear session mapping.
+describe('Feature: one ancestry walk names the claude process (pid, start time, command)', () => {
+  const tree: Record<number, string> = {
+    300: '200 /bin/sh -c node hook.js',
+    200: '1 node /usr/local/bin/claude \u2014dangerously-load-development-channels server:memesh-channel',
+  };
+  const runPs = (pid: number) => {
+    const line = tree[pid];
+    if (!line) throw new Error('no such process');
+    return line;
+  };
+
+  it('returns the launcher pid, its start time and its command line', () => {
+    expect(resolveClaudeLauncher(300, runPs, (pid) => (pid === 200 ? 'Mon Sep 28 10:00:00 2026\n' : ''))).toEqual({
+      pid: 200,
+      start: 'Mon Sep 28 10:00:00 2026',
+      command: tree[200].replace(/^1 /, ''),
+    });
+  });
+
+  it('returns null when the start time cannot be read (no pairing on half an identity)', () => {
+    expect(resolveClaudeLauncher(300, runPs, () => { throw new Error('ps failed'); })).toBeNull();
+    expect(resolveClaudeLauncher(300, runPs, () => '  \n')).toBeNull();
+  });
+
+  it('warns from the resolved command exactly as the walking helper does', () => {
+    const launcher = resolveClaudeLauncher(300, runPs, () => 'Mon Sep 28 10:00:00 2026');
+    expect(channelFlagWarningFor(launcher?.command)).toBe(findChannelFlagWarning(300, runPs));
+    expect(channelFlagWarningFor(launcher?.command)).not.toBeNull();
+    expect(channelFlagWarningFor(undefined)).toBeNull();
   });
 });
