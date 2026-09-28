@@ -78,6 +78,15 @@ describe('buildSessionInsights — the Stop hook rules', () => {
     expect(files.title).toBe('2026-09-12 hermes: edited 2 file(s)');
   });
 
+  it('#495: stores a route file under its full name, not its $-looking stem', () => {
+    const out = buildSessionInsights(
+      { filesEdited: ['$postId.tsx'], bashCommands: [], errorsEncountered: [], toolCallCount: 5, unrecognizedTools: [], toolResultsNonJson: 0 },
+      ctx,
+    );
+    expect(out[0].tags).toContain('file:$postId.tsx');
+    expect(out[0].tags).not.toContain('file:$postId');
+  });
+
   it('stores nothing for a quiet session (fewer than 3 tool calls)', () => {
     const out = buildSessionInsights(
       { filesEdited: ['a.ts'], bashCommands: [], errorsEncountered: [], toolCallCount: 2, unrecognizedTools: [], toolResultsNonJson: 0 },

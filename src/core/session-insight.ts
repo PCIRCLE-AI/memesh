@@ -26,7 +26,7 @@
 import { redactSecrets } from './paths.js';
 import { truncateTitle } from './title.js';
 import { remember } from './operations.js';
-import { bashEditedFileNames, editedFileName } from './bash-edited-paths.js';
+import { bashEditedFileNames, editedFileName, isPathShapedFileName } from './bash-edited-paths.js';
 
 /** Fewer tool calls than this is a quiet session — same guard as the Stop hook. */
 export const MIN_TOOL_CALLS = 3;
@@ -184,7 +184,7 @@ function fileTagsFor(files: string[]): string[] {
     if (!f) continue;
     tags.add(`file:${f}`);
     const noExt = f.replace(/\.[^.]+$/, '');
-    if (noExt && noExt !== f) tags.add(`file:${noExt}`);
+    if (noExt && noExt !== f && isPathShapedFileName(noExt)) tags.add(`file:${noExt}`);
   }
   return [...tags];
 }

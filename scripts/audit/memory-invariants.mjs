@@ -364,7 +364,9 @@ const INVARIANTS = [
     // and the repair (removeJunkFileTags) apply. No LIMIT: it would bound
     // candidates, not violations; the cap is applied after the filter, by
     // the caller.
-    sql: `SELECT e.name AS name, t.tag AS tag FROM tags t JOIN entities e ON e.id = t.entity_id WHERE t.tag LIKE 'file:%'`,
+    // Captured session memories only, like the repair: a person's own file: tag is theirs.
+    sql: `SELECT e.name AS name, t.tag AS tag FROM tags t JOIN entities e ON e.id = t.entity_id
+      WHERE t.tag LIKE 'file:%' AND e.type = 'session-insight'`,
     rows: (_db, rows) => rows.filter((r) => !isPathShapedFileName(r.tag.slice('file:'.length))),
     row: (r) => `${r.name}  ${r.tag}`,
   },

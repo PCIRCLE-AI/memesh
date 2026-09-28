@@ -26979,7 +26979,8 @@ function removeJunkFileTags(db2) {
     version: 1,
     describe: "junk file: tag removal",
     migrate: (conn) => {
-      const rows = conn.prepare(`SELECT id, tag FROM tags WHERE tag LIKE 'file:%'`).all();
+      const rows = conn.prepare(`SELECT t.id, t.tag FROM tags t JOIN entities e ON e.id = t.entity_id
+          WHERE t.tag LIKE 'file:%' AND e.type = 'session-insight'`).all();
       const del = conn.prepare("DELETE FROM tags WHERE id = ?");
       removed = 0;
       for (const row of rows) {

@@ -730,7 +730,11 @@ export function removeJunkFileTags(db: MemeshDatabase): number {
     describe: 'junk file: tag removal',
     migrate: (conn) => {
       const rows = conn
-        .prepare(`SELECT id, tag FROM tags WHERE tag LIKE 'file:%'`)
+        // Captured session memories only (both writers of file: tags create
+        // `session-insight` entities): a file: tag a person wrote, such as a
+        // glob like `file:*.test.ts`, is theirs to keep.
+        .prepare(`SELECT t.id, t.tag FROM tags t JOIN entities e ON e.id = t.entity_id
+          WHERE t.tag LIKE 'file:%' AND e.type = 'session-insight'`)
         .all() as unknown as Array<{ id: number; tag: string }>;
       const del = conn.prepare('DELETE FROM tags WHERE id = ?');
       removed = 0;

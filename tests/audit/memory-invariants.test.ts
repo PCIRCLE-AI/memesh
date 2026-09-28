@@ -631,7 +631,7 @@ describe('memory-invariants: read-only detector over a real graph', () => {
     try {
       withRawDb(dbPath, (db) => {
         const id = insertEntity(db, 'session-junk-files', 'session-insight');
-        for (const tag of ['file:$f', 'file:-E', 'file:s#^source', 'file:auth.ts']) {
+        for (const tag of ['file:$f', 'file:-E', 'file:s#^source', 'file:auth.ts', 'source:auto-capture']) {
           db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
         }
       });
@@ -652,9 +652,12 @@ describe('memory-invariants: read-only detector over a real graph', () => {
     try {
       withRawDb(dbPath, (db) => {
         const id = insertEntity(db, 'session-clean-files', 'session-insight');
-        for (const tag of ['file:auth.ts', 'file:auth', 'file:README.md', 'file:{{cookiecutter.slug}}.py']) {
+        for (const tag of ['file:auth.ts', 'file:auth', 'file:README.md', 'file:{{cookiecutter.slug}}.py', 'source:auto-capture']) {
           db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
         }
+        // A person's own glob tag is not auto-capture debris.
+        const human = insertEntity(db, 'decision-test-layout', 'decision');
+        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(human, 'file:*.test.ts');
       });
       const r = run(dbPath);
       expect(r.status, r.stdout).toBe(0);

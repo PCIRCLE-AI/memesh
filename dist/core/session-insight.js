@@ -1,7 +1,7 @@
 import { redactSecrets } from './paths.js';
 import { truncateTitle } from './title.js';
 import { remember } from './operations.js';
-import { bashEditedFileNames, editedFileName } from './bash-edited-paths.js';
+import { bashEditedFileNames, editedFileName, isPathShapedFileName } from './bash-edited-paths.js';
 export const MIN_TOOL_CALLS = 3;
 export const HEAVY_SESSION_TOOL_CALLS = 20;
 const FILE_WRITE_TOOLS = new Set(['write_file', 'patch', 'edit_file', 'Write', 'Edit', 'MultiEdit']);
@@ -116,7 +116,7 @@ function fileTagsFor(files) {
             continue;
         tags.add(`file:${f}`);
         const noExt = f.replace(/\.[^.]+$/, '');
-        if (noExt && noExt !== f)
+        if (noExt && noExt !== f && isPathShapedFileName(noExt))
             tags.add(`file:${noExt}`);
     }
     return [...tags];

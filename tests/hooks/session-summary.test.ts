@@ -498,6 +498,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/repo/#scratch#' } }] } },
       // A Windows-style path basenames the same way in both branches, on any OS.
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: 'C:\\repo\\src\\winfile.ts' } }] } },
+      // A route file keeps its full name; its stem `$postId` is not stored.
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/routes/$postId.tsx' } }] } },
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
     ]);
 
@@ -515,6 +517,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     const tags = (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(entity.id) as any[]).map((r) => r.tag);
     expect(tags).toContain('file:{{cookiecutter.slug}}.py');
     expect(tags).toContain('file:winfile.ts');
+    expect(tags).toContain('file:$postId.tsx');
+    expect(tags).not.toContain('file:$postId');
     expect(tags.some((t) => t.includes('#') || t.includes('\\'))).toBe(false);
     db.close();
   });

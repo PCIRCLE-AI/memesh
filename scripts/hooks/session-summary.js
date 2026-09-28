@@ -35,7 +35,7 @@ import { runStopHandoff } from './_stop-handoff.js';
 import { runStopNotes } from './_stop-notes.js';
 // Edited file names from Bash and Edit/Write, under one path-shape rule
 // (#495). Generated from src/core/bash-edited-paths.ts — do not hand-edit.
-import { bashEditedFileNames, editedFileName } from './_generated/bash-edited-paths.js';
+import { bashEditedFileNames, editedFileName, isPathShapedFileName } from './_generated/bash-edited-paths.js';
 
 const require = createRequire(import.meta.url);
 
@@ -400,7 +400,9 @@ process.stdin.on('end', async () => {
           if (!f) continue;
           tags.add(`file:${f}`);
           const noExt = f.replace(/\.[^.]+$/, '');
-          if (noExt && noExt !== f) tags.add(`file:${noExt}`);
+          // The extension-less stem goes through the same rule: `$postId.tsx`
+          // is a real route file, its stem `$postId` reads as a shell variable.
+          if (noExt && noExt !== f && isPathShapedFileName(noExt)) tags.add(`file:${noExt}`);
         }
         return [...tags];
       }

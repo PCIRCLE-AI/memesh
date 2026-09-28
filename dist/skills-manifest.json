@@ -193,8 +193,8 @@
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "20a54cb70ea433b4bc0eebbf3fd3813f1eedfc6cbc17fd614e5fbcf55ad976cf",
-      "bytes": 42460
+      "sha256": "51cd57bc47e5cda404b9af4c847a0ee11b078cb59f567e5704fff72a73a6a3c6",
+      "bytes": 42673
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",

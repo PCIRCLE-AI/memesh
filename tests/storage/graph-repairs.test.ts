@@ -818,6 +818,15 @@ describe('#495 — removeJunkFileTags: a file: tag that is not path-shaped is de
     expect(inv.status, inv.stdout).toBe(0);
   });
 
+  it('leaves a file: tag a person wrote alone, whatever it looks like', () => {
+    seed((db) => {
+      insertEntity(db, 'decision-test-layout', 'decision', ['file:*.test.ts', 'project:x']);
+    });
+    const db = repaired();
+    expect(tagsOf(db, 'decision-test-layout')).toEqual(['file:*.test.ts', 'project:x']);
+    closeDatabase();
+  });
+
   it('touches no entity that carries no junk tag', () => {
     seed((db) => {
       insertEntity(db, 'session-clean-files', 'session-insight', [
@@ -833,22 +842,22 @@ describe('#495 — removeJunkFileTags: a file: tag that is not path-shaped is de
 
   it('is one-shot: a second open changes nothing further', () => {
     seed((db) => {
-      insertEntity(db, 'session-junk-xyz-files', 'session-insight', ['file:$G', 'file:real.ts']);
+      insertEntity(db, 'session-junk-xyz-files', 'session-insight', ['file:$G', 'file:real.ts', 'source:auto-capture']);
     });
     let db = repaired();
     expect(marker(db, JUNK_FILE_TAGS_KEY)).toBe('1');
-    expect(tagsOf(db, 'session-junk-xyz-files')).toEqual(['file:real.ts']);
+    expect(tagsOf(db, 'session-junk-xyz-files')).toEqual(['file:real.ts', 'source:auto-capture']);
     expect(removeJunkFileTags(db)).toBe(-1);
     closeDatabase();
 
     db = openDatabase(dbPath);
-    expect(tagsOf(db, 'session-junk-xyz-files')).toEqual(['file:real.ts']);
+    expect(tagsOf(db, 'session-junk-xyz-files')).toEqual(['file:real.ts', 'source:auto-capture']);
     closeDatabase();
   });
 
   it('does not touch entities_fts — tags are not part of the FTS document', () => {
     seed((db) => {
-      const id = insertEntity(db, 'session-fts-check-files', 'session-insight', ['file:$H']);
+      const id = insertEntity(db, 'session-fts-check-files', 'session-insight', ['file:$H', 'source:auto-capture']);
       db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'findablefts token here');
     });
     const db = repaired();
