@@ -4,6 +4,10 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `message discover` no longer shows a model it cannot know. The `model` on a discovery card was whatever `memesh agent setup --model` once declared, not the model the session runs, and the host can change it at any time (`/model`). Cards now always carry `model: null`, even from a router of an earlier release. `agent setup --model` still accepts the flag so older scripts keep working, but it says the flag is ignored and writes nothing.
+
 ## [4.10.8] — 2026-09-27
 
 Includes the changes documented under 4.10.7 and 4.10.6 below; neither was

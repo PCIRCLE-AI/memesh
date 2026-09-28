@@ -270,7 +270,6 @@ function connectCodexSessionCompanion(config, session, realpath, connect) {
             principal_id: selected.principal_id,
             session_instance_id: session.threadId,
             adapter_kind: 'codex-cli-queue',
-            ...(selected.model === undefined ? {} : { model: selected.model }),
             ...(selected.work_summary === undefined ? {} : { work_summary: selected.work_summary }),
         },
         async deliver() {
@@ -313,7 +312,6 @@ function configuredCodexSessionConfig(config, session, realpath) {
         auth_token: readTokenFile(config.token_file),
         project: canonicalAgentScopeId(getProjectName(session.workspace)),
         principal_id: requiredString(principal.principalId, 'principal_id'),
-        ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
         ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
     };
     return resolved;

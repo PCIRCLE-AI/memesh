@@ -26,7 +26,7 @@
 //
 // Deliberately narrow: this decides ONLY the principal id, not the rest of
 // `configuredCodexSessionConfig`'s resolved shape (router_socket, auth_token,
-// project, model, work_summary) — those need `router-client.ts`/`config.ts`
+// project, work_summary) — those need `router-client.ts`/`config.ts`
 // (reading a token file, normalising a socket path), which are not leaf-safe
 // and are not needed to answer "what does this session call itself".
 

@@ -206,6 +206,27 @@ class RouterHostClient {
   }
 }
 
+/** One discover frame over a raw socket: the router's own answer, before any client-side handling. */
+async function rawDiscover(socketPath: string, project: string): Promise<Frame> {
+  const socket = net.createConnection(socketPath);
+  try {
+    return await new Promise<Frame>((resolve, reject) => {
+      let buffer = '';
+      socket.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const newline = buffer.indexOf('\n');
+        if (newline >= 0) resolve(JSON.parse(buffer.slice(0, newline)) as Frame);
+      });
+      socket.once('error', reject);
+      socket.once('connect', () => socket.write(`${JSON.stringify({
+        version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(), project, limit: 10, hops: 0,
+      })}\n`));
+    });
+  } finally {
+    socket.destroy();
+  }
+}
+
 function send(db: ReturnType<typeof openDatabase>, recipient: string, key: string, target_kind: 'principal' | 'session' = 'principal') {
   return sendAgentMessage(db, {
     project: 'project-a',
@@ -408,6 +429,44 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
         version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(),
         project: 'project-a', limit: 10, hops: 0,
       })).rejects.toMatchObject({ code: 'invalid_response' });
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
+  it('accepts a declared model from an older router but never passes it on', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-router-discovery-model-'));
+    fs.chmodSync(dir, 0o700);
+    tempDirs.push(dir);
+    const socketPath = path.join(dir, 'router.sock');
+    const server = net.createServer((socket) => {
+      socket.once('data', (chunk) => {
+        const request = JSON.parse(chunk.toString('utf8').trim()) as Frame;
+        socket.write(`${JSON.stringify({
+          version: AGENT_ROUTER_PROTOCOL_VERSION,
+          request_id: request.request_id,
+          ok: true,
+          result: {
+            cards: [{
+              session_id: 'old-session', principal_id: 'old-principal',
+              host_kind: 'claude', project: 'project-a', model: 'claude-fable-5-1',
+              work_summary: null, active: true, generation: 1,
+              lease_expires_at_ms: Date.now() + 60_000,
+            }],
+          },
+        })}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(socketPath, resolve);
+    });
+    try {
+      const result = await sendAgentRouterRequest(socketPath, {
+        version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(),
+        project: 'project-a', limit: 10, hops: 0,
+      });
+      expect(result.cards).toEqual([expect.objectContaining({ session_id: 'old-session', model: null })]);
     } finally {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
@@ -750,12 +809,20 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     const result = await sendAgentRouterRequest(socketPath, {
       version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'discover', request_id: randomUUID(), project: 'project-a', limit: 10, hops: 0,
     });
+    // An older host still sends `model`: it registers, but the card never
+    // shows it — no host knows which model a session runs, so a declared one
+    // was a guess. The key stays, as null, for clients that require it.
     expect(result.cards).toEqual([expect.objectContaining({
       session_id: 'session-codex',
       principal_id: 'principal-codex', host_kind: 'other', project: 'project-a',
-      model: 'gpt-5.6-luna', work_summary: 'review router contract', active: true,
+      model: null, work_summary: 'review router contract', active: true,
       generation: 1, lease_expires_at_ms: expect.any(Number),
     })]);
+    // The router itself sends null too — the client above would hide an echo,
+    // and a client from an earlier release passes the field straight through.
+    const raw = await rawDiscover(socketPath, 'project-a');
+    expect(raw.ok).toBe(true);
+    expect(((raw.result as Frame).cards as Frame[]).map(card => card.model)).toEqual([null]);
     expect((result.cards as unknown[]).some(card => (card as Frame).session_id === 'session-other')).toBe(false);
     expect(db.prepare('SELECT COUNT(*) AS count FROM agent_messages').get()).toEqual(before.messages);
     expect(db.prepare('SELECT COUNT(*) AS count FROM agent_message_receipts').get()).toEqual(before.receipts);

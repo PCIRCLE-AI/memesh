@@ -21,7 +21,6 @@ export interface ClaudeManagedSessionConfig {
     project?: string;
     principal_id: string;
     session_instance_id?: string;
-    model?: string;
     work_summary?: string;
 }
 export interface ClaudeManagedSessionDependencies {
