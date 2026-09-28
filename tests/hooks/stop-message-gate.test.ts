@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
@@ -295,17 +295,19 @@ describe('Feature: the Claude Code Stop message gate blocks once per waiting mes
 
   // A block nobody saw must not count as delivered: when the host has closed
   // stdout, the ids written ahead to the ledger are taken back out, so the
-  // next Stop still blocks for them. (`| exit 0` closes the pipe's only
-  // reader long before node has started, so the gate's write fails with EPIPE.)
+  // next Stop still blocks for them. The test closes the pipe's only reader
+  // before the gate has started, so the gate's write fails with EPIPE. (Not
+  // run on Windows, where this has not been checked.)
   it.skipIf(process.platform === 'win32')('takes the ids back out of its ledger when the host closed stdout', async () => {
     const message = await send('gate-principal');
     seedHostAccept(message);
-    spawnSync('sh', ['-c', 'node "$0" | exit 0', path.resolve('scripts/hooks/stop-message-gate.js')], {
-      input: JSON.stringify({ session_id: 's-gate-1', cwd: tmp, hook_event_name: 'Stop', stop_hook_active: false }),
+    const child = spawn(process.execPath, [path.resolve('scripts/hooks/stop-message-gate.js')], {
       env: { ...process.env, HOME: tmp, MEMESH_DB_PATH: dbPath, MEMESH_RECIPIENT: 'gate-principal', MEMESH_HOOK_HOST: 'claude-code' },
-      encoding: 'utf8',
-      timeout: 15000,
+      stdio: ['pipe', 'pipe', 'ignore'],
     });
+    child.stdout.destroy();
+    child.stdin.end(JSON.stringify({ session_id: 's-gate-1', cwd: tmp, hook_event_name: 'Stop', stop_hook_active: false }));
+    await new Promise((resolve) => child.on('close', resolve));
     expect(ledger().at(-1)?.reason).toContain('host closed the pipe');
 
     const next = runGate();
