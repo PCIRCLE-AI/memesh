@@ -43,6 +43,14 @@ describe('activityFromChatMessages (Hermes / OpenAI tool_calls format)', () => {
     expect(activityFromChatMessages(fixture.messages).toolResultsNonJson).toBe(0);
   });
 
+  it('#495: a written file keeps a template name but not an editor scratch name', () => {
+    const call = (p: string) => ({ function: { name: 'write_file', arguments: JSON.stringify({ path: p }) } });
+    const a = activityFromChatMessages([
+      { role: 'assistant', tool_calls: [call('/repo/{{cookiecutter.slug}}.py'), call('/repo/#scratch#')] },
+    ]);
+    expect(a.filesEdited).toEqual(['{{cookiecutter.slug}}.py']);
+  });
+
   it('never throws on malformed entries', () => {
     const a = activityFromChatMessages([
       null, 3, { role: 'assistant', tool_calls: [null, { function: { name: 'write_file', arguments: '{not json' } }] },
@@ -68,6 +76,15 @@ describe('buildSessionInsights — the Stop hook rules', () => {
     expect(out[1].tags).toContain('type:bugfix');
     expect(out[2].tags).toContain('type:heavy-session');
     expect(files.title).toBe('2026-09-12 hermes: edited 2 file(s)');
+  });
+
+  it('#495: stores a route file under its full name, not its $-looking stem', () => {
+    const out = buildSessionInsights(
+      { filesEdited: ['$postId.tsx'], bashCommands: [], errorsEncountered: [], toolCallCount: 5, unrecognizedTools: [], toolResultsNonJson: 0 },
+      ctx,
+    );
+    expect(out[0].tags).toContain('file:$postId.tsx');
+    expect(out[0].tags).not.toContain('file:$postId');
   });
 
   it('stores nothing for a quiet session (fewer than 3 tool calls)', () => {
