@@ -6,6 +6,8 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- Memories a hook captures while running under Codex now name `codex` as their source host. Before, every hook-created memory was labelled `claude-code`, which could make `memesh doctor` read Codex activity as a silent Claude Code Stop hook.
+- `message discover` no longer shows a model it cannot know. The `model` on a discovery card was whatever `memesh agent setup --model` once declared, not the model the session runs, and the host can change it at any time (`/model`). Cards now always carry `model: null`, even from a router of an earlier release. `agent setup --model` still accepts the flag so older scripts keep working, but it says the flag is ignored and writes nothing.
 - The dashboard's Project tab and Memories tab no longer scroll sideways on a phone-width screen when a project id carries its routing hash (`<label>~<32 hex>`): the hash has no break opportunity, so a chip or memory-row tag holding it raw could not wrap. Project and Memories chips show the hash-stripped label, adding the first 6 hex characters only when two projects share a label; a place that shows one project (a memory row's tag, the roadmap header, a Home proposal card) always keeps those 6 characters (`memesh~2c0fe4`). The full id stays as a tooltip and is still what every click and filter uses. The search placeholder now ends in an ellipsis, and the Scope row's divider wraps together with the Archived chip (#493).
 
 ## [4.10.8] — 2026-09-27

@@ -26,6 +26,7 @@ import {
   AUTO_CAPTURE_TAG,
   captureEntity,
   hookErrorReason,
+  hookSourceHost,
   openHookDb,
   recordHookOutcome,
   redactSecrets,
@@ -100,6 +101,7 @@ function captureHandoff(payload, { captureEnabled, project, env }) {
       title: HANDOFF_TITLE,
       replace: true,
       localHandoff: true,
+      sourceHost: hookSourceHost(payload, env),
     });
     if (result === null) throw new Error('captureEntity could not resolve the handoff entity');
     if (result.archived) return { outcome: 'skipped', reason: SKIP_REASONS.handoffArchived, entity: name };

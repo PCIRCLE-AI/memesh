@@ -13,6 +13,7 @@ import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { getProjectName } from '../../src/core/paths.js';
 import { sessionHandoffName, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { withoutHostIdentity } from '../helpers/host-env.js';
 import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
 
 const STOP_HOOK = path.resolve('scripts/hooks/session-summary.js');
@@ -41,7 +42,7 @@ describe('Stop hook: the session handoff', () => {
   afterEach(() => removeTempDir(home));
 
   function childEnv(env: Record<string, string | undefined> = {}) {
-    const e: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home };
+    const e: Record<string, string | undefined> = { ...withoutHostIdentity(process.env), HOME: home, USERPROFILE: home };
     delete e.MEMESH_DB_PATH;
     delete e.MEMESH_DIR;
     return { ...e, ...env };
@@ -421,6 +422,24 @@ describe('Stop hook: the session handoff', () => {
       const after = start();
       expect(after).toContain('LOCAL-NEW-TEXT');
       expect(after).not.toContain('IMPORTED-OLD-TEXT');
+    }, 90_000);
+
+    it('a local Stop under Codex re-homes the imported handoff to codex, not claude-code', () => {
+      seedImported();
+      const codexHome = path.join(home, 'codex-home');
+      fs.mkdirSync(codexHome, { recursive: true });
+      runStop({ last_assistant_message: 'LOCAL-CODEX-TEXT: the Codex session finished the importer and the next step is the staging dry run.' }, { CODEX_HOME: codexHome });
+      expect(metadata().provenance).toEqual({ source_host: 'codex' });
+    }, 90_000);
+
+    it('a handoff a Codex hook run creates names codex, as that run\'s outcome record does', () => {
+      const codexHome = path.join(home, 'codex-home');
+      fs.mkdirSync(codexHome, { recursive: true });
+      runStop({ last_assistant_message: LONG_ENOUGH }, { CODEX_HOME: codexHome });
+      expect(metadata().provenance).toEqual({ source_host: 'codex' });
+      const records = fs.readFileSync(path.join(home, '.memesh', 'hook-outcomes.jsonl'), 'utf8').split('\n').filter(Boolean)
+        .map((l) => JSON.parse(l)).filter((r) => r.hook === 'handoff-capture');
+      expect(records.at(-1)?.host, 'provenance and the outcome record must name the same host').toBe('codex');
     }, 90_000);
 
     it('is not healed by a Stop that stores nothing (too short, capture off, archived)', () => {

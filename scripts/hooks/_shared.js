@@ -1083,6 +1083,18 @@ export function isCodexHost(env = process.env) {
 }
 
 /**
+ * The host a hook run's new memories are attributed to
+ * (`metadata.provenance.source_host`). The same call `recordHookOutcome` makes,
+ * so a run's provenance and its outcome record cannot name different hosts —
+ * `memesh doctor` reads both. `unknown` becomes null: no stamp, because a wrong
+ * label is worse than none.
+ */
+export function hookSourceHost(payload, env = process.env) {
+  const host = detectHookHost(payload ?? null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) });
+  return host === 'unknown' ? null : host;
+}
+
+/**
  * Record what `hook` DID, on every exit path (issue #327).
  *
  * `recordHookRun` answers "did the hook execute"; this answers "and did it
@@ -1679,12 +1691,14 @@ export { truncateTitle } from './_generated/title.js';
  * `trust: 'untrusted'` and `provenance.source: 'import'`, and without this the
  * handoff stays hidden from every later session although each Stop rewrites
  * it. Only those two marks change; every other key (forgotten_observation_hashes
- * among them) is kept. Runs inside captureEntity's transaction, so a failure
- * rolls the replacement back with it. A replacement that stored nothing —
+ * among them) is kept. The import provenance becomes this run's `sourceHost`,
+ * or no host at all when the host is unknown — never a guessed one. Runs
+ * inside captureEntity's transaction, so a failure rolls the replacement back
+ * with it. A replacement that stored nothing —
  * every new line filtered as forgotten — throws, which also rolls back: the
  * old text stays, and it keeps its marks.
  */
-function refreshLocalHandoffTrust(db, id, type, replace, written) {
+function refreshLocalHandoffTrust(db, id, type, replace, written, sourceHost) {
   if (type !== SESSION_HANDOFF_TYPE || !replace) throw new Error('localHandoff applies only to replacing a session handoff');
   if (written === 0) throw new Error('the handoff replacement stored no text');
   const raw = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(id)?.metadata;
@@ -1699,7 +1713,7 @@ function refreshLocalHandoffTrust(db, id, type, replace, written) {
   const meta = parsed ?? {};
   let changed = corrupt;
   if (meta.trust === 'untrusted') { delete meta.trust; changed = true; }
-  if (meta.provenance?.source === 'import') { meta.provenance = { source_host: 'claude-code' }; changed = true; }
+  if (meta.provenance?.source === 'import') { meta.provenance = sourceHost ? { source_host: sourceHost } : {}; changed = true; }
   if (changed) db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), id);
 }
 
@@ -1722,7 +1736,9 @@ function refreshLocalHandoffTrust(db, id, type, replace, written) {
  * hooks stay a cheap always-on capture path and core owns later enrichment.
  *
  * @param {import('./_generated/sqlite.js').MemeshDatabase} db - an open hook DB handle
- * @param {{name: string, type: string, observations?: string[], tags?: string[], title?: string | null, metadata?: Record<string, unknown>, replace?: boolean}} entity
+ * @param {{name: string, type: string, observations?: string[], tags?: string[], title?: string | null, metadata?: Record<string, unknown>, replace?: boolean, sourceHost?: string | null}} entity
+ *   `sourceHost` is the host this hook run is under — pass
+ *   `hookSourceHost(payload, env)`. Null or absent stamps no host.
  *   `metadata` is extra INSERT-only metadata (e.g. post-commit's session_id +
  *   files). It cannot override the provenance/title_source stamps below, and
  *   an OR IGNORE re-capture of an existing entity leaves it untouched — same
@@ -1735,7 +1751,7 @@ function refreshLocalHandoffTrust(db, id, type, replace, written) {
  *   could not be resolved; `archived: true` if `replace` was requested on an
  *   entity `forget` archived — nothing was written, by design
  */
-export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false, localHandoff = false }) {
+export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false, localHandoff = false, sourceHost = null }) {
   // One transaction, because this function performs six writes that only
   // mean anything together: the entity row, its observations, its tags, and
   // the contentless-FTS delete + insert that make them findable.
@@ -1754,21 +1770,24 @@ export function captureEntity(db, { name, type, observations = [], tags = [], ti
   // could not be resolved. `observationsWritten` may be lower than
   // `observations.length`: an observation whose exact content is already on
   // the entity is not stored again (see the dedupe in captureEntityInner).
-  return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff }))();
+  return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }))();
 }
 
-function captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff }) {
-  // source_host provenance: these hooks only ever run under Claude Code (they
-  // are wired into ~/.claude/settings.json), so a hook-captured entity is by
-  // definition a claude-code capture. Stamped only on the INSERT — an OR
-  // IGNORE re-capture of an existing entity must not overwrite provenance an
-  // earlier writer (possibly another host, via MCP) already recorded.
+function captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }) {
+  // source_host provenance: the host this hook run is under, as the caller
+  // detected it. Claude Code and Codex both run these hooks, so it cannot be
+  // assumed. Stamped only on the INSERT — an OR IGNORE re-capture of an
+  // existing entity must not overwrite provenance an earlier writer (possibly
+  // another host, via MCP) already recorded.
   //
   // title_source: every title a hook writes is machine-derived, so it is
   // marked 'heuristic'. The mark distinguishes generated display text from an
   // unmarked human-provided title, so later reviewed edits can preserve the
   // ownership boundary.
-  const insertMetadata = { ...(metadata ?? {}), provenance: { source_host: 'claude-code' } };
+  // [WORKAROUND: no record here on purpose — a null sourceHost means the host
+  // is unknown, and this same run's hook outcome already records it as
+  // host 'unknown'; a stamp would only guess.]
+  const insertMetadata = { ...(metadata ?? {}), provenance: sourceHost ? { source_host: sourceHost } : {} };
   if (title != null) insertMetadata.title_source = 'heuristic';
   const insertResult = db
     .prepare('INSERT OR IGNORE INTO entities (name, type, metadata, title) VALUES (?, ?, ?, ?)')
@@ -1963,7 +1982,7 @@ function captureEntityInner(db, { name, type, observations, tags, title, metadat
     : ((title !== undefined && title !== previousTitle) ? title : previousTitle);
   insertFtsRow(db, id, name, allObsText, currentTitle);
 
-  if (localHandoff) refreshLocalHandoffTrust(db, id, type, replace, freshObservations.length);
+  if (localHandoff) refreshLocalHandoffTrust(db, id, type, replace, freshObservations.length, sourceHost);
 
   // `observationsWritten` is what actually landed, which is no longer the same
   // as `observations.length` once the dedupe above can drop rows. A caller
