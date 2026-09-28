@@ -68,8 +68,9 @@ host is recallable from all of them. Not installed yet? Follow
 5. **When you need another agent** — to hand off, to ask, to report back —
    first use `message discover` with the exact project when you do not already
    know the recipient. It lists only live registrations and their routing IDs,
-   host kind, declared model/current work, generation, and lease; missing
-   declarations remain unknown. Then send a `message`. The host's own push tool (Claude
+   host kind, declared current work, generation, and lease; `model` is always
+   `null` (MeMesh cannot see which model a session runs), and a missing work
+   declaration remains unknown. Then send a `message`. The host's own push tool (Claude
    Code's `SendMessage`, a Codex queue) delivers a wakeup; it is not the
    record, and it cannot reach an agent on a different host or one that is
    not running. Generic `briefing` has no recipient identity and stays quiet;

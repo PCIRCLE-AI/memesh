@@ -294,7 +294,9 @@ This branch is optional and local-only: an oversized full envelope returns `nati
 
 Before sending, `message discover` can read the router's live registrations for
 one exact project. It returns session/principal routing identity, host kind,
-declared model and work summary, generation, and authoritative lease expiry.
+declared work summary, generation, and authoritative lease expiry. `model` is
+always `null` — no host tells MeMesh which model a session runs — and the key
+stays because older clients require it.
 The directory is in-memory presence joined to the current connection row; it is
 not a second durable registry, and the read creates no message or receipt facts.
 
