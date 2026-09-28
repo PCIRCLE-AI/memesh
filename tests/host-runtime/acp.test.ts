@@ -244,12 +244,13 @@ describe('managed Gemini ACP runtime', () => {
     });
     // #474: the project is derived from `workspace`, never from the config's
     // own `project` field ('managed-project', ignored — see `managedConfig`).
+    // The config still carries `model` (an older setup wrote it); the host
+    // never declares it, because nothing tells MeMesh which model runs.
     expect(routerOptions?.identity).toEqual({
       project: canonicalAgentScopeId(getProjectName(process.cwd())),
       principal_id: 'gemini-managed',
       session_instance_id: 'generated-managed-session',
       adapter_kind: 'acp',
-      model: 'gemini-current',
       work_summary: 'review ACP boundary',
     });
     expect(runtime).toMatchObject({

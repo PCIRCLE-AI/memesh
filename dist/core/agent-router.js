@@ -230,7 +230,6 @@ export class AgentRouter {
             principal_id: request.principal_id,
             session_instance_id: request.session_instance_id,
             adapter_kind: request.adapter_kind,
-            ...(request.model === undefined ? {} : { model: request.model }),
             ...(request.work_summary === undefined ? {} : { work_summary: request.work_summary }),
             ...(request.auth_token === undefined ? {} : { auth_token: request.auth_token }),
         };
@@ -244,7 +243,7 @@ export class AgentRouter {
             principal_id: connection.principal_id,
             host_kind: hostKind(connection.adapter_kind),
             project: connection.project,
-            model: registration.model ?? null,
+            model: null,
             work_summary: registration.work_summary ?? null,
         });
         setImmediate(() => { void this.drainConnection(connection, request.hops + 1).catch(() => undefined); });
@@ -835,6 +834,8 @@ function validateRouterSuccessResult(request, value) {
                 || value.cards.some(card => !isSelectionCard(card, request.project))) {
                 throw new AgentRouterProtocolError('invalid_response', 'Router response contained invalid discovery cards.');
             }
+            for (const card of value.cards)
+                card.model = null;
             break;
         case 'heartbeat':
             requireResultInteger('generation');
@@ -897,7 +898,6 @@ function parseRequest(frame, maxHops) {
                 principal_id: validateField('principal_id', value.principal_id),
                 session_instance_id: validateField('session_instance_id', value.session_instance_id),
                 adapter_kind: validateField('adapter_kind', value.adapter_kind),
-                ...(value.model === undefined || value.model === null ? {} : { model: validateField('model', value.model) }),
                 ...(value.work_summary === undefined || value.work_summary === null
                     ? {} : { work_summary: validateField('work_summary', value.work_summary) }),
                 ...(value.auth_token === undefined ? {} : { auth_token: validateField('auth_token', value.auth_token) }),

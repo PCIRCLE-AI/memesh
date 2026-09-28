@@ -115,8 +115,10 @@ describe.skipIf(process.platform === 'win32')('managed Codex host runtime', () =
         identity: {
           project: canonicalAgentScopeId(getProjectName(fs.realpathSync(config.workspace as string))),
           principal_id: 'principal-1',
+          // The config still carries `model` (an older setup wrote it); it is
+          // never declared — nothing tells MeMesh which model runs.
           session_instance_id: 'session-exact-1', adapter_kind: 'codex-app-server',
-          model: 'gpt-5.6-sol', work_summary: 'implement MeMesh runtime',
+          work_summary: 'implement MeMesh runtime',
         },
       }));
 

@@ -41,7 +41,6 @@ export interface AgentHostRegistration {
   principal_id: string;
   session_instance_id: string;
   adapter_kind: string;
-  model?: string;
   work_summary?: string;
   /** Optional shared secret supplied by an external host process. */
   auth_token?: string;
@@ -102,7 +101,6 @@ export interface AgentRouterRegisterRequest {
   principal_id: string;
   session_instance_id: string;
   adapter_kind: string;
-  model?: string;
   work_summary?: string;
   auth_token?: string;
   hops: number;
@@ -219,7 +217,12 @@ export interface AgentSelectionCard {
   principal_id: string;
   host_kind: 'codex' | 'claude' | 'gemini' | 'other';
   project: string;
-  model: string | null;
+  /**
+   * Always null. No host tells MeMesh which model a session runs (the host
+   * picks it, and can change it mid-session), so a declared one was a guess.
+   * The key stays because clients from earlier releases require it on every card.
+   */
+  model: null;
   work_summary: string | null;
   active: true;
   generation: number;
@@ -451,7 +454,6 @@ export class AgentRouter {
       principal_id: request.principal_id,
       session_instance_id: request.session_instance_id,
       adapter_kind: request.adapter_kind,
-      ...(request.model === undefined ? {} : { model: request.model }),
       ...(request.work_summary === undefined ? {} : { work_summary: request.work_summary }),
       ...(request.auth_token === undefined ? {} : { auth_token: request.auth_token }),
     };
@@ -466,7 +468,7 @@ export class AgentRouter {
       principal_id: connection.principal_id,
       host_kind: hostKind(connection.adapter_kind),
       project: connection.project,
-      model: registration.model ?? null,
+      model: null,
       work_summary: registration.work_summary ?? null,
     });
     setImmediate(() => { void this.drainConnection(connection, request.hops + 1).catch(() => undefined); });
@@ -1163,6 +1165,10 @@ function validateRouterSuccessResult(request: AgentRouterRequest, value: unknown
         || value.cards.some(card => !isSelectionCard(card, request.project))) {
         throw new AgentRouterProtocolError('invalid_response', 'Router response contained invalid discovery cards.');
       }
+      // A router from an earlier release still echoes a host's declared
+      // model. Accepted above so discovery keeps working, but never passed
+      // on: it was a guess (see AgentSelectionCard.model).
+      for (const card of value.cards as Array<Record<string, unknown>>) card.model = null;
       break;
     case 'heartbeat':
       requireResultInteger('generation');
@@ -1183,7 +1189,7 @@ function validateRouterSuccessResult(request: AgentRouterRequest, value: unknown
   return value as AgentJsonObject;
 }
 
-function isSelectionCard(value: unknown, project: string): value is AgentSelectionCard {
+function isSelectionCard(value: unknown, project: string): boolean {
   if (!isPlainObject(value)) return false;
   return typeof value.session_id === 'string'
     && typeof value.principal_id === 'string'
@@ -1211,6 +1217,8 @@ function parseRequest(frame: Buffer, maxHops: number): AgentRouterRequest {
   const hops = validateInteger('hops', value.hops, 0, maxHops);
   switch (type) {
     case 'register':
+      // `model` is still allowed so a host from an earlier release, which
+      // declares one, can register; it is not read (see AgentSelectionCard).
       assertAllowedKeys(value, [
         ...common, 'project', 'principal_id', 'session_instance_id', 'adapter_kind', 'auth_token', 'model', 'work_summary',
       ]);
@@ -1222,7 +1230,6 @@ function parseRequest(frame: Buffer, maxHops: number): AgentRouterRequest {
         principal_id: validateField('principal_id', value.principal_id),
         session_instance_id: validateField('session_instance_id', value.session_instance_id),
         adapter_kind: validateField('adapter_kind', value.adapter_kind),
-        ...(value.model === undefined || value.model === null ? {} : { model: validateField('model', value.model) }),
         ...(value.work_summary === undefined || value.work_summary === null
           ? {} : { work_summary: validateField('work_summary', value.work_summary) }),
         ...(value.auth_token === undefined ? {} : { auth_token: validateField('auth_token', value.auth_token) }),

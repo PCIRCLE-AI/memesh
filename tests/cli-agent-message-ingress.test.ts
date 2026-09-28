@@ -316,8 +316,11 @@ describe('CLI durable-message ingress', () => {
       const config = JSON.parse(readOwnerPrivateRegularFile(result.config_path)) as Record<string, unknown>;
       expect(config).toMatchObject({
         project: 'test', principal_id: 'reviewer', workspace: home,
-        model: 'gpt-5.6-luna', work_summary: 'review agent directory',
+        work_summary: 'review agent directory',
       });
+      // --model is accepted for older scripts but never written.
+      expect(config).not.toHaveProperty('model');
+      expect(setup.stderr).toContain('--model is ignored');
       expect(config).not.toHaveProperty('session_instance_id');
       expect(config).not.toHaveProperty('thread_id');
 
@@ -462,6 +465,25 @@ describe('CLI durable-message ingress', () => {
       expect(result.registration_command).toContain('claude mcp add --transport stdio --scope user memesh-channel');
       expect(result.next_command).toBe(result.registration_command);
       expect(result.launch_command).toBe('claude --dangerously-load-development-channels server:memesh-channel');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // A declared model was a guess: the host picks the model per session (and
+  // `/model` changes it mid-session), and no host tells MeMesh which one runs.
+  // An older script may still pass --model, so it is accepted, said to be
+  // ignored, and never written.
+  it.skipIf(process.platform === 'win32')('accepts --model, says it is ignored, and writes no model', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-model-'));
+    try {
+      const setup = spawnSync(process.execPath, cliArgs(
+        'agent', 'setup', 'claude', '--principal', 'claude-a', '--model', 'claude-fable-5-1', '--json',
+      ), { encoding: 'utf8', env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' } });
+      expect(setup.status, setup.stderr).toBe(0);
+      expect(setup.stderr).toContain('--model is ignored');
+      const config = JSON.parse(readOwnerPrivateRegularFile(path.join(home, '.memesh', 'hosts', 'claude.json')));
+      expect(config).not.toHaveProperty('model');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

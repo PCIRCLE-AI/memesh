@@ -121,8 +121,10 @@ describe('ordinary Codex session companion', () => {
       // remaining purpose is only a stable PRINCIPAL for one workspace.
       identity: {
         project: getProjectName(config.workspace as string), principal_id: 'principal-a',
+        // The config still carries `model` (an older setup wrote it); it is
+        // never declared — nothing tells MeMesh which model a thread runs.
         session_instance_id: threadId, adapter_kind: 'codex-cli-queue',
-        model: 'gpt-5.6-sol', work_summary: 'review MeMesh delivery',
+        work_summary: 'review MeMesh delivery',
       },
     }));
   });

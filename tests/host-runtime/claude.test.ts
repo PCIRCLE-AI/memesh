@@ -73,7 +73,6 @@ function config(sessionInstanceId?: string): ClaudeManagedSessionConfig {
     router_socket: '/private/tmp/memesh-router-test.sock',
     auth_token: 'test-token',
     principal_id: 'claude-a',
-    model: 'claude-sonnet',
     work_summary: 'fresh-eyes review',
     session_instance_id: sessionInstanceId,
   };
@@ -186,7 +185,6 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
       principal_id: 'claude-a',
       session_instance_id: 'generated-session-stable',
       adapter_kind: 'claude-channel',
-      model: 'claude-sonnet',
       work_summary: 'fresh-eyes review',
     });
     await session.close();
