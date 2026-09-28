@@ -33,8 +33,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "91f2fcc32efd70be60aad39275cda065e18d32329bd4681be8c204156563413b",
-      "bytes": 5603
+      "sha256": "f7705055be70a9754fb0a454e1ffda24dac0a2d4b35e6df68220e5a471b10228",
+      "bytes": 7266
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
@@ -58,8 +58,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "dc7eb01c945cbd003345ee5be07f862e3c8b993569fa330cabde096001b506c6",
-      "bytes": 18765
+      "sha256": "605b58eb067cc6d34f98a30a37ed9f703f0c073ba0fc8310a38e5e0659f79431",
+      "bytes": 18657
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -193,8 +193,8 @@
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
-      "sha256": "cfde03fc70a10cbfedd8449c301e32d45f56e542803948f977fcc2164c9e1e0c",
-      "bytes": 7127
+      "sha256": "61b00f9679a33e32a29fa6c2b92a93f169c2615b70d02a91866e75254ba8cce0",
+      "bytes": 7936
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
@@ -208,8 +208,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "f105303f71cd402fd6ab1a86ebfeffe991cfb186e3e52ff91dd8e78e534c5223",
-      "bytes": 23564
+      "sha256": "28f7c473c4bc4ad593e4ed13c03226a13bbd6880f129890a01ddf23d868e06bd",
+      "bytes": 23593
     }
   ]
 }
