@@ -6,6 +6,7 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- Memories a hook captures while running under Codex now name `codex` as their source host. Before, every hook-created memory was labelled `claude-code`, which could make `memesh doctor` read Codex activity as a silent Claude Code Stop hook.
 - `message discover` no longer shows a model it cannot know. The `model` on a discovery card was whatever `memesh agent setup --model` once declared, not the model the session runs, and the host can change it at any time (`/model`). Cards now always carry `model: null`, even from a router of an earlier release. `agent setup --model` still accepts the flag so older scripts keep working, but it says the flag is ignored and writes nothing.
 
 ## [4.10.8] — 2026-09-27
