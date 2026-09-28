@@ -8,7 +8,8 @@ import { fileURLToPath } from 'url';
 import {
   openDatabase, closeDatabase, getDatabase, reindexFts,
 } from '../../db.js';
-import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
+import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
+import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { readConfig, updateConfig } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, resolveSessionLimit } from '../../core/session-limit.js';
 import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
@@ -291,6 +292,9 @@ const packageJsonPath = path.resolve(
 const packageRoot = path.dirname(packageJsonPath);
 const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
+/** How human-readable `recall` says the size cap (#494) left results out. */
+const RECALL_OMITTED_HINT = 'omitted to keep the response under size — narrow the query, or open the dashboard for the full text';
+
 const program = new Command();
 program
   .name('memesh')
@@ -548,9 +552,8 @@ program
   .action(async (query, opts) => {
     requireOneOf(opts.namespace, NAMESPACES, '--namespace');
     await withDatabase(async () => {
-      // FTS5 recall and conflict annotation are owned by core so transports
-      // cannot drift on the wrapping rule.
-      const { entities, conflicts, retrieval } = await recallWithConflicts({
+      // recallForAgent: recall + conflicts + the agent-facing size cap (#494); see its docstring.
+      const result = await recallForAgent({
         query: query || undefined,
         tag: opts.tag,
         limit: opts.limit,
@@ -558,41 +561,64 @@ program
         namespace: opts.namespace,
         cross_project: opts.crossProject,
       });
+      const { entities, conflicts, retrieval, entities_omitted } = result;
 
       if (opts.json) {
         // One envelope shape, always — the old output was a bare array
         // normally and an object when conflicts existed, so every consumer
         // had to special-case it; and it had nowhere to carry `retrieval`,
         // which is the point (a limit-full recall must say so in-band). MCP
-        // and HTTP already answer with this object envelope.
-        console.log(JSON.stringify(
-          conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval },
-        ));
+        // and HTTP already answer with this object envelope. `truncated` /
+        // `entities_omitted` ride along only when the size cap cut something
+        // — same rule as `conflicts`.
+        console.log(JSON.stringify(agentRecallEnvelope(result)));
       } else if (entities.length === 0) {
-        console.log(query ? 'No results found in the keyword index.' : 'No results found.');
+        // Every match can be too large to show (a huge metadata blob): say
+        // so, never "No results found" for results that exist.
+        if (entities_omitted) {
+          console.log(`${entities_omitted.total} result(s) found, all ${RECALL_OMITTED_HINT}.`);
+        } else {
+          console.log(query ? 'No results found in the keyword index.' : 'No results found.');
+        }
       } else {
         for (const e of entities) {
           const badge = e.archived ? ' [archived]' : '';
           console.log(`  ${e.name}${badge} (${e.type})`);
-          for (const obs of e.observations.slice(0, 3)) {
+          e.observations.slice(0, 3).forEach((obs, i) => {
             // Display cap only — storage is untouched. A single 324KB
             // observation used to flood the terminal on every hit.
+            // Only the first observation can have been cut by the size cap
+            // (#494), and then `truncated.observations` says so: show one
+            // marker for it, not the cap's own "(+N more bytes)" plus a second.
+            const cut = i === 0 && e.truncated?.observations
+              ? /\s?… \(\+\d+ more bytes\)$/.exec(obs)
+              : null;
+            const text = cut ? obs.slice(0, cut.index) : obs;
             let shown = obs;
-            if (obs.length > 500) {
-              let head = obs.slice(0, 500);
+            if (cut || text.length > 500) {
+              let head = text.slice(0, 500);
               // Don't cut a surrogate pair in half — a trailing lone high
               // surrogate prints as a broken glyph.
               if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
-              shown = `${head} … (+${obs.length - head.length} more chars)`;
+              shown = cut
+                ? `${head}${head ? ' ' : ''}… (cut; full text in the dashboard)`
+                : `${head} … (+${text.length - head.length} more chars)`;
             }
             console.log(`    - ${shown}`);
-          }
-          if (e.observations.length > 3) {
-            console.log(`    ... +${e.observations.length - 3} more`);
+          });
+          // The true total, not `e.observations.length` — the size cap (#494)
+          // may already have dropped some before this ever saw the entity, and
+          // the "+N more" count must reflect that, not the post-cap remainder.
+          const totalObservations = e.truncated?.observations?.total ?? e.observations.length;
+          if (totalObservations > 3) {
+            console.log(`    ... +${totalObservations - 3} more`);
           }
         }
-        const truncatedNote = retrieval.truncated ? ' (limit reached — more may exist)' : '';
+        const truncatedNote = retrieval.truncated ? ' (search limit reached — more may match; raise --limit)' : '';
         console.log(`\n${entities.length} result(s)${truncatedNote}`);
+        if (entities_omitted) {
+          console.log(`(${entities_omitted.total - entities_omitted.shown} more result(s) ${RECALL_OMITTED_HINT})`);
+        }
         if (conflicts.length > 0) {
           console.log('\nWarning: Conflicts detected:');
           for (const c of conflicts) {

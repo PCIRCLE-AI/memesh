@@ -3,6 +3,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
+import { KnowledgeGraph } from '../../src/knowledge-graph.js';
+import { RECALL_RESPONSE_MAX_BYTES } from '../../src/core/recall-agent-view.js';
+import { seedOversizedEntity } from '../helpers/recall-size-fixture.js';
 
 // Import the Express app (not startServer, which opens its own DB and binds a port).
 // We open our own isolated DB and start the app on a random port.
@@ -265,6 +268,30 @@ describe('HTTP Transport: POST /v1/recall', () => {
     expect(res.body.data.entities).toBeDefined();
     expect(Array.isArray(res.body.data.entities)).toBe(true);
     expect(res.body.data.entities.length).toBeGreaterThan(0);
+  });
+
+  // #494: the size cap applies only to the agent-facing surfaces (MCP
+  // `recall`, CLI `memesh recall`). The dashboard's HTTP API must stay
+  // exactly as it was — same oversized fixture the MCP/CLI tests use
+  // (tests/tools.test.ts, tests/cli/recall-size-caps.test.ts), proving HTTP
+  // returns it whole: no per-entity cap, no file:* filtering, no `truncated`
+  // / `entities_omitted` fields, and a body that CAN exceed 32 KB.
+  it('#494: stays uncapped — full observations, file: tags included, no truncation fields, response can exceed 32 KB', async () => {
+    seedOversizedEntity(new KnowledgeGraph(getDatabase()), 'http-recall-size-fixture', 'project:httprecallsize');
+
+    const res = await req('POST', '/v1/recall', { tag: 'project:httprecallsize' });
+    expect(res.status).toBe(200);
+    const entity = res.body.data.entities.find((e: any) => e.name === 'http-recall-size-fixture');
+    expect(entity, 'fixture entity must come back').toBeTruthy();
+
+    expect(entity.observations).toHaveLength(157);
+    expect(entity.tags.filter((t: string) => t.startsWith('file:'))).toHaveLength(71);
+    expect(entity.truncated).toBeUndefined();
+    expect(res.body.data.truncated).toBeUndefined();
+    expect(res.body.data.entities_omitted).toBeUndefined();
+
+    const bodyBytes = Buffer.byteLength(JSON.stringify(res.body));
+    expect(bodyBytes, 'HTTP must NOT be capped — this fixture is deliberately over the MCP/CLI 32 KB cap').toBeGreaterThan(RECALL_RESPONSE_MAX_BYTES);
   });
 });
 

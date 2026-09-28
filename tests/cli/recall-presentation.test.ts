@@ -48,7 +48,12 @@ describe('recall presentation: disclose what geometry cannot certify', () => {
     expect(r.stdout, 'display must be capped').toContain('more chars)');
     expect(r.stdout, 'the tail of the full text must not print').not.toContain('needle-omega');
 
-    // Storage untouched: JSON output carries the full observation.
+    // Storage is always untouched, but `--json` is now subject to #494's
+    // agent-facing size cap (8 KB/entity, 32 KB/response — see
+    // tests/tools.test.ts's "recall size caps" and
+    // tests/cli/recall-size-caps.test.ts). This fixture (~3.9 KB) stays under
+    // that cap, so `--json` still carries it whole; it is not evidence that
+    // `--json` is exempt from the cap in general.
     const j = runCli(['recall', 'needle-alpha', '--json']);
     expect(j.stdout).toContain('needle-omega');
   });

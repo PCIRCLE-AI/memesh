@@ -15,6 +15,8 @@ import * as agentMessaging from '../src/core/agent-messaging.js';
 import { handleTool, TOOL_DEFINITIONS } from '../src/mcp/tools.js';
 import { normalizeClientHost, resolveTranscriptWorkspace } from '../src/transports/mcp/handlers.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../src/core/agent-messaging.js';
+import { RECALL_ENTITY_CONTENT_MAX_BYTES, RECALL_RESPONSE_MAX_BYTES } from '../src/core/recall-agent-view.js';
+import { filler, seedOversizedEntity } from './helpers/recall-size-fixture.js';
 
 // recall's MCP payload is an object envelope ({ entities, conflicts? }), never
 // a bare array — see the shape contract test in the recall describe block.
@@ -947,6 +949,134 @@ describe('recall', () => {
   it('rejects recall with limit=101', async () => {
     const result = await handleTool('recall', { limit: 101 });
     expect(result.isError).toBe(true);
+  });
+});
+
+// ── Recall size caps (#494) ────────────────────────────────────────────
+//
+// A real graph (~3,300 memories) returned a single entity at 61.9 KB (157
+// observations, 71 tags) from one recall — straight into an agent's
+// context. The fixtures add `file:*` tags, the kind auto-captured session
+// memories carry, to exercise their omission too. These fixtures reproduce that shape directly via
+// KnowledgeGraph.createEntity (RememberSchema caps observations at 100 and
+// tags at 50 per call; the real entities got this large by repeated
+// captures over time, which the schema cap does not limit cumulatively).
+describe('recall size caps (#494)', () => {
+  const kgFor = () => new KnowledgeGraph(getDatabase());
+
+  it('MCP recall: a large-observation, many-file-tag entity is capped, marked, and file: tags are omitted', async () => {
+    const observations = seedOversizedEntity(kgFor(), 'recall-size-fixture', 'project:recallsize494');
+
+    const result = await handleTool('recall', { tag: 'project:recallsize494' });
+    const parsed = JSON.parse(result.content[0].text);
+    const entity = parsed.entities.find((e: any) => e.name === 'recall-size-fixture');
+    expect(entity, 'fixture entity must come back').toBeTruthy();
+
+    // file:* tags never appear in agent-facing recall output.
+    expect(entity.tags.some((t: string) => t.startsWith('file:'))).toBe(false);
+    expect(entity.tags).toContain('project:recallsize494');
+
+    // Per-entity content cap: observations+tags serialized <= 8 KB.
+    const contentBytes = Buffer.byteLength(JSON.stringify(entity.observations)) + Buffer.byteLength(JSON.stringify(entity.tags));
+    expect(contentBytes).toBeLessThanOrEqual(RECALL_ENTITY_CONTENT_MAX_BYTES);
+
+    // Marked with the FULL original count, not the capped one.
+    expect(entity.truncated?.observations?.total).toBe(157);
+    expect(entity.truncated.observations.shown).toBeGreaterThan(0);
+    expect(entity.truncated.observations.shown).toBeLessThan(157);
+    expect(entity.observations.length).toBe(entity.truncated.observations.shown);
+    // The kept observations are the FIRST ones (dropped from the end).
+    expect(entity.observations[0]).toBe(observations[0]);
+
+    // The response itself says something was cut.
+    expect(parsed.truncated).toBe(true);
+  });
+
+  it('MCP recall: a single observation larger than the whole per-entity cap is cut mid-way and marked, never dropped to zero', async () => {
+    const hugeObservation = filler('huge', 20_000); // one observation, ~20 KB, alone > 8 KB cap
+    kgFor().createEntity('recall-size-single-huge', 'note', {
+      observations: [hugeObservation],
+      tags: ['project:recallsize494huge'],
+    });
+
+    const result = await handleTool('recall', { tag: 'project:recallsize494huge' });
+    const parsed = JSON.parse(result.content[0].text);
+    const entity = parsed.entities.find((e: any) => e.name === 'recall-size-single-huge');
+    expect(entity).toBeTruthy();
+
+    // Never hidden entirely: exactly one (cut) observation is shown.
+    expect(entity.observations).toHaveLength(1);
+    expect(entity.observations[0].length).toBeLessThan(hugeObservation.length);
+    expect(entity.observations[0]).toContain('more bytes)');
+    expect(entity.truncated.observations).toEqual({ shown: 1, total: 1 });
+
+    const contentBytes = Buffer.byteLength(JSON.stringify(entity.observations)) + Buffer.byteLength(JSON.stringify(entity.tags));
+    expect(contentBytes).toBeLessThanOrEqual(RECALL_ENTITY_CONTENT_MAX_BYTES);
+  });
+
+  it('MCP recall: whole entities are dropped from the end once the 32 KB response budget is exceeded', async () => {
+    const kg = kgFor();
+    const SEEDED = 6;
+    for (let i = 0; i < SEEDED; i++) {
+      const observations = Array.from({ length: 30 }, (_, j) => filler(`e${i}o${j}`, 400)); // ~12 KB raw each — over the 8 KB entity cap on its own
+      kg.createEntity(`recall-size-many-${i}`, 'note', {
+        observations,
+        tags: ['project:recallsize494many'],
+      });
+    }
+
+    const result = await handleTool('recall', { tag: 'project:recallsize494many', limit: SEEDED });
+    const parsed = JSON.parse(result.content[0].text);
+
+    const responseBytes = Buffer.byteLength(result.content[0].text);
+    expect(responseBytes).toBeLessThanOrEqual(RECALL_RESPONSE_MAX_BYTES);
+
+    expect(parsed.entities_omitted).toBeTruthy();
+    expect(parsed.entities_omitted.total).toBe(SEEDED);
+    expect(parsed.entities_omitted.shown).toBe(parsed.entities.length);
+    expect(parsed.entities.length).toBeLessThan(SEEDED);
+    expect(parsed.truncated).toBe(true);
+  });
+
+  it('MCP recall: many non-file: tags alone are capped and marked, dropped whole from the end', async () => {
+    // 100 tags x ~203 JSON-serialized bytes each is already over the 8 KB
+    // entity budget on tags alone — exercises packTags' own drop-from-the-end
+    // path independently of the observations cap.
+    const tags = ['project:recallsize494tags', ...Array.from({ length: 99 }, (_, i) => filler(`tag${i}`, 190))];
+    kgFor().createEntity('recall-size-many-tags', 'note', {
+      observations: ['one small observation'],
+      tags,
+    });
+
+    const result = await handleTool('recall', { tag: 'project:recallsize494tags' });
+    const parsed = JSON.parse(result.content[0].text);
+    const entity = parsed.entities.find((e: any) => e.name === 'recall-size-many-tags');
+    expect(entity).toBeTruthy();
+
+    expect(entity.truncated?.tags?.total).toBe(100);
+    expect(entity.truncated.tags.shown).toBeGreaterThan(0);
+    expect(entity.truncated.tags.shown).toBeLessThan(100);
+    expect(entity.tags.length).toBe(entity.truncated.tags.shown);
+    // Dropped from the end: the filter tag (index 0) is kept.
+    expect(entity.tags).toContain('project:recallsize494tags');
+
+    const contentBytes = Buffer.byteLength(JSON.stringify(entity.observations)) + Buffer.byteLength(JSON.stringify(entity.tags));
+    expect(contentBytes).toBeLessThanOrEqual(RECALL_ENTITY_CONTENT_MAX_BYTES);
+  });
+
+  it('MCP recall: an entity that fits within the caps carries no truncated marker', async () => {
+    kgFor().createEntity('recall-size-small', 'note', {
+      observations: ['a small observation, well under any cap'],
+      tags: ['project:recallsize494small', 'topic:x'],
+    });
+
+    const result = await handleTool('recall', { tag: 'project:recallsize494small' });
+    const parsed = JSON.parse(result.content[0].text);
+    const entity = parsed.entities.find((e: any) => e.name === 'recall-size-small');
+    expect(entity).toBeTruthy();
+    expect(entity.truncated).toBeUndefined();
+    expect(parsed.truncated).toBeUndefined();
+    expect(parsed.entities_omitted).toBeUndefined();
   });
 });
 
