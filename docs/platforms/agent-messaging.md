@@ -8,8 +8,10 @@ MeMesh provides two complementary collaboration surfaces on one machine:
 
 Use `memesh message discover --project <name> [--limit 1..100]` to read the
 router directory. Results expose `session_id`, `principal_id`, `host_kind`,
-`project`, declared `model` and `work_summary` (`null` when absent), `active`,
-`generation`, and `lease_expires_at_ms`. Discovery performs no send, fetch, ACK, replay, or
+`project`, `model` (always `null`: no host tells MeMesh which model a session
+runs, so none is shown; the key stays for older clients), declared
+`work_summary` (`null` when absent), `active`, `generation`, and
+`lease_expires_at_ms`. Discovery performs no send, fetch, ACK, replay, or
 receipt operation; router unavailability is an explicit error, never an empty
 directory.
 
@@ -222,8 +224,10 @@ same project automatically; nothing has to be typed or copied between them.
 a given value is still written into the config file, but no host reads it
 back to decide where it registers.
 
-Optional declarations can be persisted with `--model <id>` and
-`--work-summary <text>` (each is capped at 200 characters); no defaults are guessed.
+An optional declaration can be persisted with `--work-summary <text>` (capped
+at 200 characters); no default is guessed. `--model <id>` is accepted only so an
+older script does not fail: it prints that it is ignored and writes nothing,
+because the model is the host's choice per session and MeMesh cannot see it.
 For ordinary Codex only, `memesh agent setup codex-session ...` is an optional
 workspace-specific stable-principal override, not an activation prerequisite.
 

@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { expectValidHookOutput, HOOK_SPECIFIC_OUTPUT_EVENTS } from '../helpers/hook-output-contract.js';
+import { withoutHostIdentity } from '../helpers/host-env.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 
 const require = createRequire(import.meta.url);
@@ -45,7 +46,7 @@ describe('Feature: PreCompact Hook', () => {
     const jsonInput = JSON.stringify(input);
     return execFileSync('node', [hookPath], {
       input: jsonInput,
-      env: { ...process.env, MEMESH_DB_PATH: dbPath, ...env },
+      env: { ...withoutHostIdentity(process.env), MEMESH_DB_PATH: dbPath, ...env },
       encoding: 'utf8',
       timeout: 60000,
     });
@@ -93,6 +94,26 @@ describe('Feature: PreCompact Hook', () => {
     // The strongest possible form of "no entity": the database file was
     // never even created, because the hook skipped before touching it.
     expect(fs.existsSync(dbPath), 'no database may be created for a non-event').toBe(false);
+  });
+
+  it('Scenario: a pre-compact memory captured by a Codex hook run names codex as its source host', () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-home-'));
+    try {
+      runHook({
+        session_id: 'sess-codex-pc',
+        transcript_path: '',
+        cwd: '/tmp/myproject',
+        hook_event_name: 'PreCompact',
+        reason: 'auto',
+      }, { CODEX_HOME: codexHome });
+    } finally {
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+    const db = openDb();
+    const entity = db.prepare('SELECT metadata FROM entities WHERE name = ?').get('pre-compact-sess-codex-pc') as { metadata: string } | undefined;
+    db.close();
+    expect(entity, 'the Codex run must still capture').toBeTruthy();
+    expect(JSON.parse(entity!.metadata).provenance).toEqual({ source_host: 'codex' });
   });
 
   it('Scenario: Basic pre-compact event -> entity created with correct type and tags', () => {

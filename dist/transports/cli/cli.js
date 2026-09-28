@@ -25563,6 +25563,8 @@ function validateRouterSuccessResult(request, value) {
       if (!Array.isArray(value.cards) || value.cards.length > request.limit || value.cards.some((card) => !isSelectionCard(card, request.project))) {
         throw new AgentRouterProtocolError("invalid_response", "Router response contained invalid discovery cards.");
       }
+      for (const card of value.cards)
+        card.model = null;
       break;
     case "heartbeat":
       requireResultInteger("generation");
@@ -62470,9 +62472,12 @@ messageStorageCmd.command("prune").description("Dry-run one bounded terminal-pay
   });
 });
 var agentCmd = program2.command("agent").description("Set up reusable owner-private local host configuration");
-agentCmd.command("setup").description("Write this host's local config (a stable principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner \u2014 also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. The routing project always comes from the host's own working directory (claude) or its --workspace (codex, codex-session, gemini) \u2014 no flag decides it. See docs/platforms/agent-messaging.md.").argument("<host>", "codex-session | codex | claude | gemini").option("--project <name>", "Ignored for routing (#474) \u2014 the project always comes from the host's own working directory or --workspace. Accepted only so an older script that still passes it does not fail; a given value is still written into the config for reference, never used to route.").requiredOption("--principal <id>", "Stable logical recipient ID").option("--workspace <path>", "Managed Codex/Gemini workspace", process.cwd()).option("--model <id>", "Optional declared model identifier").option("--work-summary <text>", "Optional declared current work summary").option("--json", "Output machine-readable setup result").action((host, opts) => {
+agentCmd.command("setup").description("Write this host's local config (a stable principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner \u2014 also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. The routing project always comes from the host's own working directory (claude) or its --workspace (codex, codex-session, gemini) \u2014 no flag decides it. See docs/platforms/agent-messaging.md.").argument("<host>", "codex-session | codex | claude | gemini").option("--project <name>", "Ignored for routing (#474) \u2014 the project always comes from the host's own working directory or --workspace. Accepted only so an older script that still passes it does not fail; a given value is still written into the config for reference, never used to route.").requiredOption("--principal <id>", "Stable logical recipient ID").option("--workspace <path>", "Managed Codex/Gemini workspace", process.cwd()).option("--model <id>", "Ignored \u2014 no host tells MeMesh which model a session runs, so none is declared. Accepted only so an older script that still passes it does not fail; the value is not written.").option("--work-summary <text>", "Optional declared current work summary").option("--json", "Output machine-readable setup result").action((host, opts) => {
   requireOneOf(host, ["codex-session", "codex", "claude", "gemini"], "<host>");
   assertSecureLocalHostRuntimeSupported();
+  if (opts.model !== void 0) {
+    process.stderr.write("--model is ignored: no host tells MeMesh which model a session runs, so discovery shows none.\n");
+  }
   const messageDir = path19.dirname(getDbPath());
   const hostsDir = path19.join(messageDir, "hosts");
   fs21.mkdirSync(hostsDir, { recursive: true, mode: 448 });
@@ -62489,7 +62494,6 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
     token_file: routerTokenFile,
     principal_id: requireAgentScopeArg(opts.principal, "recipient", "--principal"),
     ...opts.project === void 0 ? {} : { project: requireAgentScopeArg(opts.project, "project", "--project") },
-    ...opts.model === void 0 ? {} : { model: boundedCliDeclaration(opts.model, "--model", 200) },
     ...opts.workSummary === void 0 ? {} : { work_summary: boundedCliDeclaration(opts.workSummary, "--work-summary", 200) }
   };
   const config2 = host === "codex-session" ? { ...common, workspace: fs21.realpathSync(path19.resolve(opts.workspace)) } : host === "codex" ? { ...common, control_socket: path19.join(hostsDir, "codex-app-server.sock"), workspace: path19.resolve(opts.workspace) } : host === "claude" ? { ...common, server_name: "memesh-channel" } : { ...common, workspace: path19.resolve(opts.workspace), command: "gemini", args: [] };
