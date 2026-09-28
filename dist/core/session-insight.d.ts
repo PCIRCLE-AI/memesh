@@ -15,7 +15,6 @@ export interface InsightEntity {
     observations: string[];
     tags: string[];
 }
-export declare function bashEditedPaths(cmd: unknown): string[];
 export declare function activityFromChatMessages(messages: unknown): SessionActivity;
 export interface InsightContext {
     sessionId: string;
