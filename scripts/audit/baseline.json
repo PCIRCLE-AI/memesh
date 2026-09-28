@@ -71,25 +71,25 @@
       "reason": "A project with no work items correctly has no anchor candidate.",
       "triaged": "2026-09-06 provider-vector retirement audit"
     },
-    "C5 src/core/operations.ts:41": {
+    "C5 src/core/operations.ts:42": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "A new entity legitimately starts with empty metadata before local fields are applied.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 40→41 (#451: canonicalEntityType import added above; statement byte-identical)"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 40→41 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 41→42 (#494: one import line added above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:44": {
+    "C5 src/core/operations.ts:45": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Missing provenance legitimately starts an empty provenance object before local fields are applied.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 43→44 (#451: canonicalEntityType import added above; statement byte-identical)"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 43→44 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 44→45 (#494: one import line added above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:47": {
+    "C5 src/core/operations.ts:48": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent provenance overrides correctly add no fields to the generated provenance.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 46→47 (#451: canonicalEntityType import added above; statement byte-identical)"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-26 46→47 (#451: canonicalEntityType import added above; statement byte-identical); re-keyed 2026-09-28 47→48 (#494: one import line added above; statement byte-identical)"
     },
-    "C5 src/core/operations.ts:334": {
+    "C5 src/core/operations.ts:335": {
       "class": "SAFE-OPTIONAL-OBJECT",
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical)"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical)"
     },
     "C1 tests/cli-agent-message-ingress.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
@@ -585,6 +585,16 @@
       "class": "NOT-A-GATE",
       "reason": "Read-only status of the verify receipt (fresh / stale / missing) for a person to run by hand. Before 2026-09-20 its automated caller was the maintainer's local git commit/push hook shims in .git/hooks/ (never tracked — .git/ itself is never version-controlled), installed by scripts/sdlc/install-git-hooks.mjs; those shims exec'd scripts/sdlc/git-gate.mjs, which WAS tracked here (one of this change's deletions) and read the receipt via receiptStatus() in-process rather than by spawning this file. Those hooks left with the rest of the SDLC loop, so nothing in this repository invokes it under either name now — the classification is unchanged.",
       "triaged": "2026-09-14 SDLC loop install (chore/sdlc-loop); re-triaged 2026-09-20 (SDLC loop removal: reason updated to name the caller as local-only, not in-repo); corrected 2026-09-20 (git-gate.mjs was tracked and just deleted, not never-tracked; the never-tracked part is the .git/hooks/ shim)"
+    },
+    "C5 src/core/recall-agent-view.ts:153": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "entity.tags is typed string[] (non-optional) on every Entity recallWithConflicts() returns; the ?? [] is defensive against a malformed/legacy row, matching operations.ts's existing provenance-object defaults, not a fallback that turns a real absence into a false success.",
+      "triaged": "2026-09-28 #494 recall-response-size: recall-agent-view.ts introduced; re-keyed 2026-09-28 (bytesWith()/cutToFit added and packObservations' early return removed, all above, across several passes); currently :153, statement byte-identical to the pre-simplification-pass :154"
+    },
+    "C5 src/core/recall-agent-view.ts:154": {
+      "class": "SAFE-OPTIONAL-OBJECT",
+      "reason": "entity.observations is typed string[] (non-optional) on every Entity recallWithConflicts() returns; same defensive-only ?? [] as the tags line immediately above.",
+      "triaged": "2026-09-28 #494 recall-response-size: recall-agent-view.ts introduced; re-keyed 2026-09-28 (bytesWith()/cutToFit added and packObservations' early return removed, all above, across several passes); currently :154, statement byte-identical to the pre-simplification-pass :155"
     }
   }
 }

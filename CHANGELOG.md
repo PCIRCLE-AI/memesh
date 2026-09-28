@@ -4,6 +4,10 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `recall` (MCP tool and `memesh recall`, including `--json`) no longer returns an unbounded response: each entity's observations+tags are capped at 8 KB and the whole response at 32 KB, a cut entity or response is marked with the full counts, and `file:*` tags are omitted (they remain in the database for pre-edit recall). A real recall that returned one 61.9 KB entity now returns it capped and marked. `POST /v1/recall` (the dashboard) is unchanged (#494).
+
 ## [4.10.8] — 2026-09-27
 
 Includes the changes documented under 4.10.7 and 4.10.6 below; neither was

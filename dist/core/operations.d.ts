@@ -1,3 +1,4 @@
+import { type RecallForAgentResult } from './recall-agent-view.js';
 import type { RememberInput, RememberResult, RecallInput, ForgetInput, ForgetResult, LearnInput, LearnResult, Entity } from './types.js';
 export declare function remember(input: RememberInput): RememberResult;
 export declare const REPLACED_HISTORY_MAX = 20;
@@ -24,6 +25,7 @@ export declare function recallWithConflicts(args: RecallInput): Promise<{
     conflicts: string[];
     retrieval: RetrievalMeta;
 }>;
+export declare function recallForAgent(args: RecallInput): Promise<RecallForAgentResult>;
 export { exportMemories, importMemories } from './serializer.js';
 export declare function learn(args: LearnInput): LearnResult;
 export declare function forget(args: ForgetInput): ForgetResult;

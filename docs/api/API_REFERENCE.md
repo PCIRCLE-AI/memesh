@@ -220,9 +220,66 @@ when truncated.
 **Provenance (`match`)**: when the call has a query, every result carries
 `"source": "keyword"` and the normalized FTS relevance score. The empty-query
 listing (recent memories) carries no `match` field — a listing is not a match.
-In CLI (non-`--json`) output, observations longer than 500
-characters are capped on display with `… (+N more chars)`; storage and
-`--json` always carry the full text.
+In CLI (non-`--json`) output, observations longer than 500 characters are
+additionally capped on display with `… (+N more chars)`; storage always
+carries the full text. `--json` is subject to the size cap below, not to this
+500-character display cap.
+
+**Size cap (MCP and CLI only)**: the MCP `recall` tool and `memesh recall`
+(including `--json`) cap what comes back, because this answer can go straight
+into an agent's context. Each returned entity's `observations` + `tags` are
+capped at 8 KB of JSON-serialized bytes, and the whole response is capped at
+32 KB. `file:*` tags (written for pre-edit recall's own database lookups —
+`memesh why`, the PreToolUse hook — never for reading) are omitted
+unconditionally, not just when the cap is hit.
+
+When an entity's content is cut, it carries a `truncated` object with the
+full original counts — enough to know how much was left out, never to guess:
+
+```json
+{
+  "name": "memesh-series-local-cloud-positioning-coordination",
+  "observations": ["Chose JWT for authentication", "..."],
+  "tags": ["project:memesh"],
+  "truncated": {"observations": {"shown": 22, "total": 157}}
+}
+```
+
+`observations` and `tags` themselves are never a special "truncated" shape —
+they are the plain kept arrays; `shown` is always `observations.length` (or
+`tags.length`) at the same moment.
+
+An observation is dropped whole, from the end (the first ones are kept) —
+except the very first one being packed: if that single observation alone is
+larger than the whole 8 KB entity budget, it is cut mid-way instead of
+hidden, with the observation TEXT ending in a marker showing how much was
+cut, e.g. `"…the text up to the cut… … (+41318 more bytes)"`. Tags are packed
+first, so an entity whose tags fill nearly all of the 8 KB shows no
+observations at all, still reported as `{"shown": 0, "total": N}`.
+
+When the size cap forces whole entities out of the response (each already
+capped to 8 KB, and 32 KB / 8 KB leaves room for only a few), the envelope
+carries `truncated: true` and `entities_omitted`:
+
+```json
+{
+  "entities": [ /* ...fewer than were matched... */ ],
+  "retrieval": {"mode": "fts", "truncated": false},
+  "truncated": true,
+  "entities_omitted": {"shown": 3, "total": 6}
+}
+```
+
+`truncated` at the top level means "something in THIS response was cut for
+size" — it is unrelated to `retrieval.truncated`, which means "the search
+LIMIT window filled; more matching entities may exist". Both can be true, or
+neither.
+
+**The HTTP API (`POST /v1/recall`, the dashboard's data source) is NOT
+capped.** It returns `file:*` tags and full observation text, exactly as
+before this cap existed — the dashboard already renders large entities with
+its own UI-level truncation, and does not need this agent-context-budget
+protection.
 
 **Conflict detection**: When any pair of returned entities have a `contradicts` relation, the object gains a `conflicts` array beside `entities`. Nothing creates that relation for you — a caller states it via `remember`'s `relations` (see [remember](#remember)), so an absent `conflicts` means "none stated between these results", not "checked and clean":
 
