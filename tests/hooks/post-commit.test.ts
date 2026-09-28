@@ -6,6 +6,7 @@ import path from 'path';
 import os from 'os';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { HOOK_OUTCOMES_FILENAME } from '../../src/core/capture-liveness.js';
+import { withoutHostIdentity } from '../helpers/host-env.js';
 
 /**
  * The columns these assertions read off a `SELECT`. better-sqlite3 types
@@ -80,7 +81,7 @@ describe('Feature: Post-Commit Hook', () => {
     const jsonInput = JSON.stringify(input);
     execFileSync('node', [hookPath], {
       input: jsonInput,
-      env: { ...process.env, ...env, MEMESH_DB_PATH: dbPath },
+      env: { ...withoutHostIdentity(process.env), ...env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
       timeout: 60000,
     });
@@ -88,7 +89,7 @@ describe('Feature: Post-Commit Hook', () => {
 
   function spawnHook(input: object) {
     const child = spawn(process.execPath, [path.resolve('scripts/hooks/post-commit.js')], {
-      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      env: { ...withoutHostIdentity(process.env), MEMESH_DB_PATH: dbPath },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     child.stdin.end(JSON.stringify(input));
@@ -597,7 +598,10 @@ describe('Feature: Post-Commit Hook', () => {
     git(['commit', '-q', '-m', 'feat: add auth', '--no-verify']);
     const hash = git(['rev-parse', '--short', 'HEAD']).trim();
 
+    // `hook_event_name` as Claude Code sends it: the host stamp below comes
+    // from the payload, not from whatever CLAUDE* variables the test runner has.
     runHook({
+      hook_event_name: 'PostToolUse',
       tool_name: 'Bash',
       session_id: 'sess-why-1',
       cwd: repoDir,
@@ -614,6 +618,31 @@ describe('Feature: Post-Commit Hook', () => {
     // The extra metadata must not displace the stamps captureEntity owns.
     expect(meta.provenance.source_host).toBe('claude-code');
     expect(meta.title_source).toBe('heuristic');
+  });
+
+  it('Scenario: a commit captured by a Codex hook run names codex as its source host', () => {
+    fs.writeFileSync(path.join(repoDir, 'codex.ts'), 'export const c = 1;\n');
+    git(['add', '--', 'codex.ts']);
+    git(['commit', '-q', '-m', 'feat: add codex', '--no-verify']);
+    const hash = git(['rev-parse', '--short', 'HEAD']).trim();
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-home-'));
+
+    try {
+      runHook({
+        tool_name: 'Bash',
+        session_id: 'sess-codex-1',
+        cwd: repoDir,
+        tool_input: { command: 'git commit -m "feat: add codex"' },
+        tool_output: `[main ${hash}] feat: add codex\n 1 file changed, 1 insertion(+)\n`,
+      }, { CODEX_HOME: codexHome });
+    } finally {
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+
+    const db = openDb();
+    const entity = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(`commit-${hash}`) as Row;
+    db.close();
+    expect(JSON.parse(entity.metadata as string).provenance).toEqual({ source_host: 'codex' });
   });
 
   it('Scenario: output that LOOKS like a commit, from a command that was not one -> nothing written', () => {

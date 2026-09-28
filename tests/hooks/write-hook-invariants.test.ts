@@ -307,19 +307,33 @@ describe('write-hook invariants (fake-working gates)', () => {
     }
   });
 
-  it('captureEntity stamps source_host=claude-code on a NEW entity', () => {
-    // Hooks only ever run under Claude Code, so hook capture IS claude-code
-    // capture. The stamp is what lets a federated reader (phase 03) say which
-    // host a memory came from.
+  it('captureEntity stamps the host its caller names on a NEW entity, and none when it names none', () => {
+    // Claude Code and Codex both run these hooks, so the caller passes the
+    // host it detected. The stamp is what lets a reader say which host a
+    // memory came from; a wrong label is worse than none, so no host means no
+    // stamp.
     const handle = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: dbPath }, { fts: true });
     const { db } = handle;
     try {
-      const res = shared.captureEntity(db, { name: 'prov-new', type: 'note', observations: ['x'] });
-      const row = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(res.id) as { metadata: string };
-      expect(JSON.parse(row.metadata).provenance.source_host).toBe('claude-code');
+      const provenanceOf = (name: string, sourceHost: string | null | undefined) => {
+        const res = shared.captureEntity(db, { name, type: 'note', observations: ['x'], sourceHost });
+        const row = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(res.id) as { metadata: string };
+        return JSON.parse(row.metadata).provenance;
+      };
+      expect(provenanceOf('prov-claude', 'claude-code')).toEqual({ source_host: 'claude-code' });
+      expect(provenanceOf('prov-codex', 'codex')).toEqual({ source_host: 'codex' });
+      expect(provenanceOf('prov-none', null)).toEqual({});
+      expect(provenanceOf('prov-omitted', undefined)).toEqual({});
     } finally {
       db.close();
     }
+  });
+
+  it('hookSourceHost answers what the outcome record answers, and null for unknown', () => {
+    expect(shared.hookSourceHost(null, { MEMESH_HOOK_HOST: 'codex' })).toBe('codex');
+    expect(shared.hookSourceHost(null, { CODEX_HOME: '/x' })).toBe('codex');
+    expect(shared.hookSourceHost({ hook_event_name: 'Stop' }, {})).toBe('claude-code');
+    expect(shared.hookSourceHost(null, {})).toBeNull();
   });
 
   it('captureEntity does NOT overwrite metadata another writer already recorded', () => {
