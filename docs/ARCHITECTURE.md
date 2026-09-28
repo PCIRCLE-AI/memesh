@@ -88,6 +88,7 @@ src/
 ├── core/
 │   ├── types.ts           # Shared types (zero external deps)
 │   ├── operations.ts      # remember/recall/forget/learn + re-exports export/import
+│   ├── recall-agent-view.ts # recall's agent-facing size cap (MCP + CLI only, #494) — pure, DB-free
 │   ├── serializer.ts      # Export/import memory snapshots (extracted from operations)
 │   ├── config.ts          # Owner-local reads and safe partial updates for retained non-model settings
 │   ├── paths.ts           # Centralised path helpers (homeDir, memeshDir, getDbPath, getProjectName)
@@ -133,6 +134,8 @@ src/
 **types.ts** — Shared TypeScript interfaces used across all transports. No external dependencies.
 
 **operations.ts** — Pure functions implementing `remember`, `recall`, `forget`, `learn`, and others. All three transports delegate here — no transport-specific logic leaks into business logic.
+
+**recall-agent-view.ts** — `capRecallForAgent()` (#494): the agent-facing size cap layered on `recallWithConflicts()`'s result, wired in via `operations.recallForAgent()`. Caps each entity's observations+tags to 8 KB of JSON bytes (dropping observations from the end, cutting the first one mid-way only if it alone exceeds the budget) and the whole response to 32 KB (dropping whole entities from the end), and omits `file:*` tags unconditionally — they exist for `pre-edit-recall.js` and `why.ts`'s own direct database lookups, not for an agent to read back. Pure and DB-free. Only the MCP `recall` tool and the CLI `recall` command go through it; `POST /v1/recall` calls `recallWithConflicts()` directly and stays uncapped.
 
 **config.ts** — Owner-local configuration management for `autoCapture`, `sessionLimit`, `autoUpdate`, `updateCheck`, `setupCompleted`, and `briefing`. Reads select only those retained fields; partial updates preserve unknown or retired top-level data without reading or printing credential values, and refuse to overwrite an unreadable file. `autoUpdate` is a bump limit; npm-global installs request host-mediated per-session consent at SessionStart and Stop dispatches only after explicit approval, while other channels receive their channel-specific manual action. `sessionLimit`'s documented range (#431), the integer check and the effective-value resolver live in `core/session-limit.ts`, re-exported here for callers that already import this file for other settings; a hook imports the generated copy directly, since this file is not itself a leaf. Write paths (`config set`, `POST /v1/config`) enforce the range; `GET`/`POST /v1/config` return a stored number, and the SessionStart hook resolves what it actually uses (clamping an above-range value to the max, falling back to the default below it), recording why whenever it had to. `briefing` (#360) is read through UNVALIDATED — unlike `autoUpdate`, an unrecognised stored value is not silently dropped, because `briefing-level.ts`'s `resolveBriefingLevel` is where it must be validated AND reported, not here. The on-disk config path is resolved lazily via `paths.ts:memeshDir()` so HOME-first override works in hermetic Windows tests.
 
@@ -204,7 +207,7 @@ Thin adapter: imports shared Zod schemas from `transports/schemas.ts`, validates
 |------|--------|---------|
 | `work_package` | WorkPackageSchema | Delegates to `core/dreamer.executeWorkPackage()` with the MCP client's bounded workspace-root context |
 | `remember` | RememberSchema | Delegates to `operations.remember()` |
-| `recall` | RecallSchema | Delegates to `operations.recallWithConflicts()` (backed by `recallEnhanced()`) |
+| `recall` | RecallSchema | Delegates to `operations.recallForAgent()` (backed by `recallWithConflicts()` / `recallEnhanced()`, capped for size by `core/recall-agent-view.ts` — #494) |
 | `forget` | ForgetSchema | Delegates to `operations.forget()` |
 | `export` | ExportSchema | Delegates to `operations.exportMemories()` |
 | `import` | ImportSchema | Delegates to `operations.importMemories()` |
@@ -305,13 +308,22 @@ not a second durable registry, and the read creates no message or receipt facts.
 ```
 Tool call: recall({query, tag, limit})
   -> Zod validation (RecallSchema)
-  -> recallWithConflicts() in core/operations
-     -> recallEnhanced()
-        -> KnowledgeGraph.search() — FTS5 keyword match
-        -> rankEntities() applies multi-factor scoring (relevance, recency, frequency, confidence, impact)
-     -> KnowledgeGraph.findConflicts() checks for contradicts relations among results
+  -> MCP + CLI: recallForAgent() in core/operations       HTTP: recallWithConflicts() directly
+       -> recallWithConflicts()                                (same, minus the next line)
+          -> recallEnhanced()
+             -> KnowledgeGraph.search() — FTS5 keyword match
+             -> rankEntities() applies multi-factor scoring (relevance, recency, frequency, confidence, impact)
+          -> KnowledgeGraph.findConflicts() checks for contradicts relations among results
+       -> capRecallForAgent() in core/recall-agent-view.ts (#494): omits file:* tags; caps each
+          entity's observations+tags at 8 KB and the whole response at 32 KB, marking what was cut
   -> Return {entities, retrieval}; add conflicts only when non-empty (never a bare array)
+     (MCP + CLI also add truncated / entities_omitted, only when something was cut)
 ```
+
+The size cap exists only on the MCP tool and CLI paths — the answer goes
+straight into an agent's context on those two. `POST /v1/recall` (the
+dashboard's data source) stays uncapped; see `### recall` in
+[API_REFERENCE.md](api/API_REFERENCE.md#recall) for the full shape.
 
 ### Prepare agent-assisted memory (`work_package`)
 

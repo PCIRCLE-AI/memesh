@@ -7,6 +7,7 @@ import {
   accessSignal,
   extractProject,
   typeLabel,
+  shortProjectId,
 } from '../lib/entity-display';
 import { EntityIcon } from './icons/EntityIcon';
 
@@ -71,15 +72,16 @@ export function MemoryRow({ entity: e, actions, highlight }: Props) {
           <span class="badge badge-type">{typeLabel(e.type)}</span>
           {isArchived && <span class="badge badge-archived">{translate('memory.archivedBadge')}</span>}
           {project && (
+            // #493: prose label, full id kept as the tooltip — see shortProjectId.
             <span
               class="tag"
-              style={{ background: 'var(--life-soft)', color: 'var(--life)', display: 'inline-flex', alignItems: 'center', gap: 4 }}
-              title={translate('memory.tooltip.project')}
+              style={{ background: 'var(--life-soft)', color: 'var(--life)', display: 'inline-flex', alignItems: 'center', gap: 4, maxWidth: '100%', minWidth: 0 }}
+              title={`${translate('memory.tooltip.project')}: ${project}`}
             >
               <svg width="11" height="11" viewBox="0 0 16 16" aria-hidden="true" style={{ flexShrink: 0 }}>
                 <path d="M2 4 a1 1 0 0 1 1 -1 h4 l2 2 h5 a1 1 0 0 1 1 1 v6 a1 1 0 0 1 -1 1 H3 a1 1 0 0 1 -1 -1 z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
               </svg>
-              {project}
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{shortProjectId(project)}</span>
             </span>
           )}
           {access.tone !== 'none' && (

@@ -5391,6 +5391,63 @@ var init_lesson_slug = __esm({
   }
 });
 
+// dist/core/bash-edited-paths.js
+function isPathShapedFileName(name) {
+  if (!name)
+    return false;
+  if (name.startsWith("-") || name.startsWith("~"))
+    return false;
+  if (/^\$(?:[A-Za-z_]\w*|[0-9@*#?$!-])$/.test(name) || /\$[{(]/.test(name))
+    return false;
+  if (/\{[^{}]*,[^{}]*\}/.test(name))
+    return false;
+  if (/[#^*?`]/.test(name))
+    return false;
+  return true;
+}
+function basename(p) {
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] ?? "";
+}
+function bashEditedPaths(cmd) {
+  if (typeof cmd !== "string")
+    return [];
+  const found = /* @__PURE__ */ new Set();
+  for (const re of [
+    /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/g,
+    /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/g,
+    /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/g,
+    /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/g,
+    /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/g,
+    /writeFileSync\(\s*['"]([^'"]+)['"]/g
+  ]) {
+    let m;
+    while ((m = re.exec(cmd)) !== null) {
+      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
+        found.add(m[1]);
+    }
+  }
+  return [...found];
+}
+function bashEditedFileNames(cmd) {
+  const names = /* @__PURE__ */ new Set();
+  for (const p of bashEditedPaths(cmd)) {
+    const name = basename(p);
+    if (isPathShapedFileName(name))
+      names.add(name);
+  }
+  return [...names];
+}
+function editedFileName(filePath) {
+  const name = typeof filePath === "string" ? basename(filePath) : "";
+  return isPathShapedFileName(name) ? name : null;
+}
+var init_bash_edited_paths = __esm({
+  "dist/core/bash-edited-paths.js"() {
+    "use strict";
+  }
+});
+
 // dist/storage/graph-repairs.js
 function note(line) {
   process.stderr.write(`MeMesh: ${line}
@@ -5439,13 +5496,7 @@ function dedupeObservations(db2) {
   return removed;
 }
 function bashWritesFiles(command) {
-  for (const re of BASH_WRITE_SHAPES) {
-    for (const m of command.matchAll(new RegExp(re.source, "g"))) {
-      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
-        return true;
-    }
-  }
-  return false;
+  return bashEditedPaths(command).length > 0;
 }
 function retractZeroEditClaims(db2) {
   let rewritten = -1;
@@ -5707,29 +5758,47 @@ function canonicalizeLessonTypes(db2) {
   });
   return renamed;
 }
-var SESSION_DEDUPE_KEY, ZERO_EDIT_RETRACT_KEY, FUSED_LESSON_SPLIT_KEY, ARCHIVED_FTS_ROWS_KEY, FUSED_LESSON_SHELL_HISTORY_RESET_KEY, LESSON_TYPE_CANONICAL_KEY, ZERO_EDITS, ZERO_EDITS_RETRACTED, BASH_WRITE_SHAPES;
+function removeJunkFileTags(db2) {
+  let removed = -1;
+  runOnceMigration(db2, {
+    key: JUNK_FILE_TAGS_KEY,
+    version: 1,
+    describe: "junk file: tag removal",
+    migrate: (conn) => {
+      const rows = conn.prepare(`SELECT t.id, t.tag FROM tags t JOIN entities e ON e.id = t.entity_id
+          WHERE t.tag LIKE 'file:%' AND e.type = 'session-insight'`).all();
+      const del = conn.prepare("DELETE FROM tags WHERE id = ?");
+      removed = 0;
+      for (const row of rows) {
+        if (isPathShapedFileName(row.tag.slice("file:".length)))
+          continue;
+        del.run(row.id);
+        removed += 1;
+      }
+      if (removed > 0) {
+        note(`removed ${removed} junk file: tag(s) \u2014 a shell variable, flag or sed/regex fragment captured as an edited file name (#495).`);
+      }
+    }
+  });
+  return removed;
+}
+var SESSION_DEDUPE_KEY, ZERO_EDIT_RETRACT_KEY, FUSED_LESSON_SPLIT_KEY, ARCHIVED_FTS_ROWS_KEY, FUSED_LESSON_SHELL_HISTORY_RESET_KEY, LESSON_TYPE_CANONICAL_KEY, JUNK_FILE_TAGS_KEY, ZERO_EDITS, ZERO_EDITS_RETRACTED;
 var init_graph_repairs = __esm({
   "dist/storage/graph-repairs.js"() {
     "use strict";
     init_schema();
     init_lesson_slug();
     init_signal_scorer();
+    init_bash_edited_paths();
     SESSION_DEDUPE_KEY = "session_observation_dedupe";
     ZERO_EDIT_RETRACT_KEY = "session_zero_edit_retract";
     FUSED_LESSON_SPLIT_KEY = "fused_lesson_split";
     ARCHIVED_FTS_ROWS_KEY = "archived_fts_rows";
     FUSED_LESSON_SHELL_HISTORY_RESET_KEY = "fused_lesson_shell_history_reset";
     LESSON_TYPE_CANONICAL_KEY = "lesson_type_canonical";
+    JUNK_FILE_TAGS_KEY = "junk_file_tags";
     ZERO_EDITS = ", 0 files edited";
     ZERO_EDITS_RETRACTED = ", files edited through Bash (count not recorded before 4.8.2)";
-    BASH_WRITE_SHAPES = [
-      /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/,
-      /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/,
-      /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/,
-      /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/,
-      /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/,
-      /writeFileSync\(\s*['"]([^'"]+)['"]/
-    ];
   }
 });
 
@@ -5829,6 +5898,7 @@ function migrateToCurrentSchema(db2, resolvedPath) {
   backfillAcceptedProposalTrust(db2);
   dedupeObservations(db2);
   retractZeroEditClaims(db2);
+  removeJunkFileTags(db2);
   canonicalizeLessonTypes(db2);
   splitFusedLessons(db2, { deriveTitle: deriveHeuristicTitle });
   repairFusedLessonShellHistory(db2);
@@ -6235,6 +6305,135 @@ var init_note_derive = __esm({
     NOTE_MAX_OBSERVATIONS = 100;
     NOTE_MAX_CHARS = 2e4;
     NOTE_DEFAULT_TYPE = "note";
+  }
+});
+
+// dist/core/recall-agent-view.js
+function byteLength(text) {
+  return Buffer.byteLength(text, "utf8");
+}
+function truncateToBytes(text, maxBytes) {
+  if (maxBytes <= 0)
+    return { text: "", cutBytes: byteLength(text) };
+  const full = Buffer.from(text, "utf8");
+  if (full.byteLength <= maxBytes)
+    return { text, cutBytes: 0 };
+  let sliceLen = maxBytes;
+  while (sliceLen > 0 && (full[sliceLen] & 192) === 128)
+    sliceLen--;
+  const kept = full.subarray(0, sliceLen).toString("utf8");
+  return { text: kept, cutBytes: full.byteLength - byteLength(kept) };
+}
+function bytesWith(kept, item) {
+  return byteLength(JSON.stringify([...kept, item]));
+}
+function cutToFit(obs, budgetBytes) {
+  let limit = budgetBytes;
+  for (; ; ) {
+    const { text, cutBytes } = truncateToBytes(obs, limit);
+    const marked = `${text}${text ? " " : ""}\u2026 (+${cutBytes} more bytes)`;
+    const jsonBytes2 = bytesWith([], marked);
+    if (jsonBytes2 <= budgetBytes)
+      return marked;
+    if (limit === 0)
+      return null;
+    limit = Math.max(0, Math.min(limit - 1, Math.floor(limit * budgetBytes / jsonBytes2)));
+  }
+}
+function packTags(tags, budgetBytes) {
+  const kept = [];
+  for (const tag of tags) {
+    if (bytesWith(kept, tag) > budgetBytes)
+      break;
+    kept.push(tag);
+  }
+  return { kept, total: tags.length };
+}
+function packObservations(observations, budgetBytes) {
+  const total = observations.length;
+  const kept = [];
+  let cutMidway = false;
+  for (const obs of observations) {
+    if (bytesWith(kept, obs) <= budgetBytes) {
+      kept.push(obs);
+      continue;
+    }
+    if (kept.length === 0) {
+      const cut = cutToFit(obs, budgetBytes);
+      if (cut !== null) {
+        kept.push(cut);
+        cutMidway = true;
+      }
+    }
+    break;
+  }
+  return { kept, total, cutMidway };
+}
+function capEntityForAgent(entity) {
+  const visibleTags = (entity.tags ?? []).filter((t) => !t.startsWith("file:"));
+  const observations = entity.observations ?? [];
+  const tagsResult = packTags(visibleTags, RECALL_ENTITY_CONTENT_MAX_BYTES);
+  const tagsBytesUsed = byteLength(JSON.stringify(tagsResult.kept));
+  const observationsBudget = Math.max(0, RECALL_ENTITY_CONTENT_MAX_BYTES - tagsBytesUsed);
+  const obsResult = packObservations(observations, observationsBudget);
+  const truncated = {};
+  if (obsResult.kept.length < obsResult.total || obsResult.cutMidway) {
+    truncated.observations = { shown: obsResult.kept.length, total: obsResult.total };
+  }
+  if (tagsResult.kept.length < tagsResult.total) {
+    truncated.tags = { shown: tagsResult.kept.length, total: tagsResult.total };
+  }
+  const capped = { ...entity, tags: tagsResult.kept, observations: obsResult.kept };
+  if (Object.keys(truncated).length > 0)
+    capped.truncated = truncated;
+  return capped;
+}
+function capRecallForAgent(result) {
+  const cappedEntities = result.entities.map(capEntityForAgent);
+  const totalEntities = cappedEntities.length;
+  const responseBudget = RECALL_RESPONSE_MAX_BYTES - RESPONSE_METADATA_RESERVE_BYTES;
+  let shownCount = 0;
+  for (let count = totalEntities; count >= 0; count--) {
+    const candidateBytes = byteLength(JSON.stringify({
+      entities: cappedEntities.slice(0, count),
+      conflicts: result.conflicts,
+      retrieval: result.retrieval
+    }));
+    if (candidateBytes <= responseBudget) {
+      shownCount = count;
+      break;
+    }
+  }
+  const shownEntities = cappedEntities.slice(0, shownCount);
+  const entitiesDropped = shownCount < totalEntities;
+  const anyContentTruncated = shownEntities.some((e) => e.truncated !== void 0);
+  const envelope = {
+    entities: shownEntities,
+    conflicts: result.conflicts,
+    retrieval: result.retrieval
+  };
+  if (anyContentTruncated || entitiesDropped)
+    envelope.truncated = true;
+  if (entitiesDropped)
+    envelope.entities_omitted = { shown: shownCount, total: totalEntities };
+  return envelope;
+}
+function agentRecallEnvelope(r) {
+  return {
+    entities: r.entities,
+    retrieval: r.retrieval,
+    ...r.conflicts.length > 0 ? { conflicts: r.conflicts } : {},
+    ...r.truncated ? { truncated: r.truncated } : {},
+    ...r.entities_omitted ? { entities_omitted: r.entities_omitted } : {}
+  };
+}
+var RECALL_ENTITY_CONTENT_MAX_BYTES, RECALL_RESPONSE_MAX_BYTES, RESPONSE_METADATA_RESERVE_BYTES;
+var init_recall_agent_view = __esm({
+  "dist/core/recall-agent-view.js"() {
+    "use strict";
+    RECALL_ENTITY_CONTENT_MAX_BYTES = 8 * 1024;
+    RECALL_RESPONSE_MAX_BYTES = 32 * 1024;
+    RESPONSE_METADATA_RESERVE_BYTES = 128;
   }
 });
 
@@ -6763,6 +6962,9 @@ async function recallWithConflicts(args) {
   const conflicts = kg.findConflicts(entities.map((e) => e.name));
   return { entities, conflicts, retrieval };
 }
+async function recallForAgent(args) {
+  return capRecallForAgent(await recallWithConflicts(args));
+}
 function learn(args) {
   const projectName = getProjectName();
   const result = createExplicitLesson(args.error, args.fix, projectName, {
@@ -6823,6 +7025,7 @@ var init_operations = __esm({
     init_lesson_engine();
     init_note_derive();
     init_work_topology();
+    init_recall_agent_view();
     init_serializer();
     REPLACED_HISTORY_MAX = 20;
     REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
@@ -24790,11 +24993,11 @@ var init_session_handoff = __esm({
 function isIndexableType(type) {
   return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
 }
-function byteLength(text) {
+function byteLength2(text) {
   return new TextEncoder().encode(text).length;
 }
 function sectionBytes(lines) {
-  return lines.reduce((sum, line) => sum + byteLength(line) + 1, 0);
+  return lines.reduce((sum, line) => sum + byteLength2(line) + 1, 0);
 }
 function parseActivity(value) {
   if (!value)
@@ -24867,7 +25070,7 @@ function closeWithFooter(lines, shown) {
   const above = sectionBytes(lines);
   let footer = footerLine(shown, above, Math.ceil(above / 4));
   for (let step = 0; step < 8; step++) {
-    const bytes = above + byteLength(footer) + 1;
+    const bytes = above + byteLength2(footer) + 1;
     const tokens = Math.ceil(bytes / 4);
     const next = footerLine(shown, bytes, tokens);
     if (next === footer)
@@ -24910,7 +25113,7 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
     if (rendered.length >= INDEX_MAX_LINES)
       break;
     const line = indexLine(c);
-    const cost = byteLength(line) + 1;
+    const cost = byteLength2(line) + 1;
     if (used + cost > budget)
       break;
     if (usedChars + line.length + 1 > charBudget)
@@ -56456,6 +56659,45 @@ function inspectAgentMessageStorage(db2, databasePath, policy) {
     return void 0;
   }
 }
+function noDaemonReason(detailJson) {
+  try {
+    return JSON.parse(detailJson)?.detail?.reason === "no_daemon";
+  } catch {
+    return false;
+  }
+}
+function inspectCodexQueueDaemon(db2) {
+  try {
+    const present = db2.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_receipts'").get();
+    if (!present?.present)
+      return void 0;
+    const rows = db2.prepare(`
+      SELECT project, recipient, detail_json, created_at FROM agent_message_receipts
+      WHERE receipt_kind = 'host_activation'
+        AND actor = 'memesh-router'
+        AND idempotency_key LIKE 'codex-queue-release-%'
+        AND created_at > datetime('now', '-7 days')
+      ORDER BY created_at DESC, rowid DESC
+    `).all();
+    if (rows.length === 0) {
+      return createInfo("codex-queue-daemon", "Codex stuck-message release", "No Codex host_activation receipts in the last 7 days. The Codex stuck-message release has not run recently, so its app-server-daemon dependency has not been exercised either way.");
+    }
+    const latestPerThread = /* @__PURE__ */ new Map();
+    for (const row of rows) {
+      const key = `${row.project}\0${row.recipient}`;
+      if (!latestPerThread.has(key))
+        latestPerThread.set(key, row);
+    }
+    const stuck = [...latestPerThread.values()].filter((row) => noDaemonReason(row.detail_json));
+    if (stuck.length === 0) {
+      return createInfo("codex-queue-daemon", "Codex stuck-message release", `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`);
+    }
+    const named = stuck.map((row) => `${row.recipient} in ${row.project} (${row.created_at.replace(" ", "T")}Z)`).join(", ");
+    return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`, "Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).");
+  } catch (err) {
+    return createCheck("codex-queue-daemon", "Codex stuck-message release", "warn", `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`, "Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.");
+  }
+}
 function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
   if (!codexPluginCacheDetected)
     return null;
@@ -57608,6 +57850,9 @@ async function runDoctor(options) {
     const messageStorage = inspectAgentMessageStorage(db2, databasePath, configuredAgentMessageStoragePolicy(agentMessageStoragePolicy));
     if (messageStorage)
       dbChecks.push(messageStorage);
+    const codexQueueDaemon = inspectCodexQueueDaemon(db2);
+    if (codexQueueDaemon)
+      dbChecks.push(codexQueueDaemon);
     const hasVocab = db2.prepare(`SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'fts_vocab'`).get();
     if (hasVocab?.present) {
       const unsegmented = db2.prepare(`SELECT COUNT(*) AS c FROM fts_vocab
@@ -60454,6 +60699,7 @@ var {
 // dist/transports/cli/cli.js
 init_db();
 init_operations();
+init_recall_agent_view();
 init_config();
 init_session_limit();
 import { createHash as createHash16 } from "crypto";
@@ -61285,32 +61531,9 @@ init_work_topology();
 init_paths();
 init_title();
 init_operations();
+init_bash_edited_paths();
 var MIN_TOOL_CALLS = 3;
 var HEAVY_SESSION_TOOL_CALLS = 20;
-function bashEditedPaths(cmd) {
-  if (typeof cmd !== "string")
-    return [];
-  const found = /* @__PURE__ */ new Set();
-  for (const re of [
-    /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/g,
-    /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/g,
-    /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/g,
-    /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/g,
-    /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/g,
-    /writeFileSync\(\s*['"]([^'"]+)['"]/g
-  ]) {
-    let m;
-    while ((m = re.exec(cmd)) !== null) {
-      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
-        found.add(m[1]);
-    }
-  }
-  return [...found];
-}
-function basename(p) {
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1] || p;
-}
 var FILE_WRITE_TOOLS = /* @__PURE__ */ new Set(["write_file", "patch", "edit_file", "Write", "Edit", "MultiEdit"]);
 var SHELL_TOOLS = /* @__PURE__ */ new Set(["terminal", "shell", "bash", "Bash"]);
 var KNOWN_READ_ONLY_TOOLS = /* @__PURE__ */ new Set([
@@ -61386,12 +61609,13 @@ function activityFromChatMessages(messages) {
         const args = parseArgs(fn.arguments);
         if (FILE_WRITE_TOOLS.has(name)) {
           const fp = args.path ?? args.file_path;
-          if (typeof fp === "string" && fp)
-            filesEdited.add(basename(fp));
+          const name2 = editedFileName(fp);
+          if (name2)
+            filesEdited.add(name2);
         } else if (SHELL_TOOLS.has(name)) {
           const cmd = args.command;
-          for (const fp of bashEditedPaths(cmd))
-            filesEdited.add(basename(fp));
+          for (const f of bashEditedFileNames(cmd))
+            filesEdited.add(f);
           if (typeof cmd === "string" && cmd.length > 10 && !cmd.startsWith("ls") && !cmd.startsWith("cd")) {
             bashCommands.push(redactSecrets(cmd).slice(0, 100));
           }
@@ -61423,7 +61647,7 @@ function fileTagsFor(files) {
       continue;
     tags.add(`file:${f}`);
     const noExt = f.replace(/\.[^.]+$/, "");
-    if (noExt && noExt !== f)
+    if (noExt && noExt !== f && isPathShapedFileName(noExt))
       tags.add(`file:${noExt}`);
   }
   return [...tags];
@@ -61997,6 +62221,7 @@ function wireUserHooks() {
 var packageJsonPath2 = path19.resolve(path19.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
 var packageRoot2 = path19.dirname(packageJsonPath2);
 var pkg = JSON.parse(fs21.readFileSync(packageJsonPath2, "utf8"));
+var RECALL_OMITTED_HINT = "omitted to keep the response under size \u2014 narrow the query, or open the dashboard for the full text";
 var program2 = new Command();
 program2.name("memesh").description("MeMesh \u2014 Agentic memory for coding agents").version(pkg.version).allowExcessArguments(true).showSuggestionAfterError(true);
 var UPDATE_NOTICE_SILENT_COMMANDS = /* @__PURE__ */ new Set([
@@ -62141,7 +62366,7 @@ program2.command("remember").argument("[text]", "Quick-capture text \u2014 title
 program2.command("recall").description("Search stored knowledge").argument("[query]", "Search query").option("--tag <tag>", "Filter by tag").option("--limit <n>", "Max results", wholeNumber("--limit"), 20).option("--include-archived", "Include archived entities").option("--namespace <namespace>", "Filter by namespace: personal, team, or global").option("--cross-project", "Search across all project tags (ignores --tag filter)").option("--json", "Output as JSON").action(async (query, opts) => {
   requireOneOf(opts.namespace, NAMESPACES, "--namespace");
   await withDatabase(async () => {
-    const { entities, conflicts, retrieval } = await recallWithConflicts({
+    const result = await recallForAgent({
       query: query || void 0,
       tag: opts.tag,
       limit: opts.limit,
@@ -62149,31 +62374,42 @@ program2.command("recall").description("Search stored knowledge").argument("[que
       namespace: opts.namespace,
       cross_project: opts.crossProject
     });
+    const { entities, conflicts, retrieval, entities_omitted } = result;
     if (opts.json) {
-      console.log(JSON.stringify(conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval }));
+      console.log(JSON.stringify(agentRecallEnvelope(result)));
     } else if (entities.length === 0) {
-      console.log(query ? "No results found in the keyword index." : "No results found.");
+      if (entities_omitted) {
+        console.log(`${entities_omitted.total} result(s) found, all ${RECALL_OMITTED_HINT}.`);
+      } else {
+        console.log(query ? "No results found in the keyword index." : "No results found.");
+      }
     } else {
       for (const e of entities) {
         const badge = e.archived ? " [archived]" : "";
         console.log(`  ${e.name}${badge} (${e.type})`);
-        for (const obs of e.observations.slice(0, 3)) {
+        e.observations.slice(0, 3).forEach((obs, i) => {
+          const cut = i === 0 && e.truncated?.observations ? /\s?… \(\+\d+ more bytes\)$/.exec(obs) : null;
+          const text = cut ? obs.slice(0, cut.index) : obs;
           let shown = obs;
-          if (obs.length > 500) {
-            let head = obs.slice(0, 500);
+          if (cut || text.length > 500) {
+            let head = text.slice(0, 500);
             if (/[\uD800-\uDBFF]$/.test(head))
               head = head.slice(0, -1);
-            shown = `${head} \u2026 (+${obs.length - head.length} more chars)`;
+            shown = cut ? `${head}${head ? " " : ""}\u2026 (cut; full text in the dashboard)` : `${head} \u2026 (+${text.length - head.length} more chars)`;
           }
           console.log(`    - ${shown}`);
-        }
-        if (e.observations.length > 3) {
-          console.log(`    ... +${e.observations.length - 3} more`);
+        });
+        const totalObservations = e.truncated?.observations?.total ?? e.observations.length;
+        if (totalObservations > 3) {
+          console.log(`    ... +${totalObservations - 3} more`);
         }
       }
-      const truncatedNote = retrieval.truncated ? " (limit reached \u2014 more may exist)" : "";
+      const truncatedNote = retrieval.truncated ? " (search limit reached \u2014 more may match; raise --limit)" : "";
       console.log(`
 ${entities.length} result(s)${truncatedNote}`);
+      if (entities_omitted) {
+        console.log(`(${entities_omitted.total - entities_omitted.shown} more result(s) ${RECALL_OMITTED_HINT})`);
+      }
       if (conflicts.length > 0) {
         console.log("\nWarning: Conflicts detected:");
         for (const c of conflicts) {

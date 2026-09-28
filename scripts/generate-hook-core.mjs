@@ -52,6 +52,10 @@ const SOURCES = [
   { from: 'dist/core/repo-state.js', to: 'repo-state.js', src: 'src/core/repo-state.ts' },
   { from: 'dist/core/guards.js', to: 'guards.js', src: 'src/core/guards.ts' },
   { from: 'dist/core/time-utils.js', to: 'time-utils.js', src: 'src/core/time-utils.ts' },
+  // Bash-captured edited paths, and the filter that keeps a non-path-shaped
+  // token (a shell variable, a flag, a sed/regex fragment) from becoming a
+  // `file:` tag (#495).
+  { from: 'dist/core/bash-edited-paths.js', to: 'bash-edited-paths.js', src: 'src/core/bash-edited-paths.ts' },
   // Recipient-id validation: the hooks refuse a path-shaped MEMESH_RECIPIENT
   // by the same rule the `message` tool applies.
   { from: 'dist/core/agent-scope-id.js', to: 'agent-scope-id.js', src: 'src/core/agent-scope-id.ts' },

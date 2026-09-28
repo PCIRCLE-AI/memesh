@@ -26637,6 +26637,41 @@ function lessonSlug(error51) {
   return `${readable.slice(0, 71)}-${digest}`;
 }
 
+// dist/core/bash-edited-paths.js
+function isPathShapedFileName(name) {
+  if (!name)
+    return false;
+  if (name.startsWith("-") || name.startsWith("~"))
+    return false;
+  if (/^\$(?:[A-Za-z_]\w*|[0-9@*#?$!-])$/.test(name) || /\$[{(]/.test(name))
+    return false;
+  if (/\{[^{}]*,[^{}]*\}/.test(name))
+    return false;
+  if (/[#^*?`]/.test(name))
+    return false;
+  return true;
+}
+function bashEditedPaths(cmd) {
+  if (typeof cmd !== "string")
+    return [];
+  const found = /* @__PURE__ */ new Set();
+  for (const re of [
+    /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/g,
+    /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/g,
+    /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/g,
+    /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/g,
+    /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/g,
+    /writeFileSync\(\s*['"]([^'"]+)['"]/g
+  ]) {
+    let m;
+    while ((m = re.exec(cmd)) !== null) {
+      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
+        found.add(m[1]);
+    }
+  }
+  return [...found];
+}
+
 // dist/storage/graph-repairs.js
 var SESSION_DEDUPE_KEY = "session_observation_dedupe";
 var ZERO_EDIT_RETRACT_KEY = "session_zero_edit_retract";
@@ -26644,6 +26679,7 @@ var FUSED_LESSON_SPLIT_KEY = "fused_lesson_split";
 var ARCHIVED_FTS_ROWS_KEY = "archived_fts_rows";
 var FUSED_LESSON_SHELL_HISTORY_RESET_KEY = "fused_lesson_shell_history_reset";
 var LESSON_TYPE_CANONICAL_KEY = "lesson_type_canonical";
+var JUNK_FILE_TAGS_KEY = "junk_file_tags";
 var ZERO_EDITS = ", 0 files edited";
 var ZERO_EDITS_RETRACTED = ", files edited through Bash (count not recorded before 4.8.2)";
 function note(line) {
@@ -26692,22 +26728,8 @@ function dedupeObservations(db2) {
   });
   return removed;
 }
-var BASH_WRITE_SHAPES = [
-  /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/,
-  /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/,
-  /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/,
-  /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/,
-  /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/,
-  /writeFileSync\(\s*['"]([^'"]+)['"]/
-];
 function bashWritesFiles(command) {
-  for (const re of BASH_WRITE_SHAPES) {
-    for (const m of command.matchAll(new RegExp(re.source, "g"))) {
-      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
-        return true;
-    }
-  }
-  return false;
+  return bashEditedPaths(command).length > 0;
 }
 function retractZeroEditClaims(db2) {
   let rewritten = -1;
@@ -26969,6 +26991,30 @@ function canonicalizeLessonTypes(db2) {
   });
   return renamed;
 }
+function removeJunkFileTags(db2) {
+  let removed = -1;
+  runOnceMigration(db2, {
+    key: JUNK_FILE_TAGS_KEY,
+    version: 1,
+    describe: "junk file: tag removal",
+    migrate: (conn) => {
+      const rows = conn.prepare(`SELECT t.id, t.tag FROM tags t JOIN entities e ON e.id = t.entity_id
+          WHERE t.tag LIKE 'file:%' AND e.type = 'session-insight'`).all();
+      const del = conn.prepare("DELETE FROM tags WHERE id = ?");
+      removed = 0;
+      for (const row of rows) {
+        if (isPathShapedFileName(row.tag.slice("file:".length)))
+          continue;
+        del.run(row.id);
+        removed += 1;
+      }
+      if (removed > 0) {
+        note(`removed ${removed} junk file: tag(s) \u2014 a shell variable, flag or sed/regex fragment captured as an edited file name (#495).`);
+      }
+    }
+  });
+  return removed;
+}
 
 // dist/core/title.js
 var TITLE_MAX_LENGTH = 200;
@@ -27049,6 +27095,7 @@ function migrateToCurrentSchema(db2, resolvedPath) {
   backfillAcceptedProposalTrust(db2);
   dedupeObservations(db2);
   retractZeroEditClaims(db2);
+  removeJunkFileTags(db2);
   canonicalizeLessonTypes(db2);
   splitFusedLessons(db2, { deriveTitle: deriveHeuristicTitle });
   repairFusedLessonShellHistory(db2);
@@ -27400,6 +27447,129 @@ function deriveNote(raw) {
   const digest = createHash4("sha256").update(text).digest("hex").slice(0, 8);
   const name = `${slugify2(title) || NOTE_DEFAULT_TYPE}-${digest}`;
   return { text, title, observations, name };
+}
+
+// dist/core/recall-agent-view.js
+var RECALL_ENTITY_CONTENT_MAX_BYTES = 8 * 1024;
+var RECALL_RESPONSE_MAX_BYTES = 32 * 1024;
+var RESPONSE_METADATA_RESERVE_BYTES = 128;
+function byteLength(text) {
+  return Buffer.byteLength(text, "utf8");
+}
+function truncateToBytes(text, maxBytes) {
+  if (maxBytes <= 0)
+    return { text: "", cutBytes: byteLength(text) };
+  const full = Buffer.from(text, "utf8");
+  if (full.byteLength <= maxBytes)
+    return { text, cutBytes: 0 };
+  let sliceLen = maxBytes;
+  while (sliceLen > 0 && (full[sliceLen] & 192) === 128)
+    sliceLen--;
+  const kept = full.subarray(0, sliceLen).toString("utf8");
+  return { text: kept, cutBytes: full.byteLength - byteLength(kept) };
+}
+function bytesWith(kept, item) {
+  return byteLength(JSON.stringify([...kept, item]));
+}
+function cutToFit(obs, budgetBytes) {
+  let limit = budgetBytes;
+  for (; ; ) {
+    const { text, cutBytes } = truncateToBytes(obs, limit);
+    const marked = `${text}${text ? " " : ""}\u2026 (+${cutBytes} more bytes)`;
+    const jsonBytes2 = bytesWith([], marked);
+    if (jsonBytes2 <= budgetBytes)
+      return marked;
+    if (limit === 0)
+      return null;
+    limit = Math.max(0, Math.min(limit - 1, Math.floor(limit * budgetBytes / jsonBytes2)));
+  }
+}
+function packTags(tags, budgetBytes) {
+  const kept = [];
+  for (const tag of tags) {
+    if (bytesWith(kept, tag) > budgetBytes)
+      break;
+    kept.push(tag);
+  }
+  return { kept, total: tags.length };
+}
+function packObservations(observations, budgetBytes) {
+  const total = observations.length;
+  const kept = [];
+  let cutMidway = false;
+  for (const obs of observations) {
+    if (bytesWith(kept, obs) <= budgetBytes) {
+      kept.push(obs);
+      continue;
+    }
+    if (kept.length === 0) {
+      const cut = cutToFit(obs, budgetBytes);
+      if (cut !== null) {
+        kept.push(cut);
+        cutMidway = true;
+      }
+    }
+    break;
+  }
+  return { kept, total, cutMidway };
+}
+function capEntityForAgent(entity) {
+  const visibleTags = (entity.tags ?? []).filter((t) => !t.startsWith("file:"));
+  const observations = entity.observations ?? [];
+  const tagsResult = packTags(visibleTags, RECALL_ENTITY_CONTENT_MAX_BYTES);
+  const tagsBytesUsed = byteLength(JSON.stringify(tagsResult.kept));
+  const observationsBudget = Math.max(0, RECALL_ENTITY_CONTENT_MAX_BYTES - tagsBytesUsed);
+  const obsResult = packObservations(observations, observationsBudget);
+  const truncated = {};
+  if (obsResult.kept.length < obsResult.total || obsResult.cutMidway) {
+    truncated.observations = { shown: obsResult.kept.length, total: obsResult.total };
+  }
+  if (tagsResult.kept.length < tagsResult.total) {
+    truncated.tags = { shown: tagsResult.kept.length, total: tagsResult.total };
+  }
+  const capped = { ...entity, tags: tagsResult.kept, observations: obsResult.kept };
+  if (Object.keys(truncated).length > 0)
+    capped.truncated = truncated;
+  return capped;
+}
+function capRecallForAgent(result) {
+  const cappedEntities = result.entities.map(capEntityForAgent);
+  const totalEntities = cappedEntities.length;
+  const responseBudget = RECALL_RESPONSE_MAX_BYTES - RESPONSE_METADATA_RESERVE_BYTES;
+  let shownCount = 0;
+  for (let count = totalEntities; count >= 0; count--) {
+    const candidateBytes = byteLength(JSON.stringify({
+      entities: cappedEntities.slice(0, count),
+      conflicts: result.conflicts,
+      retrieval: result.retrieval
+    }));
+    if (candidateBytes <= responseBudget) {
+      shownCount = count;
+      break;
+    }
+  }
+  const shownEntities = cappedEntities.slice(0, shownCount);
+  const entitiesDropped = shownCount < totalEntities;
+  const anyContentTruncated = shownEntities.some((e) => e.truncated !== void 0);
+  const envelope = {
+    entities: shownEntities,
+    conflicts: result.conflicts,
+    retrieval: result.retrieval
+  };
+  if (anyContentTruncated || entitiesDropped)
+    envelope.truncated = true;
+  if (entitiesDropped)
+    envelope.entities_omitted = { shown: shownCount, total: totalEntities };
+  return envelope;
+}
+function agentRecallEnvelope(r) {
+  return {
+    entities: r.entities,
+    retrieval: r.retrieval,
+    ...r.conflicts.length > 0 ? { conflicts: r.conflicts } : {},
+    ...r.truncated ? { truncated: r.truncated } : {},
+    ...r.entities_omitted ? { entities_omitted: r.entities_omitted } : {}
+  };
 }
 
 // dist/core/types.js
@@ -27911,6 +28081,9 @@ async function recallWithConflicts(args) {
   const kg = new KnowledgeGraph(getDatabase());
   const conflicts = kg.findConflicts(entities.map((e) => e.name));
   return { entities, conflicts, retrieval };
+}
+async function recallForAgent(args) {
+  return capRecallForAgent(await recallWithConflicts(args));
 }
 function learn(args) {
   const projectName = getProjectName();
@@ -29318,11 +29491,11 @@ function isIndexableType(type) {
   return !INDEX_EXCLUDED_TYPES.includes(type || "memory");
 }
 var DAY_MS = 24 * 60 * 60 * 1e3;
-function byteLength(text) {
+function byteLength2(text) {
   return new TextEncoder().encode(text).length;
 }
 function sectionBytes(lines) {
-  return lines.reduce((sum, line) => sum + byteLength(line) + 1, 0);
+  return lines.reduce((sum, line) => sum + byteLength2(line) + 1, 0);
 }
 function parseActivity(value) {
   if (!value)
@@ -29395,7 +29568,7 @@ function closeWithFooter(lines, shown) {
   const above = sectionBytes(lines);
   let footer = footerLine(shown, above, Math.ceil(above / 4));
   for (let step = 0; step < 8; step++) {
-    const bytes = above + byteLength(footer) + 1;
+    const bytes = above + byteLength2(footer) + 1;
     const tokens = Math.ceil(bytes / 4);
     const next = footerLine(shown, bytes, tokens);
     if (next === footer)
@@ -29438,7 +29611,7 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
     if (rendered.length >= INDEX_MAX_LINES)
       break;
     const line = indexLine(c);
-    const cost = byteLength(line) + 1;
+    const cost = byteLength2(line) + 1;
     if (used + cost > budget)
       break;
     if (usedChars + line.length + 1 > charBudget)
@@ -32013,7 +32186,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "recall",
-    description: "Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance.",
+    description: "Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity's observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included \u2014 they exist for pre-edit lookups, not for reading.",
     inputSchema: {
       type: "object",
       properties: {
@@ -32361,8 +32534,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
       const r = parseOrFail(RecallSchema, args);
       if (!r.ok)
         return r.result;
-      const { entities, conflicts, retrieval } = await recallWithConflicts(r.data);
-      return ok(conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval });
+      return ok(agentRecallEnvelope(await recallForAgent(r.data)));
     }
     if (name === "forget") {
       const r = parseOrFail(ForgetSchema, args);

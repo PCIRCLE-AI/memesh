@@ -9,6 +9,7 @@ import type { Entity } from './api';
 import { t, getLocale } from './i18n';
 import { isBoilerplateObservation } from '../../../src/core/title.js';
 import { parseSqliteUtcMs } from '../../../src/core/time-utils.js';
+import { projectLabel } from '../../../src/core/work-topology.js';
 import { CATEGORICAL_TYPE_COLORS } from './type-palette';
 
 /* ---------- type clustering ---------- */
@@ -123,6 +124,58 @@ export function extractProject(entity: Entity): string | null {
   const tag = entity.tags?.find((t) => t.startsWith(PROJECT_TAG_PREFIX));
   if (tag) return tag.slice(PROJECT_TAG_PREFIX.length);
   return null;
+}
+
+/** The display text for one project chip (#493): a label plus an optional
+ *  short hex disambiguator, kept apart so a caller can render the
+ *  disambiguator in `--mono` (DESIGN.md: IDs are compared digit by digit). */
+export interface ProjectChipLabel {
+  /** The human label — `projectLabel(id)`, the routing hash stripped. */
+  base: string;
+  /** First 6 hex characters of the id's routing hash — set only when the id
+   *  HAS a hash and another id in the same call shares `base`. An id with no
+   *  hash, or a unique `base`, never gets one. */
+  suffix?: string;
+}
+
+/**
+ * Chip text for a list of project ids, at phone width, wrap-safe (#493): a
+ * project id such as `memesh~2c0fe491888c8efb9a4894828bbc2733` has no break
+ * opportunity in its 32-hex routing hash, so a chip holding the raw id
+ * cannot wrap and forces the page to scroll sideways. `projectLabel`
+ * (work-topology.ts) already strips that hash for prose headings; this
+ * reuses it for chip text and restores JUST enough of the hash — 6 hex
+ * characters — to keep two projects that share a label apart.
+ *
+ * An id with no hash never grows a `suffix`: it was already short, and if it
+ * collides with a hashed sibling's label, the HASHED one carries the
+ * ambiguity — the plain id keeps its label as-is.
+ *
+ * Keyed by the full id, which callers keep using as `title`, the click
+ * value and every routing/filter call — only the rendered text changes.
+ */
+export function projectChipLabels(ids: string[]): Map<string, ProjectChipLabel> {
+  const bases = ids.map(projectLabel);
+  const countByBase = new Map<string, number>();
+  for (const base of bases) countByBase.set(base, (countByBase.get(base) ?? 0) + 1);
+  const labels = new Map<string, ProjectChipLabel>();
+  ids.forEach((id, i) => {
+    const base = bases[i];
+    // projectLabel only ever strips `~<hash>`, so when it changed the id, the
+    // hash is whatever follows `base~` — no second copy of its pattern here.
+    const hashed = id !== base;
+    const ambiguous = (countByBase.get(base) ?? 0) > 1;
+    labels.set(id, { base, suffix: hashed && ambiguous ? id.slice(base.length + 1, base.length + 7) : undefined });
+  });
+  return labels;
+}
+
+/** A place that shows ONE project cannot tell whether its label is shared,
+ *  so a hashed id always keeps its 6-hex suffix there: `memesh~2c0fe4` —
+ *  short enough to wrap at phone width, still telling two `memesh` apart. */
+export function shortProjectId(id: string): string {
+  const base = projectLabel(id);
+  return id === base ? id : `${base}~${id.slice(base.length + 1, base.length + 7)}`;
 }
 
 /* ---------- best preview ---------- */

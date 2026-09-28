@@ -401,6 +401,13 @@ actor `memesh-router` in `message receipts`:
   started with `--no-daemon`. A queued MeMesh message can then stay stuck after
   an interrupted turn until you send a prompt.
 
+`memesh doctor` reads the last 7 days of the release's own `host_activation`
+receipts and, for each Codex thread, looks at the newest one. It reports a
+WARN naming every thread whose newest receipt says `no_daemon`: a message
+queued there is still waiting for a prompt, so send that thread one (and
+avoid `--no-daemon` next time). Otherwise, including when no release ran in
+the window, it reports PASS.
+
 The checks live in the router process; a router restart drops the ones still
 pending.
 

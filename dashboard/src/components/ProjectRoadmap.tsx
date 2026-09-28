@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Entity } from '../lib/api';
 import { MemoryRow } from './MemoryRow';
 import { t, getLocale } from '../lib/i18n';
-import { relativeDate, timeBucket, accessSignal, typeLabel, displayTitle } from '../lib/entity-display';
+import { relativeDate, timeBucket, accessSignal, typeLabel, displayTitle, shortProjectId } from '../lib/entity-display';
 import { EntityIcon } from './icons/EntityIcon';
 import { CaptureDensityBand } from './CaptureDensityBand';
 import { EntityTechnicalDetails } from './LessonCards';
@@ -423,12 +423,13 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-0)', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-              <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" style={{ color: 'var(--life)' }}>
+            <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-0)', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+              <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" style={{ color: 'var(--life)', flexShrink: 0 }}>
                 <path d="M2 4 a1 1 0 0 1 1 -1 h4 l2 2 h5 a1 1 0 0 1 1 1 v6 a1 1 0 0 1 -1 1 H3 a1 1 0 0 1 -1 -1 z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
               </svg>
-              <span>{projectName}</span>
-              <span style={{ color: 'var(--text-3)', fontWeight: 400, fontSize: 14 }}>
+              {/* #493: prose label, full id kept as the tooltip — see shortProjectId. */}
+              <span title={projectName} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{shortProjectId(projectName)}</span>
+              <span style={{ color: 'var(--text-3)', fontWeight: 400, fontSize: 14, flexShrink: 0 }}>
                 · {t('roadmap.title')}
               </span>
             </div>
@@ -1344,6 +1345,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
     setPanY(0);
   };
 
+  const rootLabel = shortProjectId(projectName);
   return (
     <div
       style={{
@@ -1460,7 +1462,7 @@ function RoadmapMindmap({ projectName, phases, entities, onNodeClick }: MindmapP
             fill="var(--text-0)"
             style={{ pointerEvents: 'none' }}
           >
-            {projectName.length > 14 ? projectName.slice(0, 12) + '…' : projectName}
+            {rootLabel.length > 14 ? rootLabel.slice(0, 12) + '…' : rootLabel}
           </text>
         </g>
 

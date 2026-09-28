@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn } from '../../core/operations.js';
+import { remember, recallForAgent, forget, exportMemories, importMemories, learn } from '../../core/operations.js';
+import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { getDatabase } from '../../db.js';
 import { executeWorkPackage } from '../../core/dreamer.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -118,7 +119,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'recall',
-        description: 'Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance.',
+        description: 'Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -475,8 +476,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const r = parseOrFail(RecallSchema, args);
             if (!r.ok)
                 return r.result;
-            const { entities, conflicts, retrieval } = await recallWithConflicts(r.data);
-            return ok(conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval });
+            return ok(agentRecallEnvelope(await recallForAgent(r.data)));
         }
         if (name === 'forget') {
             const r = parseOrFail(ForgetSchema, args);

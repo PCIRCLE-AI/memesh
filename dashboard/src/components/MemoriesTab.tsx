@@ -6,7 +6,7 @@ import { Chip } from './Chip';
 import { ExpandedBody, SeverityBadge } from './LessonCards';
 import { t, getLocale } from '../lib/i18n';
 import { actionFailureMessage, classifyLoadError, failureMessage } from '../lib/failure';
-import { clusterOf, timeBucket, extractProject, CLUSTER_DOT, type TypeCluster, type TimeBucket } from '../lib/entity-display';
+import { clusterOf, timeBucket, extractProject, projectChipLabels, CLUSTER_DOT, type TypeCluster, type TimeBucket } from '../lib/entity-display';
 import { useSignalMode } from '../lib/signalMode';
 import { layerOf } from '../../../src/core/work-topology.js';
 import { parseSqliteUtcMs } from '../../../src/core/time-utils.js';
@@ -223,6 +223,13 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
     return c;
   }, [active]);
 
+  // Project filter chip text at phone width (#493) — see ProjectTab, which
+  // does the same for the project selector.
+  const projectChipText = useMemo(
+    () => projectChipLabels(projects.map((p) => p.name)),
+    [projects],
+  );
+
   function matchesScope(e: Entity): boolean {
     if (scope.kind === 'archived') return isArchivedEntity(e);
     if (isArchivedEntity(e)) return false;
@@ -435,8 +442,14 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
           <Chip label={t('memories.scopeWork')} active={scope.kind === 'layer' && scope.v === 'work'} onClick={() => setScope({ kind: 'layer', v: 'work' })} count={layerCounts.work} />
           <Chip label={t('memories.scopeEvidence')} active={scope.kind === 'layer' && scope.v === 'evidence'} onClick={() => setScope({ kind: 'layer', v: 'evidence' })} count={layerCounts.evidence} />
           <Chip label={t('memories.scopeAll')} active={scope.kind === 'layer' && scope.v === 'all'} onClick={() => setScope({ kind: 'layer', v: 'all' })} count={activeTotal} />
-          <span style={{ width: 1, alignSelf: 'stretch', background: 'var(--border-subtle)', margin: '0 6px' }} />
-          <Chip label={t('memories.scopeArchived')} active={scope.kind === 'archived'} onClick={() => setScope({ kind: 'archived' })} count={archivedAll.length} />
+          {/* Divider + Archived chip grouped into one flex item (#493): apart,
+              a row that wraps at the divider left it stranded at the end of
+              the PREVIOUS line with Archived alone on the next one. Grouped,
+              the two wrap together or not at all. */}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+            <span aria-hidden="true" style={{ width: 1, alignSelf: 'stretch', background: 'var(--border-subtle)' }} />
+            <Chip label={t('memories.scopeArchived')} active={scope.kind === 'archived'} onClick={() => setScope({ kind: 'archived' })} count={archivedAll.length} />
+          </span>
         </div>
 
         {/* Composition — what this brain is made of, by cluster. The bar is
@@ -484,15 +497,20 @@ export function MemoriesTab({ health, dataRevision = 0 }: { health?: HealthData 
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 6 }}>
             <span style={{ fontSize: 14, color: 'var(--text-3)', alignSelf: 'center', marginRight: 4 }}>{t('browse.filterProject')}</span>
             <Chip label={t('cluster.all')} active={project === 'all'} onClick={() => setProject('all')} />
-            {projects.map((p) => (
-              <Chip
-                key={p.name}
-                label={p.name}
-                count={p.count}
-                active={project === p.name}
-                onClick={() => setProject(p.name)}
-              />
-            ))}
+            {projects.map((p) => {
+              const chipLabel = projectChipText.get(p.name)!;
+              return (
+                <Chip
+                  key={p.name}
+                  label={chipLabel.base}
+                  idSuffix={chipLabel.suffix}
+                  title={p.name}
+                  count={p.count}
+                  active={project === p.name}
+                  onClick={() => setProject(p.name)}
+                />
+              );
+            })}
           </div>
         )}
 
