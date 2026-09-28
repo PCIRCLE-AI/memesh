@@ -6,7 +6,7 @@ import { EmptyLibraryState } from './EmptyLibraryState';
 import { Chip } from './Chip';
 import { t } from '../lib/i18n';
 import { classifyLoadError, failureMessage } from '../lib/failure';
-import { extractProject, relativeDate } from '../lib/entity-display';
+import { extractProject, projectChipLabels, relativeDate } from '../lib/entity-display';
 import { TerminalHandoff } from './ExternalHandoff';
 
 const FETCH_LIMIT = 2000;
@@ -286,6 +286,14 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
     () => selectProjectEntities(entities, selected),
     [entities, selected],
   );
+  // Chip text at phone width (#493): a project id's routing hash has no
+  // break opportunity, so the raw id cannot wrap. `projectChipText` is keyed
+  // by the untouched id — `selected`/`writeUrlProject` never see the
+  // shortened text, only the chip's rendered label does.
+  const projectChipText = useMemo(
+    () => projectChipLabels(projects.map((p) => p.name)),
+    [projects],
+  );
 
   const [taskState, taskStateError] = useProjectResource(fetchTaskState, selected, dataRevision);
   const [briefingIndex, briefingIndexError] = useProjectResource(fetchBriefingIndex, selected, dataRevision);
@@ -320,15 +328,20 @@ export function ProjectTab({ health, dataRevision = 0 }: { health?: HealthData |
       {projectsError && <div class="error-box" role="alert">{projectsError}</div>}
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 12, alignItems: 'center' }}>
         <span style={{ fontSize: 14, color: 'var(--text-3)', marginRight: 4 }}>{t('project.selectLabel')}</span>
-        {projects.map((p) => (
-          <Chip
-            key={p.name}
-            label={p.name}
-            count={p.count}
-            active={selected === p.name}
-            onClick={() => { setSelected(p.name); writeUrlProject(p.name); }}
-          />
-        ))}
+        {projects.map((p) => {
+          const chipLabel = projectChipText.get(p.name)!;
+          return (
+            <Chip
+              key={p.name}
+              label={chipLabel.base}
+              idSuffix={chipLabel.suffix}
+              title={p.name}
+              count={p.count}
+              active={selected === p.name}
+              onClick={() => { setSelected(p.name); writeUrlProject(p.name); }}
+            />
+          );
+        })}
       </div>
       {selected
         ? (

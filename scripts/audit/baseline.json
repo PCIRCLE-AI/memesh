@@ -416,35 +416,35 @@
       "reason": "ACP child argv is optional by API contract; absence truthfully means launch the configured executable with zero arguments. Every supplied argument and the aggregate argv are independently bounded before spawn.",
       "triaged": "2026-08-27 host-native push release audit"
     },
-    "C5 dashboard/src/components/MemoriesTab.tsx:243": {
+    "C5 dashboard/src/components/MemoriesTab.tsx:250": {
       "class": "SAFE-DISPLAY",
-      "reason": "client-side search haystack only (absorbs the retired BrowseTab:169 and LessonsTab:298 hay statements) (re-keyed 244→242 on 2026-08-29; 242→243 on 2026-09-08 after ranked-search exit state moved above; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-08-16 (UX-3: local CLUSTER_DOT block removed above, statement unchanged — verified); re-keyed 2026-09-08 after ranked-search exit state moved above, statement unchanged — verified"
+      "reason": "client-side search haystack only (absorbs the retired BrowseTab:169 and LessonsTab:298 hay statements) (re-keyed 244→242 on 2026-08-29; 242→243 on 2026-09-08 after ranked-search exit state moved above; 243→250 on 2026-09-28 after the #493 project-chip-label memo was added above; line shift only, classification unchanged)",
+      "triaged": "2026-08-16 (tab consolidation: statement moved verbatim from the retired LessonsTab/BrowseTab; original triage 2026-08-04); re-keyed 2026-08-16 (UX-3: local CLUSTER_DOT block removed above, statement unchanged — verified); re-keyed 2026-09-08 after ranked-search exit state moved above, statement unchanged — verified; re-keyed 2026-09-28 (#493: projectChipText memo added above, statement unchanged — verified)"
     },
     "C5 dashboard/src/components/ProjectRoadmap.tsx:347": {
       "class": "SAFE-DISPLAY",
       "reason": "`e.relations ?? []` while collecting lineage edges — relations are optional on the wire; absence draws no arc and the visible legend counts only DRAWN arcs, so missing input yields visible emptiness, not claimed success. (re-keyed 342→346 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 lineage overlay); re-keyed 2026-09-24 346→347 (session-handoff: lines added above shifted the unchanged statement)"
+      "triaged": "2026-08-16 (UX-3 lineage overlay); re-keyed 2026-09-24 346→347 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 347→347 (#493: header span byte-identical; net-zero churn during review)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1073": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1072": {
       "class": "SAFE-DISPLAY",
       "reason": "`e.relations ?? []` building the reverse supersession index in DecisionsView — no relations means no chain lines render; status falls back to active only when NO supersedes edge points at the entity anywhere in the set. (re-keyed 1065→1070 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1070→1071 (session-handoff: lines added above shifted the unchanged statement)"
+      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1070→1071 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1071→1072 (#493: header span import above, comment dedup below; net +1; statement byte-identical)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1071": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1074": {
       "class": "SAFE-DISPLAY",
       "reason": "`m.get(r.to) ?? []` — standard multimap-append idiom inside the reverse index build; the default is the empty bucket being created, not a masked failure. (re-keyed 1067→1072 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1068→1069 (session-handoff: lines added above shifted the unchanged statement)"
+      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1068→1069 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1069→1074 (#493: header span import above, comment dedup below; net +5; statement byte-identical)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1104": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1105": {
       "class": "SAFE-DISPLAY",
       "reason": "`supersededBy.get(e.name) ?? []` — a decision nothing points at is genuinely unreplaced; the empty default is the honest answer and renders as status \"active\", which is the documented two-state contract. (re-keyed 1098→1103 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1101→1102 (session-handoff: lines added above shifted the unchanged statement)"
+      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1101→1102 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1102→1105 (#493: header span import + comment dedup above; net +3; statement byte-identical)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1108": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1109": {
       "class": "SAFE-DISPLAY",
       "reason": "`(e.relations ?? []).filter` listing outgoing supersedes chain lines — absence renders no chain section at all rather than an empty claim. (re-keyed 1102→1107 on 2026-08-29; line shift only, classification unchanged)",
-      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1105→1106 (session-handoff: lines added above shifted the unchanged statement)"
+      "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1105→1106 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1106→1109 (#493: header span import + comment dedup above; net +3; statement byte-identical)"
     },
     "C1 tests/cli/briefing-recipient.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
@@ -526,15 +526,15 @@
       "reason": "Every emptiness assertion is paired in the same test with a positive readback: the stale-marker test asserts UP_TO_DATE first and then that the marker file is gone; the claim test asserts the first claimant received {from,to} before the second gets null and the directory listing is empty; the corrupt-snooze test writes the bad bytes it expects to be rejected; the refresh-policy test asserts true and false on both sides of each TTL.",
       "triaged": "2026-09-10 #308 update-notice resolver"
     },
-    "C5 dashboard/src/lib/entity-display.ts:192": {
+    "C5 dashboard/src/lib/entity-display.ts:245": {
       "class": "SAFE-DISPLAY",
       "reason": "classification falls through to the freeform bucket",
-      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 191→192 (session-handoff: lines added above shifted the unchanged statement)"
+      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 191→192 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 192→245 (#493: projectChipLabels + shortProjectId added above, doc trimmed same day; net +53; statement byte-identical)"
     },
-    "C5 dashboard/src/lib/entity-display.ts:194": {
+    "C5 dashboard/src/lib/entity-display.ts:247": {
       "class": "SAFE-DISPLAY",
       "reason": "classification falls through to the freeform bucket",
-      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 193→194 (session-handoff: lines added above shifted the unchanged statement)"
+      "triaged": "2026-08-04; re-keyed 2026-08-14 (displayTitle helper added above; same statement — verified); re-keyed 2026-08-16 (UX-3: CLUSTER_DOT block added above; same statement — verified); re-keyed 2026-09-10 (#237: relationLabel removed above; same statement — verified); re-keyed 2026-09-24 193→194 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 194→247 (#493: projectChipLabels + shortProjectId added above, doc trimmed same day; net +53; statement byte-identical)"
     },
     "C5 dashboard/src/components/ProjectTab.tsx:45": {
       "class": "SAFE-DISPLAY",
