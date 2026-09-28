@@ -5372,6 +5372,63 @@ var init_lesson_slug = __esm({
   }
 });
 
+// dist/core/bash-edited-paths.js
+function isPathShapedFileName(name) {
+  if (!name)
+    return false;
+  if (name.startsWith("-") || name.startsWith("~"))
+    return false;
+  if (/^\$(?:[A-Za-z_]\w*|[0-9@*#?$!-])$/.test(name) || /\$[{(]/.test(name))
+    return false;
+  if (/\{[^{}]*,[^{}]*\}/.test(name))
+    return false;
+  if (/[#^*?`]/.test(name))
+    return false;
+  return true;
+}
+function basename(p) {
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1] ?? "";
+}
+function bashEditedPaths(cmd) {
+  if (typeof cmd !== "string")
+    return [];
+  const found = /* @__PURE__ */ new Set();
+  for (const re of [
+    /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/g,
+    /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/g,
+    /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/g,
+    /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/g,
+    /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/g,
+    /writeFileSync\(\s*['"]([^'"]+)['"]/g
+  ]) {
+    let m;
+    while ((m = re.exec(cmd)) !== null) {
+      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
+        found.add(m[1]);
+    }
+  }
+  return [...found];
+}
+function bashEditedFileNames(cmd) {
+  const names = /* @__PURE__ */ new Set();
+  for (const p of bashEditedPaths(cmd)) {
+    const name = basename(p);
+    if (isPathShapedFileName(name))
+      names.add(name);
+  }
+  return [...names];
+}
+function editedFileName(filePath) {
+  const name = typeof filePath === "string" ? basename(filePath) : "";
+  return isPathShapedFileName(name) ? name : null;
+}
+var init_bash_edited_paths = __esm({
+  "dist/core/bash-edited-paths.js"() {
+    "use strict";
+  }
+});
+
 // dist/storage/graph-repairs.js
 function note(line) {
   process.stderr.write(`MeMesh: ${line}
@@ -5420,13 +5477,7 @@ function dedupeObservations(db2) {
   return removed;
 }
 function bashWritesFiles(command) {
-  for (const re of BASH_WRITE_SHAPES) {
-    for (const m of command.matchAll(new RegExp(re.source, "g"))) {
-      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
-        return true;
-    }
-  }
-  return false;
+  return bashEditedPaths(command).length > 0;
 }
 function retractZeroEditClaims(db2) {
   let rewritten = -1;
@@ -5688,29 +5739,47 @@ function canonicalizeLessonTypes(db2) {
   });
   return renamed;
 }
-var SESSION_DEDUPE_KEY, ZERO_EDIT_RETRACT_KEY, FUSED_LESSON_SPLIT_KEY, ARCHIVED_FTS_ROWS_KEY, FUSED_LESSON_SHELL_HISTORY_RESET_KEY, LESSON_TYPE_CANONICAL_KEY, ZERO_EDITS, ZERO_EDITS_RETRACTED, BASH_WRITE_SHAPES;
+function removeJunkFileTags(db2) {
+  let removed = -1;
+  runOnceMigration(db2, {
+    key: JUNK_FILE_TAGS_KEY,
+    version: 1,
+    describe: "junk file: tag removal",
+    migrate: (conn) => {
+      const rows = conn.prepare(`SELECT t.id, t.tag FROM tags t JOIN entities e ON e.id = t.entity_id
+          WHERE t.tag LIKE 'file:%' AND e.type = 'session-insight'`).all();
+      const del = conn.prepare("DELETE FROM tags WHERE id = ?");
+      removed = 0;
+      for (const row of rows) {
+        if (isPathShapedFileName(row.tag.slice("file:".length)))
+          continue;
+        del.run(row.id);
+        removed += 1;
+      }
+      if (removed > 0) {
+        note(`removed ${removed} junk file: tag(s) \u2014 a shell variable, flag or sed/regex fragment captured as an edited file name (#495).`);
+      }
+    }
+  });
+  return removed;
+}
+var SESSION_DEDUPE_KEY, ZERO_EDIT_RETRACT_KEY, FUSED_LESSON_SPLIT_KEY, ARCHIVED_FTS_ROWS_KEY, FUSED_LESSON_SHELL_HISTORY_RESET_KEY, LESSON_TYPE_CANONICAL_KEY, JUNK_FILE_TAGS_KEY, ZERO_EDITS, ZERO_EDITS_RETRACTED;
 var init_graph_repairs = __esm({
   "dist/storage/graph-repairs.js"() {
     "use strict";
     init_schema();
     init_lesson_slug();
     init_signal_scorer();
+    init_bash_edited_paths();
     SESSION_DEDUPE_KEY = "session_observation_dedupe";
     ZERO_EDIT_RETRACT_KEY = "session_zero_edit_retract";
     FUSED_LESSON_SPLIT_KEY = "fused_lesson_split";
     ARCHIVED_FTS_ROWS_KEY = "archived_fts_rows";
     FUSED_LESSON_SHELL_HISTORY_RESET_KEY = "fused_lesson_shell_history_reset";
     LESSON_TYPE_CANONICAL_KEY = "lesson_type_canonical";
+    JUNK_FILE_TAGS_KEY = "junk_file_tags";
     ZERO_EDITS = ", 0 files edited";
     ZERO_EDITS_RETRACTED = ", files edited through Bash (count not recorded before 4.8.2)";
-    BASH_WRITE_SHAPES = [
-      /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/,
-      /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/,
-      /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/,
-      /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/,
-      /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/,
-      /writeFileSync\(\s*['"]([^'"]+)['"]/
-    ];
   }
 });
 
@@ -5810,6 +5879,7 @@ function migrateToCurrentSchema(db2, resolvedPath) {
   backfillAcceptedProposalTrust(db2);
   dedupeObservations(db2);
   retractZeroEditClaims(db2);
+  removeJunkFileTags(db2);
   canonicalizeLessonTypes(db2);
   splitFusedLessons(db2, { deriveTitle: deriveHeuristicTitle });
   repairFusedLessonShellHistory(db2);
@@ -61086,32 +61156,9 @@ init_work_topology();
 init_paths();
 init_title();
 init_operations();
+init_bash_edited_paths();
 var MIN_TOOL_CALLS = 3;
 var HEAVY_SESSION_TOOL_CALLS = 20;
-function bashEditedPaths(cmd) {
-  if (typeof cmd !== "string")
-    return [];
-  const found = /* @__PURE__ */ new Set();
-  for (const re of [
-    /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/g,
-    /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/g,
-    /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/g,
-    /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/g,
-    /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/g,
-    /writeFileSync\(\s*['"]([^'"]+)['"]/g
-  ]) {
-    let m;
-    while ((m = re.exec(cmd)) !== null) {
-      if (m[1] && !m[1].startsWith("/dev/") && !m[1].startsWith("/tmp/"))
-        found.add(m[1]);
-    }
-  }
-  return [...found];
-}
-function basename(p) {
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1] || p;
-}
 var FILE_WRITE_TOOLS = /* @__PURE__ */ new Set(["write_file", "patch", "edit_file", "Write", "Edit", "MultiEdit"]);
 var SHELL_TOOLS = /* @__PURE__ */ new Set(["terminal", "shell", "bash", "Bash"]);
 var KNOWN_READ_ONLY_TOOLS = /* @__PURE__ */ new Set([
@@ -61187,12 +61234,13 @@ function activityFromChatMessages(messages) {
         const args = parseArgs(fn.arguments);
         if (FILE_WRITE_TOOLS.has(name)) {
           const fp = args.path ?? args.file_path;
-          if (typeof fp === "string" && fp)
-            filesEdited.add(basename(fp));
+          const name2 = editedFileName(fp);
+          if (name2)
+            filesEdited.add(name2);
         } else if (SHELL_TOOLS.has(name)) {
           const cmd = args.command;
-          for (const fp of bashEditedPaths(cmd))
-            filesEdited.add(basename(fp));
+          for (const f of bashEditedFileNames(cmd))
+            filesEdited.add(f);
           if (typeof cmd === "string" && cmd.length > 10 && !cmd.startsWith("ls") && !cmd.startsWith("cd")) {
             bashCommands.push(redactSecrets(cmd).slice(0, 100));
           }
@@ -61224,7 +61272,7 @@ function fileTagsFor(files) {
       continue;
     tags.add(`file:${f}`);
     const noExt = f.replace(/\.[^.]+$/, "");
-    if (noExt && noExt !== f)
+    if (noExt && noExt !== f && isPathShapedFileName(noExt))
       tags.add(`file:${noExt}`);
   }
   return [...tags];

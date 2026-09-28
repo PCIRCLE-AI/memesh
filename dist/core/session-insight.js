@@ -1,32 +1,9 @@
 import { redactSecrets } from './paths.js';
 import { truncateTitle } from './title.js';
 import { remember } from './operations.js';
+import { bashEditedFileNames, editedFileName, isPathShapedFileName } from './bash-edited-paths.js';
 export const MIN_TOOL_CALLS = 3;
 export const HEAVY_SESSION_TOOL_CALLS = 20;
-export function bashEditedPaths(cmd) {
-    if (typeof cmd !== 'string')
-        return [];
-    const found = new Set();
-    for (const re of [
-        /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/g,
-        /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/g,
-        /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/g,
-        /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/g,
-        /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/g,
-        /writeFileSync\(\s*['"]([^'"]+)['"]/g,
-    ]) {
-        let m;
-        while ((m = re.exec(cmd)) !== null) {
-            if (m[1] && !m[1].startsWith('/dev/') && !m[1].startsWith('/tmp/'))
-                found.add(m[1]);
-        }
-    }
-    return [...found];
-}
-function basename(p) {
-    const parts = p.split(/[\\/]/);
-    return parts[parts.length - 1] || p;
-}
 const FILE_WRITE_TOOLS = new Set(['write_file', 'patch', 'edit_file', 'Write', 'Edit', 'MultiEdit']);
 const SHELL_TOOLS = new Set(['terminal', 'shell', 'bash', 'Bash']);
 const KNOWN_READ_ONLY_TOOLS = new Set([
@@ -98,13 +75,14 @@ export function activityFromChatMessages(messages) {
                 const args = parseArgs(fn.arguments);
                 if (FILE_WRITE_TOOLS.has(name)) {
                     const fp = args.path ?? args.file_path;
-                    if (typeof fp === 'string' && fp)
-                        filesEdited.add(basename(fp));
+                    const name = editedFileName(fp);
+                    if (name)
+                        filesEdited.add(name);
                 }
                 else if (SHELL_TOOLS.has(name)) {
                     const cmd = args.command;
-                    for (const fp of bashEditedPaths(cmd))
-                        filesEdited.add(basename(fp));
+                    for (const f of bashEditedFileNames(cmd))
+                        filesEdited.add(f);
                     if (typeof cmd === 'string' && cmd.length > 10 && !cmd.startsWith('ls') && !cmd.startsWith('cd')) {
                         bashCommands.push(redactSecrets(cmd).slice(0, 100));
                     }
@@ -138,7 +116,7 @@ function fileTagsFor(files) {
             continue;
         tags.add(`file:${f}`);
         const noExt = f.replace(/\.[^.]+$/, '');
-        if (noExt && noExt !== f)
+        if (noExt && noExt !== f && isPathShapedFileName(noExt))
             tags.add(`file:${noExt}`);
     }
     return [...tags];
