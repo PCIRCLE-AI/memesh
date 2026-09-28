@@ -358,6 +358,11 @@ export const MessageSchema = z.discriminatedUnion('action', [
     sender: messageSender,
     recipient: messageRecipient,
     target_kind: z.enum(['principal', 'session']).default('principal'),
+    // #497: the one session of a shared principal a principal message is
+    // meant for; and, for a session send, "if that session refuses it, send
+    // it to its principal meant for that session instead".
+    intended_session: agentScopeId('intended_session').optional(),
+    fallback_to_principal: z.boolean().optional(),
     idempotency_key: messageIdempotencyKey,
     payload: z.json().refine(
       (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= AGENT_MESSAGE_JSON_MAX_BYTES,
@@ -369,7 +374,22 @@ export const MessageSchema = z.discriminatedUnion('action', [
     privacy: z.enum(['private', 'team']).default('private'),
     correlation_id: nonBlankBounded(255).optional(),
     reply_to: messageId.optional(),
-  }).strict(),
+  }).strict().superRefine((send, ctx) => {
+    if (send.intended_session !== undefined && send.target_kind !== 'principal') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['intended_session'],
+        message: 'intended_session is only valid with target_kind "principal".',
+      });
+    }
+    if (send.fallback_to_principal !== undefined && send.target_kind !== 'session') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['fallback_to_principal'],
+        message: 'fallback_to_principal is only valid with target_kind "session".',
+      });
+    }
+  }),
   z.object({
     action: z.literal('poll'),
     project: messageProject,

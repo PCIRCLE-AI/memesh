@@ -34,6 +34,7 @@ import { TASK_STATE_FIELDS, taskStateLines, type TaskStateField } from '../../co
 import type { LessonSeverity, MergeStrategy, ExportResult } from '../../core/types.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
+import { hostSessionFromEnv } from '../../core/host-session.js';
 import {
   getAgentMessageStorageReport,
   pruneTerminalAgentMessagePayloads,
@@ -1030,6 +1031,7 @@ async function runCliMessage(input: unknown): Promise<void> {
       const result = await executeAgentMessageAction(getDatabase(), input, {
         transport: 'cli',
         sourceHost: 'cli',
+        hostSession: hostSessionFromEnv(),
       });
       console.log(JSON.stringify(result));
     } catch (error) {
@@ -1061,6 +1063,8 @@ messageCmd
   .requiredOption('--sender <id>', 'Stable sender agent/host ID')
   .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
   .option('--target-kind <kind>', 'principal | session', 'principal')
+  .option('--intended-session <id>', 'Principal target only: the one session of that principal this message is meant for')
+  .option('--fallback-to-principal', 'Session target only: if that session refuses it, send it to its principal, meant for that session')
   .requiredOption('--idempotency-key <key>', 'Stable retry key')
   .requiredOption(
     '--payload-stdin',
@@ -1081,6 +1085,8 @@ messageCmd
         sender: opts.sender,
         recipient: opts.recipient,
         target_kind: opts.targetKind,
+        intended_session: opts.intendedSession,
+        fallback_to_principal: opts.fallbackToPrincipal,
         idempotency_key: opts.idempotencyKey,
         payload: await readCliMessagePayloadFromStdin(opts.contentType),
         content_type: opts.contentType,

@@ -18,6 +18,7 @@ export interface SendAgentMessageInput {
     sender: string;
     recipient: string;
     target_kind?: AgentTargetKind;
+    intended_session?: string | null;
     idempotency_key: string;
     payload: AgentJsonValue;
     content_type: AgentContentType;
@@ -36,6 +37,7 @@ export interface SentAgentMessage {
     sender_host: string | null;
     recipient: string;
     target_kind: AgentTargetKind;
+    intended_session: string | null;
     content_type: AgentContentType;
     correlation_id: string | null;
     reply_to: string | null;
@@ -112,6 +114,7 @@ interface AgentReceiptBase {
     actor: string;
     idempotency_key: string;
     detail?: AgentJsonObject;
+    caller_session?: string | null;
 }
 export type RecordAgentReceiptInput = (AgentReceiptBase & {
     receipt_kind: 'intake';
@@ -210,6 +213,13 @@ export declare class AgentMessagingError extends Error {
 export declare class AgentIdempotencyConflictError extends AgentMessagingError {
 }
 export declare class AgentMessageAccessError extends AgentMessagingError {
+}
+export declare class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
+    readonly code = "intended_for_other_session";
+    constructor(messageId: string, intendedSession: string, callerSession: string | null);
+}
+export declare class AgentIntendedSessionUnsupportedError extends AgentMessagingError {
+    constructor(session: string, adapterKind: string);
 }
 export declare class AgentWaitAbortedError extends AgentMessagingError {
 }

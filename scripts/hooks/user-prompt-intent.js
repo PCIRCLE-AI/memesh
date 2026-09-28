@@ -33,6 +33,7 @@ import {
   readUpdatePromptClaim,
   resolvePluginRoot,
   unreadMessageLines,
+  SESSION_ID_MISMATCH_REASON,
   writeAutoUpdateConsent,
   writeSnooze,
 } from './_shared.js';
@@ -287,6 +288,7 @@ if (isMainModule) {
         (err) => record('error', `inbox: ${hookErrorReason(err)}`),
         (label) => record('notified', `recipient: MEMESH_RECIPIENT ignored (${label})`),
         { sessionId: data.session_id, cwd: data.cwd },
+        () => record('notified', SESSION_ID_MISMATCH_REASON),
       );
       if (!rememberIntent && !updateDecision && inboxLines.length === 0) {
         record('skipped', SKIP_REASONS.noPromptIntent);

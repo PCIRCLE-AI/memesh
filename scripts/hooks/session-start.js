@@ -60,6 +60,8 @@ import {
   isCodexHost,
   resolveMessageRecipient,
   waitingMessageLines,
+  hookMessageSessionId,
+  SESSION_ID_MISMATCH_REASON,
   briefingLevelPolicy,
   sessionStartAppendsWorkPackageNotice,
   WORK_PACKAGE_NOTICE,
@@ -1521,7 +1523,9 @@ process.stdin.on('end', async () => {
         // memory", it is addressed to it. An inbox that cannot be read is
         // recorded as its own `error` (a label, like the two below), and is
         // not a failed memory assembly: the rest of the context still ships.
-        const inboxLines = waitingMessageLines(db, recipient, (err) =>
+        const inboxSession = hookMessageSessionId(data.session_id);
+        if (inboxSession.mismatch) record({ outcome: 'notified', reason: SESSION_ID_MISMATCH_REASON });
+        const inboxLines = waitingMessageLines(db, recipient, inboxSession.sessionId, (err) =>
           record({
             outcome: 'error',
             reason: `inbox: ${hookErrorReason(err)}`,

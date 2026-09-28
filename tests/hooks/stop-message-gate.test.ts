@@ -231,6 +231,55 @@ describe('Feature: the Claude Code Stop message gate blocks once per waiting mes
     expect(result.stdout).toBe('');
   });
 
+  // #497: every session of the principal shares this inbox; a message meant
+  // for session A blocks A's Stop and not B's, and B's intake (refused) does
+  // not clear A's. A message meant for nobody in particular blocks both.
+  describe('#497 a message meant for one session', () => {
+    const SESSION_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const SESSION_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+
+    async function sendIntended(session: string): Promise<SentMessage> {
+      return executeAgentMessageAction(getDatabase(), {
+        action: 'send', project: 'gate-room', sender: 'codex-lead', recipient: 'gate-principal',
+        intended_session: session, idempotency_key: `k-${randomUUID()}`,
+        payload: { text: 'for one session' }, content_type: 'application/json',
+      }, { transport: 'mcp', sourceHost: 'test-host' }) as Promise<SentMessage>;
+    }
+
+    it('step 3: blocks A\'s Stop and not B\'s', async () => {
+      await sendIntended(SESSION_A);
+
+      const asB = runGate({ session_id: SESSION_B });
+      expect(asB.stdout).toBe('');
+      expect(ledger().at(-1)).toMatchObject({ outcome: 'skipped' });
+
+      const asA = runGate({ session_id: SESSION_A });
+      const parsed = expectValidHookOutput(asA.stdout, 'stop-message-gate').parsed as { decision: string } | undefined;
+      expect(parsed?.decision).toBe('block');
+    });
+
+    it('step 4: B\'s refused intake leaves A blocked', async () => {
+      const message = await sendIntended(SESSION_A);
+      await expect(executeAgentMessageAction(getDatabase(), {
+        action: 'intake', project: message.project, recipient: message.recipient, message_id: message.message_id,
+        intake_state: 'ingested', idempotency_key: `intake-${message.message_id}`,
+      }, { transport: 'mcp', sourceHost: 'test-host', hostSession: SESSION_B }))
+        .rejects.toMatchObject({ code: 'intended_for_other_session' });
+
+      const asA = runGate({ session_id: SESSION_A });
+      expect((expectValidHookOutput(asA.stdout, 'stop-message-gate').parsed as { decision: string }).decision).toBe('block');
+    });
+
+    it('step 5: a plain principal message blocks both A and B', async () => {
+      await send('gate-principal');
+
+      for (const session of [SESSION_A, SESSION_B]) {
+        const result = runGate({ session_id: session });
+        expect((expectValidHookOutput(result.stdout, 'stop-message-gate').parsed as { decision: string }).decision).toBe('block');
+      }
+    });
+  });
+
   it('does nothing without a usable session_id', async () => {
     const message = await send('gate-principal');
     seedHostAccept(message);

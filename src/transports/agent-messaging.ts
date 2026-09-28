@@ -1,7 +1,8 @@
 import { z } from 'zod';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import {
+  AgentIntendedSessionUnsupportedError,
   AgentMessageAccessError,
   AgentMessagingError,
   AgentNativeMessageTooLargeError,
@@ -14,6 +15,8 @@ import {
   type AgentAckFact,
   type AgentJsonObject,
   type AgentMessagePostCommitNotifier,
+  type SendAgentMessageInput,
+  type SentAgentMessage,
   type AgentWorkflowFact,
 } from '../core/agent-messaging.js';
 import { MessageSchema } from './schemas.js';
@@ -33,6 +36,13 @@ export interface AgentMessageTransportContext {
   transport: 'cli' | 'http' | 'mcp';
   sourceHost: string;
   signal?: AbortSignal;
+  /**
+   * #497: the host session this call runs in, as the transport knows it
+   * (MCP and CLI: `CLAUDE_CODE_SESSION_ID`; HTTP: none). Decides whether
+   * intake or a disposition may be recorded for a delivery meant for one
+   * session. Never taken from the call's own arguments.
+   */
+  hostSession?: string;
 }
 
 export interface AgentMessageTransportDependencies {
@@ -42,8 +52,8 @@ export interface AgentMessageTransportDependencies {
 export class AgentRecipientUnavailableError extends AgentMessagingError {
   readonly code = 'recipient_unavailable';
 
-  constructor() {
-    super('recipient_unavailable: the exact active session did not accept the native message.');
+  constructor(detail?: string) {
+    super(`recipient_unavailable: the exact active session did not accept the native message.${detail ? ` ${detail}` : ''}`);
   }
 }
 
@@ -281,6 +291,7 @@ function recordPublicWorkflow(
     receipt_kind: 'disposition',
     disposition: input.disposition,
     detail: receiptDetail(input.detail, context),
+    caller_session: context.hostSession,
   });
 }
 
@@ -426,6 +437,69 @@ function parseStoredObject(raw: string, label: string): AgentJsonObject {
 }
 
 /**
+ * #497 `fallback_to_principal`: the exact session refused a session send, so
+ * send the same message to that session's principal, meant for that session
+ * (`intended_session`). Only that session is then reminded of it, and only it
+ * can record intake. The refused session delivery stays durable, as it does
+ * without the flag.
+ *
+ * The principal is the one the session registered under in this project. A
+ * session the router has never registered has no known principal, so there
+ * is nothing to fall back to: the refusal is raised, saying so.
+ *
+ * The fallback's idempotency key is derived from the caller's, so a retry of
+ * the same call returns the same principal message instead of a second one.
+ */
+function sendPrincipalFallback(
+  db: MemeshDatabase,
+  message: Omit<SendAgentMessageInput, 'recipient' | 'target_kind' | 'intended_session'>,
+  refused: { message_id: string; delivery_id: string; project: string; recipient: string },
+) {
+  const session = db.prepare(`
+    SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
+  `).get(refused.project, refused.recipient) as { principal_id: string } | undefined;
+  if (!session) {
+    throw new AgentRecipientUnavailableError(
+      `There is no principal fallback: session ${JSON.stringify(refused.recipient)} has never registered in project `
+      + `${JSON.stringify(refused.project)}, so its principal is unknown. Send to the principal yourself with `
+      + `intended_session ${JSON.stringify(refused.recipient)}.`,
+    );
+  }
+  let fallback: SentAgentMessage;
+  try {
+    fallback = sendAgentMessage(db, {
+      ...message,
+      recipient: session.principal_id,
+      target_kind: 'principal',
+      intended_session: refused.recipient,
+      idempotency_key: `principal-fallback:${createHash('sha256').update(message.idempotency_key).digest('hex')}`,
+    }, {
+      notifier: optionalRouterNotifier(),
+      storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
+    });
+  } catch (error) {
+    // A Codex session: keep the sender's answer the refusal it got, and say why
+    // there is no fallback, rather than a bare validation error.
+    if (error instanceof AgentIntendedSessionUnsupportedError) {
+      throw new AgentRecipientUnavailableError(`There is no principal fallback: ${error.message}`);
+    }
+    throw error;
+  }
+  return {
+    ...fallback,
+    fallback: {
+      reason: 'recipient_unavailable',
+      from: {
+        message_id: refused.message_id,
+        delivery_id: refused.delivery_id,
+        recipient: refused.recipient,
+        target_kind: 'session',
+      },
+    },
+  };
+}
+
+/**
  * One transport-neutral dispatcher for the public message lifecycle.
  *
  * The Zod union owns conditional fields for MCP, HTTP, and CLI alike.  Host
@@ -444,12 +518,10 @@ export async function executeAgentMessageAction(
 
   switch (input.action) {
     case 'send': {
-      const sent = sendAgentMessage(db, {
+      const message = {
         project: input.project,
         sender: input.sender,
         sender_host: context.sourceHost,
-        recipient: input.recipient,
-        target_kind: input.target_kind,
         idempotency_key: input.idempotency_key,
         payload: input.payload,
         content_type: input.content_type,
@@ -460,15 +532,26 @@ export async function executeAgentMessageAction(
           transport: context.transport,
           source_host: context.sourceHost,
         },
+      };
+      const sent = sendAgentMessage(db, {
+        ...message,
+        recipient: input.recipient,
+        target_kind: input.target_kind,
+        intended_session: input.intended_session,
       }, {
         notifier: input.target_kind === 'session' ? undefined : optionalRouterNotifier(),
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
       });
       if (sent.target_kind !== 'session') return sent;
-      return {
-        ...sent,
-        native_delivery: await requireExactSessionNativeAcceptance(db, sent, dependencies),
-      };
+      try {
+        return {
+          ...sent,
+          native_delivery: await requireExactSessionNativeAcceptance(db, sent, dependencies),
+        };
+      } catch (error) {
+        if (input.fallback_to_principal !== true || !(error instanceof AgentRecipientUnavailableError)) throw error;
+        return sendPrincipalFallback(db, message, sent);
+      }
     }
     case 'poll': {
       const query = {
@@ -520,6 +603,7 @@ export async function executeAgentMessageAction(
         receipt_kind: 'intake',
         intake_state: input.intake_state,
         detail: receiptDetail(undefined, context),
+        caller_session: context.hostSession,
       });
     case 'ack':
       return recordPublicAck(db, input, context);

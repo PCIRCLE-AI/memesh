@@ -9,6 +9,7 @@ import { assembleBriefing } from '../../core/briefing.js';
 import { getTaskState, setTaskState } from '../../core/task-state-store.js';
 import { getProductImprovementStatus, stageProductImprovement, } from '../../core/product-improvements.js';
 import { executeAgentMessageAction } from '../agent-messaging.js';
+import { hostSessionFromEnv } from '../../core/host-session.js';
 import { RememberSchema, RecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, LearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, } from '../schemas.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
 import { getProjectName, memeshDir } from '../../core/paths.js';
@@ -313,7 +314,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'message',
-        description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
+        description: `Use this to contact or discover another local agent on the same MeMesh instance. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept that full envelope. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. poll/fetch remain compatibility and recovery reads; intake, ack, disposition, and activation are separate explicit facts. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion.`,
         inputSchema: {
             type: 'object',
             properties: {
@@ -329,6 +330,14 @@ export const TOOL_DEFINITIONS = [
                     type: 'string',
                     enum: ['principal', 'session'],
                     description: 'Recipient identity kind for send and fetch. Defaults to principal; exact-session delivery and fetch require session.',
+                },
+                intended_session: {
+                    type: 'string',
+                    description: 'Optional for send with target_kind principal: the one session of that principal this message is meant for. Only that session is reminded of it and may record intake or a disposition.',
+                },
+                fallback_to_principal: {
+                    type: 'boolean',
+                    description: 'Optional for send with target_kind session: if that session refuses the message (recipient_unavailable), send it to the principal it registered under, with intended_session set to it.',
                 },
                 idempotency_key: { type: 'string', description: 'Required for send and receipt writes. Stable retry key.' },
                 payload: {
@@ -605,6 +614,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
                 transport: 'mcp',
                 sourceHost: normalizeClientHost(sourceHost),
                 signal,
+                hostSession: hostSessionFromEnv(),
             }));
         }
         return fail(`Unknown tool: ${name}`);

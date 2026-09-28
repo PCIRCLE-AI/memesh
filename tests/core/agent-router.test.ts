@@ -239,6 +239,14 @@ function send(db: ReturnType<typeof openDatabase>, recipient: string, key: strin
   });
 }
 
+/** #497: only a claude-channel session can be named as intended_session. */
+function startClaudeChannelRouter(db: ReturnType<typeof openDatabase>, socketPath: string, token: string) {
+  return startRouter(db, socketPath, token, {}, [{
+    kind: 'claude-channel',
+    authenticate: (registration: AgentHostRegistration) => registration.auth_token === token,
+  }]);
+}
+
 describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite + UDS integration', () => {
   it('uses protocol version 2', () => {
     expect(AGENT_ROUTER_PROTOCOL_VERSION).toBe(2);
@@ -675,6 +683,62 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     });
     await vi.waitFor(() => expect(second.deliveries).toHaveLength(1));
     expect(first.deliveries).toHaveLength(0);
+  });
+
+  it('#497: pushes a principal delivery meant for session A only to A, even when B connected last', async () => {
+    const { db, socketPath, token } = setup();
+    await startClaudeChannelRouter(db, socketPath, token);
+    const a = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-a', adapterKind: 'claude-channel',
+    });
+    const b = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-b', adapterKind: 'claude-channel',
+    });
+
+    const meantForA = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a', intended_session: 'session-a',
+      idempotency_key: 'meant-for-a', payload: { text: 'for A' }, content_type: 'application/json',
+    }, { notifier: createAgentRouterNotifier(socketPath) });
+    await vi.waitFor(() => expect(a.deliveries).toHaveLength(1));
+    expect(a.deliveries[0].delivery_id).toBe(meantForA.delivery_id);
+
+    // A plain principal message still goes to the most recent connection.
+    const plain = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a',
+      idempotency_key: 'for-anyone', payload: { text: 'for anyone' }, content_type: 'application/json',
+    }, { notifier: createAgentRouterNotifier(socketPath) });
+    await vi.waitFor(() => expect(b.deliveries).toHaveLength(1));
+    expect(b.deliveries[0].delivery_id).toBe(plain.delivery_id);
+    expect(a.deliveries).toHaveLength(1);
+  });
+
+  it('#497: keeps a delivery meant for an absent session durable instead of pushing it to another session', async () => {
+    const { db, socketPath, token } = setup();
+    await startClaudeChannelRouter(db, socketPath, token);
+    const b = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-b', adapterKind: 'claude-channel',
+    });
+
+    const meantForA = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'principal-a', intended_session: 'session-a',
+      idempotency_key: 'meant-for-absent-a', payload: { text: 'for A' }, content_type: 'application/json',
+    }, { notifier: createAgentRouterNotifier(socketPath) });
+    // B's own reconnect drain must not pick it up either.
+    const bAgain = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-b', adapterKind: 'claude-channel',
+    });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(b.deliveries).toHaveLength(0);
+    expect(bAgain.deliveries).toHaveLength(0);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM agent_host_accepts WHERE delivery_id = ?')
+      .get(meantForA.delivery_id)).toEqual({ count: 0 });
+
+    // When A connects, the principal drain hands it to A.
+    const a = await RouterHostClient.connect({
+      socketPath, token, project: 'project-a', principal: 'principal-a', session: 'session-a', adapterKind: 'claude-channel',
+    });
+    await vi.waitFor(() => expect(a.deliveries).toHaveLength(1));
+    expect(a.deliveries[0].delivery_id).toBe(meantForA.delivery_id);
   });
 
   it('never reroutes or later replays an exact-session delivery and drains principal pending after router restart', async () => {

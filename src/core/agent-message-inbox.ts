@@ -38,24 +38,48 @@ interface InboxDb {
   prepare(sql: string): { get(...params: unknown[]): unknown };
 }
 
-/** Same, for the one query that returns several rows. */
+/** Same, for the queries that return several rows. */
 interface InboxListDb {
-  prepare(sql: string): { all(...params: unknown[]): unknown[] };
+  prepare(sql: string): { all(...params: unknown[]): unknown[]; get(...params: unknown[]): unknown };
 }
 
 /**
- * Deliveries addressed to recipients in `project` that have no intake receipt.
- * 0 when the message tables are absent (pre-4.8.0 graph) or on any query
- * error — a briefing must never fail because the inbox could not be counted.
+ * #497: every session of one principal shares its inbox, so a delivery can
+ * name the one session it is meant for (`intended_session`). A waiting count
+ * asked for `session` includes deliveries meant for nobody in particular
+ * (NULL) and deliveries meant for exactly that session. A caller that cannot
+ * say which session it is (`session` undefined) gets only the NULL ones:
+ * reminding the wrong session is the failure this exists to stop.
+ *
+ * Returns the extra `AND ...` clause and its one parameter. Returns no clause
+ * on a database from before the column: a hook opens the database read-only
+ * and never migrates it, and every delivery there is meant for every session.
  */
-export function unreadDeliveryCount(db: InboxDb, project: string, recipient?: string): number {
+function intendedSessionFilter(db: InboxDb, session?: string): { sql: string; params: unknown[] } {
+  const hasColumn = db.prepare(
+    "SELECT 1 AS present FROM pragma_table_info('agent_message_deliveries') WHERE name = 'intended_session'",
+  ).get() !== undefined;
+  return hasColumn
+    ? { sql: 'AND (d.intended_session IS NULL OR d.intended_session = ?)', params: [session ?? null] }
+    : { sql: '', params: [] };
+}
+
+/**
+ * Deliveries addressed to recipients in `project` that have no intake receipt,
+ * narrowed to `session` as {@link intendedSessionFilter} describes. 0 when the
+ * message tables are absent (pre-4.8.0 graph) or on any query error — a
+ * briefing must never fail because the inbox could not be counted.
+ */
+export function unreadDeliveryCount(db: InboxDb, project: string, recipient?: string, session?: string): number {
   if (!recipient) return 0;
   try {
+    const intended = intendedSessionFilter(db, session);
     const row = db.prepare(
       `SELECT COUNT(*) AS n
        FROM agent_message_deliveries d
        WHERE d.project = ?
          AND d.recipient = ?
+         ${intended.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -63,7 +87,7 @@ export function unreadDeliveryCount(db: InboxDb, project: string, recipient?: st
              AND r.message_id = d.message_id
              AND r.receipt_kind = 'intake'
          )`,
-    ).get(project, recipient) as { n?: number } | undefined;
+    ).get(project, recipient, ...intended.params) as { n?: number } | undefined;
     const n = row?.n;
     return typeof n === 'number' && n > 0 ? n : 0;
   } catch {
@@ -211,7 +235,8 @@ export interface UnreadMessageRef {
  * session that is no longer there would be nagging about a dead session, not
  * a wakeup, and #490 asks for exactly the opposite. Callers of this fragment
  * pass `recipient` twice and the current time in ms once, in that order,
- * before any further `?` their own query adds.
+ * before any further `?` their own query adds (the #497 session filter's own
+ * parameter comes next).
  */
 const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
   d.recipient = ?
@@ -242,19 +267,24 @@ const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
  * been accounted for, and a project outside that top-5 must still be able to
  * trigger that decision. Also matches a delivery targeted at a LIVE session
  * registered under `recipient` as its principal — see
- * {@link DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION} (#490).
+ * {@link DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION} (#490) — and leaves out
+ * a delivery meant for a session other than `session` (#497, see
+ * {@link intendedSessionFilter}).
  */
 export function unreadMessageRefsFor(
   db: InboxListDb,
   recipient?: string,
+  session?: string,
   limit: number = UNREAD_MESSAGE_REFS_LIMIT,
 ): UnreadMessageRef[] {
   if (!recipient) return [];
   try {
+    const intended = intendedSessionFilter(db, session);
     const rows = db.prepare(
       `SELECT d.project AS project, d.message_id AS message_id
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
+         ${intended.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -264,7 +294,7 @@ export function unreadMessageRefsFor(
          )
        ORDER BY d.project, d.message_id
        LIMIT ?`,
-    ).all(recipient, recipient, Date.now(), limit) as Array<{ project?: string; message_id?: string }>;
+    ).all(recipient, recipient, Date.now(), ...intended.params, limit) as Array<{ project?: string; message_id?: string }>;
     return rows.filter(
       (row): row is UnreadMessageRef => typeof row.project === 'string' && typeof row.message_id === 'string',
     );
@@ -323,18 +353,21 @@ export function unreadInboxLines(
  * first. Senders pick the project string themselves, so this does not assume
  * the session's own project name; the line names the project AND the exact
  * recipient (the declared one, or the live session's own id) to poll with.
- * The recipient must match exactly, so an agent still never learns that a
- * message exists for anyone else. No recipient, nothing waiting, or a
+ * A delivery meant for a session other than `session` is left out (#497,
+ * see {@link intendedSessionFilter}). The recipient must match exactly, so an
+ * agent still never learns that a message exists for anyone else. No recipient, nothing waiting, or a
  * database from before the message tables existed all return no lines; any
  * other failure is raised, because it is not "no messages".
  */
-export function unreadInboxLinesFor(db: InboxListDb, recipient?: string): string[] {
+export function unreadInboxLinesFor(db: InboxListDb, recipient?: string, session?: string): string[] {
   if (!recipient) return [];
   try {
+    const intended = intendedSessionFilter(db, session);
     const rows = db.prepare(
       `SELECT d.project AS project, d.recipient AS recipient, d.target_kind AS target_kind, COUNT(*) AS n
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
+         ${intended.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -345,7 +378,7 @@ export function unreadInboxLinesFor(db: InboxListDb, recipient?: string): string
        GROUP BY d.project, d.recipient, d.target_kind
        ORDER BY n DESC, d.project, d.recipient
        LIMIT 5`,
-    ).all(recipient, recipient, Date.now()) as Array<{ project?: string; recipient?: string; target_kind?: string; n?: number }>;
+    ).all(recipient, recipient, Date.now(), ...intended.params) as Array<{ project?: string; recipient?: string; target_kind?: string; n?: number }>;
     return rows.flatMap((row) =>
       typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
         ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')

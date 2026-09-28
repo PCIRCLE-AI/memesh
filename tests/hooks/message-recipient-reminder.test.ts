@@ -253,6 +253,45 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
     expect(anonymous.stdout).not.toContain('message waiting');
   });
 
+  it('#497: reminds only the session a message is meant for, at the prompt and at SessionStart', async () => {
+    const sessionA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const sessionB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    await executeAgentMessageAction(getDatabase(), {
+      action: 'send', project: 'team-room', sender: 'codex-lead', recipient: 'claude-implementer',
+      intended_session: sessionA, idempotency_key: 'k-intended',
+      payload: { text: 'for A' }, content_type: 'application/json',
+    }, { transport: 'mcp', sourceHost: 'test-host' });
+    const env = { MEMESH_RECIPIENT: 'claude-implementer' };
+
+    const promptA = run('user-prompt-intent.js', { prompt: 'hello there', session_id: sessionA, cwd: tmp }, env);
+    expect(context(promptA.stdout)).toContain('1 message waiting for "claude-implementer"');
+    const promptB = run('user-prompt-intent.js', { prompt: 'hello there', session_id: sessionB, cwd: tmp }, env);
+    expect(promptB.stdout).not.toContain('message waiting');
+
+    const startA = run('session-start.js', { cwd: tmp, session_id: sessionA, source: 'startup' }, env);
+    expect(context(startA.stdout)).toContain('1 message waiting for "claude-implementer"');
+    const startB = run('session-start.js', { cwd: tmp, session_id: sessionB, source: 'startup' }, env);
+    expect(startB.stdout).not.toContain('message waiting');
+  });
+
+  it('#497: trusts neither id when CODEX_THREAD_ID and the payload session_id differ — counts only unassigned messages, and records it', async () => {
+    const thread = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    await executeAgentMessageAction(getDatabase(), {
+      action: 'send', project: 'team-room', sender: 'codex-lead', recipient: 'claude-implementer',
+      intended_session: thread, idempotency_key: 'k-mismatch-intended',
+      payload: { text: 'for the thread' }, content_type: 'application/json',
+    }, { transport: 'mcp', sourceHost: 'test-host' });
+    await send('claude-implementer', 'team-room', 'k-mismatch-plain');
+    const env = { MEMESH_RECIPIENT: 'claude-implementer', CODEX_THREAD_ID: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' };
+
+    const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: thread, cwd: tmp }, env);
+
+    // Only the plain message: the one meant for `thread` needs a trusted id.
+    expect(context(result.stdout)).toContain('1 message waiting for "claude-implementer"');
+    expect(ledger('user-prompt-intent').map((record) => record.reason ?? ''))
+      .toEqual(expect.arrayContaining([expect.stringContaining('session_id_mismatch')]));
+  });
+
   it('hints at SessionStart when the declared recipient has never been seen in any project', () => {
     const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
       MEMESH_RECIPIENT: 'typo-nobody',

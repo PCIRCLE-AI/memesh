@@ -108,6 +108,9 @@ CREATE TABLE IF NOT EXISTS agent_message_deliveries (
   project            TEXT NOT NULL,
   recipient          TEXT NOT NULL,
   target_kind        TEXT NOT NULL DEFAULT 'principal' CHECK (target_kind IN ('principal', 'session')),
+  -- #497: the one session a principal delivery is meant for (NULL: every
+  -- session of that principal). Added by migrateEntitiesSchema on older files.
+  intended_session   TEXT,
   created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
   UNIQUE(message_id, project, recipient)
@@ -466,6 +469,16 @@ export function migrateEntitiesSchema(db: MemeshDatabase): void {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_target
        ON agent_message_deliveries(project, target_kind, recipient, message_id);`,
+  );
+  // #497: which session of a shared principal a delivery is meant for.
+  // Nullable and not backfilled: every delivery written before it existed
+  // stays meant for every session, which is what it meant when it was sent.
+  if (!deliveryColumns.has('intended_session')) {
+    safeAlter(db, 'ALTER TABLE agent_message_deliveries ADD COLUMN intended_session TEXT');
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_intended
+       ON agent_message_deliveries(project, recipient, intended_session);`,
   );
 
   // Message payload retention is deliberately additive: a database created

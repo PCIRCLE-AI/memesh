@@ -26,6 +26,8 @@ import {
   SKIP_REASONS,
   waitingMessageLines,
   waitingMessageRefs,
+  hookMessageSessionId,
+  SESSION_ID_MISMATCH_REASON,
   writePrivateJson,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
@@ -114,8 +116,11 @@ process.stdin.on('end', () => {
       // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling.
       db = new MemeshDatabase(dbPath, { readOnly: true });
       db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
-      refs = waitingMessageRefs(db, recipient, onInboxReadError);
-      lines = waitingMessageLines(db, recipient, onInboxReadError);
+      // #497: the session leaves out a message meant for another session.
+      const inboxSession = hookMessageSessionId(sessionId);
+      if (inboxSession.mismatch) record('notified', SESSION_ID_MISMATCH_REASON);
+      refs = waitingMessageRefs(db, recipient, inboxSession.sessionId, onInboxReadError);
+      lines = waitingMessageLines(db, recipient, inboxSession.sessionId, onInboxReadError);
     } finally {
       try { db?.close(); } catch { /* already closed */ }
     }

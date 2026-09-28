@@ -17,6 +17,26 @@ export class AgentIdempotencyConflictError extends AgentMessagingError {
 }
 export class AgentMessageAccessError extends AgentMessagingError {
 }
+export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
+    code = 'intended_for_other_session';
+    constructor(messageId, intendedSession, callerSession) {
+        const caller = callerSession === null
+            ? 'this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set, or the request came over HTTP). '
+                + 'If you are that session in Codex, record it with the CLI from your shell (`memesh message intake ...`): '
+                + 'Codex does not pass its thread id to MCP servers'
+            : `this caller is session ${JSON.stringify(callerSession)}`;
+        super(`intended_for_other_session: message ${messageId} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. `
+            + 'Otherwise leave it for that session: do not record intake or a disposition for it.');
+    }
+}
+const INTENDED_SESSION_ADAPTERS = new Set(['claude-channel', 'codex-cli-queue']);
+export class AgentIntendedSessionUnsupportedError extends AgentMessagingError {
+    constructor(session, adapterKind) {
+        super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot `
+            + 'say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads '
+            + '(claude-channel, codex-cli-queue, or an id the router never registered) can be named as intended_session.');
+    }
+}
 export class AgentWaitAbortedError extends AgentMessagingError {
 }
 export class AgentNativeMessageTooLargeError extends AgentMessagingError {
@@ -39,11 +59,20 @@ export function serializeNativeAgentMessage(envelope, deliveryId) {
 }
 export function sendAgentMessage(db, input, options = {}) {
     const normalized = normalizeSendInput(input);
+    if (normalized.intended_session !== null) {
+        const registered = db.prepare(`
+      SELECT adapter_kind FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
+    `).get(normalized.project, normalized.intended_session);
+        if (registered && !INTENDED_SESSION_ADAPTERS.has(registered.adapter_kind)) {
+            throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, registered.adapter_kind);
+        }
+    }
     const requestHash = hashCanonical({
         project: normalized.project,
         sender: normalized.sender,
         recipient: normalized.recipient,
         target_kind: normalized.target_kind,
+        ...(normalized.intended_session === null ? {} : { intended_session: normalized.intended_session }),
         idempotency_key: normalized.idempotency_key,
         content_type: normalized.content_type,
         sender_host: normalized.sender_host,
@@ -78,9 +107,9 @@ export function sendAgentMessage(db, input, options = {}) {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(messageId, normalized.project, normalized.sender, normalized.sender_host, normalized.recipient, normalized.content_type, normalized.correlation_id, normalized.reply_to, normalized.privacy, payloadJson, stableStringify(normalized.provenance));
         db.prepare(`
-      INSERT INTO agent_message_deliveries (delivery_id, message_id, project, recipient, target_kind)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(deliveryId, messageId, normalized.project, normalized.recipient, normalized.target_kind);
+      INSERT INTO agent_message_deliveries (delivery_id, message_id, project, recipient, target_kind, intended_session)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(deliveryId, messageId, normalized.project, normalized.recipient, normalized.target_kind, normalized.intended_session);
         db.prepare(`
       INSERT INTO agent_message_events (event_id, message_id, delivery_id, project, recipient, event_kind)
       VALUES (?, ?, ?, ?, ?, 'message_available')
@@ -213,7 +242,14 @@ export function fetchAgentMessage(db, input) {
 }
 export function recordAgentReceipt(db, input) {
     const normalized = normalizeReceiptInput(input);
-    assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
+    const intendedSession = assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
+    if (intendedSession !== null
+        && (normalized.receipt_kind === 'intake' || normalized.receipt_kind === 'disposition')) {
+        const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
+        if (callerSession !== intendedSession) {
+            throw new AgentIntendedForOtherSessionError(normalized.message_id, intendedSession, callerSession);
+        }
+    }
     const detail = buildReceiptDetail(normalized);
     const requestHash = hashCanonical({
         message_id: normalized.message_id,
@@ -376,6 +412,12 @@ function normalizeSendInput(input) {
     const sender = requireText('sender', input.sender, MAX_SCOPE_FIELD);
     const recipient = requireScopeId('recipient', input.recipient);
     const target_kind = parseTargetKind(input.target_kind ?? 'principal');
+    const intended_session = input.intended_session === undefined || input.intended_session === null
+        ? null
+        : requireScopeId('intended_session', input.intended_session);
+    if (intended_session !== null && target_kind !== 'principal') {
+        throw new AgentMessagingError('intended_session is only valid with target_kind "principal".');
+    }
     const idempotency_key = requireText('idempotency_key', input.idempotency_key, MAX_IDEMPOTENCY_KEY);
     const content_type = parseContentType(input.content_type);
     const sender_host = optionalText('sender_host', input.sender_host ?? null, MAX_SCOPE_FIELD);
@@ -402,6 +444,7 @@ function normalizeSendInput(input) {
         sender,
         recipient,
         target_kind,
+        intended_session,
         idempotency_key,
         content_type,
         payload: input.payload,
@@ -544,6 +587,7 @@ function lookupExistingMessage(db, project, sender, idempotencyKey) {
       m.sender_host,
       d.recipient,
       d.target_kind,
+      d.intended_session,
       m.content_type,
       m.correlation_id,
       m.reply_to_message_id,
@@ -570,6 +614,7 @@ function loadSentMessage(db, project, recipient, messageId) {
       m.sender_host,
       d.recipient,
       d.target_kind,
+      d.intended_session,
       m.content_type,
       m.correlation_id,
       m.reply_to_message_id,
@@ -586,13 +631,14 @@ function loadSentMessage(db, project, recipient, messageId) {
 }
 function assertMessageAccess(db, project, recipient, messageId) {
     const row = db.prepare(`
-    SELECT 1
+    SELECT intended_session
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId);
     if (!row) {
         throw new AgentMessageAccessError(`Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`);
     }
+    return row.intended_session;
 }
 function lookupExistingReceipt(db, project, recipient, messageId, receiptKind, idempotencyKey) {
     return db.prepare(`
@@ -705,6 +751,7 @@ function rowToSentAgentMessage(row) {
         sender_host: row.sender_host,
         recipient: row.recipient,
         target_kind: parseTargetKind(row.target_kind),
+        intended_session: row.intended_session,
         content_type: parseContentType(row.content_type),
         correlation_id: row.correlation_id,
         reply_to: row.reply_to_message_id,
