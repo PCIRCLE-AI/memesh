@@ -91,7 +91,7 @@ function cutToFit(obs: string, budgetBytes: number): string | null {
   let limit = budgetBytes;
   for (;;) {
     const { text, cutBytes } = truncateToBytes(obs, limit);
-    const marked = `${text} … (+${cutBytes} more bytes)`;
+    const marked = `${text}${text ? ' ' : ''}… (+${cutBytes} more bytes)`;
     const jsonBytes = bytesWith([], marked);
     if (jsonBytes <= budgetBytes) return marked;
     if (limit === 0) return null;

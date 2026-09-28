@@ -955,8 +955,9 @@ describe('recall', () => {
 // ── Recall size caps (#494) ────────────────────────────────────────────
 //
 // A real graph (~3,300 memories) returned a single entity at 61.9 KB (157
-// observations, 71 tags, most of them `file:*`) from one recall — straight
-// into an agent's context. These fixtures reproduce that shape directly via
+// observations, 71 tags) from one recall — straight into an agent's
+// context. The fixtures add `file:*` tags, the kind auto-captured session
+// memories carry, to exercise their omission too. These fixtures reproduce that shape directly via
 // KnowledgeGraph.createEntity (RememberSchema caps observations at 100 and
 // tags at 50 per call; the real entities got this large by repeated
 // captures over time, which the schema cap does not limit cumulatively).

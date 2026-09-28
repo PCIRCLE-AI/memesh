@@ -3,8 +3,10 @@
 // =============================================================================
 //
 // A real graph (~3,300 memories) returned a single entity at 61.9 KB (157
-// observations, 71 tags, most of them `file:*`) from one recall. This is the
-// exact shape three test files reproduce to exercise the size cap
+// observations, 71 tags) from one recall. The fixture adds `file:*` tags to
+// that shape, the kind auto-captured session memories carry, so one entity
+// exercises both the size cap and the file: omission. Three test files use
+// it
 // (tests/tools.test.ts, tests/cli/recall-size-caps.test.ts,
 // tests/transports/http.test.ts) — factored out once so the fixture cannot
 // drift between them.

@@ -214,15 +214,16 @@ other tools address the memory by, not a label meant to be read.
 FTS answered the query. `truncated: true` means the results filled `limit` and
 more may exist — a small hit count is a window, not a graph-wide count, and
 this flag is the difference between "that is all" and "that is all I was
-allowed to return". The CLI prints a `(limit reached — more may exist)` note
-when truncated.
+allowed to return". The CLI prints a `(search limit reached — more may match;
+raise --limit)` note when truncated.
 
 **Provenance (`match`)**: when the call has a query, every result carries
 `"source": "keyword"` and the normalized FTS relevance score. The empty-query
 listing (recent memories) carries no `match` field — a listing is not a match.
 In CLI (non-`--json`) output, observations longer than 500 characters are
-additionally capped on display with `… (+N more chars)`; storage always
-carries the full text. `--json` is subject to the size cap below, not to this
+additionally capped on display with `… (+N more chars)`, and an observation
+the size cap below already cut shows `… (cut; full text in the dashboard)`
+instead; storage always carries the full text. `--json` is subject to the size cap below, not to this
 500-character display cap.
 
 **Size cap (MCP and CLI only)**: the MCP `recall` tool and `memesh recall`

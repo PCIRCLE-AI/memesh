@@ -13,7 +13,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
-import { RECALL_ENTITY_CONTENT_MAX_BYTES, RECALL_RESPONSE_MAX_BYTES } from '../../src/core/recall-agent-view.js';
+import { RECALL_ENTITY_CONTENT_MAX_BYTES, RECALL_RESPONSE_MAX_BYTES, capRecallForAgent } from '../../src/core/recall-agent-view.js';
 import { filler, seedOversizedEntity } from '../helpers/recall-size-fixture.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
@@ -165,6 +165,50 @@ describe('memesh recall size caps (#494)', () => {
     // count derived from whatever the size cap already trimmed the array
     // to server-side.
     expect(r.stdout).toContain('+154 more');
+  });
+
+  it('human-readable output: an observation the size cap already cut shows one marker, not two', () => {
+    seed(home, (kg) => {
+      kg.createEntity('recall-size-human-cut', 'note', {
+        observations: [filler('huge', 20_000)],
+        tags: ['project:recallsizeclihumancut'],
+      });
+    });
+
+    const r = runCli(home, 'recall', '--tag', 'project:recallsizeclihumancut');
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain('(cut; full text in the dashboard)');
+    expect(r.stdout).not.toContain('more chars');
+    expect(r.stdout).not.toContain('more bytes');
+  });
+
+  it('human-readable output: a cut observation with little text left still shows the one dashboard marker', () => {
+    seed(home, (kg) => {
+      kg.createEntity('recall-size-human-short-cut', 'note', {
+        observations: [filler('huge', 20_000)],
+        tags: ['project:recallsizeclishortcut', ...Array.from({ length: 60 }, (_, i) => `topic:${filler(`t${i}`, 120)}`)],
+      });
+    });
+
+    const r = runCli(home, 'recall', '--tag', 'project:recallsizeclishortcut');
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain('(cut; full text in the dashboard)');
+    expect(r.stdout).not.toContain('more bytes');
+  });
+
+  it('a cut that keeps no text never starts its marker with a space', () => {
+    // Sweep tag fills so the observation budget runs from a few bytes to a
+    // few dozen: somewhere in there the cut keeps no text at all.
+    for (let fill = 7900; fill <= 8190; fill += 2) {
+      const tag = `topic:${'x'.repeat(fill)}`;
+      const capped = capRecallForAgent({
+        entities: [{ name: 'e', type: 'note', observations: ['y'.repeat(20_000)], tags: [tag] } as never],
+        conflicts: [],
+        retrieval: { source: 'keyword', truncated: false } as never,
+      });
+      const first = capped.entities[0]?.observations[0];
+      if (first !== undefined) expect(first.startsWith(' '), `fill ${fill}: ${JSON.stringify(first)}`).toBe(false);
+    }
   });
 
   it('human-readable output: when every match is too large to show, it says so instead of "No results found."', () => {

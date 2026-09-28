@@ -292,6 +292,9 @@ const packageJsonPath = path.resolve(
 const packageRoot = path.dirname(packageJsonPath);
 const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
+/** How human-readable `recall` says the size cap (#494) left results out. */
+const RECALL_OMITTED_HINT = 'omitted to keep the response under size — narrow the query, or open the dashboard for the full text';
+
 const program = new Command();
 program
   .name('memesh')
@@ -573,7 +576,7 @@ program
         // Every match can be too large to show (a huge metadata blob): say
         // so, never "No results found" for results that exist.
         if (entities_omitted) {
-          console.log(`${entities_omitted.total} result(s) found, all omitted to keep the response under size — narrow the query, or open the dashboard for the full text.`);
+          console.log(`${entities_omitted.total} result(s) found, all ${RECALL_OMITTED_HINT}.`);
         } else {
           console.log(query ? 'No results found in the keyword index.' : 'No results found.');
         }
@@ -581,19 +584,28 @@ program
         for (const e of entities) {
           const badge = e.archived ? ' [archived]' : '';
           console.log(`  ${e.name}${badge} (${e.type})`);
-          for (const obs of e.observations.slice(0, 3)) {
+          e.observations.slice(0, 3).forEach((obs, i) => {
             // Display cap only — storage is untouched. A single 324KB
             // observation used to flood the terminal on every hit.
+            // Only the first observation can have been cut by the size cap
+            // (#494), and then `truncated.observations` says so: show one
+            // marker for it, not the cap's own "(+N more bytes)" plus a second.
+            const cut = i === 0 && e.truncated?.observations
+              ? /\s?… \(\+\d+ more bytes\)$/.exec(obs)
+              : null;
+            const text = cut ? obs.slice(0, cut.index) : obs;
             let shown = obs;
-            if (obs.length > 500) {
-              let head = obs.slice(0, 500);
+            if (cut || text.length > 500) {
+              let head = text.slice(0, 500);
               // Don't cut a surrogate pair in half — a trailing lone high
               // surrogate prints as a broken glyph.
               if (/[\uD800-\uDBFF]$/.test(head)) head = head.slice(0, -1);
-              shown = `${head} … (+${obs.length - head.length} more chars)`;
+              shown = cut
+                ? `${head}${head ? ' ' : ''}… (cut; full text in the dashboard)`
+                : `${head} … (+${text.length - head.length} more chars)`;
             }
             console.log(`    - ${shown}`);
-          }
+          });
           // The true total, not `e.observations.length` — the size cap (#494)
           // may already have dropped some before this ever saw the entity, and
           // the "+N more" count must reflect that, not the post-cap remainder.
@@ -602,10 +614,10 @@ program
             console.log(`    ... +${totalObservations - 3} more`);
           }
         }
-        const truncatedNote = retrieval.truncated ? ' (limit reached — more may exist)' : '';
+        const truncatedNote = retrieval.truncated ? ' (search limit reached — more may match; raise --limit)' : '';
         console.log(`\n${entities.length} result(s)${truncatedNote}`);
         if (entities_omitted) {
-          console.log(`(${entities_omitted.total - entities_omitted.shown} more result(s) omitted to keep the response under size — narrow the query, or open the dashboard for the full text)`);
+          console.log(`(${entities_omitted.total - entities_omitted.shown} more result(s) ${RECALL_OMITTED_HINT})`);
         }
         if (conflicts.length > 0) {
           console.log('\nWarning: Conflicts detected:');

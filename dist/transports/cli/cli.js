@@ -6242,7 +6242,7 @@ function cutToFit(obs, budgetBytes) {
   let limit = budgetBytes;
   for (; ; ) {
     const { text, cutBytes } = truncateToBytes(obs, limit);
-    const marked = `${text} \u2026 (+${cutBytes} more bytes)`;
+    const marked = `${text}${text ? " " : ""}\u2026 (+${cutBytes} more bytes)`;
     const jsonBytes2 = bytesWith([], marked);
     if (jsonBytes2 <= budgetBytes)
       return marked;
@@ -61927,6 +61927,7 @@ function wireUserHooks() {
 var packageJsonPath2 = path19.resolve(path19.dirname(fileURLToPath3(import.meta.url)), "../../../package.json");
 var packageRoot2 = path19.dirname(packageJsonPath2);
 var pkg = JSON.parse(fs21.readFileSync(packageJsonPath2, "utf8"));
+var RECALL_OMITTED_HINT = "omitted to keep the response under size \u2014 narrow the query, or open the dashboard for the full text";
 var program2 = new Command();
 program2.name("memesh").description("MeMesh \u2014 Agentic memory for coding agents").version(pkg.version).allowExcessArguments(true).showSuggestionAfterError(true);
 var UPDATE_NOTICE_SILENT_COMMANDS = /* @__PURE__ */ new Set([
@@ -62084,7 +62085,7 @@ program2.command("recall").description("Search stored knowledge").argument("[que
       console.log(JSON.stringify(agentRecallEnvelope(result)));
     } else if (entities.length === 0) {
       if (entities_omitted) {
-        console.log(`${entities_omitted.total} result(s) found, all omitted to keep the response under size \u2014 narrow the query, or open the dashboard for the full text.`);
+        console.log(`${entities_omitted.total} result(s) found, all ${RECALL_OMITTED_HINT}.`);
       } else {
         console.log(query ? "No results found in the keyword index." : "No results found.");
       }
@@ -62092,26 +62093,28 @@ program2.command("recall").description("Search stored knowledge").argument("[que
       for (const e of entities) {
         const badge = e.archived ? " [archived]" : "";
         console.log(`  ${e.name}${badge} (${e.type})`);
-        for (const obs of e.observations.slice(0, 3)) {
+        e.observations.slice(0, 3).forEach((obs, i) => {
+          const cut = i === 0 && e.truncated?.observations ? /\s?… \(\+\d+ more bytes\)$/.exec(obs) : null;
+          const text = cut ? obs.slice(0, cut.index) : obs;
           let shown = obs;
-          if (obs.length > 500) {
-            let head = obs.slice(0, 500);
+          if (cut || text.length > 500) {
+            let head = text.slice(0, 500);
             if (/[\uD800-\uDBFF]$/.test(head))
               head = head.slice(0, -1);
-            shown = `${head} \u2026 (+${obs.length - head.length} more chars)`;
+            shown = cut ? `${head}${head ? " " : ""}\u2026 (cut; full text in the dashboard)` : `${head} \u2026 (+${text.length - head.length} more chars)`;
           }
           console.log(`    - ${shown}`);
-        }
+        });
         const totalObservations = e.truncated?.observations?.total ?? e.observations.length;
         if (totalObservations > 3) {
           console.log(`    ... +${totalObservations - 3} more`);
         }
       }
-      const truncatedNote = retrieval.truncated ? " (limit reached \u2014 more may exist)" : "";
+      const truncatedNote = retrieval.truncated ? " (search limit reached \u2014 more may match; raise --limit)" : "";
       console.log(`
 ${entities.length} result(s)${truncatedNote}`);
       if (entities_omitted) {
-        console.log(`(${entities_omitted.total - entities_omitted.shown} more result(s) omitted to keep the response under size \u2014 narrow the query, or open the dashboard for the full text)`);
+        console.log(`(${entities_omitted.total - entities_omitted.shown} more result(s) ${RECALL_OMITTED_HINT})`);
       }
       if (conflicts.length > 0) {
         console.log("\nWarning: Conflicts detected:");
