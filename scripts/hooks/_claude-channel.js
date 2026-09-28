@@ -59,18 +59,10 @@ export function commandNamesClaudeLauncher(command) {
 /**
  * Walk up from `startPpid`, calling `runPs(pid)` for one `ps -o
  * ppid=,command=` line at a time, up to `maxLevels` hops. Returns the
- * launcher's full command line once found, or `null` — a missing process, an
+ * launcher's `{ pid, command }` once found, or `null` — a missing process, an
  * unparsable line, or the walk running out of levels — without ever
  * throwing: `runPs` failing (no such process, `ps` itself missing) ends the
  * walk exactly like reaching the top of the tree.
- */
-export function findClaudeLauncherCommand(startPpid, runPs, maxLevels = MAX_ANCESTRY_LEVELS) {
-  return findClaudeLauncher(startPpid, runPs, maxLevels)?.command ?? null;
-}
-
-/**
- * The same walk as {@link findClaudeLauncherCommand}, returning the launcher's
- * pid as well: `{ pid, command }`, or `null` on the same conditions.
  */
 export function findClaudeLauncher(startPpid, runPs, maxLevels = MAX_ANCESTRY_LEVELS) {
   let pid = startPpid;
@@ -138,7 +130,7 @@ export function channelFlagWarningLine() {
 }
 
 /** The only impure calls in this module. `-p` scopes `ps` to one pid. */
-export function runRealPs(pid) {
+function runRealPs(pid) {
   return execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
     encoding: 'utf8',
     timeout: 2000,
@@ -149,13 +141,20 @@ export function runRealPs(pid) {
 /**
  * When `pid` started, as `ps -o lstart=` prints it (macOS and Linux both
  * support it). A pid alone can be reused by a later process; pid plus start
- * time names one process.
+ * time names one process. `lstart` is printed in the local time zone and
+ * locale, so both are pinned: otherwise a changed TZ or LANG makes the same
+ * process read as a different one. `exec` is a test seam.
+ *
+ * @param {number} pid
+ * @param {(file: string, args: string[], options: { env?: NodeJS.ProcessEnv } & Record<string, unknown>) => string} [exec]
+ * @returns {string}
  */
-export function runRealPsStart(pid) {
-  return execFileSync('ps', ['-o', 'lstart=', '-p', String(pid)], {
+export function runRealPsStart(pid, exec = /** @type {any} */ (execFileSync)) {
+  return exec('ps', ['-o', 'lstart=', '-p', String(pid)], {
     encoding: 'utf8',
     timeout: 2000,
     stdio: ['ignore', 'pipe', 'ignore'],
+    env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
   });
 }
 
@@ -178,22 +177,4 @@ export function resolveClaudeLauncher(startPpid = process.ppid, runPs = runRealP
 /** The channel-flag warning for an already-resolved launcher command line, or `null`. */
 export function channelFlagWarningFor(command) {
   return typeof command === 'string' && commandLooksLikeMistypedChannelFlag(command) ? channelFlagWarningLine() : null;
-}
-
-/**
- * One warning line for SessionStart's `systemMessage`, or `null`. Never
- * throws: any failure to inspect the process tree means silence, never a
- * false warning, so a platform where `ps` behaves differently just sees no
- * line rather than a wrong one. Also silent when the launcher's command line
- * shows no intent to load a channel at all — see
- * `commandLooksLikeMistypedChannelFlag`.
- */
-export function findChannelFlagWarning(startPpid = process.ppid, runPs = runRealPs) {
-  try {
-    const launcher = findClaudeLauncherCommand(startPpid, runPs);
-    if (!launcher) return null;
-    return commandLooksLikeMistypedChannelFlag(launcher) ? channelFlagWarningLine() : null;
-  } catch {
-    return null;
-  }
 }

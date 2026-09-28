@@ -824,6 +824,13 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
 // injected, instead of the generic `session-start-banner` outcome marker that
 // carries no `reason`. One helper, not three copies of the template string,
 // so the wording cannot drift between call sites.
+/** Did the launcher mapping fail to be stored for a reason worth recording on any start? */
+function launcherWriteFailed(outcome) {
+  return outcome.outcome === 'error'
+    || outcome.reason === SKIP_REASONS.clearAliasNoTable
+    || outcome.reason === SKIP_REASONS.sessionLauncherNoDatabase;
+}
+
 /**
  * Record this SessionStart's session for its claude process (#497). Opens the
  * database for writing only when it already exists — a first session with no
@@ -833,10 +840,10 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
  * 30s writer default. Returns the outcome.
  */
 function recordLauncherSession(data, launcher) {
-  if (!existsSync(dbPath)) return { outcome: 'skipped', reason: SKIP_REASONS.clearAliasNoTable };
   let db;
   try {
     return recordSessionLauncher(() => {
+      if (!existsSync(dbPath)) return null;
       db = new MemeshDatabase(dbPath);
       db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
       return db;
@@ -917,15 +924,6 @@ process.stdin.on('end', async () => {
     const data = JSON.parse(input);
     hookPayload = data;
 
-    // #497: remember which session this claude process now has, and on
-    // /clear link the new id to the previous one (see _clear-alias.js).
-    // Recorded on /clear, where it decides something: a mapping a startup
-    // could not store shows up there as `clearAliasNoPrevious` (or
-    // `sessionLauncherNotFound`), not as a second outcome on every start.
-    if (onClaudeCode) {
-      const launcherOutcome = recordLauncherSession(data, claudeLauncher);
-      if (data.source === 'clear') record(launcherOutcome);
-    }
 
     const projectName = getProjectName(data.cwd);
 
@@ -1096,6 +1094,20 @@ process.stdin.on('end', async () => {
     captureWarning = unwritable
       ? `◉ MeMesh cannot write to ${unwritable} — memories will NOT be saved this session (recall still works). Run 'memesh doctor'.`
       : null;
+
+    // After the writability probe on purpose: recording an outcome creates
+    // and chmods the memesh directory, which would hide an unwritable one.
+    // #497: remember which session this claude process now has, and on
+    // /clear link the new id to the previous one (see _clear-alias.js).
+    // Always recorded on /clear. On any other start, recorded when the
+    // mapping could not be stored (a write error such as a held lock, no
+    // tables, no database file) — that start can never link back later, and
+    // the next /clear alone could not say why. A routine start (stored, no
+    // claude process, a subagent) adds no second outcome.
+    if (onClaudeCode) {
+      const launcherOutcome = recordLauncherSession(data, claudeLauncher);
+      if (data.source === 'clear' || launcherWriteFailed(launcherOutcome)) record(launcherOutcome);
+    }
 
     if (!existsSync(dbPath)) {
       // Combine deprecation banner (if any) into the same

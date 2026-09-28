@@ -101,7 +101,10 @@ Bash, while the memesh MCP server and the channel host keep the one they
 started with. On macOS and Linux, memesh links the two through the `claude`
 process both run under (its pid and start time, recorded at every
 SessionStart), so a message meant for the session reaches it, and can be
-intaken, under either id. On Windows (no `ps`) the ids are not linked.
+intaken, under either id. On Windows (no `ps`) the ids are not linked, and
+neither are they when the session could not be recorded (the database was
+busy at SessionStart, for example); that failure is recorded in
+`hook-outcomes.jsonl`.
 
 A message with no `intended_session` (every message sent before this
 existed, too) keeps reaching every session of the principal. The Claude

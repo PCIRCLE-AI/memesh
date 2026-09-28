@@ -12,7 +12,7 @@
  * walk and `ps` are real.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -137,6 +137,36 @@ describe('Feature: #497 /clear keeps one session one session', () => {
     expect(aliases()).toEqual([{ session_id: NEW, previous_session_id: OLD }]);
   });
 
+  posixOnly('a startup that cannot write its mapping (write lock held) records an error naming the launcher write', async () => {
+    // As right after an upgrade, while the MCP server migrates: another
+    // process holds the write lock past the hook's 2s busy_timeout. Held for
+    // 6s and then released, so the rest of session-start (which has its own
+    // writes) is not what this test measures.
+    const locked = path.join(tmp, 'locked');
+    const holder = spawn(process.execPath, ['-e', `
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(${JSON.stringify(dbPath)});
+      db.exec('BEGIN IMMEDIATE');
+      require('fs').writeFileSync(${JSON.stringify(locked)}, '');
+      setTimeout(() => { db.exec('ROLLBACK'); db.close(); }, 6000);
+    `], { stdio: 'ignore' });
+    const exited = new Promise((resolve) => holder.once('exit', resolve));
+    const waitUntil = Date.now() + 10_000;
+    while (!fs.existsSync(locked) && Date.now() < waitUntil) await new Promise((r) => setTimeout(r, 20));
+    expect(fs.existsSync(locked), 'fixture: the lock holder never took the lock').toBe(true);
+    try {
+      underOneClaude([{ source: 'startup', session_id: OLD }]);
+    } finally {
+      await exited;
+    }
+
+    const records = fs.readFileSync(path.join(tmp, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n')
+      .map((line) => JSON.parse(line) as { hook: string; outcome: string; reason?: string })
+      .filter((record) => record.hook === 'session-start');
+    expect(records.filter((record) => record.outcome === 'error').map((record) => record.reason))
+      .toEqual([expect.stringMatching(/^session-launcher: /)]);
+  });
+
   posixOnly('records why, and links nothing, when there is no ps to find the claude process', () => {
     const noTools = path.join(tmp, 'empty-bin');
     fs.mkdirSync(noTools);
@@ -191,6 +221,19 @@ describe('Feature: #497 /clear keeps one session one session', () => {
       expect(chain.has(ids[0])).toBe(true);
       expect(chain.size).toBe(12);
       expect(sessionAliasChain(getDatabase(), ids[0]).has(ids[11])).toBe(true);
+    });
+
+    posixOnly('records a first startup with no database file yet under its own reason', () => {
+      closeDatabase();
+      fs.rmSync(dbPath, { force: true });
+      fs.rmSync(`${dbPath}-wal`, { force: true });
+      fs.rmSync(`${dbPath}-shm`, { force: true });
+      try {
+        underOneClaude([{ source: 'startup', session_id: OLD }]);
+      } finally {
+        openDatabase(dbPath);
+      }
+      expect(reasons()).toContain(SKIP_REASONS.sessionLauncherNoDatabase);
     });
 
     it('records a skip when there is no claude process, and when the database has no tables', () => {

@@ -56251,6 +56251,7 @@ var init_capture_liveness = __esm({
       alreadyBlockedForGate: "every waiting message id was already blocked for in this session",
       sessionLauncherNotFound: "session_launcher_not_found: no claude process found above this hook (no ps, or not under Claude Code)",
       sessionLauncherSubagent: "session_launcher_subagent: a subagent SessionStart does not change its session mapping",
+      sessionLauncherNoDatabase: "session_launcher_no_database: no database file yet \u2014 this session is not recorded for its claude process",
       clearAliasNoPrevious: "clear_alias_no_previous: no earlier session recorded for this claude process",
       clearAliasPidReused: "clear_alias_pid_reused: the recorded process had the same pid but a different start time",
       clearAliasAlreadyLinked: "clear_alias_already_linked: one of these session ids is already aliased",

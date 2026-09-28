@@ -28,13 +28,13 @@
     },
     {
       "path": "scripts/hooks/_claude-channel.js",
-      "sha256": "c76412a0748f030190b02a651bd24582a99c9e3be1971caaa024eef85db549b0",
-      "bytes": 8558
+      "sha256": "a3597f9e4f3a347117a555e2acf94129f97617de4587a61b737011be685a162d",
+      "bytes": 7939
     },
     {
       "path": "scripts/hooks/_clear-alias.js",
-      "sha256": "804b472a1e4236054f1fdcf3a341dc78eebd54df338a89909026e8b2c9dca64d",
-      "bytes": 4338
+      "sha256": "00a7f2207eca88266be2772e62995761cc5be46193c2f95c58e5816d9cabd4fd",
+      "bytes": 4489
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
@@ -63,8 +63,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "e7e8cc08c4922c3558331b0bf38d2c82367032c67a3c4baba5cca199898d3b47",
-      "bytes": 19444
+      "sha256": "9af56193885632eb7cd671a3178b8885a6d5404334c820dbd10759296d9e14c2",
+      "bytes": 19585
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -188,8 +188,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "5ce4f8a276a1d9948c30a72af54b9bc67ec36ad84bfbe3acb9445249e1919f00",
-      "bytes": 110271
+      "sha256": "f3e2e499fa95f8b6fbc73aa113f02e460a26441a224f7e3b13e245eebb81dd73",
+      "bytes": 110848
     },
     {
       "path": "scripts/hooks/session-summary.js",

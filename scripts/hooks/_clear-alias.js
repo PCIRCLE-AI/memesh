@@ -23,6 +23,7 @@ import { SKIP_REASONS } from './_generated/capture-liveness.js';
  *
  * The database is opened through `openDb` only after the checks that need
  * none, so a session with nothing to record never waits on a write lock.
+ * `openDb` returns null when there is no database file yet.
  *
  * @param {() => import('./_generated/sqlite.js').MemeshDatabase} openDb returns a writable database
  * @param {{
@@ -46,6 +47,7 @@ export function recordSessionLauncher(openDb, { sessionId, source, agentType, la
   }
   if (!launcher) return { outcome: 'skipped', reason: SKIP_REASONS.sessionLauncherNotFound };
   const db = openDb();
+  if (!db) return { outcome: 'skipped', reason: SKIP_REASONS.sessionLauncherNoDatabase };
   const tables = db.prepare(`
     SELECT COUNT(*) AS n FROM sqlite_master
     WHERE type = 'table' AND name IN ('agent_session_aliases', 'agent_session_launchers')

@@ -76,6 +76,7 @@ export declare const SKIP_REASONS: {
     readonly alreadyBlockedForGate: "every waiting message id was already blocked for in this session";
     readonly sessionLauncherNotFound: "session_launcher_not_found: no claude process found above this hook (no ps, or not under Claude Code)";
     readonly sessionLauncherSubagent: "session_launcher_subagent: a subagent SessionStart does not change its session mapping";
+    readonly sessionLauncherNoDatabase: "session_launcher_no_database: no database file yet — this session is not recorded for its claude process";
     readonly clearAliasNoPrevious: "clear_alias_no_previous: no earlier session recorded for this claude process";
     readonly clearAliasPidReused: "clear_alias_pid_reused: the recorded process had the same pid but a different start time";
     readonly clearAliasAlreadyLinked: "clear_alias_already_linked: one of these session ids is already aliased";
