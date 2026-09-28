@@ -9,6 +9,7 @@ import { buildHint } from '../../scripts/hooks/user-prompt-intent.js';
 import { getProjectName } from '../../src/core/paths.js';
 import { resolveMessageRecipient } from '../../scripts/hooks/_shared.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { registerAgentSession, sendSessionTargetedMessage } from '../helpers/agent-session-fixture.js';
 
 // A Claude Code session that was not started with the channel flag has no
 // identity a sender can address, so nothing ever told it a message was
@@ -635,6 +636,64 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       });
 
       expect(context(result.stdout)).toContain(`1 message waiting for "${automaticRecipient}" in project "team-room"`);
+    });
+  });
+
+  // #490: a `target_kind: "session"` delivery is addressed to the HOST's own
+  // session_instance_id, not the principal `MEMESH_RECIPIENT` (or the
+  // owner-private fallback) resolves to. Both hooks must widen their lookup
+  // to also find a delivery targeted at a session that is LIVE right now and
+  // registered under that exact principal.
+  describe('Feature: #490 a session-targeted delivery is reminded under its principal, only while live', () => {
+    it('UserPromptSubmit reminds about a session-targeted message for a LIVE session under the declared principal, naming the session and target_kind', async () => {
+      const sessionId = registerAgentSession('team-room', 'claude-implementer');
+      sendSessionTargetedMessage('team-room', sessionId, 'session-k1');
+
+      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, {
+        MEMESH_HOOK_HOST: 'claude-code',
+        MEMESH_RECIPIENT: 'claude-implementer',
+      });
+
+      const text = context(result.stdout);
+      expect(text).toContain(`1 message waiting for the live session ${JSON.stringify(sessionId)}`);
+      expect(text).toContain('target_kind "session"');
+      expect(text).toContain(`recipient ${JSON.stringify(sessionId)}`);
+    });
+
+    it('SessionStart reminds about the same session-targeted message', async () => {
+      const sessionId = registerAgentSession('team-room', 'claude-implementer');
+      sendSessionTargetedMessage('team-room', sessionId, 'session-k2');
+
+      const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, {
+        MEMESH_HOOK_HOST: 'claude-code',
+        MEMESH_RECIPIENT: 'claude-implementer',
+      });
+
+      expect(context(start.stdout)).toContain(`1 message waiting for the live session ${JSON.stringify(sessionId)}`);
+    });
+
+    it('does NOT remind once that session has disconnected — no nagging about a dead session', async () => {
+      const sessionId = registerAgentSession('team-room', 'claude-implementer', { disconnected: true });
+      sendSessionTargetedMessage('team-room', sessionId, 'session-k3');
+
+      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, {
+        MEMESH_HOOK_HOST: 'claude-code',
+        MEMESH_RECIPIENT: 'claude-implementer',
+      });
+
+      expect(result.stdout).toBe('');
+    });
+
+    it('does NOT remind about a live session registered under a DIFFERENT principal', async () => {
+      const sessionId = registerAgentSession('team-room', 'someone-elses-principal');
+      sendSessionTargetedMessage('team-room', sessionId, 'session-k4');
+
+      const result = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, {
+        MEMESH_HOOK_HOST: 'claude-code',
+        MEMESH_RECIPIENT: 'claude-implementer',
+      });
+
+      expect(result.stdout).toBe('');
     });
   });
 });

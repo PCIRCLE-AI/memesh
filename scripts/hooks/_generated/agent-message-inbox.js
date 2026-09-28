@@ -48,8 +48,13 @@ function recipientSeenQuery(db, recipient, project, onError) {
     }
 }
 function isMissingMessageTableError(err) {
-    const message = err && typeof err === 'object' && 'message' in err ? String(err.message) : '';
-    return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(message);
+    return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(errorMessage(err));
+}
+function isMissingDeliveriesTableError(err) {
+    return /no such table: agent_message_deliveries\b/.test(errorMessage(err));
+}
+function errorMessage(err) {
+    return err && typeof err === 'object' && 'message' in err ? String(err.message) : '';
 }
 export function recipientEverSeen(db, project, recipient) {
     return recipientSeenQuery(db, recipient, project);
@@ -61,13 +66,30 @@ export function unknownRecipientHint(recipient) {
     return `MEMESH_RECIPIENT ${JSON.stringify(recipient)} has never been seen in any project — check it for a typo (or ignore this if it is a genuinely new recipient id).`;
 }
 export const UNREAD_MESSAGE_REFS_LIMIT = 500;
+const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
+  d.recipient = ?
+  OR (
+    d.target_kind = 'session'
+    AND EXISTS (
+      SELECT 1
+      FROM agent_session_instances si
+      JOIN agent_session_connections c
+        ON c.project = si.project AND c.session_instance_id = si.session_instance_id
+      WHERE si.project = d.project
+        AND si.session_instance_id = d.recipient
+        AND si.principal_id = ?
+        AND c.disconnected_at IS NULL
+        AND c.lease_expires_at_ms > ?
+    )
+  )
+)`;
 export function unreadMessageRefsFor(db, recipient, limit = UNREAD_MESSAGE_REFS_LIMIT) {
     if (!recipient)
         return [];
     try {
         const rows = db.prepare(`SELECT d.project AS project, d.message_id AS message_id
        FROM agent_message_deliveries d
-       WHERE d.recipient = ?
+       WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -76,22 +98,25 @@ export function unreadMessageRefsFor(db, recipient, limit = UNREAD_MESSAGE_REFS_
              AND r.receipt_kind = 'intake'
          )
        ORDER BY d.project, d.message_id
-       LIMIT ?`).all(recipient, limit);
+       LIMIT ?`).all(recipient, recipient, Date.now(), limit);
         return rows.filter((row) => typeof row.project === 'string' && typeof row.message_id === 'string');
     }
     catch (err) {
-        if (/no such table: agent_message_deliveries/.test(String(err?.message)))
+        if (isMissingDeliveriesTableError(err))
             return [];
         throw err;
     }
 }
-export function unreadInboxLines(count, project, recipient, everSeen) {
+export function unreadInboxLines(count, project, recipient, everSeen, targetKind = 'principal') {
     if (!recipient)
         return [];
     const displayProject = JSON.stringify(project);
     const displayRecipient = JSON.stringify(recipient);
     if (count > 0) {
         const noun = count === 1 ? 'message' : 'messages';
+        if (targetKind === 'session') {
+            return [`${count} ${noun} waiting for the live session ${displayRecipient} in project ${displayProject} — that session is registered under your principal and connected right now. Poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id with target_kind "session" (fetch or intake using your own principal id instead of ${displayRecipient} will not match this session-targeted message), and record intake for each with recipient ${displayRecipient} (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
+        }
         return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} — poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record intake for each (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
     }
     if (everSeen === false) {
@@ -103,9 +128,9 @@ export function unreadInboxLinesFor(db, recipient) {
     if (!recipient)
         return [];
     try {
-        const rows = db.prepare(`SELECT d.project AS project, COUNT(*) AS n
+        const rows = db.prepare(`SELECT d.project AS project, d.recipient AS recipient, d.target_kind AS target_kind, COUNT(*) AS n
        FROM agent_message_deliveries d
-       WHERE d.recipient = ?
+       WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -113,15 +138,15 @@ export function unreadInboxLinesFor(db, recipient) {
              AND r.message_id = d.message_id
              AND r.receipt_kind = 'intake'
          )
-       GROUP BY d.project
-       ORDER BY n DESC, d.project
-       LIMIT 5`).all(recipient);
-        return rows.flatMap((row) => typeof row.project === 'string' && typeof row.n === 'number' && row.n > 0
-            ? unreadInboxLines(row.n, row.project, recipient)
+       GROUP BY d.project, d.recipient, d.target_kind
+       ORDER BY n DESC, d.project, d.recipient
+       LIMIT 5`).all(recipient, recipient, Date.now());
+        return rows.flatMap((row) => typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
+            ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')
             : []);
     }
     catch (err) {
-        if (/no such table: agent_message_deliveries/.test(String(err?.message)))
+        if (isMissingDeliveriesTableError(err))
             return [];
         throw err;
     }

@@ -69,7 +69,6 @@ export declare const SKIP_REASONS: {
     readonly noAssistantText: "the Stop payload and the transcript held no assistant message";
     readonly handoffTooShort: "the last assistant message was too short to be a handoff — the previous one is kept";
     readonly handoffArchived: "the handoff memory was archived by forget — left alone";
-    readonly stopHookActive: "stop_hook_active is true — Claude Code is already continuing from a previous block";
     readonly notClaudeCodeHost: "this Stop is not running under Claude Code";
     readonly noRecipientForGate: "no recipient could be resolved for this session";
     readonly noDatabaseForMessageGate: "no database yet — nothing to check for waiting messages";
