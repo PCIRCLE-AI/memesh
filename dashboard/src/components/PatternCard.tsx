@@ -1,4 +1,5 @@
 import { t } from '../lib/i18n';
+import { shortProjectId } from '../lib/entity-display';
 
 // PatternCard keeps earlier pattern_emergent proposals reviewable after their
 // producer was retired. These already-staged rows share the proposal table and
@@ -112,7 +113,7 @@ export function PatternCard(props: PatternCardProps) {
               {t('pattern.title')}
             </span>
             <span style={{ fontWeight: 600 }}>{p.digest_name}</span>
-            <span class="tag" style={{ fontSize: 14 }}>{p.project}</span>
+            <span class="tag" style={{ fontSize: 14 }} title={p.project}>{shortProjectId(p.project)}</span>
             <span class="tag" style={{ fontSize: 14, color: 'var(--text-2)' }}>
               {t('pattern.evidenceCount', { n: String(p.source_count) })}
             </span>

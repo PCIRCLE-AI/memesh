@@ -4,6 +4,10 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- The dashboard's Project tab and Memories tab no longer scroll sideways on a phone-width screen when a project id carries its routing hash (`<label>~<32 hex>`): the hash has no break opportunity, so a chip or memory-row tag holding it raw could not wrap. Project and Memories chips show the hash-stripped label, adding the first 6 hex characters only when two projects share a label; a place that shows one project (a memory row's tag, the roadmap header, a Home proposal card) always keeps those 6 characters (`memesh~2c0fe4`). The full id stays as a tooltip and is still what every click and filter uses. The search placeholder now ends in an ellipsis, and the Scope row's divider wraps together with the Archived chip (#493).
+
 ## [4.10.8] — 2026-09-27
 
 Includes the changes documented under 4.10.7 and 4.10.6 below; neither was

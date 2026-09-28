@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'preact/hooks';
 import { api } from '../lib/api';
 import { t } from '../lib/i18n';
 import { actionFailureMessage, classifyLoadError, failureMessage } from '../lib/failure';
-import { relativeDate } from '../lib/entity-display';
+import { relativeDate, shortProjectId } from '../lib/entity-display';
 import { PatternCard } from './PatternCard';
 import type { JSX } from 'preact';
 
@@ -367,7 +367,7 @@ export function InsightsTab({
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                   <span class="badge badge-type" style={{ textTransform: 'none', fontFamily: 'var(--mono)' }}>#{p.id}</span>
                   <span style={{ fontWeight: 600 }}>{p.digest_name}</span>
-                  <span class="tag" style={{ fontSize: 14 }}>{p.project}</span>
+                  <span class="tag" style={{ fontSize: 14 }} title={p.project}>{shortProjectId(p.project)}</span>
                   <span class="tag" style={{ fontSize: 14 }}>{p.cluster_key}</span>
                   {p.kind === 'digest' && p.source_kind && (
                     <span class="tag" style={{ fontSize: 14 }}>

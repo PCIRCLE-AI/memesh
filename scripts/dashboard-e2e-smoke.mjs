@@ -12,6 +12,8 @@ import { buildIsolatedRuntimeEnv } from './lib/isolated-env.mjs';
 import { npmSync } from './lib/npm-bin.mjs';
 import { isMain } from './lib/verify-core.mjs';
 
+const PHONE_PROJECT_HASH = '2c0fe491888c8efb9a4894828bbc2733';
+
 const repoRoot = process.cwd();
 const smokeDir = path.join(repoRoot, 'tmp', 'dashboard-e2e-smoke');
 const npmCacheDir = process.env.MEMESH_NPM_CACHE ?? path.join(os.tmpdir(), 'memesh-npm-cache');
@@ -187,6 +189,20 @@ async function main() {
     '--tags', 'project:dashboard-e2e',
   ], commonEnv);
 
+  // A second project whose id carries the 32-hex routing hash
+  // `getProjectName` appends (paths.ts `projectIdentity`: `<label>~<32 hex>`)
+  // — #493: that hash has no break opportunity, so the Project tab's project
+  // list and the Memories tab's filter chips/row tags could not wrap it and
+  // scrolled the whole page sideways at phone width.
+  runNode(cliEntry, [
+    'remember',
+    '--name', 'dashboard-e2e-phone-memory',
+    '--type', 'lesson_learned',
+    '--title', 'dashboard-e2e-phone-memory',
+    '--obs', 'Dashboard phone-width smoke memory (#493)',
+    '--tags', `project:dashboard-e2e-phone~${PHONE_PROJECT_HASH}`,
+  ], commonEnv);
+
   const port = await getAvailablePort();
   const healthUrl = `http://127.0.0.1:${port}/v1/health`;
   const dashboardUrl = `http://127.0.0.1:${port}/dashboard`;
@@ -227,6 +243,7 @@ async function main() {
           consoleErrors.push(message.text());
         }
       });
+      const phoneProjectChip = (panel) => page.locator(panel).getByRole('button', { name: /dashboard-e2e-phone/ }).first();
 
       // Open the dashboard with ?tab=Memories to land on the "All Memories"
       // library view directly. Default tab is "Home" (the 8→5 tab merge),
@@ -251,14 +268,22 @@ async function main() {
       assert.equal(await page.getByPlaceholder(/Filter as you type/i).inputValue(), '', 'Back to list clears the ranked-search filter');
 
       // Tab switching on a real browser: the nav is a WAI-ARIA tablist
-      // (tabs are role=tab, not plain buttons). The Project tab derives its
-      // project list from the seeded `project:dashboard-e2e` tag and
-      // auto-selects the only project. Scope the assertion to the Project
-      // panel — the Memories panel stays mounted (hidden) after the switch
-      // and also contains the project name.
+      // (tabs are role=tab, not plain buttons). Two projects are seeded now
+      // (#493) so nothing auto-selects — ProjectTab only does that for a
+      // SINGLE project — the chip list itself is what this first check
+      // exercises. Scope the assertion to the Project panel — the Memories
+      // panel stays mounted (hidden) after the switch and also contains the
+      // project name.
       await page.getByRole('navigation').getByRole('tab', { name: 'Project' }).click();
       await page.locator('#panel-Project').getByText('dashboard-e2e', { exact: false }).first()
         .waitFor({ state: 'visible', timeout: 10000 });
+
+      // #493: select the hashed project explicitly — ProjectTab stays mounted
+      // after a tab switch (`keepMounted` in App.tsx), so this selection
+      // survives into the locale loop below, which re-measures this chip row.
+      // Regex, not exact text: the accessible name also carries the count.
+      await phoneProjectChip('#panel-Project').click();
+      await page.locator('#panel-Project [role="tablist"]').waitFor({ state: 'visible', timeout: 10000 });
 
       await page.getByRole('navigation').getByRole('tab', { name: 'Settings' }).click();
       // Target the language <select> specifically — Settings has multiple
@@ -275,6 +300,23 @@ async function main() {
       await page.setViewportSize({ width: 375, height: 812 });
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       assert.equal(overflow, 0, `Settings is ${overflow}px wider than a 375px screen`);
+
+      // #493: the Memories tab's bottom project-filter chips and each memory
+      // row's project tag also render the raw project id — same 32-hex hash,
+      // same missing break opportunity, a second place it forced the page to
+      // scroll sideways. Readable-prefix regex, same reasoning as the
+      // Project-tab chip click above.
+      await page.locator('#tab-Memories').click();
+      await phoneProjectChip('#panel-Memories')
+        .waitFor({ state: 'visible', timeout: 10000 });
+      const memoriesOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      assert.equal(memoriesOverflow, 0, `Memories tab is ${memoriesOverflow}px wider than a 375px screen`);
+
+      // Back to Settings for the locale loops below — SettingsTab unmounts when
+      // its tab isn't active (App.tsx), so `languageSelect` re-resolves against
+      // the remounted <select> once its options load (Playwright auto-waits on the
+      // `:has(option[value="zh-TW"])` match).
+      await page.locator('#tab-Settings').click();
 
       // Keep the header usable when translations lengthen its signal, status,
       // and version labels. The version may wrap, but none of it may clip.
@@ -308,7 +350,10 @@ async function main() {
         assert.ok(header.rightLeft >= 0 && header.rightRight <= 375 && header.toggleLeft >= 0 && header.toggleRight <= 375,
           `${locale} header clips the controls: ${JSON.stringify(header)}`);
       }
-      // The Project tab's view toggle must also fit, in every locale.
+      // The Project tab's view toggle must also fit, in every locale. The
+      // hashed project selected above (#493) stays selected through every
+      // iteration, so this also re-measures the project chip row and the
+      // ProjectRoadmap header in all 11 languages.
       for (const locale of ['en', 'zh-TW', 'zh-CN', 'ja', 'ko', 'pt', 'fr', 'de', 'vi', 'es', 'th']) {
         await page.locator('#tab-Settings').click();
         await languageSelect.selectOption(locale);
@@ -319,6 +364,27 @@ async function main() {
       }
       await page.locator('#tab-Settings').click();
       await languageSelect.selectOption('en');
+
+      // #493: shortening the chip TEXT must not drop the full project id —
+      // it has to stay reachable as a tooltip/title. Checked after the
+      // scrollWidth passes above, on purpose: the overflow bug is #493's
+      // primary complaint, so a red run should fail on it first. `getByRole`
+      // queries the accessibility tree, which excludes a `display:none`
+      // (inactive) panel even though the component itself stays mounted —
+      // so switch into each tab before reading its chip's title.
+      await page.locator('#tab-Project').click();
+      const projectChipTitle = await phoneProjectChip('#panel-Project').getAttribute('title');
+      assert.ok(projectChipTitle?.includes(PHONE_PROJECT_HASH),
+        `Project chip must keep the full project id available via its title, got: ${projectChipTitle}`);
+      await page.locator('#tab-Memories').click();
+      const memoriesChipTitle = await phoneProjectChip('#panel-Memories').getAttribute('title');
+      assert.ok(memoriesChipTitle?.includes(PHONE_PROJECT_HASH),
+        `Memories filter chip must keep the full project id available via its title, got: ${memoriesChipTitle}`);
+
+      // Back to Settings — same SettingsTab-unmount reason as above.
+      await page.locator('#tab-Settings').click();
+      await languageSelect.waitFor({ state: 'visible', timeout: 10000 });
+
       const signalToggle = page.locator('.signal-toggle');
       const initialSignalMode = await signalToggle.getAttribute('aria-pressed');
       await signalToggle.click();
@@ -543,7 +609,14 @@ async function main() {
       server.kill('SIGTERM');
       await onceExit(server);
     }
-    fs.rmSync(smokeDir, { recursive: true, force: true });
+    // A cleanup error thrown from `finally` would replace the assertion that
+    // failed the run (macOS sometimes answers ENOTEMPTY here while the server
+    // is still letting go of its files), so it is reported, not thrown.
+    try {
+      fs.rmSync(smokeDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch (err) {
+      console.error(`[smoke] could not remove ${smokeDir}: ${err.message}`);
+    }
   }
 
   console.log('Dashboard packaged e2e smoke passed');
