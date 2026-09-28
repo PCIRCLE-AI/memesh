@@ -35,6 +35,22 @@ one `notified` record in `hook-outcomes.jsonl`, and — since a hook that exits 
 never shows its stderr to the user or the model — the same rejection text in
 SessionStart's own visible output, every session start.
 
+The lookup behind that reminder is not limited to messages addressed to the
+recipient string itself (#490). A message sent with `target_kind: "session"`
+is addressed to the HOST's own `session_instance_id`, not to `MEMESH_RECIPIENT`
+or its owner-private fallback — a different string an ordinary reminder would
+never match. SessionStart, the prompt hook and the Stop gate below all also
+find a delivery like that when the target session is registered, in the
+delivery's own project, under the resolved recipient as ITS principal, AND is
+LIVE right now (a connection with no disconnect and an unexpired lease). A
+session that has since disconnected or let its lease expire is not
+surfaced — this never nags about a dead session. The reminder line for a
+match like this names the target session as the recipient to use, not the
+principal: `... waiting for the live session "<session id>" ... fetch each
+message_id with target_kind "session" (fetch or intake using your own
+principal id instead of "<session id>" will not match this session-targeted
+message) ...`.
+
 If the declared recipient's inbox is empty everywhere, that reads exactly like
 a typo'd id — so SessionStart (only; not every prompt), once a database with
 the messaging tables exists, additionally checks whether the id has ever been
@@ -106,16 +122,28 @@ reminder's own project line tell you which.
 **Stop gate.** A separate Claude Code Stop hook, registered after
 `session-summary.js`, resolves the recipient the same way (declared or
 fallback) and blocks the stop — `{"decision":"block","reason":"..."}`, printing
-the same waiting-message lines the prompt hook shows plus one instruction line
-— once per message id that has no intake receipt yet and that this session has
-not already been blocked for. Whether a `host_accept` row exists is irrelevant
-to this: `host_accept` is not proof of delivery (see above), so a message a
+the same waiting-message lines the prompt hook shows (including a
+live-session-targeted match, #490 above) plus one instruction line — once per
+message id that has no intake receipt yet and that this session has not
+already been blocked for. Whether a `host_accept` row exists is irrelevant to
+this: `host_accept` is not proof of delivery (see above), so a message a
 stopped or disconnected exact session never actually received still blocks the
-stop just as readily as one that was pushed. `stop_hook_active: true` (Claude
-Code retrying the same turn after a prior block) is never blocked again, and
-this hook never runs under Codex. The per-session record of which ids it has
-already blocked for lives beside the database, keyed by `session_id`, next to
-the existing Stop-side per-session state files.
+stop just as readily as one that was pushed. This hook never runs under Codex.
+
+The per-session record of which ids it has already blocked for lives beside
+the database, keyed by `session_id`, next to the existing Stop-side
+per-session state files, and is the ONLY thing that stops a re-block (#492).
+`stop_hook_active: true` on the Stop payload means "a Stop hook blocked the
+prior turn" — it does not say this gate was the one that blocked it, so the
+gate does not skip on that flag alone: a message that arrives while a
+DIFFERENT Stop hook (a project's own verify-receipt gate, say) is holding the
+block chain open still reaches the blocked-id ledger and, finding its id new,
+blocks once — the same as any other new id, active flag or not. What the
+ledger does prevent is re-blocking for an id it already blocked for in this
+session, `stop_hook_active` or not. The gate writes the ledger before it
+blocks; if the write fails (a full disk, a read-only directory) it records an
+`error` outcome and, on a Stop that is already continuing a block, does not
+block, so an unwritable ledger cannot keep the session from stopping.
 
 **Channel-flag warning.** SessionStart also checks, only when
 `hosts/claude.json` exists (the channel is configured) and only under Claude
