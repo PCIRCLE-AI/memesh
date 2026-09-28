@@ -34,7 +34,6 @@ export interface CodexSessionHostConfig extends Record<string, unknown> {
   project?: unknown;
   principal_id: unknown;
   workspace: unknown;
-  model?: unknown;
   work_summary?: unknown;
 }
 
@@ -344,7 +343,6 @@ function connectCodexSessionCompanion(
       principal_id: selected.principal_id,
       session_instance_id: session.threadId,
       adapter_kind: 'codex-cli-queue',
-      ...(selected.model === undefined ? {} : { model: selected.model }),
       ...(selected.work_summary === undefined ? {} : { work_summary: selected.work_summary }),
     },
     async deliver() {
@@ -388,7 +386,6 @@ interface ResolvedCodexSessionConfig {
   auth_token: string;
   project: string;
   principal_id: string;
-  model?: string;
   work_summary?: string;
 }
 
@@ -420,7 +417,6 @@ function configuredCodexSessionConfig(
     // project was always incidental to that.
     project: canonicalAgentScopeId(getProjectName(session.workspace)),
     principal_id: requiredString(principal.principalId, 'principal_id'),
-    ...(config.model == null ? {} : { model: requiredString(config.model, 'model') }),
     ...(config.work_summary == null ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
   };
   return resolved;

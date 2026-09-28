@@ -9,7 +9,6 @@ export interface AgentHostRegistration {
     principal_id: string;
     session_instance_id: string;
     adapter_kind: string;
-    model?: string;
     work_summary?: string;
     auth_token?: string;
 }
@@ -58,7 +57,6 @@ export interface AgentRouterRegisterRequest {
     principal_id: string;
     session_instance_id: string;
     adapter_kind: string;
-    model?: string;
     work_summary?: string;
     auth_token?: string;
     hops: number;
@@ -144,7 +142,7 @@ export interface AgentSelectionCard {
     principal_id: string;
     host_kind: 'codex' | 'claude' | 'gemini' | 'other';
     project: string;
-    model: string | null;
+    model: null;
     work_summary: string | null;
     active: true;
     generation: number;

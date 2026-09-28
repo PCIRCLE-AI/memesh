@@ -56,7 +56,6 @@ export interface ManagedCodexHostConfig extends Record<string, unknown> {
   workspace: unknown;
   codex_command?: unknown;
   startup_timeout_ms?: unknown;
-  model?: unknown;
   work_summary?: unknown;
 }
 
@@ -85,7 +84,6 @@ interface NormalizedConfig {
   workspace: string;
   codexCommand: string;
   startupTimeoutMs: number;
-  model: string | undefined;
   workSummary: string | undefined;
 }
 
@@ -150,7 +148,6 @@ export async function startManagedCodexHost(
         principal_id: normalized.principalId,
         session_instance_id: normalized.sessionInstanceId,
         adapter_kind: 'codex-app-server',
-        ...(normalized.model === undefined ? {} : { model: normalized.model }),
         ...(normalized.workSummary === undefined ? {} : { work_summary: normalized.workSummary }),
       },
       async deliver(delivery) {
@@ -242,7 +239,6 @@ function normalizeConfig(config: ManagedCodexHostConfig): NormalizedConfig {
     workspace,
     codexCommand: requiredString(config.codex_command ?? 'codex', 'codex_command'),
     startupTimeoutMs: boundedStartupTimeout(config.startup_timeout_ms ?? DEFAULT_STARTUP_TIMEOUT_MS),
-    model: config.model === undefined ? undefined : requiredString(config.model, 'model'),
     workSummary: config.work_summary === undefined ? undefined : requiredString(config.work_summary, 'work_summary'),
   };
 }

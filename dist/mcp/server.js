@@ -30829,6 +30829,8 @@ function validateRouterSuccessResult(request, value) {
       if (!Array.isArray(value.cards) || value.cards.length > request.limit || value.cards.some((card) => !isSelectionCard(card, request.project))) {
         throw new AgentRouterProtocolError("invalid_response", "Router response contained invalid discovery cards.");
       }
+      for (const card of value.cards)
+        card.model = null;
       break;
     case "heartbeat":
       requireResultInteger("generation");
