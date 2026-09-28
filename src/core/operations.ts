@@ -16,6 +16,7 @@ import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
 import { canonicalEntityType } from './work-topology.js';
+import { capRecallForAgent, type RecallForAgentResult } from './recall-agent-view.js';
 import type {
   RememberInput,
   RememberResult,
@@ -496,6 +497,20 @@ export async function recallWithConflicts(args: RecallInput) {
   const kg = new KnowledgeGraph(getDatabase());
   const conflicts = kg.findConflicts(entities.map((e) => e.name));
   return { entities, conflicts, retrieval };
+}
+
+/**
+ * recallWithConflicts, capped to what an AGENT should receive in one shot
+ * (#494): each entity's observations+tags bounded to
+ * RECALL_ENTITY_CONTENT_MAX_BYTES, `file:*` tags omitted, and the whole
+ * response bounded to RECALL_RESPONSE_MAX_BYTES. The MCP `recall` tool and
+ * the CLI `recall` command both call this instead of `recallWithConflicts`
+ * directly, so the two agent-facing surfaces cannot drift on the cap. The
+ * HTTP API (the dashboard's data source) calls `recallWithConflicts`
+ * directly and is deliberately NOT capped — see recall-agent-view.ts.
+ */
+export async function recallForAgent(args: RecallInput): Promise<RecallForAgentResult> {
+  return capRecallForAgent(await recallWithConflicts(args));
 }
 
 // --- Serialization (extracted to serializer.ts) ---

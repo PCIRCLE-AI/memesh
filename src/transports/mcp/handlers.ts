@@ -7,7 +7,8 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
-import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn } from '../../core/operations.js';
+import { remember, recallForAgent, forget, exportMemories, importMemories, learn } from '../../core/operations.js';
+import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { getDatabase } from '../../db.js';
 import { executeWorkPackage } from '../../core/dreamer.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -164,7 +165,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'recall',
     description:
-      'Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance.',
+      'Search and retrieve stored knowledge. Uses full-text search with optional project tag filtering. Call with no query to list recent memories. One- and two-term queries use OR matching; queries with three or more terms try strict all-term matching first and fall back to OR only when strict matching has no hits, with results ranked by relevance. Results are capped for size: each entity\'s observations+tags at 8 KB, the whole response at 32 KB; a capped entity carries `truncated` with the full shown/total counts, and the response carries `truncated`/`entities_omitted` when anything was cut. `file:*` tags are never included — they exist for pre-edit lookups, not for reading.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -647,8 +648,7 @@ async function handleToolInner(
     if (name === 'recall') {
       const r = parseOrFail(RecallSchema, args);
       if (!r.ok) return r.result;
-      // recallWithConflicts: recall + conflict annotation, owned by core so the
-      // three transports can't drift on the wrapping rule.
+      // recallForAgent: recall + conflicts + the agent-facing size cap (#494); see its docstring.
       //
       // The MCP payload is ALWAYS an object, never a bare array. Gemini CLI's
       // transport JSON-parses the first text content item and, when it parses,
@@ -661,9 +661,10 @@ async function handleToolInner(
       // consumer otherwise has to special-case.
       // `retrieval` rides every envelope so callers can see the FTS mode and
       // whether the bounded window filled. `degraded: false` remains as a
-      // fixed compatibility field for older consumers.
-      const { entities, conflicts, retrieval } = await recallWithConflicts(r.data);
-      return ok(conflicts.length > 0 ? { entities, retrieval, conflicts } : { entities, retrieval });
+      // fixed compatibility field for older consumers. `truncated` /
+      // `entities_omitted` ride the envelope only when the size cap actually
+      // cut something.
+      return ok(agentRecallEnvelope(await recallForAgent(r.data)));
     }
     if (name === 'forget') {
       const r = parseOrFail(ForgetSchema, args);

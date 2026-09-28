@@ -5,6 +5,7 @@ import { getProjectName } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
 import { canonicalEntityType } from './work-topology.js';
+import { capRecallForAgent } from './recall-agent-view.js';
 function buildLocalMetadata(existingMetadata, overrides) {
     return {
         ...(existingMetadata ?? {}),
@@ -237,6 +238,9 @@ export async function recallWithConflicts(args) {
     const kg = new KnowledgeGraph(getDatabase());
     const conflicts = kg.findConflicts(entities.map((e) => e.name));
     return { entities, conflicts, retrieval };
+}
+export async function recallForAgent(args) {
+    return capRecallForAgent(await recallWithConflicts(args));
 }
 export { exportMemories, importMemories } from './serializer.js';
 export function learn(args) {
