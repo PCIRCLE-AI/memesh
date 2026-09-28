@@ -25,7 +25,7 @@ import { SKIP_REASONS } from './_generated/capture-liveness.js';
  * none, so a session with nothing to record never waits on a write lock.
  * `openDb` returns null when there is no database file yet.
  *
- * @param {() => import('./_generated/sqlite.js').MemeshDatabase} openDb returns a writable database
+ * @param {() => import('./_generated/sqlite.js').MemeshDatabase | null} openDb returns a writable database, or null when there is no database file yet
  * @param {{
  *   sessionId: unknown,
  *   source: unknown,

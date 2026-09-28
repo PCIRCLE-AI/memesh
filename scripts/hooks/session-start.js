@@ -816,14 +816,6 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
   return [...lines.filter((l) => l.length > 0), '', baseMessage].join('\n');
 }
 
-// #360: the ONE reason string for "this session's memory injection resolved
-// to nothing" — every exit path that ends up with a falsy `memoryContext`
-// passes this through `output()`'s `recorded` argument, so a genuinely silent
-// session (`minimal` on an empty project, the no-database and
-// no-entities-table early exits) always leaves a trace of WHY nothing was
-// injected, instead of the generic `session-start-banner` outcome marker that
-// carries no `reason`. One helper, not three copies of the template string,
-// so the wording cannot drift between call sites.
 /** Did the launcher mapping fail to be stored for a reason worth recording on any start? */
 function launcherWriteFailed(outcome) {
   return outcome.outcome === 'error'
@@ -855,6 +847,14 @@ function recordLauncherSession(data, launcher) {
   }
 }
 
+// #360: the ONE reason string for "this session's memory injection resolved
+// to nothing" — every exit path that ends up with a falsy `memoryContext`
+// passes this through `output()`'s `recorded` argument, so a genuinely silent
+// session (`minimal` on an empty project, the no-database and
+// no-entities-table early exits) always leaves a trace of WHY nothing was
+// injected, instead of the generic `session-start-banner` outcome marker that
+// carries no `reason`. One helper, not three copies of the template string,
+// so the wording cannot drift between call sites.
 function nothingToInjectReason(level, detail) {
   return `briefing-level: nothing to inject at "${level}" — ${detail}`;
 }
@@ -923,7 +923,6 @@ process.stdin.on('end', async () => {
     try {
     const data = JSON.parse(input);
     hookPayload = data;
-
 
     const projectName = getProjectName(data.cwd);
 

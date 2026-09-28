@@ -33,8 +33,8 @@
     },
     {
       "path": "scripts/hooks/_clear-alias.js",
-      "sha256": "00a7f2207eca88266be2772e62995761cc5be46193c2f95c58e5816d9cabd4fd",
-      "bytes": 4489
+      "sha256": "da537cac0ae382c5ee5a696e5595cfa8d9c269db4a9e07bee59a600ea1e2852b",
+      "bytes": 4540
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
@@ -188,8 +188,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "f3e2e499fa95f8b6fbc73aa113f02e460a26441a224f7e3b13e245eebb81dd73",
-      "bytes": 110848
+      "sha256": "916d1ea5a53e8d1c58fde352ed0e2fe3727c0f33f1a806c469734a2ef56b0c75",
+      "bytes": 110847
     },
     {
       "path": "scripts/hooks/session-summary.js",
