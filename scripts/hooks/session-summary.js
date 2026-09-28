@@ -21,6 +21,7 @@ import {
   readUpdateCheckCache,
   redactSecrets,
   hookErrorReason,
+  hookSourceHost,
   recordHookOutcome,
   recordHookRun,
   stampHookRunOnly,
@@ -445,7 +446,7 @@ process.stdin.on('end', async () => {
         // sentences on every turn; skipping after the first froze a two-day
         // session at its first turn (#322). A snapshot is restated, not added
         // to.
-        const result = captureEntity(db, { name, type, observations, tags, title, replace: true });
+        const result = captureEntity(db, { name, type, observations, tags, title, replace: true, sourceHost: hookSourceHost(payload, process.env) });
         if (result?.archived) {
           // The user `forget`-archived this exact entity. Not a failure —
           // captureEntity's contract left it untouched on purpose — so it
