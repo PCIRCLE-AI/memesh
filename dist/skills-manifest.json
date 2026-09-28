@@ -23,8 +23,8 @@
     },
     {
       "path": "hooks/hooks.json",
-      "sha256": "314cabefc61b1a11fc735128b4e700ad0223d79dadca64dadb7eaf4d59c02a61",
-      "bytes": 2730
+      "sha256": "c43eb07c6d5a3b7955d7a7ec0e1e2eedf73a88f9744f4d2d696994a324cbdeb7",
+      "bytes": 2963
     },
     {
       "path": "scripts/hooks/_claude-channel.js",
@@ -32,9 +32,14 @@
       "bytes": 6997
     },
     {
+      "path": "scripts/hooks/_clear-alias.js",
+      "sha256": "8448a1610d7c8a6313dbdaa56930cbbca8d9e26be8bda80f13cd16484a318747",
+      "bytes": 4848
+    },
+    {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "7d405e882d5bb6d11467360370c663e0f0f9261a535f64558b96698371dd8be1",
-      "bytes": 7982
+      "sha256": "f198a16f3bf917ab8cce74cf65ebf11d05f7460a49a5fcded1612e0d04deda52",
+      "bytes": 9118
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
@@ -58,8 +63,8 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "605b58eb067cc6d34f98a30a37ed9f703f0c073ba0fc8310a38e5e0659f79431",
-      "bytes": 18657
+      "sha256": "31a722dca816bdc2ab48f2135d7b6987b0b7a981927c7c2870717a81f2509c13",
+      "bytes": 19260
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
@@ -93,8 +98,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "cf17e2dd6a8e8263c8eb8923927674b6b0b46fa737ca87cab2950acf28705c38",
-      "bytes": 25352
+      "sha256": "603399be11e200244c6aaaf65e4eab42bb413823f3f86c27d8381f1ae90d61cb",
+      "bytes": 25857
     },
     {
       "path": "scripts/hooks/_generated/session-handoff.js",
@@ -183,8 +188,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "93e5fe04f714dce10044c9dbf3ab7386236923aac9f0672cb89e1c3ba641b437",
-      "bytes": 108336
+      "sha256": "2436189ba972f6cdcc7ef28badb7b9655d3290ef0fc013ef8e5927b39ff5e31e",
+      "bytes": 109849
     },
     {
       "path": "scripts/hooks/session-summary.js",

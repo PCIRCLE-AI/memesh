@@ -37,5 +37,11 @@ function sessionFromVariable(env: NodeJS.ProcessEnv, name: string): string | und
   const raw = env[name]?.trim();
   if (!raw) return undefined;
   const session = canonicalAgentScopeId(raw);
-  return agentScopeIdRejection(name, session) === null ? session : undefined;
+  if (agentScopeIdRejection(name, session) === null) return session;
+  // Set but unusable: say so, or "no session" reads exactly like "not set".
+  // The variable only, never its value.
+  try {
+    process.stderr.write(`[memesh] ignoring ${name}: set but not a valid session id\n`);
+  } catch { /* stderr gone */ }
+  return undefined;
 }

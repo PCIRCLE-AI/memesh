@@ -23,7 +23,7 @@ import {
   unreadMessageRefsFor,
 } from '../../src/core/agent-message-inbox.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
-import { registerAgentSession, sendIntendedPrincipalMessage } from '../helpers/agent-session-fixture.js';
+import { registerAgentSession, sendIntendedPrincipalMessage, sendSessionTargetedMessage } from '../helpers/agent-session-fixture.js';
 
 const PROJECT = 'proj-497';
 const PRINCIPAL = 'claude-proj-497-1';
@@ -101,7 +101,7 @@ describe('Feature: #497 a principal message meant for one session reaches only t
     );
     // The error says what to do: Codex does not pass its thread id to MCP.
     expect(() => receipt(sent.message_id, 'intake', undefined)).toThrow(
-      /CLAUDE_CODE_SESSION_ID \/ CODEX_THREAD_ID.*memesh message intake/,
+      /CLAUDE_CODE_SESSION_ID \/ CODEX_THREAD_ID not set or not a valid session id.*memesh message intake/,
     );
     expect(waitingFor(SESSION_A).refs).toBe(1);
   });
@@ -177,6 +177,36 @@ describe('Feature: #497 a principal message meant for one session reaches only t
       project: PROJECT, sender: 'codex-lead', recipient: PRINCIPAL,
       idempotency_key: 'k-retry', payload: { text: 'work instruction for one session' }, content_type: 'application/json',
     })).toThrow(AgentIdempotencyConflictError);
+  });
+
+  describe('a session-targeted delivery to A, while A and B are both live under the principal', () => {
+    function sessionIntake(messageId: string, callerSession: string | undefined) {
+      return recordAgentReceipt(getDatabase(), {
+        project: PROJECT, recipient: SESSION_A, message_id: messageId, actor: SESSION_A,
+        idempotency_key: `intake-${messageId}-${callerSession ?? 'none'}`,
+        receipt_kind: 'intake', intake_state: 'ingested', caller_session: callerSession,
+      });
+    }
+
+    function setup(key: string) {
+      registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, adapterKind: 'claude-channel' });
+      registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_B, adapterKind: 'claude-channel' });
+      return sendSessionTargetedMessage(PROJECT, SESSION_A, key);
+    }
+
+    it('refuses intake from B, a registered session; A, a caller with no session id, and an unregistered id can', () => {
+      const sent = setup('k-session-a-intake');
+
+      expect(() => sessionIntake(sent.message_id, SESSION_B)).toThrow(
+        expect.objectContaining({ code: 'intended_for_other_session' }),
+      );
+      expect(sessionIntake(sent.message_id, SESSION_A)).toMatchObject({ receipt_kind: 'intake' });
+      // No session id: a Codex MCP process.
+      expect(sessionIntake(sent.message_id, undefined)).toMatchObject({ receipt_kind: 'intake' });
+      // An id nobody registered: e.g. this session after /clear, while its
+      // channel host keeps the id it was started with.
+      expect(sessionIntake(sent.message_id, 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee')).toMatchObject({ receipt_kind: 'intake' });
+    });
   });
 
   it('migration: a database from before the column gains it, and its old deliveries count for every session', () => {

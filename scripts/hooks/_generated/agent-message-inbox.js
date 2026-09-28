@@ -8,9 +8,38 @@
 // ============================================================================
 function intendedSessionFilter(db, session) {
     const hasColumn = db.prepare("SELECT 1 AS present FROM pragma_table_info('agent_message_deliveries') WHERE name = 'intended_session'").get() !== undefined;
-    return hasColumn
-        ? { sql: 'AND (d.intended_session IS NULL OR d.intended_session = ?)', params: [session ?? null] }
-        : { sql: '', params: [] };
+    if (!hasColumn)
+        return { sql: '', params: [] };
+    if (session === undefined)
+        return { sql: 'AND d.intended_session IS NULL', params: [] };
+    const ids = [...sessionAliasChain(db, session)];
+    return {
+        sql: `AND (d.intended_session IS NULL OR d.intended_session IN (${ids.map(() => '?').join(', ')}))`,
+        params: ids,
+    };
+}
+export const SESSION_ALIAS_MAX_HOPS = 8;
+export function sessionAliasChain(db, session, maxHops = SESSION_ALIAS_MAX_HOPS) {
+    const chain = new Set([session]);
+    try {
+        const previous = db.prepare('SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?');
+        const next = db.prepare('SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?');
+        for (const step of [previous, next]) {
+            let current = session;
+            for (let hop = 0; hop < maxHops; hop++) {
+                const row = step.get(current);
+                if (typeof row?.id !== 'string' || chain.has(row.id))
+                    break;
+                chain.add(row.id);
+                current = row.id;
+            }
+        }
+    }
+    catch (err) {
+        if (!/no such table: agent_session_aliases\b/.test(errorMessage(err)))
+            throw err;
+    }
+    return chain;
 }
 export function unreadDeliveryCount(db, project, recipient, session) {
     if (!recipient)

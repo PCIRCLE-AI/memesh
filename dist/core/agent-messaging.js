@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { agentMessagePayloadStorageBytes, enforceAgentMessageStorageQuota, } from './agent-message-storage.js';
+import { sessionAliasChain } from './agent-message-inbox.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, } from './agent-scope-id.js';
 const MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
 const MAX_IDEMPOTENCY_KEY = 200;
@@ -21,7 +22,7 @@ export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
     code = 'intended_for_other_session';
     constructor(messageId, intendedSession, callerSession) {
         const caller = callerSession === null
-            ? 'this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set, or the request came over HTTP). '
+            ? 'this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set or not a valid session id, or the request came over HTTP). '
                 + 'If you are that session in Codex, record it with the CLI from your shell (`memesh message intake ...`): '
                 + 'Codex does not pass its thread id to MCP servers'
             : `this caller is session ${JSON.stringify(callerSession)}`;
@@ -242,12 +243,19 @@ export function fetchAgentMessage(db, input) {
 }
 export function recordAgentReceipt(db, input) {
     const normalized = normalizeReceiptInput(input);
-    const intendedSession = assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
-    if (intendedSession !== null
-        && (normalized.receipt_kind === 'intake' || normalized.receipt_kind === 'disposition')) {
+    const delivery = assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
+    if (normalized.receipt_kind === 'intake' || normalized.receipt_kind === 'disposition') {
         const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
-        if (callerSession !== intendedSession) {
-            throw new AgentIntendedForOtherSessionError(normalized.message_id, intendedSession, callerSession);
+        if (delivery.intended_session !== null
+            && (callerSession === null || !sessionAliasChain(db, delivery.intended_session).has(callerSession))) {
+            throw new AgentIntendedForOtherSessionError(normalized.message_id, delivery.intended_session, callerSession);
+        }
+        if (delivery.target_kind === 'session'
+            && callerSession !== null
+            && !sessionAliasChain(db, normalized.recipient).has(callerSession)
+            && db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?')
+                .get(normalized.project, callerSession) !== undefined) {
+            throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
         }
     }
     const detail = buildReceiptDetail(normalized);
@@ -631,14 +639,14 @@ function loadSentMessage(db, project, recipient, messageId) {
 }
 function assertMessageAccess(db, project, recipient, messageId) {
     const row = db.prepare(`
-    SELECT intended_session
+    SELECT intended_session, target_kind
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId);
     if (!row) {
         throw new AgentMessageAccessError(`Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`);
     }
-    return row.intended_session;
+    return row;
 }
 function lookupExistingReceipt(db, project, recipient, messageId, receiptKind, idempotencyKey) {
     return db.prepare(`

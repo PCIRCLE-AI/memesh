@@ -379,6 +379,18 @@ export function migrateEntitiesSchema(db) {
     addColumn('title', "ALTER TABLE entities ADD COLUMN title TEXT");
     db.exec(`CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status);
      CREATE INDEX IF NOT EXISTS idx_entities_namespace ON entities(namespace);`);
+    db.exec(`CREATE TABLE IF NOT EXISTS agent_session_aliases (
+       session_id          TEXT PRIMARY KEY,
+       previous_session_id TEXT NOT NULL UNIQUE,
+       created_at_ms       INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS agent_session_clear_markers (
+       side           TEXT NOT NULL CHECK (side IN ('end', 'start')),
+       session_id     TEXT NOT NULL,
+       cwd            TEXT NOT NULL,
+       created_at_ms  INTEGER NOT NULL,
+       PRIMARY KEY (side, session_id)
+     );`);
     const deliveryTableExists = db
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_deliveries'")
         .get();

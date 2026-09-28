@@ -49,7 +49,11 @@ match like this names the target session as the recipient to use, not the
 principal: `... waiting for the live session "<session id>" ... fetch each
 message_id with target_kind "session" (fetch or intake using your own
 principal id instead of "<session id>" will not match this session-targeted
-message) ...`.
+message) ...`. `intake` or a `disposition` for such a delivery from a caller
+that is itself another registered session of the project
+(`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`) is refused with
+`intended_for_other_session` (#497). A caller with no session id, or with an
+id no session registered, still can — a Codex MCP process has none.
 
 Every Claude Code session in one project shares one principal, so a message
 sent to that principal reaches all of them. A message can instead name the
@@ -72,11 +76,15 @@ router never registered has no known principal, so that send still fails,
 saying so, and so does a refused session registered through a host that
 cannot be named.
 An unreachable router (`router_unreachable`) does not trigger the
-fallback. For a message like this:
+fallback. The refused session delivery is kept, so if that session comes back
+it can see the message twice — its own session copy and the principal copy —
+and should record intake for both. For a message like this:
 
-- only that session's SessionStart, prompt hook, Stop gate and `briefing`
-  count it as waiting; every other session of the principal does not, and
-  neither does a caller with no session id;
+- only that session's hooks (SessionStart, the prompt hook, the Stop gate)
+  count it as waiting, and so does `briefing` where it knows the session: the
+  MCP tool under Claude Code, or the CLI run from a Codex shell. Every other
+  session of the principal does not, and neither does a caller with no
+  session id;
 - only that session can record `intake` or a `disposition` for it. The MCP
   tool and the CLI take the caller's session from `CLAUDE_CODE_SESSION_ID`,
   else `CODEX_THREAD_ID`. Any other caller — another session, or HTTP and the
@@ -87,6 +95,13 @@ fallback. For a message like this:
   `ack` and `activation` are not restricted;
 - the router pushes it only to that session's connection. With that session
   not connected it stays durable, for the hooks to surface.
+
+After `/clear`, Claude Code gives the session a new id for its hooks and
+Bash, while the memesh MCP server and the channel host keep the one they
+started with. memesh links the two when the SessionEnd and SessionStart hooks
+of that `/clear` run, so a message meant for the session reaches it, and can
+be intaken, under either id. If two sessions clear in the same directory at
+the same moment, neither is linked.
 
 A message with no `intended_session` (every message sent before this
 existed, too) keeps reaching every session of the principal. The Claude

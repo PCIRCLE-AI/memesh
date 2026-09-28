@@ -9,6 +9,8 @@ interface InboxListDb {
         get(...params: unknown[]): unknown;
     };
 }
+export declare const SESSION_ALIAS_MAX_HOPS = 8;
+export declare function sessionAliasChain(db: InboxDb, session: string, maxHops?: number): Set<string>;
 export declare function unreadDeliveryCount(db: InboxDb, project: string, recipient?: string, session?: string): number;
 export declare function recipientEverSeen(db: InboxDb, project: string, recipient: string): boolean | undefined;
 export declare function recipientEverSeenAnywhere(db: InboxDb, recipient: string, onError?: (err: unknown) => void): boolean | undefined;

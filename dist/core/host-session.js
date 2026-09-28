@@ -10,6 +10,12 @@ function sessionFromVariable(env, name) {
     if (!raw)
         return undefined;
     const session = canonicalAgentScopeId(raw);
-    return agentScopeIdRejection(name, session) === null ? session : undefined;
+    if (agentScopeIdRejection(name, session) === null)
+        return session;
+    try {
+        process.stderr.write(`[memesh] ignoring ${name}: set but not a valid session id\n`);
+    }
+    catch { }
+    return undefined;
 }
 //# sourceMappingURL=host-session.js.map

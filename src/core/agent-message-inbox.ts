@@ -51,7 +51,10 @@ interface InboxListDb {
  * say which session it is (`session` undefined) gets only the NULL ones:
  * reminding the wrong session is the failure this exists to stop.
  *
- * Returns the extra `AND ...` clause and its one parameter. Returns no clause
+ * After /clear, `session` also stands for every id in its alias chain
+ * ({@link sessionAliasChain}).
+ *
+ * Returns the extra `AND ...` clause and its parameters. Returns no clause
  * on a database from before the column: a hook opens the database read-only
  * and never migrates it, and every delivery there is meant for every session.
  */
@@ -59,9 +62,46 @@ function intendedSessionFilter(db: InboxDb, session?: string): { sql: string; pa
   const hasColumn = db.prepare(
     "SELECT 1 AS present FROM pragma_table_info('agent_message_deliveries') WHERE name = 'intended_session'",
   ).get() !== undefined;
-  return hasColumn
-    ? { sql: 'AND (d.intended_session IS NULL OR d.intended_session = ?)', params: [session ?? null] }
-    : { sql: '', params: [] };
+  if (!hasColumn) return { sql: '', params: [] };
+  if (session === undefined) return { sql: 'AND d.intended_session IS NULL', params: [] };
+  // After /clear the session answers to every id in its alias chain.
+  const ids = [...sessionAliasChain(db, session)];
+  return {
+    sql: `AND (d.intended_session IS NULL OR d.intended_session IN (${ids.map(() => '?').join(', ')}))`,
+    params: ids,
+  };
+}
+
+/** Most /clear links {@link sessionAliasChain} follows in each direction. */
+export const SESSION_ALIAS_MAX_HOPS = 8;
+
+/**
+ * #497 /clear: every id one session has had. Claude Code gives a cleared
+ * session a new id for its hooks and Bash, while its MCP servers keep the id
+ * they started with, so a message meant for the session can name either.
+ * `agent_session_aliases` links each new id to the previous one (both columns
+ * unique, so it is a plain list); this walks it both ways, at most
+ * {@link SESSION_ALIAS_MAX_HOPS} links each way. Always contains `session`.
+ * A database without the table (not migrated yet) has no aliases.
+ */
+export function sessionAliasChain(db: InboxDb, session: string, maxHops: number = SESSION_ALIAS_MAX_HOPS): Set<string> {
+  const chain = new Set([session]);
+  try {
+    const previous = db.prepare('SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?');
+    const next = db.prepare('SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?');
+    for (const step of [previous, next]) {
+      let current = session;
+      for (let hop = 0; hop < maxHops; hop++) {
+        const row = step.get(current) as { id?: unknown } | undefined;
+        if (typeof row?.id !== 'string' || chain.has(row.id)) break;
+        chain.add(row.id);
+        current = row.id;
+      }
+    }
+  } catch (err) {
+    if (!/no such table: agent_session_aliases\b/.test(errorMessage(err))) throw err;
+  }
+  return chain;
 }
 
 /**

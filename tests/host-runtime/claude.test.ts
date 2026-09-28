@@ -279,6 +279,30 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
     await session.close();
   });
 
+  it('warns on stderr, naming only the variable, when CLAUDE_CODE_SESSION_ID is set but not a valid session id', async () => {
+    const writes: string[] = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: string | Uint8Array) => {
+      writes.push(String(chunk));
+      return true;
+    });
+    try {
+      const { session, server } = await setup({
+        generate_session_id: () => 'generated-session-a',
+        env: { CLAUDE_CODE_SESSION_ID: '/secret/path-shaped' },
+      });
+      server.oninitialized?.();
+      await session.registered;
+      expect(session.session_instance_id).toBe('generated-session-a');
+      await session.close();
+    } finally {
+      spy.mockRestore();
+    }
+    const warning = writes.join('');
+    expect(warning).toContain('CLAUDE_CODE_SESSION_ID');
+    expect(warning).toContain('not a valid session id');
+    expect(warning).not.toContain('/secret/path-shaped');
+  });
+
   it('keeps a configured session id over CLAUDE_CODE_SESSION_ID', async () => {
     const server = fakeServer();
     const session = await startClaudeManagedSession(config('injected-session-a'), {

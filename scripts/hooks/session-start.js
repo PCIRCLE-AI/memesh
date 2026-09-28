@@ -60,6 +60,8 @@ import {
   isCodexHost,
   resolveMessageRecipient,
   waitingMessageLines,
+  openHookDb,
+  SKIP_REASONS,
   hookMessageSessionId,
   SESSION_ID_MISMATCH_REASON,
   briefingLevelPolicy,
@@ -73,6 +75,7 @@ import {
   writeAutoUpdateConsent,
   writePrivateJson,
 } from './_shared.js';
+import { recordClearSide } from './_clear-alias.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import {
   buildBriefingIndex,
@@ -822,6 +825,30 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
 // injected, instead of the generic `session-start-banner` outcome marker that
 // carries no `reason`. One helper, not three copies of the template string,
 // so the wording cannot drift between call sites.
+/**
+ * Which side of a /clear this run is: SessionEnd with reason "clear" holds
+ * the old session id, SessionStart with source "clear" the new one.
+ * (`exit_reason` / `startup_mode` are accepted as the same fields.)
+ */
+function clearSideOf(data) {
+  if (data.hook_event_name === 'SessionEnd') return (data.reason ?? data.exit_reason) === 'clear' ? 'end' : null;
+  return (data.source ?? data.startup_mode) === 'clear' ? 'start' : null;
+}
+
+/** Run one side of the /clear pairing; returns the outcome to record. Claude Code only. */
+function runClearSide(side, data) {
+  if (!isClaudeCodeHost(process.env)) return { outcome: 'skipped', reason: SKIP_REASONS.notClaudeCodeHost };
+  let db;
+  try {
+    ({ db } = openHookDb(process.env));
+    return recordClearSide(db, { side, sessionId: data.session_id, cwd: data.cwd });
+  } catch (err) {
+    return { outcome: 'error', reason: `clear-alias: ${hookErrorReason(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* already closed */ }
+  }
+}
+
 function nothingToInjectReason(level, detail) {
   return `briefing-level: nothing to inject at "${level}" — ${detail}`;
 }
@@ -886,6 +913,16 @@ process.stdin.on('end', async () => {
     try {
     const data = JSON.parse(input);
     hookPayload = data;
+
+    // #497 /clear: pair the session's old id (SessionEnd) with its new one
+    // (SessionStart) — see _clear-alias.js. A SessionEnd shows nothing.
+    const clearSide = clearSideOf(data);
+    if (clearSide) record(runClearSide(clearSide, data));
+    if (data.hook_event_name === 'SessionEnd') {
+      if (!clearSide) record({ outcome: 'skipped', reason: SKIP_REASONS.clearAliasNotClear });
+      return process.exit(0);
+    }
+
     const projectName = getProjectName(data.cwd);
 
     // #360 — resolve the briefing level ONCE, before any exit path, so every

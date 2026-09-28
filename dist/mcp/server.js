@@ -26476,6 +26476,18 @@ function migrateEntitiesSchema(db2) {
   addColumn("title", "ALTER TABLE entities ADD COLUMN title TEXT");
   db2.exec(`CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status);
      CREATE INDEX IF NOT EXISTS idx_entities_namespace ON entities(namespace);`);
+  db2.exec(`CREATE TABLE IF NOT EXISTS agent_session_aliases (
+       session_id          TEXT PRIMARY KEY,
+       previous_session_id TEXT NOT NULL UNIQUE,
+       created_at_ms       INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS agent_session_clear_markers (
+       side           TEXT NOT NULL CHECK (side IN ('end', 'start')),
+       session_id     TEXT NOT NULL,
+       cwd            TEXT NOT NULL,
+       created_at_ms  INTEGER NOT NULL,
+       PRIMARY KEY (side, session_id)
+     );`);
   const deliveryTableExists = db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_deliveries'").get();
   if (!deliveryTableExists)
     return;
@@ -29135,7 +29147,37 @@ function setTaskState(input) {
 // dist/core/agent-message-inbox.js
 function intendedSessionFilter(db2, session) {
   const hasColumn = db2.prepare("SELECT 1 AS present FROM pragma_table_info('agent_message_deliveries') WHERE name = 'intended_session'").get() !== void 0;
-  return hasColumn ? { sql: "AND (d.intended_session IS NULL OR d.intended_session = ?)", params: [session ?? null] } : { sql: "", params: [] };
+  if (!hasColumn)
+    return { sql: "", params: [] };
+  if (session === void 0)
+    return { sql: "AND d.intended_session IS NULL", params: [] };
+  const ids = [...sessionAliasChain(db2, session)];
+  return {
+    sql: `AND (d.intended_session IS NULL OR d.intended_session IN (${ids.map(() => "?").join(", ")}))`,
+    params: ids
+  };
+}
+var SESSION_ALIAS_MAX_HOPS = 8;
+function sessionAliasChain(db2, session, maxHops = SESSION_ALIAS_MAX_HOPS) {
+  const chain = /* @__PURE__ */ new Set([session]);
+  try {
+    const previous = db2.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?");
+    const next = db2.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?");
+    for (const step of [previous, next]) {
+      let current = session;
+      for (let hop = 0; hop < maxHops; hop++) {
+        const row = step.get(current);
+        if (typeof row?.id !== "string" || chain.has(row.id))
+          break;
+        chain.add(row.id);
+        current = row.id;
+      }
+    }
+  } catch (err) {
+    if (!/no such table: agent_session_aliases\b/.test(errorMessage(err)))
+      throw err;
+  }
+  return chain;
 }
 function unreadDeliveryCount(db2, project, recipient, session) {
   if (!recipient)
@@ -29256,7 +29298,14 @@ function sessionFromVariable(env, name) {
   if (!raw)
     return void 0;
   const session = canonicalAgentScopeId(raw);
-  return agentScopeIdRejection(name, session) === null ? session : void 0;
+  if (agentScopeIdRejection(name, session) === null)
+    return session;
+  try {
+    process.stderr.write(`[memesh] ignoring ${name}: set but not a valid session id
+`);
+  } catch {
+  }
+  return void 0;
 }
 
 // dist/core/briefing-index.js
@@ -29756,7 +29805,7 @@ var AgentMessageAccessError = class extends AgentMessagingError {
 var AgentIntendedForOtherSessionError = class extends AgentMessageAccessError {
   code = "intended_for_other_session";
   constructor(messageId2, intendedSession, callerSession) {
-    const caller = callerSession === null ? "this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set, or the request came over HTTP). If you are that session in Codex, record it with the CLI from your shell (`memesh message intake ...`): Codex does not pass its thread id to MCP servers" : `this caller is session ${JSON.stringify(callerSession)}`;
+    const caller = callerSession === null ? "this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set or not a valid session id, or the request came over HTTP). If you are that session in Codex, record it with the CLI from your shell (`memesh message intake ...`): Codex does not pass its thread id to MCP servers" : `this caller is session ${JSON.stringify(callerSession)}`;
     super(`intended_for_other_session: message ${messageId2} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. Otherwise leave it for that session: do not record intake or a disposition for it.`);
   }
 };
@@ -29958,11 +30007,14 @@ function fetchAgentMessage(db2, input) {
 }
 function recordAgentReceipt(db2, input) {
   const normalized = normalizeReceiptInput(input);
-  const intendedSession = assertMessageAccess(db2, normalized.project, normalized.recipient, normalized.message_id);
-  if (intendedSession !== null && (normalized.receipt_kind === "intake" || normalized.receipt_kind === "disposition")) {
+  const delivery = assertMessageAccess(db2, normalized.project, normalized.recipient, normalized.message_id);
+  if (normalized.receipt_kind === "intake" || normalized.receipt_kind === "disposition") {
     const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
-    if (callerSession !== intendedSession) {
-      throw new AgentIntendedForOtherSessionError(normalized.message_id, intendedSession, callerSession);
+    if (delivery.intended_session !== null && (callerSession === null || !sessionAliasChain(db2, delivery.intended_session).has(callerSession))) {
+      throw new AgentIntendedForOtherSessionError(normalized.message_id, delivery.intended_session, callerSession);
+    }
+    if (delivery.target_kind === "session" && callerSession !== null && !sessionAliasChain(db2, normalized.recipient).has(callerSession) && db2.prepare("SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?").get(normalized.project, callerSession) !== void 0) {
+      throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
     }
   }
   const detail = buildReceiptDetail(normalized);
@@ -30233,14 +30285,14 @@ function loadSentMessage(db2, project, recipient, messageId2) {
 }
 function assertMessageAccess(db2, project, recipient, messageId2) {
   const row = db2.prepare(`
-    SELECT intended_session
+    SELECT intended_session, target_kind
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId2);
   if (!row) {
     throw new AgentMessageAccessError(`Agent message ${messageId2} is not available to recipient ${recipient} in project ${project}.`);
   }
-  return row.intended_session;
+  return row;
 }
 function lookupExistingReceipt(db2, project, recipient, messageId2, receiptKind, idempotencyKey) {
   return db2.prepare(`

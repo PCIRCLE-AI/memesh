@@ -412,6 +412,13 @@ export const SKIP_REASONS = {
   noDatabaseForMessageGate: 'no database yet — nothing to check for waiting messages',
   nothingWaitingForGate: 'no messages are waiting for the resolved recipient',
   alreadyBlockedForGate: 'every waiting message id was already blocked for in this session',
+  // session-start, on /clear (#497): pairing the old and new session ids
+  clearAliasWaiting: 'clear_alias_waiting: marker left for the other side of this /clear',
+  clearAliasAmbiguous: 'clear_alias_ambiguous: more than one session cleared here at once — no alias written',
+  clearAliasAlreadyLinked: 'clear_alias_already_linked: one of these session ids is already aliased',
+  clearAliasNoTable: 'clear_alias_no_table: the database has no alias tables yet (not migrated)',
+  clearAliasInvalidInput: 'clear_alias_invalid_input: no usable session_id or cwd in the /clear payload',
+  clearAliasNotClear: 'clear_alias_not_clear: this SessionEnd was not a /clear',
 } as const;
 
 const KNOWN_SKIP_REASONS: ReadonlySet<string> = new Set(Object.values(SKIP_REASONS));

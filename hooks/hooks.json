@@ -54,6 +54,16 @@
             "timeout": 3
           }
         ]
+      },
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.js",
+            "timeout": 3
+          }
+        ]
       }
     ],
     "PostToolUse": [

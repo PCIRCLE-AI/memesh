@@ -74,6 +74,12 @@ export declare const SKIP_REASONS: {
     readonly noDatabaseForMessageGate: "no database yet — nothing to check for waiting messages";
     readonly nothingWaitingForGate: "no messages are waiting for the resolved recipient";
     readonly alreadyBlockedForGate: "every waiting message id was already blocked for in this session";
+    readonly clearAliasWaiting: "clear_alias_waiting: marker left for the other side of this /clear";
+    readonly clearAliasAmbiguous: "clear_alias_ambiguous: more than one session cleared here at once — no alias written";
+    readonly clearAliasAlreadyLinked: "clear_alias_already_linked: one of these session ids is already aliased";
+    readonly clearAliasNoTable: "clear_alias_no_table: the database has no alias tables yet (not migrated)";
+    readonly clearAliasInvalidInput: "clear_alias_invalid_input: no usable session_id or cwd in the /clear payload";
+    readonly clearAliasNotClear: "clear_alias_not_clear: this SessionEnd was not a /clear";
 };
 export declare const UNRECOGNISED_REASON = "unrecognised reason";
 export declare function renderableSkipReason(reason: string | undefined): string;

@@ -4,6 +4,7 @@ import {
   agentMessagePayloadStorageBytes,
   enforceAgentMessageStorageQuota,
 } from './agent-message-storage.js';
+import { sessionAliasChain } from './agent-message-inbox.js';
 import {
   AGENT_SCOPE_ID_MAX_LENGTH,
   agentScopeIdRejection,
@@ -255,7 +256,7 @@ export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
 
   constructor(messageId: string, intendedSession: string, callerSession: string | null) {
     const caller = callerSession === null
-      ? 'this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set, or the request came over HTTP). '
+      ? 'this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set or not a valid session id, or the request came over HTTP). '
         + 'If you are that session in Codex, record it with the CLI from your shell (`memesh message intake ...`): '
         + 'Codex does not pass its thread id to MCP servers'
       : `this caller is session ${JSON.stringify(callerSession)}`;
@@ -630,14 +631,32 @@ export function fetchAgentMessage(db: MemeshDatabase, input: FetchAgentMessageIn
 
 export function recordAgentReceipt(db: MemeshDatabase, input: RecordAgentReceiptInput): AgentMessageReceipt {
   const normalized = normalizeReceiptInput(input);
-  const intendedSession = assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
-  if (
-    intendedSession !== null
-    && (normalized.receipt_kind === 'intake' || normalized.receipt_kind === 'disposition')
-  ) {
+  const delivery = assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
+  if (normalized.receipt_kind === 'intake' || normalized.receipt_kind === 'disposition') {
     const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
-    if (callerSession !== intendedSession) {
-      throw new AgentIntendedForOtherSessionError(normalized.message_id, intendedSession, callerSession);
+    // A principal delivery meant for one session: only that session — under
+    // any id it has had across /clear — and a caller that cannot say which
+    // session it is may not stand in for it.
+    if (
+      delivery.intended_session !== null
+      && (callerSession === null || !sessionAliasChain(db, delivery.intended_session).has(callerSession))
+    ) {
+      throw new AgentIntendedForOtherSessionError(normalized.message_id, delivery.intended_session, callerSession);
+    }
+    // A delivery addressed to one session outright: refuse a caller that is
+    // itself another registered session of this project. A caller with no
+    // session id stays allowed (a Codex MCP process has none and must still
+    // record its own), and so does an unregistered id: an MCP server keeps the
+    // session id it was started with, while `/clear` gives the session a new
+    // one, so an id nobody registered proves nothing.
+    if (
+      delivery.target_kind === 'session'
+      && callerSession !== null
+      && !sessionAliasChain(db, normalized.recipient).has(callerSession)
+      && db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?')
+        .get(normalized.project, callerSession) !== undefined
+    ) {
+      throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
     }
   }
 
@@ -1089,20 +1108,25 @@ function loadSentMessage(
   `).get(project, project, recipient, messageId) as MessageJoinRow | undefined;
 }
 
-/** Throws unless the delivery exists; returns its `intended_session` (#497). */
-function assertMessageAccess(db: MemeshDatabase, project: string, recipient: string, messageId: string): string | null {
+/** Throws unless the delivery exists; returns who it is for (#497). */
+function assertMessageAccess(
+  db: MemeshDatabase,
+  project: string,
+  recipient: string,
+  messageId: string,
+): { intended_session: string | null; target_kind: string } {
   const row = db.prepare(`
-    SELECT intended_session
+    SELECT intended_session, target_kind
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
-  `).get(project, recipient, messageId) as { intended_session: string | null } | undefined;
+  `).get(project, recipient, messageId) as { intended_session: string | null; target_kind: string } | undefined;
 
   if (!row) {
     throw new AgentMessageAccessError(
       `Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`,
     );
   }
-  return row.intended_session;
+  return row;
 }
 
 function lookupExistingReceipt(
