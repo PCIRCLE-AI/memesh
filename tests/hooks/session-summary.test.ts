@@ -462,6 +462,63 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     db.close();
   });
 
+  it('#495: a Bash capture that is not path-shaped does not become a file: tag', () => {
+    // `tee -a $F` captures the shell variable `$F` in the exact slot a real
+    // file target would occupy. Mixed with one real edit and enough calls to
+    // clear MIN_TOOL_CALLS: the real edit's tags must land, the junk token
+    // must not appear as a tag in any form (full or extension-less stem).
+    writeTranscript([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: "cat > notes.md <<'EOF'\nhi\nEOF" } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'tee -a $F' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
+    ]);
+
+    runHook({
+      session_id: 'test-junktags',
+      transcript_path: transcriptPath,
+      cwd: '/tmp/myproject',
+      stop_reason: 'end_turn',
+      was_in_agentic_loop: true,
+    });
+
+    const db = openDb();
+    const entity = db.prepare("SELECT id FROM entities WHERE name = 'session-test-junktags-files'").get() as any;
+    expect(entity, 'the real edit still produces a -files entity').toBeTruthy();
+    const tags = (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(entity.id) as any[]).map((r) => r.tag);
+    expect(tags).toContain('file:notes.md');
+    expect(tags).toContain('file:notes');
+    expect(tags).not.toContain('file:$F');
+    expect(tags.some((t) => t.startsWith('file:$'))).toBe(false);
+    db.close();
+  });
+
+  it('#495: Edit/Write paths go through the same name rule — a template name is kept, an editor scratch name is not', () => {
+    writeTranscript([
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/{{cookiecutter.slug}}/{{cookiecutter.slug}}.py' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/repo/#scratch#' } }] } },
+      // A Windows-style path basenames the same way in both branches, on any OS.
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: 'C:\\repo\\src\\winfile.ts' } }] } },
+      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
+    ]);
+
+    runHook({
+      session_id: 'test-edittags',
+      transcript_path: transcriptPath,
+      cwd: '/tmp/myproject',
+      stop_reason: 'end_turn',
+      was_in_agentic_loop: true,
+    });
+
+    const db = openDb();
+    const entity = db.prepare("SELECT id FROM entities WHERE name = 'session-test-edittags-files'").get() as any;
+    expect(entity, 'the template edit still produces a -files entity').toBeTruthy();
+    const tags = (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(entity.id) as any[]).map((r) => r.tag);
+    expect(tags).toContain('file:{{cookiecutter.slug}}.py');
+    expect(tags).toContain('file:winfile.ts');
+    expect(tags.some((t) => t.includes('#') || t.includes('\\'))).toBe(false);
+    db.close();
+  });
+
   it('Scenario: Session with errors creates bugfix entity', () => {
     writeTranscript([
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },

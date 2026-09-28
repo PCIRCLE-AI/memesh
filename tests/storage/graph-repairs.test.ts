@@ -23,12 +23,14 @@ import {
   ARCHIVED_FTS_ROWS_KEY,
   FUSED_LESSON_SHELL_HISTORY_RESET_KEY,
   FUSED_LESSON_SPLIT_KEY,
+  JUNK_FILE_TAGS_KEY,
   LESSON_TYPE_CANONICAL_KEY,
   SESSION_DEDUPE_KEY,
   ZERO_EDIT_RETRACT_KEY,
   bashWritesFiles,
   canonicalizeLessonTypes,
   dropArchivedIndexRows,
+  removeJunkFileTags,
 } from '../../src/storage/graph-repairs.js';
 import { lessonSlug } from '../../src/core/lesson-slug.js';
 import { computeSignalScore } from '../../src/core/signal-scorer.js';
@@ -54,7 +56,7 @@ function seed(fn: (db: Db) => void): void {
   const db = openDatabase(dbPath);
   fn(db);
   db.prepare(
-    'DELETE FROM memesh_metadata WHERE key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ?',
+    'DELETE FROM memesh_metadata WHERE key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ? OR key LIKE ?',
   ).run(
     `${SESSION_DEDUPE_KEY}%`,
     `${ZERO_EDIT_RETRACT_KEY}%`,
@@ -62,6 +64,7 @@ function seed(fn: (db: Db) => void): void {
     `${ARCHIVED_FTS_ROWS_KEY}%`,
     `${FUSED_LESSON_SHELL_HISTORY_RESET_KEY}%`,
     `${LESSON_TYPE_CANONICAL_KEY}%`,
+    `${JUNK_FILE_TAGS_KEY}%`,
   );
   closeDatabase();
 }
@@ -791,6 +794,66 @@ describe('dropArchivedIndexRows — archived rows leave the FTS index (D12)', ()
     expect(new KnowledgeGraph(db).search('correctlytoken').map((e) => e.name)).toEqual(['note-drifted']);
     closeDatabase();
     expect(runInvariants().status).toBe(0);
+  });
+});
+
+describe('#495 — removeJunkFileTags: a file: tag that is not path-shaped is deleted', () => {
+  function marker(db: Db, key: string): string | undefined {
+    return (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key) as
+      | { value: string }
+      | undefined)?.value;
+  }
+
+  it('removes a shell-variable and a flag tag, keeps a real one, and the invariant goes green', () => {
+    seed((db) => {
+      insertEntity(db, 'session-junk-abc-files', 'session-insight', [
+        'file:$F', 'file:-E', 'file:s#^source', 'file:auth.ts', 'file:auth', 'source:auto-capture',
+      ]);
+    });
+
+    const db = repaired();
+    expect(tagsOf(db, 'session-junk-abc-files')).toEqual(['file:auth', 'file:auth.ts', 'source:auto-capture']);
+    closeDatabase();
+    const inv = runInvariants();
+    expect(inv.status, inv.stdout).toBe(0);
+  });
+
+  it('touches no entity that carries no junk tag', () => {
+    seed((db) => {
+      insertEntity(db, 'session-clean-files', 'session-insight', [
+        'file:notes.md', 'file:notes', 'file:{{cookiecutter.slug}}.py', 'file:$postId.tsx', 'source:auto-capture',
+      ]);
+    });
+    const db = repaired();
+    expect(tagsOf(db, 'session-clean-files')).toEqual([
+      'file:$postId.tsx', 'file:notes', 'file:notes.md', 'file:{{cookiecutter.slug}}.py', 'source:auto-capture',
+    ]);
+    closeDatabase();
+  });
+
+  it('is one-shot: a second open changes nothing further', () => {
+    seed((db) => {
+      insertEntity(db, 'session-junk-xyz-files', 'session-insight', ['file:$G', 'file:real.ts']);
+    });
+    let db = repaired();
+    expect(marker(db, JUNK_FILE_TAGS_KEY)).toBe('1');
+    expect(tagsOf(db, 'session-junk-xyz-files')).toEqual(['file:real.ts']);
+    expect(removeJunkFileTags(db)).toBe(-1);
+    closeDatabase();
+
+    db = openDatabase(dbPath);
+    expect(tagsOf(db, 'session-junk-xyz-files')).toEqual(['file:real.ts']);
+    closeDatabase();
+  });
+
+  it('does not touch entities_fts — tags are not part of the FTS document', () => {
+    seed((db) => {
+      const id = insertEntity(db, 'session-fts-check-files', 'session-insight', ['file:$H']);
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'findablefts token here');
+    });
+    const db = repaired();
+    expect(new KnowledgeGraph(db).search('findablefts').map((e) => e.name)).toEqual(['session-fts-check-files']);
+    closeDatabase();
   });
 });
 

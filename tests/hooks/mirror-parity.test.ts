@@ -418,4 +418,44 @@ describe('F5 mirror parity: scripts/hooks/_shared.js vs src/core', () => {
     });
   });
 
+  // #495 — bash-edited-paths.ts is copied VERBATIM to
+  // _generated/bash-edited-paths.js (no hand-mirror, same as briefing-level.ts
+  // / session-limit.ts above), from dist/, one build step removed from src/.
+  // session-summary.js imports ONLY the generated copy (it cannot import
+  // TypeScript), so a source edit landing without `npm run build` /
+  // generate-hook-core.mjs would leave the Stop hook silently running the OLD
+  // extraction/filter rules while everything importing src/ directly already
+  // sees the new ones. This closes that gap: compare the generated mirror's
+  // answer against the TS source's answer for the #495 rejection/keep cases.
+  describe('bash-edited-paths parity (#495)', () => {
+    it('the generated mirror rejects and keeps the same tokens as core', async () => {
+      const core = await import('../../src/core/bash-edited-paths.js');
+      const generated = require('../../scripts/hooks/_generated/bash-edited-paths.js');
+      const cases = [
+        'tee -a $F',
+        "sed -i '' -E 's#^source' f.md",
+        'cat > "$OUT"',
+        'cat > notes.md',
+        'tee out.txt',
+        "cat > a/b.ts <<'EOF'\nhello\nEOF",
+        'cat > README.md',
+        'cat > ~notes',
+        'cat > ~/notes/y.ts',
+      ];
+      for (const cmd of cases) {
+        expect(generated.bashEditedFileNames(cmd), `bashEditedFileNames drift for ${JSON.stringify(cmd)}`)
+          .toEqual(core.bashEditedFileNames(cmd));
+      }
+    });
+
+    it('the generated mirror agrees on isPathShapedFileName for every #495 case', async () => {
+      const core = await import('../../src/core/bash-edited-paths.js');
+      const generated = require('../../scripts/hooks/_generated/bash-edited-paths.js');
+      for (const name of ['', '$F', '-E', '~notes', 's#^source', 'a*b', 'a`b`', 'auth.ts', 'README.md', 'notes']) {
+        expect(generated.isPathShapedFileName(name), `isPathShapedFileName drift for ${JSON.stringify(name)}`)
+          .toBe(core.isPathShapedFileName(name));
+      }
+    });
+  });
+
 });

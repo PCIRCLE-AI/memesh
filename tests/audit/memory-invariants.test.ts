@@ -625,6 +625,44 @@ describe('memory-invariants: read-only detector over a real graph', () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('#495 — flags a file: tag that is a shell variable, a flag, or a sed/regex fragment', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        const id = insertEntity(db, 'session-junk-files', 'session-insight');
+        for (const tag of ['file:$f', 'file:-E', 'file:s#^source', 'file:auth.ts']) {
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
+        }
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(1);
+      expect(r.stdout).toContain('file-tags-are-path-shaped');
+      expect(r.stdout).toContain('session-junk-files  file:$f');
+      expect(r.stdout).toContain('session-junk-files  file:-E');
+      expect(r.stdout).toContain('session-junk-files  file:s#^source');
+      expect(r.stdout).not.toContain('session-junk-files  file:auth.ts');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#495 — a graph with only path-shaped file: tags is clean', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        const id = insertEntity(db, 'session-clean-files', 'session-insight');
+        for (const tag of ['file:auth.ts', 'file:auth', 'file:README.md', 'file:{{cookiecutter.slug}}.py']) {
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
+        }
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain('ok   file-tags-are-path-shaped');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
   /**
    * The write path refuses a shape, the repair rewrites it, and this script
    * watches it. Those three sets must name the same columns: a column the

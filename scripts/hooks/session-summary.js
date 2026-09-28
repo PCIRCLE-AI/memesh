@@ -5,7 +5,7 @@
 // and stores as session-insight entities in MeMesh.
 //
 import { createRequire } from 'module';
-import { basename, join } from 'path';
+import { join } from 'path';
 import { existsSync, readFileSync, writeSync } from 'fs';
 import { pathToFileURL } from 'url';
 import {
@@ -33,6 +33,9 @@ import {
 } from './_shared.js';
 import { runStopHandoff } from './_stop-handoff.js';
 import { runStopNotes } from './_stop-notes.js';
+// Edited file names from Bash and Edit/Write, under one path-shape rule
+// (#495). Generated from src/core/bash-edited-paths.ts — do not hand-edit.
+import { bashEditedFileNames, editedFileName } from './_generated/bash-edited-paths.js';
 
 const require = createRequire(import.meta.url);
 
@@ -74,30 +77,6 @@ async function runAutoUpdateAtStop(sessionId) {
 // Handles the current Claude Code transcript format where tool_use/tool_result
 // are nested inside assistant/user message entries, not top-level entries.
 // Defensive: never throws — malformed lines are silently skipped.
-/**
- * File paths a shell command writes in place. Recognises the shapes an
- * agent actually uses to edit without Write/Edit: heredoc redirection
- * (`> path <<'EOF'`, `cat > path`), `sed -i`, `tee`, and `pathlib.Path('x')
- * .write_text(` / `fs.writeFileSync('x'` inside an inline script. Returns
- * basenames' sources; the caller keeps basename() as the stored form.
- */
-function bashEditedPaths(cmd) {
-  if (typeof cmd !== 'string') return [];
-  const found = new Set();
-  const add = (m) => { if (m && m[1] && !m[1].startsWith('/dev/') && !m[1].startsWith('/tmp/')) found.add(m[1]); };
-  for (const re of [
-    /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/g,   // > file <<'EOF'
-    /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/g,                            // cat > file
-    /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/g,                      // tee file
-    /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/g, // sed -i '...' file
-    /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/g,           // pathlib write_text
-    /writeFileSync\(\s*['"]([^'"]+)['"]/g,                        // fs.writeFileSync
-  ]) {
-    let m; while ((m = re.exec(cmd)) !== null) add(m);
-  }
-  return [...found];
-}
-
 function parseTranscript(transcriptPath) {
   const filesEdited = new Set();
   const bashCommands = [];
@@ -125,7 +104,8 @@ function parseTranscript(transcriptPath) {
 
             if (block.name === 'Write' || block.name === 'Edit') {
               const fp = block.input?.file_path ?? block.input?.path;
-              if (fp && typeof fp === 'string') filesEdited.add(basename(fp));
+              const name = editedFileName(fp);
+              if (name) filesEdited.add(name);
             }
             if (block.name === 'Bash') {
               const cmd = block.input?.command ?? '';
@@ -137,7 +117,10 @@ function parseTranscript(transcriptPath) {
               // -summary entity re-append on every Stop (#240). Recognise the
               // common in-place write shapes; anything not matched is simply
               // uncounted, which is honest — it is not asserted as zero.
-              for (const fp of bashEditedPaths(cmd)) filesEdited.add(basename(fp));
+              // bashEditedFileNames also rejects a captured token that is
+              // not path-shaped — a shell variable, a flag, a sed/regex
+              // fragment (#495) — before it can ever become a `file:` tag.
+              for (const f of bashEditedFileNames(cmd)) filesEdited.add(f);
               if (typeof cmd === 'string' && cmd.length > 10 && !cmd.startsWith('ls') && !cmd.startsWith('cd')) {
                 // Redact BEFORE truncating. A bash command line is the single
                 // most likely place a credential appears in a transcript

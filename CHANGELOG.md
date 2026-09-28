@@ -7,6 +7,7 @@ All notable changes to MeMesh are documented here.
 ### Fixed
 
 - Memories a hook captures while running under Codex now name `codex` as their source host. Before, every hook-created memory was labelled `claude-code`, which could make `memesh doctor` read Codex activity as a silent Claude Code Stop hook.
+- Auto-capture no longer stores a shell variable, a flag, or a fragment of a sed/regex script as a `file:` tag (`tee -a $F` → `file:$F`, `sed -i '' -E 's#^source' f.md` → `file:-E`): every `file:` tag, from a Bash command or an Edit/Write, must now be path-shaped before it is stored, and a one-time repair removes the ones already on the graph (#495).
 
 ## [4.10.8] — 2026-09-27
 

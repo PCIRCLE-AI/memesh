@@ -48,22 +48,16 @@ import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+// Plain committed JS (not TypeScript), so it can be imported directly rather
+// than hand-mirrored — same precedent as scripts/audit/measure-work-topology-baseline.mjs
+// importing WORK_LAYER_TYPES from a _generated/ file. This makes the
+// write-path filter, the repair (src/storage/graph-repairs.ts
+// removeJunkFileTags) and this invariant provably the same function, and the
+// same for the Bash write shapes #240's invariant below needs.
+import { bashEditedPaths, isPathShapedFileName } from '../hooks/_generated/bash-edited-paths.js';
 
 const MAX_ROWS = 8;
 
-/**
- * The Bash write shapes the Stop hook's `bashEditedPaths` recognises
- * (scripts/hooks/session-summary.js) — mirrored in src/storage/graph-repairs.ts,
- * which repairs what this invariant reports. Keep the three in step.
- */
-const BASH_WRITE_SHAPES = [
-  /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/,
-  /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/,
-  /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/,
-  /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/,
-  /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/,
-  /writeFileSync\(\s*['"]([^'"]+)['"]/,
-];
 /**
  * The name key of an explicit lesson — mirrored from src/core/lesson-slug.ts
  * (this script cannot import TypeScript). Keep the two in step: the
@@ -81,16 +75,6 @@ function lessonSlug(error) {
   const readable = words.join('-') || 'unspecified';
   const digest = createHash('sha256').update(normalized).digest('hex').slice(0, 8);
   return `${readable.slice(0, 71)}-${digest}`;
-}
-
-function bashWritesFiles(command) {
-  for (const re of BASH_WRITE_SHAPES) {
-    // Every match, like the hook: the first tee target may be /tmp, the second real.
-    for (const m of command.matchAll(new RegExp(re.source, 'g'))) {
-      if (m[1] && !m[1].startsWith('/dev/') && !m[1].startsWith('/tmp/')) return true;
-    }
-  }
-  return false;
 }
 
 function resolveDbPath(argv) {
@@ -245,14 +229,14 @@ const INVARIANTS = [
         AND EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND o.content LIKE 'Significant session:%, 0 files edited%')
         AND EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND o.content LIKE 'Command:%')`,
     // Anchored on ", 0 files edited": "10 files edited" ends the same way and is true.
-    // The SQL only narrows; the Bash-write test is the hook's own regexes
-    // (BASH_WRITE_SHAPES above), applied in JS — a bare `<<` only feeds stdin.
+    // The SQL only narrows; the Bash-write test is the hook's own
+    // bashEditedPaths, applied in JS — a bare `<<` only feeds stdin.
     // NO LIMIT in the SQL: it would bound candidates, not violations, and
     // eight honest sessions sorting first would hide a real one. The cap is
     // applied after the filter, by the caller, where it means "first 8 violations".
     rows: (db, rows) => {
       const commands = db.prepare("SELECT content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? AND o.content LIKE 'Command:%'");
-      return rows.filter((r) => commands.all(r.name).some((o) => bashWritesFiles(o.content)));
+      return rows.filter((r) => commands.all(r.name).some((o) => bashEditedPaths(o.content).length > 0));
     },
     row: (r) => r.name,
   },
@@ -370,6 +354,19 @@ const INVARIANTS = [
       ORDER BY e.id LIMIT ${MAX_ROWS + 1}`,
     row: (r) => `${r.name}  type=${r.type}`,
     reportOnly: true,
+  },
+  {
+    id: 'file-tags-are-path-shaped',
+    refs: '#495',
+    says: 'no file: tag is a shell variable, a flag, or a sed/regex fragment captured as an edited file name',
+    // The SQL narrows to file: tags only; the verdict is isPathShapedFileName
+    // in JS below — the same predicate the write path (bashEditedFileNames)
+    // and the repair (removeJunkFileTags) apply. No LIMIT: it would bound
+    // candidates, not violations; the cap is applied after the filter, by
+    // the caller.
+    sql: `SELECT e.name AS name, t.tag AS tag FROM tags t JOIN entities e ON e.id = t.entity_id WHERE t.tag LIKE 'file:%'`,
+    rows: (_db, rows) => rows.filter((r) => !isPathShapedFileName(r.tag.slice('file:'.length))),
+    row: (r) => `${r.name}  ${r.tag}`,
   },
   {
     id: 'agent-message-scope-ids-are-not-filesystem-paths',

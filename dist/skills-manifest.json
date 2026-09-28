@@ -42,6 +42,11 @@
       "bytes": 2487
     },
     {
+      "path": "scripts/hooks/_generated/bash-edited-paths.js",
+      "sha256": "e6159a9189e9dd801b835f4844e833cfe3ef4b454d450bfe5a0715d63e7c3b92",
+      "bytes": 2171
+    },
+    {
       "path": "scripts/hooks/_generated/briefing-index.js",
       "sha256": "f435055f83ef220e5ffc52d631ea0044f3af873a1430cb99e02e64cd9810c6e4",
       "bytes": 7011
@@ -188,8 +193,8 @@
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "3a493240582f685f15737fac5e9e68d0d6c00769975c85e74ad48e2330b5b5a2",
-      "bytes": 43204
+      "sha256": "20a54cb70ea433b4bc0eebbf3fd3813f1eedfc6cbc17fd614e5fbcf55ad976cf",
+      "bytes": 42460
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",

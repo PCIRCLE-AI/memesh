@@ -58,6 +58,7 @@ import type { MemeshDatabase } from './sqlite.js';
 import { rebuildFtsIndex, runOnceMigration } from './schema.js';
 import { lessonSlug } from '../core/lesson-slug.js';
 import { computeSignalScore } from '../core/signal-scorer.js';
+import { bashEditedPaths, isPathShapedFileName } from '../core/bash-edited-paths.js';
 
 export const SESSION_DEDUPE_KEY = 'session_observation_dedupe';
 export const ZERO_EDIT_RETRACT_KEY = 'session_zero_edit_retract';
@@ -65,6 +66,7 @@ export const FUSED_LESSON_SPLIT_KEY = 'fused_lesson_split';
 export const ARCHIVED_FTS_ROWS_KEY = 'archived_fts_rows';
 export const FUSED_LESSON_SHELL_HISTORY_RESET_KEY = 'fused_lesson_shell_history_reset';
 export const LESSON_TYPE_CANONICAL_KEY = 'lesson_type_canonical';
+export const JUNK_FILE_TAGS_KEY = 'junk_file_tags';
 
 /** The summary suffix the Stop hook wrote when it could not see Bash edits. */
 const ZERO_EDITS = ', 0 files edited';
@@ -223,33 +225,22 @@ export function dedupeObservations(db: MemeshDatabase): number {
 }
 
 /**
- * Does this stored `Command:` line write a file in place? The same shapes
- * the Stop hook's `bashEditedPaths` recognises (scripts/hooks/session-summary.js)
- * — heredoc redirection, `cat >`, `tee`, `sed -i`, `write_text(`,
- * `writeFileSync(` — and the same exclusions: `/dev/*` and `/tmp/*` targets
- * are not edits. A bare `<<` is NOT a write (`psql <<EOF`, `python3 - <<'PY'`
+ * Does this stored `Command:` line write a file in place? Exactly
+ * `bashEditedPaths` (src/core/bash-edited-paths.ts, the one implementation
+ * the Stop hook and session-insight.ts use — see #495) — heredoc
+ * redirection, `cat >`, `tee`, `sed -i`, `write_text(`, `writeFileSync(` —
+ * with its exclusions: `/dev/*` and `/tmp/*` targets are not edits. A bare `<<` is NOT a write (`psql <<EOF`, `python3 - <<'PY'`
  * only feed stdin), and neither is `| tee` with no path, so substring
  * matching would have turned a true "0 files edited" into a false claim.
+ *
+ * Deliberately NOT filtered by #495's `isPathShapedFileName`: this answers
+ * "did the command write ANYTHING", not "what did it write", and `tee -a $F`
+ * genuinely wrote a file even though `$F` is not a usable file NAME. Folding
+ * the name filter in here would flip a real write back to "0 files edited" —
+ * the exact false claim this function exists to prevent.
  */
-const BASH_WRITE_SHAPES: RegExp[] = [
-  /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/,
-  /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/,
-  /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/,
-  /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/,
-  /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/,
-  /writeFileSync\(\s*['"]([^'"]+)['"]/,
-];
-
 export function bashWritesFiles(command: string): boolean {
-  for (const re of BASH_WRITE_SHAPES) {
-    // Every match, like the hook: `… | tee /tmp/t.log && … | tee CHANGELOG.md`
-    // writes a file even though its FIRST tee target is excluded. A fresh
-    // global regex per call so no `lastIndex` survives an early return.
-    for (const m of command.matchAll(new RegExp(re.source, 'g'))) {
-      if (m[1] && !m[1].startsWith('/dev/') && !m[1].startsWith('/tmp/')) return true;
-    }
-  }
-  return false;
+  return bashEditedPaths(command).length > 0;
 }
 
 /**
@@ -715,4 +706,43 @@ export function canonicalizeLessonTypes(db: MemeshDatabase): number {
     },
   });
   return renamed;
+}
+
+/**
+ * #495 — a `file:` tag is not shell/regex debris.
+ *
+ * Removes, once, every `file:` tag `isPathShapedFileName` rejects — a shell
+ * fragment auto-capture stored before #495 (`tee -a $F` → `file:$F`). The
+ * write path uses the same predicate, so the two cannot drift apart.
+ *
+ * No FTS rebuild: `entities_fts` (src/storage/schema.ts `FTS_SQL`) indexes
+ * only `name, observations` — no `tags` column, and `rebuildFtsIndex`'s own
+ * SELECT confirms it (only `e.name`, `e.title`, `group_concat(o.content)`).
+ * A tag delete has nothing for the index to forget.
+ *
+ * @returns number of tag rows removed, or -1 if the pass did not run
+ */
+export function removeJunkFileTags(db: MemeshDatabase): number {
+  let removed = -1;
+  runOnceMigration(db, {
+    key: JUNK_FILE_TAGS_KEY,
+    version: 1,
+    describe: 'junk file: tag removal',
+    migrate: (conn) => {
+      const rows = conn
+        .prepare(`SELECT id, tag FROM tags WHERE tag LIKE 'file:%'`)
+        .all() as unknown as Array<{ id: number; tag: string }>;
+      const del = conn.prepare('DELETE FROM tags WHERE id = ?');
+      removed = 0;
+      for (const row of rows) {
+        if (isPathShapedFileName(row.tag.slice('file:'.length))) continue;
+        del.run(row.id);
+        removed += 1;
+      }
+      if (removed > 0) {
+        note(`removed ${removed} junk file: tag(s) — a shell variable, flag or sed/regex fragment captured as an edited file name (#495).`);
+      }
+    },
+  });
+  return removed;
 }

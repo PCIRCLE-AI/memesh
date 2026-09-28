@@ -26,6 +26,7 @@
 import { redactSecrets } from './paths.js';
 import { truncateTitle } from './title.js';
 import { remember } from './operations.js';
+import { bashEditedFileNames, editedFileName } from './bash-edited-paths.js';
 
 /** Fewer tool calls than this is a quiet session — same guard as the Stop hook. */
 export const MIN_TOOL_CALLS = 3;
@@ -63,35 +64,6 @@ export interface InsightEntity {
   title: string;
   observations: string[];
   tags: string[];
-}
-
-/**
- * File paths a shell command writes in place: heredoc redirection, `cat >`,
- * `tee`, `sed -i`, pathlib `write_text`, `fs.writeFileSync`. Mirrors the Stop
- * hook's recogniser; anything unmatched is simply uncounted.
- */
-export function bashEditedPaths(cmd: unknown): string[] {
-  if (typeof cmd !== 'string') return [];
-  const found = new Set<string>();
-  for (const re of [
-    /(?:^|[^<])>\s*"?([^\s"'>|&;]+)"?\s*<<\s*['"]?\w+['"]?/g,
-    /\bcat\s*>\s*"?([^\s"'>|&;]+)"?/g,
-    /\btee\s+(?:-a\s+)?"?([^\s"'>|&;]+)"?/g,
-    /\bsed\s+-i(?:\s+'')?\s+(?:'[^']*'|"[^"]*")\s+"?([^\s"'>|&;]+)"?/g,
-    /Path\(\s*['"]([^'"]+)['"]\s*\)\s*\.write_text\(/g,
-    /writeFileSync\(\s*['"]([^'"]+)['"]/g,
-  ]) {
-    let m: RegExpExecArray | null;
-    while ((m = re.exec(cmd)) !== null) {
-      if (m[1] && !m[1].startsWith('/dev/') && !m[1].startsWith('/tmp/')) found.add(m[1]);
-    }
-  }
-  return [...found];
-}
-
-function basename(p: string): string {
-  const parts = p.split(/[\\/]/);
-  return parts[parts.length - 1] || p;
 }
 
 // Hermes Agent's tool names, as its OpenAI-format `tool_calls` carry them.
@@ -175,10 +147,11 @@ export function activityFromChatMessages(messages: unknown): SessionActivity {
         const args = parseArgs((fn as { arguments?: unknown }).arguments);
         if (FILE_WRITE_TOOLS.has(name)) {
           const fp = args.path ?? args.file_path;
-          if (typeof fp === 'string' && fp) filesEdited.add(basename(fp));
+          const name = editedFileName(fp);
+          if (name) filesEdited.add(name);
         } else if (SHELL_TOOLS.has(name)) {
           const cmd = args.command;
-          for (const fp of bashEditedPaths(cmd)) filesEdited.add(basename(fp));
+          for (const f of bashEditedFileNames(cmd)) filesEdited.add(f);
           if (typeof cmd === 'string' && cmd.length > 10 && !cmd.startsWith('ls') && !cmd.startsWith('cd')) {
             // Redact BEFORE truncating, as the Stop hook does: truncation can
             // cut a token in half and leave the fragment unmatched.
