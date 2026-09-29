@@ -4,6 +4,8 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+## [4.10.9] — 2026-09-29
+
 ### Fixed
 
 - Memories a hook captures while running under Codex now name `codex` as their source host. Before, every hook-created memory was labelled `claude-code`, which could make `memesh doctor` read Codex activity as a silent Claude Code Stop hook.
