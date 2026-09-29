@@ -1577,11 +1577,12 @@ process.stdin.on('end', async () => {
         // not a failed memory assembly: the rest of the context still ships.
         const inboxSession = hookMessageSessionId(data.session_id);
         if (inboxSession.mismatch) record({ outcome: 'notified', reason: SESSION_ID_MISMATCH_REASON });
+        // Under Codex, a delivery already pushed into the thread is not reminded again.
         const inboxLines = waitingMessageLines(db, recipient, inboxSession.sessionId, (err) =>
           record({
             outcome: 'error',
             reason: `inbox: ${hookErrorReason(err)}`,
-          }));
+          }), isCodexHost(process.env));
         // A rejected MEMESH_RECIPIENT is mutually exclusive with a resolved
         // `recipient`, so this never collides with the hint below.
         if (recipientRejectionLine) inboxLines.unshift(recipientRejectionLine);

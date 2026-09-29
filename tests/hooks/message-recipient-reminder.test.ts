@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
+import { randomUUID } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -684,6 +685,65 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
   // to also find a delivery targeted at a session that is LIVE right now and
   // registered under that exact principal.
   describe('Feature: #490 a session-targeted delivery is reminded under its principal, only while live', () => {
+    // The router already pushed this delivery into the host (a host_accept
+    // row, through the same FK chain the router writes).
+    function seedHostAccept(project: string, deliveryId: string, principal: string) {
+      const suffix = randomUUID();
+      const db = getDatabase();
+      db.prepare(`
+        INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind)
+        VALUES (?, ?, ?, 'test-adapter')
+      `).run(project, `session-${suffix}`, principal);
+      db.prepare(`
+        INSERT INTO agent_session_connections (
+          connection_id, project, principal_id, session_instance_id, generation,
+          adapter_kind, router_instance_id, lease_expires_at_ms
+        ) VALUES (?, ?, ?, ?, 1, 'test-adapter', 'test-router', ?)
+      `).run(`connection-${suffix}`, project, principal, `session-${suffix}`, Date.now() + 60_000);
+      db.prepare(`
+        INSERT INTO agent_dispatch_attempts (
+          attempt_id, delivery_id, project, principal_id, session_instance_id,
+          connection_id, generation, router_instance_id, attempt_number, result, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, 1, 'test-router', 1, 'adapter_returned', CURRENT_TIMESTAMP)
+      `).run(`attempt-${suffix}`, deliveryId, project, principal, `session-${suffix}`, `connection-${suffix}`);
+      db.prepare(`
+        INSERT INTO agent_host_accepts (host_accept_id, attempt_id, delivery_id, adapter_kind, receipt_json)
+        VALUES (?, ?, ?, 'test-adapter', '{}')
+      `).run(`host-accept-${suffix}`, `attempt-${suffix}`, deliveryId);
+    }
+
+    const codexEnv = { MEMESH_HOOK_HOST: 'codex', MEMESH_RECIPIENT: 'claude-implementer' };
+
+    it('under Codex, does not remind about a delivery the router already pushed into the thread', async () => {
+      const sessionId = registerAgentSession('team-room', 'claude-implementer');
+      const sent = sendSessionTargetedMessage('team-room', sessionId, 'codex-accepted');
+      seedHostAccept('team-room', sent.delivery_id, 'claude-implementer');
+
+      const promptResult = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, codexEnv);
+      expect(promptResult.stdout).not.toContain('message waiting');
+      const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, codexEnv);
+      expect(start.stdout).not.toContain('message waiting');
+    });
+
+    it('under Codex, still reminds about a delivery with no host acceptance', async () => {
+      const sessionId = registerAgentSession('team-room', 'claude-implementer');
+      sendSessionTargetedMessage('team-room', sessionId, 'codex-not-accepted');
+
+      const promptResult = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, codexEnv);
+      expect(context(promptResult.stdout)).toContain(`1 message waiting for the live session ${JSON.stringify(sessionId)}`);
+    });
+
+    it('under Claude Code, still reminds about a delivery even with host acceptance', async () => {
+      const sessionId = registerAgentSession('team-room', 'claude-implementer');
+      const sent = sendSessionTargetedMessage('team-room', sessionId, 'claude-accepted');
+      seedHostAccept('team-room', sent.delivery_id, 'claude-implementer');
+
+      const promptResult = run('user-prompt-intent.js', { prompt: 'hello there', session_id: 's-1', cwd: tmp }, {
+        MEMESH_HOOK_HOST: 'claude-code', MEMESH_RECIPIENT: 'claude-implementer',
+      });
+      expect(context(promptResult.stdout)).toContain(`1 message waiting for the live session ${JSON.stringify(sessionId)}`);
+    });
+
     it('UserPromptSubmit reminds about a session-targeted message for a LIVE session under the declared principal, naming the session and target_kind', async () => {
       const sessionId = registerAgentSession('team-room', 'claude-implementer');
       sendSessionTargetedMessage('team-room', sessionId, 'session-k1');

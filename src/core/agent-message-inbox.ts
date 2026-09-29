@@ -44,6 +44,23 @@ interface InboxListDb {
 }
 
 /**
+ * Under Codex (only), a delivery the router already pushed into the thread
+ * — an `agent_host_accepts` row — is in the model's context, so a reminder
+ * to poll and fetch it again only makes the agent do it twice. Claude Code
+ * keeps reminding: there host acceptance is not proof the model saw it
+ * (#468, #492). No clause on a database without the table.
+ */
+function hostAcceptedFilter(db: InboxDb, excludeHostAccepted: boolean): string {
+  if (!excludeHostAccepted) return '';
+  const hasTable = db.prepare(
+    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_host_accepts'",
+  ).get() !== undefined;
+  return hasTable
+    ? 'AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id)'
+    : '';
+}
+
+/**
  * #497: every session of one principal shares its inbox, so a delivery can
  * name the one session it is meant for (`intended_session`). A waiting count
  * asked for `session` includes deliveries meant for nobody in particular
@@ -316,6 +333,7 @@ export function unreadMessageRefsFor(
   recipient?: string,
   session?: string,
   limit: number = UNREAD_MESSAGE_REFS_LIMIT,
+  excludeHostAccepted = false,
 ): UnreadMessageRef[] {
   if (!recipient) return [];
   try {
@@ -325,6 +343,7 @@ export function unreadMessageRefsFor(
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          ${intended.sql}
+         ${hostAcceptedFilter(db, excludeHostAccepted)}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -399,7 +418,12 @@ export function unreadInboxLines(
  * database from before the message tables existed all return no lines; any
  * other failure is raised, because it is not "no messages".
  */
-export function unreadInboxLinesFor(db: InboxListDb, recipient?: string, session?: string): string[] {
+export function unreadInboxLinesFor(
+  db: InboxListDb,
+  recipient?: string,
+  session?: string,
+  excludeHostAccepted = false,
+): string[] {
   if (!recipient) return [];
   try {
     const intended = intendedSessionFilter(db, session);
@@ -408,6 +432,7 @@ export function unreadInboxLinesFor(db: InboxListDb, recipient?: string, session
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          ${intended.sql}
+         ${hostAcceptedFilter(db, excludeHostAccepted)}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project

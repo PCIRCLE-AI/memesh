@@ -1,3 +1,11 @@
+function hostAcceptedFilter(db, excludeHostAccepted) {
+    if (!excludeHostAccepted)
+        return '';
+    const hasTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_host_accepts'").get() !== undefined;
+    return hasTable
+        ? 'AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = d.delivery_id)'
+        : '';
+}
 function intendedSessionFilter(db, session) {
     const hasColumn = db.prepare("SELECT 1 AS present FROM pragma_table_info('agent_message_deliveries') WHERE name = 'intended_session'").get() !== undefined;
     if (!hasColumn)
@@ -111,7 +119,7 @@ const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
     )
   )
 )`;
-export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESSAGE_REFS_LIMIT) {
+export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESSAGE_REFS_LIMIT, excludeHostAccepted = false) {
     if (!recipient)
         return [];
     try {
@@ -120,6 +128,7 @@ export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESS
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          ${intended.sql}
+         ${hostAcceptedFilter(db, excludeHostAccepted)}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -154,7 +163,7 @@ export function unreadInboxLines(count, project, recipient, everSeen, targetKind
     }
     return [];
 }
-export function unreadInboxLinesFor(db, recipient, session) {
+export function unreadInboxLinesFor(db, recipient, session, excludeHostAccepted = false) {
     if (!recipient)
         return [];
     try {
@@ -163,6 +172,7 @@ export function unreadInboxLinesFor(db, recipient, session) {
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
          ${intended.sql}
+         ${hostAcceptedFilter(db, excludeHostAccepted)}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project

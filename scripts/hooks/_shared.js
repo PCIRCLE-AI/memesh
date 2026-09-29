@@ -835,11 +835,13 @@ export function hookMessageSessionId(payloadSessionId, env = process.env) {
  * `sessionId` comes from {@link hookMessageSessionId} (#497): a message meant
  * for another session of the same principal is left out, and with no
  * `sessionId` only messages meant for no session in particular are counted.
+ * `excludeHostAccepted` (pass it under Codex) leaves out a delivery the
+ * router already pushed into the thread.
  */
-export function waitingMessageLines(db, recipient, sessionId, recordFailure) {
+export function waitingMessageLines(db, recipient, sessionId, recordFailure, excludeHostAccepted = false) {
   if (!recipient) return [];
   try {
-    return unreadInboxLinesFor(db, recipient, sessionId);
+    return unreadInboxLinesFor(db, recipient, sessionId, excludeHostAccepted);
   } catch (err) {
     return inboxReadFailed(err, recordFailure);
   }
@@ -849,12 +851,13 @@ export function waitingMessageLines(db, recipient, sessionId, recordFailure) {
  * The waiting message REFS behind those same lines — see
  * {@link unreadMessageRefsFor}'s own doc for what "waiting" means and why it
  * is not project-capped. Same never-throws contract as
- * {@link waitingMessageLines}, and the same `sessionId` and `recordFailure`.
+ * {@link waitingMessageLines}, and the same `sessionId`, `recordFailure` and
+ * `excludeHostAccepted`.
  */
-export function waitingMessageRefs(db, recipient, sessionId, recordFailure) {
+export function waitingMessageRefs(db, recipient, sessionId, recordFailure, excludeHostAccepted = false) {
   if (!recipient) return [];
   try {
-    return unreadMessageRefsFor(db, recipient, sessionId);
+    return unreadMessageRefsFor(db, recipient, sessionId, undefined, excludeHostAccepted);
   } catch (err) {
     return inboxReadFailed(err, recordFailure);
   }
@@ -871,7 +874,8 @@ export function waitingMessageRefs(db, recipient, sessionId, recordFailure) {
  * to `resolveMessageRecipient`'s Codex fallback — see its own doc — and its
  * `sessionId` also narrows the count to this session (#497), through
  * {@link hookMessageSessionId}; `onSessionMismatch` is called when that
- * reports a mismatch, so the caller can record it.
+ * reports a mismatch, so the caller can record it. Under Codex a delivery
+ * the router already pushed into the thread is not reminded again.
  */
 export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected, hostContext, onSessionMismatch) {
   const recipient = resolveMessageRecipient(env, onRecipientRejected, hostContext);
@@ -885,7 +889,7 @@ export function unreadMessageLines(env = process.env, recordFailure, onRecipient
     db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
     const session = hookMessageSessionId(hostContext?.sessionId, env);
     if (session.mismatch) onSessionMismatch?.();
-    return waitingMessageLines(db, recipient, session.sessionId, recordFailure);
+    return waitingMessageLines(db, recipient, session.sessionId, recordFailure, isCodexHost(env));
   } catch (err) {
     return inboxReadFailed(err, recordFailure);
   } finally {

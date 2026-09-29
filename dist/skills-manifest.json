@@ -8,7 +8,7 @@
     },
     {
       "path": ".claude-plugin/plugin.json",
-      "sha256": "e676544664c7afe74efdd61a4beff43c285a8c6f4c1a0b523d292b88e71a32c5",
+      "sha256": "b21118c59633af27653825c214e86f3a7977d62dadc8e1aa5ee8748a69dc0cd4",
       "bytes": 591
     },
     {
@@ -18,7 +18,7 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "7a3add4ea29b310e0718d7aaba2407a2e67c6adab7f37abb4c65d310cde1c007",
+      "sha256": "8b4e9cf2c73938be3e8c1dfc0d9c58d01c7fe36a8c748ae25308b955f73ae1bc",
       "bytes": 221
     },
     {
@@ -38,8 +38,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "a8010879f1dbfbdf2585e656c29aba0034517b6571a116ea5313c1a4b945dd6b",
-      "bytes": 9012
+      "sha256": "f8b3644ba982d4b4f17eb33c8e397dc6f16981766dd0ff12353917c87b8e8c92",
+      "bytes": 9559
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
@@ -148,8 +148,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "72608083da1b55d57b1441bf40c35be4016642e5056872a56139e190f4452719",
-      "bytes": 122277
+      "sha256": "f406115c4e24fce15d17f0027dea313958d633301b68f0aa0fb99a3937c2f8bb",
+      "bytes": 122638
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -193,8 +193,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "916d1ea5a53e8d1c58fde352ed0e2fe3727c0f33f1a806c469734a2ef56b0c75",
-      "bytes": 110847
+      "sha256": "1380a2fdd4ad8bf4f44e9c697fc656e81dc06a6ac6e1108ae18bc91904511249",
+      "bytes": 110962
     },
     {
       "path": "scripts/hooks/session-summary.js",
