@@ -53,7 +53,10 @@ message) ...`. `intake` or a `disposition` for such a delivery from a caller
 that is itself another registered session of the project
 (`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`) is refused with
 `intended_for_other_session` (#497). A caller with no session id, or with an
-id no session registered, still can — a Codex MCP process has none.
+id no session registered, still can — a Codex MCP process has none. Under
+Codex, SessionStart and the prompt hook do not remind about a delivery the
+router already pushed into the thread (it has a host acceptance); under
+Claude Code they still do.
 
 Every Claude Code session in one project shares one principal, so a message
 sent to that principal reaches all of them. A message can instead name the

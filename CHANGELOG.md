@@ -4,6 +4,14 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+## [4.10.11] — 2026-09-29
+
+Includes the changes documented under 4.10.10 and 4.10.9 below; neither was published to npm.
+
+### Fixed
+
+- Under Codex, a message already delivered into the thread is no longer announced again as "waiting" at the next prompt or session start, which made the agent fetch and record it a second time.
+
 ## [4.10.10] — 2026-09-29
 
 Includes the changes documented under 4.10.9 below; 4.10.9 was not published to npm.

@@ -19,8 +19,8 @@ export interface UnreadMessageRef {
     readonly project: string;
     readonly message_id: string;
 }
-export declare function unreadMessageRefsFor(db: InboxListDb, recipient?: string, session?: string, limit?: number): UnreadMessageRef[];
+export declare function unreadMessageRefsFor(db: InboxListDb, recipient?: string, session?: string, limit?: number, excludeHostAccepted?: boolean): UnreadMessageRef[];
 export declare function unreadInboxLines(count: number, project: string, recipient?: string, everSeen?: boolean, targetKind?: 'principal' | 'session'): string[];
-export declare function unreadInboxLinesFor(db: InboxListDb, recipient?: string, session?: string): string[];
+export declare function unreadInboxLinesFor(db: InboxListDb, recipient?: string, session?: string, excludeHostAccepted?: boolean): string[];
 export {};
 //# sourceMappingURL=agent-message-inbox.d.ts.map
