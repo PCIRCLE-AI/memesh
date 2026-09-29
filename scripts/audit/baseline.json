@@ -426,22 +426,22 @@
       "reason": "`e.relations ?? []` while collecting lineage edges — relations are optional on the wire; absence draws no arc and the visible legend counts only DRAWN arcs, so missing input yields visible emptiness, not claimed success. (re-keyed 342→346 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 lineage overlay); re-keyed 2026-09-24 346→347 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 347→347 (#493: header span byte-identical; net-zero churn during review)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1072": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1074": {
       "class": "SAFE-DISPLAY",
       "reason": "`e.relations ?? []` building the reverse supersession index in DecisionsView — no relations means no chain lines render; status falls back to active only when NO supersedes edge points at the entity anywhere in the set. (re-keyed 1065→1070 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1070→1071 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1071→1072 (#493: header span import above, comment dedup below; net +1; statement byte-identical)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1074": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1076": {
       "class": "SAFE-DISPLAY",
       "reason": "`m.get(r.to) ?? []` — standard multimap-append idiom inside the reverse index build; the default is the empty bucket being created, not a masked failure. (re-keyed 1067→1072 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1068→1069 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1069→1074 (#493: header span import above, comment dedup below; net +5; statement byte-identical)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1105": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1107": {
       "class": "SAFE-DISPLAY",
       "reason": "`supersededBy.get(e.name) ?? []` — a decision nothing points at is genuinely unreplaced; the empty default is the honest answer and renders as status \"active\", which is the documented two-state contract. (re-keyed 1098→1103 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1101→1102 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1102→1105 (#493: header span import + comment dedup above; net +3; statement byte-identical)"
     },
-    "C5 dashboard/src/components/ProjectRoadmap.tsx:1109": {
+    "C5 dashboard/src/components/ProjectRoadmap.tsx:1111": {
       "class": "SAFE-DISPLAY",
       "reason": "`(e.relations ?? []).filter` listing outgoing supersedes chain lines — absence renders no chain section at all rather than an empty claim. (re-keyed 1102→1107 on 2026-08-29; line shift only, classification unchanged)",
       "triaged": "2026-08-16 (UX-3 ADR view); re-keyed 2026-09-24 1105→1106 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-28 1106→1109 (#493: header span import + comment dedup above; net +3; statement byte-identical)"
