@@ -4,6 +4,14 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+## [4.10.10] — 2026-09-29
+
+Includes the changes documented under 4.10.9 below; 4.10.9 was not published to npm.
+
+### Fixed
+
+- On a phone-width screen, the Project tab no longer hides the project name in Chinese and Korean; the view toggle moves to its own line instead.
+
 ## [4.10.9] — 2026-09-29
 
 ### Fixed

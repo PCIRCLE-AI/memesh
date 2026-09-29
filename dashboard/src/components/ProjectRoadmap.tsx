@@ -422,7 +422,9 @@ export function ProjectRoadmap({ projectName, entities }: Props) {
         }}
       >
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 8 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
+          {/* 240px basis: a narrow screen wraps the toggle to its own line
+              instead of squeezing the project name to nothing. */}
+          <div style={{ flex: '1 1 240px', minWidth: 0 }}>
             <div style={{ fontSize: 18, fontWeight: 600, color: 'var(--text-0)', display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
               <svg width="18" height="18" viewBox="0 0 16 16" aria-hidden="true" style={{ color: 'var(--life)', flexShrink: 0 }}>
                 <path d="M2 4 a1 1 0 0 1 1 -1 h4 l2 2 h5 a1 1 0 0 1 1 1 v6 a1 1 0 0 1 -1 1 H3 a1 1 0 0 1 -1 -1 z" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />

@@ -1,6 +1,6 @@
 # CODEMAP
 
-**Version**: 4.10.9
+**Version**: 4.10.10
 
 A navigation map for the codebase: *"I want to change X — which file?"* For the
 design rationale behind these modules see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md);

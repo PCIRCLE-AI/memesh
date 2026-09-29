@@ -364,6 +364,14 @@ async function main() {
         await page.locator('#panel-Project [role="tablist"]').waitFor({ state: 'visible', timeout: 10000 });
         const projectOverflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
         assert.equal(projectOverflow, 0, `${locale} Project tab is ${projectOverflow}px wider than a 375px screen`);
+        // The project name must stay visible, not only fit: in zh-TW, zh-CN
+        // and ko the short toggle shared the header row and squeezed the
+        // roadmap title's name to 0px.
+        const hiddenNames = await page.evaluate((hash) =>
+          [...document.querySelectorAll('#panel-Project [title]')]
+            .filter((el) => el.getAttribute('title').includes(hash) && el.getBoundingClientRect().width < 1)
+            .map((el) => el.textContent), PHONE_PROJECT_HASH);
+        assert.deepEqual(hiddenNames, [], `${locale} Project tab squeezes a project name to 0px: ${JSON.stringify(hiddenNames)}`);
       }
       await page.locator('#tab-Settings').click();
       await languageSelect.selectOption('en');
