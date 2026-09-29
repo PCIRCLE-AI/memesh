@@ -8,13 +8,14 @@ export interface AgentMessageTransportContext {
     transport: 'cli' | 'http' | 'mcp';
     sourceHost: string;
     signal?: AbortSignal;
+    hostSession?: string;
 }
 export interface AgentMessageTransportDependencies {
     sendRouterRequest?: typeof sendAgentRouterRequest;
 }
 export declare class AgentRecipientUnavailableError extends AgentMessagingError {
     readonly code = "recipient_unavailable";
-    constructor();
+    constructor(detail?: string);
 }
 export declare class AgentRouterUnavailableError extends AgentMessagingError {
     readonly code = "router_unreachable";

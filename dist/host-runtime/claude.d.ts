@@ -31,6 +31,7 @@ export interface ClaudeManagedSessionDependencies {
     lifecycle?: LifecycleBindings;
     on_fatal_error?: (error: unknown) => void;
     cwd?: () => string;
+    env?: NodeJS.ProcessEnv;
 }
 export interface ClaudeManagedSession {
     readonly session_instance_id: string;

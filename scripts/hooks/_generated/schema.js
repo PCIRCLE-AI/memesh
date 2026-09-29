@@ -99,6 +99,9 @@ CREATE TABLE IF NOT EXISTS agent_message_deliveries (
   project            TEXT NOT NULL,
   recipient          TEXT NOT NULL,
   target_kind        TEXT NOT NULL DEFAULT 'principal' CHECK (target_kind IN ('principal', 'session')),
+  -- #497: the one session a principal delivery is meant for (NULL: every
+  -- session of that principal). Added by migrateEntitiesSchema on older files.
+  intended_session   TEXT,
   created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
   UNIQUE(message_id, project, recipient)
@@ -376,6 +379,17 @@ export function migrateEntitiesSchema(db) {
     addColumn('title', "ALTER TABLE entities ADD COLUMN title TEXT");
     db.exec(`CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status);
      CREATE INDEX IF NOT EXISTS idx_entities_namespace ON entities(namespace);`);
+    db.exec(`CREATE TABLE IF NOT EXISTS agent_session_aliases (
+       session_id          TEXT PRIMARY KEY,
+       previous_session_id TEXT NOT NULL UNIQUE,
+       created_at_ms       INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS agent_session_launchers (
+       launcher_pid    INTEGER PRIMARY KEY,
+       launcher_start  TEXT NOT NULL,
+       session_id      TEXT NOT NULL,
+       updated_at_ms   INTEGER NOT NULL
+     );`);
     const deliveryTableExists = db
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_deliveries'")
         .get();
@@ -388,6 +402,11 @@ export function migrateEntitiesSchema(db) {
     }
     db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_target
        ON agent_message_deliveries(project, target_kind, recipient, message_id);`);
+    if (!deliveryColumns.has('intended_session')) {
+        safeAlter(db, 'ALTER TABLE agent_message_deliveries ADD COLUMN intended_session TEXT');
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_intended
+       ON agent_message_deliveries(project, recipient, intended_session);`);
     const messageColumns = new Set(db.prepare("PRAGMA table_info(agent_messages)").all().map((column) => column.name));
     const addMessageColumn = (column, sql) => {
         if (messageColumns.has(column))

@@ -3,9 +3,11 @@ import {
   CHANNEL_FLAG,
   channelFlagWarningLine,
   commandNamesClaudeLauncher,
-  findChannelFlagWarning,
-  findClaudeLauncherCommand,
+  channelFlagWarningFor,
+  findClaudeLauncher,
   parsePsLine,
+  resolveClaudeLauncher,
+  runRealPsStart,
 } from '../../scripts/hooks/_claude-channel.js';
 
 // SessionStart warns once when the memesh-channel is configured but
@@ -46,7 +48,7 @@ describe('Feature: the channel-flag ancestry check never warns falsely', () => {
     });
   });
 
-  describe('findClaudeLauncherCommand', () => {
+  describe('findClaudeLauncher', () => {
     it('walks up the ancestry and returns the launcher command once found', () => {
       const lines = [
         '900 /bin/zsh',
@@ -58,29 +60,34 @@ describe('Feature: the channel-flag ancestry check never warns falsely', () => {
         calls += 1;
         return line;
       };
-      expect(findClaudeLauncherCommand(1000, runPs)).toBe(
+      expect(findClaudeLauncher(1000, runPs)?.command).toBe(
         'node /usr/local/bin/claude --dangerously-load-development-channels server:memesh-channel',
       );
       expect(calls).toBe(2);
     });
 
     it('returns null when the walk runs out of levels without finding one', () => {
-      const runPs = (pid: number) => `${pid - 1} /bin/some-wrapper`;
-      expect(findClaudeLauncherCommand(1000, runPs, 3)).toBeNull();
+      let calls = 0;
+      const runPs = (pid: number) => { calls += 1; return `${pid - 1} /bin/some-wrapper`; };
+      expect(findClaudeLauncher(1000, runPs, 3)).toBeNull();
+      expect(calls).toBe(3);
     });
 
     it('returns null, never throws, when ps fails (a missing process)', () => {
       const runPs = () => { throw new Error('No such process'); };
-      expect(findClaudeLauncherCommand(1000, runPs)).toBeNull();
+      expect(findClaudeLauncher(1000, runPs)).toBeNull();
     });
 
     it('returns null on an unparsable ps line', () => {
       const runPs = () => 'garbage, not a ps line';
-      expect(findClaudeLauncherCommand(1000, runPs)).toBeNull();
+      expect(findClaudeLauncher(1000, runPs)).toBeNull();
     });
   });
 
-  describe('findChannelFlagWarning', () => {
+  describe('channelFlagWarningFor the launcher the walk finds', () => {
+    const warningAbove = (start: number, runPs: (pid: number) => string) =>
+      channelFlagWarningFor(findClaudeLauncher(start, runPs)?.command);
+
     // Narrow on purpose: an owner whose Mac has `hosts/claude.json` from a
     // past `agent setup` but never uses the channel flag must not be warned
     // at every session start. Only a command line that shows some INTENT to
@@ -88,12 +95,12 @@ describe('Feature: the channel-flag ancestry check never warns falsely', () => {
     // exact flag backing it up gets a line.
     it('warns nothing when the launcher carries the exact ASCII flag', () => {
       const runPs = () => '1 node /usr/local/bin/claude --dangerously-load-development-channels server:memesh-channel';
-      expect(findChannelFlagWarning(1000, runPs)).toBeNull();
+      expect(warningAbove(1000, runPs)).toBeNull();
     });
 
     it('warns, with mistyped-flag wording, when a dash was autocorrected into an em dash', () => {
       const runPs = () => '1 node /usr/local/bin/claude —dangerously-load-development-channels server:memesh-channel';
-      const line = findChannelFlagWarning(1000, runPs);
+      const line = warningAbove(1000, runPs);
       expect(line).toBe(channelFlagWarningLine());
       expect(line).toContain('mistyped');
       expect(line).toContain(CHANNEL_FLAG);
@@ -101,7 +108,7 @@ describe('Feature: the channel-flag ancestry check never warns falsely', () => {
 
     it('warns when server:memesh-channel appears with no exact flag token anywhere', () => {
       const runPs = () => '1 node /usr/local/bin/claude server:memesh-channel';
-      const line = findChannelFlagWarning(1000, runPs);
+      const line = warningAbove(1000, runPs);
       expect(line).toBe(channelFlagWarningLine());
     });
 
@@ -110,24 +117,68 @@ describe('Feature: the channel-flag ancestry check never warns falsely', () => {
     // if the flag-word check itself fires.
     it('warns on a mistyped flag word even with no channel-name mention on the line', () => {
       const runPs = () => '1 node /usr/local/bin/claude —dangerously-load-development-channels';
-      const line = findChannelFlagWarning(1000, runPs);
+      const line = warningAbove(1000, runPs);
       expect(line).toBe(channelFlagWarningLine());
     });
 
     it('warns nothing when the command line mentions neither the flag word nor the channel name', () => {
       const runPs = () => '1 node /usr/local/bin/claude --resume abc123';
-      expect(findChannelFlagWarning(1000, runPs)).toBeNull();
+      expect(warningAbove(1000, runPs)).toBeNull();
     });
 
     it('warns nothing when the launching claude process cannot be found', () => {
       const runPs = () => { throw new Error('No such process'); };
-      expect(findChannelFlagWarning(1000, runPs)).toBeNull();
+      expect(warningAbove(1000, runPs)).toBeNull();
     });
 
     it('never throws even when runPs throws something unusual', () => {
       const runPs = () => { throw 'not an Error object'; };
-      expect(() => findChannelFlagWarning(1000, runPs)).not.toThrow();
-      expect(findChannelFlagWarning(1000, runPs)).toBeNull();
+      expect(() => warningAbove(1000, runPs)).not.toThrow();
+      expect(warningAbove(1000, runPs)).toBeNull();
     });
+  });
+});
+
+// #497: session-start resolves the launcher ONCE and uses it for both the
+// channel-flag warning and the /clear session mapping.
+describe('Feature: one ancestry walk names the claude process (pid, start time, command)', () => {
+  const tree: Record<number, string> = {
+    300: '200 /bin/sh -c node hook.js',
+    200: '1 node /usr/local/bin/claude \u2014dangerously-load-development-channels server:memesh-channel',
+  };
+  const runPs = (pid: number) => {
+    const line = tree[pid];
+    if (!line) throw new Error('no such process');
+    return line;
+  };
+
+  it('returns the launcher pid, its start time and its command line', () => {
+    expect(resolveClaudeLauncher(300, runPs, (pid) => (pid === 200 ? 'Mon Sep 28 10:00:00 2026\n' : ''))).toEqual({
+      pid: 200,
+      start: 'Mon Sep 28 10:00:00 2026',
+      command: tree[200].replace(/^1 /, ''),
+    });
+  });
+
+  it('returns null when the start time cannot be read (no pairing on half an identity)', () => {
+    expect(resolveClaudeLauncher(300, runPs, () => { throw new Error('ps failed'); })).toBeNull();
+    expect(resolveClaudeLauncher(300, runPs, () => '  \n')).toBeNull();
+  });
+
+  it('warns from the resolved command, and says nothing with no command', () => {
+    const launcher = resolveClaudeLauncher(300, runPs, () => 'Mon Sep 28 10:00:00 2026');
+    expect(channelFlagWarningFor(launcher?.command)).toBe(channelFlagWarningLine());
+    expect(channelFlagWarningFor(undefined)).toBeNull();
+  });
+
+  it('reads the start time in UTC and the C locale, so one process always reads the same', () => {
+    let seen: { env?: NodeJS.ProcessEnv } | undefined;
+    const exec = (_file: string, _args: string[], options: { env?: NodeJS.ProcessEnv }) => {
+      seen = options;
+      return 'Mon Sep 28 10:00:00 2026\n';
+    };
+    expect(runRealPsStart(200, exec)).toBe('Mon Sep 28 10:00:00 2026\n');
+    expect(seen?.env?.TZ).toBe('UTC');
+    expect(seen?.env?.LC_ALL).toBe('C');
   });
 });

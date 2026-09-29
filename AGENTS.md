@@ -100,7 +100,11 @@ host is recallable from all of them. Not installed yet? Follow
    Stop hook additionally BLOCKS the turn from ending — once per message id
    with no intake receipt yet that this session has not already been blocked
    for — asking you to poll, fetch and record intake before finishing; it does
-   not run under Codex (#468).
+   not run under Codex (#468). Every Claude Code session in a project shares
+   one principal; a message sent with `intended_session` is meant for one of
+   them, so only that session is reminded or blocked by it, and `intake` or
+   `disposition` from any other session returns `intended_for_other_session`
+   — leave such a message for its session (#497).
 
 ## All 12 MCP tools
 

@@ -12,4 +12,13 @@ describe('public MCP message tool definition', () => {
       enum: ['principal', 'session'],
     }));
   });
+
+  it('#497: advertises intended_session and fallback_to_principal, and says what each does', () => {
+    const message = TOOL_DEFINITIONS.find((tool) => tool.name === 'message');
+    const properties = message?.inputSchema.properties as Record<string, unknown>;
+    expect(properties.intended_session).toEqual(expect.objectContaining({ type: 'string' }));
+    expect(properties.fallback_to_principal).toEqual(expect.objectContaining({ type: 'boolean' }));
+    expect(message?.description).toContain('intended_session');
+    expect(message?.description).toContain('intended_for_other_session');
+  });
 });

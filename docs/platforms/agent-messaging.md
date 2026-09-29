@@ -49,7 +49,68 @@ match like this names the target session as the recipient to use, not the
 principal: `... waiting for the live session "<session id>" ... fetch each
 message_id with target_kind "session" (fetch or intake using your own
 principal id instead of "<session id>" will not match this session-targeted
-message) ...`.
+message) ...`. `intake` or a `disposition` for such a delivery from a caller
+that is itself another registered session of the project
+(`CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`) is refused with
+`intended_for_other_session` (#497). A caller with no session id, or with an
+id no session registered, still can — a Codex MCP process has none.
+
+Every Claude Code session in one project shares one principal, so a message
+sent to that principal reaches all of them. A message can instead name the
+one session it is meant for (#497): `send` with `target_kind: "principal"` and
+`intended_session: "<session id>"`. The session id is the one the host's
+hooks receive as `session_id`: for Claude Code, `CLAUDE_CODE_SESSION_ID` (set
+in the MCP servers and shell commands it starts); for an ordinary Codex CLI
+thread, its thread id, which Codex sets as `CODEX_THREAD_ID` only for
+commands it runs in its shell — not for MCP servers. A session registered
+through any other host (`acp`, or `codex-app-server`, which registers a
+configured id rather than the thread id) is refused, because nothing there
+could say which session it is when it records intake. An id the router never
+registered is allowed — a Claude Code session without the channel host is the
+normal case. A `target_kind: "session"` send with
+`fallback_to_principal: true` does this by itself when the session refuses the
+message (`recipient_unavailable`): it sends the same message to the principal
+that session registered under, with `intended_session` set to it, and returns
+that message with a `fallback` field naming the refused one. A session the
+router never registered has no known principal, so that send still fails,
+saying so, and so does a refused session registered through a host that
+cannot be named.
+An unreachable router (`router_unreachable`) does not trigger the
+fallback. The refused session delivery is kept, so if that session comes back
+it can see the message twice — its own session copy and the principal copy —
+and should record intake for both. For a message like this:
+
+- only that session's hooks (SessionStart, the prompt hook, the Stop gate)
+  count it as waiting, and so does `briefing` where it knows the session: the
+  MCP tool under Claude Code, or the CLI run from a Codex shell. Every other
+  session of the principal does not, and neither does a caller with no
+  session id;
+- only that session can record `intake` or a `disposition` for it. The MCP
+  tool and the CLI take the caller's session from `CLAUDE_CODE_SESSION_ID`,
+  else `CODEX_THREAD_ID`. Any other caller — another session, or HTTP and the
+  dashboard, which have no session — gets `intended_for_other_session`, and
+  the message stays waiting for the session it is meant for. A Codex session
+  records it with the CLI from its shell (`memesh message intake ...`),
+  because Codex does not pass its thread id to MCP servers. `poll`, `fetch`,
+  `ack` and `activation` are not restricted;
+- the router pushes it only to that session's connection. With that session
+  not connected it stays durable, for the hooks to surface.
+
+After `/clear`, Claude Code gives the session a new id for its hooks and
+Bash, while the memesh MCP server and the channel host keep the one they
+started with. On macOS and Linux, memesh links the two through the `claude`
+process both run under (its pid and start time, recorded at every
+SessionStart), so a message meant for the session reaches it, and can be
+intaken, under either id. On Windows (no `ps`) the ids are not linked, and
+neither are they when the session could not be recorded (the database was
+busy at SessionStart, for example); that failure is recorded in
+`hook-outcomes.jsonl`.
+
+A message with no `intended_session` (every message sent before this
+existed, too) keeps reaching every session of the principal. The Claude
+channel host registers with the router under `CLAUDE_CODE_SESSION_ID` when its
+config names no `session_instance_id`, so the router's session id, the hooks'
+`session_id` and `intended_session` are the same string.
 
 If the declared recipient's inbox is empty everywhere, that reads exactly like
 a typo'd id — so SessionStart (only; not every prompt), once a database with
@@ -423,10 +484,10 @@ for active Codex-session delivery.
 ## What Works Today
 
 - MCP, HTTP, and CLI use the same message lifecycle and SQLite system of record.
-- `send` creates one canonical message, recipient delivery, and payload-free notification event under an idempotency key. Exact-session success additionally requires native host acceptance; an oversized envelope returns `native_message_too_large`, an unreachable local router returns `router_unreachable`, and other unavailable or rejected sessions return `recipient_unavailable`, with recovery state preserved for all three outcomes.
+- `send` creates one canonical message, recipient delivery, and payload-free notification event under an idempotency key. Exact-session success additionally requires native host acceptance; an oversized envelope returns `native_message_too_large`, an unreachable local router returns `router_unreachable`, and other unavailable or rejected sessions return `recipient_unavailable`, with recovery state preserved for all three outcomes. A principal send may name `intended_session`; a session send may set `fallback_to_principal` (#497, above).
 - `poll` and `memesh message watch` return only events for the exact project and recipient. They are compatibility and diagnostic paths; the opaque cursor can be persisted and reused after a timeout, dropped hint, duplicate delivery, or process restart.
 - `fetch` returns the payload only to the named recipient and matching `target_kind` in the named project. Exact-session messages require `target_kind=session`; polling and fetching do not acknowledge the message.
-- `intake`, `ack`, `disposition`, and `activation` are explicit, separate, idempotent receipt facts. Inbox/MCP ACK is valid without a host-native acceptance; host-native ACK remains bound to its `host_accept`. `receipts` returns one ordered projection and identifies each underlying fact source. For example, `manual_resume_required` does not imply ACK, acceptance, rejection, cancellation, or completion.
+- `intake`, `ack`, `disposition`, and `activation` are explicit, separate, idempotent receipt facts. `intake` and `disposition` for a delivery with an `intended_session` are refused (`intended_for_other_session`) unless the caller is that session. Inbox/MCP ACK is valid without a host-native acceptance; host-native ACK remains bound to its `host_accept`. `receipts` returns one ordered projection and identifies each underlying fact source. For example, `manual_resume_required` does not imply ACK, acceptance, rejection, cancellation, or completion.
 - The transport, rather than model-provided payload data, records sender-host provenance.
 
 ## Repeatable owner-run live checks

@@ -4876,6 +4876,17 @@ function migrateEntitiesSchema(db2) {
   addColumn("title", "ALTER TABLE entities ADD COLUMN title TEXT");
   db2.exec(`CREATE INDEX IF NOT EXISTS idx_entities_status ON entities(status);
      CREATE INDEX IF NOT EXISTS idx_entities_namespace ON entities(namespace);`);
+  db2.exec(`CREATE TABLE IF NOT EXISTS agent_session_aliases (
+       session_id          TEXT PRIMARY KEY,
+       previous_session_id TEXT NOT NULL UNIQUE,
+       created_at_ms       INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS agent_session_launchers (
+       launcher_pid    INTEGER PRIMARY KEY,
+       launcher_start  TEXT NOT NULL,
+       session_id      TEXT NOT NULL,
+       updated_at_ms   INTEGER NOT NULL
+     );`);
   const deliveryTableExists = db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_deliveries'").get();
   if (!deliveryTableExists)
     return;
@@ -4885,6 +4896,11 @@ function migrateEntitiesSchema(db2) {
   }
   db2.exec(`CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_target
        ON agent_message_deliveries(project, target_kind, recipient, message_id);`);
+  if (!deliveryColumns.has("intended_session")) {
+    safeAlter(db2, "ALTER TABLE agent_message_deliveries ADD COLUMN intended_session TEXT");
+  }
+  db2.exec(`CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_intended
+       ON agent_message_deliveries(project, recipient, intended_session);`);
   const messageColumns = new Set(db2.prepare("PRAGMA table_info(agent_messages)").all().map((column) => column.name));
   const addMessageColumn = (column, sql) => {
     if (messageColumns.has(column))
@@ -5104,6 +5120,9 @@ CREATE TABLE IF NOT EXISTS agent_message_deliveries (
   project            TEXT NOT NULL,
   recipient          TEXT NOT NULL,
   target_kind        TEXT NOT NULL DEFAULT 'principal' CHECK (target_kind IN ('principal', 'session')),
+  -- #497: the one session a principal delivery is meant for (NULL: every
+  -- session of that principal). Added by migrateEntitiesSchema on older files.
+  intended_session   TEXT,
   created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
   UNIQUE(message_id, project, recipient)
@@ -23430,15 +23449,129 @@ var init_agent_message_storage = __esm({
   }
 });
 
+// dist/core/agent-message-inbox.js
+function intendedSessionFilter(db2, session) {
+  const hasColumn = db2.prepare("SELECT 1 AS present FROM pragma_table_info('agent_message_deliveries') WHERE name = 'intended_session'").get() !== void 0;
+  if (!hasColumn)
+    return { sql: "", params: [] };
+  if (session === void 0)
+    return { sql: "AND d.intended_session IS NULL", params: [] };
+  const ids = [...sessionAliasChain(db2, session)];
+  return {
+    sql: `AND (d.intended_session IS NULL OR d.intended_session IN (${ids.map(() => "?").join(", ")}))`,
+    params: ids
+  };
+}
+function sessionAliasChain(db2, session) {
+  const chain = /* @__PURE__ */ new Set([session]);
+  try {
+    const previous = db2.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?");
+    const next = db2.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?");
+    for (const step of [previous, next]) {
+      let current = session;
+      for (; ; ) {
+        const row = step.get(current);
+        if (typeof row?.id !== "string" || chain.has(row.id))
+          break;
+        chain.add(row.id);
+        current = row.id;
+      }
+    }
+  } catch (err) {
+    if (!/no such table: agent_session_aliases\b/.test(errorMessage(err)))
+      throw err;
+  }
+  return chain;
+}
+function unreadDeliveryCount(db2, project, recipient, session) {
+  if (!recipient)
+    return 0;
+  try {
+    const intended = intendedSessionFilter(db2, session);
+    const row = db2.prepare(`SELECT COUNT(*) AS n
+       FROM agent_message_deliveries d
+       WHERE d.project = ?
+         AND d.recipient = ?
+         ${intended.sql}
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_message_receipts r
+           WHERE r.project = d.project
+             AND r.recipient = d.recipient
+             AND r.message_id = d.message_id
+             AND r.receipt_kind = 'intake'
+         )`).get(project, recipient, ...intended.params);
+    const n = row?.n;
+    return typeof n === "number" && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+function recipientSeenQuery(db2, recipient, project, onError) {
+  try {
+    const scope = project !== void 0 ? "project = ? AND " : "";
+    const params = project !== void 0 ? [project, recipient, project, recipient, project, recipient] : [recipient, recipient, recipient];
+    const row = db2.prepare(`SELECT (
+         EXISTS(SELECT 1 FROM agent_principals WHERE ${scope}principal_id = ?)
+         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE ${scope}recipient = ?)
+         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE ${scope}session_instance_id = ?)
+       ) AS seen`).get(...params);
+    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
+  } catch (err) {
+    if (!isMissingMessageTableError(err))
+      onError?.(err);
+    return void 0;
+  }
+}
+function isMissingMessageTableError(err) {
+  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(errorMessage(err));
+}
+function errorMessage(err) {
+  return err && typeof err === "object" && "message" in err ? String(err.message) : "";
+}
+function recipientEverSeen(db2, project, recipient) {
+  return recipientSeenQuery(db2, recipient, project);
+}
+function unreadInboxLines(count, project, recipient, everSeen, targetKind = "principal") {
+  if (!recipient)
+    return [];
+  const displayProject = JSON.stringify(project);
+  const displayRecipient = JSON.stringify(recipient);
+  if (count > 0) {
+    const noun = count === 1 ? "message" : "messages";
+    if (targetKind === "session") {
+      return [`${count} ${noun} waiting for the live session ${displayRecipient} in project ${displayProject} \u2014 that session is registered under your principal and connected right now. Poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id with target_kind "session" (fetch or intake using your own principal id instead of ${displayRecipient} will not match this session-targeted message), and record intake for each with recipient ${displayRecipient} (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
+    }
+    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record intake for each (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
+  }
+  if (everSeen === false) {
+    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
+  }
+  return [];
+}
+var init_agent_message_inbox = __esm({
+  "dist/core/agent-message-inbox.js"() {
+    "use strict";
+  }
+});
+
 // dist/core/agent-messaging.js
 import { createHash as createHash6, randomBytes as randomBytes2, randomUUID as randomUUID2 } from "node:crypto";
 function sendAgentMessage(db2, input, options = {}) {
   const normalized = normalizeSendInput(input);
+  if (normalized.intended_session !== null) {
+    const registered = db2.prepare(`
+      SELECT adapter_kind FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
+    `).get(normalized.project, normalized.intended_session);
+    if (registered && !INTENDED_SESSION_ADAPTERS.has(registered.adapter_kind)) {
+      throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, registered.adapter_kind);
+    }
+  }
   const requestHash = hashCanonical({
     project: normalized.project,
     sender: normalized.sender,
     recipient: normalized.recipient,
     target_kind: normalized.target_kind,
+    ...normalized.intended_session === null ? {} : { intended_session: normalized.intended_session },
     idempotency_key: normalized.idempotency_key,
     content_type: normalized.content_type,
     sender_host: normalized.sender_host,
@@ -23473,9 +23606,9 @@ function sendAgentMessage(db2, input, options = {}) {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(messageId2, normalized.project, normalized.sender, normalized.sender_host, normalized.recipient, normalized.content_type, normalized.correlation_id, normalized.reply_to, normalized.privacy, payloadJson, stableStringify(normalized.provenance));
     db2.prepare(`
-      INSERT INTO agent_message_deliveries (delivery_id, message_id, project, recipient, target_kind)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(deliveryId, messageId2, normalized.project, normalized.recipient, normalized.target_kind);
+      INSERT INTO agent_message_deliveries (delivery_id, message_id, project, recipient, target_kind, intended_session)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(deliveryId, messageId2, normalized.project, normalized.recipient, normalized.target_kind, normalized.intended_session);
     db2.prepare(`
       INSERT INTO agent_message_events (event_id, message_id, delivery_id, project, recipient, event_kind)
       VALUES (?, ?, ?, ?, ?, 'message_available')
@@ -23607,7 +23740,16 @@ function fetchAgentMessage(db2, input) {
 }
 function recordAgentReceipt(db2, input) {
   const normalized = normalizeReceiptInput(input);
-  assertMessageAccess(db2, normalized.project, normalized.recipient, normalized.message_id);
+  const delivery = assertMessageAccess(db2, normalized.project, normalized.recipient, normalized.message_id);
+  if (normalized.receipt_kind === "intake" || normalized.receipt_kind === "disposition") {
+    const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
+    if (delivery.intended_session !== null && (callerSession === null || !sessionAliasChain(db2, delivery.intended_session).has(callerSession))) {
+      throw new AgentIntendedForOtherSessionError(normalized.message_id, delivery.intended_session, callerSession);
+    }
+    if (delivery.target_kind === "session" && callerSession !== null && !sessionAliasChain(db2, normalized.recipient).has(callerSession) && db2.prepare("SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?").get(normalized.project, callerSession) !== void 0) {
+      throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
+    }
+  }
   const detail = buildReceiptDetail(normalized);
   const requestHash = hashCanonical({
     message_id: normalized.message_id,
@@ -23666,6 +23808,10 @@ function normalizeSendInput(input) {
   const sender = requireText("sender", input.sender, MAX_SCOPE_FIELD);
   const recipient = requireScopeId("recipient", input.recipient);
   const target_kind = parseTargetKind(input.target_kind ?? "principal");
+  const intended_session = input.intended_session === void 0 || input.intended_session === null ? null : requireScopeId("intended_session", input.intended_session);
+  if (intended_session !== null && target_kind !== "principal") {
+    throw new AgentMessagingError('intended_session is only valid with target_kind "principal".');
+  }
   const idempotency_key = requireText("idempotency_key", input.idempotency_key, MAX_IDEMPOTENCY_KEY);
   const content_type = parseContentType(input.content_type);
   const sender_host = optionalText("sender_host", input.sender_host ?? null, MAX_SCOPE_FIELD);
@@ -23690,6 +23836,7 @@ function normalizeSendInput(input) {
     sender,
     recipient,
     target_kind,
+    intended_session,
     idempotency_key,
     content_type,
     payload: input.payload,
@@ -23827,6 +23974,7 @@ function lookupExistingMessage(db2, project, sender, idempotencyKey) {
       m.sender_host,
       d.recipient,
       d.target_kind,
+      d.intended_session,
       m.content_type,
       m.correlation_id,
       m.reply_to_message_id,
@@ -23853,6 +24001,7 @@ function loadSentMessage(db2, project, recipient, messageId2) {
       m.sender_host,
       d.recipient,
       d.target_kind,
+      d.intended_session,
       m.content_type,
       m.correlation_id,
       m.reply_to_message_id,
@@ -23869,13 +24018,14 @@ function loadSentMessage(db2, project, recipient, messageId2) {
 }
 function assertMessageAccess(db2, project, recipient, messageId2) {
   const row = db2.prepare(`
-    SELECT 1
+    SELECT intended_session, target_kind
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId2);
   if (!row) {
     throw new AgentMessageAccessError(`Agent message ${messageId2} is not available to recipient ${recipient} in project ${project}.`);
   }
+  return row;
 }
 function lookupExistingReceipt(db2, project, recipient, messageId2, receiptKind, idempotencyKey) {
   return db2.prepare(`
@@ -23912,6 +24062,7 @@ function rowToSentAgentMessage(row) {
     sender_host: row.sender_host,
     recipient: row.recipient,
     target_kind: parseTargetKind(row.target_kind),
+    intended_session: row.intended_session,
     content_type: parseContentType(row.content_type),
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,
@@ -24109,11 +24260,12 @@ async function waitForDelay(ms, signal) {
       onAbort();
   });
 }
-var MAX_SCOPE_FIELD, MAX_IDEMPOTENCY_KEY, MAX_CURSOR_TOKEN, AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES, DEFAULT_POLL_LIMIT, MAX_POLL_LIMIT, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_WAIT_INTERVAL_MS, MIN_WAIT_INTERVAL_MS, AgentMessagingError, AgentIdempotencyConflictError, AgentMessageAccessError, AgentWaitAbortedError, AgentNativeMessageTooLargeError;
+var MAX_SCOPE_FIELD, MAX_IDEMPOTENCY_KEY, MAX_CURSOR_TOKEN, AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES, DEFAULT_POLL_LIMIT, MAX_POLL_LIMIT, DEFAULT_WAIT_TIMEOUT_MS, DEFAULT_WAIT_INTERVAL_MS, MIN_WAIT_INTERVAL_MS, AgentMessagingError, AgentIdempotencyConflictError, AgentMessageAccessError, AgentIntendedForOtherSessionError, INTENDED_SESSION_ADAPTERS, AgentIntendedSessionUnsupportedError, AgentWaitAbortedError, AgentNativeMessageTooLargeError;
 var init_agent_messaging = __esm({
   "dist/core/agent-messaging.js"() {
     "use strict";
     init_agent_message_storage();
+    init_agent_message_inbox();
     init_agent_scope_id();
     MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
     MAX_IDEMPOTENCY_KEY = 200;
@@ -24130,6 +24282,19 @@ var init_agent_messaging = __esm({
     AgentIdempotencyConflictError = class extends AgentMessagingError {
     };
     AgentMessageAccessError = class extends AgentMessagingError {
+    };
+    AgentIntendedForOtherSessionError = class extends AgentMessageAccessError {
+      code = "intended_for_other_session";
+      constructor(messageId2, intendedSession, callerSession) {
+        const caller = callerSession === null ? "this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set or not a valid session id, or the request came over HTTP). If you are that session in Codex, record it with the CLI from your shell (`memesh message intake ...`): Codex does not pass its thread id to MCP servers" : `this caller is session ${JSON.stringify(callerSession)}`;
+        super(`intended_for_other_session: message ${messageId2} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. Otherwise leave it for that session: do not record intake or a disposition for it.`);
+      }
+    };
+    INTENDED_SESSION_ADAPTERS = /* @__PURE__ */ new Set(["claude-channel", "codex-cli-queue"]);
+    AgentIntendedSessionUnsupportedError = class extends AgentMessagingError {
+      constructor(session, adapterKind) {
+        super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads (claude-channel, codex-cli-queue, or an id the router never registered) can be named as intended_session.`);
+      }
     };
     AgentWaitAbortedError = class extends AgentMessagingError {
     };
@@ -24334,13 +24499,30 @@ var init_schemas3 = __esm({
         sender: messageSender,
         recipient: messageRecipient,
         target_kind: external_exports.enum(["principal", "session"]).default("principal"),
+        intended_session: agentScopeId("intended_session").optional(),
+        fallback_to_principal: external_exports.boolean().optional(),
         idempotency_key: messageIdempotencyKey,
         payload: external_exports.json().refine((value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= AGENT_MESSAGE_JSON_MAX_BYTES, { message: `payload must be at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes when encoded as JSON` }).describe(`Untrusted JSON value. The encoded payload is limited to ${AGENT_MESSAGE_JSON_MAX_BYTES} bytes (64 KiB); native delivery additionally requires the complete envelope to fit ${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB).`),
         content_type: external_exports.enum(["text/plain", "application/json"]).default("text/plain"),
         privacy: external_exports.enum(["private", "team"]).default("private"),
         correlation_id: nonBlankBounded(255).optional(),
         reply_to: messageId.optional()
-      }).strict(),
+      }).strict().superRefine((send, ctx) => {
+        if (send.intended_session !== void 0 && send.target_kind !== "principal") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["intended_session"],
+            message: 'intended_session is only valid with target_kind "principal".'
+          });
+        }
+        if (send.fallback_to_principal !== void 0 && send.target_kind !== "session") {
+          ctx.addIssue({
+            code: "custom",
+            path: ["fallback_to_principal"],
+            message: 'fallback_to_principal is only valid with target_kind "session".'
+          });
+        }
+      }),
       external_exports.object({
         action: external_exports.literal("poll"),
         project: messageProject,
@@ -24696,73 +24878,31 @@ var init_task_state_store = __esm({
   }
 });
 
-// dist/core/agent-message-inbox.js
-function unreadDeliveryCount(db2, project, recipient) {
-  if (!recipient)
-    return 0;
-  try {
-    const row = db2.prepare(`SELECT COUNT(*) AS n
-       FROM agent_message_deliveries d
-       WHERE d.project = ?
-         AND d.recipient = ?
-         AND NOT EXISTS (
-           SELECT 1 FROM agent_message_receipts r
-           WHERE r.project = d.project
-             AND r.recipient = d.recipient
-             AND r.message_id = d.message_id
-             AND r.receipt_kind = 'intake'
-         )`).get(project, recipient);
-    const n = row?.n;
-    return typeof n === "number" && n > 0 ? n : 0;
-  } catch {
-    return 0;
-  }
+// dist/core/host-session.js
+function hostSessionFromEnv(env = process.env) {
+  return claudeCodeSessionFromEnv(env) ?? sessionFromVariable(env, "CODEX_THREAD_ID");
 }
-function recipientSeenQuery(db2, recipient, project, onError) {
-  try {
-    const scope = project !== void 0 ? "project = ? AND " : "";
-    const params = project !== void 0 ? [project, recipient, project, recipient, project, recipient] : [recipient, recipient, recipient];
-    const row = db2.prepare(`SELECT (
-         EXISTS(SELECT 1 FROM agent_principals WHERE ${scope}principal_id = ?)
-         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE ${scope}recipient = ?)
-         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE ${scope}session_instance_id = ?)
-       ) AS seen`).get(...params);
-    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
-  } catch (err) {
-    if (!isMissingMessageTableError(err))
-      onError?.(err);
+function claudeCodeSessionFromEnv(env = process.env) {
+  return sessionFromVariable(env, "CLAUDE_CODE_SESSION_ID");
+}
+function sessionFromVariable(env, name) {
+  const raw = env[name]?.trim();
+  if (!raw)
     return void 0;
+  const session = canonicalAgentScopeId(raw);
+  if (agentScopeIdRejection(name, session) === null)
+    return session;
+  try {
+    process.stderr.write(`[memesh] ignoring ${name}: set but not a valid session id
+`);
+  } catch {
   }
+  return void 0;
 }
-function isMissingMessageTableError(err) {
-  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(errorMessage(err));
-}
-function errorMessage(err) {
-  return err && typeof err === "object" && "message" in err ? String(err.message) : "";
-}
-function recipientEverSeen(db2, project, recipient) {
-  return recipientSeenQuery(db2, recipient, project);
-}
-function unreadInboxLines(count, project, recipient, everSeen, targetKind = "principal") {
-  if (!recipient)
-    return [];
-  const displayProject = JSON.stringify(project);
-  const displayRecipient = JSON.stringify(recipient);
-  if (count > 0) {
-    const noun = count === 1 ? "message" : "messages";
-    if (targetKind === "session") {
-      return [`${count} ${noun} waiting for the live session ${displayRecipient} in project ${displayProject} \u2014 that session is registered under your principal and connected right now. Poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id with target_kind "session" (fetch or intake using your own principal id instead of ${displayRecipient} will not match this session-targeted message), and record intake for each with recipient ${displayRecipient} (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
-    }
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record intake for each (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
-  }
-  if (everSeen === false) {
-    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
-  }
-  return [];
-}
-var init_agent_message_inbox = __esm({
-  "dist/core/agent-message-inbox.js"() {
+var init_host_session = __esm({
+  "dist/core/host-session.js"() {
     "use strict";
+    init_agent_scope_id();
   }
 });
 
@@ -25188,7 +25328,7 @@ function assembleBriefing(project, recipient) {
     taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
   }
   const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
-  const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient);
+  const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
   const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName), inboxRecipient) : void 0;
   const handoffRow = db2.prepare(`SELECT e.id, e.metadata, o.content AS text, o.created_at AS observedAt
      FROM entities e JOIN observations o ON o.entity_id = e.id
@@ -25287,6 +25427,7 @@ var init_briefing = __esm({
     init_scoring();
     init_task_state_store();
     init_agent_message_inbox();
+    init_host_session();
     init_agent_scope_id();
     init_task_state();
     init_session_handoff();
@@ -25831,7 +25972,7 @@ var init_agent_router = __esm({
 });
 
 // dist/transports/agent-messaging.js
-import { randomUUID as randomUUID4 } from "node:crypto";
+import { createHash as createHash10, randomUUID as randomUUID4 } from "node:crypto";
 function configuredAgentMessageStorageQuotaBytes() {
   const raw = process.env[AGENT_MESSAGE_STORAGE_QUOTA_ENV];
   if (raw === void 0 || raw === "")
@@ -25956,7 +26097,8 @@ function recordPublicWorkflow(db2, input, context) {
     idempotency_key: input.idempotency_key,
     receipt_kind: "disposition",
     disposition: input.disposition,
-    detail: receiptDetail(input.detail, context)
+    detail: receiptDetail(input.detail, context),
+    caller_session: context.hostSession
   });
 }
 function readPublicReceipts(db2, input) {
@@ -26080,16 +26222,52 @@ function parseStoredObject(raw, label) {
   }
   throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
+function sendPrincipalFallback(db2, message, refused) {
+  const session = db2.prepare(`
+    SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
+  `).get(refused.project, refused.recipient);
+  if (!session) {
+    throw new AgentRecipientUnavailableError(`There is no principal fallback: session ${JSON.stringify(refused.recipient)} has never registered in project ${JSON.stringify(refused.project)}, so its principal is unknown. Send to the principal yourself with intended_session ${JSON.stringify(refused.recipient)}.`);
+  }
+  let fallback;
+  try {
+    fallback = sendAgentMessage(db2, {
+      ...message,
+      recipient: session.principal_id,
+      target_kind: "principal",
+      intended_session: refused.recipient,
+      idempotency_key: `principal-fallback:${createHash10("sha256").update(message.idempotency_key).digest("hex")}`
+    }, {
+      notifier: optionalRouterNotifier(),
+      storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
+    });
+  } catch (error51) {
+    if (error51 instanceof AgentIntendedSessionUnsupportedError) {
+      throw new AgentRecipientUnavailableError(`There is no principal fallback: ${error51.message}`);
+    }
+    throw error51;
+  }
+  return {
+    ...fallback,
+    fallback: {
+      reason: "recipient_unavailable",
+      from: {
+        message_id: refused.message_id,
+        delivery_id: refused.delivery_id,
+        recipient: refused.recipient,
+        target_kind: "session"
+      }
+    }
+  };
+}
 async function executeAgentMessageAction(db2, rawInput, context, dependencies = {}) {
   const input = MessageSchema.parse(rawInput);
   switch (input.action) {
     case "send": {
-      const sent = sendAgentMessage(db2, {
+      const message = {
         project: input.project,
         sender: input.sender,
         sender_host: context.sourceHost,
-        recipient: input.recipient,
-        target_kind: input.target_kind,
         idempotency_key: input.idempotency_key,
         payload: input.payload,
         content_type: input.content_type,
@@ -26100,16 +26278,28 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
           transport: context.transport,
           source_host: context.sourceHost
         }
+      };
+      const sent = sendAgentMessage(db2, {
+        ...message,
+        recipient: input.recipient,
+        target_kind: input.target_kind,
+        intended_session: input.intended_session
       }, {
         notifier: input.target_kind === "session" ? void 0 : optionalRouterNotifier(),
         storage_quota_bytes: configuredAgentMessageStorageQuotaBytes()
       });
       if (sent.target_kind !== "session")
         return sent;
-      return {
-        ...sent,
-        native_delivery: await requireExactSessionNativeAcceptance(db2, sent, dependencies)
-      };
+      try {
+        return {
+          ...sent,
+          native_delivery: await requireExactSessionNativeAcceptance(db2, sent, dependencies)
+        };
+      } catch (error51) {
+        if (input.fallback_to_principal !== true || !(error51 instanceof AgentRecipientUnavailableError))
+          throw error51;
+        return sendPrincipalFallback(db2, message, sent);
+      }
     }
     case "poll": {
       const query = {
@@ -26149,7 +26339,8 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
         idempotency_key: input.idempotency_key,
         receipt_kind: "intake",
         intake_state: input.intake_state,
-        detail: receiptDetail(void 0, context)
+        detail: receiptDetail(void 0, context),
+        caller_session: context.hostSession
       });
     case "ack":
       return recordPublicAck(db2, input, context);
@@ -26180,8 +26371,8 @@ var init_agent_messaging2 = __esm({
     init_paths();
     AgentRecipientUnavailableError = class extends AgentMessagingError {
       code = "recipient_unavailable";
-      constructor() {
-        super("recipient_unavailable: the exact active session did not accept the native message.");
+      constructor(detail) {
+        super(`recipient_unavailable: the exact active session did not accept the native message.${detail ? ` ${detail}` : ""}`);
       }
     };
     AgentRouterUnavailableError = class extends AgentMessagingError {
@@ -52896,7 +53087,7 @@ var require_ip_address = __commonJS({
 import { isIPv6 } from "node:net";
 import { isIPv6 as isIPv62 } from "node:net";
 import { Buffer as Buffer2 } from "node:buffer";
-import { createHash as createHash10 } from "node:crypto";
+import { createHash as createHash11 } from "node:crypto";
 import { isIP } from "node:net";
 function ipKeyGenerator(ip, ipv6Subnet = 56) {
   if (isIPv6(ip)) {
@@ -53084,7 +53275,7 @@ var init_dist = __esm({
       return resetSeconds;
     };
     getPartitionKey = (key) => {
-      const hash2 = createHash10("sha256");
+      const hash2 = createHash11("sha256");
       hash2.update(key);
       const partitionKey = hash2.digest("hex").slice(0, 12);
       return Buffer2.from(partitionKey).toString("base64");
@@ -56260,7 +56451,15 @@ var init_capture_liveness = __esm({
       noRecipientForGate: "no recipient could be resolved for this session",
       noDatabaseForMessageGate: "no database yet \u2014 nothing to check for waiting messages",
       nothingWaitingForGate: "no messages are waiting for the resolved recipient",
-      alreadyBlockedForGate: "every waiting message id was already blocked for in this session"
+      alreadyBlockedForGate: "every waiting message id was already blocked for in this session",
+      sessionLauncherNotFound: "session_launcher_not_found: no claude process found above this hook (no ps, or not under Claude Code)",
+      sessionLauncherSubagent: "session_launcher_subagent: a subagent SessionStart does not change its session mapping",
+      sessionLauncherNoDatabase: "session_launcher_no_database: no database file yet \u2014 this session is not recorded for its claude process",
+      clearAliasNoPrevious: "clear_alias_no_previous: no earlier session recorded for this claude process",
+      clearAliasPidReused: "clear_alias_pid_reused: the recorded process had the same pid but a different start time",
+      clearAliasAlreadyLinked: "clear_alias_already_linked: one of these session ids is already aliased",
+      clearAliasNoTable: "clear_alias_no_table: the database has no alias tables yet (not migrated)",
+      clearAliasInvalidInput: "clear_alias_invalid_input: no usable session_id in the SessionStart payload"
     };
     KNOWN_SKIP_REASONS = new Set(Object.values(SKIP_REASONS));
     UNRECOGNISED_REASON = "unrecognised reason";
@@ -56377,7 +56576,7 @@ import fs18 from "fs";
 import os2 from "os";
 import path16 from "path";
 import net2 from "node:net";
-import { createHash as createHash11 } from "crypto";
+import { createHash as createHash12 } from "crypto";
 import { createRequire as createRequire2 } from "module";
 import { execFileSync as execFileSync7 } from "child_process";
 function countH2Headings(content) {
@@ -57501,7 +57700,7 @@ function verifySkillsManifest(packageRoot3, existsSyncImpl, readFileSyncImpl, in
     let actualHash;
     try {
       const buf = readFileSyncImpl(full);
-      actualHash = createHash11("sha256").update(buf).digest("hex");
+      actualHash = createHash12("sha256").update(buf).digest("hex");
     } catch (err) {
       mismatches.push(`${entry.path} (read error: ${err instanceof Error ? err.message : "unknown"})`);
       continue;
@@ -57886,7 +58085,7 @@ var init_doctor = __esm({
 
 // dist/core/transcript-source.js
 import fs19 from "fs";
-import { createHash as createHash12 } from "node:crypto";
+import { createHash as createHash13 } from "node:crypto";
 import path17 from "path";
 function readTranscriptSnapshot(transcriptPath, expected) {
   return readTranscriptSnapshotWithin(transcriptPath, expected, MAX_TRANSCRIPT_SOURCE_BYTES).snapshot;
@@ -57926,7 +58125,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
-    const contentHash = createHash12("sha256").update(bytes).digest("hex");
+    const contentHash = createHash13("sha256").update(bytes).digest("hex");
     if (expected && contentHash !== expected.contentHash)
       return { snapshot: null, aggregateLimitExceeded: false };
     return { snapshot: { bytes, contentHash, ...identity }, aggregateLimitExceeded: false };
@@ -58132,7 +58331,7 @@ var init_transcript_extractor = __esm({
 });
 
 // dist/core/product-improvements.js
-import { createHash as createHash13 } from "node:crypto";
+import { createHash as createHash14 } from "node:crypto";
 function clean2(label, value, max) {
   const normalized = value.replace(/\s+/g, " ").trim();
   if (!normalized)
@@ -58201,7 +58400,7 @@ __export(dreamer_exports, {
   listProposals: () => listProposals,
   rejectProposal: () => rejectProposal
 });
-import { createHash as createHash14 } from "node:crypto";
+import { createHash as createHash15 } from "node:crypto";
 function collisionSafeName(db2, proposed, kind, proposalId2) {
   const taken = db2.prepare("SELECT 1 FROM entities WHERE name = ?").get(proposed) !== void 0;
   return taken ? `${proposed} (${kind} #${proposalId2})` : proposed;
@@ -58319,7 +58518,7 @@ function executeWorkPackage(db2, input, context = {}) {
   const execute = () => {
     const project = input.action === "prepare" ? input.project : input.ref.project;
     const kind = input.action === "prepare" ? input.kind : input.ref.kind;
-    const hash2 = (value) => createHash14("sha256").update(JSON.stringify(value)).digest("hex");
+    const hash2 = (value) => createHash15("sha256").update(JSON.stringify(value)).digest("hex");
     if (input.action !== "prepare") {
       const submitted = input.action === "submit" ? input.result : void 0;
       if (submitted && [submitted.name, ...submitted.observations, ...submitted.tags].some((s) => redactSecrets(s) !== s)) {
@@ -60503,7 +60702,7 @@ init_operations();
 init_recall_agent_view();
 init_config();
 init_session_limit();
-import { createHash as createHash15 } from "crypto";
+import { createHash as createHash16 } from "crypto";
 import fs21 from "fs";
 import path19 from "path";
 import { fileURLToPath as fileURLToPath3 } from "url";
@@ -61907,6 +62106,7 @@ init_task_state_store();
 init_task_state();
 init_agent_messaging();
 init_agent_messaging2();
+init_host_session();
 init_agent_message_storage();
 init_config2();
 init_install_channel();
@@ -62502,7 +62702,8 @@ async function runCliMessage(input) {
     try {
       const result = await executeAgentMessageAction(getDatabase(), input, {
         transport: "cli",
-        sourceHost: "cli"
+        sourceHost: "cli",
+        hostSession: hostSessionFromEnv()
       });
       console.log(JSON.stringify(result));
     } catch (error51) {
@@ -62522,7 +62723,7 @@ messageCmd.command("discover").description("Discover active leased agents in one
   project: opts.project,
   limit: opts.limit
 }));
-messageCmd.command("send").description(`Durably send one exact-recipient message (payload 64 KiB; complete native envelope 16 KiB; idempotent)`).requiredOption("--project <name>", "Project scope").requiredOption("--sender <id>", "Stable sender agent/host ID").requiredOption("--recipient <id>", "Stable recipient agent/host ID").option("--target-kind <kind>", "principal | session", "principal").requiredOption("--idempotency-key <key>", "Stable retry key").requiredOption("--payload-stdin", `Read untrusted text or JSON from stdin, never argv (stdin read cap ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes; JSON-encoded durable payload cap ${AGENT_MESSAGE_JSON_MAX_BYTES}; exact-session complete native envelope cap ${AGENT_NATIVE_MESSAGE_MAX_BYTES})`).option("--content-type <type>", "text/plain | application/json", "text/plain").option("--privacy <scope>", "private | team", "private").option("--correlation-id <id>", "Conversation or task correlation ID").option("--reply-to <message-id>", "Message ID this replies to").action(async (opts) => {
+messageCmd.command("send").description(`Durably send one exact-recipient message (payload 64 KiB; complete native envelope 16 KiB; idempotent)`).requiredOption("--project <name>", "Project scope").requiredOption("--sender <id>", "Stable sender agent/host ID").requiredOption("--recipient <id>", "Stable recipient agent/host ID").option("--target-kind <kind>", "principal | session", "principal").option("--intended-session <id>", "Principal target only: the one session of that principal this message is meant for").option("--fallback-to-principal", "Session target only: if that session refuses it, send it to its principal, meant for that session").requiredOption("--idempotency-key <key>", "Stable retry key").requiredOption("--payload-stdin", `Read untrusted text or JSON from stdin, never argv (stdin read cap ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes; JSON-encoded durable payload cap ${AGENT_MESSAGE_JSON_MAX_BYTES}; exact-session complete native envelope cap ${AGENT_NATIVE_MESSAGE_MAX_BYTES})`).option("--content-type <type>", "text/plain | application/json", "text/plain").option("--privacy <scope>", "private | team", "private").option("--correlation-id <id>", "Conversation or task correlation ID").option("--reply-to <message-id>", "Message ID this replies to").action(async (opts) => {
   requireOneOf(opts.contentType, ["text/plain", "application/json"], "--content-type");
   requireOneOf(opts.privacy, ["private", "team"], "--privacy");
   requireOneOf(opts.targetKind, ["principal", "session"], "--target-kind");
@@ -62533,6 +62734,8 @@ messageCmd.command("send").description(`Durably send one exact-recipient message
       sender: opts.sender,
       recipient: opts.recipient,
       target_kind: opts.targetKind,
+      intended_session: opts.intendedSession,
+      fallback_to_principal: opts.fallbackToPrincipal,
       idempotency_key: opts.idempotencyKey,
       payload: await readCliMessagePayloadFromStdin(opts.contentType),
       content_type: opts.contentType,
@@ -63816,7 +64019,7 @@ delegationCmd.command("record").description("Turn a worker JSON envelope into on
   }
   requireOneOf(opts.verdict, DELEGATION_VERDICTS, "--verdict");
   const envelopeText = readLocalFile("--envelope", opts.envelope, ENVELOPE_MAX_BYTES).toString("utf8");
-  const promptSha256 = createHash15("sha256").update(readLocalFile("--prompt-file", opts.promptFile, 64 * 1024 * 1024)).digest("hex");
+  const promptSha256 = createHash16("sha256").update(readLocalFile("--prompt-file", opts.promptFile, 64 * 1024 * 1024)).digest("hex");
   await withDatabase(() => {
     let result;
     try {

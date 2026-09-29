@@ -901,9 +901,9 @@ The `action` field is one of:
 | `discover` | `project`, optional `limit` (default 50, max 100) | Read currently live registrations in one project from the router. Returns only router data (`session_id`, `principal_id`, `host_kind`, `project`, `model` (always `null`: no host tells MeMesh which model a session runs), declared `work_summary` or `null`, `active`, `generation`, and `lease_expires_at_ms`); performs no message or receipt operation and fails explicitly when the router is unavailable. |
 | `poll` | `project`, `recipient` | Read a bounded batch after an optional opaque `cursor`. `wait_ms` is 0–30000 and `limit` is 1–100. Events contain routing metadata, never the payload. |
 | `fetch` | `project`, `recipient`, `message_id` | Return the payload routed to that principal or exact session. Optional `target_kind` defaults to `principal`; exact-session fetches must pass `session`. Fetch is a read and does not imply intake or ACK. |
-| `intake` | receipt base plus `intake_state` | Record `fetched` or `ingested` without implying ACK. |
+| `intake` | receipt base plus `intake_state` | Record `fetched` or `ingested` without implying ACK. Refused with `intended_for_other_session` for a delivery with an `intended_session`, unless the caller is that session (MCP and CLI read it from `CLAUDE_CODE_SESSION_ID`, else `CODEX_THREAD_ID`; HTTP has none). Codex sets `CODEX_THREAD_ID` only for its shell commands, so a Codex session records it with `memesh message intake`. For a `target_kind: "session"` delivery, a caller that is another registered session of the project is refused the same way; a caller with no session id, or an unregistered one, is not. |
 | `ack` | receipt base | Record explicit recipient acknowledgement. Inbox/MCP acknowledgement does not require or imply host-native acceptance. |
-| `disposition` | receipt base plus `disposition` | Record `accepted`, `rejected`, `completed`, `cancelled`, or `deferred`. |
+| `disposition` | receipt base plus `disposition` | Record `accepted`, `rejected`, `completed`, `cancelled`, or `deferred`. Same `intended_session` rule as `intake`. |
 | `activation` | receipt base plus `activation` | Record `woken`, `manual_resume_required`, `unsupported`, or `failed`. |
 | `receipts` | `project`, `recipient`, `message_id` | Read one ordered audit projection containing public receipt facts plus any host acceptance, host-native ACK, and workflow facts for the authorized delivery. Each row identifies its `fact_source`. |
 
@@ -916,6 +916,8 @@ Additional `send` fields:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `target_kind` | `principal` \| `session` | No | Defaults to `principal`. A `session` target is bound to that exact active session, waits for native acceptance, and never reroutes to a replacement. |
+| `intended_session` | string | No | Only with `target_kind: "principal"`. The one session of that principal the message is meant for: a Claude Code session id or an ordinary Codex CLI thread id (the `session_id` its hooks receive). A session the router registered through any other host (`acp`, `codex-app-server`) is refused, since nothing there could say which session it is when it records intake; an id the router never registered is allowed. Only that session is reminded of it (hooks, Stop gate, `briefing`), only it can record `intake` or a `disposition` (anyone else, including an HTTP caller, gets `intended_for_other_session`), and the router pushes it only to that session's connection. Part of the idempotency request. |
+| `fallback_to_principal` | boolean | No | Only with `target_kind: "session"`. If that session refuses the message (`recipient_unavailable`), send it to the principal the session registered under, with `intended_session` set to it, and return that message with a `fallback` field naming the refused one. A session that never registered has no known principal, and a refused session registered through a host that cannot be named is refused, so in both cases the send still fails with `recipient_unavailable`, saying so. `router_unreachable` does not trigger it. |
 | `content_type` | `text/plain` \| `application/json` | No | Defaults to `text/plain`; text payloads must be strings. |
 | `privacy` | `private` \| `team` | No | Retained message metadata; defaults to `private`. Delivery remains exact-recipient in both cases. |
 | `correlation_id` | string | No | Conversation or task correlation without changing routing. |
@@ -1525,7 +1527,7 @@ The CLI exposes the same local lifecycle as the MCP and HTTP `message` surface:
 
 | Command | Purpose |
 |---------|---------|
-| `memesh message send` | Durably send one exact-recipient untrusted JSON payload (64 KiB max); exact-session native envelopes have a separate 16 KiB cap and report `native_message_too_large` distinctly |
+| `memesh message send` | Durably send one exact-recipient untrusted JSON payload (64 KiB max); exact-session native envelopes have a separate 16 KiB cap and report `native_message_too_large` distinctly. `--intended-session <id>` and `--fallback-to-principal` are the `send` fields of the same names |
 | `memesh message watch` | Emit `ready`, then one bounded `events` or `timeout` JSONL record with `next_cursor` |
 | `memesh message fetch` | Fetch one authorized payload without acknowledging it |
 | `memesh message intake` | Record `fetched` or `ingested` |

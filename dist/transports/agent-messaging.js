@@ -1,12 +1,12 @@
-import { randomUUID } from 'node:crypto';
-import { AgentMessageAccessError, AgentMessagingError, AgentNativeMessageTooLargeError, fetchAgentMessage, pollAgentEvents, readAgentMessageReceipts, recordAgentReceipt, sendAgentMessage, waitForAgentEvents, } from '../core/agent-messaging.js';
+import { createHash, randomUUID } from 'node:crypto';
+import { AgentIntendedSessionUnsupportedError, AgentMessageAccessError, AgentMessagingError, AgentNativeMessageTooLargeError, fetchAgentMessage, pollAgentEvents, readAgentMessageReceipts, recordAgentReceipt, sendAgentMessage, waitForAgentEvents, } from '../core/agent-messaging.js';
 import { MessageSchema } from './schemas.js';
 import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterError, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
-    constructor() {
-        super('recipient_unavailable: the exact active session did not accept the native message.');
+    constructor(detail) {
+        super(`recipient_unavailable: the exact active session did not accept the native message.${detail ? ` ${detail}` : ''}`);
     }
 }
 export class AgentRouterUnavailableError extends AgentMessagingError {
@@ -155,6 +155,7 @@ function recordPublicWorkflow(db, input, context) {
         receipt_kind: 'disposition',
         disposition: input.disposition,
         detail: receiptDetail(input.detail, context),
+        caller_session: context.hostSession,
     });
 }
 function readPublicReceipts(db, input) {
@@ -285,16 +286,55 @@ function parseStoredObject(raw, label) {
     }
     throw new AgentMessagingError(`Invalid stored JSON object in ${label}.`);
 }
+function sendPrincipalFallback(db, message, refused) {
+    const session = db.prepare(`
+    SELECT principal_id FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
+  `).get(refused.project, refused.recipient);
+    if (!session) {
+        throw new AgentRecipientUnavailableError(`There is no principal fallback: session ${JSON.stringify(refused.recipient)} has never registered in project `
+            + `${JSON.stringify(refused.project)}, so its principal is unknown. Send to the principal yourself with `
+            + `intended_session ${JSON.stringify(refused.recipient)}.`);
+    }
+    let fallback;
+    try {
+        fallback = sendAgentMessage(db, {
+            ...message,
+            recipient: session.principal_id,
+            target_kind: 'principal',
+            intended_session: refused.recipient,
+            idempotency_key: `principal-fallback:${createHash('sha256').update(message.idempotency_key).digest('hex')}`,
+        }, {
+            notifier: optionalRouterNotifier(),
+            storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
+        });
+    }
+    catch (error) {
+        if (error instanceof AgentIntendedSessionUnsupportedError) {
+            throw new AgentRecipientUnavailableError(`There is no principal fallback: ${error.message}`);
+        }
+        throw error;
+    }
+    return {
+        ...fallback,
+        fallback: {
+            reason: 'recipient_unavailable',
+            from: {
+                message_id: refused.message_id,
+                delivery_id: refused.delivery_id,
+                recipient: refused.recipient,
+                target_kind: 'session',
+            },
+        },
+    };
+}
 export async function executeAgentMessageAction(db, rawInput, context, dependencies = {}) {
     const input = MessageSchema.parse(rawInput);
     switch (input.action) {
         case 'send': {
-            const sent = sendAgentMessage(db, {
+            const message = {
                 project: input.project,
                 sender: input.sender,
                 sender_host: context.sourceHost,
-                recipient: input.recipient,
-                target_kind: input.target_kind,
                 idempotency_key: input.idempotency_key,
                 payload: input.payload,
                 content_type: input.content_type,
@@ -305,16 +345,29 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                     transport: context.transport,
                     source_host: context.sourceHost,
                 },
+            };
+            const sent = sendAgentMessage(db, {
+                ...message,
+                recipient: input.recipient,
+                target_kind: input.target_kind,
+                intended_session: input.intended_session,
             }, {
                 notifier: input.target_kind === 'session' ? undefined : optionalRouterNotifier(),
                 storage_quota_bytes: configuredAgentMessageStorageQuotaBytes(),
             });
             if (sent.target_kind !== 'session')
                 return sent;
-            return {
-                ...sent,
-                native_delivery: await requireExactSessionNativeAcceptance(db, sent, dependencies),
-            };
+            try {
+                return {
+                    ...sent,
+                    native_delivery: await requireExactSessionNativeAcceptance(db, sent, dependencies),
+                };
+            }
+            catch (error) {
+                if (input.fallback_to_principal !== true || !(error instanceof AgentRecipientUnavailableError))
+                    throw error;
+                return sendPrincipalFallback(db, message, sent);
+            }
         }
         case 'poll': {
             const query = {
@@ -358,6 +411,7 @@ export async function executeAgentMessageAction(db, rawInput, context, dependenc
                 receipt_kind: 'intake',
                 intake_state: input.intake_state,
                 detail: receiptDetail(undefined, context),
+                caller_session: context.hostSession,
             });
         case 'ack':
             return recordPublicAck(db, input, context);

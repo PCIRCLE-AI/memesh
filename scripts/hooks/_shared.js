@@ -804,17 +804,42 @@ function inboxReadFailed(err, recordFailure) {
   return [];
 }
 
+/** The outcome reason a hook records when {@link hookMessageSessionId} reports a mismatch. */
+export const SESSION_ID_MISMATCH_REASON =
+  'session: session_id_mismatch (CODEX_THREAD_ID differs from the payload session_id; only messages meant for no particular session are counted)';
+
+/**
+ * #497: the session id a hook narrows the waiting count by — the payload's
+ * own `session_id`. Under Codex the hook's environment also has
+ * `CODEX_THREAD_ID`, and the payload's `session_id` and `CODEX_THREAD_ID`
+ * name the same thread. When both are set and differ, neither is trusted: the result
+ * is no session (only messages meant for no particular session count), and
+ * `mismatch` is true so the caller records it — never a silent downgrade.
+ *
+ * @returns {{ sessionId: string | undefined, mismatch: boolean }}
+ */
+export function hookMessageSessionId(payloadSessionId, env = process.env) {
+  const payload = typeof payloadSessionId === 'string' ? payloadSessionId.trim() : '';
+  const thread = typeof env.CODEX_THREAD_ID === 'string' ? env.CODEX_THREAD_ID.trim() : '';
+  if (payload && thread && payload !== thread) return { sessionId: undefined, mismatch: true };
+  return { sessionId: payload || undefined, mismatch: false };
+}
+
 /**
  * The reminder lines for `recipient` from an open database. Never throws
  * itself: a reminder must not be the reason a prompt or a session start fails,
  * and a failure that is not "nothing waiting" is said on stderr and handed to
  * `recordFailure`, not swallowed. `recordFailure` must not throw either; both
  * hooks pass one built on `recordHookOutcome`, which cannot.
+ *
+ * `sessionId` comes from {@link hookMessageSessionId} (#497): a message meant
+ * for another session of the same principal is left out, and with no
+ * `sessionId` only messages meant for no session in particular are counted.
  */
-export function waitingMessageLines(db, recipient, recordFailure) {
+export function waitingMessageLines(db, recipient, sessionId, recordFailure) {
   if (!recipient) return [];
   try {
-    return unreadInboxLinesFor(db, recipient);
+    return unreadInboxLinesFor(db, recipient, sessionId);
   } catch (err) {
     return inboxReadFailed(err, recordFailure);
   }
@@ -824,12 +849,12 @@ export function waitingMessageLines(db, recipient, recordFailure) {
  * The waiting message REFS behind those same lines — see
  * {@link unreadMessageRefsFor}'s own doc for what "waiting" means and why it
  * is not project-capped. Same never-throws contract as
- * {@link waitingMessageLines}, and the same `recordFailure`.
+ * {@link waitingMessageLines}, and the same `sessionId` and `recordFailure`.
  */
-export function waitingMessageRefs(db, recipient, recordFailure) {
+export function waitingMessageRefs(db, recipient, sessionId, recordFailure) {
   if (!recipient) return [];
   try {
-    return unreadMessageRefsFor(db, recipient);
+    return unreadMessageRefsFor(db, recipient, sessionId);
   } catch (err) {
     return inboxReadFailed(err, recordFailure);
   }
@@ -843,9 +868,12 @@ export function waitingMessageRefs(db, recipient, recordFailure) {
  * `recordFailure` that does not, see `waitingMessageLines`).
  * `onRecipientRejected`, if given, is `resolveMessageRecipient`'s own
  * rejection callback — see there. `hostContext` is passed straight through
- * to `resolveMessageRecipient`'s Codex fallback — see its own doc.
+ * to `resolveMessageRecipient`'s Codex fallback — see its own doc — and its
+ * `sessionId` also narrows the count to this session (#497), through
+ * {@link hookMessageSessionId}; `onSessionMismatch` is called when that
+ * reports a mismatch, so the caller can record it.
  */
-export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected, hostContext) {
+export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected, hostContext, onSessionMismatch) {
   const recipient = resolveMessageRecipient(env, onRecipientRejected, hostContext);
   if (!recipient) return [];
   const dbPath = env.MEMESH_DB_PATH ?? getDbPath();
@@ -855,7 +883,9 @@ export function unreadMessageLines(env = process.env, recordFailure, onRecipient
     // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling.
     db = new MemeshDatabase(dbPath, { readOnly: true });
     db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
-    return waitingMessageLines(db, recipient, recordFailure);
+    const session = hookMessageSessionId(hostContext?.sessionId, env);
+    if (session.mismatch) onSessionMismatch?.();
+    return waitingMessageLines(db, recipient, session.sessionId, recordFailure);
   } catch (err) {
     return inboxReadFailed(err, recordFailure);
   } finally {

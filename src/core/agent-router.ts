@@ -235,6 +235,7 @@ type DeliveryRow = {
   project: string;
   recipient: string;
   target_kind: string;
+  intended_session: string | null;
   event_sequence: number;
 };
 
@@ -922,7 +923,7 @@ export class AgentRouter {
 
   private loadDelivery(deliveryId: string, project: string): DeliveryRow {
     const row = this.db.prepare(`
-      SELECT d.delivery_id, d.message_id, d.project, d.recipient, d.target_kind, e.event_sequence
+      SELECT d.delivery_id, d.message_id, d.project, d.recipient, d.target_kind, d.intended_session, e.event_sequence
       FROM agent_message_deliveries d
       JOIN agent_message_events e ON e.delivery_id = d.delivery_id
       WHERE d.delivery_id = ? AND d.project = ?
@@ -946,15 +947,25 @@ export class AgentRouter {
         WHERE project = ? AND principal_id = ?
       `).get(delivery.project, delivery.recipient) as { activation_event_sequence: number } | undefined;
       if (!principal || delivery.event_sequence <= principal.activation_event_sequence) return undefined;
+      // #497: a principal delivery meant for one session goes only to that
+      // session's connection; with none live it stays durable, for the hooks.
       return this.db.prepare(`
         SELECT connection_id, project, principal_id, session_instance_id, generation,
                adapter_kind, router_instance_id, lease_expires_at_ms
         FROM agent_session_connections
         WHERE project = ? AND principal_id = ? AND router_instance_id = ?
           AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+          AND (? IS NULL OR session_instance_id = ?)
         ORDER BY connected_at DESC, rowid DESC
         LIMIT 1
-      `).get(delivery.project, delivery.recipient, this.router_instance_id, Date.now()) as ConnectionRow | undefined;
+      `).get(
+        delivery.project,
+        delivery.recipient,
+        this.router_instance_id,
+        Date.now(),
+        delivery.intended_session,
+        delivery.intended_session,
+      ) as ConnectionRow | undefined;
     }
     return this.db.prepare(`
       SELECT connection_id, project, principal_id, session_instance_id, generation,
@@ -975,6 +986,7 @@ export class AgentRouter {
     if (connection.project !== delivery.project) return false;
     return targetKind === 'principal'
       ? connection.principal_id === delivery.recipient
+        && (delivery.intended_session === null || connection.session_instance_id === delivery.intended_session)
       : connection.session_instance_id === delivery.recipient;
   }
 

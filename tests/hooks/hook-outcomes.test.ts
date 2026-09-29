@@ -97,6 +97,16 @@ describe('hook outcome records', () => {
     return parseHookOutcomes(raw).hooks[hook] ?? [];
   }
 
+  /**
+   * session-start's records other than its /clear session mapping (#497).
+   * Whether a mapping record appears depends on whether this test run has a
+   * `claude` process above it (a local run inside Claude Code does, CI does
+   * not), so the assertions about the hook's own outcome leave it out.
+   */
+  function sessionStartOwnRecords(): HookOutcomeRecord[] {
+    return records('session-start').filter((r) => !/^(session[-_]launcher|clear[-_]alias)/.test(r.reason ?? ''));
+  }
+
   function realCommit(message: string): { hash: string; output: string } {
     fs.writeFileSync(path.join(repoDir, `f${Date.now()}.txt`), 'content\n');
     git(['add', '-A']);
@@ -346,7 +356,7 @@ describe('hook outcome records', () => {
     // Injected context is something this hook READ, never something it
     // stored, so it must not count towards doctor's `writes`.
     runHook('session-start', { session_id: 'ss-1', cwd: repoDir });
-    const rows = records('session-start');
+    const rows = sessionStartOwnRecords();
     expect(rows.length).toBeGreaterThanOrEqual(1);
     expect(rows[0].outcome).toBe('notified');
   });
@@ -376,7 +386,7 @@ describe('hook outcome records', () => {
     });
     const out = JSON.parse(stdout.trim());
     expect(String(out.systemMessage)).toContain('memories not loaded');
-    const rows = records('session-start');
+    const rows = sessionStartOwnRecords();
     expect(rows.map((r) => r.outcome)).toEqual(['error']);
     expect(rows[0].reason).toMatch(/^uncaught [A-Za-z][\w-]*$/);
   });

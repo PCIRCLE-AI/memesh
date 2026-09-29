@@ -59,12 +59,12 @@ export function commandNamesClaudeLauncher(command) {
 /**
  * Walk up from `startPpid`, calling `runPs(pid)` for one `ps -o
  * ppid=,command=` line at a time, up to `maxLevels` hops. Returns the
- * launcher's full command line once found, or `null` — a missing process, an
+ * launcher's `{ pid, command }` once found, or `null` — a missing process, an
  * unparsable line, or the walk running out of levels — without ever
  * throwing: `runPs` failing (no such process, `ps` itself missing) ends the
  * walk exactly like reaching the top of the tree.
  */
-export function findClaudeLauncherCommand(startPpid, runPs, maxLevels = MAX_ANCESTRY_LEVELS) {
+export function findClaudeLauncher(startPpid, runPs, maxLevels = MAX_ANCESTRY_LEVELS) {
   let pid = startPpid;
   for (let i = 0; i < maxLevels && Number.isInteger(pid) && pid > 1; i++) {
     let raw;
@@ -75,7 +75,7 @@ export function findClaudeLauncherCommand(startPpid, runPs, maxLevels = MAX_ANCE
     }
     const parsed = parsePsLine(raw);
     if (!parsed) return null;
-    if (commandNamesClaudeLauncher(parsed.command)) return parsed.command;
+    if (commandNamesClaudeLauncher(parsed.command)) return { pid, command: parsed.command };
     pid = parsed.ppid;
   }
   return null;
@@ -129,7 +129,7 @@ export function channelFlagWarningLine() {
     + `restart Claude with the exact \`${CHANNEL_FLAG} server:memesh-channel\` flag.`;
 }
 
-/** The only impure call in this module. `-p` scopes `ps` to one pid. */
+/** The only impure calls in this module. `-p` scopes `ps` to one pid. */
 function runRealPs(pid) {
   return execFileSync('ps', ['-o', 'ppid=,command=', '-p', String(pid)], {
     encoding: 'utf8',
@@ -139,19 +139,42 @@ function runRealPs(pid) {
 }
 
 /**
- * One warning line for SessionStart's `systemMessage`, or `null`. Never
- * throws: any failure to inspect the process tree means silence, never a
- * false warning, so a platform where `ps` behaves differently just sees no
- * line rather than a wrong one. Also silent when the launcher's command line
- * shows no intent to load a channel at all — see
- * `commandLooksLikeMistypedChannelFlag`.
+ * When `pid` started, as `ps -o lstart=` prints it (macOS and Linux both
+ * support it). A pid alone can be reused by a later process; pid plus start
+ * time names one process. `lstart` is printed in the local time zone and
+ * locale, so both are pinned: otherwise a changed TZ or LANG makes the same
+ * process read as a different one. `exec` is a test seam.
+ *
+ * @param {number} pid
+ * @param {(file: string, args: string[], options: { env?: NodeJS.ProcessEnv } & Record<string, unknown>) => string} [exec]
+ * @returns {string}
  */
-export function findChannelFlagWarning(startPpid = process.ppid, runPs = runRealPs) {
+export function runRealPsStart(pid, exec = /** @type {any} */ (execFileSync)) {
+  return exec('ps', ['-o', 'lstart=', '-p', String(pid)], {
+    encoding: 'utf8',
+    timeout: 2000,
+    stdio: ['ignore', 'pipe', 'ignore'],
+    env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
+  });
+}
+
+/**
+ * The `claude` process this hook runs under: `{ pid, start, command }`, or
+ * `null` when there is none to find (not under Claude Code, no `ps` — Windows
+ * — or the walk failed). Never throws.
+ */
+export function resolveClaudeLauncher(startPpid = process.ppid, runPs = runRealPs, runPsStart = runRealPsStart) {
   try {
-    const launcher = findClaudeLauncherCommand(startPpid, runPs);
-    if (!launcher) return null;
-    return commandLooksLikeMistypedChannelFlag(launcher) ? channelFlagWarningLine() : null;
+    const found = findClaudeLauncher(startPpid, runPs);
+    if (!found) return null;
+    const start = String(runPsStart(found.pid) ?? '').trim();
+    return start !== '' ? { ...found, start } : null;
   } catch {
     return null;
   }
+}
+
+/** The channel-flag warning for an already-resolved launcher command line, or `null`. */
+export function channelFlagWarningFor(command) {
+  return typeof command === 'string' && commandLooksLikeMistypedChannelFlag(command) ? channelFlagWarningLine() : null;
 }

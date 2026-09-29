@@ -32,6 +32,7 @@ import { readRepoState, repoStateLines } from './repo-state.js';
 import { rankEntities } from './scoring.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
+import { hostSessionFromEnv } from './host-session.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
 import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
@@ -360,7 +361,9 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // reappearing on the surface an agent actually reads. The project tag
   // lookups below deliberately keep `projectName` as given — those are
   // entity tags, written by a different path, not this key.
-  const unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient);
+  // #497: a message meant for one session of a shared principal counts only
+  // in that session; this process's session is the one Claude Code started it in.
+  const unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
   // D8: only worth asking when it can change the answer — a nonzero count
   // already proves the recipient is real, and with no recipient at all
   // `unreadInboxLines` never looks at it.

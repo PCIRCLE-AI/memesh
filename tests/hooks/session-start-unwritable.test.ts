@@ -106,6 +106,36 @@ describe.skipIf(isRoot || isWindows)('session-start: an unwritable memesh dir is
     expect(message).not.toMatch(/MeMesh ready/);
   });
 
+  // #497: on /clear the hook always records its session mapping outcome.
+  // Recording creates and chmods the memesh directory, so doing it before
+  // the writability probe made an unwritable directory probe as writable and
+  // the warning vanished. Run under a stand-in `claude` process (a node
+  // script named `claude`, as `ps` shows the npm shim) so the mapping step
+  // actually runs.
+  it('still warns on a /clear SessionStart, which records its session mapping', () => {
+    const fakeClaude = path.join(home, 'claude');
+    fs.writeFileSync(fakeClaude, `
+      const { execFileSync } = require('child_process');
+      process.stdout.write(execFileSync(process.execPath, [process.argv[2]], {
+        input: process.argv[3], env: process.env, encoding: 'utf8', timeout: 15000,
+      }));
+    `);
+    fs.chmodSync(memeshDir, 0o555);
+    expect(() => fs.writeFileSync(path.join(memeshDir, 'probe'), 'x')).toThrow();
+
+    const out = execFileSync(process.execPath, [
+      fakeClaude,
+      path.resolve('scripts/hooks/session-start.js'),
+      JSON.stringify({ hook_event_name: 'SessionStart', source: 'clear', session_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', cwd: home }),
+    ], {
+      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: memeshDir, MEMESH_HOOK_HOST: 'claude-code' },
+      encoding: 'utf8',
+      timeout: 20000,
+    });
+    const parsed = JSON.parse(out.trim()) as { systemMessage?: string };
+    expect(parsed.systemMessage ?? '').toMatch(/cannot write to/i);
+  });
+
   it('says nothing about writability when the directory IS writable', () => {
     // Or the two above are satisfied by a hook that always cries wolf.
     const message = runHook();

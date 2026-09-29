@@ -5,7 +5,7 @@ import { spawn } from 'child_process';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, constants as fsConstants } from 'fs';
-import { findChannelFlagWarning } from './_claude-channel.js';
+import { channelFlagWarningFor, resolveClaudeLauncher } from './_claude-channel.js';
 import {
   buildReferenceContext,
   hasBriefingContent,
@@ -60,6 +60,9 @@ import {
   isCodexHost,
   resolveMessageRecipient,
   waitingMessageLines,
+  SKIP_REASONS,
+  hookMessageSessionId,
+  SESSION_ID_MISMATCH_REASON,
   briefingLevelPolicy,
   sessionStartAppendsWorkPackageNotice,
   WORK_PACKAGE_NOTICE,
@@ -71,6 +74,7 @@ import {
   writeAutoUpdateConsent,
   writePrivateJson,
 } from './_shared.js';
+import { recordSessionLauncher } from './_clear-alias.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import {
   buildBriefingIndex,
@@ -812,6 +816,37 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
   return [...lines.filter((l) => l.length > 0), '', baseMessage].join('\n');
 }
 
+/** Did the launcher mapping fail to be stored for a reason worth recording on any start? */
+function launcherWriteFailed(outcome) {
+  return outcome.outcome === 'error'
+    || outcome.reason === SKIP_REASONS.clearAliasNoTable
+    || outcome.reason === SKIP_REASONS.sessionLauncherNoDatabase;
+}
+
+/**
+ * Record this SessionStart's session for its claude process (#497). Opens the
+ * database for writing only when it already exists — a first session with no
+ * database keeps its "no database yet" banner — and without migrating it
+ * (tables missing: recorded and skipped). The hook's own busy_timeout is set
+ * before any statement, so a held write lock costs at most that, not the
+ * 30s writer default. Returns the outcome.
+ */
+function recordLauncherSession(data, launcher) {
+  let db;
+  try {
+    return recordSessionLauncher(() => {
+      if (!existsSync(dbPath)) return null;
+      db = new MemeshDatabase(dbPath);
+      db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
+      return db;
+    }, { sessionId: data.session_id, source: data.source, agentType: data.agent_type, launcher });
+  } catch (err) {
+    return { outcome: 'error', reason: `session-launcher: ${hookErrorReason(err)}` };
+  } finally {
+    try { db?.close(); } catch { /* already closed */ }
+  }
+}
+
 // #360: the ONE reason string for "this session's memory injection resolved
 // to nothing" — every exit path that ends up with a falsy `memoryContext`
 // passes this through `output()`'s `recorded` argument, so a genuinely silent
@@ -871,11 +906,15 @@ process.stdin.on('end', async () => {
   // Depends on neither `data` nor the database, so it can run before both —
   // and does, since the ancestry walk this can trigger is worth paying once
   // per session, not once per exit path.
+  //
+  // The same walk finds the `claude` process (#497): its pid and start time
+  // name the session across /clear — see _clear-alias.js.
+  const onClaudeCode = isClaudeCodeHost(process.env);
+  const claudeLauncher = onClaudeCode ? resolveClaudeLauncher() : null;
   let channelFlagWarningLine = null;
   try {
-    if (isClaudeCodeHost(process.env)
-      && existsSync(join(getMemeshDirFromDbPath(), 'hosts', 'claude.json'))) {
-      channelFlagWarningLine = findChannelFlagWarning();
+    if (onClaudeCode && existsSync(join(getMemeshDirFromDbPath(), 'hosts', 'claude.json'))) {
+      channelFlagWarningLine = channelFlagWarningFor(claudeLauncher?.command);
     }
   } catch { /* diagnostics must never cost a session its banner */ }
   const withChannelFlagWarning = (msg) =>
@@ -884,6 +923,7 @@ process.stdin.on('end', async () => {
     try {
     const data = JSON.parse(input);
     hookPayload = data;
+
     const projectName = getProjectName(data.cwd);
 
     // #360 — resolve the briefing level ONCE, before any exit path, so every
@@ -1053,6 +1093,20 @@ process.stdin.on('end', async () => {
     captureWarning = unwritable
       ? `◉ MeMesh cannot write to ${unwritable} — memories will NOT be saved this session (recall still works). Run 'memesh doctor'.`
       : null;
+
+    // After the writability probe on purpose: recording an outcome creates
+    // and chmods the memesh directory, which would hide an unwritable one.
+    // #497: remember which session this claude process now has, and on
+    // /clear link the new id to the previous one (see _clear-alias.js).
+    // Always recorded on /clear. On any other start, recorded when the
+    // mapping could not be stored (a write error such as a held lock, no
+    // tables, no database file) — that start can never link back later, and
+    // the next /clear alone could not say why. A routine start (stored, no
+    // claude process, a subagent) adds no second outcome.
+    if (onClaudeCode) {
+      const launcherOutcome = recordLauncherSession(data, claudeLauncher);
+      if (data.source === 'clear' || launcherWriteFailed(launcherOutcome)) record(launcherOutcome);
+    }
 
     if (!existsSync(dbPath)) {
       // Combine deprecation banner (if any) into the same
@@ -1521,7 +1575,9 @@ process.stdin.on('end', async () => {
         // memory", it is addressed to it. An inbox that cannot be read is
         // recorded as its own `error` (a label, like the two below), and is
         // not a failed memory assembly: the rest of the context still ships.
-        const inboxLines = waitingMessageLines(db, recipient, (err) =>
+        const inboxSession = hookMessageSessionId(data.session_id);
+        if (inboxSession.mismatch) record({ outcome: 'notified', reason: SESSION_ID_MISMATCH_REASON });
+        const inboxLines = waitingMessageLines(db, recipient, inboxSession.sessionId, (err) =>
           record({
             outcome: 'error',
             reason: `inbox: ${hookErrorReason(err)}`,

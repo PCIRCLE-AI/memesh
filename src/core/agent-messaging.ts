@@ -4,6 +4,7 @@ import {
   agentMessagePayloadStorageBytes,
   enforceAgentMessageStorageQuota,
 } from './agent-message-storage.js';
+import { sessionAliasChain } from './agent-message-inbox.js';
 import {
   AGENT_SCOPE_ID_MAX_LENGTH,
   agentScopeIdRejection,
@@ -27,6 +28,12 @@ export interface SendAgentMessageInput {
   sender: string;
   recipient: string;
   target_kind?: AgentTargetKind;
+  /**
+   * #497: the one session of a shared principal this message is meant for.
+   * Only with `target_kind: 'principal'`. That session alone is reminded of
+   * it and alone may record intake or a disposition for it.
+   */
+  intended_session?: string | null;
   idempotency_key: string;
   payload: AgentJsonValue;
   content_type: AgentContentType;
@@ -46,6 +53,7 @@ export interface SentAgentMessage {
   sender_host: string | null;
   recipient: string;
   target_kind: AgentTargetKind;
+  intended_session: string | null;
   content_type: AgentContentType;
   correlation_id: string | null;
   reply_to: string | null;
@@ -133,6 +141,13 @@ interface AgentReceiptBase {
   actor: string;
   idempotency_key: string;
   detail?: AgentJsonObject;
+  /**
+   * #497: the host session recording this receipt, as the transport knows it
+   * (never taken from the caller's arguments). Checked for intake and
+   * disposition of a delivery that names an `intended_session`; absent means
+   * "cannot say", which such a delivery refuses.
+   */
+  caller_session?: string | null;
 }
 
 export type RecordAgentReceiptInput =
@@ -231,6 +246,50 @@ const MIN_WAIT_INTERVAL_MS = 10;
 export class AgentMessagingError extends Error {}
 export class AgentIdempotencyConflictError extends AgentMessagingError {}
 export class AgentMessageAccessError extends AgentMessagingError {}
+/**
+ * #497: intake or a disposition for a principal delivery meant for another
+ * session of that principal. Refused so that the session it is meant for
+ * still has it waiting.
+ */
+export class AgentIntendedForOtherSessionError extends AgentMessageAccessError {
+  readonly code = 'intended_for_other_session';
+
+  constructor(messageId: string, intendedSession: string, callerSession: string | null) {
+    const caller = callerSession === null
+      ? 'this caller has no session id (CLAUDE_CODE_SESSION_ID / CODEX_THREAD_ID not set or not a valid session id, or the request came over HTTP). '
+        + 'If you are that session in Codex, record it with the CLI from your shell (`memesh message intake ...`): '
+        + 'Codex does not pass its thread id to MCP servers'
+      : `this caller is session ${JSON.stringify(callerSession)}`;
+    super(
+      `intended_for_other_session: message ${messageId} is meant for session ${JSON.stringify(intendedSession)}, and ${caller}. `
+      + 'Otherwise leave it for that session: do not record intake or a disposition for it.',
+    );
+  }
+}
+/**
+ * #497: the hosts whose registered `session_instance_id` is the same id the
+ * session can later name itself by when it records intake:
+ * `claude-channel` registers `CLAUDE_CODE_SESSION_ID`, and `codex-cli-queue`
+ * (codex-session.ts) registers the Codex thread id, which Codex exposes to
+ * its shell as `CODEX_THREAD_ID`. `codex-app-server` registers a configured
+ * or random id, not the thread id, so it is not here.
+ */
+const INTENDED_SESSION_ADAPTERS: ReadonlySet<string> = new Set(['claude-channel', 'codex-cli-queue']);
+
+/**
+ * #497: `intended_session` names a session registered through a host that
+ * cannot say which session it is when it records intake, so nothing could
+ * ever record intake for the message.
+ */
+export class AgentIntendedSessionUnsupportedError extends AgentMessagingError {
+  constructor(session: string, adapterKind: string) {
+    super(
+      `intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot `
+      + 'say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads '
+      + '(claude-channel, codex-cli-queue, or an id the router never registered) can be named as intended_session.',
+    );
+  }
+}
 export class AgentWaitAbortedError extends AgentMessagingError {}
 export class AgentNativeMessageTooLargeError extends AgentMessagingError {
   readonly code = 'native_message_too_large';
@@ -292,6 +351,7 @@ type MessageJoinRow = {
   sender_host: string | null;
   recipient: string;
   target_kind: string;
+  intended_session: string | null;
   content_type: string;
   correlation_id: string | null;
   reply_to_message_id: string | null;
@@ -343,11 +403,24 @@ export function sendAgentMessage(
   options: SendAgentMessageOptions = {},
 ): SentAgentMessage {
   const normalized = normalizeSendInput(input);
+  if (normalized.intended_session !== null) {
+    // An unregistered id is the normal case: a Claude session without the
+    // channel host never registers.
+    const registered = db.prepare(`
+      SELECT adapter_kind FROM agent_session_instances WHERE project = ? AND session_instance_id = ?
+    `).get(normalized.project, normalized.intended_session) as { adapter_kind: string } | undefined;
+    if (registered && !INTENDED_SESSION_ADAPTERS.has(registered.adapter_kind)) {
+      throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, registered.adapter_kind);
+    }
+  }
   const requestHash = hashCanonical({
     project: normalized.project,
     sender: normalized.sender,
     recipient: normalized.recipient,
     target_kind: normalized.target_kind,
+    // Only when set, so every request hash stored before #497 still matches
+    // its own retry.
+    ...(normalized.intended_session === null ? {} : { intended_session: normalized.intended_session }),
     idempotency_key: normalized.idempotency_key,
     content_type: normalized.content_type,
     sender_host: normalized.sender_host,
@@ -400,9 +473,16 @@ export function sendAgentMessage(
     );
 
     db.prepare(`
-      INSERT INTO agent_message_deliveries (delivery_id, message_id, project, recipient, target_kind)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(deliveryId, messageId, normalized.project, normalized.recipient, normalized.target_kind);
+      INSERT INTO agent_message_deliveries (delivery_id, message_id, project, recipient, target_kind, intended_session)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      deliveryId,
+      messageId,
+      normalized.project,
+      normalized.recipient,
+      normalized.target_kind,
+      normalized.intended_session,
+    );
 
     db.prepare(`
       INSERT INTO agent_message_events (event_id, message_id, delivery_id, project, recipient, event_kind)
@@ -551,7 +631,34 @@ export function fetchAgentMessage(db: MemeshDatabase, input: FetchAgentMessageIn
 
 export function recordAgentReceipt(db: MemeshDatabase, input: RecordAgentReceiptInput): AgentMessageReceipt {
   const normalized = normalizeReceiptInput(input);
-  assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
+  const delivery = assertMessageAccess(db, normalized.project, normalized.recipient, normalized.message_id);
+  if (normalized.receipt_kind === 'intake' || normalized.receipt_kind === 'disposition') {
+    const callerSession = input.caller_session?.trim() ? canonicalAgentScopeId(input.caller_session.trim()) : null;
+    // A principal delivery meant for one session: only that session — under
+    // any id it has had across /clear — and a caller that cannot say which
+    // session it is may not stand in for it.
+    if (
+      delivery.intended_session !== null
+      && (callerSession === null || !sessionAliasChain(db, delivery.intended_session).has(callerSession))
+    ) {
+      throw new AgentIntendedForOtherSessionError(normalized.message_id, delivery.intended_session, callerSession);
+    }
+    // A delivery addressed to one session outright: refuse a caller that is
+    // itself another registered session of this project. A caller with no
+    // session id stays allowed (a Codex MCP process has none and must still
+    // record its own), and so does an unregistered id: an MCP server keeps the
+    // session id it was started with, while `/clear` gives the session a new
+    // one, so an id nobody registered proves nothing.
+    if (
+      delivery.target_kind === 'session'
+      && callerSession !== null
+      && !sessionAliasChain(db, normalized.recipient).has(callerSession)
+      && db.prepare('SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id = ?')
+        .get(normalized.project, callerSession) !== undefined
+    ) {
+      throw new AgentIntendedForOtherSessionError(normalized.message_id, normalized.recipient, callerSession);
+    }
+  }
 
   const detail = buildReceiptDetail(normalized);
   const requestHash = hashCanonical({
@@ -760,6 +867,12 @@ function normalizeSendInput(input: SendAgentMessageInput): Required<Omit<SendAge
   const sender = requireText('sender', input.sender, MAX_SCOPE_FIELD);
   const recipient = requireScopeId('recipient', input.recipient);
   const target_kind = parseTargetKind(input.target_kind ?? 'principal');
+  const intended_session = input.intended_session === undefined || input.intended_session === null
+    ? null
+    : requireScopeId('intended_session', input.intended_session);
+  if (intended_session !== null && target_kind !== 'principal') {
+    throw new AgentMessagingError('intended_session is only valid with target_kind "principal".');
+  }
   const idempotency_key = requireText('idempotency_key', input.idempotency_key, MAX_IDEMPOTENCY_KEY);
   const content_type = parseContentType(input.content_type);
   const sender_host = optionalText('sender_host', input.sender_host ?? null, MAX_SCOPE_FIELD);
@@ -787,6 +900,7 @@ function normalizeSendInput(input: SendAgentMessageInput): Required<Omit<SendAge
     sender,
     recipient,
     target_kind,
+    intended_session,
     idempotency_key,
     content_type,
     payload: input.payload,
@@ -945,6 +1059,7 @@ function lookupExistingMessage(
       m.sender_host,
       d.recipient,
       d.target_kind,
+      d.intended_session,
       m.content_type,
       m.correlation_id,
       m.reply_to_message_id,
@@ -977,6 +1092,7 @@ function loadSentMessage(
       m.sender_host,
       d.recipient,
       d.target_kind,
+      d.intended_session,
       m.content_type,
       m.correlation_id,
       m.reply_to_message_id,
@@ -992,18 +1108,25 @@ function loadSentMessage(
   `).get(project, project, recipient, messageId) as MessageJoinRow | undefined;
 }
 
-function assertMessageAccess(db: MemeshDatabase, project: string, recipient: string, messageId: string): void {
+/** Throws unless the delivery exists; returns who it is for (#497). */
+function assertMessageAccess(
+  db: MemeshDatabase,
+  project: string,
+  recipient: string,
+  messageId: string,
+): { intended_session: string | null; target_kind: string } {
   const row = db.prepare(`
-    SELECT 1
+    SELECT intended_session, target_kind
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
-  `).get(project, recipient, messageId);
+  `).get(project, recipient, messageId) as { intended_session: string | null; target_kind: string } | undefined;
 
   if (!row) {
     throw new AgentMessageAccessError(
       `Agent message ${messageId} is not available to recipient ${recipient} in project ${project}.`,
     );
   }
+  return row;
 }
 
 function lookupExistingReceipt(
@@ -1157,6 +1280,7 @@ function rowToSentAgentMessage(row: MessageJoinRow): SentAgentMessage {
     sender_host: row.sender_host,
     recipient: row.recipient,
     target_kind: parseTargetKind(row.target_kind),
+    intended_session: row.intended_session,
     content_type: parseContentType(row.content_type),
     correlation_id: row.correlation_id,
     reply_to: row.reply_to_message_id,

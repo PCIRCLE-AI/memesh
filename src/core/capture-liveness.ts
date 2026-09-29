@@ -412,6 +412,15 @@ export const SKIP_REASONS = {
   noDatabaseForMessageGate: 'no database yet — nothing to check for waiting messages',
   nothingWaitingForGate: 'no messages are waiting for the resolved recipient',
   alreadyBlockedForGate: 'every waiting message id was already blocked for in this session',
+  // session-start (#497): which session each claude process has, and /clear
+  sessionLauncherNotFound: 'session_launcher_not_found: no claude process found above this hook (no ps, or not under Claude Code)',
+  sessionLauncherSubagent: 'session_launcher_subagent: a subagent SessionStart does not change its session mapping',
+  sessionLauncherNoDatabase: 'session_launcher_no_database: no database file yet — this session is not recorded for its claude process',
+  clearAliasNoPrevious: 'clear_alias_no_previous: no earlier session recorded for this claude process',
+  clearAliasPidReused: 'clear_alias_pid_reused: the recorded process had the same pid but a different start time',
+  clearAliasAlreadyLinked: 'clear_alias_already_linked: one of these session ids is already aliased',
+  clearAliasNoTable: 'clear_alias_no_table: the database has no alias tables yet (not migrated)',
+  clearAliasInvalidInput: 'clear_alias_invalid_input: no usable session_id in the SessionStart payload',
 } as const;
 
 const KNOWN_SKIP_REASONS: ReadonlySet<string> = new Set(Object.values(SKIP_REASONS));

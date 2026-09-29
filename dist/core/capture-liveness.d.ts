@@ -74,6 +74,14 @@ export declare const SKIP_REASONS: {
     readonly noDatabaseForMessageGate: "no database yet — nothing to check for waiting messages";
     readonly nothingWaitingForGate: "no messages are waiting for the resolved recipient";
     readonly alreadyBlockedForGate: "every waiting message id was already blocked for in this session";
+    readonly sessionLauncherNotFound: "session_launcher_not_found: no claude process found above this hook (no ps, or not under Claude Code)";
+    readonly sessionLauncherSubagent: "session_launcher_subagent: a subagent SessionStart does not change its session mapping";
+    readonly sessionLauncherNoDatabase: "session_launcher_no_database: no database file yet — this session is not recorded for its claude process";
+    readonly clearAliasNoPrevious: "clear_alias_no_previous: no earlier session recorded for this claude process";
+    readonly clearAliasPidReused: "clear_alias_pid_reused: the recorded process had the same pid but a different start time";
+    readonly clearAliasAlreadyLinked: "clear_alias_already_linked: one of these session ids is already aliased";
+    readonly clearAliasNoTable: "clear_alias_no_table: the database has no alias tables yet (not migrated)";
+    readonly clearAliasInvalidInput: "clear_alias_invalid_input: no usable session_id in the SessionStart payload";
 };
 export declare const UNRECOGNISED_REASON = "unrecognised reason";
 export declare function renderableSkipReason(reason: string | undefined): string;

@@ -76,6 +76,13 @@ export function buildIsolatedSuiteEnv(baseEnv, { runtimeHome }) {
   delete isolatedEnv.OPENAI_API_KEY;
   delete isolatedEnv.OLLAMA_HOST;
   delete isolatedEnv.MEMESH_BRIEFING; // see buildIsolatedRuntimeEnv
+  // #497: which messages count as waiting, who may record intake, and which
+  // session the claude channel host registers as follow these. A suite
+  // launched from inside a Claude Code or Codex session must behave as it
+  // does in CI, where they are unset.
+  delete isolatedEnv.CLAUDE_CODE_SESSION_ID;
+  delete isolatedEnv.CODEX_THREAD_ID;
+  delete isolatedEnv.CODEX_SESSION_ID;
   return envWithNpmCache(path.join(runtimeHome, 'npm-cache'), isolatedEnv);
 }
 import path from 'node:path';

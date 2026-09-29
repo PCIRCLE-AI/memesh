@@ -273,6 +273,28 @@ describe('assembleBriefing', () => {
     expect(assembleBriefing('project-with-no-inbox', 'claude-implementer').text).not.toContain('message waiting');
   });
 
+  it('#497: counts a message meant for one session only in that session (CLAUDE_CODE_SESSION_ID)', async () => {
+    seed();
+    const sessionA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    await executeAgentMessageAction(getDatabase(), {
+      action: 'send', project: PROJECT, sender: 'codex-lead', recipient: 'claude-implementer',
+      intended_session: sessionA, idempotency_key: 'briefing-intended-1',
+      payload: { text: 'for A' }, content_type: 'application/json',
+    }, { transport: 'mcp', sourceHost: 'test-host' });
+    const original = process.env.CLAUDE_CODE_SESSION_ID;
+    try {
+      process.env.CLAUDE_CODE_SESSION_ID = sessionA;
+      expect(assembleBriefing(PROJECT, 'claude-implementer').text).toContain('1 message waiting');
+      process.env.CLAUDE_CODE_SESSION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+      expect(assembleBriefing(PROJECT, 'claude-implementer').text).not.toContain('message waiting');
+      delete process.env.CLAUDE_CODE_SESSION_ID;
+      expect(assembleBriefing(PROJECT, 'claude-implementer').text).not.toContain('message waiting');
+    } finally {
+      if (original === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
+      else process.env.CLAUDE_CODE_SESSION_ID = original;
+    }
+  });
+
   // D8: `briefing --recipient <typo>` used to read identically to
   // `briefing --recipient <real-but-quiet>` — both zero unread, both
   // silent, so a typo was never reported.

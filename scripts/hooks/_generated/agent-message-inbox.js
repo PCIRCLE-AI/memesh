@@ -6,21 +6,57 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
-export function unreadDeliveryCount(db, project, recipient) {
+function intendedSessionFilter(db, session) {
+    const hasColumn = db.prepare("SELECT 1 AS present FROM pragma_table_info('agent_message_deliveries') WHERE name = 'intended_session'").get() !== undefined;
+    if (!hasColumn)
+        return { sql: '', params: [] };
+    if (session === undefined)
+        return { sql: 'AND d.intended_session IS NULL', params: [] };
+    const ids = [...sessionAliasChain(db, session)];
+    return {
+        sql: `AND (d.intended_session IS NULL OR d.intended_session IN (${ids.map(() => '?').join(', ')}))`,
+        params: ids,
+    };
+}
+export function sessionAliasChain(db, session) {
+    const chain = new Set([session]);
+    try {
+        const previous = db.prepare('SELECT previous_session_id AS id FROM agent_session_aliases WHERE session_id = ?');
+        const next = db.prepare('SELECT session_id AS id FROM agent_session_aliases WHERE previous_session_id = ?');
+        for (const step of [previous, next]) {
+            let current = session;
+            for (;;) {
+                const row = step.get(current);
+                if (typeof row?.id !== 'string' || chain.has(row.id))
+                    break;
+                chain.add(row.id);
+                current = row.id;
+            }
+        }
+    }
+    catch (err) {
+        if (!/no such table: agent_session_aliases\b/.test(errorMessage(err)))
+            throw err;
+    }
+    return chain;
+}
+export function unreadDeliveryCount(db, project, recipient, session) {
     if (!recipient)
         return 0;
     try {
+        const intended = intendedSessionFilter(db, session);
         const row = db.prepare(`SELECT COUNT(*) AS n
        FROM agent_message_deliveries d
        WHERE d.project = ?
          AND d.recipient = ?
+         ${intended.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
              AND r.recipient = d.recipient
              AND r.message_id = d.message_id
              AND r.receipt_kind = 'intake'
-         )`).get(project, recipient);
+         )`).get(project, recipient, ...intended.params);
         const n = row?.n;
         return typeof n === 'number' && n > 0 ? n : 0;
     }
@@ -83,13 +119,15 @@ const DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION = `(
     )
   )
 )`;
-export function unreadMessageRefsFor(db, recipient, limit = UNREAD_MESSAGE_REFS_LIMIT) {
+export function unreadMessageRefsFor(db, recipient, session, limit = UNREAD_MESSAGE_REFS_LIMIT) {
     if (!recipient)
         return [];
     try {
+        const intended = intendedSessionFilter(db, session);
         const rows = db.prepare(`SELECT d.project AS project, d.message_id AS message_id
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
+         ${intended.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -98,7 +136,7 @@ export function unreadMessageRefsFor(db, recipient, limit = UNREAD_MESSAGE_REFS_
              AND r.receipt_kind = 'intake'
          )
        ORDER BY d.project, d.message_id
-       LIMIT ?`).all(recipient, recipient, Date.now(), limit);
+       LIMIT ?`).all(recipient, recipient, Date.now(), ...intended.params, limit);
         return rows.filter((row) => typeof row.project === 'string' && typeof row.message_id === 'string');
     }
     catch (err) {
@@ -124,13 +162,15 @@ export function unreadInboxLines(count, project, recipient, everSeen, targetKind
     }
     return [];
 }
-export function unreadInboxLinesFor(db, recipient) {
+export function unreadInboxLinesFor(db, recipient, session) {
     if (!recipient)
         return [];
     try {
+        const intended = intendedSessionFilter(db, session);
         const rows = db.prepare(`SELECT d.project AS project, d.recipient AS recipient, d.target_kind AS target_kind, COUNT(*) AS n
        FROM agent_message_deliveries d
        WHERE ${DELIVERY_MATCHES_RECIPIENT_OR_LIVE_SESSION}
+         ${intended.sql}
          AND NOT EXISTS (
            SELECT 1 FROM agent_message_receipts r
            WHERE r.project = d.project
@@ -140,7 +180,7 @@ export function unreadInboxLinesFor(db, recipient) {
          )
        GROUP BY d.project, d.recipient, d.target_kind
        ORDER BY n DESC, d.project, d.recipient
-       LIMIT 5`).all(recipient, recipient, Date.now());
+       LIMIT 5`).all(recipient, recipient, Date.now(), ...intended.params);
         return rows.flatMap((row) => typeof row.project === 'string' && typeof row.recipient === 'string' && typeof row.n === 'number' && row.n > 0
             ? unreadInboxLines(row.n, row.project, row.recipient, undefined, row.target_kind === 'session' ? 'session' : 'principal')
             : []);

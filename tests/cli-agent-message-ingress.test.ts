@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { closeDatabase, openDatabase } from '../src/db.js';
 
 const cliLoader = `
   import { createServer } from 'vite';
@@ -66,6 +67,90 @@ describe('CLI durable-message ingress', () => {
       });
       expect(typeof response.message_id).toBe('string');
       expect(result.stdout).not.toContain(payload);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('#497: sends a principal message meant for one session, and only that session (CLAUDE_CODE_SESSION_ID) can record intake', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-intended-'));
+    const sessionA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const sessionB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const env = (session?: string) => ({
+      ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', CLAUDE_CODE_SESSION_ID: session,
+    });
+    try {
+      const sent = spawnSync(process.execPath, cliArgs(
+        'message', 'send', '--project', 'test', '--sender', 'lead', '--recipient', 'claude-test-1',
+        '--intended-session', sessionA, '--idempotency-key', 'intended-cli', '--payload-stdin',
+      ), { encoding: 'utf8', input: 'for owner A', env: env() });
+      expect(sent.status, sent.stderr).toBe(0);
+      const message = JSON.parse(sent.stdout) as { message_id: string; intended_session: string };
+      expect(message.intended_session).toBe(sessionA);
+
+      const intake = (session: string) => spawnSync(process.execPath, cliArgs(
+        'message', 'intake', '--project', 'test', '--recipient', 'claude-test-1',
+        '--message-id', message.message_id, '--idempotency-key', `intake-${message.message_id}`, '--state', 'ingested',
+      ), { encoding: 'utf8', env: env(session) });
+      const asB = intake(sessionB);
+      expect(asB.status).toBe(1);
+      expect(asB.stderr).toContain('intended_for_other_session');
+      const asA = intake(sessionA);
+      expect(asA.status, asA.stderr).toBe(0);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('#497: a registered Codex CLI thread can be named, and records intake from its shell (CODEX_THREAD_ID); no session id is refused with the CLI hint', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-codex-intended-'));
+    const dbPath = path.join(home, 'graph.db');
+    const thread = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    // The same row codex-session.ts writes: the thread id is the session id.
+    const db = openDatabase(dbPath);
+    db.prepare(`INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES ('test', 'codex-lead', 0)`).run();
+    db.prepare(`
+      INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind)
+      VALUES ('test', ?, 'codex-lead', 'codex-cli-queue')
+    `).run(thread);
+    closeDatabase();
+    const env = (vars: Record<string, string | undefined>) => ({
+      ...process.env, HOME: home, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'false',
+      CLAUDE_CODE_SESSION_ID: undefined, CODEX_THREAD_ID: undefined, ...vars,
+    });
+    try {
+      const sent = spawnSync(process.execPath, cliArgs(
+        'message', 'send', '--project', 'test', '--sender', 'claude-lead', '--recipient', 'codex-lead',
+        '--intended-session', thread, '--idempotency-key', 'codex-intended', '--payload-stdin',
+      ), { encoding: 'utf8', input: 'for the codex thread', env: env({}) });
+      expect(sent.status, sent.stderr).toBe(0);
+      const message = JSON.parse(sent.stdout) as { message_id: string; intended_session: string };
+      expect(message.intended_session).toBe(thread);
+
+      const intake = (vars: Record<string, string | undefined>) => spawnSync(process.execPath, cliArgs(
+        'message', 'intake', '--project', 'test', '--recipient', 'codex-lead',
+        '--message-id', message.message_id, '--idempotency-key', `intake-${message.message_id}`, '--state', 'ingested',
+      ), { encoding: 'utf8', env: env(vars) });
+      const noSession = intake({});
+      expect(noSession.status).toBe(1);
+      expect(noSession.stderr).toContain('intended_for_other_session');
+      expect(noSession.stderr).toContain('memesh message intake');
+      const fromShell = intake({ CODEX_THREAD_ID: thread });
+      expect(fromShell.status, fromShell.stderr).toBe(0);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('#497: --fallback-to-principal is refused without --target-kind session', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-fallback-'));
+    try {
+      const result = spawnSync(process.execPath, cliArgs(
+        'message', 'send', '--project', 'test', '--sender', 'lead', '--recipient', 'claude-test-1',
+        '--fallback-to-principal', '--idempotency-key', 'fallback-cli', '--payload-stdin',
+      ), { encoding: 'utf8', input: 'x', env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' } });
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('fallback_to_principal is only valid with target_kind');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

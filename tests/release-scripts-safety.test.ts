@@ -1191,6 +1191,9 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       OPENAI_API_KEY: 'ambient-openai-sentinel',
       ANTHROPIC_API_KEY: 'ambient-anthropic-sentinel',
       MEMESH_BRIEFING: 'full',
+      CLAUDE_CODE_SESSION_ID: 'ambient-claude-session-sentinel',
+      CODEX_THREAD_ID: 'ambient-codex-thread-sentinel',
+      CODEX_SESSION_ID: 'ambient-codex-session-sentinel',
     };
 
     const env = buildIsolatedSuiteEnv(pollutedBaseEnv, { runtimeHome });
@@ -1203,6 +1206,11 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect('MEMESH_DB_PATH' in env).toBe(false);
     // The suite asserts the DEFAULT briefing level, so an ambient value must go.
     expect('MEMESH_BRIEFING' in env).toBe(false);
+    // #497: the session a suite run happens to be launched from (inside
+    // Claude Code) must not decide which messages a test sees as waiting.
+    expect('CLAUDE_CODE_SESSION_ID' in env).toBe(false);
+    expect('CODEX_THREAD_ID' in env).toBe(false);
+    expect('CODEX_SESSION_ID' in env).toBe(false);
     expect(env.npm_config_cache).toBe(path.join(runtimeHome, 'npm-cache'));
     expect('NPM_CONFIG_CACHE' in env).toBe(false);
     for (const key of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'OLLAMA_HOST']) {

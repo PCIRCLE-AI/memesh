@@ -206,6 +206,8 @@ export declare const MessageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
         principal: "principal";
         session: "session";
     }>>;
+    intended_session: z.ZodOptional<z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>>;
+    fallback_to_principal: z.ZodOptional<z.ZodBoolean>;
     idempotency_key: z.ZodString;
     payload: z.ZodJSONSchema;
     content_type: z.ZodDefault<z.ZodEnum<{

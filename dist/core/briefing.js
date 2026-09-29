@@ -5,6 +5,7 @@ import { readRepoState, repoStateLines } from './repo-state.js';
 import { rankEntities } from './scoring.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
+import { hostSessionFromEnv } from './host-session.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { briefingTaskStateLines } from './task-state.js';
 import { handoffLines, SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
@@ -127,7 +128,7 @@ export function assembleBriefing(project, recipient) {
         taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
     }
     const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
-    const unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient);
+    const unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
     const everSeen = inboxRecipient !== undefined && unreadCount === 0
         ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
         : undefined;

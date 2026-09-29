@@ -108,6 +108,9 @@ CREATE TABLE IF NOT EXISTS agent_message_deliveries (
   project            TEXT NOT NULL,
   recipient          TEXT NOT NULL,
   target_kind        TEXT NOT NULL DEFAULT 'principal' CHECK (target_kind IN ('principal', 'session')),
+  -- #497: the one session a principal delivery is meant for (NULL: every
+  -- session of that principal). Added by migrateEntitiesSchema on older files.
+  intended_session   TEXT,
   created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
   UNIQUE(message_id, project, recipient)
@@ -441,6 +444,29 @@ export function migrateEntitiesSchema(db: MemeshDatabase): void {
      CREATE INDEX IF NOT EXISTS idx_entities_namespace ON entities(namespace);`,
   );
 
+  // #497 /clear: Claude Code gives a cleared session a new id for its hooks
+  // and Bash, while its MCP servers keep the id they started with.
+  // `agent_session_aliases` links the new id to the previous one (one link
+  // per /clear, so both columns are unique and a chain is a plain list);
+  // `agent_session_launchers` holds, per `claude` process (pid plus start
+  // time, since a pid can be reused), the session id it had at its last
+  // SessionStart — the previous id a /clear links to. Created before the
+  // messaging-table check below, so a hook-only database gets them too.
+  // Additive; nothing is backfilled.
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS agent_session_aliases (
+       session_id          TEXT PRIMARY KEY,
+       previous_session_id TEXT NOT NULL UNIQUE,
+       created_at_ms       INTEGER NOT NULL
+     );
+     CREATE TABLE IF NOT EXISTS agent_session_launchers (
+       launcher_pid    INTEGER PRIMARY KEY,
+       launcher_start  TEXT NOT NULL,
+       session_id      TEXT NOT NULL,
+       updated_at_ms   INTEGER NOT NULL
+     );`,
+  );
+
   // Host-native push adds target_kind to a table that already shipped as the
   // durable pull inbox. This shared migration helper is also intentionally
   // callable against an entities-only legacy fixture, so do not assume the
@@ -466,6 +492,16 @@ export function migrateEntitiesSchema(db: MemeshDatabase): void {
   db.exec(
     `CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_target
        ON agent_message_deliveries(project, target_kind, recipient, message_id);`,
+  );
+  // #497: which session of a shared principal a delivery is meant for.
+  // Nullable and not backfilled: every delivery written before it existed
+  // stays meant for every session, which is what it meant when it was sent.
+  if (!deliveryColumns.has('intended_session')) {
+    safeAlter(db, 'ALTER TABLE agent_message_deliveries ADD COLUMN intended_session TEXT');
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_intended
+       ON agent_message_deliveries(project, recipient, intended_session);`,
   );
 
   // Message payload retention is deliberately additive: a database created
