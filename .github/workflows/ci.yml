@@ -185,8 +185,8 @@ jobs:
         # the workspace and runner.temp are on D:. The suite creates a temp
         # folder and a SQLite database per test, and there the Windows legs
         # spent 1556 s of test time against 373 s on ubuntu (run 36757693602).
-        # Node's os.tmpdir() reads TEMP/TMP on Windows and TMPDIR elsewhere,
-        # so this changes nothing on ubuntu or macOS.
+        # On ubuntu and macOS Node reads TMPDIR first; where that is unset,
+        # temp moves to runner.temp too, on the workspace's disk (harmless).
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}

@@ -401,6 +401,9 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     }
     // Lint runs inside verify:release; this step is its only home in the leg.
     unconditionalStep(buildJob, 'npm run verify:release');
+    expect(pkg.scripts['verify:release']).toMatch(/^npm run lint && /);
+    // Windows stays in the matrix: the legs the temp-disk step is for.
+    expect(buildJob).toMatch(/\n\s+os: \[[^\]]*\bwindows-latest\b[^\]]*\]/);
   });
 
   it('puts the test temp folders on the runner temp disk, on every leg', () => {
