@@ -152,6 +152,18 @@ class ActiveRouterHostConnection implements RouterHostConnection {
   }
 
   private async connectOnce(): Promise<void> {
+    // Read each time: after an in-place downgrade a long-running host must
+    // not keep claiming the newer version it started with (#518). Outside the
+    // try below, so a package.json caught mid-upgrade is retried, not taken
+    // for a missing router.
+    let installedVersion: string;
+    try {
+      installedVersion = this.resilience.installed_version();
+    } catch (error) {
+      throw new RouterTransportError(
+        `Could not read the installed MeMesh version: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     try {
       assertPrivateRouterSocket(this.input.socket_path);
       const socket = net.createConnection(this.input.socket_path);
@@ -159,7 +171,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
       try {
         await waitForSocketConnect(socket);
         if (this.closed) throw new RouterTransportError('Router host connection was closed.');
-        await this.registerSocket(socket);
+        await this.registerSocket(socket, installedVersion);
       } catch (error) {
         socket.destroy();
         throw error;
@@ -179,7 +191,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
     }
   }
 
-  private registerSocket(socket: net.Socket): Promise<void> {
+  private registerSocket(socket: net.Socket, installedVersion: string): Promise<void> {
     const registerId = randomUUID();
     let buffer = Buffer.alloc(0);
     let connectionId = '';
@@ -315,9 +327,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
         request_id: registerId,
         ...this.input.identity,
         auth_token: this.input.auth_token,
-        // Read each time: after an in-place downgrade a long-running host
-        // must not keep claiming the newer version it started with (#518).
-        memesh_version: this.resilience.installed_version(),
+        memesh_version: installedVersion,
         hops: 0,
       });
     });
@@ -327,6 +337,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
     this.currentSocket = socket;
     this.currentConnectionId = connectionId;
     this.currentGeneration = generation;
+    this.reportedOutdatedRouter = false;
     this.clearHeartbeat();
     this.heartbeat = setInterval(() => {
       if (this.closed || this.currentSocket !== socket) return;

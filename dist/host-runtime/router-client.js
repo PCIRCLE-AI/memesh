@@ -87,6 +87,13 @@ class ActiveRouterHostConnection {
         }
     }
     async connectOnce() {
+        let installedVersion;
+        try {
+            installedVersion = this.resilience.installed_version();
+        }
+        catch (error) {
+            throw new RouterTransportError(`Could not read the installed MeMesh version: ${error instanceof Error ? error.message : String(error)}`);
+        }
         try {
             assertPrivateRouterSocket(this.input.socket_path);
             const socket = net.createConnection(this.input.socket_path);
@@ -95,7 +102,7 @@ class ActiveRouterHostConnection {
                 await waitForSocketConnect(socket);
                 if (this.closed)
                     throw new RouterTransportError('Router host connection was closed.');
-                await this.registerSocket(socket);
+                await this.registerSocket(socket, installedVersion);
             }
             catch (error) {
                 socket.destroy();
@@ -117,7 +124,7 @@ class ActiveRouterHostConnection {
             throw error;
         }
     }
-    registerSocket(socket) {
+    registerSocket(socket, installedVersion) {
         const registerId = randomUUID();
         let buffer = Buffer.alloc(0);
         let connectionId = '';
@@ -245,7 +252,7 @@ class ActiveRouterHostConnection {
                 request_id: registerId,
                 ...this.input.identity,
                 auth_token: this.input.auth_token,
-                memesh_version: this.resilience.installed_version(),
+                memesh_version: installedVersion,
                 hops: 0,
             });
         });
@@ -254,6 +261,7 @@ class ActiveRouterHostConnection {
         this.currentSocket = socket;
         this.currentConnectionId = connectionId;
         this.currentGeneration = generation;
+        this.reportedOutdatedRouter = false;
         this.clearHeartbeat();
         this.heartbeat = setInterval(() => {
             if (this.closed || this.currentSocket !== socket)

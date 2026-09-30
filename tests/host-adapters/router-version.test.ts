@@ -135,6 +135,53 @@ describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after
     });
   });
 
+  it('a connected host that loses its router and meets an outdated one says so on stderr, once', async () => {
+    const { db, socketPath } = setup();
+    const router = makeRouter(db, socketPath, memeshPackageVersion());
+    await router.start();
+    connection = await connectRouterHost({
+      socket_path: socketPath,
+      auth_token: 'token',
+      identity: {
+        project: 'project-a', principal_id: 'principal-a',
+        session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+      },
+      deliver: async () => ({ host: 'fixture', status: 'queued' }),
+      resilience: { initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0, initial_attempts: 1, start_router: async () => undefined },
+    });
+    const writes = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await router.stop();
+      await startLegacyRouter(socketPath, 'rejects-version-field');
+      await vi.waitFor(() => {
+        const outdated = writes.mock.calls.filter(([text]) => String(text).includes('router_outdated'));
+        expect(outdated.length).toBeGreaterThan(0);
+      }, { timeout: 5_000 });
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const outdated = writes.mock.calls.filter(([text]) => String(text).includes('router_outdated'));
+      expect(outdated).toHaveLength(1);
+      expect(String(outdated[0][0])).toContain('pkill -f dist/host-runtime/router.js');
+    } finally {
+      writes.mockRestore();
+    }
+  });
+
+  it('a package.json caught mid-upgrade is retried, not taken for a missing router', async () => {
+    const { db, socketPath } = setup();
+    const router = makeRouter(db, socketPath, memeshPackageVersion());
+    await router.start();
+    routers.push(router);
+    let reads = 0;
+    const startRouter = vi.fn(async () => undefined);
+    connection = await connect(socketPath, startRouter, 5, () => {
+      reads += 1;
+      if (reads === 1) throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' });
+      return memeshPackageVersion();
+    });
+    expect(reads).toBe(2);
+    expect(startRouter).not.toHaveBeenCalled();
+  });
+
   it('a router that answers without a version is treated as outdated', async () => {
     const { socketPath } = setup();
     await startLegacyRouter(socketPath, 'omits-version');
