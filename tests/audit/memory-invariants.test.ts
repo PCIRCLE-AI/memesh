@@ -7,6 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDatabase, closeDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
+import { remember, exportMemories, importMemories } from '../../src/core/operations.js';
 import { lessonSlug } from '../../src/core/lesson-slug.js';
 import { AGENT_MESSAGE_SCOPE_COLUMNS, isFilesystemPathScopeId } from '../../src/core/agent-scope-id.js';
 
@@ -641,6 +642,52 @@ describe('memory-invariants: read-only detector over a real graph', () => {
       expect(r.stdout).toContain('task-state:acme  type=task-state');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#519 — flags a captured session summary, not only a commit, that lost its project', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        const summary = insertEntity(db, 'session-xyz-summary', 'session-insight');
+        for (const tag of ['source:auto-capture', 'session:xyz']) {
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(summary, tag);
+        }
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(1);
+      expect(r.stdout).toContain('session-xyz-summary  type=session-insight');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#519 — a captured memory deliberately made global, then exported and imported, is not flagged', async () => {
+    const home = freshGraph();
+    const target = freshGraph();
+    try {
+      openDatabase(home.dbPath);
+      remember({ name: 'session-portable-summary', type: 'session-insight', observations: ['kept'], tags: ['source:auto-capture', 'project:acme'] });
+      remember({ name: 'session-portable-summary', type: 'session-insight', observations: ['kept'], tags: ['source:auto-capture', 'session:portable'], namespace: 'global', replace: true });
+      const bundle = exportMemories({});
+      closeDatabase();
+      openDatabase(target.dbPath);
+      importMemories({ data: bundle, merge_strategy: 'skip' });
+      closeDatabase();
+      for (const g of [home, target]) {
+        const r = run(g.dbPath);
+        expect(r.stdout).toContain('ok   captured-memories-keep-a-project');
+        expect(r.status, r.stdout).toBe(0);
+      }
+      // The same memory left in the personal namespace without its project is flagged.
+      withRawDb(target.dbPath, (db) => {
+        db.prepare("UPDATE entities SET namespace = 'personal' WHERE name = 'session-portable-summary'").run();
+      });
+      expect(run(target.dbPath).status).toBe(1);
+    } finally {
+      closeDatabase();
+      fs.rmSync(home.dir, { recursive: true, force: true });
+      fs.rmSync(target.dir, { recursive: true, force: true });
     }
   });
 
