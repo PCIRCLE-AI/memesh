@@ -32475,11 +32475,12 @@ function stripNullProps(value) {
     return value;
   const out = {};
   for (const [k, v] of Object.entries(value)) {
-    if (v !== null)
+    if (v !== null || NULL_IS_DATA.has(k))
       out[k] = v;
   }
   return out;
 }
+var NULL_IS_DATA = /* @__PURE__ */ new Set(["payload"]);
 function parseOrFail(schema, args) {
   const raw = args === void 0 || args === null ? {} : args;
   const strictPass = schema.safeParse(raw);

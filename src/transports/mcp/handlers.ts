@@ -486,8 +486,9 @@ function formatIssue(issue: z.ZodIssue): string {
  * where Claude Code and Codex omit the key entirely. Zod's `.optional()`
  * accepts the missing key but rejects the explicit null, so the exact same
  * recall that succeeds from Codex fails from Gemini with a type error. At
- * this boundary a null-valued property can only mean "left blank" — no
- * memesh tool uses null as a sentinel — so it is dropped before validation.
+ * this boundary a null-valued property means "left blank", so it is dropped
+ * before validation — except where null is itself the value (NULL_IS_DATA
+ * below: a message `payload`, #553).
  *
  * Only the tool's own parameters (the top level) are touched. What a
  * parameter CARRIES is data and is passed on as sent: a message payload, an
@@ -500,10 +501,18 @@ function stripNullProps(value: unknown): unknown {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
-    if (v !== null) out[k] = v;
+    if (v !== null || NULL_IS_DATA.has(k)) out[k] = v;
   }
   return out;
 }
+
+/**
+ * A top-level parameter whose null is a value, not a blank: a message
+ * `payload` is any JSON value, null included, as the schema and the HTTP
+ * path accept (#553). Only `send` declares it; on every other action the
+ * unknown-key check above has already refused it.
+ */
+const NULL_IS_DATA: ReadonlySet<string> = new Set(['payload']);
 
 function parseOrFail<T>(schema: z.ZodType<T>, args: unknown):
   | { ok: true; data: T }
