@@ -383,6 +383,14 @@ writer is gone. `SessionEnd` leaves a bounded 45-second idle queue window;
 resume replaces the prior exact generation through its private control socket,
 and expiry removes the registration. A missing or malformed identity, invalid
 cwd, insecure explicit override, or failed connection does not register a host.
+A companion's control socket is removed only by that companion while the path
+is still its own, or after its lifecycle record shows its process is gone and
+the socket is still the one it bound. Otherwise a new start refuses and prints
+one `companion_busy` line naming the file and the check to run before removing
+it by hand.
+The companion has no terminal of its own, so a reason it could not stop
+cleanly is appended to the owner-private `codex-companion.log` in the MeMesh
+data directory.
 
 For a registered session, MeMesh invokes `codex queue` with one untrusted full
 envelope capped at 16,384 bytes (16 KiB), including routing metadata and payload.

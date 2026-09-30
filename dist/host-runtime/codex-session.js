@@ -45,7 +45,9 @@ function readCompanionState(statePath) {
             || !isValidCodexThreadId(state.thread_id)
             || typeof state.workspace !== 'string' || !path.isAbsolute(state.workspace)
             || typeof state.token !== 'string' || !/^[0-9a-f]{32}$/.test(state.token)
-            || typeof state.control_socket !== 'string' || !path.isAbsolute(state.control_socket))
+            || typeof state.control_socket !== 'string' || !path.isAbsolute(state.control_socket)
+            || (state.control_socket_ino !== undefined
+                && (typeof state.control_socket_ino !== 'string' || !/^[0-9]+$/.test(state.control_socket_ino))))
             return null;
         return state;
     }
@@ -84,13 +86,30 @@ function writePrivateJson(file, value) {
         fs.closeSync(descriptor);
     }
 }
+class CompanionRefusal extends Error {
+}
+function errorText(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+function recordCompanionFailure(dataDir, line) {
+    const text = `[${new Date().toISOString()}] ${line}\n`;
+    try {
+        fs.appendFileSync(path.join(dataDir, 'codex-companion.log'), text, { mode: 0o600 });
+    }
+    catch (error) {
+        fs.writeSync(2, `memesh-host-codex-session: ${text.trimEnd()} (log unwritable: ${errorText(error)})\n`);
+    }
+}
+function companionFailureDetail(error) {
+    return routerOutdatedDetail(error) || (error instanceof CompanionRefusal ? ` ${error.message}` : '');
+}
 function companionFailurePath(launchFile) {
     return `${launchFile}.failed`;
 }
 function removeUnclaimedFailures(directory) {
     const cutoff = Date.now() - 60_000;
     for (const name of fs.readdirSync(directory)) {
-        if (!name.endsWith('.failed'))
+        if (!/\.failed(\.[0-9a-f]{12}\.tmp)?$/.test(name))
             continue;
         const file = path.join(directory, name);
         try {
@@ -120,9 +139,13 @@ function takeCompanionFailure(file) {
     }
     fs.unlinkSync(file);
     const parsed = JSON.parse(raw);
-    if (parsed.code !== 'router_outdated' || typeof parsed.message !== 'string')
+    if (typeof parsed.message !== 'string')
         return null;
-    return new AgentRouterProtocolError('router_outdated', parsed.message.slice(0, 1000));
+    if (parsed.code === 'router_outdated')
+        return new AgentRouterProtocolError('router_outdated', parsed.message.slice(0, 1000));
+    if (parsed.code === 'companion_busy')
+        return new CompanionRefusal(parsed.message.slice(0, 1000));
+    return null;
 }
 async function launchDetachedCompanion(dataDir, session, input) {
     const directory = lifecycleDirectory(dataDir);
@@ -142,18 +165,33 @@ async function launchDetachedCompanion(dataDir, session, input) {
         const statePath = codexCompanionStatePath(dataDir, session.threadId);
         const deadline = Date.now() + CONTROL_TIMEOUT_MS;
         const failurePath = companionFailurePath(launchFile);
-        while (Date.now() < deadline) {
+        for (;;) {
             if (readCompanionState(statePath)?.pid === child.pid)
                 return;
             const failure = takeCompanionFailure(failurePath);
             if (failure)
                 throw failure;
+            if (Date.now() >= deadline)
+                break;
             await new Promise(resolve => setTimeout(resolve, 25));
         }
         throw new Error('Detached Codex companion did not publish its lifecycle state before the hook timeout.');
     }
     catch (error) {
-        child?.kill('SIGTERM');
+        if (child && child.exitCode === null && child.signalCode === null) {
+            child.kill('SIGTERM');
+            const stopped = Date.now() + CONTROL_TIMEOUT_MS;
+            while (child.exitCode === null && child.signalCode === null && Date.now() < stopped) {
+                await new Promise(resolve => setTimeout(resolve, 25));
+            }
+        }
+        let outcome;
+        try {
+            outcome = takeCompanionFailure(companionFailurePath(launchFile)) ?? error;
+        }
+        catch (takeError) {
+            outcome = takeError;
+        }
         for (const file of [launchFile, companionFailurePath(launchFile)]) {
             try {
                 fs.unlinkSync(file);
@@ -163,7 +201,7 @@ async function launchDetachedCompanion(dataDir, session, input) {
                     throw unlinkError;
             }
         }
-        throw error;
+        throw outcome;
     }
 }
 function readDetachedLaunchInput(dataDir, launchFile) {
@@ -208,19 +246,60 @@ function pidIsGone(pid) {
         return error.code === 'ESRCH';
     }
 }
-function removeStaleState(statePath, state) {
-    if (!pidIsGone(state.pid))
-        return;
-    removeOwnState(statePath, state.token);
+function socketInode(socketPath) {
+    return String(fs.lstatSync(socketPath, { bigint: true }).ino);
+}
+function socketIsSame(socketPath, ino) {
+    if (ino === undefined)
+        return false;
     try {
-        const stat = fs.lstatSync(state.control_socket);
-        if (stat.isSocket())
-            fs.unlinkSync(state.control_socket);
+        const stat = fs.lstatSync(socketPath, { bigint: true });
+        return stat.isSocket() && String(stat.ino) === ino;
     }
     catch (error) {
-        if (error.code !== 'ENOENT')
-            throw error;
+        if (error.code === 'ENOENT')
+            return false;
+        throw error;
     }
+}
+function unusedSocketCheck(socketPath) {
+    return `If \`lsof -U | grep '${socketPath}'\` prints nothing, delete that file`;
+}
+function legacySocketNote(socketPath) {
+    return `its record came from an older MeMesh and did not say which socket was its own, so ${socketPath} is left in place. `
+        + `${unusedSocketCheck(socketPath)}`;
+}
+function removeStaleState(statePath, state) {
+    if (!pidIsGone(state.pid))
+        return null;
+    const taken = `${statePath}.${randomBytes(6).toString('hex')}.stale`;
+    try {
+        fs.renameSync(statePath, taken);
+    }
+    catch (error) {
+        if (error.code === 'ENOENT')
+            return null;
+        throw error;
+    }
+    if (readCompanionState(taken)?.token !== state.token) {
+        try {
+            fs.linkSync(taken, statePath);
+        }
+        catch (error) {
+            if (error.code !== 'EEXIST')
+                throw error;
+        }
+        fs.unlinkSync(taken);
+        return null;
+    }
+    fs.unlinkSync(taken);
+    if (socketIsSame(state.control_socket, state.control_socket_ino)) {
+        fs.unlinkSync(state.control_socket);
+    }
+    else if (state.control_socket_ino === undefined && fs.existsSync(state.control_socket)) {
+        return state.control_socket;
+    }
+    return null;
 }
 export async function requestExactCompanionControl(state, action) {
     return new Promise((resolve) => {
@@ -253,9 +332,20 @@ async function terminatePriorExactCompanion(dataDir, session) {
         throw new Error('Codex companion lifecycle state belongs to another exact session; refusing cross-thread termination.');
     }
     if (!await requestExactCompanionControl(state, 'terminate')) {
-        removeStaleState(statePath, state);
+        const leftSocket = removeStaleState(statePath, state);
+        if (leftSocket) {
+            throw new CompanionRefusal(`companion_busy: the last MeMesh companion for this Codex session has exited, but ${legacySocketNote(leftSocket)} `
+                + 'and start the session again.');
+        }
         if (fs.existsSync(statePath)) {
-            throw new Error('Prior exact Codex companion did not prove its identity over its control socket; refusing PID-based termination.');
+            const current = readCompanionState(statePath);
+            if (current?.token !== state.token) {
+                throw new CompanionRefusal(`companion_busy: another MeMesh companion for this Codex session replaced ${statePath} while this start was checking it. `
+                    + `Start the session again${current ? `; if this keeps happening, check that \`ps -p ${current.pid}\` is a MeMesh companion` : ''}.`);
+            }
+            throw new CompanionRefusal(`companion_busy: process ${state.pid}, which ${statePath} names as this Codex session's companion, `
+                + `is still running but does not answer on ${state.control_socket}. If \`ps -p ${state.pid}\` shows a MeMesh companion, `
+                + `stop it with \`kill ${state.pid}\`; otherwise delete ${statePath}. Then start the session again.`);
         }
         return;
     }
@@ -277,6 +367,7 @@ function createCompanionControlServer(socketPath, token, control) {
     return new Promise((resolve, reject) => {
         const server = net.createServer((socket) => {
             let input = '';
+            socket.on('error', () => { });
             socket.setEncoding('utf8');
             socket.on('data', (chunk) => { input += chunk; });
             socket.once('end', () => {
@@ -295,7 +386,10 @@ function createCompanionControlServer(socketPath, token, control) {
                 }
             });
         });
-        server.once('error', reject);
+        server.once('error', (error) => reject(error.code === 'EADDRINUSE'
+            ? new CompanionRefusal(`companion_busy: ${socketPath} is still in place, and nothing records whether an earlier companion `
+                + `for this Codex session still uses it. ${unusedSocketCheck(socketPath)} and start the session again.`)
+            : error));
         server.listen(socketPath, () => resolve(server));
     });
 }
@@ -422,17 +516,20 @@ async function endExactCodexSessionCompanion(dataDir, session) {
     if (!state) {
         if (fs.existsSync(statePath))
             throw new Error('Codex companion lifecycle state is malformed; refusing SessionEnd cleanup.');
-        return;
+        return null;
     }
     if (state.thread_id !== session.threadId || state.workspace !== session.workspace) {
         throw new Error('Codex SessionEnd does not match the stored companion identity; refusing cross-thread termination.');
     }
     if (await requestExactCompanionControl(state, 'retire'))
-        return;
-    removeStaleState(statePath, state);
+        return null;
+    const leftSocket = removeStaleState(statePath, state);
+    if (leftSocket)
+        return `session ended. Its companion had already exited, but ${legacySocketNote(leftSocket)}.`;
     if (fs.existsSync(statePath)) {
         throw new Error('Codex SessionEnd could not prove the stored companion identity; refusing PID-based termination.');
     }
+    return null;
 }
 export async function endCodexSessionCompanion(dataDir, hookInput, environment, realpath = fs.realpathSync) {
     const session = validateCodexSessionEnd(hookInput, environment, realpath);
@@ -446,55 +543,63 @@ async function runDetachedCompanion(dataDir, input, failurePath) {
     if (!session)
         return;
     ensureOwnerPrivateDataDirectory(dataDir);
-    await terminatePriorExactCompanion(dataDir, session);
     const statePath = codexCompanionStatePath(dataDir, session.threadId);
     const token = randomBytes(16).toString('hex');
     const socketPath = codexCompanionControlSocketPath(dataDir, session.threadId);
-    if (fs.existsSync(socketPath))
-        throw new Error('Codex companion control socket already exists; refusing to replace it.');
-    let closing = false;
+    let socketIno;
     let retirement = null;
     let connection = null;
     let control = null;
-    const close = () => {
-        if (closing)
-            return;
-        closing = true;
-        void (async () => {
-            let failed = false;
-            try {
-                await connection?.close();
-            }
-            catch {
-                failed = true;
-            }
+    let cleanup = null;
+    const shutdown = () => cleanup ??= (async () => {
+        if (retirement)
+            clearTimeout(retirement);
+        const problems = [];
+        try {
+            await connection?.close();
+        }
+        catch (error) {
+            problems.push(`closing its router connection: ${errorText(error)}`);
+        }
+        let ownsPath = false;
+        try {
+            ownsPath = socketIsSame(socketPath, socketIno);
+        }
+        catch (error) {
+            problems.push(`checking ${socketPath}, left in place: ${errorText(error)}`);
+        }
+        if (ownsPath)
             await new Promise((resolve) => control?.close(() => resolve()) ?? resolve());
-            try {
-                const stat = fs.lstatSync(socketPath);
-                if (stat.isSocket())
-                    fs.unlinkSync(socketPath);
-            }
-            catch (error) {
-                if (error.code !== 'ENOENT')
-                    failed = true;
-            }
-            removeOwnState(statePath, token);
-            process.exit(failed ? 1 : 0);
-        })();
+        removeOwnState(statePath, token);
+        if (problems.length > 0)
+            recordCompanionFailure(dataDir, `companion ${process.pid} stopped with problems: ${problems.join('; ')}`);
+        return problems.length > 0;
+    })();
+    const exitAfterShutdown = () => {
+        void shutdown().then((failed) => {
+            if (failed)
+                process.exitCode = 1;
+            process.exit();
+        }, (error) => {
+            recordCompanionFailure(dataDir, `companion ${process.pid} could not finish stopping: ${errorText(error)}`);
+            process.exit(1);
+        });
     };
     const controlLifecycle = (action) => {
         if (action === 'terminate') {
-            if (retirement)
-                clearTimeout(retirement);
-            close();
+            exitAfterShutdown();
             return;
         }
-        if (retirement || closing)
+        if (retirement || cleanup)
             return;
-        retirement = setTimeout(close, SESSION_END_GRACE_MS);
+        retirement = setTimeout(exitAfterShutdown, SESSION_END_GRACE_MS);
     };
+    process.once('SIGINT', exitAfterShutdown);
+    process.once('SIGTERM', exitAfterShutdown);
     try {
+        await terminatePriorExactCompanion(dataDir, session);
         control = await createCompanionControlServer(socketPath, token, controlLifecycle);
+        socketIno = socketInode(socketPath);
         connection = await connectCodexSessionCompanion(readCodexSessionConfigIfPresent(path.join(dataDir, 'hosts', 'codex-session.json')), session, fs.realpathSync, connectRouterHost);
         writeCompanionState(statePath, {
             version: 1,
@@ -503,27 +608,27 @@ async function runDetachedCompanion(dataDir, input, failurePath) {
             workspace: session.workspace,
             token,
             control_socket: socketPath,
+            control_socket_ino: socketIno,
         });
     }
     catch (error) {
-        await connection?.close();
-        await new Promise((resolve) => control?.close(() => resolve()) ?? resolve());
+        process.exitCode = 1;
         try {
-            fs.unlinkSync(socketPath);
+            const detail = companionFailureDetail(error);
+            if (detail) {
+                publishCompanionFailure(failurePath, {
+                    code: error instanceof CompanionRefusal ? 'companion_busy' : 'router_outdated',
+                    message: error.message,
+                });
+            }
         }
-        catch (unlinkError) {
-            if (unlinkError.code !== 'ENOENT')
-                throw unlinkError;
-        }
-        removeOwnState(statePath, token);
-        if (routerOutdatedDetail(error)) {
-            publishCompanionFailure(failurePath, { code: 'router_outdated', message: error.message });
+        finally {
+            await shutdown();
         }
         throw error;
     }
-    process.once('SIGINT', close);
-    process.once('SIGTERM', close);
 }
+let failureLead = 'session registration failed.';
 async function main() {
     const dataDir = getMemeshDirFromDbPath();
     if (process.argv[2] === '--companion') {
@@ -536,8 +641,11 @@ async function main() {
     const input = await readHookInput();
     const ending = validateCodexSessionEnd(input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT }, fs.realpathSync);
     if (ending) {
+        failureLead = 'session end failed.';
         ensureOwnerPrivateDataDirectory(dataDir);
-        await endExactCodexSessionCompanion(dataDir, ending);
+        const note = await endExactCodexSessionCompanion(dataDir, ending);
+        if (note)
+            fs.writeSync(2, `memesh-host-codex-session: ${note}\n`);
         return;
     }
     const session = validateCodexSessionStart(input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT }, fs.realpathSync);
@@ -573,8 +681,8 @@ if (isMainModule()) {
         await main();
     }
     catch (error) {
-        process.stderr.write(`memesh-host-codex-session: session registration failed.${routerOutdatedDetail(error)}\n`);
-        process.exitCode = 1;
+        fs.writeSync(2, `memesh-host-codex-session: ${failureLead}${companionFailureDetail(error)}\n`);
+        process.exit(1);
     }
 }
 //# sourceMappingURL=codex-session.js.map
