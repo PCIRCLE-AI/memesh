@@ -527,7 +527,9 @@ export { exportMemories, importMemories } from './serializer.js';
  * Uses createExplicitLesson from lesson-engine to build and store the entity.
  */
 export function learn(args: LearnInput): LearnResult {
-  const projectName = getProjectName();
+  // The caller's project when it named one, else the process's own — the same
+  // fallback task_state and briefing use (#527).
+  const projectName = args.project ?? getProjectName();
 
   const result = createExplicitLesson(
     args.error,

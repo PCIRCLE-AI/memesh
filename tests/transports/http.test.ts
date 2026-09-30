@@ -623,7 +623,7 @@ describe('HTTP Transport: stable errorCode on error envelopes', () => {
 
 describe('HTTP Transport: POST /v1/learn', () => {
   it('creates a lesson_learned entity and returns learned=true', async () => {
-    const res = await req('POST', '/v1/learn', { error: 'NullPointerException', fix: 'Added null guard' });
+    const res = await req('POST', '/v1/learn', { error: 'NullPointerException', fix: 'Added null guard', project: 'http-learn' });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.learned).toBe(true);
@@ -634,7 +634,7 @@ describe('HTTP Transport: POST /v1/learn', () => {
   it('stamps source_host=http on the lesson entity', async () => {
     // Same guard as the remember route: the wrapper injection is the only
     // thing carrying provenance here, so its absence must turn a test red.
-    await req('POST', '/v1/learn', { error: 'http-learn-prov-unique boom', fix: 'reseat the cable' });
+    await req('POST', '/v1/learn', { error: 'http-learn-prov-unique boom', fix: 'reseat the cable', project: 'http-learn' });
     const res = await req('POST', '/v1/recall', { query: 'http-learn-prov-unique' });
     const found = res.body.data.entities.find((e: any) => e.name.startsWith('lesson-'));
     expect(found.metadata.provenance.source_host).toBe('http');
@@ -647,19 +647,20 @@ describe('HTTP Transport: POST /v1/learn', () => {
       root_cause: 'Default timeout too low',
       prevention: 'Always configure timeouts explicitly',
       severity: 'major',
+      project: 'http-learn',
     });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
   });
 
   it('returns 400 when error field is missing', async () => {
-    const res = await req('POST', '/v1/learn', { fix: 'Some fix' });
+    const res = await req('POST', '/v1/learn', { fix: 'Some fix', project: 'http-learn' });
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });
 
   it('returns 400 when fix field is missing', async () => {
-    const res = await req('POST', '/v1/learn', { error: 'Some error' });
+    const res = await req('POST', '/v1/learn', { error: 'Some error', project: 'http-learn' });
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
   });

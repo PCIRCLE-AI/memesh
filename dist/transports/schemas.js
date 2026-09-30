@@ -3,7 +3,7 @@ import { NAMESPACES } from '../core/types.js';
 import { TITLE_MAX_LENGTH } from '../core/title.js';
 import { deriveNote, NOTE_MAX_CHARS, NOTE_MAX_OBSERVATIONS } from '../core/note-derive.js';
 import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../core/agent-messaging.js';
-import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, } from '../core/agent-scope-id.js';
+import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection, } from '../core/agent-scope-id.js';
 const sanitizeName = (s) => s.replace(/[\r\n\t]+/g, ' ').trim();
 const nameField = z.string().min(1).max(255).transform(sanitizeName).refine(s => s.length > 0, {
     message: 'Name must not be blank after sanitization',
@@ -128,28 +128,38 @@ export const ImportSchema = z.object({
     merge_strategy: z.enum(['skip', 'overwrite', 'append']),
     restore_archived: z.boolean().optional(),
 }).strict();
-export const LearnSchema = z.object({
-    error: z.string().min(1).max(5000),
-    fix: z.string().min(1).max(5000),
-    root_cause: z.string().max(5000).optional(),
-    prevention: z.string().max(5000).optional(),
-    severity: z.enum(['critical', 'major', 'minor']).optional(),
-}).strict();
-export const TaskStateSchema = z.object({
-    project: z.string().min(1).max(200).optional(),
-    goal: z.string().max(1000).optional(),
-    next: z.string().max(1000).optional(),
-    blocked: z.string().max(1000).optional(),
-    done: z.string().max(1000).optional(),
-}).strict();
 const nonBlankBounded = (max) => z.string().trim().min(1).max(max);
 const agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH)
     .transform(canonicalAgentScopeId)
     .refine((value) => agentScopeIdRejection(field, value) === null, {
     error: (issue) => agentScopeIdRejection(field, String(issue.input)) ?? `${field} is not a valid identifier.`,
 });
+const projectRules = (base) => base.max(AGENT_SCOPE_ID_MAX_LENGTH).superRefine((value, ctx) => {
+    const rejection = projectScopeRejection(value);
+    if (rejection !== null)
+        ctx.addIssue({ code: 'custom', message: rejection });
+});
+const projectName = projectRules(z.string());
+export const LearnSchema = z.object({
+    error: z.string().min(1).max(5000),
+    fix: z.string().min(1).max(5000),
+    root_cause: z.string().max(5000).optional(),
+    prevention: z.string().max(5000).optional(),
+    severity: z.enum(['critical', 'major', 'minor']).optional(),
+    project: projectName.optional(),
+}).strict();
+export const HttpLearnSchema = LearnSchema.extend({
+    project: projectRules(z.string({ error: 'project is required: name the project this lesson belongs to' })),
+});
+export const TaskStateSchema = z.object({
+    project: projectName.optional(),
+    goal: z.string().max(1000).optional(),
+    next: z.string().max(1000).optional(),
+    blocked: z.string().max(1000).optional(),
+    done: z.string().max(1000).optional(),
+}).strict();
 export const BriefingSchema = z.object({
-    project: agentScopeId('project').optional(),
+    project: projectName.optional(),
     recipient: agentScopeId('recipient').optional(),
 }).strict();
 export const WhySchema = z.object({

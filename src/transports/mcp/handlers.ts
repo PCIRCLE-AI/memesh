@@ -32,6 +32,22 @@ import { staleRunningProcessNotice } from '../../core/update-notice.js';
 
 export interface McpRequestContext {
   workspaceRootUris?: readonly string[];
+  /**
+   * The server process runs in MeMesh's own directory (Codex starts a plugin's
+   * MCP server in the plugin root), so a project defaulted from the working
+   * directory would be MeMesh's, not the caller's. Set by the stdio entry
+   * point only (#527).
+   */
+  projectUndeterminable?: boolean;
+}
+
+/** The refusal for a call that would default its project while that is unknowable. */
+function projectRequired(tool: string, project: string | undefined, ctx: McpRequestContext): ToolResult | null {
+  if (project !== undefined || !ctx.projectUndeterminable) return null;
+  return fail(
+    `${tool}: \`project\` is required here — this server runs in MeMesh's own directory and cannot tell which project you are in. `
+    + 'Pass the `project` value your SessionStart briefing gave you.',
+  );
 }
 
 export function resolveTranscriptWorkspace(
@@ -275,6 +291,10 @@ export const TOOL_DEFINITIONS = [
           type: 'string',
           enum: ['critical', 'major', 'minor'],
           description: 'Severity level (default: minor)',
+        },
+        project: {
+          type: 'string',
+          description: 'Project name. Omit to use the current working directory’s project. A stable name, never a filesystem path.',
         },
       },
       required: ['error', 'fix'],
@@ -713,11 +733,15 @@ async function handleToolInner(
     if (name === 'learn') {
       const r = parseOrFail(LearnSchema, args);
       if (!r.ok) return r.result;
+      const refusedLearn = projectRequired('learn', r.data.project, requestContext);
+      if (refusedLearn) return refusedLearn;
       return ok(learn({ ...r.data, sourceHost }));
     }
     if (name === 'task_state') {
       const r = parseOrFail(TaskStateSchema, args);
       if (!r.ok) return r.result;
+      const refusedTask = projectRequired('task_state', r.data.project, requestContext);
+      if (refusedTask) return refusedTask;
       const { project, ...patch } = r.data;
       // No field mentioned at all = a read. Distinguished by which KEYS
       // arrived, not by their values: `blocked: ""` is a write that clears,
@@ -728,6 +752,8 @@ async function handleToolInner(
     if (name === 'briefing') {
       const r = parseOrFail(BriefingSchema, args);
       if (!r.ok) return r.result;
+      const refusedBriefing = projectRequired('briefing', r.data.project, requestContext);
+      if (refusedBriefing) return refusedBriefing;
       return ok(assembleBriefing(r.data.project, r.data.recipient));
     }
     if (name === 'user_patterns') {

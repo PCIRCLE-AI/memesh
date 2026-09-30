@@ -160,6 +160,7 @@ export interface LearnInput {
     root_cause?: string;
     prevention?: string;
     severity?: LessonSeverity;
+    project?: string;
     sourceHost?: string;
 }
 export interface LearnResult {

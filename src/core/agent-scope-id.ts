@@ -107,6 +107,30 @@ export function agentScopeIdRejection(field: string, value: string): string | nu
 }
 
 /**
+ * The refusal for a PROJECT value, or `null` when it is acceptable (#527).
+ *
+ * Stricter than `agentScopeIdRejection`, which also guards agent ids that may
+ * legitimately contain a slash: a project name is a label (`getProjectName`
+ * builds `<basename>~<hash>`), so it never contains a path separator. Refused:
+ * empty or whitespace-only, an absolute path, and any value with `/` or `\\`
+ * in it (`a/b`, `./foo`, `../foo`, `~/foo`). A bare `.ssh` stays allowed.
+ *
+ * It only judges; it never rewrites. A stored project key is compared byte
+ * for byte, so canonicalising here would strand state already stored under
+ * another spelling of the same name.
+ */
+export function projectScopeRejection(value: string): string | null {
+  if (value.trim() === '') return 'project must not be empty.';
+  const absolute = agentScopeIdRejection('project', value);
+  if (absolute) return absolute;
+  if (/[\\/]/.test(value)) {
+    return `project must be a stable name, not a path (received ${JSON.stringify(value)}). `
+      + `Use the name on its own, for example ${JSON.stringify(lastPathSegment(value) ?? 'my-project')}.`;
+  }
+  return null;
+}
+
+/**
  * Every durable-message column that holds a routing identity, with the role
  * each column plays. One list is imported by `kg rename-project`
  * (`core/project-tags.ts`) and mirrored — it cannot be imported from

@@ -12,6 +12,7 @@ import {
   AGENT_SCOPE_ID_MAX_LENGTH,
   agentScopeIdRejection,
   canonicalAgentScopeId,
+  projectScopeRejection,
 } from '../core/agent-scope-id.js';
 
 const sanitizeName = (s: string) => s.replace(/[\r\n\t]+/g, ' ').trim();
@@ -224,31 +225,6 @@ export const ImportSchema = z.object({
   restore_archived: z.boolean().optional(),
 }).strict();
 
-export const LearnSchema = z.object({
-  error: z.string().min(1).max(5000),
-  fix: z.string().min(1).max(5000),
-  root_cause: z.string().max(5000).optional(),
-  prevention: z.string().max(5000).optional(),
-  severity: z.enum(['critical', 'major', 'minor']).optional(),
-}).strict();
-
-// Every field optional, including the project: a call with no fields at all is
-// the READ. Empty string is meaningful and therefore allowed — it is how a
-// resolved blocker gets removed, so `.min(1)` here would make the state
-// append-only and keep injecting a blocker that is gone.
-export const TaskStateSchema = z.object({
-  project: z.string().min(1).max(200).optional(),
-  goal: z.string().max(1000).optional(),
-  next: z.string().max(1000).optional(),
-  blocked: z.string().max(1000).optional(),
-  done: z.string().max(1000).optional(),
-// `.strict()` is doubly load-bearing here: beyond the blanket rule above, a
-// stripped key CHANGES THE OPERATION on this tool. "No recognised field" is
-// what marks a call as a read, so a model that writes `blocker:` for
-// `blocked:` would have its key dropped, fall through to the read branch,
-// and get a success-shaped response back with nothing recorded.
-}).strict();
-
 const nonBlankBounded = (max: number) => z.string().trim().min(1).max(max);
 
 /**
@@ -277,6 +253,56 @@ const agentScopeId = (field: string) =>
         agentScopeIdRejection(field, String(issue.input)) ?? `${field} is not a valid identifier.`,
     });
 
+/**
+ * A project name as the caller spelled it: validated, never rewritten (a
+ * stored task-state key is matched byte for byte). Empty, absolute-path and
+ * relative-path values are refused (#527).
+ */
+const projectRules = (base: z.ZodString) => base.max(AGENT_SCOPE_ID_MAX_LENGTH).superRefine((value, ctx) => {
+  const rejection = projectScopeRejection(value);
+  if (rejection !== null) ctx.addIssue({ code: 'custom', message: rejection });
+});
+const projectName = projectRules(z.string());
+
+export const LearnSchema = z.object({
+  error: z.string().min(1).max(5000),
+  fix: z.string().min(1).max(5000),
+  root_cause: z.string().max(5000).optional(),
+  prevention: z.string().max(5000).optional(),
+  severity: z.enum(['critical', 'major', 'minor']).optional(),
+  // Optional, like task_state's. Omitted = the server process's own project
+  // (what task_state and briefing do); an empty or path-shaped value is
+  // refused (#527).
+  project: projectName.optional(),
+}).strict();
+
+/**
+ * `POST /v1/learn`: the same as `LearnSchema` but `project` is REQUIRED. An HTTP
+ * server has no caller to derive a project from — its working directory is
+ * wherever `memesh serve` was started — so a missing project is refused rather
+ * than silently filed under that directory's project (#527).
+ */
+export const HttpLearnSchema = LearnSchema.extend({
+  project: projectRules(z.string({ error: 'project is required: name the project this lesson belongs to' })),
+});
+
+// Every field optional, including the project: a call with no fields at all is
+// the READ. Empty string is meaningful and therefore allowed — it is how a
+// resolved blocker gets removed, so `.min(1)` here would make the state
+// append-only and keep injecting a blocker that is gone.
+export const TaskStateSchema = z.object({
+  project: projectName.optional(),
+  goal: z.string().max(1000).optional(),
+  next: z.string().max(1000).optional(),
+  blocked: z.string().max(1000).optional(),
+  done: z.string().max(1000).optional(),
+// `.strict()` is doubly load-bearing here: beyond the blanket rule above, a
+// stripped key CHANGES THE OPERATION on this tool. "No recognised field" is
+// what marks a call as a read, so a model that writes `blocker:` for
+// `blocked:` would have its key dropped, fall through to the read branch,
+// and get a success-shaped response back with nothing recorded.
+}).strict();
+
 // `briefing` reads the SAME inbox key the message tool writes — it counts the
 // deliveries for one exact (project, recipient) — so it must ask the question
 // in the same spelling. Left as free text it would report "0 unread" for a
@@ -284,7 +310,9 @@ const agentScopeId = (field: string) =>
 // the split this change exists to close, reappearing on the surface an agent
 // actually reads.
 export const BriefingSchema = z.object({
-  project: agentScopeId('project').optional(),
+  // Exact, like learn and task_state: a lesson stored under a project must be
+  // found by a briefing for that same string (no trim, no normalising).
+  project: projectName.optional(),
   recipient: agentScopeId('recipient').optional(),
 }).strict();
 

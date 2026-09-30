@@ -1,6 +1,7 @@
 import { z } from 'zod';
 export interface McpRequestContext {
     workspaceRootUris?: readonly string[];
+    projectUndeterminable?: boolean;
 }
 export declare function resolveTranscriptWorkspace(project: string, rootUris: readonly string[] | undefined): {
     transcriptWorkspace?: string;
@@ -331,6 +332,10 @@ export declare const TOOL_DEFINITIONS: readonly [{
                 readonly type: "string";
                 readonly enum: readonly ["critical", "major", "minor"];
                 readonly description: "Severity level (default: minor)";
+            };
+            readonly project: {
+                readonly type: "string";
+                readonly description: "Project name. Omit to use the current working directory’s project. A stable name, never a filesystem path.";
             };
         };
         readonly required: readonly ["error", "fix"];
