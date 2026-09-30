@@ -15,8 +15,10 @@ useTestDatabase('memesh-mcp-payload-nulls-');
 const PROJECT = 'proj-517';
 const PAYLOAD = { a: null, b: 1, nested: { c: null, d: 2 }, arr: [null, 3] };
 
+// The result is the first content block. The first MCP call of a process can
+// carry an update notice as a SECOND block (handlers.ts), which is not JSON.
 function textOf(result: { content: Array<{ text?: string }> }): string {
-  return result.content.map((c) => c.text ?? '').join('');
+  return result.content[0]?.text ?? '';
 }
 
 describe('Feature: #517 the MCP message tool stores a JSON payload exactly as sent', () => {
