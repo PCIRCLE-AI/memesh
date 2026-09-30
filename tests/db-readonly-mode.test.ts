@@ -11,7 +11,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { closeDatabase, openDatabase } from '../src/db.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
-import { ownerWriteCommand } from '../src/core/file-mode.js';
+import { belongsToAnotherUser, ownerWriteCommand } from '../src/core/file-mode.js';
 
 const posix = process.platform !== 'win32';
 
@@ -265,12 +265,12 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     keepSidecars();
     peer!.prepare("INSERT INTO entities (name, type) VALUES ('only-in-the-wal', 'note')").run();
     const wal = `${dbPath}-wal`;
-    expect(fs.statSync(wal).size).toBeGreaterThan(0);
-    fs.chmodSync(wal, 0o444);
     const before = fs.readFileSync(wal);
+    expect(before.length).toBeGreaterThan(0);
+    fs.chmodSync(wal, 0o444);
     expect(() => openDatabase(dbPath)).toThrow(`chmod u+w "${wal}"`);
-    expect(mode(wal)).toBe(0o400);
     expect(fs.readFileSync(wal).equals(before)).toBe(true);
+    expect(mode(wal)).toBe(0o400);
     expect(peer!.prepare("SELECT count(*) AS n FROM entities WHERE name = 'only-in-the-wal'").get()).toEqual({ n: 1 });
   });
 
@@ -462,6 +462,21 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     expect(advice).toContain(`${rootOwnedReadOnly} belongs to another user`);
     expect(advice).toContain('point MEMESH_DB_PATH at a database you own, in a folder you own');
     expect(advice).not.toContain('chmod');
+  });
+
+  it.skipIf(!posix)('root is never told a file belongs to another user: it gets the chmod, which root can run', () => {
+    // A stubbed uid, never a real root run: one read-only file of this
+    // user's, seen first by another user and then by root.
+    const readOnly = path.join(dir, 'seen-by-root.db');
+    fs.writeFileSync(readOnly, '');
+    fs.chmodSync(readOnly, 0o444);
+    const getuid = vi.spyOn(process, 'getuid');
+    getuid.mockReturnValue(fs.statSync(readOnly).uid + 1);
+    expect(ownerWriteCommand(readOnly)).toContain(`${readOnly} belongs to another user`);
+    getuid.mockReturnValue(0);
+    expect(ownerWriteCommand(readOnly)).toBe(`run: chmod u+w "${readOnly}"`);
+    // An owner other than root, even when the suite itself runs as root.
+    expect(belongsToAnotherUser({ uid: 12345 } as fs.Stats)).toBe(false);
   });
 
   it.skipIf(!posix)('a folder that belongs to someone else is named once, with a way out, not a chmod the owner cannot run', () => {

@@ -128,12 +128,12 @@ describe.skipIf(!posixUser)('#520: hooks and the data folder', () => {
     const peer = shared.openHookDb(env, { fts: true }).db;
     try {
       peer.prepare("INSERT INTO entities (name, type) VALUES ('only-in-the-wal', 'note')").run();
-      expect(fs.statSync(wal).size).toBeGreaterThan(0);
-      fs.chmodSync(wal, 0o444);
       const before = fs.readFileSync(wal);
+      expect(before.length).toBeGreaterThan(0);
+      fs.chmodSync(wal, 0o444);
       expect(() => shared.openHookDb(env, { fts: true })).toThrow(`chmod u+w "${wal}"`);
-      expect(mode(wal) & 0o200).toBe(0);
       expect(fs.readFileSync(wal).equals(before)).toBe(true);
+      expect(mode(wal) & 0o200).toBe(0);
     } finally {
       fs.chmodSync(wal, 0o600);
       peer.close();
