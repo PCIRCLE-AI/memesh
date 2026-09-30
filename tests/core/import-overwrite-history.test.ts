@@ -181,9 +181,16 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
     const history = entityOf('x\uFFFD').metadata?.replaced_history as Array<{ observations: string[] }>;
     expect(history.map((h) => h.observations)).toEqual([['genuine v1'], ['genuine v2']]);
     expect(entityOf('x\uFFFD').observations).toEqual(['current']);
-    // A valid surrogate pair is one character, not two lone halves.
-    const emoji = bundle('a\u{1F600}', ['e']);
-    emoji.entities.push({ ...bundle('b\u{1F600}', ['f']).entities[0] });
+    // Two lone low halves, and two runs of lone high halves, are each one name too.
+    for (const [a, b] of [['y\uDC00', 'y\uDC01'], ['z\uD800\uD800', 'z\uD801\uD802']]) {
+      const pair = bundle(a, ['p']);
+      pair.entities.push({ ...bundle(b, ['q']).entities[0] });
+      pair.entity_count = 2;
+      expect(() => importMemories({ data: pair, merge_strategy: 'skip' })).toThrow(/more than once/);
+    }
+    // A valid surrogate pair is one character: two emoji that differ in the high half are two names.
+    const emoji = bundle('\u{1F600}', ['e']);
+    emoji.entities.push({ ...bundle('\u{1F200}', ['f']).entities[0] });
     emoji.entity_count = 2;
     expect(importMemories({ data: emoji, merge_strategy: 'skip' }).imported).toBe(2);
   });

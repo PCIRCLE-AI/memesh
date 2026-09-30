@@ -699,9 +699,6 @@ function storedContentOf(db: ReturnType<typeof getDatabase>, name: string): Omit
   };
 }
 
-/** A UTF-16 surrogate with no partner: SQLite stores it as U+FFFD (String.prototype.toWellFormed is ES2024; the build targets ES2022). */
-const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
-
 /**
  * `options.trust` is a SECOND argument, never a field of `ImportInput` or
  * its Zod schema (`ImportSchema` stays `.strict()`) — so MCP `import` and
@@ -775,9 +772,9 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
     const name = (entity as { name?: unknown } | null)?.name;
     // An unusable name is reported for its own entry below; only usable ones can collide.
     if (typeof name !== 'string' || name === '') continue;
-    // SQLite stores a lone surrogate as U+FFFD, so two names that differ only
-    // there are one row: compare the well-formed spelling the database keeps.
-    const stored = name.replace(LONE_SURROGATE, '\uFFFD');
+    // SQLite stores text as UTF-8, where a lone surrogate becomes U+FFFD, so
+    // two names that differ only there are one row: compare that spelling.
+    const stored = Buffer.from(name, 'utf8').toString('utf8');
     if (seenNames.has(stored)) {
       throw new Error(
         `This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}…` : name)} more than once. Nothing was imported. ` +

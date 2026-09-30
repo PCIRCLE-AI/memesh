@@ -27773,7 +27773,6 @@ function storedContentOf(db2, name) {
     tags: db2.prepare("SELECT tag FROM tags WHERE entity_id = ?").all(row.id).map((t) => t.tag).sort()
   };
 }
-var LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 function importMemories(args, options) {
   const trust = options?.trust === true;
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
@@ -27797,7 +27796,7 @@ function importMemories(args, options) {
     const name = entity?.name;
     if (typeof name !== "string" || name === "")
       continue;
-    const stored = name.replace(LONE_SURROGATE, "\uFFFD");
+    const stored = Buffer.from(name, "utf8").toString("utf8");
     if (seenNames.has(stored)) {
       throw new Error(`This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}\u2026` : name)} more than once. Nothing was imported. A file produced by \`memesh export\` names each memory once.`);
     }
