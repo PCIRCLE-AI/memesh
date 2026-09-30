@@ -11,6 +11,7 @@ import { seedOversizedEntity } from '../helpers/recall-size-fixture.js';
 // We open our own isolated DB and start the app on a random port.
 import { app, startServer, __setRemoteTokenForTest, isLoopbackRequest } from '../../src/transports/http/server.js';
 import { readConfig } from '../../src/core/config.js';
+import { shellQuote } from '../../src/core/file-mode.js';
 
 let tmpDir: string;
 let server: ReturnType<typeof app.listen>;
@@ -1090,7 +1091,16 @@ describe('HTTP Transport: Startup validation', () => {
     closeDatabase();
 
     try {
-      expect(() => startServer('127.0.0.1', 0)).toThrow(/Database initialization failed/);
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      let printed = '';
+      try {
+        expect(() => startServer('127.0.0.1', 0)).toThrow(/Database initialization failed/);
+        printed = spy.mock.calls.map((c) => c.join(' ')).join('\n');
+      } finally { spy.mockRestore(); }
+      // The same diagnosis doctor gives: the "folder" is a file.
+      expect(printed).toContain(`${blockingFile} is a file, not a folder`);
+      expect(printed).toContain('Fix: Point MEMESH_DB_PATH at a path inside a folder');
+      expect(printed).not.toMatch(/Backup and reset|mv /);
     } finally {
       if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
       else process.env.MEMESH_DB_PATH = previousDbPath;
@@ -1099,6 +1109,60 @@ describe('HTTP Transport: Startup validation', () => {
       // and so other concurrent tests are not affected.
       openDatabase(path.join(tmpDir, 'test.db'));
     }
+  });
+
+  // A refusal over permissions says its own fix, as doctor does. Moving the
+  // database aside would not fix it, and the old text told the owner to.
+  describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('a permission refusal at startup', () => {
+    function startupOutput(setup: (dir: string, dbPath: string) => void): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memesh-http-perm-it's-"));
+      const dbPath = path.join(dir, 'test.db');
+      const previousDbPath = process.env.MEMESH_DB_PATH;
+      closeDatabase();
+      openDatabase(dbPath);
+      closeDatabase();
+      for (const s of ['-wal', '-shm']) fs.rmSync(`${dbPath}${s}`, { force: true });
+      setup(dir, dbPath);
+      process.env.MEMESH_DB_PATH = dbPath;
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        expect(() => startServer('127.0.0.1', 0)).toThrow(/Database initialization failed/);
+        return spy.mock.calls.map((c) => c.join(' ')).join('\n');
+      } finally {
+        spy.mockRestore();
+        if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
+        else process.env.MEMESH_DB_PATH = previousDbPath;
+        for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, dir]) { try { fs.chmodSync(p, 0o700); } catch { /* gone */ } }
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        openDatabase(path.join(tmpDir, 'test.db'));
+      }
+    }
+
+    it('read-only folder: prints the chmod, not the reset advice', () => {
+      let dirName = '';
+      const out = startupOutput((dir) => { dirName = dir; fs.chmodSync(dir, 0o500); });
+      expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(dirName)}`);
+      expect(out).not.toMatch(/Backup and reset|mv |Quick fix/);
+    });
+
+    it('a -wal with fewer owner permissions: prints the chmod, not the reset advice', () => {
+      let wal = '';
+      const out = startupOutput((_dir, dbPath) => {
+        wal = `${dbPath}-wal`;
+        fs.writeFileSync(wal, '', { mode: 0o400 });
+      });
+      expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(wal)}`);
+      expect(out).not.toMatch(/Backup and reset|mv |Quick fix/);
+    });
+
+    it('a database the owner cannot read or write: prints the chmod doctor prints, not the reset advice', () => {
+      for (const fileMode of [0o000, 0o200]) {
+        let db = '';
+        const out = startupOutput((_dir, dbPath) => { db = dbPath; fs.chmodSync(dbPath, fileMode); });
+        expect(out, fileMode.toString(8)).toContain(`chmod u+rw ${shellQuote(db)}`);
+        expect(out, fileMode.toString(8)).not.toMatch(/Backup and reset|mv |Quick fix/);
+      }
+    });
   });
 
   it('shows actual bound port instead of input port (F15 port display fix)', async () => {

@@ -1,4 +1,6 @@
 import fs from 'fs';
+export declare function shellQuote(value: string): string;
+export declare function runOrSay(fix: string): string;
 export declare function removeGroupAndOtherAccess(target: string): void;
 export declare function belongsToAnotherUser(stat: fs.Stats): boolean;
 export declare function databaseFiles(dbPath: string): [string, string, string];

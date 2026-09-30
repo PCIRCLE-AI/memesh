@@ -1,5 +1,25 @@
 import fs from 'fs';
 
+/**
+ * A path as ONE word of a command memesh prints for the owner to paste into a
+ * POSIX shell. Single quotes switch off every expansion ($(...), backticks,
+ * $VAR, `;`, a newline), so a legal file name cannot run anything; only the
+ * quote itself needs escaping. Double quotes would not do: they still expand
+ * $(...) and backticks. A relative path that starts with `-` would be read as
+ * an option (`chmod u+w -x`), so it is printed as `./-x`; an absolute path
+ * cannot start that way. Every printed command that embeds a path goes
+ * through here.
+ */
+export function shellQuote(value: string): string {
+  const word = value.startsWith('-') ? `./${value}` : value;
+  return `'${word.replace(/'/g, `'\\''`)}'`;
+}
+
+/** A refusal's `fix` is either a command to run or advice (another user's file). */
+export function runOrSay(fix: string): string {
+  return /^chmod /.test(fix) ? `Run: ${fix}` : fix;
+}
+
 /** Targets already warned about in this process: say it once, not per open. */
 const warned = new Set<string>();
 
@@ -30,7 +50,7 @@ export function removeGroupAndOtherAccess(target: string): void {
           ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). ` +
               'Point MEMESH_DB_PATH at a database you own, in a folder you own.\n'
           : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); ` +
-              `they may be able to read your memories. Fix it with: chmod go-rwx "${target}"\n`,
+              `they may be able to read your memories. Fix it with: chmod go-rwx ${shellQuote(target)}\n`,
       );
     } catch { /* stderr gone */ }
   }
@@ -76,12 +96,12 @@ export function requirePrivateWritableDirectory(dir: string, purpose: string): v
   removeGroupAndOtherAccess(dir);
   const mode = fs.statSync(dir).mode & 0o777;
   if ((mode & 0o077) !== 0) {
-    throw new Error(`${dir} is still open to other users (${mode.toString(8)}), and ${purpose}. Run: chmod go-rwx "${dir}"`);
+    throw new Error(`${dir} is still open to other users (${mode.toString(8)}), and ${purpose}. Run: chmod go-rwx ${shellQuote(dir)}`);
   }
   try {
     fs.accessSync(dir, fs.constants.W_OK);
   } catch {
-    throw new Error(`${dir} is read-only, and ${purpose}. MeMesh does not make it writable; if you want it to run, run: chmod u+w "${dir}"`);
+    throw new Error(`${dir} is read-only, and ${purpose}. MeMesh does not make it writable; if you want it to run, run: chmod u+w ${shellQuote(dir)}`);
   }
 }
 
@@ -89,7 +109,7 @@ export function requirePrivateWritableDirectory(dir: string, purpose: string): v
 export const SIDECAR_PERMISSIONS_CODE = 'MEMESH_SIDECAR_PERMISSIONS';
 
 const OWNER_LETTERS: Array<[number, string]> = [[0o400, 'r'], [0o200, 'w'], [0o100, 'x']];
-const quoted = (files: string[]) => files.map((f) => `"${f}"`).join(' ');
+const quoted = (files: string[]) => files.map(shellQuote).join(' ');
 
 const letters = (bits: number) => OWNER_LETTERS.filter(([bit]) => bits & bit).map(([, letter]) => letter).join('');
 
@@ -142,7 +162,7 @@ export function refuseMismatchedSidecars(dbPath: string): void {
   }
   if (fewer.length > 0) {
     const fix = `chmod u+${letters(fewerBits)} ${quoted(fewer)}`;
-    const keepReadOnly = fewerBits === 0o200 ? ` To keep the database read-only instead, run: chmod u-w "${real}"` : '';
+    const keepReadOnly = fewerBits === 0o200 ? ` To keep the database read-only instead, run: chmod u-w ${shellQuote(real)}` : '';
     throw Object.assign(
       new Error(
         `MeMesh: ${fewer.join(' and ')} ${fewer.length > 1 ? 'have' : 'has'} fewer owner permissions than ` +
@@ -159,7 +179,7 @@ export function refuseMismatchedSidecars(dbPath: string): void {
       new Error(
         `MeMesh: ${extra.join(' and ')} ${extra.length > 1 ? 'are' : 'is'} empty and ${extra.length > 1 ? 'have' : 'has'} ` +
           `more owner permissions than ${real}, which SQLite would reset while opening. ` +
-          `To read the database as it is, run: ${fix}. To use it normally, run: chmod u+${letters(extraBits)} "${real}"`,
+          `To read the database as it is, run: ${fix}. To use it normally, run: chmod u+${letters(extraBits)} ${shellQuote(real)}`,
       ),
       // The code is what a hook's outcome record keeps (hookErrorReason).
       { fix, code: SIDECAR_PERMISSIONS_CODE },

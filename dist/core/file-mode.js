@@ -1,4 +1,11 @@
 import fs from 'fs';
+export function shellQuote(value) {
+    const word = value.startsWith('-') ? `./${value}` : value;
+    return `'${word.replace(/'/g, `'\\''`)}'`;
+}
+export function runOrSay(fix) {
+    return /^chmod /.test(fix) ? `Run: ${fix}` : fix;
+}
 const warned = new Set();
 export function removeGroupAndOtherAccess(target) {
     let stat;
@@ -21,7 +28,7 @@ export function removeGroupAndOtherAccess(target) {
                 ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). ` +
                     'Point MEMESH_DB_PATH at a database you own, in a folder you own.\n'
                 : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); ` +
-                    `they may be able to read your memories. Fix it with: chmod go-rwx "${target}"\n`);
+                    `they may be able to read your memories. Fix it with: chmod go-rwx ${shellQuote(target)}\n`);
         }
         catch { }
     }
@@ -47,18 +54,18 @@ export function requirePrivateWritableDirectory(dir, purpose) {
     removeGroupAndOtherAccess(dir);
     const mode = fs.statSync(dir).mode & 0o777;
     if ((mode & 0o077) !== 0) {
-        throw new Error(`${dir} is still open to other users (${mode.toString(8)}), and ${purpose}. Run: chmod go-rwx "${dir}"`);
+        throw new Error(`${dir} is still open to other users (${mode.toString(8)}), and ${purpose}. Run: chmod go-rwx ${shellQuote(dir)}`);
     }
     try {
         fs.accessSync(dir, fs.constants.W_OK);
     }
     catch {
-        throw new Error(`${dir} is read-only, and ${purpose}. MeMesh does not make it writable; if you want it to run, run: chmod u+w "${dir}"`);
+        throw new Error(`${dir} is read-only, and ${purpose}. MeMesh does not make it writable; if you want it to run, run: chmod u+w ${shellQuote(dir)}`);
     }
 }
 export const SIDECAR_PERMISSIONS_CODE = 'MEMESH_SIDECAR_PERMISSIONS';
 const OWNER_LETTERS = [[0o400, 'r'], [0o200, 'w'], [0o100, 'x']];
-const quoted = (files) => files.map((f) => `"${f}"`).join(' ');
+const quoted = (files) => files.map(shellQuote).join(' ');
 const letters = (bits) => OWNER_LETTERS.filter(([bit]) => bits & bit).map(([, letter]) => letter).join('');
 export function refuseMismatchedSidecars(dbPath) {
     if (process.platform === 'win32')
@@ -100,7 +107,7 @@ export function refuseMismatchedSidecars(dbPath) {
     }
     if (fewer.length > 0) {
         const fix = `chmod u+${letters(fewerBits)} ${quoted(fewer)}`;
-        const keepReadOnly = fewerBits === 0o200 ? ` To keep the database read-only instead, run: chmod u-w "${real}"` : '';
+        const keepReadOnly = fewerBits === 0o200 ? ` To keep the database read-only instead, run: chmod u-w ${shellQuote(real)}` : '';
         throw Object.assign(new Error(`MeMesh: ${fewer.join(' and ')} ${fewer.length > 1 ? 'have' : 'has'} fewer owner permissions than ` +
             `${real}, so opening it would either widen them or leave the database silently read-only. ` +
             `To use the database normally, run: ${fix}.${keepReadOnly}`), { fix, code: SIDECAR_PERMISSIONS_CODE });
@@ -109,7 +116,7 @@ export function refuseMismatchedSidecars(dbPath) {
         const fix = `chmod u-${letters(extraBits)} ${quoted(extra)}`;
         throw Object.assign(new Error(`MeMesh: ${extra.join(' and ')} ${extra.length > 1 ? 'are' : 'is'} empty and ${extra.length > 1 ? 'have' : 'has'} ` +
             `more owner permissions than ${real}, which SQLite would reset while opening. ` +
-            `To read the database as it is, run: ${fix}. To use it normally, run: chmod u+${letters(extraBits)} "${real}"`), { fix, code: SIDECAR_PERMISSIONS_CODE });
+            `To read the database as it is, run: ${fix}. To use it normally, run: chmod u+${letters(extraBits)} ${shellQuote(real)}`), { fix, code: SIDECAR_PERMISSIONS_CODE });
     }
 }
 export function ownerWriteCommand(dbPath) {

@@ -17,7 +17,8 @@ import {
   type InstallChannel, type PluginHost,
 } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
-import { databaseFiles, ownerWriteCommand } from './file-mode.js';
+import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
+import { diagnoseDatabaseFailure } from './database-diagnosis.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
@@ -340,11 +341,6 @@ function resolveDatabasePath(): string {
   return getDbPath();
 }
 
-/** A refusal's `fix` is either a command to run or advice (another user's file). */
-function runOrSay(fix: string): string {
-  return /^chmod /.test(fix) ? `Run: ${fix}` : fix;
-}
-
 /**
  * A read-only database, folder or -wal/-shm is a permission question, not a
  * disk one (#520). MeMesh's own refusals carry their command as `fix`, the
@@ -356,9 +352,13 @@ function queryFailedFix(err: unknown): string {
     return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
   }
   const detail = err instanceof Error ? err.message : String(err);
-  return /readonly database|SQLITE_READONLY/i.test(detail)
-    ? 'The database is read-only; the Database row above shows the command that makes it writable again.'
-    : 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
+  if (/readonly database|SQLITE_READONLY/i.test(detail)) {
+    return 'The database is read-only; the Database row above shows the command that makes it writable again.';
+  }
+  if (/database is locked|SQLITE_BUSY/i.test(detail)) {
+    return 'Another process has the database locked; wait for it to finish, or stop it, then retry.';
+  }
+  return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
 }
 
 function createCheck(
@@ -681,7 +681,7 @@ function inspectConfigFile(
       'Config',
       'fail',
       `${configPath} could not be read or parsed (${msg}). Its settings are being ignored right now.`,
-      `Fix the JSON or remove the file to fall back to defaults: mv ${configPath} ${configPath}.bak`,
+      `Fix the JSON or remove the file to fall back to defaults: mv ${shellQuote(configPath)} ${shellQuote(`${configPath}.bak`)}`,
       { code: 'config-parse.unreadable', params: { path: configPath, detail: msg } },
     );
   }
@@ -808,7 +808,7 @@ function inspectMcpConfig(
         'MCP config',
         'warn',
         `${label} starts \`${entry}\`. NOT VERIFIED: \`${MCP_PLACEHOLDER}\` is substituted by the Claude Code plugin runtime, and this is a ${installChannel} install with CLAUDE_PLUGIN_ROOT unset — so the file it names was not checked.`,
-        `Verify it the way the plugin runtime would: CLAUDE_PLUGIN_ROOT=${packageRoot} memesh doctor`,
+        `Verify it the way the plugin runtime would: CLAUDE_PLUGIN_ROOT=${shellQuote(packageRoot)} memesh doctor`,
         { code: 'mcp-config.placeholder-unresolved', params: { entry, channel: installChannel } },
       );
     }
@@ -1104,7 +1104,7 @@ function inspectHookWiring(
       // suggested remedy could not succeed: the user runs it, gets a refusal,
       // and is back where they started. The JSON has to be repaired or moved
       // aside FIRST; install-hooks writes a fresh file when none exists.
-      `Repair the JSON, or move the file aside (\`mv ${marker.settings_path} ${marker.settings_path}.broken\`) — memesh keeps timestamped \`.bak-pre-memesh-*\` copies next to it. Then run \`memesh install-hooks\`.`,
+      `Repair the JSON, or move the file aside (\`mv ${shellQuote(String(marker.settings_path))} ${shellQuote(`${marker.settings_path}.broken`)}\`) — memesh keeps timestamped \`.bak-pre-memesh-*\` copies next to it. Then run \`memesh install-hooks\`.`,
       { code: 'hook-wiring.settings-invalid', params: { path: String(marker.settings_path) } },
     );
   }
@@ -3425,68 +3425,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     }
 
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'unknown database error';
-
     // F15: Provide actionable diagnosis for common database failures
-    let diagnosis: string;
-    let fix: string;
-
-    // MeMesh's own permission errors (#520) already say what is wrong and
-    // carry the one command that fixes it; a generic guess below (move the
-    // database away and start fresh) would be wrong for every one of them.
-    const ownFix = (err as { fix?: unknown } | null)?.fix;
-    if (typeof ownFix === 'string') {
-      diagnosis = message;
-      fix = runOrSay(ownFix);
-    } else if (existsSyncImpl(databasePath)) {
-      try {
-        const stat = statSyncImpl(databasePath);
-        const canRead = !!(stat.mode & 0o400);
-        const canWrite = !!(stat.mode & 0o200);
-
-        if (!canRead || !canWrite) {
-          diagnosis = `Database file exists but has insufficient permissions (${(stat.mode & 0o777).toString(8)})`;
-          // #520: MeMesh never gives the owner back a permission the owner
-          // removed — a read-only snapshot must stay read-only — so --fix has
-          // nothing to do here; putting it back is the owner's decision.
-          // The -wal/-shm a read-only open left behind need the same bits;
-          // restoring only the database would not make it writable (#520).
-          const files = databaseFiles(databasePath).filter((file) => existsSyncImpl(file));
-          fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map((file) => `"${file}"`).join(' ')}`;
-        } else if (stat.size === 0) {
-          diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
-          fix = `Delete and recreate: rm "${databasePath}" && memesh recall (will create fresh DB)`;
-        } else {
-          diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
-          fix = `Backup and reset: mv "${databasePath}" "${databasePath}.backup" && memesh recall`;
-        }
-      } catch {
-        diagnosis = `Database file exists at ${databasePath} but stat() failed: ${message}`;
-        fix = `Check file system integrity and permissions`;
-      }
-    } else {
-      // Database file doesn't exist — check parent directory
-      const dir = path.dirname(databasePath);
-      if (!existsSyncImpl(dir)) {
-        diagnosis = `Database directory does not exist: ${dir}`;
-        fix = `Create directory: mkdir -p "${dir}" && memesh recall (will create fresh DB)`;
-      } else {
-        try {
-          const dirStat = statSyncImpl(dir);
-          const canWrite = !!(dirStat.mode & 0o200);
-          if (!canWrite) {
-            diagnosis = `Cannot create database — directory is not writable: ${dir}`;
-            fix = `Fix directory permissions: chmod u+w "${dir}"`;
-          } else {
-            diagnosis = `Database file missing at ${databasePath}, but directory exists and is writable`;
-            fix = `Run any memesh command (e.g., memesh recall) to create a fresh database`;
-          }
-        } catch {
-          diagnosis = `Database directory exists but cannot be accessed: ${dir}`;
-          fix = `Check directory permissions and ownership`;
-        }
-      }
-    }
+    const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
 
     // Replaces, not appends: whatever was staged before the throw describes a
     // database this function has just concluded it cannot use.

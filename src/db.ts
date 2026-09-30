@@ -4,7 +4,7 @@ import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
-import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess } from './core/file-mode.js';
+import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import {
@@ -79,7 +79,7 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
   if (missing.length > 0 && !folderWritable && fs.existsSync(realPath)) {
     // A folder of another user's is not this user's to chmod.
     const notYours = belongsToAnotherUser(fs.statSync(realDir));
-    const fix = notYours ? 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' : `chmod u+w "${realDir}"`;
+    const fix = notYours ? 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' : `chmod u+w ${shellQuote(realDir)}`;
     throw Object.assign(
       new Error(
         `MeMesh: ${realDir} is read-only and ${path.basename(realPath)} has no ${missing.join(' or ')} file there, ` +
@@ -109,14 +109,7 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
   // `insertFtsRow`'s current segmentation rules into an index that was never
   // migrated, which is the contentless-FTS delete mismatch the rest of this
   // release exists to eliminate.
-  const opening = new MemeshDatabase(resolvedPath);
-  try {
-    initialiseDatabase(opening);
-  } catch (err) {
-    try { opening.close(); } catch { /* already closing down */ }
-    throw err;
-  }
-  db = opening;
+  db = openInitialisedDatabase(resolvedPath);
   // Opened read-only because the owner took write access away: every later
   // write will be refused, so say once, here, what gives it back.
   const writeBack = ownerWriteCommand(resolvedPath);
@@ -129,6 +122,25 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
     } catch { /* stderr gone */ }
   }
   return db;
+}
+
+/**
+ * Open `resolvedPath` and bring it current exactly as `openDatabase` does, but
+ * hand the handle back without publishing it as the process singleton. The
+ * caller owns closing it. `kg rename-project`'s preview uses it to run the real
+ * apply on a throwaway copy. It runs none of openDatabase's permission checks:
+ * a caller opening anything but a file it just created in a private folder
+ * must run guardDatabaseFiles (with an owner-only umask) first.
+ */
+export function openInitialisedDatabase(resolvedPath: string): MemeshDatabase {
+  const opening = new MemeshDatabase(resolvedPath);
+  try {
+    initialiseDatabase(opening);
+  } catch (err) {
+    try { opening.close(); } catch { /* already closing down */ }
+    throw err;
+  }
+  return opening;
 }
 
 /**

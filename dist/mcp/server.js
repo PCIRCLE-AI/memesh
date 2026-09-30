@@ -26093,6 +26093,10 @@ function redactUserPaths(text) {
 
 // dist/core/file-mode.js
 import fs2 from "fs";
+function shellQuote(value) {
+  const word = value.startsWith("-") ? `./${value}` : value;
+  return `'${word.replace(/'/g, `'\\''`)}'`;
+}
 var warned = /* @__PURE__ */ new Set();
 function removeGroupAndOtherAccess(target) {
   let stat;
@@ -26111,7 +26115,7 @@ function removeGroupAndOtherAccess(target) {
     const notYours = stat !== void 0 && belongsToAnotherUser(stat);
     try {
       process.stderr.write(notYours ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). Point MEMESH_DB_PATH at a database you own, in a folder you own.
-` : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); they may be able to read your memories. Fix it with: chmod go-rwx "${target}"
+` : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); they may be able to read your memories. Fix it with: chmod go-rwx ${shellQuote(target)}
 `);
     } catch {
     }
@@ -26136,7 +26140,7 @@ function guardDatabaseFiles(dbPath) {
 }
 var SIDECAR_PERMISSIONS_CODE = "MEMESH_SIDECAR_PERMISSIONS";
 var OWNER_LETTERS = [[256, "r"], [128, "w"], [64, "x"]];
-var quoted = (files) => files.map((f) => `"${f}"`).join(" ");
+var quoted = (files) => files.map(shellQuote).join(" ");
 var letters = (bits) => OWNER_LETTERS.filter(([bit]) => bits & bit).map(([, letter]) => letter).join("");
 function refuseMismatchedSidecars(dbPath) {
   if (process.platform === "win32")
@@ -26175,12 +26179,12 @@ function refuseMismatchedSidecars(dbPath) {
   }
   if (fewer.length > 0) {
     const fix = `chmod u+${letters(fewerBits)} ${quoted(fewer)}`;
-    const keepReadOnly = fewerBits === 128 ? ` To keep the database read-only instead, run: chmod u-w "${real}"` : "";
+    const keepReadOnly = fewerBits === 128 ? ` To keep the database read-only instead, run: chmod u-w ${shellQuote(real)}` : "";
     throw Object.assign(new Error(`MeMesh: ${fewer.join(" and ")} ${fewer.length > 1 ? "have" : "has"} fewer owner permissions than ${real}, so opening it would either widen them or leave the database silently read-only. To use the database normally, run: ${fix}.${keepReadOnly}`), { fix, code: SIDECAR_PERMISSIONS_CODE });
   }
   if (extra.length > 0) {
     const fix = `chmod u-${letters(extraBits)} ${quoted(extra)}`;
-    throw Object.assign(new Error(`MeMesh: ${extra.join(" and ")} ${extra.length > 1 ? "are" : "is"} empty and ${extra.length > 1 ? "have" : "has"} more owner permissions than ${real}, which SQLite would reset while opening. To read the database as it is, run: ${fix}. To use it normally, run: chmod u+${letters(extraBits)} "${real}"`), { fix, code: SIDECAR_PERMISSIONS_CODE });
+    throw Object.assign(new Error(`MeMesh: ${extra.join(" and ")} ${extra.length > 1 ? "are" : "is"} empty and ${extra.length > 1 ? "have" : "has"} more owner permissions than ${real}, which SQLite would reset while opening. To read the database as it is, run: ${fix}. To use it normally, run: chmod u+${letters(extraBits)} ${shellQuote(real)}`), { fix, code: SIDECAR_PERMISSIONS_CODE });
   }
 }
 function ownerWriteCommand(dbPath) {
@@ -27162,9 +27166,21 @@ function openDatabase(dbPath) {
   }
   if (missing.length > 0 && !folderWritable && fs3.existsSync(realPath)) {
     const notYours = belongsToAnotherUser(fs3.statSync(realDir));
-    const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w "${realDir}"`;
+    const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w ${shellQuote(realDir)}`;
     throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
   }
+  db = openInitialisedDatabase(resolvedPath);
+  const writeBack = ownerWriteCommand(resolvedPath);
+  if (writeBack) {
+    try {
+      process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. To write to it again, ${writeBack}
+`);
+    } catch {
+    }
+  }
+  return db;
+}
+function openInitialisedDatabase(resolvedPath) {
   const opening = new MemeshDatabase(resolvedPath);
   try {
     initialiseDatabase(opening);
@@ -27175,16 +27191,7 @@ function openDatabase(dbPath) {
     }
     throw err;
   }
-  db = opening;
-  const writeBack = ownerWriteCommand(resolvedPath);
-  if (writeBack) {
-    try {
-      process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. To write to it again, ${writeBack}
-`);
-    } catch {
-    }
-  }
-  return db;
+  return opening;
 }
 function isReadonlyDbError(err) {
   const msg = err instanceof Error ? err.message : String(err);

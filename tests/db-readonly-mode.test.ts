@@ -255,8 +255,8 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     let error: (Error & { fix?: string }) | undefined;
     try { openDatabase(dbPath); } catch (err) { error = err as Error & { fix?: string }; }
     expect(error?.message).toContain(wal);
-    expect(error?.fix).toBe(`chmod u+w "${wal}"`);
-    expect(error?.message).toContain(`chmod u-w "${dbPath}"`); // the read-only way out too
+    expect(error?.fix).toBe(`chmod u+w '${wal}'`);
+    expect(error?.message).toContain(`chmod u-w '${dbPath}'`); // the read-only way out too
     expect(during).toEqual([]); // SQLite never ran, so it never widened the -wal
     expect(mode(wal)).toBe(0o400); // group/other gone, owner bits as the owner set them
   });
@@ -268,7 +268,7 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     const before = fs.readFileSync(wal);
     expect(before.length).toBeGreaterThan(0);
     fs.chmodSync(wal, 0o444);
-    expect(() => openDatabase(dbPath)).toThrow(`chmod u+w "${wal}"`);
+    expect(() => openDatabase(dbPath)).toThrow(`chmod u+w '${wal}'`);
     expect(fs.readFileSync(wal).equals(before)).toBe(true);
     expect(mode(wal)).toBe(0o400);
     expect(peer!.prepare("SELECT count(*) AS n FROM entities WHERE name = 'only-in-the-wal'").get()).toEqual({ n: 1 });
@@ -285,7 +285,7 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     expect(db.prepare("SELECT count(*) AS n FROM entities WHERE name = 'only-in-the-wal'").get()).toEqual({ n: 1 });
     expect(() => db.prepare("INSERT INTO entities (name, type) VALUES ('refused', 'note')").run()).toThrow(/readonly/i);
     const written = stderr.mock.calls.map((c) => String(c[0])).join('');
-    expect(written).toContain(`To write to it again, run: chmod u+w "${dbPath}"`);
+    expect(written).toContain(`To write to it again, run: chmod u+w '${dbPath}'`);
     expect(during.length).toBeGreaterThan(0);
     for (const sample of during) expect(sample).toEqual([0o600, 0o600]); // not even for a moment
     expect(mode(dbPath)).toBe(0o400);
@@ -300,8 +300,8 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     const during = sampleModesDuringOpen([wal]);
     let error: (Error & { fix?: string }) | undefined;
     try { openDatabase(dbPath); } catch (err) { error = err as Error & { fix?: string }; }
-    expect(error?.fix).toBe(`chmod u-w "${wal}"`);
-    expect(error?.message).toContain(`chmod u+w "${dbPath}"`);
+    expect(error?.fix).toBe(`chmod u-w '${wal}'`);
+    expect(error?.message).toContain(`chmod u+w '${dbPath}'`);
     expect(during).toEqual([]);
     expect(mode(wal)).toBe(0o600);
   });
@@ -358,7 +358,7 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
       let error: (Error & { fix?: string }) | undefined;
       try { openDatabase(link); } catch (err) { error = err as Error & { fix?: string }; }
       const real = fs.realpathSync(dbPath); // SQLite's own name for the file
-      expect(error?.fix).toBe(`chmod u+w "${real}-wal" "${real}-shm"`);
+      expect(error?.fix).toBe(`chmod u+w '${real}-wal' '${real}-shm'`);
       expect(mode(`${dbPath}-wal`) & 0o200).toBe(0);
       expect(fs.existsSync(`${link}-wal`)).toBe(false);
     } finally {
@@ -445,7 +445,7 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
       let error: (Error & { fix?: string }) | undefined;
       try { openDatabase(link); } catch (err) { error = err as Error & { fix?: string }; }
       expect(error?.message).toContain(`MeMesh: ${realDir} is read-only`);
-      expect(error?.fix).toBe(`chmod u+w "${realDir}"`);
+      expect(error?.fix).toBe(`chmod u+w '${realDir}'`);
       expect(mode(dir)).toBe(0o500);
     } finally {
       fs.chmodSync(dir, 0o700);
@@ -525,7 +525,7 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     getuid.mockReturnValue(fs.statSync(readOnly).uid + 1);
     expect(ownerWriteCommand(readOnly)).toContain(`${readOnly} belongs to another user`);
     getuid.mockReturnValue(0);
-    expect(ownerWriteCommand(readOnly)).toBe(`run: chmod u+w "${readOnly}"`);
+    expect(ownerWriteCommand(readOnly)).toBe(`run: chmod u+w '${readOnly}'`);
     // An owner other than root, even when the suite itself runs as root.
     expect(belongsToAnotherUser({ uid: 12345 } as fs.Stats)).toBe(false);
   });
@@ -546,7 +546,7 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     const written = stderr.mock.calls.map((c) => String(c[0])).join('');
     expect(written.split('belongs to another user').length - 1).toBe(1);
     expect(written).toContain('Point MEMESH_DB_PATH at a database you own, in a folder you own.');
-    expect(written).not.toContain(`chmod go-rwx "${dir}"`);
+    expect(written).not.toContain(`chmod go-rwx '${dir}'`);
   });
 
   it.skipIf(!posix)('a read-only database that fails to open still loses group/other access', () => {
@@ -588,7 +588,7 @@ describe('Feature: #520 a database made read-only and then restored', () => {
     closeDatabase();
     // The read-only open named every file that needs write access back.
     const written = stderr.mock.calls.map((c) => String(c[0])).join('');
-    expect(written).toContain(`To write to it again, run: chmod u+w "${dbPath}" "${wal}" "${shm}"`);
+    expect(written).toContain(`To write to it again, run: chmod u+w '${dbPath}' '${wal}' '${shm}'`);
     vi.restoreAllMocks();
     // What the rest rests on: a read-only open leaves SQLite's own -wal and
     // -shm behind at the database's 0400, and a non-empty -shm.
@@ -599,7 +599,7 @@ describe('Feature: #520 a database made read-only and then restored', () => {
     fs.chmodSync(dbPath, 0o600); // the owner restores the database only
     let error: (Error & { fix?: string }) | undefined;
     try { openDatabase(dbPath); } catch (err) { error = err as Error & { fix?: string }; }
-    expect(error?.fix).toBe(`chmod u+w "${wal}" "${shm}"`);
+    expect(error?.fix).toBe(`chmod u+w '${wal}' '${shm}'`);
     expect(mode(wal)).toBe(0o400); // MeMesh added nothing
     expect(mode(shm)).toBe(0o400);
 

@@ -100,13 +100,13 @@ describe.skipIf(!posixUser)('#520: hooks and the data folder', () => {
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     shared.openHookDb(env, { fts: true }).db.close();
     const written = stderr.mock.calls.map((c) => String(c[0])).join('');
-    expect(written).toContain(`To write to it again, run: chmod u+w "${dbPath}" "${wal}" "${shm}"`);
+    expect(written).toContain(`To write to it again, run: chmod u+w '${dbPath}' '${wal}' '${shm}'`);
     vi.restoreAllMocks();
 
     fs.chmodSync(dbPath, 0o600); // the owner restores the database only
     let error: (Error & { fix?: string }) | undefined;
     try { shared.openHookDb(env, { fts: true }); } catch (err) { error = err as Error & { fix?: string }; }
-    expect(error?.fix).toBe(`chmod u+w "${wal}" "${shm}"`);
+    expect(error?.fix).toBe(`chmod u+w '${wal}' '${shm}'`);
     expect(mode(wal) & 0o200).toBe(0); // the hook added nothing
     expect(mode(shm) & 0o200).toBe(0);
 
@@ -131,7 +131,7 @@ describe.skipIf(!posixUser)('#520: hooks and the data folder', () => {
       const before = fs.readFileSync(wal);
       expect(before.length).toBeGreaterThan(0);
       fs.chmodSync(wal, 0o444);
-      expect(() => shared.openHookDb(env, { fts: true })).toThrow(`chmod u+w "${wal}"`);
+      expect(() => shared.openHookDb(env, { fts: true })).toThrow(`chmod u+w '${wal}'`);
       expect(fs.readFileSync(wal).equals(before)).toBe(true);
       expect(mode(wal) & 0o200).toBe(0);
     } finally {
@@ -241,15 +241,74 @@ describe.skipIf(!posixUser)('#520 RO3: every hook database open passes the same 
   }
 });
 
+// A constructor call however it is spelled: `new MemeshDatabase(p)`,
+// `new MemeshDatabase (p)`, `new  MemeshDatabase\n(p)`. Scanned over the whole
+// file, not line by line, so a line break before the paren cannot hide one.
+// Reports each as `<file>: <the line it starts on>`.
+const CONSTRUCTION = /new\s+MemeshDatabase\s*\(/g;
+function findConstructions(file: string, text: string): string[] {
+  const lines = text.split('\n');
+  return [...text.matchAll(CONSTRUCTION)].map((m) => {
+    const line = text.slice(0, m.index).split('\n').length;
+    return `${file}: ${lines[line - 1].trim()}`;
+  });
+}
+
+describe('constructor scan pattern', () => {
+  it.each([
+    ['new MemeshDatabase(p)', 1],
+    ['new MemeshDatabase (p)', 1],
+    ['new  MemeshDatabase\t(p)', 1],
+    ['new MemeshDatabase\n(p)', 1],
+    ['new MemeshDatabase(a); new MemeshDatabase (b)', 2],
+    ['class MemeshDatabase {}', 0],
+  ])('%j -> %i site(s)', (text, count) => {
+    expect(findConstructions('x.ts', text)).toHaveLength(count);
+  });
+});
+
+// The same holds for the application: every open of the database goes
+// through openDatabase (src/db.ts) or a site that runs guardDatabaseFiles
+// first. A new `new MemeshDatabase(` anywhere else fails here.
+describe('#520: src constructs MemeshDatabase only at known, guarded sites', () => {
+  it('finds no other `new MemeshDatabase(` in src', () => {
+    const sites: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith('.ts')) {
+          sites.push(...findConstructions(path.relative('src', full).split(path.sep).join('/'), fs.readFileSync(full, 'utf8')));
+        }
+      }
+    };
+    walk(path.resolve('src'));
+    expect(sites.length).toBeGreaterThan(0); // the scan really read src
+    // This proves the site INVENTORY only, not that every site is guarded: a
+    // new open fails here and must be reviewed; the guard at each known site
+    // is pinned by its own tests.
+    // Each known site by file and exact text (line numbers move), and exactly
+    // once each: a second, identical or different, constructor in db.ts fails
+    // too. db.ts's open runs after guardDatabaseFiles in openDatabase;
+    // project-tags.ts's runs after it in openReadOnlyForPreview; doctor's is an
+    // in-memory probe; sqlite.ts's is a comment.
+    const known = [
+      "db.ts: const opening = new MemeshDatabase(resolvedPath);",
+      "core/doctor.ts: const probe = new MemeshDatabase(':memory:');",
+      "core/project-tags.ts: openHandle: (target: string) => MemeshDatabase = (target) => new MemeshDatabase(target, { readOnly: true }),",
+      "storage/sqlite.ts: // so `new MemeshDatabase(p)` would throw if the parameter were passed",
+    ];
+    expect([...sites].sort()).toEqual([...known].sort());
+  });
+});
+
 // The rule above holds only if no hook can open the database another way.
 describe('#520: hooks construct MemeshDatabase only through openMemeshDb', () => {
   it('finds no other `new MemeshDatabase(` in scripts/hooks', () => {
     const dir = path.resolve('scripts/hooks');
     const sites: string[] = [];
     for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.js') || f.endsWith('.mjs'))) {
-      fs.readFileSync(path.join(dir, file), 'utf8').split('\n').forEach((line, i) => {
-        if (line.includes('new MemeshDatabase(')) sites.push(`${file}:${i + 1}: ${line.trim()}`);
-      });
+      sites.push(...findConstructions(file, fs.readFileSync(path.join(dir, file), 'utf8')));
     }
     expect(sites.length).toBeGreaterThan(0); // the scan really read the hooks
     expect(sites.filter((s) => !(

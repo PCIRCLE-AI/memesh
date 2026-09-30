@@ -11,7 +11,8 @@ import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
 import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS, } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
-import { databaseFiles, ownerWriteCommand } from './file-mode.js';
+import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
+import { diagnoseDatabaseFailure } from './database-diagnosis.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
@@ -88,18 +89,19 @@ function inspectLocaleReadmeParity(packageRoot, existsSyncImpl, readFileSyncImpl
 function resolveDatabasePath() {
     return getDbPath();
 }
-function runOrSay(fix) {
-    return /^chmod /.test(fix) ? `Run: ${fix}` : fix;
-}
 function queryFailedFix(err) {
     const fix = err?.fix;
     if (typeof fix === 'string') {
         return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
     }
     const detail = err instanceof Error ? err.message : String(err);
-    return /readonly database|SQLITE_READONLY/i.test(detail)
-        ? 'The database is read-only; the Database row above shows the command that makes it writable again.'
-        : 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
+    if (/readonly database|SQLITE_READONLY/i.test(detail)) {
+        return 'The database is read-only; the Database row above shows the command that makes it writable again.';
+    }
+    if (/database is locked|SQLITE_BUSY/i.test(detail)) {
+        return 'Another process has the database locked; wait for it to finish, or stop it, then retry.';
+    }
+    return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
 }
 function createCheck(id, label, status, summary, fix, i18n, fixId) {
     return { id, label, status, summary, fix, code: i18n?.code, params: i18n?.params, fixId };
@@ -258,7 +260,7 @@ function inspectConfigFile(existsSyncImpl, readFileSyncImpl, getConfigPathImpl) 
     }
     catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return createCheck('config', 'Config', 'fail', `${configPath} could not be read or parsed (${msg}). Its settings are being ignored right now.`, `Fix the JSON or remove the file to fall back to defaults: mv ${configPath} ${configPath}.bak`, { code: 'config-parse.unreadable', params: { path: configPath, detail: msg } });
+        return createCheck('config', 'Config', 'fail', `${configPath} could not be read or parsed (${msg}). Its settings are being ignored right now.`, `Fix the JSON or remove the file to fall back to defaults: mv ${shellQuote(configPath)} ${shellQuote(`${configPath}.bak`)}`, { code: 'config-parse.unreadable', params: { path: configPath, detail: msg } });
     }
 }
 const MCP_PLACEHOLDER = '${CLAUDE_PLUGIN_ROOT}';
@@ -294,7 +296,7 @@ function inspectMcpConfig(packageRoot, installChannel, existsSyncImpl, readFileS
     if (entry) {
         const pluginRoot = installChannel === 'plugin-marketplace' ? packageRoot : (env.CLAUDE_PLUGIN_ROOT || null);
         if (entry.includes(MCP_PLACEHOLDER) && pluginRoot === null) {
-            return createCheck('mcp-config', 'MCP config', 'warn', `${label} starts \`${entry}\`. NOT VERIFIED: \`${MCP_PLACEHOLDER}\` is substituted by the Claude Code plugin runtime, and this is a ${installChannel} install with CLAUDE_PLUGIN_ROOT unset — so the file it names was not checked.`, `Verify it the way the plugin runtime would: CLAUDE_PLUGIN_ROOT=${packageRoot} memesh doctor`, { code: 'mcp-config.placeholder-unresolved', params: { entry, channel: installChannel } });
+            return createCheck('mcp-config', 'MCP config', 'warn', `${label} starts \`${entry}\`. NOT VERIFIED: \`${MCP_PLACEHOLDER}\` is substituted by the Claude Code plugin runtime, and this is a ${installChannel} install with CLAUDE_PLUGIN_ROOT unset — so the file it names was not checked.`, `Verify it the way the plugin runtime would: CLAUDE_PLUGIN_ROOT=${shellQuote(packageRoot)} memesh doctor`, { code: 'mcp-config.placeholder-unresolved', params: { entry, channel: installChannel } });
         }
         const resolved = pluginRoot === null
             ? path.resolve(packageRoot, entry)
@@ -403,7 +405,7 @@ function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir, installC
     }
     const settingsParsed = parseJsonFile(marker.settings_path, readFileSyncImpl);
     if (!settingsParsed.ok) {
-        return createCheck('hook-wiring', 'Hooks wired into Claude Code', 'fail', `${marker.settings_path} is no longer valid JSON, so nothing can read your hook wiring — including memesh.`, `Repair the JSON, or move the file aside (\`mv ${marker.settings_path} ${marker.settings_path}.broken\`) — memesh keeps timestamped \`.bak-pre-memesh-*\` copies next to it. Then run \`memesh install-hooks\`.`, { code: 'hook-wiring.settings-invalid', params: { path: String(marker.settings_path) } });
+        return createCheck('hook-wiring', 'Hooks wired into Claude Code', 'fail', `${marker.settings_path} is no longer valid JSON, so nothing can read your hook wiring — including memesh.`, `Repair the JSON, or move the file aside (\`mv ${shellQuote(String(marker.settings_path))} ${shellQuote(`${marker.settings_path}.broken`)}\`) — memesh keeps timestamped \`.bak-pre-memesh-*\` copies next to it. Then run \`memesh install-hooks\`.`, { code: 'hook-wiring.settings-invalid', params: { path: String(marker.settings_path) } });
     }
     const CAPTURE_EVENTS = new Set(['Stop', 'PostToolUse', 'PreCompact']);
     const hooks = settingsParsed.value.hooks;
@@ -1554,63 +1556,7 @@ export async function runDoctor(options) {
         }
     }
     catch (err) {
-        const message = err instanceof Error ? err.message : 'unknown database error';
-        let diagnosis;
-        let fix;
-        const ownFix = err?.fix;
-        if (typeof ownFix === 'string') {
-            diagnosis = message;
-            fix = runOrSay(ownFix);
-        }
-        else if (existsSyncImpl(databasePath)) {
-            try {
-                const stat = statSyncImpl(databasePath);
-                const canRead = !!(stat.mode & 0o400);
-                const canWrite = !!(stat.mode & 0o200);
-                if (!canRead || !canWrite) {
-                    diagnosis = `Database file exists but has insufficient permissions (${(stat.mode & 0o777).toString(8)})`;
-                    const files = databaseFiles(databasePath).filter((file) => existsSyncImpl(file));
-                    fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map((file) => `"${file}"`).join(' ')}`;
-                }
-                else if (stat.size === 0) {
-                    diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
-                    fix = `Delete and recreate: rm "${databasePath}" && memesh recall (will create fresh DB)`;
-                }
-                else {
-                    diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
-                    fix = `Backup and reset: mv "${databasePath}" "${databasePath}.backup" && memesh recall`;
-                }
-            }
-            catch {
-                diagnosis = `Database file exists at ${databasePath} but stat() failed: ${message}`;
-                fix = `Check file system integrity and permissions`;
-            }
-        }
-        else {
-            const dir = path.dirname(databasePath);
-            if (!existsSyncImpl(dir)) {
-                diagnosis = `Database directory does not exist: ${dir}`;
-                fix = `Create directory: mkdir -p "${dir}" && memesh recall (will create fresh DB)`;
-            }
-            else {
-                try {
-                    const dirStat = statSyncImpl(dir);
-                    const canWrite = !!(dirStat.mode & 0o200);
-                    if (!canWrite) {
-                        diagnosis = `Cannot create database — directory is not writable: ${dir}`;
-                        fix = `Fix directory permissions: chmod u+w "${dir}"`;
-                    }
-                    else {
-                        diagnosis = `Database file missing at ${databasePath}, but directory exists and is writable`;
-                        fix = `Run any memesh command (e.g., memesh recall) to create a fresh database`;
-                    }
-                }
-                catch {
-                    diagnosis = `Database directory exists but cannot be accessed: ${dir}`;
-                    fix = `Check directory permissions and ownership`;
-                }
-            }
-        }
+        const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
         dbChecks.length = 0;
         dbChecks.push(createCheck('database', 'Database', 'fail', diagnosis, fix, { code: 'database.broken', params: { detail: diagnosis } }));
     }

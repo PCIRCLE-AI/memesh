@@ -100,8 +100,8 @@ describe('memesh doctor --fix', () => {
       // no -wal/-shm to read from) and its one command, never a move/reset.
       const database = r.stdout.match(/\[FAIL\] Database\n([^\n]*)\n\s*Fix: ([^\n]*)/);
       expect(database?.[1]).toContain(`${dataDir} is read-only`);
-      expect(database?.[2]).toBe(`Run: chmod u+w "${dataDir}"`);
-      expect(r.stdout).not.toMatch(/Backup and reset|\bmv "/);
+      expect(database?.[2]).toBe(`Run: chmod u+w '${dataDir}'`);
+      expect(r.stdout).not.toMatch(/Backup and reset|\bmv '/);
     });
 
     it.skipIf(!posixUser)('a read-only database is named read-only in the Database row, with the command', () => {
@@ -110,7 +110,7 @@ describe('memesh doctor --fix', () => {
       const database = r.stdout.match(/\[(\w+)\] Database\n([^\n]*)\n\s*Fix: ([^\n]*)/);
       expect(database?.[1]).toBe('WARN');
       expect(database?.[2]).toContain('is read-only');
-      expect(database?.[3]).toContain(`chmod u+w "${dbPath}"`);
+      expect(database?.[3]).toContain(`chmod u+w '${dbPath}'`);
       expect(mode(dbPath)).toBe(0o400);
     });
 

@@ -23,6 +23,7 @@ import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/v
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
+import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 import fs from 'fs';
 import path from 'path';
@@ -699,14 +700,10 @@ export function startServer(host = HOST, port = PORT, opts) {
         console.error('\n❌ MeMesh startup failed: database cannot be opened\n');
         console.error(`   Database path: ${dbPath}`);
         console.error(`   Error: ${message}\n`);
-        console.error('Possible causes:');
-        console.error('  • Database file is corrupted (run: memesh doctor)');
-        console.error('  • Insufficient permissions (check file ownership)');
-        console.error('  • Another process has locked the database');
-        console.error('  • Disk is full or read-only\n');
-        console.error('Quick fix: Backup and reset the database:');
-        console.error(`  mv "${dbPath}" "${dbPath}.backup"`);
-        console.error('  memesh (will create a fresh database)\n');
+        const { diagnosis, fix } = diagnoseDatabaseFailure(err, dbPath);
+        if (diagnosis !== message)
+            console.error(`   Diagnosis: ${diagnosis}`);
+        console.error(`Fix: ${fix}\n`);
         throw new Error(`Database initialization failed: ${message}`, { cause: err });
     }
     const injectedUpdateSeam = Boolean(opts?.updateCheckImpl || opts?.lastUpdateCheckImpl);
