@@ -57,6 +57,11 @@ import { join } from 'node:path';
 // removeJunkFileTags) and this invariant provably the same function, and the
 // same for the Bash write shapes #240's invariant below needs.
 import { bashEditedPaths, isPathShapedFileName } from '../hooks/_generated/bash-edited-paths.js';
+// The writers' own constants: the tag every hook capture carries, and the task
+// state's type. The #519 invariant below is keyed on WHO wrote a memory, and
+// these are how the writers mark it.
+import { AUTO_CAPTURE_TAG } from '../hooks/_shared.js';
+import { TASK_STATE_TYPE } from '../hooks/_generated/task-state.js';
 
 const MAX_ROWS = 8;
 
@@ -380,6 +385,38 @@ const INVARIANTS = [
       WHERE t.tag LIKE 'file:%' AND e.type = 'session-insight'`,
     rows: (_db, rows) => rows.filter((r) => !isPathShapedFileName(r.tag.slice('file:'.length))),
     row: (r) => `${r.name}  ${r.tag}`,
+  },
+  {
+    id: 'captured-memories-keep-a-project',
+    refs: '#519',
+    says: 'every memory a hook captured, and every task state, still carries a project tag',
+    // WHO wrote it, not what it is called: every hook writer that stamps
+    // AUTO_CAPTURE_TAG (post-commit, session-summary, pre-compact, the Stop
+    // handoff, and core's extractor) adds `project:<name>` in the same tags
+    // array, and task-state-store always tags its project. So one of these
+    // with no project tag was not written that way; something took the tag
+    // away. #519: `kg rename-project --from X --to X --apply` removed
+    // `project:X` from every memory that had it.
+    //
+    // The data cannot tell a deliberate removal from damage: a replace record
+    // describes an earlier write, not the later change that took the tag
+    // away. So every such memory is reported. To make a captured memory
+    // global on purpose, replace it without the capture tag too; it is then
+    // the person's own memory and is not checked.
+    //
+    // What this cannot see: a memory a person wrote without a project is
+    // legitimate and is not checked, so the same rename's damage to those is
+    // invisible here; so is a commit captured before the auto-capture tag
+    // existed. It also cannot tell a WRONG project from the right one.
+    // Measured on the maintainer's graph before adding it: 2,091 such
+    // memories, none without a project tag.
+    sql: `
+      SELECT e.name AS name, e.type AS type FROM entities e
+      WHERE (e.type = '${TASK_STATE_TYPE}'
+             OR EXISTS (SELECT 1 FROM tags a WHERE a.entity_id = e.id AND a.tag = '${AUTO_CAPTURE_TAG}'))
+        AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag LIKE 'project:%')
+      ORDER BY e.id`,
+    row: (r) => `${r.name}  type=${r.type}`,
   },
   {
     id: 'agent-message-scope-ids-are-not-filesystem-paths',
