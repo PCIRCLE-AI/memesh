@@ -7,6 +7,7 @@ import os from 'os';
 import { pathToFileURL } from 'node:url';
 import { expectPrivateFile } from '../helpers/permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
+import { recallListName } from '../../scripts/hooks/_stop-notes.js';
 
 const require = createRequire(import.meta.url);
 
@@ -354,7 +355,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     db.close();
 
     // The list path is a directory: writing it fails (EISDIR) while the folder itself reads and prunes fine.
-    fs.mkdirSync(path.join(testDir, 'pre-edit-recall', 'session-a.json'), { recursive: true });
+    fs.mkdirSync(path.join(testDir, 'pre-edit-recall', recallListName('session-a')), { recursive: true });
     const result = spawnSync('node', [path.resolve('scripts/hooks/pre-edit-recall.js')], {
       input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
@@ -463,17 +464,22 @@ syncBuiltinESMExports();
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
     db.close();
 
-    // 128 + 128 characters would be a 260-byte file name: no list, no error, still shown.
+    // 128 + 128 characters is an accepted pair: throttled like any other, no error.
     const long = { session_id: 's'.repeat(128), agent_id: 'a'.repeat(128), tool_input: { file_path: '/src/auth.ts' } };
     expect(runHook(long)).toContain('auth-decision');
-    expect(runHook(long)).toContain('auth-decision');
+    expect(runHook(long)).toBe('');
+    expect(outcomesOf().filter((o) => o.outcome === 'error')).toEqual([]);
+    // Ids that differ only in case are different sessions, even on a case-insensitive disk.
+    expect(runHook({ session_id: 'CASE-A', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+    expect(runHook({ session_id: 'case-a', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
     // (a, b--c) and (a--b, c) are different contexts.
     const edit = (session_id: string, agent_id: string) => runHook({ session_id, agent_id, tool_input: { file_path: '/src/auth.ts' } });
     expect(edit('a', 'b--c')).toContain('auth-decision');
     expect(edit('a--b', 'c')).toContain('auth-decision');
     expect(edit('a', 'b--c')).toBe('');
+    // One list per context: 128+128, CASE-A, case-a, (a, b--c), (a--b, c).
     const dir = path.join(testDir, 'pre-edit-recall');
-    expect(fs.readdirSync(dir).sort()).toEqual(['a--b.c.json', 'a.b--c.json']);
+    expect(fs.readdirSync(dir)).toHaveLength(5);
   });
 
   it('#521: an agent_id that is not a safe file name writes no list and is not throttled', () => {
@@ -546,7 +552,7 @@ syncBuiltinESMExports();
 
     expect(fs.existsSync(stale)).toBe(false);
     expect(fs.existsSync(recent)).toBe(true);
-    expect(fs.existsSync(path.join(dir, 'session-a.json'))).toBe(true);
+    expect(fs.existsSync(path.join(dir, recallListName('session-a')))).toBe(true);
   });
 
   it('#521: a failed read of the list directory is reported on stderr, recall still shown', () => {
@@ -598,7 +604,7 @@ syncBuiltinESMExports();
 
     runHook({ tool_input: { file_path: '/src/auth.ts' } });
 
-    expect(fs.existsSync(path.join(testDir, 'pre-edit-recall', 'session-a.json'))).toBe(true);
+    expect(fs.existsSync(path.join(testDir, 'pre-edit-recall', recallListName('session-a')))).toBe(true);
   });
 
   it('should write throttle state with private file permissions', () => {
@@ -612,7 +618,7 @@ syncBuiltinESMExports();
 
     runHook({ tool_input: { file_path: '/src/auth.ts' } });
 
-    const throttlePath = path.join(testDir, 'pre-edit-recall', 'session-a.json');
+    const throttlePath = path.join(testDir, 'pre-edit-recall', recallListName('session-a'));
     expectPrivateFile(throttlePath);
   });
 

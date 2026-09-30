@@ -11,6 +11,7 @@ import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
 import { TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { recallListName } from '../../scripts/hooks/_stop-notes.js';
 
 const require = createRequire(import.meta.url);
 // Non-git identity is basename + real-path hash; derive seeds through the
@@ -969,8 +970,8 @@ describe('Feature: Session Start Hook', () => {
     // #521: a start of THIS session clears its own list, not another session's.
     const dir = path.join(testDir, 'pre-edit-recall');
     fs.mkdirSync(dir, { recursive: true });
-    const own = path.join(dir, 'this-session.json');
-    const other = path.join(dir, 'other-session.json');
+    const own = path.join(dir, recallListName('this-session'));
+    const other = path.join(dir, recallListName('other-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
     fs.writeFileSync(other, JSON.stringify(['/src/auth.ts']), 'utf8');
     const legacy = path.join(testDir, 'session-recalled-files.json');
@@ -988,7 +989,7 @@ describe('Feature: Session Start Hook', () => {
     db.close();
     const dir = path.join(testDir, 'pre-edit-recall');
     fs.mkdirSync(dir, { recursive: true });
-    const own = path.join(dir, 'this-session.json');
+    const own = path.join(dir, recallListName('this-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
     const loader = path.join(testDir, 'fault.mjs');
     fs.writeFileSync(loader, `import fs from 'node:fs';
@@ -1022,7 +1023,7 @@ syncBuiltinESMExports();
     db.close();
     const dir = path.join(testDir, 'pre-edit-recall');
     fs.mkdirSync(dir, { recursive: true });
-    const own = path.join(dir, 'this-session.json');
+    const own = path.join(dir, recallListName('this-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
 
     runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_type: 'x', source: 'compact' });
@@ -1035,7 +1036,7 @@ syncBuiltinESMExports();
     db.close();
     const dir = path.join(testDir, 'pre-edit-recall');
     fs.mkdirSync(dir, { recursive: true });
-    const own = path.join(dir, 'this-session.json');
+    const own = path.join(dir, recallListName('this-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
 
     runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_id: 'sub1', agent_type: 'Explore' });

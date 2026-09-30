@@ -53,6 +53,16 @@ export const INGEST_MAX_FILES = 100;
 const MAX_WINDOW_BYTES = 16 * 1024 * 1024;
 /** A session id safe to use as a file name. */
 export const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * The file name of one context's pre-edit recall list (#521): a session, or a
+ * subagent inside it (its payload carries the parent's session id plus its own
+ * agent id). A hash of the ids, so the name has a fixed length, and ids that
+ * differ only in case stay different files on a case-insensitive disk.
+ */
+export function recallListName(sessionId, agentId) {
+  return `${createHash('sha256').update(agentId ? `${sessionId}\n${agentId}` : sessionId).digest('hex').slice(0, 32)}.json`;
+}
 const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
 
 const MEMORY_WRITE_TOOL_RE = /(?:^|__)(?:remember|learn)$/;

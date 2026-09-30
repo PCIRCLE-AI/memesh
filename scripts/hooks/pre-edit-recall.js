@@ -35,7 +35,7 @@ import {
   recordHookOutcome,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
-import { pruneSessionState, SESSION_ID_RE } from './_stop-notes.js';
+import { pruneSessionState, recallListName, SESSION_ID_RE } from './_stop-notes.js';
 
 const dbPath = getDbPath();
 const memeshDir = getMemeshDirFromDbPath();
@@ -43,13 +43,10 @@ const memeshDir = getMemeshDirFromDbPath();
 // session (or another host) had recalled a file, every other session editing
 // it got nothing, recorded as "nothing to recall".
 const THROTTLE_DIR = join(memeshDir, 'pre-edit-recall');
-// A subagent's hook payload carries its PARENT's session_id plus its own agent_id
+// A subagent's hook payload carries its PARENT's session_id plus its own agent id
 // (Claude Code 2.1.285, captured), and its context has not seen what the parent
 // was shown, so it gets a list of its own.
-// The dot cannot occur in either id (SESSION_ID_RE), so two ids never make one name.
-const throttleFileFor = (sessionId, agentId) => join(THROTTLE_DIR, agentId ? `${sessionId}.${agentId}.json` : `${sessionId}.json`);
-// A file name is at most 255 bytes; two ids of 128 would not fit.
-const THROTTLE_NAME_MAX = 200;
+const throttleFileFor = (sessionId, agentId) => join(THROTTLE_DIR, recallListName(sessionId, agentId));
 const MAX_RESULTS = 3;
 
 // #358 round 3 item 2: Strategy 2 fetches this many CANDIDATES before literal
@@ -107,8 +104,7 @@ process.stdin.on('end', () => {
     const fileKey = filePath.toLowerCase();
     const hasAgent = data.agent_id !== undefined && data.agent_id !== null && data.agent_id !== '';
     const throttleFile = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id)
-      && (!hasAgent || (typeof data.agent_id === 'string' && SESSION_ID_RE.test(data.agent_id)
-        && data.session_id.length + data.agent_id.length < THROTTLE_NAME_MAX))
+      && (!hasAgent || (typeof data.agent_id === 'string' && SESSION_ID_RE.test(data.agent_id)))
       ? throttleFileFor(data.session_id, hasAgent ? data.agent_id : null)
       : null;
     let seenFiles = [];

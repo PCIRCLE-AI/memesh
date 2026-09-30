@@ -75,7 +75,7 @@ import {
   writePrivateJson,
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
-import { SESSION_ID_RE } from './_stop-notes.js';
+import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import {
   buildBriefingIndex,
@@ -1072,7 +1072,7 @@ process.stdin.on('end', async () => {
     try {
       const sid = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id) ? data.session_id : null;
       if (sid && !data.agent_id) {
-        const own = join(throttleDir, `${sid}.json`);
+        const own = join(throttleDir, recallListName(sid));
         if (existsSync(own)) unlinkSync(own);
       }
       // The old machine-wide list, from before #521.
