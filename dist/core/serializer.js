@@ -180,6 +180,16 @@ function describeInvalidEntity(entity, index) {
     }
     return null;
 }
+function storedContentOf(db, name) {
+    const row = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name);
+    return {
+        title: row.title ?? null,
+        observations: db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(row.id)
+            .map((o) => o.content),
+        tags: db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(row.id)
+            .map((t) => t.tag).sort(),
+    };
+}
 export function importMemories(args, options) {
     const trust = options?.trust === true;
     if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
@@ -204,6 +214,7 @@ export function importMemories(args, options) {
             'Nothing was imported. memesh import expects a file produced by `memesh export`.');
     }
     const db = getDatabase();
+    const storedContent = (name) => storedContentOf(db, name);
     const kg = new KnowledgeGraph(db);
     let imported = 0;
     let overwritten = 0;
@@ -256,14 +267,11 @@ export function importMemories(args, options) {
                         kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
                         return { kind: 'appended' };
                     }
-                    const entityId = db.prepare('SELECT id FROM entities WHERE name = ?').get(entity.name).id;
                     replacedVersion = {
                         replaced_at: new Date().toISOString(),
                         title: existing.title ?? null,
-                        observations: db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(entityId)
-                            .map((o) => o.content),
-                        tags: db.prepare('SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag').all(entityId)
-                            .map((t) => t.tag),
+                        observations: [...existing.observations],
+                        tags: [...existing.tags].sort(),
                     };
                     kg.clearEntityData(entity.name);
                 }
@@ -280,7 +288,11 @@ export function importMemories(args, options) {
                         const merged = { ...current, ...importedMetadata };
                         const version = replacedVersion;
                         const history = Array.isArray(merged.replaced_history) ? merged.replaced_history : [];
-                        return { ...merged, replaced_history: boundReplacedHistory([...history, version]) };
+                        const now = storedContent(entity.name);
+                        const unchanged = now.title === version.title
+                            && JSON.stringify(now.observations) === JSON.stringify(version.observations)
+                            && JSON.stringify(now.tags) === JSON.stringify(version.tags);
+                        return unchanged ? merged : { ...merged, replaced_history: boundReplacedHistory([...history, version]) };
                     });
                 }
                 if (!existing) {

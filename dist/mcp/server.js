@@ -27765,6 +27765,14 @@ function describeInvalidEntity(entity, index) {
   }
   return null;
 }
+function storedContentOf(db2, name) {
+  const row = db2.prepare("SELECT id, title FROM entities WHERE name = ?").get(name);
+  return {
+    title: row.title ?? null,
+    observations: db2.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(row.id).map((o) => o.content),
+    tags: db2.prepare("SELECT tag FROM tags WHERE entity_id = ?").all(row.id).map((t) => t.tag).sort()
+  };
+}
 function importMemories(args, options) {
   const trust = options?.trust === true;
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
@@ -27784,6 +27792,7 @@ function importMemories(args, options) {
     throw new Error(`This file has no "entities" array (found ${bundleEntities === void 0 ? "nothing" : typeof bundleEntities}). Nothing was imported. memesh import expects a file produced by \`memesh export\`.`);
   }
   const db2 = getDatabase();
+  const storedContent = (name) => storedContentOf(db2, name);
   const kg = new KnowledgeGraph(db2);
   let imported = 0;
   let overwritten = 0;
@@ -27834,12 +27843,11 @@ function importMemories(args, options) {
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
             return { kind: "appended" };
           }
-          const entityId = db2.prepare("SELECT id FROM entities WHERE name = ?").get(entity.name).id;
           replacedVersion = {
             replaced_at: (/* @__PURE__ */ new Date()).toISOString(),
             title: existing.title ?? null,
-            observations: db2.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(entityId).map((o) => o.content),
-            tags: db2.prepare("SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag").all(entityId).map((t) => t.tag)
+            observations: [...existing.observations],
+            tags: [...existing.tags].sort()
           };
           kg.clearEntityData(entity.name);
         }
@@ -27856,7 +27864,9 @@ function importMemories(args, options) {
             const merged = { ...current, ...importedMetadata };
             const version2 = replacedVersion;
             const history = Array.isArray(merged.replaced_history) ? merged.replaced_history : [];
-            return { ...merged, replaced_history: boundReplacedHistory([...history, version2]) };
+            const now = storedContent(entity.name);
+            const unchanged = now.title === version2.title && JSON.stringify(now.observations) === JSON.stringify(version2.observations) && JSON.stringify(now.tags) === JSON.stringify(version2.tags);
+            return unchanged ? merged : { ...merged, replaced_history: boundReplacedHistory([...history, version2]) };
           });
         }
         if (!existing) {

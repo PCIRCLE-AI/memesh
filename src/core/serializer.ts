@@ -694,6 +694,18 @@ function describeInvalidEntity(entity: unknown, index: number): string | null {
  * reach it. Only the CLI's `--trust` (a restore-your-own-backup path,
  * confirmed before it writes anything) passes `{ trust: true }`.
  */
+/** A memory's title, observations (in order) and tags (sorted like the history entry's), as stored. */
+function storedContentOf(db: ReturnType<typeof getDatabase>, name: string): Omit<ReplacedVersion, 'replaced_at'> {
+  const row = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name) as { id: number; title: string | null };
+  return {
+    title: row.title ?? null,
+    observations: (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(row.id) as { content: string }[])
+      .map((o) => o.content),
+    tags: (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(row.id) as { tag: string }[])
+      .map((t) => t.tag).sort(),
+  };
+}
+
 export function importMemories(args: ImportInput, options?: { trust?: boolean }): ImportResult {
   const trust = options?.trust === true;
   if (!(MERGE_STRATEGIES as readonly string[]).includes(args.merge_strategy)) {
@@ -752,6 +764,7 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
   }
 
   const db = getDatabase();
+  const storedContent = (name: string) => storedContentOf(db, name);
   const kg = new KnowledgeGraph(db);
 
   let imported = 0;
@@ -874,14 +887,11 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
           // `remember` with `replace: true` writes), clear it, then
           // re-populate below. #530: without this, a bundle naming an
           // existing memory erased its observations and tags with no trace.
-          const entityId = (db.prepare('SELECT id FROM entities WHERE name = ?').get(entity.name) as { id: number }).id;
           replacedVersion = {
             replaced_at: new Date().toISOString(),
             title: existing.title ?? null,
-            observations: (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(entityId) as { content: string }[])
-              .map((o) => o.content),
-            tags: (db.prepare('SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag').all(entityId) as { tag: string }[])
-              .map((t) => t.tag),
+            observations: [...existing.observations],
+            tags: [...existing.tags].sort(),
           };
           kg.clearEntityData(entity.name);
         }
@@ -915,7 +925,13 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             // this overwrite just replaced.
             const version = replacedVersion!;
             const history = Array.isArray(merged.replaced_history) ? merged.replaced_history as ReplacedVersion[] : [];
-            return { ...merged, replaced_history: boundReplacedHistory([...history, version]) };
+            // Restoring the same backup again replaces a version with itself:
+            // recording it would push real older versions out of the bound.
+            const now = storedContent(entity.name);
+            const unchanged = now.title === version.title
+              && JSON.stringify(now.observations) === JSON.stringify(version.observations)
+              && JSON.stringify(now.tags) === JSON.stringify(version.tags);
+            return unchanged ? merged : { ...merged, replaced_history: boundReplacedHistory([...history, version]) };
           });
         }
 

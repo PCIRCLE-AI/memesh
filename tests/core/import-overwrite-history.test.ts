@@ -89,6 +89,40 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
     expect(history[0].tags).toEqual(tags.slice(0, history[0].tags.length));
   });
 
+  it('restoring the same bundle again records nothing, so older versions are not pushed out', () => {
+    remember({ name: 'r', type: 'decision', observations: ['genuine v1'] });
+    remember({ name: 'r', type: 'decision', observations: ['v2'], replace: true });
+    for (let i = 0; i < 22; i++) importMemories({ data: bundle('r', ['restored']), merge_strategy: 'overwrite' });
+    const history = entityOf('r').metadata?.replaced_history as Array<{ observations: string[] }>;
+    expect(history.map((h) => h.observations)).toEqual([['genuine v1'], ['v2']]);
+  });
+
+  it.each([
+    ['a title-only change', { title: 'New title' }, true],
+    ['a tag-only change', { tags: ['t2'] }, true],
+    ['an observation-order change', { observations: ['b', 'a'] }, true],
+    ['a tag-order-only change', { tags: ['t2', 't1'] }, false],
+  ] as const)('overwrite with %s records a version only when stored content changed', (_label, change, recorded) => {
+    const name = `diff-${_label.replace(/\W+/g, '-')}`;
+    remember({ name, type: 'decision', title: 'Old title', observations: ['a', 'b'], tags: ['t1', 't2'] });
+    const next = { title: 'Old title', observations: ['a', 'b'], tags: ['t1', 't2'], ...change };
+    const data = bundle(name, [...next.observations], [...next.tags]);
+    (data.entities[0] as Record<string, unknown>).title = next.title;
+    importMemories({ data, merge_strategy: 'overwrite' });
+    const history = entityOf(name).metadata?.replaced_history as unknown[] | undefined;
+    expect(history?.length ?? 0).toBe(recorded ? 1 : 0);
+  });
+
+  it('remember replace also trims the tags of one oversized version to the 64 KiB bound', () => {
+    const tags = Array.from({ length: 300 }, (_, i) => String(i).padStart(3, '0') + 'x'.repeat(252));
+    remember({ name: 'rt', type: 'decision', observations: ['old'], tags });
+    remember({ name: 'rt', type: 'decision', observations: ['new'], tags: ['t'], replace: true });
+    const history = entityOf('rt').metadata?.replaced_history as Array<{ tags: string[]; truncated?: boolean }>;
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThanOrEqual(REPLACED_HISTORY_MAX_BYTES);
+    expect(history[0].truncated).toBe(true);
+    expect(history[0].tags.length).toBeGreaterThan(0);
+  });
+
   it('records nothing for a new memory, skip, or append', () => {
     importMemories({ data: bundle('n', ['a']), merge_strategy: 'overwrite' });
     expect(entityOf('n').metadata?.replaced_history).toBeUndefined();

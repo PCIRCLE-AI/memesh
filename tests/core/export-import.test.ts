@@ -660,7 +660,7 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
           version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
           entities: [{
             name, type: 'note', namespace: 'personal', relations: [], tags: [],
-            observations: ['real-new'],
+            observations: ['bundle-new'],
             metadata: { replaced_history: forged },
           }],
         };
@@ -679,7 +679,7 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
     );
 
     it.each(['append', 'overwrite'] as const)(
-      "an EXISTING entity with NO local replaced_history stays absent, whatever the bundle sends (%s)",
+      "an EXISTING entity never takes the bundle's replaced_history; only its own replaced content is recorded (%s)",
       (merge_strategy) => {
         const name = 'existing-entity-no-replaced-history';
         remember({ name, type: 'note', observations: ['never replaced'] });
@@ -692,7 +692,7 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
           version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
           entities: [{
             name, type: 'note', namespace: 'personal', relations: [], tags: [],
-            observations: ['never replaced'],
+            observations: ['bundle-new'],
             metadata: { replaced_history: forged },
           }],
         };
