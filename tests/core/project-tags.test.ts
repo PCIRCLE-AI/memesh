@@ -234,14 +234,16 @@ describe('Feature: #519 a preview that cannot make its copy says where and how m
       },
     });
     const privateTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-nospace-'));
-    const savedTmp = process.env.TMPDIR;
-    process.env.TMPDIR = privateTmp;
+    // os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
+    const tmpVars = ['TMPDIR', 'TMP', 'TEMP'] as const;
+    const saved = tmpVars.map((name) => process.env[name]);
+    for (const name of tmpVars) process.env[name] = privateTmp;
     try {
       expect(() => renameProjectTag('ns-old', 'ns-new', { apply: false, db: faulty }))
         .toThrow(new RegExp(`preview copy under ${privateTmp.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*database or disk is full`, 's'));
       expect(fs.readdirSync(privateTmp)).toEqual([]);
     } finally {
-      if (savedTmp === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = savedTmp;
+      tmpVars.forEach((name, i) => { if (saved[i] === undefined) delete process.env[name]; else process.env[name] = saved[i]; });
       fs.rmSync(privateTmp, { recursive: true, force: true });
     }
   });
