@@ -27684,6 +27684,35 @@ function agentRecallEnvelope(r) {
   };
 }
 
+// dist/core/replaced-history.js
+var REPLACED_HISTORY_MAX = 20;
+var REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
+var jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
+function boundReplacedHistory(history) {
+  let out = history.slice(-REPLACED_HISTORY_MAX);
+  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
+    out = out.slice(1);
+  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
+    const only = out[0];
+    let kept = { ...only, observations: [], tags: [], truncated: true };
+    const fits = (v) => jsonBytes([v]) <= REPLACED_HISTORY_MAX_BYTES;
+    for (const obs of only.observations) {
+      const next = { ...kept, observations: [...kept.observations, obs] };
+      if (!fits(next))
+        break;
+      kept = next;
+    }
+    for (const tag of only.tags) {
+      const next = { ...kept, tags: [...kept.tags, tag] };
+      if (!fits(next))
+        break;
+      kept = next;
+    }
+    out = [kept];
+  }
+  return out;
+}
+
 // dist/core/types.js
 var NAMESPACES = ["personal", "team", "global"];
 
@@ -27848,6 +27877,14 @@ function describeInvalidEntity(entity, index) {
   }
   return null;
 }
+function storedContentOf(db2, name) {
+  const row = db2.prepare("SELECT id, title FROM entities WHERE name = ?").get(name);
+  return {
+    title: row.title ?? null,
+    observations: db2.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(row.id).map((o) => o.content),
+    tags: db2.prepare("SELECT tag FROM tags WHERE entity_id = ?").all(row.id).map((t) => t.tag).sort()
+  };
+}
 function importMemories(args, options) {
   const trust = options?.trust === true;
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
@@ -27866,7 +27903,19 @@ function importMemories(args, options) {
   if (!Array.isArray(bundleEntities)) {
     throw new Error(`This file has no "entities" array (found ${bundleEntities === void 0 ? "nothing" : typeof bundleEntities}). Nothing was imported. memesh import expects a file produced by \`memesh export\`.`);
   }
+  const seenNames = /* @__PURE__ */ new Set();
+  for (const entity of bundleEntities) {
+    const name = entity?.name;
+    if (typeof name !== "string" || name === "")
+      continue;
+    const stored = Buffer.from(name, "utf8").toString("utf8");
+    if (seenNames.has(stored)) {
+      throw new Error(`This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}\u2026` : name)} more than once. Nothing was imported. A file produced by \`memesh export\` names each memory once.`);
+    }
+    seenNames.add(stored);
+  }
   const db2 = getDatabase();
+  const storedContent = (name) => storedContentOf(db2, name);
   const kg = new KnowledgeGraph(db2);
   let imported = 0;
   let overwritten = 0;
@@ -27898,6 +27947,7 @@ function importMemories(args, options) {
           isNewEntity: !existing,
           trust
         });
+        let replacedVersion;
         if (existing) {
           if (args.merge_strategy === "skip")
             return { kind: "skipped" };
@@ -27916,6 +27966,12 @@ function importMemories(args, options) {
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
             return { kind: "appended" };
           }
+          replacedVersion = {
+            replaced_at: (/* @__PURE__ */ new Date()).toISOString(),
+            title: existing.title ?? null,
+            observations: [...existing.observations],
+            tags: [...existing.tags].sort()
+          };
           kg.clearEntityData(entity.name);
         }
         kg.createEntity(entity.name, entity.type, {
@@ -27927,7 +27983,14 @@ function importMemories(args, options) {
           trustOverride: "untrusted"
         });
         if (existing) {
-          kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+          kg.updateEntityMetadata(entity.name, (current) => {
+            const merged = { ...current, ...importedMetadata };
+            const version2 = replacedVersion;
+            const history = Array.isArray(merged.replaced_history) ? merged.replaced_history : [];
+            const now = storedContent(entity.name);
+            const unchanged = now.title === version2.title && JSON.stringify(now.observations) === JSON.stringify(version2.observations) && JSON.stringify(now.tags) === JSON.stringify(version2.tags);
+            return unchanged ? merged : { ...merged, replaced_history: boundReplacedHistory([...history, version2]) };
+          });
         }
         if (!existing) {
           const bundledCreatedAt = entity.created_at;
@@ -28003,26 +28066,6 @@ function remember(input) {
   const kg = new KnowledgeGraph(db2);
   const { args, derived, typeGiven } = resolveRememberInput(input);
   return db2.transaction(() => rememberInTransaction(args, derived, typeGiven, db2, kg)).immediate();
-}
-var REPLACED_HISTORY_MAX = 20;
-var REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
-var jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
-function boundReplacedHistory(history) {
-  let out = history.slice(-REPLACED_HISTORY_MAX);
-  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
-    out = out.slice(1);
-  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
-    const only = out[0];
-    const kept = [];
-    const base = { ...only, observations: [], truncated: true };
-    for (const obs of only.observations) {
-      if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
-        break;
-      kept.push(obs);
-    }
-    out = [{ ...base, observations: kept }];
-  }
-  return out;
 }
 function summarizeReplacedHistory(entities) {
   for (const e of entities) {
@@ -32362,7 +32405,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "import",
-    description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite deletes their previous observations and tags instead of archiving them. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.",
+    description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite replaces their observations and tags, keeping the previous version in metadata.replaced_history. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.",
     inputSchema: {
       type: "object",
       properties: {
@@ -32371,7 +32414,7 @@ var TOOL_DEFINITIONS = [
         merge_strategy: {
           type: "string",
           enum: ["skip", "overwrite", "append"],
-          description: "Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived \u2014 this cannot be undone)"
+          description: "Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the previous version is kept in metadata.replaced_history, up to the last 20)"
         },
         restore_archived: {
           type: "boolean",
@@ -32557,11 +32600,12 @@ function stripNullProps(value) {
     return value;
   const out = {};
   for (const [k, v] of Object.entries(value)) {
-    if (v !== null)
+    if (v !== null || NULL_IS_DATA.has(k))
       out[k] = v;
   }
   return out;
 }
+var NULL_IS_DATA = /* @__PURE__ */ new Set(["payload"]);
 function parseOrFail(schema, args) {
   const raw = args === void 0 || args === null ? {} : args;
   const strictPass = schema.safeParse(raw);

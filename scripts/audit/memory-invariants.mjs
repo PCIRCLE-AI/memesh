@@ -24,8 +24,10 @@
 //
 // Contract:
 //   - READ-ONLY. Opened with `?mode=ro`; there is no write path in this file.
-//   - Exit 1 on any violation, 0 otherwise, 2 if the database cannot be read
-//     or an invariant's own post-filter throws (a bug here, not a finding).
+//   - Exit 1 on any violation, 0 otherwise, 2 if the database cannot be read,
+//     a query fails for any reason other than a missing table or column, no
+//     invariant could be checked at all, or an invariant's own post-filter
+//     throws (a bug here, not a finding).
 //   - Each invariant prints the offending rows, bounded, so the report is
 //     actionable without a second query.
 //   - Adding an invariant here is how a memory-layer defect stays fixed. A
@@ -129,6 +131,15 @@ const AGENT_MESSAGE_SCOPE_COLUMNS = [
 const PATH_SHAPED = (col) =>
   `(substr(${col}, 1, 1) IN ('/', char(92))`
   + ` OR ${col} GLOB ('[A-Za-z]:[/' || char(92) || ']*'))`;
+
+/**
+ * The largest `metadata.replaced_history` any writer stores — mirrored from
+ * MAX_IMPORTED_REPLACED_HISTORY_ENTRIES / _TOTAL_BYTES in src/core/serializer.ts
+ * (a trusted restore of a fresh memory). `remember` replace and an import
+ * overwrite stay under the tighter bound in src/core/replaced-history.ts.
+ */
+const REPLACED_HISTORY_MAX_ENTRIES = 50;
+const REPLACED_HISTORY_MAX_BYTES = 4 * 64 * 1024;
 
 /** One invariant: a SQL query whose rows are violations. Zero rows = holds. */
 const INVARIANTS = [
@@ -393,6 +404,27 @@ const INVARIANTS = [
       FROM ${table} WHERE ${PATH_SHAPED(column)} GROUP BY ${column}`)).join('\n      UNION ALL'),
     row: (r) => `${r.tbl}.${r.col} = ${JSON.stringify(r.value)}  rows=${r.n}`,
   },
+  {
+    id: 'replaced-history-stays-bounded',
+    refs: '#530',
+    says: 'a memory\'s replaced_history is a list within the entry and byte bounds every writer applies',
+    // Every writer of this key bounds it (boundReplacedHistory, and the
+    // import validator for a restored one). A writer that appends without the
+    // bound grows one row's metadata with every overwrite, and recall and
+    // export read that row whole.
+    sql: `SELECT name, json_extract(metadata, '$.replaced_history') AS history,
+      json_type(metadata, '$.replaced_history') AS kind
+      FROM entities WHERE json_valid(metadata) AND json_type(metadata, '$.replaced_history') IS NOT NULL
+      ORDER BY id`,
+    rows: (_db, rows) => rows.map((r) => {
+      if (r.kind !== 'array') return { name: r.name, kind: r.kind };
+      const history = JSON.parse(r.history);
+      return { name: r.name, kind: r.kind, entries: history.length, bytes: Buffer.byteLength(JSON.stringify(history), 'utf8') };
+    }).filter((r) => r.kind !== 'array'
+      || r.entries > REPLACED_HISTORY_MAX_ENTRIES
+      || r.bytes > REPLACED_HISTORY_MAX_BYTES),
+    row: (r) => `${r.name}  ${r.kind === 'array' ? `entries=${r.entries} bytes=${r.bytes}` : `type=${r.kind}`}`,
+  },
 ];
 
 function main() {
@@ -410,14 +442,21 @@ function main() {
     return 2;
   }
   let violations = 0;
+  let checked = 0;
   try {
     for (const inv of INVARIANTS) {
       let rows;
       try {
         rows = db.prepare(inv.sql).all();
       } catch (err) {
-        // A schema older than the column an invariant needs is not a
-        // violation of that invariant; say so and move on.
+        // A schema older than the table or column an invariant needs is not a
+        // violation of that invariant; say so and move on. Any other failure
+        // (a file that is not a database, a locked or damaged one) means
+        // nothing was checked: that is exit 2, never a clean verdict.
+        if (!/no such (table|column)/i.test(String(err?.message ?? err))) {
+          console.error(`memory-invariants: cannot query ${dbPath} for ${inv.id}: ${err?.message ?? err}`);
+          return 2;
+        }
         console.log(`  skip ${inv.id} — ${err?.message ?? err}`);
         continue;
       }
@@ -431,6 +470,7 @@ function main() {
           return 2;
         }
       }
+      checked += 1;
       if (rows.length === 0) {
         console.log(`  ok   ${inv.id}`);
         continue;
@@ -451,6 +491,12 @@ function main() {
   if (violations > 0) {
     console.log(`\n✗ ${violations} memory invariant(s) violated in ${dbPath}`);
     return 1;
+  }
+  if (checked === 0) {
+    // Every invariant was skipped (an empty file, a schema with none of the
+    // tables): nothing was checked, so there is no verdict to give.
+    console.error(`memory-invariants: no invariant could be checked in ${dbPath}`);
+    return 2;
   }
   console.log(`\n✓ memory invariants hold in ${dbPath}`);
   return 0;

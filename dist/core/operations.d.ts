@@ -1,15 +1,7 @@
 import { type RecallForAgentResult } from './recall-agent-view.js';
 import type { RememberInput, RememberResult, RecallInput, ForgetInput, ForgetResult, LearnInput, LearnResult, Entity } from './types.js';
+export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES, type ReplacedVersion } from './replaced-history.js';
 export declare function remember(input: RememberInput): RememberResult;
-export declare const REPLACED_HISTORY_MAX = 20;
-export declare const REPLACED_HISTORY_MAX_BYTES: number;
-export interface ReplacedVersion {
-    replaced_at: string;
-    title: string | null;
-    observations: string[];
-    tags: string[];
-    truncated?: boolean;
-}
 export declare function recall(args: RecallInput): Entity[];
 export interface RetrievalMeta {
     mode: 'fts';
