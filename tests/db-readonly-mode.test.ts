@@ -385,6 +385,38 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     expect(mode(dbPath)).toBe(0o600);
   });
 
+  it.skipIf(!posix)('an empty -wal with more owner permissions that belongs to another user gets the same way out', () => {
+    closeDatabase();
+    for (const s of ['-wal', '-shm']) fs.rmSync(`${dbPath}${s}`, { force: true });
+    fs.writeFileSync(`${dbPath}-wal`, '');
+    fs.chmodSync(`${dbPath}-wal`, 0o700);
+    vi.spyOn(process, 'getuid').mockReturnValue(fs.statSync(`${dbPath}-wal`).uid + 1);
+    let error: (Error & { fix?: string }) | undefined;
+    try { openDatabase(dbPath); } catch (err) { error = err as Error & { fix?: string }; }
+    expect(error?.fix).toBe('Point MEMESH_DB_PATH at a database you own, in a folder you own.');
+    expect(error?.message).not.toContain('chmod');
+    expect(mode(`${dbPath}-wal`)).toBe(0o700);
+  });
+
+  // Root can chmod any file, so it is never told a file is someone else's.
+  it.skipIf(!posix || process.getuid?.() === 0)('a mismatched -wal next to a database that belongs to another user gets the same way out', () => {
+    fs.chmodSync(dbPath, 0o444);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    openDatabase(dbPath).prepare('SELECT count(*) FROM entities').get();
+    closeDatabase();
+    fs.chmodSync(dbPath, 0o600);
+    // Only the database looks like someone else's; the -wal/-shm stay yours.
+    const statSync = fs.statSync;
+    vi.spyOn(fs, 'statSync').mockImplementation(((p: fs.PathLike, o?: fs.StatSyncOptions) => {
+      const stat = statSync(p, o as never);
+      return stat && String(p) === dbPath ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, { uid: stat.uid + 1 }) : stat;
+    }) as typeof fs.statSync);
+    let error: (Error & { fix?: string }) | undefined;
+    try { openDatabase(dbPath); } catch (err) { error = err as Error & { fix?: string }; }
+    expect(error?.message).toContain(`${dbPath} belongs to another user`);
+    expect(error?.fix).toBe('Point MEMESH_DB_PATH at a database you own, in a folder you own.');
+  });
+
   it.skipIf(!posix || process.getuid?.() === 0)('a symlinked database opens when only the link\'s folder is read-only: the real file\'s folder holds the -wal/-shm', () => {
     keepSidecars(); // the -wal/-shm a killed writer leaves beside the real file
     const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-db-link-ro-'));
