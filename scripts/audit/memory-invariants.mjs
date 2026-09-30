@@ -387,11 +387,11 @@ const INVARIANTS = [
     // away. #519: `kg rename-project --from X --to X --apply` removed
     // `project:X` from every memory that had it.
     //
-    // A captured memory a person deliberately made global (`remember` with
-    // `replace`, `namespace: 'global'` and tags without a project) keeps its
-    // capture tag truthfully and has no project on purpose, so the global
-    // namespace is excluded. A rename never changes a memory's namespace, so
-    // #519's damage (personal memories stripped of their project) is still seen.
+    // The data cannot tell a deliberate removal from damage: a replace record
+    // describes an earlier write, not the later change that took the tag
+    // away. So every such memory is reported. To make a captured memory
+    // global on purpose, replace it without the capture tag too; it is then
+    // the person's own memory and is not checked.
     //
     // What this cannot see: a memory a person wrote without a project is
     // legitimate and is not checked, so the same rename's damage to those is
@@ -403,9 +403,8 @@ const INVARIANTS = [
       SELECT e.name AS name, e.type AS type FROM entities e
       WHERE (e.type = '${TASK_STATE_TYPE}'
              OR EXISTS (SELECT 1 FROM tags a WHERE a.entity_id = e.id AND a.tag = '${AUTO_CAPTURE_TAG}'))
-        AND e.namespace != 'global'
         AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag LIKE 'project:%')
-      ORDER BY e.id LIMIT ${MAX_ROWS + 1}`,
+      ORDER BY e.id`,
     row: (r) => `${r.name}  type=${r.type}`,
   },
   {

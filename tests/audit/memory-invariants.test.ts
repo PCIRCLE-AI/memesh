@@ -7,7 +7,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openDatabase, closeDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
-import { remember, exportMemories, importMemories } from '../../src/core/operations.js';
+import { remember } from '../../src/core/operations.js';
 import { lessonSlug } from '../../src/core/lesson-slug.js';
 import { AGENT_MESSAGE_SCOPE_COLUMNS, isFilesystemPathScopeId } from '../../src/core/agent-scope-id.js';
 
@@ -662,32 +662,82 @@ describe('memory-invariants: read-only detector over a real graph', () => {
     }
   });
 
-  it('#519 — a captured memory deliberately made global, then exported and imported, is not flagged', async () => {
-    const home = freshGraph();
-    const target = freshGraph();
+  it('#519 — a captured memory made global keeps being checked until its capture tag goes too', () => {
+    const { dir, dbPath } = freshGraph();
     try {
-      openDatabase(home.dbPath);
+      openDatabase(dbPath);
       remember({ name: 'session-portable-summary', type: 'session-insight', observations: ['kept'], tags: ['source:auto-capture', 'project:acme'] });
       remember({ name: 'session-portable-summary', type: 'session-insight', observations: ['kept'], tags: ['source:auto-capture', 'session:portable'], namespace: 'global', replace: true });
-      const bundle = exportMemories({});
       closeDatabase();
-      openDatabase(target.dbPath);
-      importMemories({ data: bundle, merge_strategy: 'skip' });
+      const flagged = run(dbPath);
+      expect(flagged.status, flagged.stdout).toBe(1);
+      expect(flagged.stdout).toContain('session-portable-summary  type=session-insight');
+
+      openDatabase(dbPath);
+      remember({ name: 'session-portable-summary', type: 'session-insight', observations: ['kept'], tags: ['session:portable'], namespace: 'global', replace: true });
       closeDatabase();
-      for (const g of [home, target]) {
-        const r = run(g.dbPath);
-        expect(r.stdout).toContain('ok   captured-memories-keep-a-project');
-        expect(r.status, r.stdout).toBe(0);
-      }
-      // The same memory left in the personal namespace without its project is flagged.
-      withRawDb(target.dbPath, (db) => {
-        db.prepare("UPDATE entities SET namespace = 'personal' WHERE name = 'session-portable-summary'").run();
-      });
-      expect(run(target.dbPath).status).toBe(1);
+      const own = run(dbPath);
+      expect(own.stdout).toContain('ok   captured-memories-keep-a-project');
+      expect(own.status, own.stdout).toBe(0);
     } finally {
       closeDatabase();
-      fs.rmSync(home.dir, { recursive: true, force: true });
-      fs.rmSync(target.dir, { recursive: true, force: true });
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#519 — a project lost after a replace that kept it is flagged, history or not', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      openDatabase(dbPath);
+      remember({ name: 'session-kept-summary', type: 'session-insight', observations: ['first'], tags: ['source:auto-capture', 'project:acme'] });
+      remember({ name: 'session-kept-summary', type: 'session-insight', observations: ['corrected'], replace: true });
+      closeDatabase();
+      expect(run(dbPath).status).toBe(0);
+      // #519's damage, done after the replace: the replace record still shows project:acme.
+      withRawDb(dbPath, (db) => {
+        db.prepare("DELETE FROM tags WHERE tag = 'project:acme' AND entity_id = (SELECT id FROM entities WHERE name = 'session-kept-summary')").run();
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(1);
+      expect(r.stdout).toContain('session-kept-summary  type=session-insight');
+    } finally {
+      closeDatabase();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#519 — a global captured memory and a global task state that lost their project in a rename are flagged', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        const captured = insertEntity(db, 'commit-global01', 'commit', { namespace: 'global' });
+        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(captured, 'source:auto-capture');
+        insertEntity(db, 'task-state:shared', 'task-state', { namespace: 'global' });
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(1);
+      expect(r.stdout).toContain('commit-global01  type=commit');
+      expect(r.stdout).toContain('task-state:shared  type=task-state');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#519 — a replace history whose newest version had no project does not excuse a missing project', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        const history = JSON.stringify({ replaced_history: [
+          { replaced_at: '2026-09-01T00:00:00.000Z', title: null, observations: ['old'], tags: ['source:auto-capture'] },
+        ] });
+        const id = insertEntity(db, 'session-noproj-summary', 'session-insight', { metadata: history });
+        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'source:auto-capture');
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(1);
+      expect(r.stdout).toContain('session-noproj-summary  type=session-insight');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
