@@ -472,12 +472,12 @@ syncBuiltinESMExports();
     // Ids that differ only in case are different sessions, even on a case-insensitive disk.
     expect(runHook({ session_id: 'CASE-A', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
     expect(runHook({ session_id: 'case-a', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
-    // (a, b--c) and (a--b, c) are different contexts.
+    // (ab, c) and (a, bc) are different contexts: the ids are not simply joined.
     const edit = (session_id: string, agent_id: string) => runHook({ session_id, agent_id, tool_input: { file_path: '/src/auth.ts' } });
-    expect(edit('a', 'b--c')).toContain('auth-decision');
-    expect(edit('a--b', 'c')).toContain('auth-decision');
-    expect(edit('a', 'b--c')).toBe('');
-    // One list per context: 128+128, CASE-A, case-a, (a, b--c), (a--b, c).
+    expect(edit('ab', 'c')).toContain('auth-decision');
+    expect(edit('a', 'bc')).toContain('auth-decision');
+    expect(edit('ab', 'c')).toBe('');
+    // One list per context: 128+128, CASE-A, case-a, (ab, c), (a, bc).
     const dir = path.join(testDir, 'pre-edit-recall');
     expect(fs.readdirSync(dir)).toHaveLength(5);
   });
