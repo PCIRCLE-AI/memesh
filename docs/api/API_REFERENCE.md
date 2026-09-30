@@ -1249,7 +1249,7 @@ What the owner stated about one project with `memesh task` — `goal`, `next`,
 `updated_at` of the last statement. Fields that were never stated are absent,
 not empty strings: the dashboard's Project tab renders an absent field as "not
 stated" and never derives progress from memory counts (#237). `project` is
-required (`400`, `validation.bad-param` without it, or when it is blank or over 200 characters); it is read as an exact key — a legacy project key that is a filesystem path can still be READ here, but `learn`, `task_state` and `briefing` accept a path as a project (messaging and `kg rename-project` rules are unchanged); a project with no
+required (`400`, `validation.bad-param` without it, or when it is blank or over 200 characters); it is read as an exact key — a legacy project key that is a filesystem path can still be READ here, but `learn`, `task_state` and `briefing` accept no path as a project (messaging and `kg rename-project` rules are unchanged); a project with no
 statement is a `200` with `state: {}`.
 
 **Response**:
