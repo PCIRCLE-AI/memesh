@@ -244,7 +244,7 @@ export async function recallForAgent(args) {
 }
 export { exportMemories, importMemories } from './serializer.js';
 export function learn(args) {
-    const projectName = getProjectName();
+    const projectName = args.project ?? getProjectName();
     const result = createExplicitLesson(args.error, args.fix, projectName, {
         rootCause: args.root_cause,
         prevention: args.prevention,

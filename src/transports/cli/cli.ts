@@ -15,7 +15,7 @@ import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, resolveSessionLimit } from '../..
 import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
-import { agentScopeIdRejection, canonicalAgentScopeId } from '../../core/agent-scope-id.js';
+import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
 import { RememberSchema } from '../schemas.js';
@@ -779,10 +779,11 @@ program
         console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
         process.exit(1);
       }
+      const notesProject = requireProjectFlag(opts.project);
       await withDatabase(() => {
         let result;
         try {
-          result = ingestNoteDirectory({ dir: String(opts.notes), project: opts.project ?? getProjectName() });
+          result = ingestNoteDirectory({ dir: String(opts.notes), project: notesProject ?? getProjectName() });
         } catch (err) {
           const code = (err as NodeJS.ErrnoException)?.code;
           console.error(code === 'ENOENT'
@@ -982,11 +983,14 @@ program
   .option('--root-cause <text>', 'Why it happened')
   .option('--prevention <text>', 'How to prevent it next time')
   .option('--severity <level>', 'Severity: critical|major|minor', 'minor')
+  .option('--project <name>', 'Project name (default: the current directory’s project)')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
     requireOneOf(opts.severity, ['critical', 'major', 'minor'], '--severity');
+    const projectFlag = requireProjectFlag(opts.project);
     await withDatabase(() => {
       const result = learn({
+        project: projectFlag,
         error: opts.error,
         fix: opts.fix,
         root_cause: opts.rootCause,
@@ -1416,6 +1420,7 @@ program
   .option('--index', 'Only the index of durable memories (decisions, lessons, patterns, references), newest first')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
+    const projectFlag = requireProjectFlag(opts.project);
     await withDatabase(() => {
       if (opts.index) {
         // The same section a `standard`/`full`-level briefing closes with
@@ -1423,7 +1428,7 @@ program
         // ranked sections. `minimal` never includes it in the assembled
         // block (#360), but this flag returns it regardless of the
         // configured level, same as `memesh briefing --json`'s `index` field.
-        const project = opts.project ?? getProjectName();
+        const project = projectFlag ?? getProjectName();
         const index = readBriefingIndex(getDatabase(), project);
         if (opts.json) {
           console.log(JSON.stringify({ project, ...index }));
@@ -1432,7 +1437,7 @@ program
         console.log(buildReferenceContext(index.lines));
         return;
       }
-      const result = assembleBriefing(opts.project, opts.recipient);
+      const result = assembleBriefing(projectFlag, opts.recipient);
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;
@@ -1681,6 +1686,7 @@ program
   .option('--done <text>', 'What was just finished')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
+    const projectFlag = requireProjectFlag(opts.project);
     await withDatabase(async () => {
       // Which flags were PASSED, not which have text: `--blocked ""` is a
       // request to clear, and reading truthiness here would silently drop it.
@@ -1693,7 +1699,7 @@ program
         let project: string;
         let state: ReturnType<typeof getTaskState>['state'];
         try {
-          ({ project, state } = getTaskState(opts.project));
+          ({ project, state } = getTaskState(projectFlag));
         } catch (err) {
           // A corrupted record is a user-facing failure with a recovery
           // step, not a stack trace: the message already says what to do.
@@ -1718,7 +1724,7 @@ program
         return;
       }
 
-      const result = setTaskState({ project: opts.project, patch, sourceHost: 'cli' });
+      const result = setTaskState({ project: projectFlag, patch, sourceHost: 'cli' });
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;
@@ -2235,6 +2241,22 @@ kgCmd
       }
     });
   });
+
+/**
+ * A `--project` value, canonical, or exit 1 naming the flag when it is empty or
+ * spelled as a filesystem path (#527). `undefined` (flag not given) passes
+ * through so the command falls back to the current directory's project.
+ */
+function requireProjectFlag(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const rejection = projectScopeRejection(value);
+  if (rejection) {
+    console.error(`Error: --project: ${rejection}`);
+    process.exit(1);
+  }
+  // As given: a stored task-state key is matched byte for byte.
+  return value;
+}
 
 /**
  * A `memesh agent setup` identity argument, in the canonical form the message

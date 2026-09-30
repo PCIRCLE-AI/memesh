@@ -3815,7 +3815,7 @@ function bySignal(a, b) {
   const bv = typeof b.signalScore === "number" ? b.signalScore : -1;
   return bv - av;
 }
-function groupTopology(entities, projectName) {
+function groupTopology(entities, projectName2) {
   const decisions = [];
   const lessons = [];
   const knowledge = [];
@@ -3852,25 +3852,25 @@ function groupTopology(entities, projectName) {
     list.sort(bySignal);
   const sections = [];
   if (decisions.length)
-    sections.push({ heading: `Decisions and direction for "${projectLabel(projectName)}":`, entities: decisions });
+    sections.push({ heading: `Decisions and direction for "${projectLabel(projectName2)}":`, entities: decisions });
   if (lessons.length)
-    sections.push({ heading: `Lessons from "${projectLabel(projectName)}" \u2014 do not repeat these:`, entities: lessons });
+    sections.push({ heading: `Lessons from "${projectLabel(projectName2)}" \u2014 do not repeat these:`, entities: lessons });
   if (knowledge.length)
-    sections.push({ heading: `What is known about "${projectLabel(projectName)}":`, entities: knowledge });
+    sections.push({ heading: `What is known about "${projectLabel(projectName2)}":`, entities: knowledge });
   if (evidence.length)
-    sections.push({ heading: `Recent activity in "${projectLabel(projectName)}":`, entities: evidence });
+    sections.push({ heading: `Recent activity in "${projectLabel(projectName2)}":`, entities: evidence });
   if (global2.length)
     sections.push({ heading: "Global memory \u2014 applies across projects:", entities: global2 });
   if (foreign.length)
     sections.push({ heading: "From your other projects (may or may not apply here):", entities: foreign });
   return sections;
 }
-function buildTopologyLines(entities, projectName, budget) {
+function buildTopologyLines(entities, projectName2, budget) {
   const maxLineChars = budget.maxLineChars ?? DEFAULT_TOPOLOGY_BUDGET.maxLineChars;
   const maxPerSection = MAX_PER_SECTION;
   const lines = [];
   let used = 0;
-  for (const section of groupTopology(entities, projectName)) {
+  for (const section of groupTopology(entities, projectName2)) {
     const candidate = section.entities.slice(0, maxPerSection);
     const rendered = [];
     for (const e of candidate) {
@@ -3891,7 +3891,7 @@ function buildTopologyLines(entities, projectName, budget) {
     lines.pop();
   return lines;
 }
-function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET, { reserve = 0 } = {}) {
+function assembleTopologyBlock(stateLines, pools, projectName2, budget = DEFAULT_TOPOLOGY_BUDGET, { reserve = 0 } = {}) {
   const seen = /* @__PURE__ */ new Set();
   const candidates = [];
   const globalCandidates = [];
@@ -3909,11 +3909,11 @@ function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_
   }
   const lines = boundStateLines(stateLines);
   const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
-  const topologyLines = room() > 0 ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() }) : [];
+  const topologyLines = room() > 0 ? buildTopologyLines(candidates, projectName2, { ...budget, maxChars: room() }) : [];
   if (lines.length > 0 && topologyLines.length > 0)
     lines.push("");
   lines.push(...topologyLines);
-  const globalLines = room() > 0 ? buildTopologyLines(globalCandidates, projectName, {
+  const globalLines = room() > 0 ? buildTopologyLines(globalCandidates, projectName2, {
     ...budget,
     maxChars: Math.min(room(), GLOBAL_TOPOLOGY_BUDGET.maxChars)
   }) : [];
@@ -6186,9 +6186,9 @@ var init_scoring = __esm({
 });
 
 // dist/core/lesson-engine.js
-function createExplicitLesson(error51, fix, projectName, opts) {
+function createExplicitLesson(error51, fix, projectName2, opts) {
   const errorPattern = opts?.errorPattern || inferErrorPattern(error51);
-  const name = opts?.errorPattern ? `lesson-${projectName}-${errorPattern}` : `lesson-${projectName}-${lessonSlug(error51)}`;
+  const name = opts?.errorPattern ? `lesson-${projectName2}-${errorPattern}` : `lesson-${projectName2}-${lessonSlug(error51)}`;
   remember({
     name,
     type: "lesson_learned",
@@ -6199,7 +6199,7 @@ function createExplicitLesson(error51, fix, projectName, opts) {
       `Prevention: ${opts?.prevention || "Review similar code paths"}`
     ],
     tags: [
-      `project:${projectName}`,
+      `project:${projectName2}`,
       `error-pattern:${errorPattern}`,
       `severity:${opts?.severity || "minor"}`,
       "source:explicit"
@@ -6966,8 +6966,8 @@ async function recallForAgent(args) {
   return capRecallForAgent(await recallWithConflicts(args));
 }
 function learn(args) {
-  const projectName = getProjectName();
-  const result = createExplicitLesson(args.error, args.fix, projectName, {
+  const projectName2 = args.project ?? getProjectName();
+  const result = createExplicitLesson(args.error, args.fix, projectName2, {
     rootCause: args.root_cause,
     prevention: args.prevention,
     severity: args.severity,
@@ -7981,6 +7981,17 @@ function agentScopeIdRejection(field, value) {
   const suggestion = lastPathSegment(value);
   const example = suggestion === null ? "reviewer-agent" : suggestion;
   return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
+}
+function projectScopeRejection(value) {
+  if (value.trim() === "")
+    return "project must not be empty.";
+  const absolute = agentScopeIdRejection("project", value);
+  if (absolute)
+    return absolute;
+  if (/[\\/]/.test(value)) {
+    return `project must be a stable name, not a path (received ${JSON.stringify(value)}). Use the name on its own, for example ${JSON.stringify(lastPathSegment(value) ?? "my-project")}.`;
+  }
+  return null;
 }
 var AGENT_SCOPE_ID_MAX_LENGTH, HOST_CONFIG_MAX_BYTES, AGENT_MESSAGE_SCOPE_COLUMNS, AGENT_MESSAGE_PROJECT_TABLES;
 var init_agent_scope_id = __esm({
@@ -24308,7 +24319,7 @@ var init_agent_messaging = __esm({
 });
 
 // dist/transports/schemas.js
-var sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, RememberSchema, RecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, LearnSchema, TaskStateSchema, nonBlankBounded, agentScopeId, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
+var sanitizeName, nameField, titleField, observationField, workPackageText, digestWorkPackageRef, transcriptWorkPackageRef, workPackageIdentity, WORK_PACKAGE_RESULT_MAX_BYTES, WorkPackageSchema, RememberSchema, RecallSchema, ForgetSchema, ExportSchema, ExportResultSchema, ImportSchema, nonBlankBounded, agentScopeId, projectRules, projectName, LearnSchema, HttpLearnSchema, TaskStateSchema, BriefingSchema, WhySchema, UserPatternsSchema, ImprovementSchema, messageProject, messageRecipient, messageSender, messageId, messageCursor, messageIdempotencyKey, messageReceiptBase, MessageSchema;
 var init_schemas3 = __esm({
   "dist/transports/schemas.js"() {
     "use strict";
@@ -24432,26 +24443,36 @@ var init_schemas3 = __esm({
       merge_strategy: external_exports.enum(["skip", "overwrite", "append"]),
       restore_archived: external_exports.boolean().optional()
     }).strict();
+    nonBlankBounded = (max) => external_exports.string().trim().min(1).max(max);
+    agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH).transform(canonicalAgentScopeId).refine((value) => agentScopeIdRejection(field, value) === null, {
+      error: (issue2) => agentScopeIdRejection(field, String(issue2.input)) ?? `${field} is not a valid identifier.`
+    });
+    projectRules = (base) => base.max(AGENT_SCOPE_ID_MAX_LENGTH).superRefine((value, ctx) => {
+      const rejection = projectScopeRejection(value);
+      if (rejection !== null)
+        ctx.addIssue({ code: "custom", message: rejection });
+    });
+    projectName = projectRules(external_exports.string());
     LearnSchema = external_exports.object({
       error: external_exports.string().min(1).max(5e3),
       fix: external_exports.string().min(1).max(5e3),
       root_cause: external_exports.string().max(5e3).optional(),
       prevention: external_exports.string().max(5e3).optional(),
-      severity: external_exports.enum(["critical", "major", "minor"]).optional()
+      severity: external_exports.enum(["critical", "major", "minor"]).optional(),
+      project: projectName.optional()
     }).strict();
+    HttpLearnSchema = LearnSchema.extend({
+      project: projectRules(external_exports.string({ error: "project is required: name the project this lesson belongs to" }))
+    });
     TaskStateSchema = external_exports.object({
-      project: external_exports.string().min(1).max(200).optional(),
+      project: projectName.optional(),
       goal: external_exports.string().max(1e3).optional(),
       next: external_exports.string().max(1e3).optional(),
       blocked: external_exports.string().max(1e3).optional(),
       done: external_exports.string().max(1e3).optional()
     }).strict();
-    nonBlankBounded = (max) => external_exports.string().trim().min(1).max(max);
-    agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH).transform(canonicalAgentScopeId).refine((value) => agentScopeIdRejection(field, value) === null, {
-      error: (issue2) => agentScopeIdRejection(field, String(issue2.input)) ?? `${field} is not a valid identifier.`
-    });
     BriefingSchema = external_exports.object({
-      project: agentScopeId("project").optional(),
+      project: projectName.optional(),
       recipient: agentScopeId("recipient").optional()
     }).strict();
     WhySchema = external_exports.object({
@@ -25040,22 +25061,22 @@ function indexLine(candidate) {
   const text = title && snippet && !repeats ? `${title} \u2014 ${snippet}` : title || snippet;
   return topologyLine({ name: String(candidate.id), id: candidate.id, type: candidate.type || "memory", title: text || null }, INDEX_LINE_MAX_CHARS);
 }
-function injectedIndexReserve(projectName) {
+function injectedIndexReserve(projectName2) {
   const worst = [
-    indexHeading(projectName),
+    indexHeading(projectName2),
     moreLine(INDEX_CANDIDATE_CAP, true),
     olderLine(INDEX_CANDIDATE_CAP, true),
     footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
   ];
-  const empty = [indexHeading(projectName), indexEmptyLine(projectName), footerLine(0, INDEX_MAX_BYTES, INDEX_MAX_BYTES)];
+  const empty = [indexHeading(projectName2), indexEmptyLine(projectName2), footerLine(0, INDEX_MAX_BYTES, INDEX_MAX_BYTES)];
   const len = (lines) => lines.reduce((n, l) => n + l.length, 0) + lines.length - 1;
   return Math.max(len(worst), len(empty));
 }
-function indexHeading(projectName) {
-  return `Index of durable memories for "${projectLabel(projectName)}" (newest first):`;
+function indexHeading(projectName2) {
+  return `Index of durable memories for "${projectLabel(projectName2)}" (newest first):`;
 }
-function indexEmptyLine(projectName) {
-  return `- No durable memories (decisions, lessons, patterns, references) for "${projectLabel(projectName)}" yet.`;
+function indexEmptyLine(projectName2) {
+  return `- No durable memories (decisions, lessons, patterns, references) for "${projectLabel(projectName2)}" yet.`;
 }
 function moreLine(n, truncated) {
   return `- ${n}${truncated ? "+" : ""} more \u2014 memesh recall --tag "project:\u2026"`;
@@ -25079,7 +25100,7 @@ function closeWithFooter(lines, shown) {
   }
   throw new Error("briefing index: the footer cost did not converge");
 }
-function buildBriefingIndex(candidates, projectName, now, options = {}) {
+function buildBriefingIndex(candidates, projectName2, now, options = {}) {
   const truncated = options.truncated === true;
   const charAllowance = typeof options.maxChars === "number" ? options.maxChars : Infinity;
   const cutoff = now - INDEX_STALE_DAYS * DAY_MS;
@@ -25093,9 +25114,9 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
     else
       current.push(c);
   }
-  const heading = indexHeading(projectName);
+  const heading = indexHeading(projectName2);
   if (current.length === 0 && older === 0) {
-    const closed2 = closeWithFooter([heading, indexEmptyLine(projectName)], 0);
+    const closed2 = closeWithFooter([heading, indexEmptyLine(projectName2)], 0);
     return { ...closed2, shown: 0, more: 0, older: 0, truncated, ids: [] };
   }
   const reserve = sectionBytes([
@@ -25104,7 +25125,7 @@ function buildBriefingIndex(candidates, projectName, now, options = {}) {
     footerLine(INDEX_MAX_LINES, INDEX_MAX_BYTES, INDEX_MAX_BYTES)
   ]);
   const budget = INDEX_MAX_BYTES - reserve - sectionBytes([heading]);
-  const charBudget = charAllowance - injectedIndexReserve(projectName);
+  const charBudget = charAllowance - injectedIndexReserve(projectName2);
   const rendered = [];
   const ids = [];
   let used = 0;
@@ -25273,11 +25294,11 @@ function toTopologyEntity(row, snippet) {
     recency: row.recency ?? null
   };
 }
-function readBriefingIndex(db2, projectName, now = Date.now()) {
-  const { candidates, truncated } = readIndexCandidates(db2, projectName);
-  return buildBriefingIndex(candidates, projectName, now, { truncated });
+function readBriefingIndex(db2, projectName2, now = Date.now()) {
+  const { candidates, truncated } = readIndexCandidates(db2, projectName2);
+  return buildBriefingIndex(candidates, projectName2, now, { truncated });
 }
-function readIndexCandidates(db2, projectName) {
+function readIndexCandidates(db2, projectName2) {
   const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
   const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
   const excluded = INDEX_EXCLUDED_TYPES.map(() => "?").join(",");
@@ -25291,7 +25312,7 @@ function readIndexCandidates(db2, projectName) {
        AND e.status = 'active'${nonGlobal}
        AND e.type NOT IN (${excluded})
      ORDER BY last_activity DESC, e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
+     LIMIT ?`).all(`project:${projectName2}`, ...INDEX_EXCLUDED_TYPES, INDEX_CANDIDATE_CAP);
   const candidates = rows.map((row) => ({
     id: row.id,
     type: row.type,
@@ -25303,7 +25324,7 @@ function readIndexCandidates(db2, projectName) {
   return { candidates, truncated: rows.length >= INDEX_CANDIDATE_CAP };
 }
 function assembleBriefing(project, recipient) {
-  const projectName = project ?? getProjectName();
+  const projectName2 = project ?? getProjectName();
   const db2 = getDatabase();
   const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
   if (resolvedLevel.invalid) {
@@ -25319,29 +25340,29 @@ function assembleBriefing(project, recipient) {
   const repoLines = project === void 0 || project === getProjectName() ? repoStateLines(readRepoState()) : [];
   let taskLines;
   try {
-    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName).state, projectName, /* @__PURE__ */ new Date(), {
+    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName2).state, projectName2, /* @__PURE__ */ new Date(), {
       includeFresh: policy.taskState
     }));
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError))
       throw err;
-    taskLines = [`task state for ${projectLabel(projectName)}: ${err.message}`];
+    taskLines = [`task state for ${projectLabel(projectName2)}: ${err.message}`];
   }
   const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
-  const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
-  const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName), inboxRecipient) : void 0;
+  const unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName2), inboxRecipient, hostSessionFromEnv());
+  const everSeen = inboxRecipient !== void 0 && unreadCount === 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName2), inboxRecipient) : void 0;
   const handoffRow = db2.prepare(`SELECT e.id, e.metadata, o.content AS text, o.created_at AS observedAt
      FROM entities e JOIN observations o ON o.entity_id = e.id
      WHERE e.name = ? AND e.type = ? AND e.status = 'active'
      ORDER BY o.id DESC
-     LIMIT 1`).get(sessionHandoffName(projectName), SESSION_HANDOFF_TYPE);
+     LIMIT 1`).get(sessionHandoffName(projectName2), SESSION_HANDOFF_TYPE);
   const handoffMeta = handoffRow ? parseMetadata(handoffRow.metadata) : null;
   const handoffTrusted = !!handoffRow && (handoffRow.metadata === null || handoffMeta !== null) && isAutoInjectable(handoffMeta);
   const handoff = handoffTrusted ? handoffLines(handoffRow) : [];
   const stateLines = [
     ...handoff,
     ...taskLines,
-    ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)
+    ...unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName2), inboxRecipient, everSeen)
   ];
   const hasNamespace = db2.prepare("PRAGMA table_info(entities)").all().some((column) => column.name === "namespace");
   const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : "";
@@ -25349,19 +25370,19 @@ function assembleBriefing(project, recipient) {
      FROM entities e JOIN tags t ON t.entity_id = e.id
      WHERE t.tag = ? AND e.status = 'active' AND e.type <> ?${nonGlobal}
      ORDER BY e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
+     LIMIT ?`).all(`project:${projectName2}`, SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP);
   const decisionRows = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}, ${RECENCY_SQL} AS recency
      FROM entities e JOIN tags t ON t.entity_id = e.id
      WHERE t.tag = ? AND e.status = 'active' AND e.type IN (${DECISION_LAYER_TYPES.map(() => "?").join(",")})${nonGlobal}
      ORDER BY recency IS NULL, recency DESC, e.id DESC
-     LIMIT ?`).all(`project:${projectName}`, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP);
+     LIMIT ?`).all(`project:${projectName2}`, ...DECISION_LAYER_TYPES, TOPOLOGY_CANDIDATE_CAP);
   const decisionPool = decisionRows.map(toPoolRow).filter((row) => row.autoInjectable);
   const projectPool = prioritizeDecisions(decisionPool, selectPool(projectRows, TOPOLOGY_CANDIDATE_CAP), PROJECT_LIMIT);
   const lessonPool = db2.prepare(`SELECT DISTINCT ${CANDIDATE_COLUMNS}
      FROM entities e JOIN tags t ON t.entity_id = e.id
      WHERE e.type IN (${LESSON_TYPE_LIST.map(() => "?").join(", ")}) AND e.status = 'active'${nonGlobal} AND t.tag = ?
      ORDER BY e.id DESC
-     LIMIT 50`).all(...LESSON_TYPE_LIST, `project:${projectName}`).map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
+     LIMIT 50`).all(...LESSON_TYPE_LIST, `project:${projectName2}`).map(toPoolRow).filter((row) => row.autoInjectable).slice(0, LESSON_LIMIT);
   const globalRows = policy.global && hasNamespace ? db2.prepare(`SELECT ${CANDIDATE_COLUMNS}
        FROM entities e
        WHERE e.namespace = 'global' AND e.status = 'active'
@@ -25390,23 +25411,23 @@ function assembleBriefing(project, recipient) {
     }
   }
   const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets.get(row.id) ?? null));
-  const indexReserve = policy.index ? injectedIndexReserve(projectName) + 2 : 0;
+  const indexReserve = policy.index ? injectedIndexReserve(projectName2) + 2 : 0;
   const lines = assembleTopologyBlock(stateLines, [
     { entities: toEntities(lessonPool), foreign: false },
     { entities: toEntities(projectPool), foreign: false },
     { entities: toEntities(globalPool), foreign: false, global: true },
     { entities: toEntities(recentPool), foreign: true }
-  ], projectName, DEFAULT_TOPOLOGY_BUDGET, { reserve: indexReserve });
+  ], projectName2, DEFAULT_TOPOLOGY_BUDGET, { reserve: indexReserve });
   const withRepo = lines.length > 0 && repoLines.length > 0 ? [...repoLines, "", ...lines] : lines;
   const now = Date.now();
-  const { candidates: indexCandidates, truncated } = readIndexCandidates(db2, projectName);
-  const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
+  const { candidates: indexCandidates, truncated } = readIndexCandidates(db2, projectName2);
+  const index = buildBriefingIndex(indexCandidates, projectName2, now, { truncated });
   const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
-  const indexLines = policy.index ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines : [];
+  const indexLines = policy.index ? buildBriefingIndex(indexCandidates, projectName2, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines : [];
   const block = withRepo.length > 0 && indexLines.length > 0 ? [...withRepo, "", ...indexLines] : [...withRepo, ...indexLines];
   const empty = !hasBriefingContent(block);
   return {
-    project: projectName,
+    project: projectName2,
     text: empty ? "" : buildReferenceContext(block),
     entityCount: lines.slice(stateLines.length).filter((l) => l.startsWith("- [")).length,
     hasTaskState: taskLines.length > 0,
@@ -26801,7 +26822,8 @@ function exportOpenAITools() {
             fix: { type: "string", description: "What fixed it" },
             root_cause: { type: "string", description: "Why it happened" },
             prevention: { type: "string", description: "How to prevent it next time" },
-            severity: { type: "string", enum: ["critical", "major", "minor"], description: "Severity level" }
+            severity: { type: "string", enum: ["critical", "major", "minor"], description: "Severity level" },
+            project: { type: "string", description: "Project name. Omit for the current directory\u2019s project. A stable name, never a filesystem path." }
           },
           required: ["error", "fix"]
         }
@@ -59686,7 +59708,7 @@ var init_server = __esm({
     }
     app.post("/v1/export", (req, res) => handlePost(ExportSchema, req, res, exportMemories));
     app.post("/v1/import", (req, res) => handlePost(ImportSchema, req, res, importMemories));
-    app.post("/v1/learn", (req, res) => handlePost(LearnSchema, req, res, (data) => learn({ ...data, sourceHost: "http" })));
+    app.post("/v1/learn", (req, res) => handlePost(HttpLearnSchema, req, res, (data) => learn({ ...data, sourceHost: "http" })));
     app.post("/v1/message", (req, res) => {
       const controller = new AbortController();
       function cleanupListeners() {
@@ -59764,7 +59786,9 @@ var init_server = __esm({
         deprecationMessage: update?.deprecationMessage ?? null
       };
     }));
-    TaskStateQuerySchema = external_exports.object({ project: external_exports.string().trim().min(1).max(200) });
+    TaskStateQuerySchema = external_exports.object({
+      project: external_exports.string().max(200).refine((value) => value.trim().length > 0, "project must not be empty")
+    });
     app.get("/v1/task-state", (req, res) => {
       const parsed = TaskStateQuerySchema.safeParse(req.query);
       if (!parsed.success) {
@@ -62497,10 +62521,11 @@ program2.command("import").description("Import memories from a JSON export file,
       console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(" or ")}. Note files always go to the personal namespace and a changed file replaces its memory.`);
       process.exit(1);
     }
+    const notesProject = requireProjectFlag(opts.project);
     await withDatabase(() => {
       let result;
       try {
-        result = ingestNoteDirectory({ dir: String(opts.notes), project: opts.project ?? getProjectName() });
+        result = ingestNoteDirectory({ dir: String(opts.notes), project: notesProject ?? getProjectName() });
       } catch (err) {
         const code = err?.code;
         console.error(code === "ENOENT" ? `Error: directory not found: ${opts.notes}` : `Error: cannot read ${opts.notes}: ${err instanceof Error ? err.message : String(err)}`);
@@ -62641,10 +62666,12 @@ program2.command("import").description("Import memories from a JSON export file,
     }
   });
 });
-program2.command("learn").description("Record a lesson from a mistake or discovery").requiredOption("--error <text>", "What went wrong").requiredOption("--fix <text>", "What fixed it").option("--root-cause <text>", "Why it happened").option("--prevention <text>", "How to prevent it next time").option("--severity <level>", "Severity: critical|major|minor", "minor").option("--json", "Output as JSON").action(async (opts) => {
+program2.command("learn").description("Record a lesson from a mistake or discovery").requiredOption("--error <text>", "What went wrong").requiredOption("--fix <text>", "What fixed it").option("--root-cause <text>", "Why it happened").option("--prevention <text>", "How to prevent it next time").option("--severity <level>", "Severity: critical|major|minor", "minor").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--json", "Output as JSON").action(async (opts) => {
   requireOneOf(opts.severity, ["critical", "major", "minor"], "--severity");
+  const projectFlag = requireProjectFlag(opts.project);
   await withDatabase(() => {
     const result = learn({
+      project: projectFlag,
       error: opts.error,
       fix: opts.fix,
       root_cause: opts.rootCause,
@@ -62921,9 +62948,10 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
   ].join("\n"));
 });
 program2.command("briefing").description("The assembled work topology for a project \u2014 decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full. Level is `minimal` (default), `standard`, or `full` \u2014 change it with `memesh config set briefing <level>`, or override per-session with the MEMESH_BRIEFING env var (env wins over config).").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--index", "Only the index of durable memories (decisions, lessons, patterns, references), newest first").option("--json", "Output as JSON").action(async (opts) => {
+  const projectFlag = requireProjectFlag(opts.project);
   await withDatabase(() => {
     if (opts.index) {
-      const project = opts.project ?? getProjectName();
+      const project = projectFlag ?? getProjectName();
       const index = readBriefingIndex(getDatabase(), project);
       if (opts.json) {
         console.log(JSON.stringify({ project, ...index }));
@@ -62932,7 +62960,7 @@ program2.command("briefing").description("The assembled work topology for a proj
       console.log(buildReferenceContext(index.lines));
       return;
     }
-    const result = assembleBriefing(opts.project, opts.recipient);
+    const result = assembleBriefing(projectFlag, opts.recipient);
     if (opts.json) {
       console.log(JSON.stringify(result));
       return;
@@ -63108,6 +63136,7 @@ program2.command("setup").description("Detect Claude Code / Codex / Gemini on th
   process.exit(failed || !allWired(statuses) ? 1 : 0);
 });
 program2.command("task").description("Show or update where the work stands on this project").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--goal <text>", "What this work is FOR \u2014 the outcome being aimed at").option("--next <text>", "The next concrete step").option("--blocked <text>", 'What is standing in the way (pass "" to clear it once resolved)').option("--done <text>", "What was just finished").option("--json", "Output as JSON").action(async (opts) => {
+  const projectFlag = requireProjectFlag(opts.project);
   await withDatabase(async () => {
     const patch = {};
     for (const field of TASK_STATE_FIELDS) {
@@ -63118,7 +63147,7 @@ program2.command("task").description("Show or update where the work stands on th
       let project;
       let state;
       try {
-        ({ project, state } = getTaskState(opts.project));
+        ({ project, state } = getTaskState(projectFlag));
       } catch (err) {
         if (!(err instanceof TaskStateUnreadableError))
           throw err;
@@ -63141,7 +63170,7 @@ Set it with:  memesh task --goal "\u2026" --next "\u2026"`);
       console.log(lines.join("\n"));
       return;
     }
-    const result = setTaskState({ project: opts.project, patch, sourceHost: "cli" });
+    const result = setTaskState({ project: projectFlag, patch, sourceHost: "cli" });
     if (opts.json) {
       console.log(JSON.stringify(result));
       return;
@@ -63459,6 +63488,16 @@ kgCmd.command("backfill-relations").description("Propose / apply deterministic r
     }
   });
 });
+function requireProjectFlag(value) {
+  if (value === void 0)
+    return void 0;
+  const rejection = projectScopeRejection(value);
+  if (rejection) {
+    console.error(`Error: --project: ${rejection}`);
+    process.exit(1);
+  }
+  return value;
+}
 function requireAgentScopeArg(value, field, flag) {
   const rejection = agentScopeIdRejection(field, value);
   if (rejection)

@@ -389,6 +389,8 @@ export interface LearnInput {
   root_cause?: string;
   prevention?: string;
   severity?: LessonSeverity;
+  /** Project the lesson belongs to. Omitted = the process's own project. */
+  project?: string;
   // Transport-set, never model-set — see RememberInput.sourceHost.
   sourceHost?: string;
 }

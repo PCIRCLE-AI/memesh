@@ -16,6 +16,12 @@ import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '..
 import { getProjectName, memeshDir } from '../../core/paths.js';
 import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/update-entrypoint.js';
 import { staleRunningProcessNotice } from '../../core/update-notice.js';
+function projectRequired(tool, project, ctx) {
+    if (project !== undefined || !ctx.projectUndeterminable)
+        return null;
+    return fail(`${tool}: \`project\` is required here — this server runs in MeMesh's own directory and cannot tell which project you are in. `
+        + 'Pass the `project` value your SessionStart briefing gave you.');
+}
 export function resolveTranscriptWorkspace(project, rootUris) {
     if (!rootUris)
         return { transcriptWorkspaceError: 'workspace_unavailable' };
@@ -217,6 +223,10 @@ export const TOOL_DEFINITIONS = [
                     type: 'string',
                     enum: ['critical', 'major', 'minor'],
                     description: 'Severity level (default: minor)',
+                },
+                project: {
+                    type: 'string',
+                    description: 'Project name. Omit to use the current working directory’s project. A stable name, never a filesystem path.',
                 },
             },
             required: ['error', 'fix'],
@@ -507,12 +517,18 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const r = parseOrFail(LearnSchema, args);
             if (!r.ok)
                 return r.result;
+            const refusedLearn = projectRequired('learn', r.data.project, requestContext);
+            if (refusedLearn)
+                return refusedLearn;
             return ok(learn({ ...r.data, sourceHost }));
         }
         if (name === 'task_state') {
             const r = parseOrFail(TaskStateSchema, args);
             if (!r.ok)
                 return r.result;
+            const refusedTask = projectRequired('task_state', r.data.project, requestContext);
+            if (refusedTask)
+                return refusedTask;
             const { project, ...patch } = r.data;
             if (Object.keys(patch).length === 0)
                 return ok(getTaskState(project));
@@ -522,6 +538,9 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const r = parseOrFail(BriefingSchema, args);
             if (!r.ok)
                 return r.result;
+            const refusedBriefing = projectRequired('briefing', r.data.project, requestContext);
+            if (refusedBriefing)
+                return refusedBriefing;
             return ok(assembleBriefing(r.data.project, r.data.recipient));
         }
         if (name === 'user_patterns') {

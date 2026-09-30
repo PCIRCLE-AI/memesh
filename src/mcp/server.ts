@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { openDatabase, closeDatabase } from '../db.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { configureVersionSource, normalizeClientHost } from '../transports/mcp/handlers.js';
+import { cwdIsMemeshOwnRoot } from '../core/own-root.js';
 
 // This file sits at the same depth (2 levels below the package root) both as
 // TS source (src/mcp/server.ts) and inside the bundled dist/mcp/server.js
@@ -26,6 +27,10 @@ const packageJsonPath = path.resolve(
 const packageVersion =
   JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')).version ?? '0.0.0';
 configureVersionSource(packageVersion, packageJsonPath);
+
+// Decided once, at start: the working directory does not change under a
+// running stdio server. See core/own-root.ts.
+const projectUndeterminable = cwdIsMemeshOwnRoot(process.cwd(), path.dirname(packageJsonPath));
 
 const server = new Server(
   { name: 'memesh', version: packageVersion },
@@ -72,7 +77,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     args,
     normalizeClientHost(server.getClientVersion()?.name),
     extra.signal,
-    { workspaceRootUris },
+    { workspaceRootUris, projectUndeterminable },
   );
 });
 
