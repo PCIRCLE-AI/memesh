@@ -60636,8 +60636,9 @@ function renameProjectTag(from, to, opts) {
     }
   });
   const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
-  let messageRowsBlocked = 0;
-  if (affected.length > 0 || messageRows > 0) {
+  let messageRowsBlocked = messagePlan.reduce((n, { table, rowIds }) => n + (rowIds.length === 0 ? 0 : countScopeCollisions(conn, table, from, to)), 0);
+  if (opts?.apply && (affected.length > 0 || messageRows > 0)) {
+    messageRowsBlocked = 0;
     const del = conn.prepare("DELETE FROM tags WHERE entity_id = ? AND tag = ?");
     const upd = conn.prepare("UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?");
     const tx = conn.transaction(() => {
@@ -60654,20 +60655,15 @@ function renameProjectTag(from, to, opts) {
         for (const rid of rowIds) {
           try {
             move.run(to, rid);
-          } catch {
+          } catch (err) {
+            if (!isUniqueViolation(err))
+              throw err;
             messageRowsBlocked += 1;
           }
         }
       }
-      if (!opts?.apply)
-        throw DRY_RUN_ROLLBACK;
     });
-    try {
-      tx();
-    } catch (err) {
-      if (err !== DRY_RUN_ROLLBACK)
-        throw err;
-    }
+    tx();
   }
   return {
     fromTag,
@@ -60681,13 +60677,26 @@ function renameProjectTag(from, to, opts) {
     messageRowsBlocked
   };
 }
-var DRY_RUN_ROLLBACK;
+function isUniqueViolation(err) {
+  const code = err?.errcode;
+  return code === 2067 || code === 1555 || /UNIQUE constraint failed/.test(err instanceof Error ? err.message : String(err));
+}
+function countScopeCollisions(conn, table, from, to) {
+  const indexes = conn.prepare(`SELECT name FROM pragma_index_list('${table}') WHERE "unique" = 1`).all().map(({ name }) => conn.prepare(`SELECT name FROM pragma_index_info('${name.replace(/'/g, "''")}')`).all().map((c) => c.name)).filter((cols) => cols.includes("project"));
+  if (indexes.length === 0)
+    return 0;
+  const collides = indexes.map((cols) => {
+    const same = cols.filter((c) => c !== "project").map((c) => `b."${c}" = a."${c}"`);
+    return `EXISTS (SELECT 1 FROM ${table} b WHERE b.project = ?${same.map((x) => ` AND ${x}`).join("")})`;
+  });
+  const row = conn.prepare(`SELECT count(*) AS n FROM ${table} a WHERE a.project = ? AND (${collides.join(" OR ")})`).get(from, ...indexes.map(() => to));
+  return row.n;
+}
 var init_project_tags = __esm({
   "dist/core/project-tags.js"() {
     "use strict";
     init_db();
     init_agent_scope_id();
-    DRY_RUN_ROLLBACK = /* @__PURE__ */ Symbol("dry-run rollback");
   }
 });
 
@@ -63519,7 +63528,7 @@ Rewrite one with:  memesh kg rename-project --from <old> --to <new>   (add --app
       console.log(`Dry-run: project:${opts.from} \u2192 project:${to}`);
       console.log(`  ${preview.affectedEntities} entit${preview.affectedEntities === 1 ? "y" : "ies"} carry project:${opts.from}`);
       console.log(`  ${preview.renamed} would be renamed, ${preview.merged} already have project:${to} (their project:${opts.from} row would be removed)`);
-      console.log(`  ${preview.messageRows} durable agent-message row(s) scoped to ${opts.from} would move to ${to}`);
+      console.log(`  ${preview.messageRows} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} of them left in place (${to} already holds an equivalent row)` : ""}`);
       console.log(`
 Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
       return;
@@ -63540,7 +63549,14 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
       process.exitCode = 1;
       return;
     }
-    const result = renameProjectTag2(opts.from, to, { apply: true });
+    let result;
+    try {
+      result = renameProjectTag2(opts.from, to, { apply: true });
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)} \u2014 nothing was changed; the backup is at ${backupPath}`);
+      process.exitCode = 1;
+      return;
+    }
     if (opts.json) {
       console.log(JSON.stringify({ ...result, backupPath }, null, 2));
       return;
@@ -63549,7 +63565,8 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
     console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
     console.log(`  ${result.messageRows} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ""}`);
     console.log(`  Backup: ${backupPath}`);
-    console.log(`  Restore if needed (stop every memesh process first): sqlite3 "${dbPath}" ".restore '${backupPath}'"`);
+    const dotQuoted = `"${backupPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+    console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
   });
 });
 program2.command("doctor").description("Verify local install health and show actionable fixes").option("--json", "Output machine-readable diagnostics as JSON").option("--probe-http", "Also probe the local HTTP server health endpoint").option("--url <url>", "Base URL for --probe-http", "http://127.0.0.1:3737").option("--fix", "Apply the whitelisted fixes doctor prescribes (asks per fix; --yes skips asking)").option("--yes", "With --fix: apply without asking").action(async (opts) => {

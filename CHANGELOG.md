@@ -8,7 +8,7 @@ All notable changes to MeMesh are documented here.
 
 - A message sent through the MCP `message` tool keeps every `null` in its JSON payload. Before, the MCP boundary removed each null-valued key at any depth of the payload while `send` still reported success, so the recipient got different data than the CLI or HTTP would have stored (#517). A null-valued top-level tool parameter still means "left blank".
 - `memesh kg rename-project --from X --to X` (the same name twice) is refused. Before, `--apply` counted every memory of X as a merge and removed its only project tag (#519).
-- `kg rename-project --apply` writes its backup to `backups/` beside the database instead of `./data/backups/` under whatever directory it was run from, and the backup now includes changes still in the database's write-ahead log; the printed restore command uses `sqlite3 .restore`. The dry run reports the same number of message rows left in place as the apply.
+- `kg rename-project --apply` writes its backup to `backups/` beside the database instead of `./data/backups/` under whatever directory it was run from, and the backup now includes changes still in the database's write-ahead log; the printed restore command uses `sqlite3 .restore` and is quoted for any path. The dry run prints how many message rows would be left in place, and an apply that cannot write no longer reports every row as left in place.
 
 ## [4.10.11] — 2026-09-29
 

@@ -91,11 +91,6 @@
       "reason": "Absent caller provenance overrides correctly preserve generated provenance unchanged.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-07 after transaction-boundary refactor shifted the unchanged statement; re-keyed 2026-09-12 (#324 src/core fix round shifted the unchanged statement); re-keyed again 2026-09-12 (#324 T4 root-cause fix shifted the same statement from :299 to :327); re-keyed 2026-09-26 327→334 (#451: canonicalEntityType import plus the entityType canonicalization comment block added above; statement byte-identical); re-keyed 2026-09-28 334→335 (#494: one import line added above; statement byte-identical)"
     },
-    "C1 tests/cli-agent-message-ingress.test.ts": {
-      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
-      "reason": "The detector's `.toBe(0)` matches successful CLI exit-status assertions, not empty collections. Each success test also parses emitted JSON and asserts concrete routing fields and a generated message ID; rejection tests assert nonzero status plus exact privacy/error behavior.",
-      "triaged": "2026-08-27 host-native push release audit"
-    },
     "C1 tests/codex-plugin-fresh-consumer.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
       "reason": "The detector's `.toBe(0)` matches the short SessionStart launcher's successful process exit status, not an empty collection. The same test separately waits for the detached lifecycle state and router socket, asserts a distinct companion PID, reads back exactly one registered session from SQLite, and performs authenticated exact-companion cleanup.",

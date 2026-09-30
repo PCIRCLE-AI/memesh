@@ -57,9 +57,6 @@ export function listProjectTags(db?: MemeshDatabase): ProjectTagCount[] {
   return rows.map((r) => ({ project: r.tag.slice('project:'.length), count: r.c }));
 }
 
-/** Thrown inside the dry-run transaction to roll every trial move back. */
-const DRY_RUN_ROLLBACK = Symbol('dry-run rollback');
-
 /**
  * Rewrite `project:<from>` → `project:<to>` across all entities.
  *
@@ -108,9 +105,13 @@ export function renameProjectTag(
     }
   });
   const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
-  let messageRowsBlocked = 0;
+  // Counted, not tried: a dry run must work on a read-only database and must
+  // not take the write lock, and the apply below leaves exactly these rows.
+  let messageRowsBlocked = messagePlan.reduce(
+    (n, { table, rowIds }) => n + (rowIds.length === 0 ? 0 : countScopeCollisions(conn, table, from, to)), 0);
 
-  if (affected.length > 0 || messageRows > 0) {
+  if (opts?.apply && (affected.length > 0 || messageRows > 0)) {
+    messageRowsBlocked = 0;
     const del = conn.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?');
     const upd = conn.prepare('UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?');
     const tx = conn.transaction(() => {
@@ -123,19 +124,20 @@ export function renameProjectTag(
         const move = conn.prepare(`UPDATE ${table} SET project = ? WHERE rowid = ?`);
         for (const rid of rowIds) {
           // Row by row, not one bulk UPDATE: a single unique collision would
-          // otherwise abort the statement and silently move nothing.
-          try { move.run(to, rid); } catch { messageRowsBlocked += 1; }
+          // otherwise abort the statement and silently move nothing. Only a
+          // unique collision means "the destination already holds this row";
+          // any other failure (a read-only file, a full disk) aborts the whole
+          // rename instead of being reported as left in place (#519).
+          try {
+            move.run(to, rid);
+          } catch (err) {
+            if (!isUniqueViolation(err)) throw err;
+            messageRowsBlocked += 1;
+          }
         }
       }
-      // A dry run performs the same moves and then rolls them back, so the
-      // blocked count it reports is the one the apply will produce (#519).
-      if (!opts?.apply) throw DRY_RUN_ROLLBACK;
     });
-    try {
-      tx();
-    } catch (err) {
-      if (err !== DRY_RUN_ROLLBACK) throw err;
-    }
+    tx();
   }
 
   return {
@@ -149,4 +151,31 @@ export function renameProjectTag(
     messageRows,
     messageRowsBlocked,
   };
+}
+
+function isUniqueViolation(err: unknown): boolean {
+  const code = (err as { errcode?: unknown } | null)?.errcode;
+  // 2067: a UNIQUE index; 1555: a composite PRIMARY KEY (agent_message_idempotency).
+  return code === 2067 || code === 1555 || /UNIQUE constraint failed/.test(err instanceof Error ? err.message : String(err));
+}
+
+/**
+ * How many `from`-scoped rows of `table` would collide with a `to`-scoped row
+ * on one of the table's unique indexes that include `project` — the rows the
+ * apply leaves in place. NULLs never collide, as in SQLite's own uniqueness.
+ * Table and column names come from a hardcoded list and the schema, never
+ * from caller input.
+ */
+function countScopeCollisions(conn: MemeshDatabase, table: string, from: string, to: string): number {
+  const indexes = (conn.prepare(`SELECT name FROM pragma_index_list('${table}') WHERE "unique" = 1`).all() as Array<{ name: string }>)
+    .map(({ name }) => (conn.prepare(`SELECT name FROM pragma_index_info('${name.replace(/'/g, "''")}')`).all() as Array<{ name: string }>).map((c) => c.name))
+    .filter((cols) => cols.includes('project'));
+  if (indexes.length === 0) return 0;
+  const collides = indexes.map((cols) => {
+    const same = cols.filter((c) => c !== 'project').map((c) => `b."${c}" = a."${c}"`);
+    return `EXISTS (SELECT 1 FROM ${table} b WHERE b.project = ?${same.map((x) => ` AND ${x}`).join('')})`;
+  });
+  const row = conn.prepare(`SELECT count(*) AS n FROM ${table} a WHERE a.project = ? AND (${collides.join(' OR ')})`)
+    .get(from, ...indexes.map(() => to)) as { n: number };
+  return row.n;
 }

@@ -2301,7 +2301,7 @@ kgCmd
         // A project identity is half the key of a durable-message inbox, so a
         // rename that moved only the tags left the messages in a scope nobody
         // polls. Reported separately because it is a different kind of row.
-        console.log(`  ${preview.messageRows} durable agent-message row(s) scoped to ${opts.from} would move to ${to}`);
+        console.log(`  ${preview.messageRows} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} of them left in place (${to} already holds an equivalent row)` : ''}`);
         console.log(`\nNothing written. Re-run with --apply to commit (the DB is backed up first).`);
         return;
       }
@@ -2321,6 +2321,7 @@ kgCmd
       const backupPath = path.join(backupDir, `kg-before-rename-project-${stamp}.db`);
       try {
         fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+        // Owner-private like the database: opening it set the umask to 077.
         getDatabase().prepare('VACUUM INTO ?').run(backupPath);
       } catch (err) {
         console.error(`❌ Could not back up the DB before applying (${err instanceof Error ? err.message : err}); aborting without changes.`);
@@ -2328,13 +2329,23 @@ kgCmd
         return;
       }
 
-      const result = renameProjectTag(opts.from, to, { apply: true });
+      let result: ReturnType<typeof renameProjectTag>;
+      try {
+        result = renameProjectTag(opts.from, to, { apply: true });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)} — nothing was changed; the backup is at ${backupPath}`);
+        process.exitCode = 1;
+        return;
+      }
       if (opts.json) { console.log(JSON.stringify({ ...result, backupPath }, null, 2)); return; }
       console.log(`✅ project:${opts.from} → project:${to}`);
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
       console.log(`  ${result.messageRows} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
       console.log(`  Backup: ${backupPath}`);
-      console.log(`  Restore if needed (stop every memesh process first): sqlite3 "${dbPath}" ".restore '${backupPath}'"`);
+      // sqlite3 reads the dot-command argument as a double-quoted string, then
+      // the shell reads the whole command: quote for both.
+      const dotQuoted = `"${backupPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+      console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
     });
   });
 

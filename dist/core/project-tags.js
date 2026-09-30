@@ -5,7 +5,6 @@ export function listProjectTags(db) {
     const rows = conn.prepare("SELECT tag, COUNT(*) c FROM tags WHERE tag LIKE 'project:%' GROUP BY tag ORDER BY c DESC, tag ASC").all();
     return rows.map((r) => ({ project: r.tag.slice('project:'.length), count: r.c }));
 }
-const DRY_RUN_ROLLBACK = Symbol('dry-run rollback');
 export function renameProjectTag(from, to, opts) {
     const conn = opts?.db ?? getDatabase();
     const fromTag = `project:${from}`;
@@ -32,8 +31,9 @@ export function renameProjectTag(from, to, opts) {
         }
     });
     const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
-    let messageRowsBlocked = 0;
-    if (affected.length > 0 || messageRows > 0) {
+    let messageRowsBlocked = messagePlan.reduce((n, { table, rowIds }) => n + (rowIds.length === 0 ? 0 : countScopeCollisions(conn, table, from, to)), 0);
+    if (opts?.apply && (affected.length > 0 || messageRows > 0)) {
+        messageRowsBlocked = 0;
         const del = conn.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?');
         const upd = conn.prepare('UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?');
         const tx = conn.transaction(() => {
@@ -51,21 +51,15 @@ export function renameProjectTag(from, to, opts) {
                     try {
                         move.run(to, rid);
                     }
-                    catch {
+                    catch (err) {
+                        if (!isUniqueViolation(err))
+                            throw err;
                         messageRowsBlocked += 1;
                     }
                 }
             }
-            if (!opts?.apply)
-                throw DRY_RUN_ROLLBACK;
         });
-        try {
-            tx();
-        }
-        catch (err) {
-            if (err !== DRY_RUN_ROLLBACK)
-                throw err;
-        }
+        tx();
     }
     return {
         fromTag,
@@ -78,5 +72,23 @@ export function renameProjectTag(from, to, opts) {
         messageRows,
         messageRowsBlocked,
     };
+}
+function isUniqueViolation(err) {
+    const code = err?.errcode;
+    return code === 2067 || code === 1555 || /UNIQUE constraint failed/.test(err instanceof Error ? err.message : String(err));
+}
+function countScopeCollisions(conn, table, from, to) {
+    const indexes = conn.prepare(`SELECT name FROM pragma_index_list('${table}') WHERE "unique" = 1`).all()
+        .map(({ name }) => conn.prepare(`SELECT name FROM pragma_index_info('${name.replace(/'/g, "''")}')`).all().map((c) => c.name))
+        .filter((cols) => cols.includes('project'));
+    if (indexes.length === 0)
+        return 0;
+    const collides = indexes.map((cols) => {
+        const same = cols.filter((c) => c !== 'project').map((c) => `b."${c}" = a."${c}"`);
+        return `EXISTS (SELECT 1 FROM ${table} b WHERE b.project = ?${same.map((x) => ` AND ${x}`).join('')})`;
+    });
+    const row = conn.prepare(`SELECT count(*) AS n FROM ${table} a WHERE a.project = ? AND (${collides.join(' OR ')})`)
+        .get(from, ...indexes.map(() => to));
+    return row.n;
 }
 //# sourceMappingURL=project-tags.js.map

@@ -363,6 +363,59 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('#519: kg rename-project --from X --to X is refused with one line and exit 1', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-same-'));
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'seed-same', '--type', 'note', '--obs', 'x', '--tags', 'project:same-519',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      for (const extra of [[], ['--apply']]) {
+        const r = spawnSync(process.execPath, cliArgs(
+          'kg', 'rename-project', '--from', 'same-519', '--to', 'same-519', ...extra,
+        ), { encoding: 'utf8', env });
+        expect(r.status).toBe(1);
+        expect(r.stderr.trim().split('\n')).toHaveLength(1);
+        expect(r.stderr).toContain('same project');
+        expect(r.stderr).not.toContain('    at ');
+      }
+      const list = spawnSync(process.execPath, cliArgs('kg', 'rename-project', '--json'), { encoding: 'utf8', env });
+      expect(list.stdout).toContain('same-519');
+      expect(fs.existsSync(path.join(home, '.memesh', 'backups'))).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // Runs the printed restore command, so it needs the sqlite3 binary.
+  const hasSqlite3 = spawnSync('sqlite3', ['-version'], { encoding: 'utf8' }).status === 0;
+  it.skipIf(process.platform === 'win32' || !hasSqlite3)('#519: the backup is owner-only and the printed restore command works for an awkward path', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "memesh cli it's \"odd\" $x-"));
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'seed-odd', '--type', 'note', '--obs', 'x', '--tags', 'project:odd-old',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      const rename = spawnSync(process.execPath, cliArgs(
+        'kg', 'rename-project', '--from', 'odd-old', '--to', 'odd-new', '--apply',
+      ), { encoding: 'utf8', env });
+      expect(rename.status, rename.stderr).toBe(0);
+      const backupLine = rename.stdout.split('\n').find((l) => l.trim().startsWith('Backup:'))!;
+      const backupPath = backupLine.trim().slice('Backup: '.length);
+      expect(fs.statSync(backupPath).mode & 0o777).toBe(0o600);
+      const restoreLine = rename.stdout.split('\n').find((l) => l.includes('Restore if needed'))!;
+      const command = restoreLine.slice(restoreLine.indexOf('sqlite3 '));
+      const run = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+      expect(run.status, run.stderr).toBe(0);
+      const after = spawnSync(process.execPath, cliArgs('kg', 'rename-project'), { encoding: 'utf8', env });
+      expect(after.stdout).toContain('odd-old');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('#519: the rename-project backup holds writes still in the WAL file of an open connection', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-wal-'));
     const { DatabaseSync } = await import('node:sqlite');

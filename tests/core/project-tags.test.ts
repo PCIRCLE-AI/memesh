@@ -138,3 +138,45 @@ describe('Feature: #519 renaming a project cannot remove it by accident', () => 
     expect(preview.messageRowsBlocked).toBe(applied.messageRowsBlocked);
   });
 });
+
+describe('Feature: #519 the dry run never writes, and only a real collision is "left in place"', () => {
+  it('a dry run on a read-only database still reports the preview, with nothing blocked', () => {
+    sendAgentMessage(getDatabase(), {
+      project: 'ro-old', sender: 'author', recipient: 'reviewer', idempotency_key: 'ro-k',
+      content_type: 'text/plain', payload: 'x',
+    });
+    getDatabase().exec('PRAGMA query_only = ON');
+    try {
+      const r = renameProjectTag('ro-old', 'ro-new', { apply: false });
+      expect(r.messageRows).toBeGreaterThan(0);
+      expect(r.messageRowsBlocked).toBe(0);
+    } finally {
+      getDatabase().exec('PRAGMA query_only = OFF');
+    }
+  });
+
+  it('an apply that cannot write fails instead of reporting every row as left in place', () => {
+    sendAgentMessage(getDatabase(), {
+      project: 'ro-old2', sender: 'author', recipient: 'reviewer', idempotency_key: 'ro-k2',
+      content_type: 'text/plain', payload: 'x',
+    });
+    getDatabase().exec('PRAGMA query_only = ON');
+    try {
+      expect(() => renameProjectTag('ro-old2', 'ro-new2', { apply: true })).toThrow(/readonly|read-only|query_only/i);
+    } finally {
+      getDatabase().exec('PRAGMA query_only = OFF');
+    }
+    expect(pollAgentEvents(getDatabase(), { project: 'ro-old2', recipient: 'reviewer' }).events).toHaveLength(1);
+  });
+
+  it('a collision on the composite primary key of the idempotency table counts as left in place', () => {
+    const send = (project: string) => sendAgentMessage(getDatabase(), {
+      project, sender: 'author', recipient: 'reviewer', idempotency_key: 'pk-shared',
+      content_type: 'text/plain', payload: project,
+    });
+    send('pk-old');
+    send('pk-new');
+    const r = renameProjectTag('pk-old', 'pk-new', { apply: true });
+    expect(r.messageRowsBlocked).toBeGreaterThan(0);
+  });
+});
