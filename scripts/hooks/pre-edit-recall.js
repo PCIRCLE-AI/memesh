@@ -43,7 +43,10 @@ const memeshDir = getMemeshDirFromDbPath();
 // session (or another host) had recalled a file, every other session editing
 // it got nothing, recorded as "nothing to recall".
 const THROTTLE_DIR = join(memeshDir, 'pre-edit-recall');
-const throttleFileFor = (sessionId) => join(THROTTLE_DIR, `${sessionId}.json`);
+// A subagent's hook payload carries its PARENT's session_id plus its own agent_id
+// (Claude Code 2.1.285, captured), and its context has not seen what the parent
+// was shown, so it gets a list of its own.
+const throttleFileFor = (sessionId, agentId) => join(THROTTLE_DIR, agentId ? `${sessionId}--${agentId}.json` : `${sessionId}.json`);
 const MAX_RESULTS = 3;
 
 // #358 round 3 item 2: Strategy 2 fetches this many CANDIDATES before literal
@@ -99,8 +102,10 @@ process.stdin.on('end', () => {
     // A payload without a usable session id is never throttled: recalling
     // twice costs a few lines, sharing one list across sessions hid memories.
     const fileKey = filePath.toLowerCase();
+    const hasAgent = data.agent_id !== undefined && data.agent_id !== null && data.agent_id !== '';
     const throttleFile = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id)
-      ? throttleFileFor(data.session_id)
+      && (!hasAgent || (typeof data.agent_id === 'string' && SESSION_ID_RE.test(data.agent_id)))
+      ? throttleFileFor(data.session_id, hasAgent ? data.agent_id : null)
       : null;
     let seenFiles = [];
     try {
@@ -488,10 +493,12 @@ process.stdin.on('end', () => {
             }
           }
 
-          // Record as seen either way (avoid re-querying a no-result file) —
-          // but not after a fault: that run looked at nothing, and marking
-          // the file seen would switch recall off for the whole session.
-          if (!recallFault && throttleFile) recordSeen(throttleFile, seenFiles, fileKey);
+          // Record as seen only when memories were actually shown: "already
+          // shown" must be true, and a file with nothing to recall is looked
+          // at again next time, so a memory stored meanwhile still appears.
+          // Never after a fault: that run looked at nothing, and marking the
+          // file seen would switch recall off for the whole session.
+          if (!recallFault && throttleFile && recallLines.length > 0) recordSeen(throttleFile, seenFiles, fileKey);
         }
       }
     } finally {
@@ -669,14 +676,24 @@ function realpathNearestExisting(dir) {
 }
 
 function recordSeen(throttleFile, seenFiles, fileKey) {
+  // One ledger row per run, however many steps fail: a list that cannot be
+  // kept means the next edit of the file shows its memories again, and that
+  // must be queryable, not only a line on stderr.
+  let faulted = false;
+  const fault = (err) => {
+    if (faulted) return;
+    faulted = true;
+    record('error', `pre-edit list: ${hookErrorReason(err)}`);
+  };
   try {
     seenFiles.push(fileKey);
     // Cap at 100 to prevent unbounded growth
     if (seenFiles.length > 100) seenFiles = seenFiles.slice(-50);
     ensurePrivateDir(THROTTLE_DIR);
     writePrivateJson(throttleFile, seenFiles);
-    pruneSessionState(THROTTLE_DIR, Date.now());
-  } catch {
-    // Non-critical
+  } catch (err) {
+    try { process.stderr.write(`[memesh] could not keep the per-session recall list ${throttleFile}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+    fault(err);
   }
+  pruneSessionState(THROTTLE_DIR, Date.now(), fault);
 }

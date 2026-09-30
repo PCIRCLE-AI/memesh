@@ -1064,12 +1064,13 @@ process.stdin.on('end', async () => {
     }
 
     // A new start of THIS session (startup, /clear, resume, compact) shows
-    // recalls again. Other sessions keep their own lists (#521). A subagent's
-    // start leaves the list alone, in case it carries its parent's id.
+    // recalls again. Other sessions keep their own lists (#521). Every start
+    // resets, whether or not it carries agent_type: a `claude --agent` main
+    // session does, and a subagent has no SessionStart of its own (payloads
+    // captured on Claude Code 2.1.285).
     try {
-      const isSubagent = typeof data.agent_type === 'string' && data.agent_type !== '';
       const sid = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id) ? data.session_id : null;
-      if (sid && !isSubagent) {
+      if (sid) {
         const own = join(throttleDir, `${sid}.json`);
         if (existsSync(own)) unlinkSync(own);
       }

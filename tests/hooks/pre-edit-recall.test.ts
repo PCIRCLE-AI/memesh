@@ -330,6 +330,91 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(outcomes.at(-1)?.reason).not.toContain('nothing to recall');
   });
 
+  const outcomesOf = () => fs.readFileSync(path.join(testDir, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n')
+    .map((l) => JSON.parse(l) as { hook: string; outcome: string; reason?: string })
+    .filter((r) => r.hook === 'pre-edit-recall');
+
+  it('#521: a file that had nothing to recall is not called "already shown", and is looked at again', () => {
+    createTestDb().close();
+    runHook({ session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } });
+    runHook({ session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } });
+    expect(outcomesOf().map((o) => o.reason)).toEqual([
+      expect.stringContaining('nothing to recall'),
+      expect.stringContaining('nothing to recall'),
+    ]);
+
+    // A memory stored between the two edits is shown by the second one.
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('late-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('late-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Added later');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+    expect(runHook({ session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } })).toContain('late-decision');
+  });
+
+  it('#521: a per-session list that cannot be written leaves an error outcome and a stderr line', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    // A plain file where the list directory belongs: creating or writing it fails.
+    fs.writeFileSync(path.join(testDir, 'pre-edit-recall'), 'not a directory');
+    const result = spawnSync('node', [path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('auth-decision');
+    expect(result.stderr).toContain('per-session recall list');
+    const errors = outcomesOf().filter((o) => o.outcome === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].reason).toContain('pre-edit list');
+  });
+
+  it('#521: a subagent shares its parent\'s session_id but has its own recall list', () => {
+    // Native payloads (Claude Code 2.1.285): a subagent's PreToolUse carries the PARENT's session_id plus
+    // agent_id and agent_type; the parent's carries neither agent field.
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const edit = (extra: object) => runHook({ session_id: 'parent-session', tool_input: { file_path: '/src/auth.ts' }, ...extra });
+    const sub = { agent_id: 'ae76a024c728ead25', agent_type: 'general-purpose' };
+    expect(edit(sub)).toContain('auth-decision');       // the subagent's context sees it
+    expect(edit({})).toContain('auth-decision');        // the parent's context has not: it still gets it
+    expect(edit(sub)).toBe('');                         // each is throttled after its own first showing
+    expect(edit({})).toBe('');
+    expect(edit({ agent_id: 'b2', agent_type: 'general-purpose' })).toContain('auth-decision'); // another subagent
+  });
+
+  it('#521: an agent_id that is not a safe file name writes no list and is not throttled', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const edit = () => runHook({ session_id: 'parent-session', agent_id: '../escape', tool_input: { file_path: '/src/auth.ts' } });
+    expect(edit()).toContain('auth-decision');
+    expect(edit()).toContain('auth-decision');
+    const dir = path.join(testDir, 'pre-edit-recall');
+    expect(fs.existsSync(dir) ? fs.readdirSync(dir) : []).toEqual([]);
+  });
+
   it('#521: a payload without a session id is never throttled', () => {
     const db = createTestDb();
     db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
@@ -419,6 +504,10 @@ syncBuiltinESMExports();
     expect(result.stdout).toContain('auth-decision');
     expect(result.stderr).toContain('could not prune');
     expect(result.stderr).toContain('controlled EPERM');
+    // Not only on stderr: the ledger doctor reads says it too.
+    const errors = outcomesOf().filter((o) => o.outcome === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].reason).toContain('pre-edit list');
   });
 
   it('should scope throttle state to MEMESH_DB_PATH directory', () => {

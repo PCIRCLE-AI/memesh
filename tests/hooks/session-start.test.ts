@@ -1015,7 +1015,9 @@ syncBuiltinESMExports();
     expect(outcomes.some((o) => o.outcome === 'error' && String(o.reason).startsWith('pre-edit reset'))).toBe(true);
   });
 
-  it('Scenario: A subagent start leaves its session\'s pre-edit list alone (#521)', () => {
+  it('Scenario: A start that carries agent_type (a `claude --agent` main session) still resets its pre-edit list (#521)', () => {
+    // Native payloads (Claude Code 2.1.285): a `claude --agent x` main session's SessionStart carries
+    // agent_type but no agent_id, and a subagent has no SessionStart of its own.
     const db = createTestDb();
     db.close();
     const dir = path.join(testDir, 'pre-edit-recall');
@@ -1023,10 +1025,9 @@ syncBuiltinESMExports();
     const own = path.join(dir, 'this-session.json');
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
 
-    runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_type: 'Explore' });
+    runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_type: 'x', source: 'compact' });
 
-    const kept = JSON.parse(fs.readFileSync(own, 'utf8')) as string[];
-    expect(kept).toEqual(['/src/auth.ts']);
+    expect(fs.existsSync(own)).toBe(false);
   });
 
   it('Scenario: Session tracking files are written with private permissions', () => {

@@ -342,7 +342,7 @@ export function scanTranscriptWindow(text, carry = null) {
  * removals per call, so a long backlog is worked off over several runs
  * rather than in one.
  */
-export function pruneSessionState(dir, now) {
+export function pruneSessionState(dir, now, onFault) {
   let removed = 0;
   let names;
   try {
@@ -351,6 +351,7 @@ export function pruneSessionState(dir, now) {
     // The directory itself is unreadable: nothing was pruned, and the caller
     // must not have to guess why. Same line as a failed per-file removal.
     try { process.stderr.write(`[memesh] could not prune ${dir}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+    if (onFault) onFault(err);
     return removed;
   }
   for (const name of names) {
@@ -366,6 +367,7 @@ export function pruneSessionState(dir, now) {
       // Another Stop removed it first, or it is unreadable: either way this
       // run leaves it; the next one retries.
       try { process.stderr.write(`[memesh] could not prune ${file}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+      if (onFault) onFault(err);
     }
   }
   return removed;
