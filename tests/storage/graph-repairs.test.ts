@@ -158,7 +158,7 @@ describe('#240 — duplicate observations are removed once, on ANY entity', () =
       ins.run(other, 'same'); ins.run(other, 'same');
       // A history log: the duplicate is unreachable (no reader selects
       // observations.created_at) so it is repaired like any other.
-      const task = insertEntity(db, 'task-state:proj', 'task-state');
+      const task = insertEntity(db, 'task-state:proj', 'task-state', ['project:proj']);
       ins.run(task, 'next cleared'); ins.run(task, 'done: shipped'); ins.run(task, 'next cleared');
     });
     expect(runInvariants().status, 'fixture must reproduce the defect before repair').toBe(1);
@@ -807,12 +807,12 @@ describe('#495 — removeJunkFileTags: a file: tag that is not path-shaped is de
   it('removes a shell-variable and a flag tag, keeps a real one, and the invariant goes green', () => {
     seed((db) => {
       insertEntity(db, 'session-junk-abc-files', 'session-insight', [
-        'file:$F', 'file:-E', 'file:s#^source', 'file:auth.ts', 'file:auth', 'source:auto-capture',
+        'file:$F', 'file:-E', 'file:s#^source', 'file:auth.ts', 'file:auth', 'source:auto-capture', 'project:proj',
       ]);
     });
 
     const db = repaired();
-    expect(tagsOf(db, 'session-junk-abc-files')).toEqual(['file:auth', 'file:auth.ts', 'source:auto-capture']);
+    expect(tagsOf(db, 'session-junk-abc-files')).toEqual(['file:auth', 'file:auth.ts', 'project:proj', 'source:auto-capture']);
     closeDatabase();
     const inv = runInvariants();
     expect(inv.status, inv.stdout).toBe(0);

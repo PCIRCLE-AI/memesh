@@ -626,12 +626,53 @@ describe('memory-invariants: read-only detector over a real graph', () => {
     }
   });
 
+  it('#519 — flags a captured memory and a task state that lost their project tag', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        const commit = insertEntity(db, 'commit-abc1234', 'commit');
+        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(commit, 'source:auto-capture');
+        insertEntity(db, 'task-state:acme', 'task-state');
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(1);
+      expect(r.stdout).toContain('FAIL captured-memories-keep-a-project');
+      expect(r.stdout).toContain('commit-abc1234  type=commit');
+      expect(r.stdout).toContain('task-state:acme  type=task-state');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#519 — a person\'s own memory, a global one or a commit from before the capture tag need no project', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        insertEntity(db, 'decision-no-project', 'decision');
+        insertEntity(db, 'global-rule', 'directive', { namespace: 'global' });
+        insertEntity(db, 'commit-legacy01', 'commit');
+        const tagged = insertEntity(db, 'commit-def5678', 'commit');
+        for (const tag of ['source:auto-capture', 'project:acme']) {
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(tagged, tag);
+        }
+        const state = insertEntity(db, 'task-state:acme', 'task-state');
+        db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(state, 'project:acme');
+      });
+      const r = run(dbPath);
+      expect(r.stdout).toContain('ok   captured-memories-keep-a-project');
+      expect(r.stdout).not.toContain('FAIL captured-memories-keep-a-project');
+      expect(r.status, r.stdout).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('#495 — flags a file: tag that is a shell variable, a flag, or a sed/regex fragment', () => {
     const { dir, dbPath } = freshGraph();
     try {
       withRawDb(dbPath, (db) => {
         const id = insertEntity(db, 'session-junk-files', 'session-insight');
-        for (const tag of ['file:$f', 'file:-E', 'file:s#^source', 'file:auth.ts', 'source:auto-capture']) {
+        for (const tag of ['file:$f', 'file:-E', 'file:s#^source', 'file:auth.ts', 'source:auto-capture', 'project:acme']) {
           db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
         }
       });
@@ -652,7 +693,7 @@ describe('memory-invariants: read-only detector over a real graph', () => {
     try {
       withRawDb(dbPath, (db) => {
         const id = insertEntity(db, 'session-clean-files', 'session-insight');
-        for (const tag of ['file:auth.ts', 'file:auth', 'file:README.md', 'file:{{cookiecutter.slug}}.py', 'source:auto-capture']) {
+        for (const tag of ['file:auth.ts', 'file:auth', 'file:README.md', 'file:{{cookiecutter.slug}}.py', 'source:auto-capture', 'project:acme']) {
           db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
         }
         // A person's own glob tag is not auto-capture debris.
