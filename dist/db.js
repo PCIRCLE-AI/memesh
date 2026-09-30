@@ -73,6 +73,7 @@ function migrateToCurrentSchema(db, resolvedPath) {
     migrateEntitiesSchema(db);
     runAutoDecay(db);
     backfillSignalScores(db);
+    ensureFtsSegmentation(db);
     backfillTitles(db);
     backfillAcceptedProposalTrust(db);
     dedupeObservations(db);
@@ -82,7 +83,6 @@ function migrateToCurrentSchema(db, resolvedPath) {
     splitFusedLessons(db, { deriveTitle: deriveHeuristicTitle });
     repairFusedLessonShellHistory(db);
     ensureDreamProposalsTable(db);
-    ensureFtsSegmentation(db);
     dropArchivedIndexRows(db);
 }
 export function reindexFts() {

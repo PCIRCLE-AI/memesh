@@ -6,6 +6,7 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
+- A small database last opened by an older release (before 4.2.11, or with Thai, Lao, Khmer, half-width katakana or rare CJK characters indexed by an older build) opens again after upgrading. Before, every open failed with "database disk image is malformed" although the database was not damaged, because an upgrade step removed keyword-index rows using the new text splitting before the index was rebuilt (#522).
 - A message sent through the MCP `message` tool keeps every `null` in its JSON payload. Before, the MCP boundary removed each null-valued key at any depth of the payload while `send` still reported success, so the recipient got different data than the CLI or HTTP would have stored (#517). A null-valued top-level tool parameter still means "left blank".
 
 ## [4.10.11] — 2026-09-29

@@ -163,6 +163,18 @@ function migrateToCurrentSchema(db: MemeshDatabase, resolvedPath: string): void 
   // marker key.
   backfillSignalScores(db);
 
+  // Rebuild entities_fts once when the way text is segmented changes.
+  // Databases written before CJK segmentation hold whole-run tokens that no
+  // segmented query can match, so without this the change would take Chinese
+  // recall from bad to zero while English kept working — a silent regression.
+  //
+  // It runs BEFORE every pass that removes FTS rows one by one (the title
+  // backfill below is the first): a contentless delete must repeat the exact
+  // tokens that were indexed, and on an old index today's segmentation
+  // produces different ones. On a small database that mismatch makes the
+  // delete fail with "database disk image is malformed" on every open (#522).
+  ensureFtsSegmentation(db);
+
   // UX-1: give pre-title rows a human-readable heuristic title. Same
   // marker + fill-only discipline as backfillSignalScores above.
   backfillTitles(db);
@@ -200,12 +212,6 @@ function migrateToCurrentSchema(db: MemeshDatabase, resolvedPath: string): void 
 
   // Agent work packages stage proposals here for explicit human review.
   ensureDreamProposalsTable(db);
-
-  // Rebuild entities_fts once when the way text is segmented changes.
-  // Databases written before CJK segmentation hold whole-run tokens that no
-  // segmented query can match, so without this the change would take Chinese
-  // recall from bad to zero while English kept working — a silent regression.
-  ensureFtsSegmentation(db);
 
   // One-shot repair for FTS rows written before archived entities were removed
   // from the keyword index. It rebuilds from active entities only and has no
