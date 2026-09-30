@@ -88,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_generated/file-mode.js",
-      "sha256": "7d21cb675130f7d36c993556f4e94603eb75f4ea5809fd896f0e531fdfff446e",
-      "bytes": 5639
+      "sha256": "930f14b79bced6248e4e9a76ed1a8ef8adfcafbf05488b66e5894529f09775fe",
+      "bytes": 6358
     },
     {
       "path": "scripts/hooks/_generated/fts-index.js",

@@ -112,6 +112,7 @@ export function refuseMismatchedSidecars(dbPath: string): void {
   if (!database) return;
   const fewer: string[] = [];
   const extra: string[] = [];
+  const notYours: string[] = [];
   let fewerBits = 0;
   let extraBits = 0;
   for (const sidecar of [wal, shm]) {
@@ -123,6 +124,21 @@ export function refuseMismatchedSidecars(dbPath: string): void {
     const added = stat.mode & ~database.mode & 0o700;
     if (missing !== 0) { fewer.push(sidecar); fewerBits |= missing; }
     else if (added !== 0 && stat.size === 0) { extra.push(sidecar); extraBits |= added; }
+    else continue;
+    if (belongsToAnotherUser(stat)) notYours.push(sidecar);
+  }
+  // A chmod on another user's file is not this user's to run: the way out is
+  // a database of their own.
+  if (notYours.length === 0 && fewer.length + extra.length > 0 && belongsToAnotherUser(database)) notYours.push(real);
+  if (notYours.length > 0) {
+    const fix = 'Point MEMESH_DB_PATH at a database you own, in a folder you own.';
+    throw Object.assign(
+      new Error(
+        `MeMesh: the owner permissions of ${real} and its ${[...fewer, ...extra].join(' and ')} do not match, and ` +
+          `${notYours.join(' and ')} ${notYours.length > 1 ? 'belong' : 'belongs'} to another user, so you cannot change them. ${fix}`,
+      ),
+      { fix, code: SIDECAR_PERMISSIONS_CODE },
+    );
   }
   if (fewer.length > 0) {
     const fix = `chmod u+${letters(fewerBits)} ${quoted(fewer)}`;

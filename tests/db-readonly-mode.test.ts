@@ -11,7 +11,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { closeDatabase, openDatabase } from '../src/db.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
-import { belongsToAnotherUser, ownerWriteCommand } from '../src/core/file-mode.js';
+import { belongsToAnotherUser, ownerWriteCommand, SIDECAR_PERMISSIONS_CODE } from '../src/core/file-mode.js';
 
 const posix = process.platform !== 'win32';
 
@@ -364,6 +364,25 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     } finally {
       fs.rmSync(linkDir, { recursive: true, force: true });
     }
+  });
+
+  it.skipIf(!posix)('a mismatched -wal/-shm that belongs to another user gets a way out, not a chmod the owner cannot run', () => {
+    fs.chmodSync(dbPath, 0o444);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    openDatabase(dbPath).prepare('SELECT count(*) FROM entities').get();
+    closeDatabase();
+    fs.chmodSync(dbPath, 0o600);
+    // A stubbed uid, never a real other user: the sidecars now look like
+    // someone else's.
+    vi.spyOn(process, 'getuid').mockReturnValue(fs.statSync(`${dbPath}-wal`).uid + 1);
+    let error: (Error & { fix?: string; code?: string }) | undefined;
+    try { openDatabase(dbPath); } catch (err) { error = err as Error & { fix?: string; code?: string }; }
+    expect(error?.message).toMatch(/belongs? to another user/);
+    expect(error?.fix).toBe('Point MEMESH_DB_PATH at a database you own, in a folder you own.');
+    expect(error?.message).not.toContain('chmod');
+    expect(error?.code).toBe(SIDECAR_PERMISSIONS_CODE);
+    for (const s of ['-wal', '-shm']) expect(mode(`${dbPath}${s}`), s).toBe(0o400);
+    expect(mode(dbPath)).toBe(0o600);
   });
 
   it.skipIf(!posix || process.getuid?.() === 0)('a symlinked database opens when only the link\'s folder is read-only: the real file\'s folder holds the -wal/-shm', () => {
