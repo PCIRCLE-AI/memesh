@@ -344,7 +344,16 @@ export function scanTranscriptWindow(text, carry = null) {
  */
 export function pruneSessionState(dir, now) {
   let removed = 0;
-  for (const name of readdirSync(dir)) {
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch (err) {
+    // The directory itself is unreadable: nothing was pruned, and the caller
+    // must not have to guess why. Same line as a failed per-file removal.
+    try { process.stderr.write(`[memesh] could not prune ${dir}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+    return removed;
+  }
+  for (const name of names) {
     if (removed >= NUDGE_PRUNE_PER_RUN) break;
     if (!name.endsWith('.json')) continue;
     const file = join(dir, name);

@@ -983,6 +983,38 @@ describe('Feature: Session Start Hook', () => {
     expect(fs.existsSync(legacy)).toBe(false);
   });
 
+  it('Scenario: A failed reset of this session\'s pre-edit list is reported, not a clean start (#521)', () => {
+    const db = createTestDb();
+    db.close();
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const own = path.join(dir, 'this-session.json');
+    fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+    const loader = path.join(testDir, 'fault.mjs');
+    fs.writeFileSync(loader, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const original = fs.unlinkSync;
+fs.unlinkSync = function (p, ...rest) {
+  if (String(p) === ${JSON.stringify(own)}) { const e = new Error('controlled EPERM'); e.code = 'EPERM'; throw e; }
+  return original.call(this, p, ...rest);
+};
+syncBuiltinESMExports();
+`);
+    const result = spawnSync('node', ['--import', loader, path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd: '/tmp/anyproject', session_id: 'this-session', source: 'resume' }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(own)).toBe(true);
+    expect(result.stderr).toContain('controlled EPERM');
+    const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l))
+      .filter((o) => o.hook === 'session-start');
+    expect(outcomes.some((o) => o.outcome === 'error' && String(o.reason).startsWith('pre-edit reset'))).toBe(true);
+  });
+
   it('Scenario: A subagent start leaves its session\'s pre-edit list alone (#521)', () => {
     const db = createTestDb();
     db.close();

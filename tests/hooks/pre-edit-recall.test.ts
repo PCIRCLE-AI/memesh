@@ -386,6 +386,40 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(fs.existsSync(path.join(dir, 'session-a.json'))).toBe(true);
   });
 
+  it('#521: a failed read of the list directory is reported on stderr, recall still shown', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    // Make the hook's directory read fail with EPERM, only for that directory.
+    const loader = path.join(testDir, 'fault.mjs');
+    fs.writeFileSync(loader, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const original = fs.readdirSync;
+fs.readdirSync = function (p, ...rest) {
+  if (String(p) === ${JSON.stringify(dir)}) { const e = new Error('controlled EPERM'); e.code = 'EPERM'; throw e; }
+  return original.call(this, p, ...rest);
+};
+syncBuiltinESMExports();
+`);
+    const result = spawnSync('node', ['--import', loader, path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('auth-decision');
+    expect(result.stderr).toContain('could not prune');
+    expect(result.stderr).toContain('controlled EPERM');
+  });
+
   it('should scope throttle state to MEMESH_DB_PATH directory', () => {
     const db = createTestDb();
     db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');

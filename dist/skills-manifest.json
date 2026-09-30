@@ -158,8 +158,8 @@
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
-      "sha256": "f23e880efe0298c30dba7a558562ca85bbd5df690b451b58ef66176ce7d625ff",
-      "bytes": 25119
+      "sha256": "14504c522d9f8193ab8bc29dc13c17f7a953057e5a1540d0d680558892d1877a",
+      "bytes": 25477
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
@@ -193,8 +193,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "965dc824da4913583fc3c6724446aedea6edc0141413346db1f8298929e04475",
-      "bytes": 111634
+      "sha256": "0ec4bd1ff39a855d26c1e37dbe346881807e7daa5311bd19df199a7c7e16b013",
+      "bytes": 111964
     },
     {
       "path": "scripts/hooks/session-summary.js",

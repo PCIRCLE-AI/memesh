@@ -1075,8 +1075,11 @@ process.stdin.on('end', async () => {
       }
       // The old machine-wide list, from before #521.
       if (existsSync(legacyThrottlePath)) unlinkSync(legacyThrottlePath);
-    } catch {
-      // Non-critical
+    } catch (err) {
+      // The list stays, so this session's next recall would stay suppressed:
+      // say so, and record it, rather than look like a clean start.
+      try { process.stderr.write(`[memesh session-start] pre-edit reset: ${err?.message || err}\n`); } catch {}
+      record({ outcome: 'error', reason: `pre-edit reset: ${hookErrorReason(err)}` });
     }
 
     // Every banner below this line is a PROMISE that memories will be saved,
