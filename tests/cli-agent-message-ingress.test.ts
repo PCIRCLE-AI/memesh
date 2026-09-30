@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -525,12 +526,136 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
+  // The preview runs the real apply on a throwaway copy, so it agrees with --apply
+  // for any index the database carries: partial, collated, expression, or non-unique.
+  describe.skipIf(process.platform === 'win32')('#519: preview and apply agree on whatever constraints the database has', () => {
+    const cases: Array<[string, string, string, string]> = [
+      ['a partial UNIQUE index keeps its predicate', "CREATE UNIQUE INDEX extra_partial ON agent_message_cursors(project,event_sequence) WHERE recipient='special'", 'alpha', 'beta'],
+      ['a NOCASE UNIQUE index keeps its collation', 'DROP INDEX idx_agent_message_cursors_unique_scope_sequence; CREATE UNIQUE INDEX idx_agent_message_cursors_unique_scope_sequence ON agent_message_cursors(project,recipient COLLATE NOCASE,event_sequence)', 'Reviewer', 'reviewer'],
+      ['a same-name NON-unique index stays non-unique', 'DROP INDEX idx_agent_message_cursors_unique_scope_sequence; CREATE INDEX idx_agent_message_cursors_unique_scope_sequence ON agent_message_cursors(project,recipient,event_sequence)', 'reviewer', 'reviewer'],
+      ['an expression UNIQUE index compares its expression', 'CREATE UNIQUE INDEX extra_expression ON agent_message_cursors(project,lower(recipient),event_sequence)', 'alpha', 'beta'],
+    ];
+    for (const [name, indexSql, oldRecipient, newRecipient] of cases) {
+      it(name, () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-constraint-'));
+        try {
+          const dbFile = path.join(home, 'seeded.db');
+          const db = openDatabase(dbFile);
+          try {
+            const insert = db.prepare('INSERT INTO agent_message_cursors VALUES (?,?,?,?,?)');
+            insert.run('old-probe', 'mv-old', oldRecipient, 42, '2026-09-30');
+            insert.run('new-probe', 'mv-new', newRecipient, 42, '2026-09-30');
+            db.exec(indexSql);
+          } finally {
+            closeDatabase();
+          }
+          const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile };
+          const digest = () => createHash('sha256').update(fs.readFileSync(dbFile)).digest('hex');
+          const before = digest();
+          const preview = rename(env, '--json');
+          expect(preview.status, preview.stderr).toBe(0);
+          expect(digest()).toBe(before);
+          const apply = rename(env, '--apply', '--json');
+          expect(apply.status, apply.stderr).toBe(0);
+          const p = JSON.parse(preview.stdout);
+          const a = JSON.parse(apply.stdout);
+          expect(p.messageRowsBlocked).toBe(a.messageRowsBlocked);
+          expect(p.messageRows).toBe(a.messageRows);
+          const reader = new DatabaseSync(dbFile, { readOnly: true });
+          try {
+            expect((reader.prepare("SELECT count(*) AS n FROM agent_message_cursors WHERE project = 'mv-old'").get() as { n: number }).n).toBe(a.messageRowsBlocked);
+          } finally {
+            reader.close();
+          }
+        } finally {
+          fs.rmSync(home, { recursive: true, force: true });
+        }
+      });
+    }
+
+    for (const [name, trigger, otherTag] of [
+      ['an ignored tag UPDATE', 'CREATE TRIGGER ignore_tag BEFORE UPDATE OF tag ON tags BEGIN SELECT RAISE(IGNORE); END', false],
+      ['an ignored tag DELETE (a merge)', 'CREATE TRIGGER ignore_tag_delete BEFORE DELETE ON tags BEGIN SELECT RAISE(IGNORE); END', true],
+    ] as const) {
+      it(`${name} fails and rolls back instead of splitting a memory from its messages`, () => {
+        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-tagignore-'));
+        try {
+          const dbFile = seedMessageScopes(home, (db) => {
+            const entity = db.prepare("INSERT INTO entities (name, type) VALUES ('tag-ignore', 'note')").run();
+            const addTag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+            addTag.run(entity.lastInsertRowid, 'project:mv-old');
+            if (otherTag) addTag.run(entity.lastInsertRowid, 'project:mv-new');
+            db.exec(trigger);
+          });
+          const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile };
+          const state = () => {
+            const reader = new DatabaseSync(dbFile, { readOnly: true });
+            try {
+              return {
+                tags: reader.prepare('SELECT tag FROM tags ORDER BY tag').all(),
+                scopes: AGENT_MESSAGE_PROJECT_TABLES.map((t) => reader.prepare(`SELECT project, count(*) AS n FROM ${t} GROUP BY project ORDER BY project`).all()),
+              };
+            } finally {
+              reader.close();
+            }
+          };
+          const before = state();
+          for (const extra of [[], ['--apply']]) {
+            const r = rename(env, ...extra);
+            expect(r.status).toBe(1);
+            expect(r.stderr.trim().split('\n')).toHaveLength(1);
+            expect(r.stderr).not.toContain('    at ');
+            expect(state()).toEqual(before);
+          }
+        } finally {
+          fs.rmSync(home, { recursive: true, force: true });
+        }
+      });
+    }
+
+    it('an update that a trigger silently ignores fails and rolls back, in the preview and in --apply', () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-ignore-'));
+      try {
+        const dbFile = seedMessageScopes(home, (db) => {
+          db.exec("CREATE TRIGGER ignore_move BEFORE UPDATE OF project ON agent_messages BEGIN SELECT RAISE(IGNORE); END");
+        });
+        const tmp = path.join(home, 'tmp');
+        fs.mkdirSync(tmp);
+        const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile, TMPDIR: tmp };
+        const scopes = () => {
+          const reader = new DatabaseSync(dbFile, { readOnly: true });
+          try {
+            return AGENT_MESSAGE_PROJECT_TABLES.map((t) => reader.prepare(`SELECT project, count(*) AS n FROM ${t} GROUP BY project ORDER BY project`).all());
+          } finally {
+            reader.close();
+          }
+        };
+        const before = scopes();
+        for (const extra of [[], ['--apply']]) {
+          const r = rename(env, ...extra);
+          expect(r.status).toBe(1);
+          expect(r.stderr.trim().split('\n')).toHaveLength(1);
+          expect(r.stderr).not.toContain('    at ');
+          expect(scopes()).toEqual(before);
+          // The preview's throwaway copy is deleted on the failure path too.
+          expect(fs.readdirSync(tmp).filter((n) => n.startsWith('memesh-rename-preview-'))).toEqual([]);
+        }
+      } finally {
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+  });
+
   it.skipIf(process.platform === 'win32')('#519: the printed message counts equal what was moved and what was left', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-count-'));
     try {
       const dbFile = seedMessageScopes(home);
-      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile };
+      const tmp = path.join(home, 'tmp');
+      fs.mkdirSync(tmp);
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile, TMPDIR: tmp };
       const p = JSON.parse(rename(env, '--json').stdout);
+      // The preview's throwaway copy is deleted when the preview succeeds.
+      expect(fs.readdirSync(tmp).filter((n) => n.startsWith('memesh-rename-preview-'))).toEqual([]);
       expect(p.messageRowsBlocked).toBeGreaterThan(0);
       const moved = p.messageRows - p.messageRowsBlocked;
       const dry = rename(env);
@@ -543,6 +668,188 @@ describe('CLI durable-message ingress', () => {
         const left = AGENT_MESSAGE_PROJECT_TABLES.reduce(
           (n, t) => n + (reader.prepare(`SELECT count(*) AS n FROM ${t} WHERE project = 'mv-old'`).get() as { n: number }).n, 0);
         expect(left).toBe(p.messageRowsBlocked);
+      } finally {
+        reader.close();
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('#519: a refused same-name rename leaves the database untouched, even with --apply', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-same-ro-'));
+    const { DatabaseSync } = await import('node:sqlite');
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'stale-same', '--type', 'note', '--obs', 'x', '--tags', 'project:same-ro',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      const dbFile = path.join(home, '.memesh', 'knowledge-graph.db');
+      const writer = new DatabaseSync(dbFile);
+      writer.exec("UPDATE entities SET confidence = 0.8, last_accessed_at = '2020-01-01' WHERE name = 'stale-same'; DELETE FROM memesh_metadata WHERE key = 'last_decay_at'");
+      writer.close();
+      for (const extra of [[], ['--apply']]) {
+        const r = spawnSync(process.execPath, cliArgs('kg', 'rename-project', '--from', 'same-ro', '--to', 'same-ro', ...extra), { encoding: 'utf8', env });
+        expect(r.status).toBe(1);
+        expect(r.stderr.trim().split('\n')).toHaveLength(1);
+        expect(r.stderr).toContain('same project');
+        const reader = new DatabaseSync(dbFile, { readOnly: true });
+        try {
+          expect((reader.prepare("SELECT confidence FROM entities WHERE name = 'stale-same'").get() as { confidence: number }).confidence).toBe(0.8);
+          expect(reader.prepare("SELECT value FROM memesh_metadata WHERE key = 'last_decay_at'").get()).toBeUndefined();
+        } finally {
+          reader.close();
+        }
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('#519: with no database yet, listing says so and exits 0, and nothing is created', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-nodb-'));
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const list = spawnSync(process.execPath, cliArgs('kg', 'rename-project'), { encoding: 'utf8', env });
+      expect(list.status, list.stderr).toBe(0);
+      expect(list.stdout).toContain('No MeMesh database yet');
+      const json = spawnSync(process.execPath, cliArgs('kg', 'rename-project', '--json'), { encoding: 'utf8', env });
+      expect(json.status, json.stderr).toBe(0);
+      expect(JSON.parse(json.stdout)).toEqual([]);
+      const dry = spawnSync(process.execPath, cliArgs('kg', 'rename-project', '--from', 'a', '--to', 'b'), { encoding: 'utf8', env });
+      expect(dry.status).toBe(1);
+      expect(dry.stderr.trim().split('\n')).toHaveLength(1);
+      expect(dry.stderr).toContain('No MeMesh database');
+      expect(fs.existsSync(path.join(home, '.memesh', 'knowledge-graph.db'))).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('#519: list and dry run work on a database in a read-only directory, and change nothing', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-rodir-'));
+    const dir = path.join(home, '.memesh');
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'ro-dir', '--type', 'note', '--obs', 'x', '--tags', 'project:rodir-old',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      const dbFile = path.join(dir, 'knowledge-graph.db');
+      expect(fs.existsSync(`${dbFile}-wal`)).toBe(false);
+      const state = () => ({
+        db: createHash('sha256').update(fs.readFileSync(dbFile)).digest('hex'),
+        files: fs.readdirSync(dir).sort(),
+      });
+      const before = state();
+      fs.chmodSync(dir, 0o555);
+      try {
+        for (const args of [[], ['--json'], ['--from', 'rodir-old', '--to', 'rodir-new']]) {
+          const r = spawnSync(process.execPath, cliArgs('kg', 'rename-project', ...args), { encoding: 'utf8', env });
+          expect(r.status, r.stderr).toBe(0);
+          expect(r.stderr).toBe('');
+          expect(r.stdout).toContain('rodir-old');
+          expect(state()).toEqual(before);
+        }
+        // An EMPTY write-ahead log holds no changes, so it is read as immutable too.
+        fs.chmodSync(dir, 0o755);
+        fs.writeFileSync(`${dbFile}-wal`, Buffer.alloc(0));
+        fs.chmodSync(dir, 0o555);
+        const emptyWal = spawnSync(process.execPath, cliArgs('kg', 'rename-project'), { encoding: 'utf8', env });
+        expect(emptyWal.status, emptyWal.stderr).toBe(0);
+        expect(emptyWal.stdout).toContain('rodir-old');
+        expect(state().db).toBe(before.db);
+        // A write-ahead log that may hold unread changes is not read as immutable: one line, exit 1.
+        fs.chmodSync(dir, 0o755);
+        fs.writeFileSync(`${dbFile}-wal`, Buffer.alloc(32));
+        fs.chmodSync(dir, 0o555);
+        const refused = spawnSync(process.execPath, cliArgs('kg', 'rename-project'), { encoding: 'utf8', env });
+        expect(refused.status).toBe(1);
+        expect(refused.stderr.trim().split('\n')).toHaveLength(1);
+        expect(refused.stderr).not.toContain('    at ');
+      } finally {
+        fs.chmodSync(dir, 0o755);
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('#519: a symlinked database path finds the real write-ahead log, so a non-empty one is never read as immutable', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-symlink-'));
+    const dir = path.join(home, '.memesh');
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'link-seed', '--type', 'note', '--obs', 'x', '--tags', 'project:link-old',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      const link = path.join(home, 'link.db');
+      fs.symlinkSync(path.join(dir, 'knowledge-graph.db'), link);
+      const linked = { ...env, MEMESH_DB_PATH: link };
+      fs.chmodSync(dir, 0o555);
+      try {
+        // No write-ahead log: nothing unread, so the immutable read works through the link.
+        const clean = spawnSync(process.execPath, cliArgs('kg', 'rename-project'), { encoding: 'utf8', env: linked });
+        expect(clean.status, clean.stderr).toBe(0);
+        expect(clean.stdout).toContain('link-old');
+        // A non-empty log beside the REAL file may hold changes the immutable read would miss.
+        fs.chmodSync(dir, 0o755);
+        fs.writeFileSync(path.join(dir, 'knowledge-graph.db-wal'), Buffer.alloc(32));
+        fs.chmodSync(dir, 0o555);
+        const refused = spawnSync(process.execPath, cliArgs('kg', 'rename-project'), { encoding: 'utf8', env: linked });
+        expect(refused.status).toBe(1);
+        expect(refused.stderr.trim().split('\n')).toHaveLength(1);
+        expect(refused.stderr).not.toContain('    at ');
+      } finally {
+        fs.chmodSync(dir, 0o755);
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('#519: listing a database with no tags table is one line and exit 1, not a stack trace', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-empty-'));
+    try {
+      const dir = path.join(home, '.memesh');
+      fs.mkdirSync(dir);
+      const dbFile = path.join(dir, 'knowledge-graph.db');
+      const empty = new DatabaseSync(dbFile);
+      empty.exec('CREATE TABLE unrelated (a)');
+      empty.close();
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const r = spawnSync(process.execPath, cliArgs('kg', 'rename-project'), { encoding: 'utf8', env });
+      expect(r.status).toBe(1);
+      expect(r.stderr.trim().split('\n')).toHaveLength(1);
+      expect(r.stderr).not.toContain('    at ');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('#519: --apply without --from and --to is refused before the database is opened', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-applyonly-'));
+    const { DatabaseSync } = await import('node:sqlite');
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'stale-applyonly', '--type', 'note', '--obs', 'x', '--tags', 'project:applyonly',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      const dbFile = path.join(home, '.memesh', 'knowledge-graph.db');
+      const writer = new DatabaseSync(dbFile);
+      writer.exec("UPDATE entities SET confidence = 0.8, last_accessed_at = '2020-01-01' WHERE name = 'stale-applyonly'; DELETE FROM memesh_metadata WHERE key = 'last_decay_at'");
+      writer.close();
+      const r = spawnSync(process.execPath, cliArgs('kg', 'rename-project', '--apply'), { encoding: 'utf8', env });
+      expect(r.status).toBe(1);
+      expect(r.stderr.trim().split('\n')).toHaveLength(1);
+      expect(r.stderr).toContain('--apply');
+      const reader = new DatabaseSync(dbFile, { readOnly: true });
+      try {
+        expect((reader.prepare("SELECT confidence FROM entities WHERE name = 'stale-applyonly'").get() as { confidence: number }).confidence).toBe(0.8);
+        expect(reader.prepare("SELECT value FROM memesh_metadata WHERE key = 'last_decay_at'").get()).toBeUndefined();
       } finally {
         reader.close();
       }

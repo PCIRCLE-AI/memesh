@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import {
   openDatabase, closeDatabase, getDatabase, reindexFts,
 } from '../../db.js';
-import { MemeshDatabase } from '../../storage/sqlite.js';
+import type { MemeshDatabase } from '../../storage/sqlite.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { readConfig, updateConfig } from '../../core/config.js';
@@ -2256,7 +2256,7 @@ kgCmd
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
     const run = async (to: string, db?: MemeshDatabase): Promise<void> => {
-      const { listProjectTags, renameProjectTag } = await import('../../core/project-tags.js');
+      const { listProjectTags, renameProjectTag, hasRenameWork } = await import('../../core/project-tags.js');
 
       // List mode — no --from/--to: show the current project-tag distribution
       // so the user can spot splits (e.g. tim vs TIM) before mapping them.
@@ -2269,17 +2269,17 @@ kgCmd
         console.log(`\nRewrite one with:  memesh kg rename-project --from <old> --to <new>   (add --apply to write)`);
         return;
       }
-      // Dry-run preview first (always computed). A refusal (renaming a
-      // project to itself, #519) is one line and exit 1, not a stack trace.
-      let preview: ReturnType<typeof renameProjectTag>;
-      try {
-        preview = renameProjectTag(opts.from, to, { apply: false, db });
-      } catch (err) {
-        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-        process.exitCode = 1;
-        return;
-      }
       if (!opts.apply) {
+        // The preview runs the real apply on a throwaway copy; any failure is
+        // one line and exit 1, not a stack trace.
+        let preview: ReturnType<typeof renameProjectTag>;
+        try {
+          preview = renameProjectTag(opts.from, to, { apply: false, db });
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exitCode = 1;
+          return;
+        }
         if (opts.json) { console.log(JSON.stringify({ ...preview, dryRun: true }, null, 2)); return; }
         console.log(`Dry-run: project:${opts.from} → project:${to}`);
         console.log(`  ${preview.affectedEntities} entit${preview.affectedEntities === 1 ? 'y' : 'ies'} carry project:${opts.from}`);
@@ -2292,7 +2292,15 @@ kgCmd
         return;
       }
 
-      if (preview.affectedEntities === 0 && preview.messageRows === 0) {
+      let hasWork: boolean;
+      try {
+        hasWork = hasRenameWork(opts.from);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (!hasWork) {
         console.log(`Nothing carries project ${opts.from} — no entity tags and no agent-message rows. Nothing to do.`);
         return;
       }
@@ -2347,10 +2355,18 @@ kgCmd
       process.exitCode = 1;
       return;
     }
+    if (opts.apply && !opts.from) {
+      console.error('Error: --apply needs both --from and --to.');
+      process.exitCode = 1;
+      return;
+    }
     let to = '';
     if (opts.from && opts.to) {
       try {
         to = requireAgentScopeArg(opts.to, 'project', '--to');
+        const { sameProjectRefusal } = await import('../../core/project-tags.js');
+        const refusal = sameProjectRefusal(opts.from, to);
+        if (refusal) throw new Error(refusal);
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -2365,9 +2381,21 @@ kgCmd
       await withDatabase(() => run(to));
       return;
     }
+    // No database yet is a true answer, not a fault: say so and create nothing.
+    if (!fs.existsSync(getDbPath())) {
+      if (opts.from) {
+        console.error(`Error: No MeMesh database at ${getDbPath()}, so nothing carries project ${opts.from}. Check HOME and MEMESH_DB_PATH.`);
+        process.exitCode = 1;
+      } else if (opts.json) {
+        console.log('[]');
+      } else {
+        console.log(`No MeMesh database yet (${getDbPath()}); nothing to list.`);
+      }
+      return;
+    }
     let readOnlyDb: MemeshDatabase;
     try {
-      readOnlyDb = new MemeshDatabase(getDbPath(), { readOnly: true });
+      readOnlyDb = (await import('../../core/project-tags.js')).openReadOnlyForPreview(getDbPath());
     } catch (err) {
       console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
       process.exitCode = 1;
@@ -2375,6 +2403,9 @@ kgCmd
     }
     try {
       await run(to, readOnlyDb);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
     } finally {
       readOnlyDb.close();
     }
