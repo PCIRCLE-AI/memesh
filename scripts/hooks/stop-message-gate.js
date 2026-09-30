@@ -31,9 +31,8 @@ import {
   writePrivateJson,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
-import { pruneNudgeState } from './_stop-notes.js';
+import { pruneSessionState, SESSION_ID_RE } from './_stop-notes.js';
 
-const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
 /** Newest blocked-for ids kept per session — bounds the state file. */
 const MAX_BLOCKED_IDS = 2000;
 
@@ -137,7 +136,7 @@ process.stdin.on('end', () => {
     const dir = join(getMemeshDirFromDbPath(), 'stop-message-gate');
     ensurePrivateDir(dir);
     try {
-      pruneNudgeState(dir, Date.now());
+      pruneSessionState(dir, Date.now());
     } catch { /* best-effort; a full directory still blocks correctly, just holds more files */ }
     const statePath = join(dir, `${sessionId}.json`);
     let state = null;

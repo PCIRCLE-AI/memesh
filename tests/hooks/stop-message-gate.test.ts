@@ -129,6 +129,16 @@ describe('Feature: the Claude Code Stop message gate blocks once per waiting mes
       .map((line) => JSON.parse(line) as { hook: string; outcome: string; reason?: string })
       .filter((record) => record.hook === 'stop-message-gate');
 
+  it('a session id longer than 128 characters is skipped with a recorded reason, not processed', async () => {
+    const message = await send('gate-principal');
+    seedHostAccept(message);
+
+    const result = runGate({ session_id: 'a'.repeat(129) });
+
+    expect(result.stdout.trim()).toBe('');
+    expect(ledger().at(-1)).toMatchObject({ outcome: 'skipped', reason: expect.stringContaining('no usable session_id') });
+  });
+
   it('blocks once with the reason, for a delivery that has host_accept but no intake', async () => {
     const message = await send('gate-principal');
     seedHostAccept(message);
