@@ -468,19 +468,21 @@ function formatIssue(issue: z.ZodIssue): string {
  * recall that succeeds from Codex fails from Gemini with a type error. At
  * this boundary a null-valued property can only mean "left blank" — no
  * memesh tool uses null as a sentinel — so it is dropped before validation.
- * Array ELEMENTS are left alone: a null inside `observations` is malformed
- * data and must still be rejected, not silently swallowed.
+ *
+ * Only the tool's own parameters (the top level) are touched. What a
+ * parameter CARRIES is data and is passed on as sent: a message payload, an
+ * import bundle or a work-package result may hold nulls on purpose, and
+ * recursing into them rewrote a message payload while `send` reported
+ * success (#517). A null element inside `observations` likewise reaches the
+ * schema and is rejected, not silently swallowed.
  */
 function stripNullProps(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stripNullProps);
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value)) {
-      if (v !== null) out[k] = stripNullProps(v);
-    }
-    return out;
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (v !== null) out[k] = v;
   }
-  return value;
+  return out;
 }
 
 function parseOrFail<T>(schema: z.ZodType<T>, args: unknown):
@@ -490,7 +492,7 @@ function parseOrFail<T>(schema: z.ZodType<T>, args: unknown):
 
   // Unknown keys are rejected BEFORE any null-stripping.
   //
-  // `stripNullProps` deletes every null-valued property, and it used to run
+  // `stripNullProps` deletes every null-valued top-level property, and it used to run
   // first — so `.strict()` never saw a key whose value happened to be null.
   // `forget({name, observations: null})` (plural: the word `remember` uses)
   // therefore lost the key entirely, fell through to the archive-the-entity

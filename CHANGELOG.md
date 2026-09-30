@@ -4,6 +4,10 @@ All notable changes to MeMesh are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- A message sent through the MCP `message` tool keeps every `null` in its JSON payload. Before, the MCP boundary removed each null-valued key at any depth of the payload while `send` still reported success, so the recipient got different data than the CLI or HTTP would have stored (#517). A null-valued top-level tool parameter still means "left blank".
+
 ## [4.10.11] — 2026-09-29
 
 Includes the changes documented under 4.10.10 and 4.10.9 below; neither was published to npm.
