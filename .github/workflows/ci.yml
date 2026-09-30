@@ -43,7 +43,7 @@ on:
   # precisely while the branch was hardest to reason about.
   #
   # No inputs: the branch is chosen by the ref the run is dispatched on, and
-  # every job below is unconditional — there is no `if:` in this file — so a
+  # every job below is unconditional — no job has an `if:` — so a
   # dispatched run does exactly what a pull request run does, rather than a
   # quieter subset that would make a green tick mean something different.
   #
@@ -71,55 +71,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # One leg, ubuntu/24, alongside the matrix rather than inside it: coverage
-  # instruments every worker and roughly doubles a run, and the numbers do not
-  # differ by OS enough to buy three more instrumented legs. Before this job,
-  # `npm run test:coverage` had ZERO automated callers — installed provider,
-  # measured include globs, and nothing anywhere that would ever go red.
-  coverage:
-    name: Coverage floor
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-          fetch-tags: true
-          fetch-depth: 0
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '24'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      # The suite spawns the built CLI, hooks and packaged binaries; without
-      # dist/ those tests fail for a reason that has nothing to do with
-      # coverage.
-      - name: Build
-        run: npm run build
-
-      - name: Run tests with the coverage floor
-        run: npm run test:coverage
-
   build-and-test:
     name: Build & Test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
-    # 40, not 15 — measured, twice (2026-08-13, runs 31697660004 and
-    # 31711750310, attempt 1 of each). A degraded windows-latest runner ran
-    # the suite at ~5× its usual pace: steady per-file progress right up to
-    # the kill, no hang — 51/127 and 48/127 test files done when the
-    # 15-minute cap cancelled the job — which projects to ~34 minutes
-    # end-to-end. A healthy Windows leg takes 6–10 minutes and ubuntu ~2, so
-    # this cap costs nothing when runners are healthy; it exists so
-    # runner-lottery slowness self-recovers as a slow green instead of a
-    # cancelled leg a human has to notice and re-run. The suite is fully
-    # serial (shared SQLite HOME) and spawn-heavy, which is why Windows
-    # magnifies runner variance this much.
+    # 40 is a bound, not a target. Measured over 19 runs (2026-09-28..30):
+    # green ubuntu legs take 5-15 minutes, macOS 7-13, Windows 22-40. Four of
+    # 38 Windows legs hit this cap with no failing test (one had finished
+    # 223 of 286 files) — a slower runner paying the same per-test cost, not
+    # a hang. That cost is Windows-only: tests that create a fresh temp dir
+    # and SQLite database per test pay ~1 s each there and ~30 ms on ubuntu.
+    # Raising the cap would only move the cancellations; removing that
+    # per-test cost is the fix. The suite is fully serial (shared SQLite
+    # HOME), so nothing inside one leg can run in parallel to absorb it.
     timeout-minutes: 40
     strategy:
       fail-fast: false
@@ -148,10 +111,21 @@ jobs:
       #        macOS/arm64 and needs a full toolchain — MSVC on Windows. One
       #        Linux leg gives early warning that Node 26 works at all
       #        without paying for a source build on three runners.
+      #
+      # ubuntu/24 also enforces the coverage floor. Coverage runs the same
+      # suite with v8 instrumentation and thresholds, and the numbers do not
+      # differ by OS enough to instrument more than one leg. It used to be a
+      # separate job on this same OS and Node, running the whole suite a
+      # second time; the first `include` entry adds `coverage` to the existing
+      # ubuntu/24 leg (it creates no new leg), so the suite runs once there.
+      # An include entry matches only the original os/node values, so it cannot attach to the Node 26 leg.
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         node: ['22', '24']
         include:
+          - os: ubuntu-latest
+            node: '24'
+            coverage: true
           - os: ubuntu-latest
             node: '26'
 
@@ -182,13 +156,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Lint (hard gate — max-warnings 0)
-        # Run BEFORE typecheck because lint is significantly faster and
-        # most regressions land here first. Fail-fast cuts CI minutes
-        # on bad PRs. Hard-gated at zero warnings since v4.2.0; new
-        # `eslint-disable` comments require explicit justification.
-        run: npm run lint
-
       - name: Build source and generated artifacts
         run: npm run build
 
@@ -208,12 +175,22 @@ jobs:
         # publish path again. Must come after Build — the mirror gate diffs what
         # the build regenerates.
         #
-        # Lint stays as its own step above for fail-fast; verify:release runs it
-        # again for ~3s, which is the cost of having one authoritative list.
+        # Its first command is `npm run lint` (zero warnings), so lint is not a
+        # separate step: that ran the same script twice in every leg.
         run: npm run verify:release
 
-      - name: Run tests
-        run: npm test -- --run
+      - name: Run tests${{ matrix.coverage && ' with the coverage floor' || '' }}
+        # Temp folders on the runner's own temp disk. On Windows, TEMP points
+        # at C:\Users\runneradmin\AppData\Local\Temp, on the OS disk, while
+        # the workspace and runner.temp are on D:. The suite creates a temp
+        # folder and a SQLite database per test, and there the Windows legs
+        # spent 1556 s of test time against 373 s on ubuntu (run 36757693602).
+        # Node's os.tmpdir() reads TEMP/TMP on Windows and TMPDIR elsewhere,
+        # so this changes nothing on ubuntu or macOS.
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: ${{ matrix.coverage && 'npm run test:coverage' || 'npm test -- --run' }}
 
       - name: Doctor (manifest + hooks integrity gate)
         # Must run AFTER the explicit build so
@@ -253,7 +230,7 @@ jobs:
             exit 1
           fi
 
-  # The three jobs below used to carry `needs: build-and-test`, which made each
+  # The jobs below used to carry `needs: build-and-test`, which made each
   # of them wait for ALL eleven matrix legs before starting. Measured on run
   # 30735734852: the matrix finished at 06:28:38, these started at 06:28:40, and
   # the run ended at 06:30:46 — a 2m06s serial tail on a 10m15s run, 20% of every
@@ -265,7 +242,7 @@ jobs:
   # and on a public repo that trade is backwards: GitHub reports
   # `billable.duration_ms = 0` for every leg of this workflow, so the currency is
   # wall-clock feedback time, and this was paying 2 minutes of it on every
-  # PASSING run to save three ubuntu jobs on the rarer failing one.
+  # PASSING run to save the ubuntu jobs on the rarer failing one.
   package-smoke:
     name: Packaged Artifact Smoke Test
     runs-on: ubuntu-latest
@@ -298,35 +275,6 @@ jobs:
       # step names the derivation — there is no version here to go stale.
       - name: Verify every derived packaged upgrade path
         run: npm run test:packaged:upgrade
-
-  dashboard-e2e-smoke:
-    name: Packaged Dashboard E2E Smoke
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-        with:
-          persist-credentials: false
-
-      - name: Setup Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: '22'
-          cache: 'npm'
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-
-      - name: Build
-        run: npm run build
-
-      - name: Run packaged dashboard e2e smoke
-        run: npm run test:e2e-dashboard
 
   # The "verify before publish" gate (per user directive 2026-05-08).
   # Catches drift that unit tests miss — e.g., installation.test.ts asserting
@@ -367,6 +315,11 @@ jobs:
   # hash) can therefore be compared with what CI saw for the same tree; a
   # receipt for a different tree is a finding. The test step before it keeps
   # scripts/verify.mjs and scripts/verify-receipt.mjs honest about themselves.
+  #
+  # This is the only job that runs the packaged dashboard e2e on a pull
+  # request. A separate job used to run the same command on the same OS and
+  # Node; tests/release-scripts-safety.test.ts pins that this job runs the
+  # full verify and that the e2e step is still in scripts/verify.config.json.
   sdlc-verify:
     name: SDLC verify
     runs-on: ubuntu-latest

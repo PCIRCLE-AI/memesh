@@ -362,6 +362,77 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(releaseJob).not.toContain('--quick');
   });
 
+  // The coverage floor and the packaged dashboard e2e each used to be their
+  // own job, and their required check names were what guaranteed they ran on
+  // every pull request. Both now live inside other jobs, so these two tests
+  // are what notices if either one quietly stops running.
+  function ciJob(id: string): string {
+    const ci = read('.github/workflows/ci.yml');
+    return ci.match(new RegExp(`\\n {2}${id}:\\n[\\s\\S]*?(?=\\n {2}[A-Za-z0-9_-]+:\\n|$)`))?.[0] ?? '';
+  }
+  // The one step of a job whose `run:` line is exactly `run`. A step-level
+  // `if:` or `continue-on-error` turns it into a green step that proved nothing.
+  function unconditionalStep(job: string, run: string): string {
+    const step = job.split(/\n {6}- /).find((s) => s.split('\n').some((line) => line.trim() === `run: ${run}`)) ?? '';
+    expect(step, `no step runs exactly: ${run}`).not.toBe('');
+    expect(step).not.toMatch(/\n\s+if:/);
+    expect(step).not.toContain('continue-on-error');
+    return step;
+  }
+
+  it('enforces the coverage floor in the ubuntu/Node 24 matrix leg, unconditionally', () => {
+    const buildJob = ciJob('build-and-test');
+    expect(buildJob).not.toBe('');
+    // A job-level `if:` can skip the whole leg, and GitHub counts a skipped
+    // job as a passing check.
+    expect(buildJob).not.toMatch(/\n {4}if:/);
+    expect(buildJob).not.toContain('continue-on-error');
+    // Adds `coverage` to the existing ubuntu/24 combination; it is not a new leg.
+    expect(buildJob).toMatch(/- os: ubuntu-latest\n\s+node: '24'\n\s+coverage: true\n/);
+    unconditionalStep(buildJob, "${{ matrix.coverage && 'npm run test:coverage' || 'npm test -- --run' }}");
+    const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+    expect(pkg.scripts['test:coverage']).toBe('node scripts/run-tests-isolated.mjs --coverage');
+    // The leg itself must exist: an `exclude:` would drop it without an `if:`.
+    expect(buildJob).not.toMatch(/\n\s+exclude:/);
+    // The floor must not be lowered in passing (raising it is fine).
+    const thresholds = read('vitest.config.ts').match(/thresholds:\s*\{([^}]*)\}/)?.[1] ?? '';
+    for (const [metric, floor] of [['statements', 52], ['branches', 48], ['functions', 55], ['lines', 54]] as const) {
+      expect(Number(thresholds.match(new RegExp(`${metric}:\\s*(\\d+)`))?.[1] ?? 0), metric).toBeGreaterThanOrEqual(floor);
+    }
+    // Lint runs inside verify:release; this step is its only home in the leg.
+    unconditionalStep(buildJob, 'npm run verify:release');
+  });
+
+  it('puts the test temp folders on the runner temp disk, on every leg', () => {
+    const step = ciJob('build-and-test').split(/\n {6}- /).find((s) => s.includes('npm test -- --run')) ?? '';
+    expect(step, 'no test step').not.toBe('');
+    expect(step).toMatch(/\n\s+TEMP: \$\{\{ runner\.temp \}\}\n/);
+    expect(step).toMatch(/\n\s+TMP: \$\{\{ runner\.temp \}\}\n/);
+  });
+
+  it('runs the packaged dashboard e2e on every pull request, inside SDLC verify', () => {
+    const sdlcJob = ciJob('sdlc-verify');
+    expect(sdlcJob).not.toBe('');
+    expect(sdlcJob).not.toMatch(/\n {4}if:/);
+    expect(sdlcJob).not.toMatch(/\n {4}continue-on-error/);
+    unconditionalStep(sdlcJob, 'npx playwright install --with-deps chromium');
+    // The full run, not `--journeys`: the full run is the one with the suite.
+    unconditionalStep(sdlcJob, 'node scripts/verify.mjs');
+    const config = JSON.parse(read('scripts/verify.config.json')) as {
+      verify: { steps: Array<{ command: string; args?: string[] }> };
+    };
+    const commands = config.verify.steps.map((step) => [step.command, ...(step.args ?? [])].join(' '));
+    expect(commands).toEqual(
+      expect.arrayContaining([
+        'npm run build',
+        'npm run verify:release',
+        'node scripts/run-tests-isolated.mjs',
+        'npm run test:packaged',
+        'npm run test:e2e-dashboard',
+      ]),
+    );
+  });
+
   it('fails the sync gate when an installed adapter artifact is missing', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'message-sync-fixture-'));
     const write = (relative: string, content = '') => {
