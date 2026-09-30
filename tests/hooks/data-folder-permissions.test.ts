@@ -178,13 +178,17 @@ describe.skipIf(!posixUser)('#520 RO3: every hook database open passes the same 
     fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  const hooks: Array<[string, (cwd: string) => object]> = [
-    ['session-start.js', (cwd) => ({ cwd, source: 'startup', session_id: 'ro3-s1' })],
-    ['guard-check.js', (cwd) => ({ cwd, tool_name: 'Bash', tool_input: { command: 'ls' } })],
-    ['pre-edit-recall.js', (cwd) => ({ cwd, tool_name: 'Edit', tool_input: { file_path: '/src/x.ts' } })],
-    ['stop-message-gate.js', (cwd) => ({ cwd, session_id: 's-ro3-1', hook_event_name: 'Stop', stop_hook_active: false })],
+  // Each hook's outcome record for the refusal: every error row it must write.
+  const refusedRow = 'uncaught MEMESH_SIDECAR_PERMISSIONS';
+  const hooks: Array<[string, (cwd: string) => object, string[]]> = [
+    // Only the row it always writes: its session-launcher row appears only when
+    // a claude process is found among the test's ancestors, which varies by runner.
+    ['session-start.js', (cwd) => ({ cwd, source: 'startup', session_id: 'ro3-s1' }), [refusedRow]],
+    ['guard-check.js', (cwd) => ({ cwd, tool_name: 'Bash', tool_input: { command: 'ls' } }), [refusedRow]],
+    ['pre-edit-recall.js', (cwd) => ({ cwd, tool_name: 'Edit', tool_input: { file_path: '/src/x.ts' } }), [refusedRow]],
+    ['stop-message-gate.js', (cwd) => ({ cwd, session_id: 's-ro3-1', hook_event_name: 'Stop', stop_hook_active: false }), [refusedRow]],
   ];
-  for (const [hook, input] of hooks) {
+  for (const [hook, input, errorRows] of hooks) {
     it(`${hook} leaves the owner-read-only -wal/-shm as they are and says why it did not open`, () => {
       const r = spawnSync(process.execPath, [path.resolve('scripts/hooks', hook)], {
         input: JSON.stringify(input(home)), env, encoding: 'utf8', timeout: 20000,
@@ -193,7 +197,11 @@ describe.skipIf(!posixUser)('#520 RO3: every hook database open passes the same 
       expect(sidecarsWritable()).toEqual([false, false]);
       const ledgerPath = path.join(dataDir, 'hook-outcomes.jsonl');
       const ledger = fs.existsSync(ledgerPath) ? fs.readFileSync(ledgerPath, 'utf8') : '';
-      expect(`${r.stderr}${ledger}`).toMatch(/fewer owner permissions|MEMESH_SIDECAR_PERMISSIONS/);
+      // The refusal is on the hook's own outcome record, not only on stderr.
+      const reasons = ledger.split('\n').filter(Boolean).map((line) => JSON.parse(line) as { hook?: string; outcome?: string; reason?: string })
+        .filter((row) => row.hook === hook.replace(/\.js$/, '') && row.outcome === 'error')
+        .map((row) => row.reason);
+      for (const reason of errorRows) expect(reasons, ledger).toContain(reason);
     });
   }
 
@@ -220,6 +228,17 @@ describe.skipIf(!posixUser)('#520 RO3: every hook database open passes the same 
     expect(r.stderr).toContain('fewer owner permissions');
     expect(sidecarsWritable()).toEqual([false, false]);
   });
+
+  for (const script of ['measure-signals.mjs', 'measure-work-topology-baseline.mjs']) {
+    it(`the ${script} audit refuses too`, () => {
+      const r = spawnSync(process.execPath, [path.resolve('scripts/audit', script), '--db', dbPath], {
+        env, encoding: 'utf8', timeout: 20000,
+      });
+      expect(r.status).toBe(2);
+      expect(r.stderr).toContain('fewer owner permissions');
+      expect(sidecarsWritable()).toEqual([false, false]);
+    });
+  }
 });
 
 // The rule above holds only if no hook can open the database another way.

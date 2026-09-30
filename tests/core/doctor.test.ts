@@ -2653,6 +2653,84 @@ describe('database failure diagnostics (F15)', () => {
     }
   });
 
+  for (const [name, refusal] of [
+    ['a read-only folder', Object.assign(
+      new Error('MeMesh: /data/.memesh is read-only and knowledge-graph.db has no -wal or -shm file there, so it cannot be opened without writing to the folder.'),
+      { fix: 'chmod u+w "/data/.memesh"' },
+    )],
+    ['a -wal/-shm with fewer owner permissions', Object.assign(
+      new Error('MeMesh: /data/.memesh/knowledge-graph.db-wal has fewer owner permissions than /data/.memesh/knowledge-graph.db.'),
+      { fix: 'chmod u+w "/data/.memesh/knowledge-graph.db-wal"', code: 'MEMESH_SIDECAR_PERMISSIONS' },
+    )],
+  ] as const) {
+    it(`does not blame the disk when MeMesh refuses ${name} (#520)`, async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      const previousEnv = process.env.MEMESH_DB_PATH;
+      process.env.MEMESH_DB_PATH = path.join(packageRoot, 'test.db');
+      try {
+        const result = await runDoctor({
+          packageRoot,
+          packageVersion: '4.1.4',
+          openDatabaseImpl: () => { throw refusal; },
+          closeDatabaseImpl: () => undefined,
+          getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+          getUpdateCheckImpl: async () => makeUpdateCheck(),
+          getCurrentInstallChannelImpl: () => 'npm-global',
+          installedPluginsPathImpl: path.join(packageRoot, 'no-such-registry.json'),
+          getInstallChannelSupportImpl: () => ({
+            channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
+            recommendedCommand: 'memesh update', guidance: '',
+          }),
+        });
+        const rows = result.checks.filter(c => c.code === 'hook-activity.query-failed' || c.code === 'capture-liveness.query-failed');
+        expect(rows.length).toBe(2);
+        for (const row of rows) {
+          expect(row.fix).not.toContain('disk is not full');
+          expect(row.fix).toContain('Database row');
+          expect(row.fix).toContain(refusal.fix);
+        }
+      } finally {
+        if (previousEnv === undefined) delete process.env.MEMESH_DB_PATH;
+        else process.env.MEMESH_DB_PATH = previousEnv;
+      }
+    });
+  }
+
+  it.skipIf(process.platform === 'win32')('shows a database its owner made read-only as a warning with the chmod that undoes it (#520)', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    const dbPath = path.join(packageRoot, 'test.db');
+    fs.writeFileSync(dbPath, '');
+    fs.chmodSync(dbPath, 0o400);
+    const previousEnv = process.env.MEMESH_DB_PATH;
+    process.env.MEMESH_DB_PATH = dbPath;
+    try {
+      const result = await runDoctor({
+        packageRoot,
+        packageVersion: '4.1.4',
+        openDatabaseImpl: () => makeDatabase(1) as never,
+        closeDatabaseImpl: () => undefined,
+        getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+        getUpdateCheckImpl: async () => makeUpdateCheck(),
+        getCurrentInstallChannelImpl: () => 'npm-global',
+        installedPluginsPathImpl: path.join(packageRoot, 'no-such-registry.json'),
+        getInstallChannelSupportImpl: () => ({
+          channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
+          recommendedCommand: 'memesh update', guidance: '',
+        }),
+      });
+      const dbCheck = result.checks.find(c => c.id === 'database');
+      expect(dbCheck!.status).toBe('warn');
+      expect(dbCheck!.summary).toContain('is read-only');
+      expect(dbCheck!.fix).toContain(`chmod u+w "${dbPath}"`);
+    } finally {
+      fs.chmodSync(dbPath, 0o600);
+      if (previousEnv === undefined) delete process.env.MEMESH_DB_PATH;
+      else process.env.MEMESH_DB_PATH = previousEnv;
+    }
+  });
+
   it('diagnoses empty database file', async () => {
     const packageRoot = createPackageRoot();
     tempRoots.push(packageRoot);

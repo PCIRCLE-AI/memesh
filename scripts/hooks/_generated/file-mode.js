@@ -27,7 +27,7 @@ export function removeGroupAndOtherAccess(target) {
         try {
             process.stderr.write(notYours
                 ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). ` +
-                    'Keep the database in a folder of your own (MEMESH_DB_PATH).\n'
+                    'Point MEMESH_DB_PATH at a database you own, in a folder you own.\n'
                 : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); ` +
                     `they may be able to read your memories. Fix it with: chmod go-rwx "${target}"\n`);
         }

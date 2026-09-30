@@ -4,7 +4,7 @@ import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
-import { guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess } from './core/file-mode.js';
+import { databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, rebuildFtsIndex, runOnceMigration, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
@@ -23,17 +23,19 @@ export function openDatabase(dbPath) {
     catch { }
     removeGroupAndOtherAccess(dir);
     guardDatabaseFiles(resolvedPath);
-    const missing = ['-wal', '-shm'].filter((suffix) => !fs.existsSync(`${resolvedPath}${suffix}`));
+    const [realPath, ...sidecars] = databaseFiles(resolvedPath);
+    const realDir = path.dirname(realPath);
+    const missing = sidecars.filter((file) => !fs.existsSync(file)).map((file) => file.slice(realPath.length));
     let folderWritable = true;
     try {
-        fs.accessSync(dir, fs.constants.W_OK);
+        fs.accessSync(realDir, fs.constants.W_OK);
     }
     catch {
         folderWritable = false;
     }
-    if (missing.length > 0 && !folderWritable && fs.existsSync(resolvedPath)) {
-        const fix = `chmod u+w "${dir}"`;
-        throw Object.assign(new Error(`MeMesh: ${dir} is read-only and ${path.basename(resolvedPath)} has no ${missing.join(' or ')} file there, ` +
+    if (missing.length > 0 && !folderWritable && fs.existsSync(realPath)) {
+        const fix = `chmod u+w "${realDir}"`;
+        throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path.basename(realPath)} has no ${missing.join(' or ')} file there, ` +
             'so it cannot be opened without writing to the folder. Copy the database to a writable folder and point ' +
             `MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`), { fix });
     }

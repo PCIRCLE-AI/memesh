@@ -20,14 +20,15 @@ export function removeGroupAndOtherAccess(target: string): void {
     if (code === 'ENOENT') return; // a sidecar that does not exist (yet)
     if (warned.has(target)) return; // said once in this process already
     warned.add(target);
-    // A folder such as /tmp belongs to someone else: chmod on it is not the
-    // owner's to run, and the way out is a folder of their own.
+    // A folder such as /tmp (or a file in it) belongs to someone else: chmod
+    // on it is not the owner's to run, and the way out is a database of their
+    // own in a folder of their own.
     const notYours = stat !== undefined && typeof process.getuid === 'function' && stat.uid !== process.getuid();
     try {
       process.stderr.write(
         notYours
           ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). ` +
-              'Keep the database in a folder of your own (MEMESH_DB_PATH).\n'
+              'Point MEMESH_DB_PATH at a database you own, in a folder you own.\n'
           : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); ` +
               `they may be able to read your memories. Fix it with: chmod go-rwx "${target}"\n`,
       );

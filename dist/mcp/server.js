@@ -26110,7 +26110,7 @@ function removeGroupAndOtherAccess(target) {
     warned.add(target);
     const notYours = stat !== void 0 && typeof process.getuid === "function" && stat.uid !== process.getuid();
     try {
-      process.stderr.write(notYours ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). Keep the database in a folder of your own (MEMESH_DB_PATH).
+      process.stderr.write(notYours ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). Point MEMESH_DB_PATH at a database you own, in a folder you own.
 ` : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); they may be able to read your memories. Fix it with: chmod go-rwx "${target}"
 `);
     } catch {
@@ -27132,16 +27132,18 @@ function openDatabase(dbPath) {
   }
   removeGroupAndOtherAccess(dir);
   guardDatabaseFiles(resolvedPath);
-  const missing = ["-wal", "-shm"].filter((suffix) => !fs3.existsSync(`${resolvedPath}${suffix}`));
+  const [realPath, ...sidecars] = databaseFiles(resolvedPath);
+  const realDir = path2.dirname(realPath);
+  const missing = sidecars.filter((file2) => !fs3.existsSync(file2)).map((file2) => file2.slice(realPath.length));
   let folderWritable = true;
   try {
-    fs3.accessSync(dir, fs3.constants.W_OK);
+    fs3.accessSync(realDir, fs3.constants.W_OK);
   } catch {
     folderWritable = false;
   }
-  if (missing.length > 0 && !folderWritable && fs3.existsSync(resolvedPath)) {
-    const fix = `chmod u+w "${dir}"`;
-    throw Object.assign(new Error(`MeMesh: ${dir} is read-only and ${path2.basename(resolvedPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`), { fix });
+  if (missing.length > 0 && !folderWritable && fs3.existsSync(realPath)) {
+    const fix = `chmod u+w "${realDir}"`;
+    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`), { fix });
   }
   const opening = new MemeshDatabase(resolvedPath);
   try {

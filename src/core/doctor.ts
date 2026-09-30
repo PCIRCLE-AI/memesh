@@ -17,7 +17,7 @@ import {
   type InstallChannel, type PluginHost,
 } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
-import { ownerWriteCommand } from './file-mode.js';
+import { ownerWriteCommand, SIDECAR_PERMISSIONS_CODE } from './file-mode.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
@@ -340,8 +340,19 @@ function resolveDatabasePath(): string {
   return getDbPath();
 }
 
-/** A read-only database is a permission question, not a disk one (#520). */
-function queryFailedFix(detail: string): string {
+/**
+ * A read-only database, folder or -wal/-shm is a permission question, not a
+ * disk one (#520). MeMesh's own refusals carry their command as `fix` (the
+ * -wal/-shm one also has SIDECAR_PERMISSIONS_CODE), the same signal the
+ * Database row reads, so the rows agree.
+ */
+function queryFailedFix(err: unknown): string {
+  const refusal = err as { code?: unknown; fix?: unknown } | null;
+  if (refusal?.code === SIDECAR_PERMISSIONS_CODE || typeof refusal?.fix === 'string') {
+    const run = typeof refusal.fix === 'string' ? ` Run: ${refusal.fix}` : '';
+    return `MeMesh did not open the database because of its permissions; the Database row above explains why.${run}`;
+  }
+  const detail = err instanceof Error ? err.message : String(err);
   return /readonly database|SQLITE_READONLY/i.test(detail)
     ? 'The database is read-only; the Database row above shows the command that makes it writable again.'
     : 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
@@ -1464,7 +1475,7 @@ function inspectHookActivity(
     const detail = err instanceof Error ? err.message : String(err);
     return createCheck('hook-activity', TITLE, 'fail',
       `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`,
-      queryFailedFix(detail),
+      queryFailedFix(err),
       { code: 'hook-activity.query-failed', params: { detail } });
   } finally {
     try { if (db) closeDatabaseImpl(); } catch { /* best-effort */ }
@@ -1660,7 +1671,7 @@ function inspectCaptureLiveness(
     return {
       check: createCheck('capture-liveness', TITLE, 'fail',
         `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`,
-        queryFailedFix(detail),
+        queryFailedFix(err),
         { code: 'capture-liveness.query-failed', params: { detail } }),
     };
   } finally {

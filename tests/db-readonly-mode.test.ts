@@ -357,6 +357,23 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     }
   });
 
+  it.skipIf(!posix || process.getuid?.() === 0)('a symlinked database opens when only the link\'s folder is read-only: the real file\'s folder holds the -wal/-shm', () => {
+    keepSidecars(); // the -wal/-shm a killed writer leaves beside the real file
+    const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-db-link-ro-'));
+    const link = path.join(linkDir, 'kg.db');
+    fs.symlinkSync(dbPath, link);
+    fs.chmodSync(linkDir, 0o500);
+    try {
+      const db = openDatabase(link);
+      expect(db.prepare('SELECT count(*) AS n FROM entities').get()).toEqual({ n: 0 });
+      closeDatabase();
+      expect(mode(linkDir)).toBe(0o500);
+    } finally {
+      fs.chmodSync(linkDir, 0o700);
+      fs.rmSync(linkDir, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(!posix)('a folder that belongs to someone else is named once, with a way out, not a chmod the owner cannot run', () => {
     fs.chmodSync(dir, 0o755);
     const realChmod = fs.chmodSync;
@@ -372,7 +389,7 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
     openDatabase(dbPath);
     const written = stderr.mock.calls.map((c) => String(c[0])).join('');
     expect(written.split('belongs to another user').length - 1).toBe(1);
-    expect(written).toContain('MEMESH_DB_PATH');
+    expect(written).toContain('Point MEMESH_DB_PATH at a database you own, in a folder you own.');
     expect(written).not.toContain(`chmod go-rwx "${dir}"`);
   });
 

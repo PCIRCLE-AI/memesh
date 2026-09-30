@@ -321,11 +321,6 @@
       "reason": "CI-wait helper a human (or an agent acting for one) runs interactively after pushing; its caller is the person waiting. It is not a gate because nothing it decides is enforced — its only product is an exit code and a RESULT line for whoever invoked it. Added because every prior way of waiting for checks failed: `gh pr checks --watch` returned 0 with checks pending, `| grep -cv pass` returned grep's status, hand-rolled loops stalled.",
       "triaged": "2026-08-23"
     },
-    "C3 scripts/audit/measure-work-topology-baseline.mjs": {
-      "class": "NOT-A-GATE",
-      "reason": "Read-only measurement tool a human runs once to size three work-topology decisions (work-layer share, recall-hit false negatives, opening-exploration cost). Opens the DB with readOnly and writes no file; it decides nothing and enforces nothing, so having no automated caller is correct. Surfaced 2026-08-23 when C3 stopped counting a filename written in a comment as a caller — measure-injection-tokens.mjs's header names this file, and that single prose mention had been enough to hide it and to get its entry pruned as stale.",
-      "triaged": "2026-08-23"
-    },
     "C6 tests/release-preconditions.test.ts": {
       "class": "WIRING-PIN",
       "reason": "The decision itself is behavioural: checkReleasePreconditions is a pure function and 21 tests in the same file drive both directions through it. What is read as text is scripts/finish-release.mjs, and only to pin five wiring properties whose happy path cannot be run — cutting the release creates a public GitHub Release and publishes to npm. The regression guarded is someone splitting the single `gh release create --target` back into `git tag` + `git push` + `gh release create`, whose middle leaves a pushed tag with no release: nothing publishes, and the coherence gate now sees the tag and reports ok. Break-tested 2026-08-23: 7/7 mutants killed, including both directions of this pin.",

@@ -4845,7 +4845,7 @@ function removeGroupAndOtherAccess(target) {
     warned.add(target);
     const notYours = stat !== void 0 && typeof process.getuid === "function" && stat.uid !== process.getuid();
     try {
-      process.stderr.write(notYours ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). Keep the database in a folder of your own (MEMESH_DB_PATH).
+      process.stderr.write(notYours ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). Point MEMESH_DB_PATH at a database you own, in a folder you own.
 ` : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); they may be able to read your memories. Fix it with: chmod go-rwx "${target}"
 `);
     } catch {
@@ -5941,16 +5941,18 @@ function openDatabase(dbPath) {
   }
   removeGroupAndOtherAccess(dir);
   guardDatabaseFiles(resolvedPath);
-  const missing = ["-wal", "-shm"].filter((suffix) => !fs3.existsSync(`${resolvedPath}${suffix}`));
+  const [realPath, ...sidecars] = databaseFiles(resolvedPath);
+  const realDir = path2.dirname(realPath);
+  const missing = sidecars.filter((file2) => !fs3.existsSync(file2)).map((file2) => file2.slice(realPath.length));
   let folderWritable = true;
   try {
-    fs3.accessSync(dir, fs3.constants.W_OK);
+    fs3.accessSync(realDir, fs3.constants.W_OK);
   } catch {
     folderWritable = false;
   }
-  if (missing.length > 0 && !folderWritable && fs3.existsSync(resolvedPath)) {
-    const fix = `chmod u+w "${dir}"`;
-    throw Object.assign(new Error(`MeMesh: ${dir} is read-only and ${path2.basename(resolvedPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`), { fix });
+  if (missing.length > 0 && !folderWritable && fs3.existsSync(realPath)) {
+    const fix = `chmod u+w "${realDir}"`;
+    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`), { fix });
   }
   const opening = new MemeshDatabase(resolvedPath);
   try {
@@ -56728,7 +56730,13 @@ function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImp
 function resolveDatabasePath() {
   return getDbPath();
 }
-function queryFailedFix(detail) {
+function queryFailedFix(err) {
+  const refusal = err;
+  if (refusal?.code === SIDECAR_PERMISSIONS_CODE || typeof refusal?.fix === "string") {
+    const run = typeof refusal.fix === "string" ? ` Run: ${refusal.fix}` : "";
+    return `MeMesh did not open the database because of its permissions; the Database row above explains why.${run}`;
+  }
+  const detail = err instanceof Error ? err.message : String(err);
   return /readonly database|SQLITE_READONLY/i.test(detail) ? "The database is read-only; the Database row above shows the command that makes it writable again." : "The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.";
 }
 function createCheck(id, label, status, summary, fix, i18n, fixId) {
@@ -57135,7 +57143,7 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     return createCheck("hook-activity", TITLE, "fail", `No capture hook has run since tracking began ${formatHoursAgo(measuringHours)}. Hook wiring is in place, so they should be executing and are not \u2014 nothing is being remembered.`, "Run `memesh doctor` after ending one work session. If this still says no hook has run, run `memesh install-hooks` and restart your agent.", { code: "hook-activity.never-ran", params: { hours: Math.round(measuringHours) } });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    return createCheck("hook-activity", TITLE, "fail", `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`, queryFailedFix(detail), { code: "hook-activity.query-failed", params: { detail } });
+    return createCheck("hook-activity", TITLE, "fail", `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: "hook-activity.query-failed", params: { detail } });
   } finally {
     try {
       if (db2)
@@ -57231,7 +57239,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return {
-      check: createCheck("capture-liveness", TITLE, "fail", `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, queryFailedFix(detail), { code: "capture-liveness.query-failed", params: { detail } })
+      check: createCheck("capture-liveness", TITLE, "fail", `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, queryFailedFix(err), { code: "capture-liveness.query-failed", params: { detail } })
     };
   } finally {
     try {
