@@ -61,6 +61,17 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
   // `insertFtsRow`'s current segmentation rules into an index that was never
   // migrated, which is the contentless-FTS delete mismatch the rest of this
   // release exists to eliminate.
+  db = openInitialisedDatabase(resolvedPath);
+  return db;
+}
+
+/**
+ * Open `resolvedPath` and bring it current exactly as `openDatabase` does, but
+ * hand the handle back without publishing it as the process singleton. The
+ * caller owns closing it. `kg rename-project`'s preview uses it to run the real
+ * apply on a throwaway copy.
+ */
+export function openInitialisedDatabase(resolvedPath: string): MemeshDatabase {
   const opening = new MemeshDatabase(resolvedPath);
   try {
     initialiseDatabase(opening, resolvedPath);
@@ -68,8 +79,7 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
     try { opening.close(); } catch { /* already closing down */ }
     throw err;
   }
-  db = opening;
-  return db;
+  return opening;
 }
 
 /**

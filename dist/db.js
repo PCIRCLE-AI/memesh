@@ -20,6 +20,10 @@ export function openDatabase(dbPath) {
         fs.chmodSync(dir, 0o700);
     }
     catch { }
+    db = openInitialisedDatabase(resolvedPath);
+    return db;
+}
+export function openInitialisedDatabase(resolvedPath) {
     const opening = new MemeshDatabase(resolvedPath);
     try {
         initialiseDatabase(opening, resolvedPath);
@@ -31,8 +35,7 @@ export function openDatabase(dbPath) {
         catch { }
         throw err;
     }
-    db = opening;
-    return db;
+    return opening;
 }
 function isReadonlyDbError(err) {
     const msg = err instanceof Error ? err.message : String(err);
