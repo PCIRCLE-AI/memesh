@@ -27,6 +27,8 @@ import type {
   LearnResult,
   Entity,
 } from './types.js';
+import { boundReplacedHistory, type ReplacedVersion } from './replaced-history.js';
+export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES, type ReplacedVersion } from './replaced-history.js';
 
 type EntityMetadata = {
   trust?: 'trusted' | 'untrusted';
@@ -86,35 +88,6 @@ export function remember(input: RememberInput): RememberResult {
   return db.transaction(() => rememberInTransaction(args, derived, typeGiven, db, kg)).immediate();
 }
 
-/** Most previous versions a replaced memory keeps in `metadata.replaced_history`. */
-export const REPLACED_HISTORY_MAX = 20;
-/**
- * Most bytes (serialized JSON) the history may take. The count alone did not
- * bound it: a 256 KB note replaced twenty times is megabytes of metadata on
- * one row. Oldest versions go first; a single version larger than the cap
- * keeps as many of its observations as fit and is marked `truncated`.
- */
-export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
-
-const jsonBytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
-
-/** Apply both history bounds. */
-function boundReplacedHistory(history: ReplacedVersion[]): ReplacedVersion[] {
-  let out = history.slice(-REPLACED_HISTORY_MAX);
-  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) out = out.slice(1);
-  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
-    const only = out[0];
-    const kept: string[] = [];
-    const base = { ...only, observations: [] as string[], truncated: true };
-    for (const obs of only.observations) {
-      if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES) break;
-      kept.push(obs);
-    }
-    out = [{ ...base, observations: kept }];
-  }
-  return out;
-}
-
 /**
  * Recall answers carry `replaced_history_count` instead of the history
  * itself: every hit's metadata is serialized to the caller, and the history
@@ -129,15 +102,6 @@ function summarizeReplacedHistory(entities: Entity[]): Entity[] {
     e.metadata = { ...rest, replaced_history_count: history.length };
   }
   return entities;
-}
-
-export interface ReplacedVersion {
-  replaced_at: string;
-  title: string | null;
-  observations: string[];
-  tags: string[];
-  /** Set when the version alone exceeded the byte cap and lost observations. */
-  truncated?: boolean;
 }
 
 // `type` stays optional: `replace` on an existing name inherits the stored
