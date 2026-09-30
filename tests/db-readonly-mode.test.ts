@@ -55,3 +55,34 @@ describe('Feature: #520 a read-only database stays read-only', () => {
     expect(fs.statSync(dbPath).mode & 0o777).toBe(0o600);
   });
 });
+
+describe('Feature: #520 a read-only snapshot folder still opens for reading', () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-readonly-dir-'));
+    dbPath = path.join(dir, 'knowledge-graph.db');
+    const db = openDatabase(dbPath);
+    db.prepare("INSERT INTO entities (name, type) VALUES ('snapshot-row', 'note')").run();
+    closeDatabase();
+  });
+
+  afterEach(() => {
+    try { closeDatabase(); } catch { /* not open */ }
+    try { fs.chmodSync(dir, 0o700); fs.chmodSync(dbPath, 0o600); } catch { /* gone */ }
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('a read-only database in a read-only folder is refused loudly and nothing is made writable', () => {
+    // A WAL database cannot be read without creating its -shm file, and the
+    // folder refuses that. Opening it used to "work" only by making the
+    // folder and the file writable again — the defect itself.
+    fs.chmodSync(dbPath, 0o444);
+    fs.chmodSync(dir, 0o555);
+    expect(() => openDatabase(dbPath)).toThrow(/readonly|read-only/i);
+    expect(fs.statSync(dir).mode & 0o200).toBe(0);
+    expect(fs.statSync(dbPath).mode & 0o200).toBe(0);
+    expect(fs.statSync(dbPath).mode & 0o400).toBeGreaterThan(0);
+  });
+});
