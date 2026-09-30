@@ -130,4 +130,30 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
     importMemories({ data: bundle('n', ['c']), merge_strategy: 'append' });
     expect(entityOf('n').metadata?.replaced_history).toBeUndefined();
   });
+
+  it('refuses a bundle that names one memory twice, before writing anything', () => {
+    remember({ name: 'dup', type: 'decision', observations: ['genuine v1'] });
+    remember({ name: 'dup', type: 'decision', observations: ['genuine v2'], replace: true });
+    remember({ name: 'dup', type: 'decision', observations: ['current'], replace: true });
+    const big = Array.from({ length: 8 }, (_, i) => `${i}`.padEnd(9000, 'y'));
+    const data = bundle('unrelated-first', ['zebraprefixtoken']);
+    data.entities.push({ ...bundle('dup', big).entities[0] });
+    data.entities.push({ ...bundle('dup', ['secondtoken']).entities[0] });
+    data.entity_count = 3;
+
+    expect(() => importMemories({ data, merge_strategy: 'overwrite' })).toThrow(/names "dup" more than once\. Nothing was imported/);
+
+    // Nothing was written: not the valid entry before the duplicates, not the index.
+    expect(new KnowledgeGraph(getDatabase()).getEntity('unrelated-first')).toBeNull();
+    const indexed = (token: string) => (getDatabase()
+      .prepare('SELECT COUNT(*) AS n FROM entities_fts WHERE entities_fts MATCH ?').get(token) as { n: number }).n;
+    expect(indexed('zebraprefixtoken')).toBe(0);
+    expect(indexed('secondtoken')).toBe(0);
+    expect(indexed('current')).toBe(1);
+
+    const e = entityOf('dup');
+    expect(e.observations).toEqual(['current']);
+    const history = e.metadata?.replaced_history as Array<{ observations: string[] }>;
+    expect(history.map((h) => h.observations)).toEqual([['genuine v1'], ['genuine v2']]);
+  });
 });

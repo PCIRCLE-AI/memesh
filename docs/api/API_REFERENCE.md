@@ -398,15 +398,17 @@ entry gets:
   LATER local `--replace` on the same memory (`rememberInTransaction`, a
   read-modify-write, not a display-only field — a forged history in a
   bundle could otherwise survive an import and then have a genuine later
-  replace silently appended onto it). An entity you already have keeps
-  its own history (or its absence) exactly; the bundle's value never reaches
-  the merge, for `append` and `overwrite` alike. For an entity the import
+  replace silently appended onto it). For an entity you already have, the
+  bundle's value never reaches the merge, for `append` and `overwrite`
+  alike: `append` keeps the local history exactly, and `overwrite` keeps it
+  and adds the version it replaced (nothing when the imported content is
+  identical to what is stored). For an entity the import
   CREATES, the bundle's value is accepted only when it is an array of AT
   MOST 50 ENTRIES, each one shaped exactly like a real entry (`replaced_at`:
   a string; `title`: a string or `null`; `observations`: an array of
   strings; `tags`: an array of strings; optional `truncated`: a boolean,
-  marking a version whose observations were pared down to fit the writer's
-  own 64 KiB cap; no other key), AND the WHOLE array's own serialized JSON
+  marking a version whose observations, then tags, were pared down to fit
+  the writer's own 64 KiB cap; no other key), AND the WHOLE array's own serialized JSON
   is AT MOST 256 KiB — a budget over the entire array together, not per
   entry (two 140 KiB entries are refused together even though each alone is
   under 256 KiB). One violation anywhere — shape, count, or the aggregate
@@ -514,7 +516,7 @@ Imported entities are marked with import provenance and treated as untrusted for
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `data` | object | Yes | The JSON bundle produced by `export` |
+| `data` | object | Yes | The JSON bundle produced by `export`. A bundle that names one memory more than once is refused and nothing is imported. |
 | `merge_strategy` | string | Yes | Merge strategy for conflicts: `"skip"`, `"overwrite"`, or `"append"` |
 | `namespace` | string | No | Force imported entities into this namespace, ignoring the namespace stored in the bundle. With `overwrite` or `append` it also **moves** entities that already exist, in bulk, out of the scope they are in — `metadata.previous_namespace` records where each came from. With `skip` it does not: see the table below. Must be `personal`, `team` or `global`; anything else is refused outright. |
 | `restore_archived` | boolean | No | Default `false`. With `overwrite` or `append`, a local entity that is archived (forgotten) and named by the bundle is left untouched and counted in `kept_archived`. `true` brings it back to active and merges or overwrites it like any other, and **requires** `merge_strategy` `append` or `overwrite`: with `skip` (which touches no existing entity) the call is refused with an error and nothing is imported. Must be a boolean; a string such as `"yes"` is refused. |
@@ -524,7 +526,7 @@ Imported entities are marked with import provenance and treated as untrusted for
 | Strategy | Behaviour on existing entity | Does `namespace` move it? |
 |----------|------------------------------|---------------------------|
 | `skip` | Keep existing entity unchanged, discard imported copy | **No** — "unchanged" includes its namespace |
-| `overwrite` | Replace existing entity's observations and tags with imported values; the replaced observations, tags and title are kept in `metadata.replaced_history`, like `remember` with `replace: true` | Yes |
+| `overwrite` | Replace existing entity's observations and tags with imported values; the replaced observations, tags and title are kept in `metadata.replaced_history`, like `remember` with `replace: true` (an import identical to what is stored adds no version) | Yes |
 | `append` | Append imported observations to existing (skipping any already present verbatim), deduplicate tags | Yes |
 
 `skip` is the exception because it is the one strategy that promises to touch

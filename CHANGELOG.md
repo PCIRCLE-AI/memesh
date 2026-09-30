@@ -6,7 +6,7 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
-- Importing with `overwrite` (MCP `import`, `POST /v1/import`, `memesh import --merge overwrite`) now keeps the memory's previous observations, tags and title in its `replaced_history`, the same way `remember` with `replace: true` does. Before, the old content was erased with no way back (#530).
+- Importing with `overwrite` (MCP `import`, `POST /v1/import`, `memesh import --merge overwrite`) now keeps the memory's previous observations, tags and title in its `replaced_history`, the same way `remember` with `replace: true` does. Before, the old content was erased with no way back. Importing a file that names one memory more than once is refused before anything is written (#530).
 - A message sent through the MCP `message` tool keeps every `null` in its JSON payload. Before, the MCP boundary removed each null-valued key at any depth of the payload while `send` still reported success, so the recipient got different data than the CLI or HTTP would have stored (#517). A null-valued top-level tool parameter still means "left blank".
 
 ## [4.10.11] — 2026-09-29

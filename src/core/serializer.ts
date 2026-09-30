@@ -687,13 +687,6 @@ function describeInvalidEntity(entity: unknown, index: number): string | null {
   return null;
 }
 
-/**
- * `options.trust` is a SECOND argument, never a field of `ImportInput` or
- * its Zod schema (`ImportSchema` stays `.strict()`) — so MCP `import` and
- * `POST /v1/import`, which both call this with exactly one argument, cannot
- * reach it. Only the CLI's `--trust` (a restore-your-own-backup path,
- * confirmed before it writes anything) passes `{ trust: true }`.
- */
 /** A memory's title, observations (in order) and tags (sorted like the history entry's), as stored. */
 function storedContentOf(db: ReturnType<typeof getDatabase>, name: string): Omit<ReplacedVersion, 'replaced_at'> {
   const row = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name) as { id: number; title: string | null };
@@ -706,6 +699,13 @@ function storedContentOf(db: ReturnType<typeof getDatabase>, name: string): Omit
   };
 }
 
+/**
+ * `options.trust` is a SECOND argument, never a field of `ImportInput` or
+ * its Zod schema (`ImportSchema` stays `.strict()`) — so MCP `import` and
+ * `POST /v1/import`, which both call this with exactly one argument, cannot
+ * reach it. Only the CLI's `--trust` (a restore-your-own-backup path,
+ * confirmed before it writes anything) passes `{ trust: true }`.
+ */
 export function importMemories(args: ImportInput, options?: { trust?: boolean }): ImportResult {
   const trust = options?.trust === true;
   if (!(MERGE_STRATEGIES as readonly string[]).includes(args.merge_strategy)) {
@@ -761,6 +761,23 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
       `This file has no "entities" array (found ${bundleEntities === undefined ? 'nothing' : typeof bundleEntities}). ` +
       'Nothing was imported. memesh import expects a file produced by `memesh export`.'
     );
+  }
+
+  // An export names each memory once. Two entries with one name would make
+  // the second overwrite file the first into replaced_history, and one
+  // oversized first entry then pushes every real older version out of the
+  // history bound (#530).
+  const seenNames = new Set<string>();
+  for (const entity of bundleEntities) {
+    const name = (entity as { name?: unknown } | null)?.name;
+    if (typeof name !== 'string') continue;
+    if (seenNames.has(name)) {
+      throw new Error(
+        `This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}…` : name)} more than once. Nothing was imported. ` +
+        'A file produced by `memesh export` names each memory once.'
+      );
+    }
+    seenNames.add(name);
   }
 
   const db = getDatabase();

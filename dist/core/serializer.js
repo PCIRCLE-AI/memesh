@@ -213,6 +213,17 @@ export function importMemories(args, options) {
         throw new Error(`This file has no "entities" array (found ${bundleEntities === undefined ? 'nothing' : typeof bundleEntities}). ` +
             'Nothing was imported. memesh import expects a file produced by `memesh export`.');
     }
+    const seenNames = new Set();
+    for (const entity of bundleEntities) {
+        const name = entity?.name;
+        if (typeof name !== 'string')
+            continue;
+        if (seenNames.has(name)) {
+            throw new Error(`This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}…` : name)} more than once. Nothing was imported. ` +
+                'A file produced by `memesh export` names each memory once.');
+        }
+        seenNames.add(name);
+    }
     const db = getDatabase();
     const storedContent = (name) => storedContentOf(db, name);
     const kg = new KnowledgeGraph(db);
