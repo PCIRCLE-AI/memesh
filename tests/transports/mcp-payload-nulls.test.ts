@@ -54,7 +54,7 @@ describe('Feature: #517 the MCP message tool stores a JSON payload exactly as se
     expect(await fetch(mcpId)).toEqual(await fetch(viaShared.message_id));
   });
 
-  it('#553 sends a null payload, as the schema and the HTTP path allow', async () => {
+  it('#553 sends a null payload, as the schema allows, and stores what the shared send stores', async () => {
     const sent = await handleTool('message', {
       action: 'send', project: PROJECT, sender: 'agent-a', recipient: 'agent-e',
       idempotency_key: 'k-553-mcp', content_type: 'application/json', payload: null,

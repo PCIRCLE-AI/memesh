@@ -466,8 +466,9 @@ function formatIssue(issue: z.ZodIssue): string {
  * where Claude Code and Codex omit the key entirely. Zod's `.optional()`
  * accepts the missing key but rejects the explicit null, so the exact same
  * recall that succeeds from Codex fails from Gemini with a type error. At
- * this boundary a null-valued property can only mean "left blank" — no
- * memesh tool uses null as a sentinel — so it is dropped before validation.
+ * this boundary a null-valued property means "left blank", so it is dropped
+ * before validation — except where null is itself the value (NULL_IS_DATA
+ * below: a message `payload`, #553).
  *
  * Only the tool's own parameters (the top level) are touched. What a
  * parameter CARRIES is data and is passed on as sent: a message payload, an
