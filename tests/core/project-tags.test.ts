@@ -272,7 +272,7 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
       send('vf-old');
       getDatabase().exec(trigger);
       const before = state();
-      expect(() => renameProjectTag('vf-old', 'vf-new', { apply: true })).toThrow(/was not kept/);
+      expect(() => renameProjectTag('vf-old', 'vf-new', { apply: true })).toThrow(/changed the result\)$/);
       expect(state()).toEqual(before);
     });
   }
@@ -291,7 +291,7 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
     send('h2-old');
     getDatabase().exec('CREATE TRIGGER undo_move AFTER UPDATE OF project ON agent_messages BEGIN UPDATE agent_messages SET project = OLD.project WHERE rowid = NEW.rowid; END');
     const before = state();
-    expect(() => renameProjectTag('h2-old', 'h2-new', { apply: true })).toThrow(/is not scoped to h2-new.*was not kept/);
+    expect(() => renameProjectTag('h2-old', 'h2-new', { apply: true })).toThrow(/is not scoped to h2-new.*changed the result\)$/);
     expect(state()).toEqual(before);
   });
 
@@ -300,7 +300,7 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
     send('h3-old');
     getDatabase().exec('CREATE TRIGGER drop_renamed AFTER UPDATE OF tag ON tags BEGIN DELETE FROM tags WHERE id = NEW.id; END');
     const before = state();
-    expect(() => renameProjectTag('h3-old', 'h3-new', { apply: true })).toThrow(/was not kept/);
+    expect(() => renameProjectTag('h3-old', 'h3-new', { apply: true })).toThrow(/changed the result\)$/);
     expect(state()).toEqual(before);
   });
 
@@ -316,6 +316,21 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
       { cursor_token: 'c-old', project: 'cur-old' },
       { cursor_token: 'c-other', project: 'cur-new' },
     ]);
+  });
+
+  it('a collision a trigger hits in the same table is not taken for the destination holding the row', () => {
+    const db = getDatabase();
+    const cursor = db.prepare('INSERT INTO agent_message_cursors (cursor_token, project, recipient, event_sequence) VALUES (?, ?, ?, ?)');
+    cursor.run('c-1', 'same-old', 'reviewer', 1);
+    cursor.run('c-9', 'same-new', 'reviewer', 99);
+    // Moving c-1 collides with nothing; the trigger's own insert collides with c-9.
+    db.exec("CREATE TRIGGER same_write AFTER UPDATE OF project ON agent_message_cursors BEGIN INSERT INTO agent_message_cursors (cursor_token, project, recipient, event_sequence) VALUES ('x', NEW.project, 'reviewer', 99); END");
+    const rows = () => db.prepare('SELECT cursor_token, project FROM agent_message_cursors ORDER BY cursor_token').all();
+    const before = rows();
+    // The dry run runs the same rename on a copy, so it refuses the same way.
+    expect(() => renameProjectTag('same-old', 'same-new', { apply: false })).toThrow(/UNIQUE constraint failed/);
+    expect(() => renameProjectTag('same-old', 'same-new', { apply: true })).toThrow(/UNIQUE constraint failed/);
+    expect(rows()).toEqual(before);
   });
 
   it('a collision a trigger hits in another table is not taken for the destination holding the row', () => {

@@ -60657,7 +60657,8 @@ function renameProjectTag(from, to, opts) {
             move.run(to, rid);
             movedRows.push({ table, rid });
           } catch (err) {
-            if (!isUniqueCollisionIn(table, err))
+            const code = err?.errcode;
+            if (code !== 2067 && code !== 1555 || !destinationHolds(conn, table, rid, to))
               throw err;
             messageRowsBlocked += 1;
           }
@@ -60666,13 +60667,13 @@ function renameProjectTag(from, to, opts) {
       const hasTag = conn.prepare("SELECT 1 FROM tags WHERE entity_id = ? AND tag = ?");
       for (const p of plan) {
         if (hasTag.get(p.id, fromTag) || !hasTag.get(p.id, toTag)) {
-          throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result), so the rename was not kept.`);
+          throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result)`);
         }
       }
       for (const { table, rid } of movedRows) {
         const row = conn.prepare(`SELECT project FROM ${table} WHERE rowid = ?`).get(rid);
         if (row?.project !== to) {
-          throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result), so the rename was not kept.`);
+          throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
         }
       }
     });
@@ -60718,11 +60719,18 @@ function hasRenameWork(from, db2) {
   const { affected, messageRows } = planRename(db2 ?? getDatabase(), from, from);
   return affected.length > 0 || messageRows > 0;
 }
-function isUniqueCollisionIn(table, err) {
-  const e = err;
-  if (e?.errcode !== 2067 && e?.errcode !== 1555)
-    return false;
-  return typeof e.message === "string" && e.message.startsWith(`UNIQUE constraint failed: ${table}.`);
+function destinationHolds(conn, table, rid, to) {
+  const quote = (name) => `"${name.replace(/"/g, '""')}"`;
+  const indexes = conn.prepare('SELECT name FROM pragma_index_list(?) WHERE "unique" = 1 AND partial = 0').all(table);
+  for (const { name } of indexes) {
+    const cols = conn.prepare("SELECT name, coll FROM pragma_index_xinfo(?) WHERE key = 1 ORDER BY seqno").all(name);
+    if (!cols.some((c) => c.name === "project") || cols.some((c) => c.name === null || !/^\w+$/.test(c.coll)))
+      continue;
+    const match = cols.map((c) => c.name === "project" ? `d.project = ? COLLATE ${c.coll}` : `d.${quote(c.name)} = s.${quote(c.name)} COLLATE ${c.coll}`).join(" AND ");
+    if (conn.prepare(`SELECT 1 FROM ${table} s, ${table} d WHERE s.rowid = ? AND d.rowid <> s.rowid AND ${match} LIMIT 1`).get(rid, to))
+      return true;
+  }
+  return false;
 }
 function previewOnCopy(source, from, to) {
   const dir = fs21.mkdtempSync(path19.join(os3.tmpdir(), "memesh-rename-preview-"));

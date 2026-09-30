@@ -604,6 +604,9 @@ describe('CLI durable-message ingress', () => {
             const r = rename(env, ...extra);
             expect(r.status).toBe(1);
             expect(r.stderr.trim().split('\n')).toHaveLength(1);
+            expect(r.stderr).toContain('(a trigger or constraint changed the result)');
+            // One sentence: the reason, then what happened, not two endings.
+            expect(r.stderr).not.toMatch(/\.\s+—/);
             expect(r.stderr).not.toContain('    at ');
             expect(state()).toEqual(before);
           }

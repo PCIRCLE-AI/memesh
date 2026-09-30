@@ -121,7 +121,11 @@ export function renameProjectTag(
             move.run(to, rid);
             movedRows.push({ table, rid });
           } catch (err) {
-            if (!isUniqueCollisionIn(table, err)) throw err;
+            const code = (err as { errcode?: unknown } | null)?.errcode;
+            // 2067: a UNIQUE index; 1555: a PRIMARY KEY. The error alone does
+            // not say the destination holds this row: a trigger's own write can
+            // collide too, in this table or another (#519). So look it up.
+            if ((code !== 2067 && code !== 1555) || !destinationHolds(conn, table, rid, to)) throw err;
             messageRowsBlocked += 1;
           }
         }
@@ -133,13 +137,13 @@ export function renameProjectTag(
       const hasTag = conn.prepare('SELECT 1 FROM tags WHERE entity_id = ? AND tag = ?');
       for (const p of plan) {
         if (hasTag.get(p.id, fromTag) || !hasTag.get(p.id, toTag)) {
-          throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result), so the rename was not kept.`);
+          throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result)`);
         }
       }
       for (const { table, rid } of movedRows) {
         const row = conn.prepare(`SELECT project FROM ${table} WHERE rowid = ?`).get(rid) as { project: string } | undefined;
         if (row?.project !== to) {
-          throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result), so the rename was not kept.`);
+          throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
         }
       }
     });
@@ -199,16 +203,27 @@ export function hasRenameWork(from: string, db?: MemeshDatabase): boolean {
   return affected.length > 0 || messageRows > 0;
 }
 
-function isUniqueCollisionIn(table: string, err: unknown): boolean {
-  const e = err as { errcode?: unknown; message?: unknown } | null;
-  // 2067: a UNIQUE index; 1555: a composite PRIMARY KEY (agent_message_idempotency).
-  // A trigger's RAISE(ABORT, ...) is 1811, so its text, which can quote any
-  // name, never gets this far. For these two codes the message is SQLite's own
-  // ("UNIQUE constraint failed: <table>.<column>, ..."), and it must name the
-  // table being updated: a trigger's write that collides in another table is
-  // not "the destination already holds this row".
-  if (e?.errcode !== 2067 && e?.errcode !== 1555) return false;
-  return typeof e.message === 'string' && e.message.startsWith(`UNIQUE constraint failed: ${table}.`);
+/**
+ * Does project `to` already hold a row that row `rid` would duplicate under
+ * one of the table's unique keys? Keys are read from the schema. Expression
+ * and partial indexes are not checked: a collision on one aborts the rename
+ * rather than being counted as left in place.
+ */
+function destinationHolds(conn: MemeshDatabase, table: string, rid: number, to: string): boolean {
+  const quote = (name: string) => `"${name.replace(/"/g, '""')}"`;
+  const indexes = conn.prepare('SELECT name FROM pragma_index_list(?) WHERE "unique" = 1 AND partial = 0')
+    .all(table) as Array<{ name: string }>;
+  for (const { name } of indexes) {
+    const cols = conn.prepare('SELECT name, coll FROM pragma_index_xinfo(?) WHERE key = 1 ORDER BY seqno')
+      .all(name) as Array<{ name: string | null; coll: string }>;
+    if (!cols.some((c) => c.name === 'project') || cols.some((c) => c.name === null || !/^\w+$/.test(c.coll))) continue;
+    const match = cols.map((c) => (c.name === 'project'
+      ? `d.project = ? COLLATE ${c.coll}`
+      : `d.${quote(c.name!)} = s.${quote(c.name!)} COLLATE ${c.coll}`)).join(' AND ');
+    // Table names come from a hardcoded list; column names and collations from the schema.
+    if (conn.prepare(`SELECT 1 FROM ${table} s, ${table} d WHERE s.rowid = ? AND d.rowid <> s.rowid AND ${match} LIMIT 1`).get(rid, to)) return true;
+  }
+  return false;
 }
 
 /**
