@@ -966,12 +966,26 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(1, projTag('anyproject'));
     db.close();
 
-    const throttlePath = path.join(testDir, 'session-recalled-files.json');
-    fs.writeFileSync(throttlePath, JSON.stringify(['/src/auth.ts']), 'utf8');
+    // #521: a start of THIS session clears its own list, not another session's.
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const own = path.join(dir, 'this-session.json');
+    const other = path.join(dir, 'other-session.json');
+    fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+    fs.writeFileSync(other, JSON.stringify(['/src/auth.ts']), 'utf8');
+    const legacy = path.join(testDir, 'session-recalled-files.json');
+    fs.writeFileSync(legacy, JSON.stringify(['/src/auth.ts']), 'utf8');
 
-    runHook({ cwd: '/tmp/anyproject' });
+    runHook({ cwd: '/tmp/anyproject', session_id: 'this-session' });
 
-    expect(fs.existsSync(throttlePath)).toBe(false);
+    expect(fs.existsSync(own)).toBe(false);
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.existsSync(legacy)).toBe(false);
+
+    // A subagent's start leaves the list alone, even under the same id.
+    fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+    runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_type: 'Explore' });
+    expect(fs.existsSync(own)).toBe(true);
   });
 
   it('Scenario: Session tracking files are written with private permissions', () => {

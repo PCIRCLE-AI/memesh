@@ -75,6 +75,7 @@ import {
   writePrivateJson,
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
+import { SESSION_ID_RE } from './_stop-notes.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import {
   buildBriefingIndex,
@@ -113,7 +114,8 @@ try {
 
 const dbPath = getDbPath();
 const memeshDir = getMemeshDirFromDbPath();
-const throttlePath = join(memeshDir, 'session-recalled-files.json');
+const throttleDir = join(memeshDir, 'pre-edit-recall');
+const legacyThrottlePath = join(memeshDir, 'session-recalled-files.json');
 
 /**
  * Build the strong deprecation warning lines to prepend to the
@@ -1061,11 +1063,18 @@ process.stdin.on('end', async () => {
       try { process.stderr.write(`[memesh session-start] citation rule: ${err?.message || err}\n`); } catch {}
     }
 
-    // Clear per-session throttle files from previous session
+    // A new start of THIS session (startup, /clear, resume, compact) shows
+    // recalls again. Other sessions keep their own lists (#521). A subagent's
+    // start leaves the list alone, in case it carries its parent's id.
     try {
-      if (existsSync(throttlePath)) {
-        unlinkSync(throttlePath);
+      const isSubagent = typeof data.agent_type === 'string' && data.agent_type !== '';
+      const sid = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id) ? data.session_id : null;
+      if (sid && !isSubagent) {
+        const own = join(throttleDir, `${sid}.json`);
+        if (existsSync(own)) unlinkSync(own);
       }
+      // The old machine-wide list, from before #521.
+      if (existsSync(legacyThrottlePath)) unlinkSync(legacyThrottlePath);
     } catch {
       // Non-critical
     }

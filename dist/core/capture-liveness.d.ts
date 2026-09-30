@@ -54,6 +54,7 @@ export declare const SKIP_REASONS: {
     readonly noFilePath: "no file_path in the tool input";
     readonly noDatabaseForRecall: "no database yet — nothing to recall";
     readonly nothingToRecall: "no guard matched and nothing to recall for this file";
+    readonly recallAlreadyShown: "no guard matched and this session was already shown the memories for this file";
     readonly candidateWindowTruncated: "more candidates may exist than the search window examined";
     readonly noPromptIntent: "the prompt carried no remember intent and no update decision";
     readonly noMemoryDir: "no Claude Code memory directory for this project";

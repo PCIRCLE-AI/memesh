@@ -35,10 +35,15 @@ import {
   recordHookOutcome,
 } from './_shared.js';
 import { MemeshDatabase } from './_generated/sqlite.js';
+import { pruneSessionState, SESSION_ID_RE } from './_stop-notes.js';
 
 const dbPath = getDbPath();
 const memeshDir = getMemeshDirFromDbPath();
-const THROTTLE_FILE = join(memeshDir, 'session-recalled-files.json');
+// #521: one list per session. A single machine-wide list meant that once any
+// session (or another host) had recalled a file, every other session editing
+// it got nothing, recorded as "nothing to recall".
+const THROTTLE_DIR = join(memeshDir, 'pre-edit-recall');
+const throttleFileFor = (sessionId) => join(THROTTLE_DIR, `${sessionId}.json`);
 const MAX_RESULTS = 3;
 
 // #358 round 3 item 2: Strategy 2 fetches this many CANDIDATES before literal
@@ -91,11 +96,16 @@ process.stdin.on('end', () => {
     // Throttle — the RECALL half runs once per file per session. The guard
     // half is deliberately outside it, so a throttled call still opens the
     // database for the guard pass.
+    // A payload without a usable session id is never throttled: recalling
+    // twice costs a few lines, sharing one list across sessions hid memories.
     const fileKey = filePath.toLowerCase();
+    const throttleFile = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id)
+      ? throttleFileFor(data.session_id)
+      : null;
     let seenFiles = [];
     try {
-      if (existsSync(THROTTLE_FILE)) {
-        const raw = JSON.parse(readFileSync(THROTTLE_FILE, 'utf8'));
+      if (throttleFile && existsSync(throttleFile)) {
+        const raw = JSON.parse(readFileSync(throttleFile, 'utf8'));
         seenFiles = Array.isArray(raw) ? raw : [];
       }
     } catch {
@@ -481,7 +491,7 @@ process.stdin.on('end', () => {
           // Record as seen either way (avoid re-querying a no-result file) —
           // but not after a fault: that run looked at nothing, and marking
           // the file seen would switch recall off for the whole session.
-          if (!recallFault) recordSeen(seenFiles, fileKey);
+          if (!recallFault && throttleFile) recordSeen(throttleFile, seenFiles, fileKey);
         }
       }
     } finally {
@@ -518,9 +528,11 @@ process.stdin.on('end', () => {
       // review's reproduction: 9+ decoys failing confirmation hid a 10th,
       // genuinely-matching row, and the old reason claimed there was
       // nothing when there was something this run never got to examine.
-      record('skipped', candidateWindowTruncated
-        ? SKIP_REASONS.candidateWindowTruncated
-        : SKIP_REASONS.nothingToRecall);
+      record('skipped', throttled
+        ? SKIP_REASONS.recallAlreadyShown
+        : candidateWindowTruncated
+          ? SKIP_REASONS.candidateWindowTruncated
+          : SKIP_REASONS.nothingToRecall);
       return pass();
     }
 
@@ -656,13 +668,14 @@ function realpathNearestExisting(dir) {
   return { dir, tail: '' };
 }
 
-function recordSeen(seenFiles, fileKey) {
+function recordSeen(throttleFile, seenFiles, fileKey) {
   try {
     seenFiles.push(fileKey);
     // Cap at 100 to prevent unbounded growth
     if (seenFiles.length > 100) seenFiles = seenFiles.slice(-50);
-    ensurePrivateDir(memeshDir);
-    writePrivateJson(THROTTLE_FILE, seenFiles);
+    ensurePrivateDir(THROTTLE_DIR);
+    writePrivateJson(throttleFile, seenFiles);
+    pruneSessionState(THROTTLE_DIR, Date.now());
   } catch {
     // Non-critical
   }

@@ -45,7 +45,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
    */
   function runHook(input: object): string {
     const hookPath = path.resolve('scripts/hooks/pre-edit-recall.js');
-    const jsonInput = JSON.stringify({ cwd: testDir, ...input });
+    const jsonInput = JSON.stringify({ cwd: testDir, session_id: 'session-a', ...input });
     const result = spawnSync('node', [hookPath], {
       input: jsonInput,
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
@@ -298,6 +298,94 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(result2).toBe('');
   });
 
+  it('#521: another session editing the same file still gets its memories', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    expect(runHook({ session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+    expect(runHook({ session_id: 'session-b', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+  });
+
+  it('#521: a throttled repeat is recorded as already shown, not as nothing to recall', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    runHook({ tool_input: { file_path: '/src/auth.ts' } });
+    runHook({ tool_input: { file_path: '/src/auth.ts' } });
+    const outcomes = fs.readFileSync(path.join(testDir, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n')
+      .map((l) => JSON.parse(l) as { hook: string; outcome: string; reason?: string })
+      .filter((r) => r.hook === 'pre-edit-recall');
+    expect(outcomes.at(-1)?.reason).toContain('already shown');
+    expect(outcomes.at(-1)?.reason).not.toContain('nothing to recall');
+  });
+
+  it('#521: a payload without a session id is never throttled', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    expect(runHook({ session_id: undefined, tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+    expect(runHook({ session_id: undefined, tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+  });
+
+  it('#521: a session id that is not a safe file name writes no list and is not throttled', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    for (const sessionId of ['../escape', 'x'.repeat(129)]) {
+      expect(runHook({ session_id: sessionId, tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+      expect(runHook({ session_id: sessionId, tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+    }
+    expect(fs.existsSync(path.join(testDir, 'escape.json'))).toBe(false);
+    const dir = path.join(testDir, 'pre-edit-recall');
+    expect(fs.existsSync(dir) ? fs.readdirSync(dir) : []).toEqual([]);
+  });
+
+  it('#521: a list idle for more than 30 days is removed on the next recall', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const stale = path.join(dir, 'old-session.json');
+    const recent = path.join(dir, 'recent-session.json');
+    fs.writeFileSync(stale, '[]', 'utf8');
+    fs.writeFileSync(recent, '[]', 'utf8');
+    const day = 24 * 60 * 60;
+    fs.utimesSync(stale, Date.now() / 1000 - 31 * day, Date.now() / 1000 - 31 * day);
+    fs.utimesSync(recent, Date.now() / 1000 - 29 * day, Date.now() / 1000 - 29 * day);
+
+    expect(runHook({ session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+
+    expect(fs.existsSync(stale)).toBe(false);
+    expect(fs.existsSync(recent)).toBe(true);
+    expect(fs.existsSync(path.join(dir, 'session-a.json'))).toBe(true);
+  });
+
   it('should scope throttle state to MEMESH_DB_PATH directory', () => {
     const db = createTestDb();
     db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
@@ -309,7 +397,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
 
     runHook({ tool_input: { file_path: '/src/auth.ts' } });
 
-    expect(fs.existsSync(path.join(testDir, 'session-recalled-files.json'))).toBe(true);
+    expect(fs.existsSync(path.join(testDir, 'pre-edit-recall', 'session-a.json'))).toBe(true);
   });
 
   it('should write throttle state with private file permissions', () => {
@@ -323,7 +411,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
 
     runHook({ tool_input: { file_path: '/src/auth.ts' } });
 
-    const throttlePath = path.join(testDir, 'session-recalled-files.json');
+    const throttlePath = path.join(testDir, 'pre-edit-recall', 'session-a.json');
     expectPrivateFile(throttlePath);
   });
 
