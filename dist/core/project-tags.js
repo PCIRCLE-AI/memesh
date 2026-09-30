@@ -1,3 +1,5 @@
+import { MemeshDatabase } from '../storage/sqlite.js';
+import { SCHEMA_SQL } from '../storage/schema.js';
 import { getDatabase } from '../db.js';
 import { AGENT_MESSAGE_PROJECT_TABLES } from './agent-scope-id.js';
 export function listProjectTags(db) {
@@ -26,12 +28,22 @@ export function renameProjectTag(from, to, opts) {
                 .all(from);
             return { table, rowIds: rows.map((r) => r.rid) };
         }
-        catch {
+        catch (err) {
+            if (!/no such table/i.test(err instanceof Error ? err.message : String(err)))
+                throw err;
             return { table, rowIds: [] };
         }
     });
     const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
-    let messageRowsBlocked = messagePlan.reduce((n, { table, rowIds }) => n + (rowIds.length === 0 ? 0 : countScopeCollisions(conn, table, from, to)), 0);
+    const currentSchema = new MemeshDatabase(':memory:');
+    let messageRowsBlocked;
+    try {
+        currentSchema.exec(SCHEMA_SQL);
+        messageRowsBlocked = messagePlan.reduce((n, { table, rowIds }) => n + (rowIds.length === 0 ? 0 : countScopeCollisions(conn, currentSchema, table, from, to)), 0);
+    }
+    finally {
+        currentSchema.close();
+    }
     if (opts?.apply && (affected.length > 0 || messageRows > 0)) {
         messageRowsBlocked = 0;
         const del = conn.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?');
@@ -77,10 +89,15 @@ function isUniqueViolation(err) {
     const code = err?.errcode;
     return code === 2067 || code === 1555 || /UNIQUE constraint failed/.test(err instanceof Error ? err.message : String(err));
 }
-function countScopeCollisions(conn, table, from, to) {
-    const indexes = conn.prepare(`SELECT name FROM pragma_index_list('${table}') WHERE "unique" = 1`).all()
-        .map(({ name }) => conn.prepare(`SELECT name FROM pragma_index_info('${name.replace(/'/g, "''")}')`).all().map((c) => c.name))
+function countScopeCollisions(conn, currentSchema, table, from, to) {
+    const uniqueKeys = (source) => source.prepare(`SELECT name FROM pragma_index_list('${table}') WHERE "unique" = 1`).all()
+        .map(({ name }) => source.prepare(`SELECT name FROM pragma_index_info('${name.replace(/'/g, "''")}')`).all().map((c) => c.name))
         .filter((cols) => cols.includes('project'));
+    const seen = new Set();
+    const indexes = [...uniqueKeys(conn), ...uniqueKeys(currentSchema)].filter((cols) => {
+        const key = cols.join(',');
+        return seen.has(key) ? false : (seen.add(key), true);
+    });
     if (indexes.length === 0)
         return 0;
     const collides = indexes.map((cols) => {

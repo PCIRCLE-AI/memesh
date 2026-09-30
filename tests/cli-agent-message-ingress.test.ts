@@ -3,7 +3,10 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { closeDatabase, openDatabase } from '../src/db.js';
+import { AGENT_MESSAGE_PROJECT_TABLES } from '../src/core/agent-scope-id.js';
+import { pollAgentEvents, sendAgentMessage } from '../src/core/agent-messaging.js';
 
 const cliLoader = `
   import { createServer } from 'vite';
@@ -383,6 +386,182 @@ describe('CLI durable-message ingress', () => {
       const list = spawnSync(process.execPath, cliArgs('kg', 'rename-project', '--json'), { encoding: 'utf8', env });
       expect(list.stdout).toContain('same-519');
       expect(fs.existsSync(path.join(home, '.memesh', 'backups'))).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('#519: a rename-project dry run persists nothing, not even auto-decay', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-dry-'));
+    const { DatabaseSync } = await import('node:sqlite');
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'stale-dry', '--type', 'note', '--obs', 'x', '--tags', 'project:dry-old',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      const dbFile = path.join(home, '.memesh', 'knowledge-graph.db');
+      const writer = new DatabaseSync(dbFile);
+      writer.exec("UPDATE entities SET confidence = 0.8, last_accessed_at = '2020-01-01' WHERE name = 'stale-dry'; DELETE FROM memesh_metadata WHERE key = 'last_decay_at'");
+      writer.close();
+      const dry = spawnSync(process.execPath, cliArgs('kg', 'rename-project', '--from', 'dry-old', '--to', 'dry-new'), { encoding: 'utf8', env });
+      expect(dry.status, dry.stderr).toBe(0);
+      expect(dry.stdout).toContain('Nothing written');
+      const reader = new DatabaseSync(dbFile, { readOnly: true });
+      try {
+        expect((reader.prepare("SELECT confidence FROM entities WHERE name = 'stale-dry'").get() as { confidence: number }).confidence).toBe(0.8);
+        expect(reader.prepare("SELECT value FROM memesh_metadata WHERE key = 'last_decay_at'").get()).toBeUndefined();
+      } finally {
+        reader.close();
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('#519: list mode and incomplete --from/--to never write to the database', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-ro-'));
+    const { DatabaseSync } = await import('node:sqlite');
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'stale-ro', '--type', 'note', '--obs', 'x', '--tags', 'project:ro-old',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      const dbFile = path.join(home, '.memesh', 'knowledge-graph.db');
+      const writer = new DatabaseSync(dbFile);
+      writer.exec("UPDATE entities SET confidence = 0.8, last_accessed_at = '2020-01-01' WHERE name = 'stale-ro'; DELETE FROM memesh_metadata WHERE key = 'last_decay_at'");
+      writer.close();
+      const snapshot = () => {
+        const reader = new DatabaseSync(dbFile, { readOnly: true });
+        try {
+          return {
+            entities: reader.prepare('SELECT name, confidence, last_accessed_at FROM entities ORDER BY id').all(),
+            metadata: reader.prepare('SELECT key, value FROM memesh_metadata ORDER BY key').all(),
+            schema: reader.prepare('SELECT type, name FROM sqlite_master ORDER BY type, name').all(),
+          };
+        } finally {
+          reader.close();
+        }
+      };
+      const before = snapshot();
+      expect(before.metadata.some((m) => (m as { key: string }).key === 'last_decay_at')).toBe(false);
+
+      for (const args of [[], ['--json']]) {
+        const list = spawnSync(process.execPath, cliArgs('kg', 'rename-project', ...args), { encoding: 'utf8', env });
+        expect(list.status, list.stderr).toBe(0);
+        expect(list.stdout).toContain('ro-old');
+        expect(snapshot()).toEqual(before);
+      }
+      for (const args of [['--from', 'ro-old'], ['--to', 'ro-new'], ['--from', 'ro-old', '--apply'], ['--to', 'ro-new', '--apply']]) {
+        const r = spawnSync(process.execPath, cliArgs('kg', 'rename-project', ...args), { encoding: 'utf8', env });
+        expect(r.status).toBe(1);
+        expect(r.stderr.trim().split('\n')).toHaveLength(1);
+        expect(r.stderr).toMatch(/^Error: .*--from and --to/);
+        expect(snapshot()).toEqual(before);
+      }
+      expect(fs.existsSync(path.join(home, '.memesh', 'backups'))).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  // A database prepared in-process (openDatabase takes a path), then driven through the CLI.
+  function seedMessageScopes(home: string, extra: (db: ReturnType<typeof openDatabase>) => void = () => {}): string {
+    const dbFile = path.join(home, 'seeded.db');
+    const db = openDatabase(dbFile);
+    try {
+      const send = (project: string, key: string) => sendAgentMessage(db, {
+        project, sender: 'author', recipient: 'reviewer', idempotency_key: key,
+        content_type: 'text/plain', payload: `p-${key}`,
+      });
+      send('mv-old', 'shared');
+      send('mv-old', 'only-old');
+      send('mv-new', 'shared');
+      extra(db);
+    } finally {
+      closeDatabase();
+    }
+    return dbFile;
+  }
+  const rename = (env: NodeJS.ProcessEnv, ...args: string[]) => spawnSync(
+    process.execPath, cliArgs('kg', 'rename-project', '--from', 'mv-old', '--to', 'mv-new', ...args), { encoding: 'utf8', env });
+
+  it.skipIf(process.platform === 'win32')('#519: the preview counts the same collisions as --apply when a unique index is still to be created', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-idx-'));
+    try {
+      const dbFile = seedMessageScopes(home, (db) => {
+        const polled = pollAgentEvents(db, { project: 'mv-old', recipient: 'reviewer' });
+        const cursor = db.prepare('SELECT * FROM agent_message_cursors WHERE cursor_token = ?').get(polled.next_cursor) as { event_sequence: number; created_at: string };
+        db.prepare('INSERT INTO agent_message_cursors VALUES (?,?,?,?,?)').run('dest-token', 'mv-new', 'reviewer', cursor.event_sequence, cursor.created_at);
+        db.exec('DROP INDEX idx_agent_message_cursors_unique_scope_sequence');
+      });
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile };
+      const scopeRows = (scope: string) => {
+        const reader = new DatabaseSync(dbFile, { readOnly: true });
+        try {
+          return AGENT_MESSAGE_PROJECT_TABLES.reduce(
+            (n, t) => n + (reader.prepare(`SELECT count(*) AS n FROM ${t} WHERE project = ?`).get(scope) as { n: number }).n, 0);
+        } finally {
+          reader.close();
+        }
+      };
+      const preview = rename(env, '--json');
+      expect(preview.status, preview.stderr).toBe(0);
+      const newBefore = scopeRows('mv-new');
+      expect(scopeRows('mv-old')).toBe(JSON.parse(preview.stdout).messageRows);
+      const apply = rename(env, '--apply', '--json');
+      expect(apply.status, apply.stderr).toBe(0);
+      const p = JSON.parse(preview.stdout);
+      const a = JSON.parse(apply.stdout);
+      expect(p.messageRowsBlocked).toBeGreaterThan(0);
+      expect(p.messageRowsBlocked).toBe(a.messageRowsBlocked);
+      expect(p.messageRows).toBe(a.messageRows);
+      // The database read back after the apply reconciles both numbers.
+      expect(scopeRows('mv-old')).toBe(a.messageRowsBlocked);
+      expect(scopeRows('mv-new') - newBefore).toBe(a.messageRows - a.messageRowsBlocked);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('#519: the printed message counts equal what was moved and what was left', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-count-'));
+    try {
+      const dbFile = seedMessageScopes(home);
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile };
+      const p = JSON.parse(rename(env, '--json').stdout);
+      expect(p.messageRowsBlocked).toBeGreaterThan(0);
+      const moved = p.messageRows - p.messageRowsBlocked;
+      const dry = rename(env);
+      expect(dry.stdout).toContain(`${moved} durable agent-message row(s) scoped to mv-old would move to mv-new, ${p.messageRowsBlocked} would be left in place`);
+      const apply = rename(env, '--apply');
+      expect(apply.status, apply.stderr).toBe(0);
+      expect(apply.stdout).toContain(`${moved} agent-message row(s) moved, ${p.messageRowsBlocked} left in place`);
+      const reader = new DatabaseSync(dbFile, { readOnly: true });
+      try {
+        const left = AGENT_MESSAGE_PROJECT_TABLES.reduce(
+          (n, t) => n + (reader.prepare(`SELECT count(*) AS n FROM ${t} WHERE project = 'mv-old'`).get() as { n: number }).n, 0);
+        expect(left).toBe(p.messageRowsBlocked);
+      } finally {
+        reader.close();
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('#519: a refused --to is one line and exit 1, not a stack trace', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-badto-'));
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      for (const extra of [[], ['--apply']]) {
+        const r = spawnSync(process.execPath, cliArgs('kg', 'rename-project', '--from', 'old', '--to', '/tmp/bad', ...extra), { encoding: 'utf8', env });
+        expect(r.status).toBe(1);
+        expect(r.stderr.trim().split('\n')).toHaveLength(1);
+        expect(r.stderr).toContain('--to');
+        expect(r.stderr).not.toContain('    at ');
+      }
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

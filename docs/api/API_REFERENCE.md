@@ -2026,7 +2026,7 @@ Merge or rename a project across every entity **and every durable agent message 
 **Usage**:
 
 ```bash
-memesh kg rename-project                          # list all project tags + counts
+memesh kg rename-project                          # list all project tags + counts (writes nothing)
 memesh kg rename-project --from tim --to TIM      # dry-run preview (writes nothing)
 memesh kg rename-project --from tim --to TIM --apply   # commit (backs up the DB first)
 ```
@@ -2042,7 +2042,7 @@ memesh kg rename-project --from tim --to TIM --apply   # commit (backs up the DB
 
 A project identity is half the key of a message inbox (`project` + `recipient`) as well as an entity tag, so renaming only the tags left every message behind in a scope nobody polls. The command reports and moves both, in one transaction, and a project carried only by messages — with no tagged entity at all — is still renameable. A message row whose destination scope already holds an equivalent row is left in place and counted rather than deleted.
 
-**Safety**: dry-run is the default — nothing is written until `--apply`. The dry run writes nothing and works on a read-only database; the counts it prints, including message rows that would be left in place because the destination already holds an equivalent row, are the ones `--apply` produces. A write failure during `--apply` other than such a collision aborts the whole rename. `--from` and `--to` naming the same project is refused: every carrier would count as a merge and lose its only project tag. On `--apply` a consistent copy of the database (including changes still in its write-ahead log) is written to the `backups/` folder beside it before any mutation; if the backup fails, the command aborts without changing anything. Restore it with every memesh process stopped: `sqlite3 <database> ".restore '<backup>'"`. The tags table has a `UNIQUE(entity_id, tag)` constraint, so an entity that already carries the target tag has its old tag removed (a merge) rather than getting a duplicate.
+**Safety**: dry-run is the default — nothing is written until `--apply`. Listing and the dry run open the database read-only: they change no data, run no maintenance (such as the automatic confidence decay) and need an existing database. Like any read of a database in write-ahead-log mode, they may create the empty `-wal`/`-shm` sidecar files beside it. The dry run also works on a read-only database. The counts it prints, including message rows that would be left in place because the destination already holds an equivalent row, are the ones `--apply` produces. A write failure during `--apply` other than such a collision aborts the whole rename. `--from` and `--to` naming the same project is refused: every carrier would count as a merge and lose its only project tag. On `--apply` a consistent copy of the database (including changes still in its write-ahead log) is written to the `backups/` folder beside it before any mutation; if the backup fails, the command aborts without changing anything. Restore it with every memesh process stopped: `sqlite3 <database> ".restore '<backup>'"`. The tags table has a `UNIQUE(entity_id, tag)` constraint, so an entity that already carries the target tag has its old tag removed (a merge) rather than getting a duplicate.
 
 ### memesh dream
 

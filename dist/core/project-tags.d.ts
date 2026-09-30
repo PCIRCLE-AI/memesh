@@ -1,4 +1,4 @@
-import type { MemeshDatabase } from '../storage/sqlite.js';
+import { MemeshDatabase } from '../storage/sqlite.js';
 export interface ProjectTagCount {
     project: string;
     count: number;

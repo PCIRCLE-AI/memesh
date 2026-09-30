@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import {
   openDatabase, closeDatabase, getDatabase, reindexFts,
 } from '../../db.js';
+import { MemeshDatabase } from '../../storage/sqlite.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { readConfig, updateConfig } from '../../core/config.js';
@@ -2254,13 +2255,13 @@ kgCmd
   .option('--apply', 'Actually write the change. Default is a dry-run preview. Backs up the DB first.')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
-    await withDatabase(async () => {
+    const run = async (to: string, db?: MemeshDatabase): Promise<void> => {
       const { listProjectTags, renameProjectTag } = await import('../../core/project-tags.js');
 
       // List mode — no --from/--to: show the current project-tag distribution
       // so the user can spot splits (e.g. tim vs TIM) before mapping them.
       if (!opts.from && !opts.to) {
-        const tags = listProjectTags();
+        const tags = listProjectTags(db);
         if (opts.json) { console.log(JSON.stringify(tags, null, 2)); return; }
         if (tags.length === 0) { console.log('No project:* tags found.'); return; }
         console.log('Project tags (entity count):');
@@ -2268,26 +2269,11 @@ kgCmd
         console.log(`\nRewrite one with:  memesh kg rename-project --from <old> --to <new>   (add --apply to write)`);
         return;
       }
-      if (!opts.from || !opts.to) {
-        console.error('Provide BOTH --from and --to (or neither, to list).');
-        process.exitCode = 1;
-        return;
-      }
-
-      // --to is a NEW routing identity — the same shape `agent setup` and the
-      // message surfaces already gate — so it goes through the same refusal
-      // and canonical form. --from is deliberately NOT validated or
-      // canonicalised: it names an EXISTING row the owner is repairing (it may
-      // itself be the path-shaped or NFD-spelled value this command exists to
-      // fix), and it must match that row's exact byte spelling or the repair
-      // silently matches nothing.
-      const to = requireAgentScopeArg(opts.to, 'project', '--to');
-
       // Dry-run preview first (always computed). A refusal (renaming a
       // project to itself, #519) is one line and exit 1, not a stack trace.
       let preview: ReturnType<typeof renameProjectTag>;
       try {
-        preview = renameProjectTag(opts.from, to, { apply: false });
+        preview = renameProjectTag(opts.from, to, { apply: false, db });
       } catch (err) {
         console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
         process.exitCode = 1;
@@ -2301,7 +2287,7 @@ kgCmd
         // A project identity is half the key of a durable-message inbox, so a
         // rename that moved only the tags left the messages in a scope nobody
         // polls. Reported separately because it is a different kind of row.
-        console.log(`  ${preview.messageRows} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} of them left in place (${to} already holds an equivalent row)` : ''}`);
+        console.log(`  ${preview.messageRows - preview.messageRowsBlocked} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} would be left in place (${to} already holds an equivalent row)` : ''}`);
         console.log(`\nNothing written. Re-run with --apply to commit (the DB is backed up first).`);
         return;
       }
@@ -2340,13 +2326,58 @@ kgCmd
       if (opts.json) { console.log(JSON.stringify({ ...result, backupPath }, null, 2)); return; }
       console.log(`✅ project:${opts.from} → project:${to}`);
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
-      console.log(`  ${result.messageRows} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
+      console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
       console.log(`  Backup: ${backupPath}`);
       // sqlite3 reads the dot-command argument as a double-quoted string, then
       // the shell reads the whole command: quote for both.
       const dotQuoted = `"${backupPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
       console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
-    });
+    };
+
+    // --to is a NEW routing identity — the same shape `agent setup` and the
+    // message surfaces already gate — so it goes through the same refusal
+    // and canonical form. --from is deliberately NOT validated or
+    // canonicalised: it names an EXISTING row the owner is repairing (it may
+    // itself be the path-shaped or NFD-spelled value this command exists to
+    // fix), and it must match that row's exact byte spelling or the repair
+    // silently matches nothing.
+    // A refusal is one line and exit 1, before anything is opened.
+    if (!opts.from !== !opts.to) {
+      console.error('Error: provide BOTH --from and --to (or neither, to list).');
+      process.exitCode = 1;
+      return;
+    }
+    let to = '';
+    if (opts.from && opts.to) {
+      try {
+        to = requireAgentScopeArg(opts.to, 'project', '--to');
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+
+    // Only --apply writes. A normal open does write (auto-decay and the other
+    // one-time passes run on it), so listing and the dry-run preview read
+    // through a read-only handle instead (#519).
+    if (opts.apply) {
+      await withDatabase(() => run(to));
+      return;
+    }
+    let readOnlyDb: MemeshDatabase;
+    try {
+      readOnlyDb = new MemeshDatabase(getDbPath(), { readOnly: true });
+    } catch (err) {
+      console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      await run(to, readOnlyDb);
+    } finally {
+      readOnlyDb.close();
+    }
   });
 
 // --- doctor ---

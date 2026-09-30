@@ -6,7 +6,8 @@
 // user-driven: `memesh kg rename-project --from <old> --to <new>`. This is a
 // deliberate, opt-in, dry-run-by-default operation — it rewrites real user data.
 
-import type { MemeshDatabase } from '../storage/sqlite.js';
+import { MemeshDatabase } from '../storage/sqlite.js';
+import { SCHEMA_SQL } from '../storage/schema.js';
 import { getDatabase } from '../db.js';
 import { AGENT_MESSAGE_PROJECT_TABLES } from './agent-scope-id.js';
 
@@ -99,16 +100,31 @@ export function renameProjectTag(
       const rows = conn.prepare(`SELECT rowid AS rid FROM ${table} WHERE project = ?`)
         .all(from) as Array<{ rid: number }>;
       return { table, rowIds: rows.map((r) => r.rid) };
-    } catch {
-      // A schema older than the durable-message tables has nothing to move.
+    } catch (err) {
+      // Only a schema older than the durable-message tables has nothing to
+      // move. Any other read failure (an I/O error) must abort: treating it as
+      // "no rows" would move the message and strand its delivery (#519).
+      if (!/no such table/i.test(err instanceof Error ? err.message : String(err))) throw err;
       return { table, rowIds: [] as number[] };
     }
   });
   const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
   // Counted, not tried: a dry run must work on a read-only database and must
   // not take the write lock, and the apply below leaves exactly these rows.
-  let messageRowsBlocked = messagePlan.reduce(
-    (n, { table, rowIds }) => n + (rowIds.length === 0 ? 0 : countScopeCollisions(conn, table, from, to)), 0);
+  //
+  // A database that is behind on schema lacks unique indexes that opening it
+  // for --apply creates (e.g. the cursor scope index), so the keys are read
+  // from the current schema as well as from this file: the preview then names
+  // the collisions the apply will hit, not the ones the old file could enforce.
+  const currentSchema = new MemeshDatabase(':memory:');
+  let messageRowsBlocked: number;
+  try {
+    currentSchema.exec(SCHEMA_SQL);
+    messageRowsBlocked = messagePlan.reduce(
+      (n, { table, rowIds }) => n + (rowIds.length === 0 ? 0 : countScopeCollisions(conn, currentSchema, table, from, to)), 0);
+  } finally {
+    currentSchema.close();
+  }
 
   if (opts?.apply && (affected.length > 0 || messageRows > 0)) {
     messageRowsBlocked = 0;
@@ -166,10 +182,16 @@ function isUniqueViolation(err: unknown): boolean {
  * Table and column names come from a hardcoded list and the schema, never
  * from caller input.
  */
-function countScopeCollisions(conn: MemeshDatabase, table: string, from: string, to: string): number {
-  const indexes = (conn.prepare(`SELECT name FROM pragma_index_list('${table}') WHERE "unique" = 1`).all() as Array<{ name: string }>)
-    .map(({ name }) => (conn.prepare(`SELECT name FROM pragma_index_info('${name.replace(/'/g, "''")}')`).all() as Array<{ name: string }>).map((c) => c.name))
-    .filter((cols) => cols.includes('project'));
+function countScopeCollisions(conn: MemeshDatabase, currentSchema: MemeshDatabase, table: string, from: string, to: string): number {
+  const uniqueKeys = (source: MemeshDatabase) =>
+    (source.prepare(`SELECT name FROM pragma_index_list('${table}') WHERE "unique" = 1`).all() as Array<{ name: string }>)
+      .map(({ name }) => (source.prepare(`SELECT name FROM pragma_index_info('${name.replace(/'/g, "''")}')`).all() as Array<{ name: string }>).map((c) => c.name))
+      .filter((cols) => cols.includes('project'));
+  const seen = new Set<string>();
+  const indexes = [...uniqueKeys(conn), ...uniqueKeys(currentSchema)].filter((cols) => {
+    const key = cols.join(',');
+    return seen.has(key) ? false : (seen.add(key), true);
+  });
   if (indexes.length === 0) return 0;
   const collides = indexes.map((cols) => {
     const same = cols.filter((c) => c !== 'project').map((c) => `b."${c}" = a."${c}"`);

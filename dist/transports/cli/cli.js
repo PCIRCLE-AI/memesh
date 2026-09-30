@@ -60631,12 +60631,21 @@ function renameProjectTag(from, to, opts) {
     try {
       const rows = conn.prepare(`SELECT rowid AS rid FROM ${table} WHERE project = ?`).all(from);
       return { table, rowIds: rows.map((r) => r.rid) };
-    } catch {
+    } catch (err) {
+      if (!/no such table/i.test(err instanceof Error ? err.message : String(err)))
+        throw err;
       return { table, rowIds: [] };
     }
   });
   const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
-  let messageRowsBlocked = messagePlan.reduce((n, { table, rowIds }) => n + (rowIds.length === 0 ? 0 : countScopeCollisions(conn, table, from, to)), 0);
+  const currentSchema = new MemeshDatabase(":memory:");
+  let messageRowsBlocked;
+  try {
+    currentSchema.exec(SCHEMA_SQL);
+    messageRowsBlocked = messagePlan.reduce((n, { table, rowIds }) => n + (rowIds.length === 0 ? 0 : countScopeCollisions(conn, currentSchema, table, from, to)), 0);
+  } finally {
+    currentSchema.close();
+  }
   if (opts?.apply && (affected.length > 0 || messageRows > 0)) {
     messageRowsBlocked = 0;
     const del = conn.prepare("DELETE FROM tags WHERE entity_id = ? AND tag = ?");
@@ -60681,8 +60690,13 @@ function isUniqueViolation(err) {
   const code = err?.errcode;
   return code === 2067 || code === 1555 || /UNIQUE constraint failed/.test(err instanceof Error ? err.message : String(err));
 }
-function countScopeCollisions(conn, table, from, to) {
-  const indexes = conn.prepare(`SELECT name FROM pragma_index_list('${table}') WHERE "unique" = 1`).all().map(({ name }) => conn.prepare(`SELECT name FROM pragma_index_info('${name.replace(/'/g, "''")}')`).all().map((c) => c.name)).filter((cols) => cols.includes("project"));
+function countScopeCollisions(conn, currentSchema, table, from, to) {
+  const uniqueKeys = (source) => source.prepare(`SELECT name FROM pragma_index_list('${table}') WHERE "unique" = 1`).all().map(({ name }) => source.prepare(`SELECT name FROM pragma_index_info('${name.replace(/'/g, "''")}')`).all().map((c) => c.name)).filter((cols) => cols.includes("project"));
+  const seen = /* @__PURE__ */ new Set();
+  const indexes = [...uniqueKeys(conn), ...uniqueKeys(currentSchema)].filter((cols) => {
+    const key = cols.join(",");
+    return seen.has(key) ? false : (seen.add(key), true);
+  });
   if (indexes.length === 0)
     return 0;
   const collides = indexes.map((cols) => {
@@ -60695,6 +60709,8 @@ function countScopeCollisions(conn, table, from, to) {
 var init_project_tags = __esm({
   "dist/core/project-tags.js"() {
     "use strict";
+    init_sqlite();
+    init_schema();
     init_db();
     init_agent_scope_id();
   }
@@ -60719,6 +60735,7 @@ var {
 
 // dist/transports/cli/cli.js
 init_db();
+init_sqlite();
 init_operations();
 init_recall_agent_view();
 init_config();
@@ -63487,10 +63504,10 @@ function requireAgentScopeArg(value, field, flag) {
   return canonicalAgentScopeId(value);
 }
 kgCmd.command("rename-project").description("Merge or rename a project across all entities AND durable agent messages (heals mis-homed tags from before git-based project identity, and the message scopes that go with them)").option("--from <name>", "Existing project name to rewrite. Omit both --from/--to to just LIST all project tags + counts.").option("--to <name>", "New project name to rewrite it to").option("--apply", "Actually write the change. Default is a dry-run preview. Backs up the DB first.").option("--json", "Output as JSON").action(async (opts) => {
-  await withDatabase(async () => {
+  const run = async (to2, db2) => {
     const { listProjectTags: listProjectTags2, renameProjectTag: renameProjectTag2 } = await Promise.resolve().then(() => (init_project_tags(), project_tags_exports));
     if (!opts.from && !opts.to) {
-      const tags = listProjectTags2();
+      const tags = listProjectTags2(db2);
       if (opts.json) {
         console.log(JSON.stringify(tags, null, 2));
         return;
@@ -63506,15 +63523,9 @@ kgCmd.command("rename-project").description("Merge or rename a project across al
 Rewrite one with:  memesh kg rename-project --from <old> --to <new>   (add --apply to write)`);
       return;
     }
-    if (!opts.from || !opts.to) {
-      console.error("Provide BOTH --from and --to (or neither, to list).");
-      process.exitCode = 1;
-      return;
-    }
-    const to = requireAgentScopeArg(opts.to, "project", "--to");
     let preview;
     try {
-      preview = renameProjectTag2(opts.from, to, { apply: false });
+      preview = renameProjectTag2(opts.from, to2, { apply: false, db: db2 });
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
       process.exitCode = 1;
@@ -63525,10 +63536,10 @@ Rewrite one with:  memesh kg rename-project --from <old> --to <new>   (add --app
         console.log(JSON.stringify({ ...preview, dryRun: true }, null, 2));
         return;
       }
-      console.log(`Dry-run: project:${opts.from} \u2192 project:${to}`);
+      console.log(`Dry-run: project:${opts.from} \u2192 project:${to2}`);
       console.log(`  ${preview.affectedEntities} entit${preview.affectedEntities === 1 ? "y" : "ies"} carry project:${opts.from}`);
-      console.log(`  ${preview.renamed} would be renamed, ${preview.merged} already have project:${to} (their project:${opts.from} row would be removed)`);
-      console.log(`  ${preview.messageRows} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} of them left in place (${to} already holds an equivalent row)` : ""}`);
+      console.log(`  ${preview.renamed} would be renamed, ${preview.merged} already have project:${to2} (their project:${opts.from} row would be removed)`);
+      console.log(`  ${preview.messageRows - preview.messageRowsBlocked} durable agent-message row(s) scoped to ${opts.from} would move to ${to2}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} would be left in place (${to2} already holds an equivalent row)` : ""}`);
       console.log(`
 Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
       return;
@@ -63551,7 +63562,7 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
     }
     let result;
     try {
-      result = renameProjectTag2(opts.from, to, { apply: true });
+      result = renameProjectTag2(opts.from, to2, { apply: true });
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : String(err)} \u2014 nothing was changed; the backup is at ${backupPath}`);
       process.exitCode = 1;
@@ -63561,13 +63572,45 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
       console.log(JSON.stringify({ ...result, backupPath }, null, 2));
       return;
     }
-    console.log(`\u2705 project:${opts.from} \u2192 project:${to}`);
+    console.log(`\u2705 project:${opts.from} \u2192 project:${to2}`);
     console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
-    console.log(`  ${result.messageRows} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ""}`);
+    console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to2} already holds an equivalent row)` : ""}`);
     console.log(`  Backup: ${backupPath}`);
     const dotQuoted = `"${backupPath.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
     console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
-  });
+  };
+  if (!opts.from !== !opts.to) {
+    console.error("Error: provide BOTH --from and --to (or neither, to list).");
+    process.exitCode = 1;
+    return;
+  }
+  let to = "";
+  if (opts.from && opts.to) {
+    try {
+      to = requireAgentScopeArg(opts.to, "project", "--to");
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+      return;
+    }
+  }
+  if (opts.apply) {
+    await withDatabase(() => run(to));
+    return;
+  }
+  let readOnlyDb;
+  try {
+    readOnlyDb = new MemeshDatabase(getDbPath(), { readOnly: true });
+  } catch (err) {
+    console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+    process.exitCode = 1;
+    return;
+  }
+  try {
+    await run(to, readOnlyDb);
+  } finally {
+    readOnlyDb.close();
+  }
 });
 program2.command("doctor").description("Verify local install health and show actionable fixes").option("--json", "Output machine-readable diagnostics as JSON").option("--probe-http", "Also probe the local HTTP server health endpoint").option("--url <url>", "Base URL for --probe-http", "http://127.0.0.1:3737").option("--fix", "Apply the whitelisted fixes doctor prescribes (asks per fix; --yes skips asking)").option("--yes", "With --fix: apply without asking").action(async (opts) => {
   const { formatDoctorReport: formatDoctorReport2, runDoctor: runDoctor2 } = await Promise.resolve().then(() => (init_doctor(), doctor_exports));

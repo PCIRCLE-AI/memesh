@@ -180,3 +180,33 @@ describe('Feature: #519 the dry run never writes, and only a real collision is "
     expect(r.messageRowsBlocked).toBeGreaterThan(0);
   });
 });
+
+describe('Feature: #519 only a missing table means "nothing to move"', () => {
+  it('a read error on a message table aborts the rename instead of moving half of a message', () => {
+    remember({ name: 'half-move', type: 'note', tags: ['project:io-old'] });
+    const sent = sendAgentMessage(getDatabase(), {
+      project: 'io-old', sender: 'author', recipient: 'reviewer', idempotency_key: 'io-k',
+      content_type: 'text/plain', payload: 'x',
+    });
+    const real = getDatabase();
+    const faulty = new Proxy(real, {
+      get(target, prop) {
+        if (prop === 'prepare') {
+          return (sql: string) => {
+            if (sql === 'SELECT rowid AS rid FROM agent_message_deliveries WHERE project = ?') {
+              throw Object.assign(new Error('disk I/O error'), { errcode: 10 });
+            }
+            return target.prepare(sql);
+          };
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    expect(() => renameProjectTag('io-old', 'io-new', { apply: true, db: faulty })).toThrow('disk I/O error');
+    const scope = (table: string) => (real.prepare(`SELECT project FROM ${table} WHERE message_id = ?`).get(sent.message_id) as { project: string }).project;
+    expect(scope('agent_messages')).toBe('io-old');
+    expect(scope('agent_message_deliveries')).toBe('io-old');
+    expect(projectTagsOf('half-move')).toEqual(['project:io-old']);
+  });
+});
