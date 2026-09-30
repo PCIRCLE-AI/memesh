@@ -9,6 +9,7 @@ import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
 import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessionPrincipal, } from '../core/codex-session-principal.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath, getProjectName } from '../core/paths.js';
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile, readHostConfigFile, readTokenFile, normalizeConfiguredRouterSocket, requiredString, } from './config.js';
+import { AgentRouterProtocolError } from '../core/agent-router.js';
 import { connectRouterHost, routerOutdatedDetail } from './router-client.js';
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const CONTROL_TIMEOUT_MS = 2_000;
@@ -83,8 +84,49 @@ function writePrivateJson(file, value) {
         fs.closeSync(descriptor);
     }
 }
+function companionFailurePath(launchFile) {
+    return `${launchFile}.failed`;
+}
+function removeUnclaimedFailures(directory) {
+    const cutoff = Date.now() - 60_000;
+    for (const name of fs.readdirSync(directory)) {
+        if (!name.endsWith('.failed'))
+            continue;
+        const file = path.join(directory, name);
+        try {
+            if (fs.lstatSync(file).mtimeMs < cutoff)
+                fs.unlinkSync(file);
+        }
+        catch (error) {
+            if (error.code !== 'ENOENT')
+                throw error;
+        }
+    }
+}
+function publishCompanionFailure(file, value) {
+    const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+    writePrivateJson(temporary, value);
+    fs.renameSync(temporary, file);
+}
+function takeCompanionFailure(file) {
+    let raw;
+    try {
+        raw = fs.readFileSync(file, 'utf8');
+    }
+    catch (error) {
+        if (error.code === 'ENOENT')
+            return null;
+        throw error;
+    }
+    fs.unlinkSync(file);
+    const parsed = JSON.parse(raw);
+    if (parsed.code !== 'router_outdated' || typeof parsed.message !== 'string')
+        return null;
+    return new AgentRouterProtocolError('router_outdated', parsed.message.slice(0, 1000));
+}
 async function launchDetachedCompanion(dataDir, session, input) {
     const directory = lifecycleDirectory(dataDir);
+    removeUnclaimedFailures(directory);
     const launchFile = path.join(directory, `launch-${process.pid}-${randomBytes(8).toString('hex')}.json`);
     writePrivateJson(launchFile, input);
     let child = null;
@@ -99,21 +141,27 @@ async function launchDetachedCompanion(dataDir, session, input) {
         child.unref();
         const statePath = codexCompanionStatePath(dataDir, session.threadId);
         const deadline = Date.now() + CONTROL_TIMEOUT_MS;
+        const failurePath = companionFailurePath(launchFile);
         while (Date.now() < deadline) {
             if (readCompanionState(statePath)?.pid === child.pid)
                 return;
+            const failure = takeCompanionFailure(failurePath);
+            if (failure)
+                throw failure;
             await new Promise(resolve => setTimeout(resolve, 25));
         }
         throw new Error('Detached Codex companion did not publish its lifecycle state before the hook timeout.');
     }
     catch (error) {
         child?.kill('SIGTERM');
-        try {
-            fs.unlinkSync(launchFile);
-        }
-        catch (unlinkError) {
-            if (unlinkError.code !== 'ENOENT')
-                throw unlinkError;
+        for (const file of [launchFile, companionFailurePath(launchFile)]) {
+            try {
+                fs.unlinkSync(file);
+            }
+            catch (unlinkError) {
+                if (unlinkError.code !== 'ENOENT')
+                    throw unlinkError;
+            }
         }
         throw error;
     }
@@ -393,7 +441,7 @@ export async function endCodexSessionCompanion(dataDir, hookInput, environment, 
     await endExactCodexSessionCompanion(dataDir, session);
     return true;
 }
-async function runDetachedCompanion(dataDir, input) {
+async function runDetachedCompanion(dataDir, input, failurePath) {
     const session = validateCodexSessionStart(input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT }, fs.realpathSync);
     if (!session)
         return;
@@ -468,6 +516,9 @@ async function runDetachedCompanion(dataDir, input) {
                 throw unlinkError;
         }
         removeOwnState(statePath, token);
+        if (routerOutdatedDetail(error)) {
+            publishCompanionFailure(failurePath, { code: 'router_outdated', message: error.message });
+        }
         throw error;
     }
     process.once('SIGINT', close);
@@ -479,7 +530,7 @@ async function main() {
         const launchFile = process.argv[3];
         if (typeof launchFile !== 'string')
             throw new Error('Codex companion launch input is required.');
-        await runDetachedCompanion(dataDir, readDetachedLaunchInput(dataDir, launchFile));
+        await runDetachedCompanion(dataDir, readDetachedLaunchInput(dataDir, launchFile), companionFailurePath(launchFile));
         return;
     }
     const input = await readHookInput();

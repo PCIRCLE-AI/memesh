@@ -142,7 +142,7 @@ describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after
   it('a router from before versions were reported is refused with a restart instruction', async () => {
     const { socketPath } = setup();
     await startLegacyRouter(socketPath, 'rejects-version-field');
-    await expect(connect(socketPath, async () => undefined, 1)).rejects.toMatchObject({
+    await expect(connect(socketPath, async () => undefined, 1).then((c) => { connection = c; return c; })).rejects.toMatchObject({
       code: 'router_outdated',
       message: expect.stringContaining('pkill -f dist/host-runtime/router.js'),
     });
@@ -183,6 +183,7 @@ describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after
     const { db, socketPath } = setup();
     const first = makeRouter(db, socketPath, memeshPackageVersion());
     await first.start();
+    routers.push(first);
     connection = await connectRouterHost({
       socket_path: socketPath,
       auth_token: 'token',
@@ -205,6 +206,7 @@ describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after
       const firstGeneration = connection.generation;
       const second = makeRouter(db, socketPath, memeshPackageVersion());
       await second.start();
+      routers.push(second);
       await vi.waitFor(() => expect(connection?.generation).toBeGreaterThan(firstGeneration), { timeout: 5_000 });
 
       // Lost again, into an outdated router again: the user is told again.
@@ -249,7 +251,7 @@ describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after
   it('a router that answers without a version is treated as outdated', async () => {
     const { socketPath } = setup();
     await startLegacyRouter(socketPath, 'omits-version');
-    await expect(connect(socketPath, async () => undefined, 1)).rejects.toMatchObject({ code: 'router_outdated' });
+    await expect(connect(socketPath, async () => undefined, 1).then((c) => { connection = c; return c; })).rejects.toMatchObject({ code: 'router_outdated' });
   });
 
   it('an older versioned router steps aside and the installed version takes over', async () => {

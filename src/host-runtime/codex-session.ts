@@ -21,6 +21,7 @@ import {
   normalizeConfiguredRouterSocket,
   requiredString,
 } from './config.js';
+import { AgentRouterProtocolError } from '../core/agent-router.js';
 import { connectRouterHost, routerOutdatedDetail, type RouterHostConnection } from './router-client.js';
 
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
@@ -133,12 +134,55 @@ function writePrivateJson(file: string, value: unknown): void {
   }
 }
 
+/**
+ * The detached companion runs with no stdio, so a reason the user must act on
+ * (an outdated router, #518) travels back to the waiting SessionStart
+ * launcher through this owner-private file. It is named after the launch file,
+ * which is random per launch, so a reused pid never reads another launch's reason.
+ */
+function companionFailurePath(launchFile: string): string {
+  return `${launchFile}.failed`;
+}
+
+/** A reason no launcher is still waiting for: its launcher was killed or timed out. */
+function removeUnclaimedFailures(directory: string): void {
+  const cutoff = Date.now() - 60_000;
+  for (const name of fs.readdirSync(directory)) {
+    if (!name.endsWith('.failed')) continue;
+    const file = path.join(directory, name);
+    try {
+      if (fs.lstatSync(file).mtimeMs < cutoff) fs.unlinkSync(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+}
+
+function publishCompanionFailure(file: string, value: unknown): void {
+  const temporary = `${file}.${randomBytes(6).toString('hex')}.tmp`;
+  writePrivateJson(temporary, value);
+  fs.renameSync(temporary, file);
+}
+
+function takeCompanionFailure(file: string): AgentRouterProtocolError | null {
+  let raw: string;
+  try { raw = fs.readFileSync(file, 'utf8'); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  fs.unlinkSync(file);
+  const parsed = JSON.parse(raw) as { code?: unknown; message?: unknown };
+  if (parsed.code !== 'router_outdated' || typeof parsed.message !== 'string') return null;
+  return new AgentRouterProtocolError('router_outdated', parsed.message.slice(0, 1000));
+}
+
 async function launchDetachedCompanion(
   dataDir: string,
   session: ValidCodexSessionStart,
   input: CodexSessionStartInput,
 ): Promise<void> {
   const directory = lifecycleDirectory(dataDir);
+  removeUnclaimedFailures(directory);
   const launchFile = path.join(directory, `launch-${process.pid}-${randomBytes(8).toString('hex')}.json`);
   writePrivateJson(launchFile, input);
   let child: ReturnType<typeof spawn> | null = null;
@@ -152,15 +196,20 @@ async function launchDetachedCompanion(
     child.unref();
     const statePath = codexCompanionStatePath(dataDir, session.threadId);
     const deadline = Date.now() + CONTROL_TIMEOUT_MS;
+    const failurePath = companionFailurePath(launchFile);
     while (Date.now() < deadline) {
       if (readCompanionState(statePath)?.pid === child.pid) return;
+      const failure = takeCompanionFailure(failurePath);
+      if (failure) throw failure;
       await new Promise(resolve => setTimeout(resolve, 25));
     }
     throw new Error('Detached Codex companion did not publish its lifecycle state before the hook timeout.');
   } catch (error) {
     child?.kill('SIGTERM');
-    try { fs.unlinkSync(launchFile); } catch (unlinkError) {
-      if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError;
+    for (const file of [launchFile, companionFailurePath(launchFile)]) {
+      try { fs.unlinkSync(file); } catch (unlinkError) {
+        if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError;
+      }
     }
     throw error;
   }
@@ -510,7 +559,11 @@ export async function endCodexSessionCompanion(
   return true;
 }
 
-async function runDetachedCompanion(dataDir: string, input: CodexSessionStartInput): Promise<void> {
+async function runDetachedCompanion(
+  dataDir: string,
+  input: CodexSessionStartInput,
+  failurePath: string,
+): Promise<void> {
   const session = validateCodexSessionStart(input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT }, fs.realpathSync);
   if (!session) return;
   ensureOwnerPrivateDataDirectory(dataDir);
@@ -572,6 +625,10 @@ async function runDetachedCompanion(dataDir: string, input: CodexSessionStartInp
       if ((unlinkError as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkError;
     }
     removeOwnState(statePath, token);
+    // Published only after cleanup: the launcher returns as soon as it reads this.
+    if (routerOutdatedDetail(error)) {
+      publishCompanionFailure(failurePath, { code: 'router_outdated', message: (error as Error).message });
+    }
     throw error;
   }
   process.once('SIGINT', close);
@@ -583,7 +640,7 @@ async function main(): Promise<void> {
   if (process.argv[2] === '--companion') {
     const launchFile = process.argv[3];
     if (typeof launchFile !== 'string') throw new Error('Codex companion launch input is required.');
-    await runDetachedCompanion(dataDir, readDetachedLaunchInput(dataDir, launchFile));
+    await runDetachedCompanion(dataDir, readDetachedLaunchInput(dataDir, launchFile), companionFailurePath(launchFile));
     return;
   }
   const input = await readHookInput();

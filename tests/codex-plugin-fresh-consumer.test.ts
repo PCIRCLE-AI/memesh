@@ -193,6 +193,51 @@ describe('Codex plugin fresh consumer', () => {
     companionStates.splice(companionStates.indexOf(statePath), 1);
   });
 
+  it.skipIf(process.platform === 'win32')('#518: SessionStart against a router from before versions were reported says why and how to stop it', async () => {
+    const pluginRoot = packagedPluginWithoutNodeModules();
+    const dataDirectory = path.join(pluginRoot, 'data');
+    fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
+    const socketPath = path.join(dataDirectory, 'agent-router-v2.sock');
+    const tokenPath = path.join(dataDirectory, 'agent-router.token');
+    fs.writeFileSync(tokenPath, 'x'.repeat(64), { mode: 0o600 });
+    // A router from 4.10.11 or earlier: it rejects the host's memesh_version field.
+    const legacy = net.createServer(socket => {
+      socket.on('error', () => undefined);
+      socket.once('data', () => {
+        socket.write(`${JSON.stringify({
+          version: 2, request_id: '', ok: false,
+          error: { code: 'unexpected_field', message: 'Router frame contains unsupported field memesh_version.' },
+        })}\n`);
+      });
+    });
+    await new Promise<void>((resolve, reject) => { legacy.once('error', reject); legacy.listen(socketPath, resolve); });
+    fs.chmodSync(socketPath, 0o600);
+    try {
+      const launcher = spawn(process.execPath, [path.join(pluginRoot, 'dist/host-runtime/codex-session.js')], {
+        env: {
+          PATH: process.env.PATH, HOME: path.join(pluginRoot, 'home'), TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
+          MEMESH_DIR: dataDirectory, MEMESH_DB_PATH: path.join(dataDirectory, 'knowledge-graph.db'),
+          MEMESH_ROUTER_SOCKET: socketPath, MEMESH_ROUTER_TOKEN_FILE: tokenPath, MEMESH_AUTO_UPDATE: '0', PLUGIN_ROOT: pluginRoot,
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      children.push(launcher);
+      let stderr = '';
+      launcher.stderr!.setEncoding('utf8');
+      launcher.stderr!.on('data', (chunk: string) => { stderr += chunk; });
+      launcher.stdin!.end(JSON.stringify({
+        hook_event_name: 'SessionStart', source: 'startup',
+        session_id: '01a041b4-5c67-75b3-9505-4e33d7942b8f', cwd: pluginRoot,
+      }));
+      await waitFor(() => launcher.exitCode !== null, 'the SessionStart launcher to exit');
+      expect(launcher.exitCode).toBe(1);
+      expect(stderr).toContain('router_outdated');
+      expect(stderr).toContain('pkill -f dist/host-runtime/router.js');
+    } finally {
+      await new Promise<void>(resolve => legacy.close(() => resolve()));
+    }
+  });
+
   it('declares the bundled MCP server for a zero-config Codex plugin install', () => {
     const plugin = JSON.parse(fs.readFileSync(path.join(repoRoot, '.codex-plugin', 'plugin.json'), 'utf8'));
     expect(plugin.mcpServers).toBe('./.codex-plugin/mcp.json');
