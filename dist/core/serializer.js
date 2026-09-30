@@ -2,6 +2,7 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { truncateTitle } from './title.js';
 import { parseSqliteUtcMs } from './time-utils.js';
+import { boundReplacedHistory } from './replaced-history.js';
 import { NAMESPACES } from './types.js';
 export const IMPORTABLE_METADATA_KEYS = new Set([
     'title_source',
@@ -236,6 +237,7 @@ export function importMemories(args, options) {
                     isNewEntity: !existing,
                     trust,
                 });
+                let replacedVersion;
                 if (existing) {
                     if (args.merge_strategy === 'skip')
                         return { kind: 'skipped' };
@@ -254,6 +256,15 @@ export function importMemories(args, options) {
                         kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
                         return { kind: 'appended' };
                     }
+                    const entityId = db.prepare('SELECT id FROM entities WHERE name = ?').get(entity.name).id;
+                    replacedVersion = {
+                        replaced_at: new Date().toISOString(),
+                        title: existing.title ?? null,
+                        observations: db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(entityId)
+                            .map((o) => o.content),
+                        tags: db.prepare('SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag').all(entityId)
+                            .map((t) => t.tag),
+                    };
                     kg.clearEntityData(entity.name);
                 }
                 kg.createEntity(entity.name, entity.type, {
@@ -265,7 +276,12 @@ export function importMemories(args, options) {
                     trustOverride: 'untrusted',
                 });
                 if (existing) {
-                    kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+                    kg.updateEntityMetadata(entity.name, (current) => {
+                        const merged = { ...current, ...importedMetadata };
+                        const version = replacedVersion;
+                        const history = Array.isArray(merged.replaced_history) ? merged.replaced_history : [];
+                        return { ...merged, replaced_history: boundReplacedHistory([...history, version]) };
+                    });
                 }
                 if (!existing) {
                     const bundledCreatedAt = entity.created_at;

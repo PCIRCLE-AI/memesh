@@ -7,6 +7,7 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { truncateTitle } from './title.js';
 import { parseSqliteUtcMs } from './time-utils.js';
+import { boundReplacedHistory, type ReplacedVersion } from './replaced-history.js';
 import { NAMESPACES } from './types.js';
 import type { ExportInput, ExportResult, ImportInput, ImportResult } from './types.js';
 
@@ -203,7 +204,7 @@ export const AUTHORITY_METADATA_KEYS: ReadonlySet<string> = new Set([
   // `append` and `overwrite` alike. A FRESH entity accepts ONLY a value
   // `validateFreshReplacedHistory` below shapes-checks against exactly what
   // `rememberInTransaction`'s own `replace` path writes
-  // (`ReplacedVersion`, operations.ts ~132-139) — never a partially
+  // (`ReplacedVersion`, replaced-history.ts) — never a partially
   // trusted shape.
   'replaced_history',
   // Compaction-chain depth guard (dreamer.ts ~110, ~747) — denied always, no
@@ -322,8 +323,8 @@ function validateFreshSignalScore(value: unknown): number | null {
  * the real writer before picking numbers (round 8, isolated child-process
  * probe, `rememberInTransaction`'s own `replace` path, not a guess):
  *
- * - `REPLACED_HISTORY_MAX` (operations.ts ~87) is 20 entries.
- *   `REPLACED_HISTORY_MAX_BYTES` (operations.ts ~95) is 64 KiB — round 9
+ * - `REPLACED_HISTORY_MAX` (replaced-history.ts) is 20 entries.
+ *   `REPLACED_HISTORY_MAX_BYTES` (replaced-history.ts) is 64 KiB — round 9
  *   review caught a round-8 comment here calling this "64 KiB PER ENTRY",
  *   which the real code does not say: `boundReplacedHistory`'s own byte
  *   check, `while (out.length > 1 && jsonBytes(out) >
@@ -347,7 +348,7 @@ function validateFreshSignalScore(value: unknown): number | null {
  *   validator therefore bounds total serialized SIZE, not element COUNT,
  *   for `observations`/`tags`.
  * - `title` is `string | null` in the real type (`ReplacedVersion`,
- *   operations.ts ~132-139) — genuinely `null`, not merely absent, whenever
+ *   replaced-history.ts) — genuinely `null`, not merely absent, whenever
  *   the replaced version had no title. A validator that only accepted a
  *   STRING title would reject this real, common shape.
  * - A single 100 KiB observation, replaced, produced an entry with
@@ -371,7 +372,7 @@ function validateFreshSignalScore(value: unknown): number | null {
 const MAX_IMPORTED_REPLACED_HISTORY_ENTRIES = 50;
 const MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES = 4 * 64 * 1024;
 
-/** The exact key set `ReplacedVersion` (operations.ts ~132-139) has — no
+/** The exact key set `ReplacedVersion` (replaced-history.ts) has — no
  *  other key survives, on ANY entry, or the WHOLE list is dropped. */
 const REPLACED_HISTORY_ENTRY_KEYS: ReadonlySet<string> = new Set([
   'replaced_at', 'title', 'observations', 'tags', 'truncated',
@@ -416,7 +417,7 @@ function isValidReplacedHistoryEntry(entry: unknown): entry is {
  * this file drops the whole value rather than filtering it down: a partial
  * history is a wrong answer to "what did this memory used to say", not a
  * safer one. The byte check runs LAST, over the WHOLE array — the same
- * quantity, over the same thing, `boundReplacedHistory` (operations.ts)
+ * quantity, over the same thing, `boundReplacedHistory` (replaced-history.ts)
  * bounds for real data; see the constant's own comment above for why this
  * moved here from a per-entry check in round 9.
  */
@@ -825,6 +826,7 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
           trust,
         });
 
+        let replacedVersion: ReplacedVersion | undefined;
         if (existing) {
           if (args.merge_strategy === 'skip') return { kind: 'skipped' } as const;
           // A forgotten memory outranks a bundle naming it: without
@@ -868,7 +870,19 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
             return { kind: 'appended' } as const;
           }
-          // overwrite: clear existing data, then re-populate below
+          // overwrite: file what is there into `replaced_history` (same shape
+          // `remember` with `replace: true` writes), clear it, then
+          // re-populate below. #530: without this, a bundle naming an
+          // existing memory erased its observations and tags with no trace.
+          const entityId = (db.prepare('SELECT id FROM entities WHERE name = ?').get(entity.name) as { id: number }).id;
+          replacedVersion = {
+            replaced_at: new Date().toISOString(),
+            title: existing.title ?? null,
+            observations: (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(entityId) as { content: string }[])
+              .map((o) => o.content),
+            tags: (db.prepare('SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag').all(entityId) as { tag: string }[])
+              .map((t) => t.tag),
+          };
           kg.clearEntityData(entity.name);
         }
 
@@ -894,7 +908,15 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
           trustOverride: 'untrusted',
         });
         if (existing) {
-          kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+          kg.updateEntityMetadata(entity.name, (current) => {
+            const merged = { ...current, ...importedMetadata };
+            // importedMetadata carries the local history (a bundle's own is
+            // never accepted for an existing memory); append the version
+            // this overwrite just replaced.
+            const version = replacedVersion!;
+            const history = Array.isArray(merged.replaced_history) ? merged.replaced_history as ReplacedVersion[] : [];
+            return { ...merged, replaced_history: boundReplacedHistory([...history, version]) };
+          });
         }
 
         // `created_at` and a bundled `status: 'archived'` are applied only to

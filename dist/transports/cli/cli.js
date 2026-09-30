@@ -6437,6 +6437,41 @@ var init_recall_agent_view = __esm({
   }
 });
 
+// dist/core/replaced-history.js
+function boundReplacedHistory(history) {
+  let out = history.slice(-REPLACED_HISTORY_MAX);
+  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
+    out = out.slice(1);
+  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
+    const only = out[0];
+    let kept = { ...only, observations: [], tags: [], truncated: true };
+    const fits = (v) => jsonBytes([v]) <= REPLACED_HISTORY_MAX_BYTES;
+    for (const obs of only.observations) {
+      const next = { ...kept, observations: [...kept.observations, obs] };
+      if (!fits(next))
+        break;
+      kept = next;
+    }
+    for (const tag of only.tags) {
+      const next = { ...kept, tags: [...kept.tags, tag] };
+      if (!fits(next))
+        break;
+      kept = next;
+    }
+    out = [kept];
+  }
+  return out;
+}
+var REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES, jsonBytes;
+var init_replaced_history = __esm({
+  "dist/core/replaced-history.js"() {
+    "use strict";
+    REPLACED_HISTORY_MAX = 20;
+    REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
+    jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
+  }
+});
+
 // dist/core/types.js
 var AUTO_CAPTURE_TAG, NAMESPACES;
 var init_types = __esm({
@@ -6625,6 +6660,7 @@ function importMemories(args, options) {
           isNewEntity: !existing,
           trust
         });
+        let replacedVersion;
         if (existing) {
           if (args.merge_strategy === "skip")
             return { kind: "skipped" };
@@ -6643,6 +6679,13 @@ function importMemories(args, options) {
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
             return { kind: "appended" };
           }
+          const entityId = db2.prepare("SELECT id FROM entities WHERE name = ?").get(entity.name).id;
+          replacedVersion = {
+            replaced_at: (/* @__PURE__ */ new Date()).toISOString(),
+            title: existing.title ?? null,
+            observations: db2.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(entityId).map((o) => o.content),
+            tags: db2.prepare("SELECT tag FROM tags WHERE entity_id = ? ORDER BY tag").all(entityId).map((t) => t.tag)
+          };
           kg.clearEntityData(entity.name);
         }
         kg.createEntity(entity.name, entity.type, {
@@ -6654,7 +6697,12 @@ function importMemories(args, options) {
           trustOverride: "untrusted"
         });
         if (existing) {
-          kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+          kg.updateEntityMetadata(entity.name, (current) => {
+            const merged = { ...current, ...importedMetadata };
+            const version2 = replacedVersion;
+            const history = Array.isArray(merged.replaced_history) ? merged.replaced_history : [];
+            return { ...merged, replaced_history: boundReplacedHistory([...history, version2]) };
+          });
         }
         if (!existing) {
           const bundledCreatedAt = entity.created_at;
@@ -6713,6 +6761,7 @@ var init_serializer = __esm({
     init_knowledge_graph();
     init_title();
     init_time_utils();
+    init_replaced_history();
     init_types();
     IMPORTABLE_METADATA_KEYS = /* @__PURE__ */ new Set([
       "title_source",
@@ -6774,23 +6823,6 @@ function remember(input) {
   const kg = new KnowledgeGraph(db2);
   const { args, derived, typeGiven } = resolveRememberInput(input);
   return db2.transaction(() => rememberInTransaction(args, derived, typeGiven, db2, kg)).immediate();
-}
-function boundReplacedHistory(history) {
-  let out = history.slice(-REPLACED_HISTORY_MAX);
-  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
-    out = out.slice(1);
-  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
-    const only = out[0];
-    const kept = [];
-    const base = { ...only, observations: [], truncated: true };
-    for (const obs of only.observations) {
-      if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
-        break;
-      kept.push(obs);
-    }
-    out = [{ ...base, observations: kept }];
-  }
-  return out;
 }
 function summarizeReplacedHistory(entities) {
   for (const e of entities) {
@@ -7014,7 +7046,6 @@ function setPinned(name, pinned) {
   });
   return { name, pinned, found: true };
 }
-var REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES, jsonBytes;
 var init_operations = __esm({
   "dist/core/operations.js"() {
     "use strict";
@@ -7026,10 +7057,9 @@ var init_operations = __esm({
     init_note_derive();
     init_work_topology();
     init_recall_agent_view();
+    init_replaced_history();
+    init_replaced_history();
     init_serializer();
-    REPLACED_HISTORY_MAX = 20;
-    REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
-    jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
   }
 });
 
@@ -26778,7 +26808,7 @@ function exportOpenAITools() {
             merge_strategy: {
               type: "string",
               enum: ["skip", "overwrite", "append"],
-              description: "Required. How to handle existing entities: skip leaves them alone; append adds observations; overwrite deletes previous observations and tags, then replaces them. Overwrite is not an archive and cannot be undone."
+              description: "Required. How to handle existing entities: skip leaves them alone; append adds observations; overwrite replaces observations and tags and keeps the previous version in metadata.replaced_history (the last 20)."
             },
             restore_archived: {
               type: "boolean",

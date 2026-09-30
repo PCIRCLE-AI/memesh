@@ -112,7 +112,7 @@ export function exportOpenAITools() {
                         merge_strategy: {
                             type: 'string',
                             enum: ['skip', 'overwrite', 'append'],
-                            description: 'Required. How to handle existing entities: skip leaves them alone; append adds observations; overwrite deletes previous observations and tags, then replaces them. Overwrite is not an archive and cannot be undone.',
+                            description: 'Required. How to handle existing entities: skip leaves them alone; append adds observations; overwrite replaces observations and tags and keeps the previous version in metadata.replaced_history (the last 20).',
                         },
                         restore_archived: {
                             type: 'boolean',

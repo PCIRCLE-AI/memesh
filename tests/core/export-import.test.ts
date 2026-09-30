@@ -496,7 +496,15 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
         expect(entity.metadata?.pin, 'pin leaked onto a restored EXISTING entity').toBeUndefined();
         expect(entity.metadata?.signal_score, "the bundle's signal_score overwrote the local one on a restored EXISTING entity").toBe(0.55);
         expect(entity.metadata?.forgotten_observation_hashes, 'forgotten_observation_hashes leaked onto a restored EXISTING entity').toBeUndefined();
-        expect(entity.metadata?.replaced_history, 'a forged replaced_history leaked onto a restored EXISTING entity with no local history').toBeUndefined();
+        const history = entity.metadata?.replaced_history as Array<{ observations: string[] }> | undefined;
+        if (merge_strategy === 'append') {
+          expect(history, 'a forged replaced_history leaked onto a restored EXISTING entity with no local history').toBeUndefined();
+        } else {
+          // #530: overwrite records the version it replaced (the archived original), never the bundle's.
+          expect(history, 'overwrite did not record exactly the replaced version').toHaveLength(1);
+          expect(history![0].observations).toContain('original text');
+          expect(JSON.stringify(history), "a bundle's forged entry reached the history").not.toContain('forged');
+        }
       },
     );
 
@@ -658,8 +666,15 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
         };
         importMemories({ data, merge_strategy });
 
-        const after = new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.replaced_history;
-        expect(after, "a bundle's forged replaced_history overwrote the real local one").toEqual(before);
+        const after = new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.replaced_history as Array<{ title: string | null; observations: string[] }>;
+        if (merge_strategy === 'append') {
+          expect(after, "a bundle's forged replaced_history overwrote the real local one").toEqual(before);
+        } else {
+          // #530: overwrite records the version it replaced; the bundle's forged entry never lands.
+          expect(after.slice(0, -1), 'the real local history was lost').toEqual(before);
+          expect(after.at(-1)?.observations, 'overwrite did not record the replaced content').toEqual(['real-new']);
+          expect(JSON.stringify(after), "a bundle's forged entry reached the history").not.toContain('forged');
+        }
       },
     );
 
@@ -683,10 +698,15 @@ describe('#359 round 4: import metadata is an ALLOW-list, not a deny-list', () =
         };
         importMemories({ data, merge_strategy });
 
-        expect(
-          new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.replaced_history,
-          "a bundle granted replaced_history where none existed locally",
-        ).toBeUndefined();
+        const after = new KnowledgeGraph(getDatabase()).getEntity(name)!.metadata?.replaced_history as Array<{ observations: string[] }> | undefined;
+        if (merge_strategy === 'append') {
+          expect(after, 'a bundle granted replaced_history where none existed locally').toBeUndefined();
+        } else {
+          // #530: overwrite records exactly the version it replaced — never the bundle's.
+          expect(after, 'overwrite did not record exactly the replaced version').toHaveLength(1);
+          expect(after![0].observations).toEqual(['never replaced']);
+          expect(JSON.stringify(after), "a bundle's forged entry reached the history").not.toContain('forged');
+        }
       },
     );
 
