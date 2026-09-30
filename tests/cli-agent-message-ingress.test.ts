@@ -346,7 +346,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: kg rename-project --apply backs up next to the database, not in the current directory', () => {
+  it('#519: kg rename-project --apply backs up next to the database, not in the current directory', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-backup-'));
     try {
       const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
@@ -367,7 +367,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: kg rename-project --from X --to X is refused with one line and exit 1', () => {
+  it('#519: kg rename-project --from X --to X is refused with one line and exit 1', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-same-'));
     try {
       const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
@@ -392,7 +392,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: a rename-project dry run persists nothing, not even auto-decay', async () => {
+  it('#519: a rename-project dry run persists nothing, not even auto-decay', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-dry-'));
     const { DatabaseSync } = await import('node:sqlite');
     try {
@@ -420,7 +420,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: list mode and incomplete --from/--to never write to the database', async () => {
+  it('#519: list mode and incomplete --from/--to never write to the database', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-ro-'));
     const { DatabaseSync } = await import('node:sqlite');
     try {
@@ -488,7 +488,7 @@ describe('CLI durable-message ingress', () => {
   const rename = (env: NodeJS.ProcessEnv, ...args: string[]) => spawnSync(
     process.execPath, cliArgs('kg', 'rename-project', '--from', 'mv-old', '--to', 'mv-new', ...args), { encoding: 'utf8', env });
 
-  it.skipIf(process.platform === 'win32')('#519: the preview counts the same collisions as --apply when a unique index is still to be created', () => {
+  it('#519: the preview counts the same collisions as --apply when a unique index is still to be created', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-idx-'));
     try {
       const dbFile = seedMessageScopes(home, (db) => {
@@ -528,7 +528,7 @@ describe('CLI durable-message ingress', () => {
 
   // The preview runs the real apply on a throwaway copy, so it agrees with --apply
   // for any index the database carries: partial, collated, expression, or non-unique.
-  describe.skipIf(process.platform === 'win32')('#519: preview and apply agree on whatever constraints the database has', () => {
+  describe('#519: preview and apply agree on whatever constraints the database has', () => {
     const cases: Array<[string, string, string, string]> = [
       ['a partial UNIQUE index keeps its predicate', "CREATE UNIQUE INDEX extra_partial ON agent_message_cursors(project,event_sequence) WHERE recipient='special'", 'alpha', 'beta'],
       ['a NOCASE UNIQUE index keeps its collation', 'DROP INDEX idx_agent_message_cursors_unique_scope_sequence; CREATE UNIQUE INDEX idx_agent_message_cursors_unique_scope_sequence ON agent_message_cursors(project,recipient COLLATE NOCASE,event_sequence)', 'Reviewer', 'reviewer'],
@@ -649,7 +649,7 @@ describe('CLI durable-message ingress', () => {
     });
   });
 
-  it.skipIf(process.platform === 'win32')('#519: the printed message counts equal what was moved and what was left', () => {
+  it('#519: the printed message counts equal what was moved and what was left', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-count-'));
     try {
       const dbFile = seedMessageScopes(home);
@@ -679,7 +679,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: a refused same-name rename leaves the database untouched, even with --apply', async () => {
+  it('#519: a refused same-name rename leaves the database untouched, even with --apply', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-same-ro-'));
     const { DatabaseSync } = await import('node:sqlite');
     try {
@@ -710,7 +710,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: with no database yet, listing says so and exits 0, and nothing is created', () => {
+  it('#519: with no database yet, listing says so and exits 0, and nothing is created', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-nodb-'));
     try {
       const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
@@ -813,7 +813,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: listing a database with no tags table is one line and exit 1, not a stack trace', () => {
+  it('#519: listing a database with no tags table is one line and exit 1, not a stack trace', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-empty-'));
     try {
       const dir = path.join(home, '.memesh');
@@ -832,7 +832,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: --apply without --from and --to is refused before the database is opened', async () => {
+  it('#519: --apply without --from and --to is refused before the database is opened', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-applyonly-'));
     const { DatabaseSync } = await import('node:sqlite');
     try {
@@ -861,7 +861,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: a refused --to is one line and exit 1, not a stack trace', () => {
+  it('#519: a refused --to is one line and exit 1, not a stack trace', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-badto-'));
     try {
       const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
@@ -905,7 +905,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('#519: the rename-project backup holds writes still in the WAL file of an open connection', async () => {
+  it('#519: the rename-project backup holds writes still in the WAL file of an open connection', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-wal-'));
     const { DatabaseSync } = await import('node:sqlite');
     let held: InstanceType<typeof DatabaseSync> | undefined;
