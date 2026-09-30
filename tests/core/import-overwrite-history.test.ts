@@ -167,4 +167,24 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
     expect(result.errors[0]).toContain('no usable "name"');
     expect(entityOf('fine').observations).toEqual(['z']);
   });
+
+  it('refuses two names that differ only in a lone surrogate, which the database stores as one', () => {
+    remember({ name: 'x\uFFFD', type: 'decision', observations: ['genuine v1'] });
+    remember({ name: 'x\uFFFD', type: 'decision', observations: ['genuine v2'], replace: true });
+    remember({ name: 'x\uFFFD', type: 'decision', observations: ['current'], replace: true });
+    const data = bundle('x\uD800', ['first']);
+    data.entities.push({ ...bundle('x\uD801', ['second']).entities[0] });
+    data.entity_count = 2;
+
+    expect(() => importMemories({ data, merge_strategy: 'overwrite' })).toThrow(/more than once\. Nothing was imported/);
+
+    const history = entityOf('x\uFFFD').metadata?.replaced_history as Array<{ observations: string[] }>;
+    expect(history.map((h) => h.observations)).toEqual([['genuine v1'], ['genuine v2']]);
+    expect(entityOf('x\uFFFD').observations).toEqual(['current']);
+    // A valid surrogate pair is one character, not two lone halves.
+    const emoji = bundle('a\u{1F600}', ['e']);
+    emoji.entities.push({ ...bundle('b\u{1F600}', ['f']).entities[0] });
+    emoji.entity_count = 2;
+    expect(importMemories({ data: emoji, merge_strategy: 'skip' }).imported).toBe(2);
+  });
 });

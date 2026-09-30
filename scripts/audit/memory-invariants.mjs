@@ -24,8 +24,10 @@
 //
 // Contract:
 //   - READ-ONLY. Opened with `?mode=ro`; there is no write path in this file.
-//   - Exit 1 on any violation, 0 otherwise, 2 if the database cannot be read
-//     or an invariant's own post-filter throws (a bug here, not a finding).
+//   - Exit 1 on any violation, 0 otherwise, 2 if the database cannot be read,
+//     a query fails for any reason other than a missing table or column, no
+//     invariant could be checked at all, or an invariant's own post-filter
+//     throws (a bug here, not a finding).
 //   - Each invariant prints the offending rows, bounded, so the report is
 //     actionable without a second query.
 //   - Adding an invariant here is how a memory-layer defect stays fixed. A

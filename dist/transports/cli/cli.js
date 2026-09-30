@@ -6641,10 +6641,11 @@ function importMemories(args, options) {
     const name = entity?.name;
     if (typeof name !== "string" || name === "")
       continue;
-    if (seenNames.has(name)) {
+    const stored = name.replace(LONE_SURROGATE, "\uFFFD");
+    if (seenNames.has(stored)) {
       throw new Error(`This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}\u2026` : name)} more than once. Nothing was imported. A file produced by \`memesh export\` names each memory once.`);
     }
-    seenNames.add(name);
+    seenNames.add(stored);
   }
   const db2 = getDatabase();
   const storedContent = (name) => storedContentOf(db2, name);
@@ -6773,7 +6774,7 @@ function importMemories(args, options) {
   }
   return { imported, overwritten, skipped, appended, kept_archived: keptArchived, errors, skipped_relations: skippedRelations };
 }
-var IMPORTABLE_METADATA_KEYS, FORGOTTEN_HASH_RE, MAX_IMPORTED_FORGOTTEN_HASHES, MAX_IMPORTED_REPLACED_HISTORY_ENTRIES, MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES, REPLACED_HISTORY_ENTRY_KEYS, jsonBytesOf, MERGE_STRATEGIES;
+var IMPORTABLE_METADATA_KEYS, FORGOTTEN_HASH_RE, MAX_IMPORTED_FORGOTTEN_HASHES, MAX_IMPORTED_REPLACED_HISTORY_ENTRIES, MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES, REPLACED_HISTORY_ENTRY_KEYS, jsonBytesOf, MERGE_STRATEGIES, LONE_SURROGATE;
 var init_serializer = __esm({
   "dist/core/serializer.js"() {
     "use strict";
@@ -6816,6 +6817,7 @@ var init_serializer = __esm({
     ]);
     jsonBytesOf = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
     MERGE_STRATEGIES = ["skip", "overwrite", "append"];
+    LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
   }
 });
 
