@@ -27031,16 +27031,21 @@ function isBoilerplateObservation(text) {
 
 // dist/db.js
 var db = null;
+function removeGroupAndOtherAccess(target) {
+  try {
+    const mode = fs2.statSync(target).mode & 4095;
+    if ((mode & 63) !== 0)
+      fs2.chmodSync(target, mode & ~63);
+  } catch {
+  }
+}
 function openDatabase(dbPath) {
   if (db)
     return db;
   const resolvedPath = dbPath ?? getDbPath();
   const dir = path2.dirname(resolvedPath);
   fs2.mkdirSync(dir, { recursive: true });
-  try {
-    fs2.chmodSync(dir, 448);
-  } catch {
-  }
+  removeGroupAndOtherAccess(dir);
   const opening = new MemeshDatabase(resolvedPath);
   try {
     initialiseDatabase(opening, resolvedPath);
@@ -27082,12 +27087,8 @@ function migrateToCurrentSchema(db2, resolvedPath) {
     process.umask(63);
   } catch {
   }
-  for (const suffix of ["", "-wal", "-shm"]) {
-    try {
-      fs2.chmodSync(`${resolvedPath}${suffix}`, 384);
-    } catch {
-    }
-  }
+  for (const suffix of ["", "-wal", "-shm"])
+    removeGroupAndOtherAccess(`${resolvedPath}${suffix}`);
   migrateEntitiesSchema(db2);
   runAutoDecay(db2);
   backfillSignalScores(db2);

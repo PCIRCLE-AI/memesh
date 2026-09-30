@@ -7,6 +7,7 @@ All notable changes to MeMesh are documented here.
 ### Fixed
 
 - A message sent through the MCP `message` tool keeps every `null` in its JSON payload. Before, the MCP boundary removed each null-valued key at any depth of the payload while `send` still reported success, so the recipient got different data than the CLI or HTTP would have stored (#517). A null-valued top-level tool parameter still means "left blank".
+- Opening a database you made read-only (for example `chmod 444` on a snapshot or backup) no longer makes it writable. memesh used to set the file to `600` on every open, which gave the owner back the write permission, so every later hook, CLI or MCP process wrote into it (#520). It now only removes access for other users and leaves the owner's permissions as they are.
 
 ## [4.10.11] — 2026-09-29
 

@@ -35,6 +35,19 @@ let db: MemeshDatabase | null = null;
 
 
 
+/**
+ * Take read/write/execute away from group and others, and leave the owner's
+ * bits exactly as they are. Setting a fixed 0600 used to ADD the owner's
+ * write bit to a database the user had made read-only (a snapshot, a
+ * backup), so every process after the first wrote into it (#520).
+ */
+function removeGroupAndOtherAccess(target: string): void {
+  try {
+    const mode = fs.statSync(target).mode & 0o7777;
+    if ((mode & 0o077) !== 0) fs.chmodSync(target, mode & ~0o077);
+  } catch { /* may not exist yet, or non-POSIX */ }
+}
+
 export function openDatabase(dbPath?: string): MemeshDatabase {
   if (db) return db;
 
@@ -42,7 +55,7 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
 
   const dir = path.dirname(resolvedPath);
   fs.mkdirSync(dir, { recursive: true });
-  try { fs.chmodSync(dir, 0o700); } catch { /* non-POSIX */ }
+  removeGroupAndOtherAccess(dir);
 
   // The module singleton is published only once initialisation SUCCEEDS.
   //
@@ -142,10 +155,7 @@ function migrateToCurrentSchema(db: MemeshDatabase, resolvedPath: string): void 
   //      in case the umask was looser when this process started and
   //      SQLite already created them.
   try { process.umask(0o077); } catch { /* non-POSIX */ }
-  for (const suffix of ['', '-wal', '-shm']) {
-    try { fs.chmodSync(`${resolvedPath}${suffix}`, 0o600); }
-    catch { /* sidecar may not exist yet, or non-POSIX */ }
-  }
+  for (const suffix of ['', '-wal', '-shm']) removeGroupAndOtherAccess(`${resolvedPath}${suffix}`);
 
   // The full conditional-ALTER chain — shared with the hooks via
   // storage/schema.ts, so a new column lands in ONE place and reaches both

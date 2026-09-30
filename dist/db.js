@@ -10,16 +10,21 @@ import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUnique
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 let db = null;
+function removeGroupAndOtherAccess(target) {
+    try {
+        const mode = fs.statSync(target).mode & 0o7777;
+        if ((mode & 0o077) !== 0)
+            fs.chmodSync(target, mode & ~0o077);
+    }
+    catch { }
+}
 export function openDatabase(dbPath) {
     if (db)
         return db;
     const resolvedPath = dbPath ?? getDbPath();
     const dir = path.dirname(resolvedPath);
     fs.mkdirSync(dir, { recursive: true });
-    try {
-        fs.chmodSync(dir, 0o700);
-    }
-    catch { }
+    removeGroupAndOtherAccess(dir);
     const opening = new MemeshDatabase(resolvedPath);
     try {
         initialiseDatabase(opening, resolvedPath);
@@ -64,12 +69,8 @@ function migrateToCurrentSchema(db, resolvedPath) {
         process.umask(0o077);
     }
     catch { }
-    for (const suffix of ['', '-wal', '-shm']) {
-        try {
-            fs.chmodSync(`${resolvedPath}${suffix}`, 0o600);
-        }
-        catch { }
-    }
+    for (const suffix of ['', '-wal', '-shm'])
+        removeGroupAndOtherAccess(`${resolvedPath}${suffix}`);
     migrateEntitiesSchema(db);
     runAutoDecay(db);
     backfillSignalScores(db);
