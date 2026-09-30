@@ -2,6 +2,7 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { truncateTitle } from './title.js';
 import { parseSqliteUtcMs } from './time-utils.js';
+import { boundReplacedHistory } from './replaced-history.js';
 import { NAMESPACES } from './types.js';
 export const IMPORTABLE_METADATA_KEYS = new Set([
     'title_source',
@@ -179,6 +180,16 @@ function describeInvalidEntity(entity, index) {
     }
     return null;
 }
+function storedContentOf(db, name) {
+    const row = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name);
+    return {
+        title: row.title ?? null,
+        observations: db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(row.id)
+            .map((o) => o.content),
+        tags: db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(row.id)
+            .map((t) => t.tag).sort(),
+    };
+}
 export function importMemories(args, options) {
     const trust = options?.trust === true;
     if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
@@ -202,7 +213,20 @@ export function importMemories(args, options) {
         throw new Error(`This file has no "entities" array (found ${bundleEntities === undefined ? 'nothing' : typeof bundleEntities}). ` +
             'Nothing was imported. memesh import expects a file produced by `memesh export`.');
     }
+    const seenNames = new Set();
+    for (const entity of bundleEntities) {
+        const name = entity?.name;
+        if (typeof name !== 'string' || name === '')
+            continue;
+        const stored = Buffer.from(name, 'utf8').toString('utf8');
+        if (seenNames.has(stored)) {
+            throw new Error(`This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}…` : name)} more than once. Nothing was imported. ` +
+                'A file produced by `memesh export` names each memory once.');
+        }
+        seenNames.add(stored);
+    }
     const db = getDatabase();
+    const storedContent = (name) => storedContentOf(db, name);
     const kg = new KnowledgeGraph(db);
     let imported = 0;
     let overwritten = 0;
@@ -236,6 +260,7 @@ export function importMemories(args, options) {
                     isNewEntity: !existing,
                     trust,
                 });
+                let replacedVersion;
                 if (existing) {
                     if (args.merge_strategy === 'skip')
                         return { kind: 'skipped' };
@@ -254,6 +279,12 @@ export function importMemories(args, options) {
                         kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
                         return { kind: 'appended' };
                     }
+                    replacedVersion = {
+                        replaced_at: new Date().toISOString(),
+                        title: existing.title ?? null,
+                        observations: [...existing.observations],
+                        tags: [...existing.tags].sort(),
+                    };
                     kg.clearEntityData(entity.name);
                 }
                 kg.createEntity(entity.name, entity.type, {
@@ -265,7 +296,16 @@ export function importMemories(args, options) {
                     trustOverride: 'untrusted',
                 });
                 if (existing) {
-                    kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+                    kg.updateEntityMetadata(entity.name, (current) => {
+                        const merged = { ...current, ...importedMetadata };
+                        const version = replacedVersion;
+                        const history = Array.isArray(merged.replaced_history) ? merged.replaced_history : [];
+                        const now = storedContent(entity.name);
+                        const unchanged = now.title === version.title
+                            && JSON.stringify(now.observations) === JSON.stringify(version.observations)
+                            && JSON.stringify(now.tags) === JSON.stringify(version.tags);
+                        return unchanged ? merged : { ...merged, replaced_history: boundReplacedHistory([...history, version]) };
+                    });
                 }
                 if (!existing) {
                     const bundledCreatedAt = entity.created_at;
