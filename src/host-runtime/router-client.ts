@@ -40,8 +40,6 @@ export interface RouterDelivery {
 export interface RouterHostConnection {
   readonly connection_id: string;
   readonly generation: number;
-  /** The MeMesh version the connected router runs. */
-  readonly router_version: string;
   close(): Promise<void>;
 }
 
@@ -53,6 +51,8 @@ export interface RouterClientResilienceOptions {
   registration_timeout_ms?: number;
   /** Test seam; production starts the packaged router entrypoint without a shell. */
   start_router?: () => void | Promise<void>;
+  /** Test seam; production reads the installed package.json at each registration. */
+  installed_version?: () => string;
   /** Test seam for deterministic jitter. Must return a value between zero and one. */
   random?: () => number;
 }
@@ -72,6 +72,7 @@ type NormalizedResilienceOptions = {
   initial_attempts: number;
   registration_timeout_ms: number;
   start_router: () => Promise<void>;
+  installed_version: () => string;
   random: () => number;
 };
 
@@ -80,7 +81,7 @@ class RouterTransportError extends Error {}
 class ActiveRouterHostConnection implements RouterHostConnection {
   private currentConnectionId = '';
   private currentGeneration = 0;
-  private currentRouterVersion = '';
+  private reportedOutdatedRouter = false;
   private currentSocket: net.Socket | null = null;
   private connectingSocket: net.Socket | null = null;
   private heartbeat: NodeJS.Timeout | null = null;
@@ -102,10 +103,6 @@ class ActiveRouterHostConnection implements RouterHostConnection {
 
   get generation(): number {
     return this.currentGeneration;
-  }
-
-  get router_version(): string {
-    return this.currentRouterVersion;
   }
 
   async connectInitial(): Promise<void> {
@@ -254,7 +251,6 @@ class ActiveRouterHostConnection implements RouterHostConnection {
               finish(routerOutdatedError());
               continue;
             }
-            this.currentRouterVersion = frame.result.memesh_version;
             try {
               connectionId = requiredFrameString(frame.result.connection_id);
               generation = requiredFrameInteger(frame.result.generation);
@@ -319,7 +315,9 @@ class ActiveRouterHostConnection implements RouterHostConnection {
         request_id: registerId,
         ...this.input.identity,
         auth_token: this.input.auth_token,
-        memesh_version: installedVersion(),
+        // Read each time: after an in-place downgrade a long-running host
+        // must not keep claiming the newer version it started with (#518).
+        memesh_version: this.resilience.installed_version(),
         hops: 0,
       });
     });
@@ -403,9 +401,15 @@ class ActiveRouterHostConnection implements RouterHostConnection {
       try {
         await this.connectOnce();
         if (this.currentSocket) return;
-      } catch {
+      } catch (error) {
         // Active hosts remain eligible for recovery. Every retry is delayed
         // and capped, including non-startup transport and protocol failures.
+        // An outdated router needs the user to act, so say so, once.
+        const outdated = routerOutdatedDetail(error);
+        if (outdated && !this.reportedOutdatedRouter) {
+          this.reportedOutdatedRouter = true;
+          try { process.stderr.write(`memesh-host:${outdated}\n`); } catch { /* stderr gone */ }
+        }
       }
     }
   }
@@ -526,6 +530,7 @@ function normalizeResilience(options: RouterClientResilienceOptions = {}): Norma
       if (options.start_router) await options.start_router();
       else await startPackagedRouter();
     },
+    installed_version: options.installed_version ?? memeshPackageVersion,
     random: options.random ?? Math.random,
   };
 }
@@ -580,12 +585,6 @@ function isDelivery(
     && requiredNonEmptyString(envelope.created_at)
     && Object.hasOwn(envelope, 'payload')
     && isRecord(envelope.provenance);
-}
-
-let cachedInstalledVersion: string | undefined;
-function installedVersion(): string {
-  cachedInstalledVersion ??= memeshPackageVersion();
-  return cachedInstalledVersion;
 }
 
 /** How a router from before #518 answers a register that names the host's version. */

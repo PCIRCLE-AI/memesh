@@ -52,7 +52,12 @@ function makeRouter(
   });
 }
 
-function connect(socketPath: string, startRouter: () => Promise<void>, attempts = 10) {
+function connect(
+  socketPath: string,
+  startRouter: () => Promise<void>,
+  attempts = 10,
+  installedVersion: () => string = memeshPackageVersion,
+) {
   return connectRouterHost({
     socket_path: socketPath,
     auth_token: 'token',
@@ -63,7 +68,7 @@ function connect(socketPath: string, startRouter: () => Promise<void>, attempts 
     deliver: async () => ({ host: 'fixture', status: 'queued' }),
     resilience: {
       initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0,
-      initial_attempts: attempts, start_router: startRouter,
+      initial_attempts: attempts, start_router: startRouter, installed_version: installedVersion,
     },
   });
 }
@@ -106,8 +111,19 @@ describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after
     const router = makeRouter(db, socketPath, memeshPackageVersion());
     await router.start();
     routers.push(router);
-    connection = await connect(socketPath, async () => undefined, 1);
-    expect(connection.router_version).toBe(memeshPackageVersion());
+    const socket = net.createConnection(socketPath);
+    await new Promise<void>((resolve, reject) => { socket.once('connect', resolve); socket.once('error', reject); });
+    const answer = new Promise<Record<string, unknown>>(resolve => socket.once('data', chunk => {
+      resolve(JSON.parse(chunk.toString('utf8').split('\n')[0]) as Record<string, unknown>);
+    }));
+    socket.write(`${JSON.stringify({
+      version: AGENT_ROUTER_PROTOCOL_VERSION, type: 'register', request_id: 'r1', project: 'project-a',
+      principal_id: 'principal-a', session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+      auth_token: 'token', hops: 0,
+    })}\n`);
+    const frame = await answer;
+    socket.destroy();
+    expect(frame).toMatchObject({ ok: true, result: { memesh_version: memeshPackageVersion() } });
   });
 
   it('a router from before versions were reported is refused with a restart instruction', async () => {
@@ -140,7 +156,32 @@ describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after
     connection = await connect(socketPath, startRouter);
 
     expect(onSuperseded).toHaveBeenCalledTimes(1);
-    expect(connection.router_version).toBe(memeshPackageVersion());
+    expect(startRouter).toHaveBeenCalledTimes(1);
+    expect(routers.at(-1)?.memesh_version).toBe(memeshPackageVersion());
+  });
+
+  it('a host still running after a downgrade reports the version installed now, not the one it started with', async () => {
+    const { db, socketPath } = setup();
+    let installed = '2.0.0';
+    const first = makeRouter(db, socketPath, '2.0.0');
+    await first.start();
+    routers.push(first);
+    connection = await connect(socketPath, async () => undefined, 1, () => installed);
+
+    // Downgrade in place: the router restarts from the older files.
+    installed = '1.0.0';
+    await first.stop();
+    const onSuperseded = vi.fn();
+    const downgraded = makeRouter(db, socketPath, '1.0.0', onSuperseded);
+    await downgraded.start();
+    routers.push(downgraded);
+
+    await vi.waitFor(() => {
+      const row = db.prepare('SELECT count(*) AS n FROM agent_session_connections WHERE router_instance_id = ?')
+        .get(downgraded.router_instance_id) as { n: number };
+      expect(row.n).toBe(1);
+    }, { timeout: 5_000 });
+    expect(onSuperseded).not.toHaveBeenCalled();
   });
 
   it('an older router started again soon after stepping aside refuses to start', async () => {
@@ -171,7 +212,7 @@ describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after
     await router.start();
     routers.push(router);
     connection = await connect(socketPath, async () => undefined, 1);
-    expect(connection.router_version).toBe('999.0.0');
+    expect(connection.connection_id.length).toBeGreaterThan(0);
     expect(onSuperseded).not.toHaveBeenCalled();
   });
 });

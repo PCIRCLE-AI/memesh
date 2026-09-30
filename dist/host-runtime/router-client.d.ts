@@ -17,7 +17,6 @@ export interface RouterDelivery {
 export interface RouterHostConnection {
     readonly connection_id: string;
     readonly generation: number;
-    readonly router_version: string;
     close(): Promise<void>;
 }
 export interface RouterClientResilienceOptions {
@@ -27,6 +26,7 @@ export interface RouterClientResilienceOptions {
     initial_attempts?: number;
     registration_timeout_ms?: number;
     start_router?: () => void | Promise<void>;
+    installed_version?: () => string;
     random?: () => number;
 }
 export interface ConnectRouterHostInput {

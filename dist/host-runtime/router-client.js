@@ -19,7 +19,7 @@ class ActiveRouterHostConnection {
     resilience;
     currentConnectionId = '';
     currentGeneration = 0;
-    currentRouterVersion = '';
+    reportedOutdatedRouter = false;
     currentSocket = null;
     connectingSocket = null;
     heartbeat = null;
@@ -38,9 +38,6 @@ class ActiveRouterHostConnection {
     }
     get generation() {
         return this.currentGeneration;
-    }
-    get router_version() {
-        return this.currentRouterVersion;
     }
     async connectInitial() {
         let lastError = new RouterTransportError('Could not connect to the router.');
@@ -192,7 +189,6 @@ class ActiveRouterHostConnection {
                             finish(routerOutdatedError());
                             continue;
                         }
-                        this.currentRouterVersion = frame.result.memesh_version;
                         try {
                             connectionId = requiredFrameString(frame.result.connection_id);
                             generation = requiredFrameInteger(frame.result.generation);
@@ -249,7 +245,7 @@ class ActiveRouterHostConnection {
                 request_id: registerId,
                 ...this.input.identity,
                 auth_token: this.input.auth_token,
-                memesh_version: installedVersion(),
+                memesh_version: this.resilience.installed_version(),
                 hops: 0,
             });
         });
@@ -335,7 +331,15 @@ class ActiveRouterHostConnection {
                 if (this.currentSocket)
                     return;
             }
-            catch {
+            catch (error) {
+                const outdated = routerOutdatedDetail(error);
+                if (outdated && !this.reportedOutdatedRouter) {
+                    this.reportedOutdatedRouter = true;
+                    try {
+                        process.stderr.write(`memesh-host:${outdated}\n`);
+                    }
+                    catch { }
+                }
             }
         }
     }
@@ -438,6 +442,7 @@ function normalizeResilience(options = {}) {
             else
                 await startPackagedRouter();
         },
+        installed_version: options.installed_version ?? memeshPackageVersion,
         random: options.random ?? Math.random,
     };
 }
@@ -483,11 +488,6 @@ function isDelivery(value, connectionId, generation, identity) {
         && requiredNonEmptyString(envelope.created_at)
         && Object.hasOwn(envelope, 'payload')
         && isRecord(envelope.provenance);
-}
-let cachedInstalledVersion;
-function installedVersion() {
-    cachedInstalledVersion ??= memeshPackageVersion();
-    return cachedInstalledVersion;
 }
 function isRouterRejectingVersionField(frame) {
     return frame.ok === false && frame.request_id === '' && isRecord(frame.error)
