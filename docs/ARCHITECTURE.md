@@ -641,7 +641,7 @@ Entities carry a `namespace` field (`personal` | `team` | `global`, default: `pe
 | Strategy | Behaviour on conflict |
 |----------|-----------------------|
 | `skip` (default) | Keep existing entity, discard imported copy |
-| `overwrite` | Replace existing entity's observations and tags |
+| `overwrite` | Replace existing entity's observations and tags; the previous version is kept in `metadata.replaced_history` (#530) |
 | `append` | Append imported observations, dedup tags |
 
 An existing entity that is archived (forgotten) is left untouched by `overwrite` and `append`, and the result counts it in `kept_archived`; `restore_archived` brings it back (and requires `append` or `overwrite`). Only import works this way — `remember` still reactivates an archived memory.

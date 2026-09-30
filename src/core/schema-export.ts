@@ -122,7 +122,7 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_import',
-        description: 'Import memories from a JSON export snapshot. Imported content is marked untrusted in metadata, not with a tag. Overwrite deletes an existing entity\'s previous observations and tags instead of archiving them.',
+        description: 'Import memories from a JSON export snapshot. Imported content is marked untrusted in metadata, not with a tag. Overwrite replaces an existing entity\'s observations and tags and keeps the previous version in metadata.replaced_history.',
         parameters: {
           type: 'object',
           properties: {
@@ -134,7 +134,7 @@ export function exportOpenAITools(): object[] {
             merge_strategy: {
               type: 'string',
               enum: ['skip', 'overwrite', 'append'],
-              description: 'Required. How to handle existing entities: skip leaves them alone; append adds observations; overwrite deletes previous observations and tags, then replaces them. Overwrite is not an archive and cannot be undone.',
+              description: 'Required. How to handle existing entities: skip leaves them alone; append adds observations; overwrite replaces observations and tags and keeps the previous version in metadata.replaced_history (the last 20).',
             },
             restore_archived: {
               type: 'boolean',
