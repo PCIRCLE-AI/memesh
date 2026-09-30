@@ -32441,17 +32441,14 @@ function formatIssue(issue2) {
   return path11 ? `${path11}: ${issue2.message}` : issue2.message;
 }
 function stripNullProps(value) {
-  if (Array.isArray(value))
-    return value.map(stripNullProps);
-  if (value !== null && typeof value === "object") {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      if (v !== null)
-        out[k] = stripNullProps(v);
-    }
-    return out;
+  if (value === null || typeof value !== "object" || Array.isArray(value))
+    return value;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (v !== null)
+      out[k] = v;
   }
-  return value;
+  return out;
 }
 function parseOrFail(schema, args) {
   const raw = args === void 0 || args === null ? {} : args;
