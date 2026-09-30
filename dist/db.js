@@ -4,30 +4,42 @@ import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
+import { guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, rebuildFtsIndex, runOnceMigration, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
 export { runOnceMigration, FTS_SEGMENTATION_VERSION };
 import { truncateTitle, isBoilerplateObservation } from './core/title.js';
 let db = null;
-function removeGroupAndOtherAccess(target) {
-    try {
-        const mode = fs.statSync(target).mode & 0o7777;
-        if ((mode & 0o077) !== 0)
-            fs.chmodSync(target, mode & ~0o077);
-    }
-    catch { }
-}
 export function openDatabase(dbPath) {
     if (db)
         return db;
     const resolvedPath = dbPath ?? getDbPath();
     const dir = path.dirname(resolvedPath);
     fs.mkdirSync(dir, { recursive: true });
+    try {
+        process.umask(0o077);
+    }
+    catch { }
     removeGroupAndOtherAccess(dir);
+    guardDatabaseFiles(resolvedPath);
+    const missing = ['-wal', '-shm'].filter((suffix) => !fs.existsSync(`${resolvedPath}${suffix}`));
+    let folderWritable = true;
+    try {
+        fs.accessSync(dir, fs.constants.W_OK);
+    }
+    catch {
+        folderWritable = false;
+    }
+    if (missing.length > 0 && !folderWritable && fs.existsSync(resolvedPath)) {
+        const fix = `chmod u+w "${dir}"`;
+        throw Object.assign(new Error(`MeMesh: ${dir} is read-only and ${path.basename(resolvedPath)} has no ${missing.join(' or ')} file there, ` +
+            'so it cannot be opened without writing to the folder. Copy the database to a writable folder and point ' +
+            `MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`), { fix });
+    }
     const opening = new MemeshDatabase(resolvedPath);
     try {
-        initialiseDatabase(opening, resolvedPath);
+        initialiseDatabase(opening);
     }
     catch (err) {
         try {
@@ -37,17 +49,25 @@ export function openDatabase(dbPath) {
         throw err;
     }
     db = opening;
+    const writeBack = ownerWriteCommand(resolvedPath);
+    if (writeBack) {
+        try {
+            process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. ` +
+                `To write to it again, run: ${writeBack}\n`);
+        }
+        catch { }
+    }
     return db;
 }
 function isReadonlyDbError(err) {
     const msg = err instanceof Error ? err.message : String(err);
     return /readonly database|SQLITE_READONLY/i.test(msg);
 }
-function initialiseDatabase(db, resolvedPath) {
+function initialiseDatabase(db) {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     try {
-        migrateToCurrentSchema(db, resolvedPath);
+        migrateToCurrentSchema(db);
     }
     catch (err) {
         if (!isReadonlyDbError(err))
@@ -60,17 +80,11 @@ function initialiseDatabase(db, resolvedPath) {
     }
     return db;
 }
-function migrateToCurrentSchema(db, resolvedPath) {
+function migrateToCurrentSchema(db) {
     db.exec(SCHEMA_SQL);
     db.exec(FTS_SQL);
     ensureTagsUniqueIndex(db);
     ensureHookRunsSince(db);
-    try {
-        process.umask(0o077);
-    }
-    catch { }
-    for (const suffix of ['', '-wal', '-shm'])
-        removeGroupAndOtherAccess(`${resolvedPath}${suffix}`);
     migrateEntitiesSchema(db);
     runAutoDecay(db);
     backfillSignalScores(db);

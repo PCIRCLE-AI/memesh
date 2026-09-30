@@ -21,6 +21,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { memeshDir } from './paths.js';
+import { removeGroupAndOtherAccess } from './file-mode.js';
 
 interface InstallRecord {
   install_id: string;
@@ -69,9 +70,13 @@ export function getInstallRecord(): InstallRecord {
 
   try {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    try { fs.chmodSync(path.dirname(filePath), 0o700); } catch { /* non-POSIX */ }
+    // #520: only group/other access comes off; 0700 would hand the owner
+    // write access back to a data folder they made read-only.
+    removeGroupAndOtherAccess(path.dirname(filePath));
     fs.writeFileSync(filePath, JSON.stringify(record, null, 2), { encoding: 'utf8', mode: 0o600 });
-    try { fs.chmodSync(filePath, 0o600); } catch { /* non-POSIX */ }
+    // `mode` above applies only when the file is created; an existing one
+    // (rewritten because it was unreadable) keeps its old mode until this.
+    removeGroupAndOtherAccess(filePath);
   } catch {
     // Cannot persist — return the in-memory record. Next call will
     // generate a new UUID; that's fine for ephemeral / sandboxed envs.

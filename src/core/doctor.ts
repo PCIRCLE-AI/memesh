@@ -17,6 +17,7 @@ import {
   type InstallChannel, type PluginHost,
 } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
+import { ownerWriteCommand } from './file-mode.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
@@ -52,7 +53,7 @@ export interface DoctorCheck {
    * Only prescriptions on --fix's whitelist carry one; everything else
    * stays advice for a human.
    */
-  fixId?: 'install-hooks' | 'fts-rebuild' | 'chmod-db' | 'config-retired-settings' | 'plugin-cache-refresh';
+  fixId?: 'install-hooks' | 'fts-rebuild' | 'config-retired-settings' | 'plugin-cache-refresh';
   /**
    * True for rows that REPORT a value rather than ASSERT a fact.
    *
@@ -337,6 +338,13 @@ function inspectLocaleReadmeParity(
 
 function resolveDatabasePath(): string {
   return getDbPath();
+}
+
+/** A read-only database is a permission question, not a disk one (#520). */
+function queryFailedFix(detail: string): string {
+  return /readonly database|SQLITE_READONLY/i.test(detail)
+    ? 'The database is read-only; the Database row above shows the command that makes it writable again.'
+    : 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
 }
 
 function createCheck(
@@ -1456,7 +1464,7 @@ function inspectHookActivity(
     const detail = err instanceof Error ? err.message : String(err);
     return createCheck('hook-activity', TITLE, 'fail',
       `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`,
-      'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.',
+      queryFailedFix(detail),
       { code: 'hook-activity.query-failed', params: { detail } });
   } finally {
     try { if (db) closeDatabaseImpl(); } catch { /* best-effort */ }
@@ -1652,7 +1660,7 @@ function inspectCaptureLiveness(
     return {
       check: createCheck('capture-liveness', TITLE, 'fail',
         `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`,
-        'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.',
+        queryFailedFix(detail),
         { code: 'capture-liveness.query-failed', params: { detail } }),
     };
   } finally {
@@ -3169,13 +3177,24 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     const db = openDatabaseImpl(databasePath) as unknown as DatabaseLike;
     const count =
       (db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c?: number } | undefined)?.c ?? 0;
+    // #520: a database the owner made read-only opens for reads, so say it
+    // here, in the row a reader looks at, with the command that undoes it.
+    const writeBack = ownerWriteCommand(databasePath);
     dbChecks.push(
-      createCheck(
-        'database',
-        'Database',
-        'pass',
-        `Database opened successfully at ${databasePath} (${count} entities).`,
-      ),
+      writeBack
+        ? createCheck(
+          'database',
+          'Database',
+          'warn',
+          `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`,
+          `If it should be writable, run: ${writeBack}`,
+        )
+        : createCheck(
+          'database',
+          'Database',
+          'pass',
+          `Database opened successfully at ${databasePath} (${count} entities).`,
+        ),
     );
 
     const messageStorage = inspectAgentMessageStorage(
@@ -3397,10 +3416,15 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     // F15: Provide actionable diagnosis for common database failures
     let diagnosis: string;
     let fix: string;
-    let fixId: DoctorCheck['fixId'];
 
-    // Check if database file exists but can't be opened
-    if (existsSyncImpl(databasePath)) {
+    // MeMesh's own permission errors (#520) already say what is wrong and
+    // carry the one command that fixes it; a generic guess below (move the
+    // database away and start fresh) would be wrong for every one of them.
+    const ownFix = (err as { fix?: unknown } | null)?.fix;
+    if (typeof ownFix === 'string') {
+      diagnosis = message;
+      fix = `Run: ${ownFix}`;
+    } else if (existsSyncImpl(databasePath)) {
       try {
         const stat = statSyncImpl(databasePath);
         const canRead = !!(stat.mode & 0o400);
@@ -3408,10 +3432,13 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
 
         if (!canRead || !canWrite) {
           diagnosis = `Database file exists but has insufficient permissions (${(stat.mode & 0o777).toString(8)})`;
-          fix = `Fix permissions: chmod 600 "${databasePath}"`;
-          // The ONLY database branch --fix may act on. The rm/mv branches
-          // below destroy or move user data — those stay human decisions.
-          fixId = 'chmod-db';
+          // #520: MeMesh never gives the owner back a permission the owner
+          // removed — a read-only snapshot must stay read-only — so --fix has
+          // nothing to do here; putting it back is the owner's decision.
+          // The -wal/-shm a read-only open left behind need the same bits;
+          // restoring only the database would not make it writable (#520).
+          const files = ['', '-wal', '-shm'].map((suffix) => `${databasePath}${suffix}`).filter((file) => existsSyncImpl(file));
+          fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map((file) => `"${file}"`).join(' ')}`;
         } else if (stat.size === 0) {
           diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
           fix = `Delete and recreate: rm "${databasePath}" && memesh recall (will create fresh DB)`;
@@ -3435,7 +3462,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           const canWrite = !!(dirStat.mode & 0o200);
           if (!canWrite) {
             diagnosis = `Cannot create database — directory is not writable: ${dir}`;
-            fix = `Fix directory permissions: chmod 700 "${dir}"`;
+            fix = `Fix directory permissions: chmod u+w "${dir}"`;
           } else {
             diagnosis = `Database file missing at ${databasePath}, but directory exists and is writable`;
             fix = `Run any memesh command (e.g., memesh recall) to create a fresh database`;
@@ -3460,7 +3487,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
         // fix stays untranslated (it is itself diagnosis-specific text);
         // the dashboard translates the summary frame and shows fix raw.
         { code: 'database.broken', params: { detail: diagnosis } },
-        fixId,
       ),
     );
   } finally {

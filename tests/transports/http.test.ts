@@ -913,6 +913,87 @@ describe('HTTP Transport: startServer host guard', () => {
     }
   });
 
+  // #520: a remote bind keeps its bearer token in the data folder. Starting
+  // the server removes other users' access to that folder, and never gives
+  // the owner back a write bit the owner removed. (A loopback `memesh serve`
+  // does not touch the folder at all.)
+  for (const [start, end] of [[0o555, 0o500], [0o755, 0o700]] as const) {
+    it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(`a remote start turns a ${start.toString(8)} data folder into ${end.toString(8)}`, async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-http-folder-'));
+      const previousDbPath = process.env.MEMESH_DB_PATH;
+      const previousToken = process.env.MEMESH_REMOTE_TOKEN;
+      process.env.MEMESH_DB_PATH = path.join(dir, 'test.db');
+      delete process.env.MEMESH_REMOTE_TOKEN;
+      fs.writeFileSync(path.join(dir, 'remote-token'), `${'a'.repeat(64)}\n`, { mode: 0o600 });
+      fs.chmodSync(dir, start);
+      let remoteServer: ReturnType<typeof app.listen> | undefined;
+      try {
+        // In the read-only folder the database cannot be created, so the start
+        // itself fails; the folder step before it is what this test is about.
+        try { remoteServer = startServer('0.0.0.0', 0, { allowRemote: true }); } catch { /* 555: no database */ }
+        if (start === 0o755) expect(remoteServer).toBeDefined();
+        expect(fs.statSync(dir).mode & 0o777).toBe(end);
+      } finally {
+        if (remoteServer?.listening) {
+          await new Promise<void>((resolve, reject) => {
+            remoteServer!.close((err) => (err ? reject(err) : resolve()));
+          });
+        }
+        __setRemoteTokenForTest(null);
+        if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
+        else process.env.MEMESH_DB_PATH = previousDbPath;
+        if (previousToken === undefined) delete process.env.MEMESH_REMOTE_TOKEN;
+        else process.env.MEMESH_REMOTE_TOKEN = previousToken;
+        fs.chmodSync(dir, 0o700);
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    });
+  }
+
+  // #520: an existing remote token is only read — it keeps the owner's bits
+  // (a 0400 token stays 0400) and still authenticates; a new one is 0600.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('an existing 0400 remote token stays 0400 and still authenticates; a new one is created 0600', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-http-token-'));
+    const previousDbPath = process.env.MEMESH_DB_PATH;
+    const previousToken = process.env.MEMESH_REMOTE_TOKEN;
+    process.env.MEMESH_DB_PATH = path.join(dir, 'test.db');
+    delete process.env.MEMESH_REMOTE_TOKEN;
+    const tokenPath = path.join(dir, 'remote-token');
+    const servers: Array<ReturnType<typeof app.listen>> = [];
+    const stop = async () => {
+      for (const server of servers.splice(0)) {
+        if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+      __setRemoteTokenForTest(null);
+    };
+    try {
+      const token = 'b'.repeat(64);
+      fs.writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
+      fs.chmodSync(tokenPath, 0o400);
+      servers.push(startServer('0.0.0.0', 0, { allowRemote: true }));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(fs.statSync(tokenPath).mode & 0o777).toBe(0o400);
+      const port = (servers[0].address() as { port: number }).port;
+      const ok = await fetch(`http://127.0.0.1:${port}/v1/health`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(ok.status).toBe(200);
+      await stop();
+
+      fs.chmodSync(tokenPath, 0o600);
+      fs.rmSync(tokenPath);
+      servers.push(startServer('0.0.0.0', 0, { allowRemote: true }));
+      expect(fs.statSync(tokenPath).mode & 0o777).toBe(0o600);
+    } finally {
+      await stop();
+      if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
+      else process.env.MEMESH_DB_PATH = previousDbPath;
+      if (previousToken === undefined) delete process.env.MEMESH_REMOTE_TOKEN;
+      else process.env.MEMESH_REMOTE_TOKEN = previousToken;
+      try { fs.chmodSync(tokenPath, 0o600); } catch { /* removed */ }
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
   // Codex challenge regression: previously a second startServer() call
   // bound to loopback would clobber the module-global `remoteToken` to
   // null, silently de-authenticating any already-running remote

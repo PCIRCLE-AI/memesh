@@ -87,6 +87,11 @@
       "bytes": 8518
     },
     {
+      "path": "scripts/hooks/_generated/file-mode.js",
+      "sha256": "b4602da31e7bdafc71e23d86f408bfc9e6890a12840661df903c042a7debeb85",
+      "bytes": 5297
+    },
+    {
       "path": "scripts/hooks/_generated/fts-index.js",
       "sha256": "16f7539aab5974da7bc88c585d4e8fc1f40a07843ea2cf63c56bcf15bf46cf02",
       "bytes": 4268
@@ -148,8 +153,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "f406115c4e24fce15d17f0027dea313958d633301b68f0aa0fb99a3937c2f8bb",
-      "bytes": 122638
+      "sha256": "7b0e26fd542e68ab396ef5d608149398e6944c252a845602007a375779a97431",
+      "bytes": 124148
     },
     {
       "path": "scripts/hooks/_stop-handoff.js",
@@ -173,8 +178,8 @@
     },
     {
       "path": "scripts/hooks/guard-check.js",
-      "sha256": "d192dddc668ada8d5c6a1239a0616d7a5b77b22c5d806461ad96032c0e4ee4aa",
-      "bytes": 4017
+      "sha256": "ec2f51991b4984f14a1c1a2984fcbee94a24441160c786e3cd09f599ccda5a44",
+      "bytes": 3970
     },
     {
       "path": "scripts/hooks/post-commit.js",
@@ -188,13 +193,13 @@
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "3d7f440a591f843b7a428d7ac425fe6f247cdfc831c895334c03cf6be8ff46e7",
-      "bytes": 34650
+      "sha256": "ef968117db6dfca4f86f95104e103d36c1ed7e701645b9cbed7d93eebec17034",
+      "bytes": 34603
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "1380a2fdd4ad8bf4f44e9c697fc656e81dc06a6ac6e1108ae18bc91904511249",
-      "bytes": 110962
+      "sha256": "79f5e4ffee21302795fb01ab85a9662fc0f585177d33bc31ff32ac5db43d1342",
+      "bytes": 110909
     },
     {
       "path": "scripts/hooks/session-summary.js",
@@ -203,8 +208,8 @@
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
-      "sha256": "0e7cc198e56a36f61507607c46520aec3eb9f6d64b2532ebfb014495547276e8",
-      "bytes": 8254
+      "sha256": "cb94413f1b07bdf89c59d1b6050ee6a83720d38f526bea18782fc562297f9b35",
+      "bytes": 8207
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",

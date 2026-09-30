@@ -22,6 +22,7 @@ import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 import fs from 'fs';
 import path from 'path';
@@ -61,10 +62,7 @@ function loadOrCreateRemoteToken() {
     const dir = memeshDir();
     const tokenPath = path.join(dir, 'remote-token');
     fs.mkdirSync(dir, { recursive: true });
-    try {
-        fs.chmodSync(dir, 0o700);
-    }
-    catch { }
+    removeGroupAndOtherAccess(dir);
     const generated = randomBytes(32).toString('hex');
     try {
         const fd = fs.openSync(tokenPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
@@ -88,10 +86,7 @@ function loadOrCreateRemoteToken() {
     if (value.length < 16) {
         throw new Error(`Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
     }
-    try {
-        fs.chmodSync(tokenPath, 0o600);
-    }
-    catch { }
+    removeGroupAndOtherAccess(tokenPath);
     return { token: Buffer.from(value, 'utf8'), freshlyCreated: false };
 }
 function constantTimeEquals(a, b) {

@@ -55,6 +55,9 @@ import { join } from 'node:path';
 // removeJunkFileTags) and this invariant provably the same function, and the
 // same for the Bash write shapes #240's invariant below needs.
 import { bashEditedPaths, isPathShapedFileName } from '../hooks/_generated/bash-edited-paths.js';
+// #520: even a read-only open lets SQLite reset an EMPTY -wal/-shm to the
+// database's mode, so this audit refuses the same way memesh does (stat only).
+import { refuseMismatchedSidecars } from '../hooks/_generated/file-mode.js';
 
 const MAX_ROWS = 8;
 
@@ -400,6 +403,7 @@ function main() {
   }
   let db;
   try {
+    refuseMismatchedSidecars(dbPath);
     db = new DatabaseSync(`file:${dbPath}?mode=ro`, { open: true, readOnly: true });
   } catch (err) {
     console.error(`memory-invariants: cannot open ${dbPath} read-only: ${err?.message ?? err}`);

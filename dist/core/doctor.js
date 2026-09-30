@@ -11,6 +11,7 @@ import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
 import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS, } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
+import { ownerWriteCommand } from './file-mode.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
@@ -86,6 +87,11 @@ function inspectLocaleReadmeParity(packageRoot, existsSyncImpl, readFileSyncImpl
 }
 function resolveDatabasePath() {
     return getDbPath();
+}
+function queryFailedFix(detail) {
+    return /readonly database|SQLITE_READONLY/i.test(detail)
+        ? 'The database is read-only; the Database row above shows the command that makes it writable again.'
+        : 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
 }
 function createCheck(id, label, status, summary, fix, i18n, fixId) {
     return { id, label, status, summary, fix, code: i18n?.code, params: i18n?.params, fixId };
@@ -531,7 +537,7 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     }
     catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
-        return createCheck('hook-activity', TITLE, 'fail', `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`, 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.', { code: 'hook-activity.query-failed', params: { detail } });
+        return createCheck('hook-activity', TITLE, 'fail', `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`, queryFailedFix(detail), { code: 'hook-activity.query-failed', params: { detail } });
     }
     finally {
         try {
@@ -633,7 +639,7 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
         return {
-            check: createCheck('capture-liveness', TITLE, 'fail', `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.', { code: 'capture-liveness.query-failed', params: { detail } }),
+            check: createCheck('capture-liveness', TITLE, 'fail', `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`, queryFailedFix(detail), { code: 'capture-liveness.query-failed', params: { detail } }),
         };
     }
     finally {
@@ -1445,7 +1451,10 @@ export async function runDoctor(options) {
     try {
         const db = openDatabaseImpl(databasePath);
         const count = db.prepare('SELECT COUNT(*) as c FROM entities').get()?.c ?? 0;
-        dbChecks.push(createCheck('database', 'Database', 'pass', `Database opened successfully at ${databasePath} (${count} entities).`));
+        const writeBack = ownerWriteCommand(databasePath);
+        dbChecks.push(writeBack
+            ? createCheck('database', 'Database', 'warn', `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, run: ${writeBack}`)
+            : createCheck('database', 'Database', 'pass', `Database opened successfully at ${databasePath} (${count} entities).`));
         const messageStorage = inspectAgentMessageStorage(db, databasePath, configuredAgentMessageStoragePolicy(agentMessageStoragePolicy));
         if (messageStorage)
             dbChecks.push(messageStorage);
@@ -1540,16 +1549,20 @@ export async function runDoctor(options) {
         const message = err instanceof Error ? err.message : 'unknown database error';
         let diagnosis;
         let fix;
-        let fixId;
-        if (existsSyncImpl(databasePath)) {
+        const ownFix = err?.fix;
+        if (typeof ownFix === 'string') {
+            diagnosis = message;
+            fix = `Run: ${ownFix}`;
+        }
+        else if (existsSyncImpl(databasePath)) {
             try {
                 const stat = statSyncImpl(databasePath);
                 const canRead = !!(stat.mode & 0o400);
                 const canWrite = !!(stat.mode & 0o200);
                 if (!canRead || !canWrite) {
                     diagnosis = `Database file exists but has insufficient permissions (${(stat.mode & 0o777).toString(8)})`;
-                    fix = `Fix permissions: chmod 600 "${databasePath}"`;
-                    fixId = 'chmod-db';
+                    const files = ['', '-wal', '-shm'].map((suffix) => `${databasePath}${suffix}`).filter((file) => existsSyncImpl(file));
+                    fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map((file) => `"${file}"`).join(' ')}`;
                 }
                 else if (stat.size === 0) {
                     diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
@@ -1577,7 +1590,7 @@ export async function runDoctor(options) {
                     const canWrite = !!(dirStat.mode & 0o200);
                     if (!canWrite) {
                         diagnosis = `Cannot create database — directory is not writable: ${dir}`;
-                        fix = `Fix directory permissions: chmod 700 "${dir}"`;
+                        fix = `Fix directory permissions: chmod u+w "${dir}"`;
                     }
                     else {
                         diagnosis = `Database file missing at ${databasePath}, but directory exists and is writable`;
@@ -1591,7 +1604,7 @@ export async function runDoctor(options) {
             }
         }
         dbChecks.length = 0;
-        dbChecks.push(createCheck('database', 'Database', 'fail', diagnosis, fix, { code: 'database.broken', params: { detail: diagnosis } }, fixId));
+        dbChecks.push(createCheck('database', 'Database', 'fail', diagnosis, fix, { code: 'database.broken', params: { detail: diagnosis } }));
     }
     finally {
         checks.push(...dbChecks);

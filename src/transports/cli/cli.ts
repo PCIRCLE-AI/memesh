@@ -2348,8 +2348,10 @@ program
     // --fix executes only prescriptions that carry a fixId — attached at the
     // diagnosing branch in doctor.ts, never parsed from the human fix text.
     // The whitelist is limited to recoverable local repairs: hook wiring,
-    // retired-key cleanup (with a config backup), keyword-index rebuild, db
-    // chmod, and explicit host plugin refresh. Destructive database reset
+    // retired-key cleanup (with a config backup), keyword-index rebuild and
+    // explicit host plugin refresh. Database permissions are not on it: the
+    // open already removes other users' access, and the owner's own bits are
+    // the owner's decision (#520). Destructive database reset
     // branches remain human decisions.
     if (opts.fix) {
       // The dispatch is a Record, not an if-chain, so a fourth fixId added
@@ -2362,10 +2364,6 @@ program
           openDatabase();
           try { return `keyword index rebuilt (${reindexFts().entities} entities)`; }
           finally { closeDatabase(); }
-        },
-        'chmod-db': () => {
-          fs.chmodSync(getDbPath(), 0o600);
-          return `permissions restored: chmod 600 ${getDbPath()}`;
         },
         'config-retired-settings': () => {
           const fixed = removeRetiredConfigKeys();

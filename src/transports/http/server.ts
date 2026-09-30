@@ -46,6 +46,7 @@ import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 
 import fs from 'fs';
@@ -168,7 +169,8 @@ function loadOrCreateRemoteToken(): { token: Buffer; freshlyCreated: boolean } {
   const dir = memeshDir();
   const tokenPath = path.join(dir, 'remote-token');
   fs.mkdirSync(dir, { recursive: true });
-  try { fs.chmodSync(dir, 0o700); } catch { /* non-POSIX */ }
+  // #520: other users lose access; the owner's own bits stay as set.
+  removeGroupAndOtherAccess(dir);
 
   // Race-free create: try O_EXCL first. If two memesh-http instances
   // launch simultaneously, exactly one wins the create; the loser falls
@@ -198,7 +200,9 @@ function loadOrCreateRemoteToken(): { token: Buffer; freshlyCreated: boolean } {
       `Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`
     );
   }
-  try { fs.chmodSync(tokenPath, 0o600); } catch { /* non-POSIX */ }
+  // An existing token is only read, never rewritten: it loses group/other
+  // access and keeps the owner's bits, so a 0400 token stays 0400 (#520).
+  removeGroupAndOtherAccess(tokenPath);
   return { token: Buffer.from(value, 'utf8'), freshlyCreated: false };
 }
 
