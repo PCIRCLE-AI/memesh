@@ -27041,6 +27041,10 @@ function openDatabase(dbPath) {
     fs2.chmodSync(dir, 448);
   } catch {
   }
+  db = openInitialisedDatabase(resolvedPath);
+  return db;
+}
+function openInitialisedDatabase(resolvedPath) {
   const opening = new MemeshDatabase(resolvedPath);
   try {
     initialiseDatabase(opening, resolvedPath);
@@ -27051,8 +27055,7 @@ function openDatabase(dbPath) {
     }
     throw err;
   }
-  db = opening;
-  return db;
+  return opening;
 }
 function isReadonlyDbError(err) {
   const msg = err instanceof Error ? err.message : String(err);

@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import {
   openDatabase, closeDatabase, getDatabase, reindexFts,
 } from '../../db.js';
+import type { MemeshDatabase } from '../../storage/sqlite.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { readConfig, updateConfig } from '../../core/config.js';
@@ -2254,13 +2255,13 @@ kgCmd
   .option('--apply', 'Actually write the change. Default is a dry-run preview. Backs up the DB first.')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
-    await withDatabase(async () => {
-      const { listProjectTags, renameProjectTag } = await import('../../core/project-tags.js');
+    const run = async (to: string, db?: MemeshDatabase): Promise<void> => {
+      const { listProjectTags, renameProjectTag, hasRenameWork } = await import('../../core/project-tags.js');
 
       // List mode — no --from/--to: show the current project-tag distribution
       // so the user can spot splits (e.g. tim vs TIM) before mapping them.
       if (!opts.from && !opts.to) {
-        const tags = listProjectTags();
+        const tags = listProjectTags(db);
         if (opts.json) { console.log(JSON.stringify(tags, null, 2)); return; }
         if (tags.length === 0) { console.log('No project:* tags found.'); return; }
         console.log('Project tags (entity count):');
@@ -2268,24 +2269,17 @@ kgCmd
         console.log(`\nRewrite one with:  memesh kg rename-project --from <old> --to <new>   (add --apply to write)`);
         return;
       }
-      if (!opts.from || !opts.to) {
-        console.error('Provide BOTH --from and --to (or neither, to list).');
-        process.exitCode = 1;
-        return;
-      }
-
-      // --to is a NEW routing identity — the same shape `agent setup` and the
-      // message surfaces already gate — so it goes through the same refusal
-      // and canonical form. --from is deliberately NOT validated or
-      // canonicalised: it names an EXISTING row the owner is repairing (it may
-      // itself be the path-shaped or NFD-spelled value this command exists to
-      // fix), and it must match that row's exact byte spelling or the repair
-      // silently matches nothing.
-      const to = requireAgentScopeArg(opts.to, 'project', '--to');
-
-      // Dry-run preview first (always computed).
-      const preview = renameProjectTag(opts.from, to, { apply: false });
       if (!opts.apply) {
+        // The preview runs the real apply on a throwaway copy; any failure is
+        // one line and exit 1, not a stack trace.
+        let preview: ReturnType<typeof renameProjectTag>;
+        try {
+          preview = renameProjectTag(opts.from, to, { apply: false, db });
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exitCode = 1;
+          return;
+        }
         if (opts.json) { console.log(JSON.stringify({ ...preview, dryRun: true }, null, 2)); return; }
         console.log(`Dry-run: project:${opts.from} → project:${to}`);
         console.log(`  ${preview.affectedEntities} entit${preview.affectedEntities === 1 ? 'y' : 'ies'} carry project:${opts.from}`);
@@ -2293,38 +2287,128 @@ kgCmd
         // A project identity is half the key of a durable-message inbox, so a
         // rename that moved only the tags left the messages in a scope nobody
         // polls. Reported separately because it is a different kind of row.
-        console.log(`  ${preview.messageRows} durable agent-message row(s) scoped to ${opts.from} would move to ${to}`);
+        console.log(`  ${preview.messageRows - preview.messageRowsBlocked} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} would be left in place (${to} already holds an equivalent row)` : ''}`);
         console.log(`\nNothing written. Re-run with --apply to commit (the DB is backed up first).`);
         return;
       }
 
-      if (preview.affectedEntities === 0 && preview.messageRows === 0) {
+      let hasWork: boolean;
+      try {
+        hasWork = hasRenameWork(opts.from);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (!hasWork) {
         console.log(`Nothing carries project ${opts.from} — no entity tags and no agent-message rows. Nothing to do.`);
         return;
       }
 
-      // --apply: back up the whole DB file before any mutation (recoverable).
+      // --apply: back up the whole database before any mutation (recoverable).
+      // Beside the database, not in the current directory (#519), and with
+      // VACUUM INTO rather than a file copy: the database runs in WAL mode, so
+      // a copy of the main file alone misses whatever the -wal file still holds.
       const dbPath = getDbPath();
-      const backupDir = path.join(process.cwd(), 'data', 'backups');
+      const backupDir = path.join(path.dirname(dbPath), 'backups');
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const backupPath = path.join(backupDir, `kg-before-rename-project-${stamp}.db`);
       try {
-        fs.mkdirSync(backupDir, { recursive: true });
-        fs.copyFileSync(dbPath, backupPath);
+        fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+        // Owner-private like the database: opening it set the umask to 077.
+        getDatabase().prepare('VACUUM INTO ?').run(backupPath);
       } catch (err) {
         console.error(`❌ Could not back up the DB before applying (${err instanceof Error ? err.message : err}); aborting without changes.`);
         process.exitCode = 1;
         return;
       }
 
-      const result = renameProjectTag(opts.from, to, { apply: true });
+      let result: ReturnType<typeof renameProjectTag>;
+      try {
+        result = renameProjectTag(opts.from, to, { apply: true });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)} — nothing was changed; the backup is at ${backupPath}`);
+        process.exitCode = 1;
+        return;
+      }
       if (opts.json) { console.log(JSON.stringify({ ...result, backupPath }, null, 2)); return; }
       console.log(`✅ project:${opts.from} → project:${to}`);
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
-      console.log(`  ${result.messageRows} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
+      console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
       console.log(`  Backup: ${backupPath}`);
-      console.log(`  Restore if needed: cp "${backupPath}" "${dbPath}"`);
-    });
+      // sqlite3 reads the dot-command argument as a double-quoted string, then
+      // the shell reads the whole command: quote for both.
+      const dotQuoted = `"${backupPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+      console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
+    };
+
+    // --to is a NEW routing identity — the same shape `agent setup` and the
+    // message surfaces already gate — so it goes through the same refusal
+    // and canonical form. --from is deliberately NOT validated or
+    // canonicalised: it names an EXISTING row the owner is repairing (it may
+    // itself be the path-shaped or NFD-spelled value this command exists to
+    // fix), and it must match that row's exact byte spelling or the repair
+    // silently matches nothing.
+    // A refusal is one line and exit 1, before anything is opened.
+    if (!opts.from !== !opts.to) {
+      console.error('Error: provide BOTH --from and --to (or neither, to list).');
+      process.exitCode = 1;
+      return;
+    }
+    if (opts.apply && !opts.from) {
+      console.error('Error: --apply needs both --from and --to.');
+      process.exitCode = 1;
+      return;
+    }
+    let to = '';
+    if (opts.from && opts.to) {
+      try {
+        to = requireAgentScopeArg(opts.to, 'project', '--to');
+        const { sameProjectRefusal } = await import('../../core/project-tags.js');
+        const refusal = sameProjectRefusal(opts.from, to);
+        if (refusal) throw new Error(refusal);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+
+    // Only --apply writes. A normal open does write (auto-decay and the other
+    // one-time passes run on it), so listing and the dry-run preview read
+    // through a read-only handle instead (#519).
+    if (opts.apply) {
+      await withDatabase(() => run(to));
+      return;
+    }
+    // No database yet is a true answer, not a fault: say so and create nothing.
+    if (!fs.existsSync(getDbPath())) {
+      if (opts.from) {
+        console.error(`Error: No MeMesh database at ${getDbPath()}, so nothing carries project ${opts.from}. Check HOME and MEMESH_DB_PATH.`);
+        process.exitCode = 1;
+      } else if (opts.json) {
+        console.log('[]');
+      } else {
+        console.log(`No MeMesh database yet (${getDbPath()}); nothing to list.`);
+      }
+      return;
+    }
+    let readOnlyDb: MemeshDatabase;
+    try {
+      readOnlyDb = (await import('../../core/project-tags.js')).openReadOnlyForPreview(getDbPath());
+    } catch (err) {
+      console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      await run(to, readOnlyDb);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    } finally {
+      readOnlyDb.close();
+    }
   });
 
 // --- doctor ---
