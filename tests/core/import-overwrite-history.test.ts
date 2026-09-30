@@ -156,4 +156,15 @@ describe('#530 import overwrite keeps the previous content in replaced_history',
     const history = e.metadata?.replaced_history as Array<{ observations: string[] }>;
     expect(history.map((h) => h.observations)).toEqual([['genuine v1'], ['genuine v2']]);
   });
+
+  it('reports blank names one entry at a time instead of refusing the file as a duplicate', () => {
+    const data = bundle('', ['x']);
+    data.entities.push({ ...bundle('', ['y']).entities[0] });
+    data.entities.push({ ...bundle('fine', ['z']).entities[0] });
+    data.entity_count = 3;
+    const result = importMemories({ data, merge_strategy: 'skip' });
+    expect(result.errors).toHaveLength(2);
+    expect(result.errors[0]).toContain('no usable "name"');
+    expect(entityOf('fine').observations).toEqual(['z']);
+  });
 });

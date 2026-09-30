@@ -436,6 +436,7 @@ function main() {
     return 2;
   }
   let violations = 0;
+  let checked = 0;
   try {
     for (const inv of INVARIANTS) {
       let rows;
@@ -463,6 +464,7 @@ function main() {
           return 2;
         }
       }
+      checked += 1;
       if (rows.length === 0) {
         console.log(`  ok   ${inv.id}`);
         continue;
@@ -483,6 +485,12 @@ function main() {
   if (violations > 0) {
     console.log(`\n✗ ${violations} memory invariant(s) violated in ${dbPath}`);
     return 1;
+  }
+  if (checked === 0) {
+    // Every invariant was skipped (an empty file, a schema with none of the
+    // tables): nothing was checked, so there is no verdict to give.
+    console.error(`memory-invariants: no invariant could be checked in ${dbPath}`);
+    return 2;
   }
   console.log(`\n✓ memory invariants hold in ${dbPath}`);
   return 0;

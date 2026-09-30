@@ -770,7 +770,8 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
   const seenNames = new Set<string>();
   for (const entity of bundleEntities) {
     const name = (entity as { name?: unknown } | null)?.name;
-    if (typeof name !== 'string') continue;
+    // An unusable name is reported for its own entry below; only usable ones can collide.
+    if (typeof name !== 'string' || name === '') continue;
     if (seenNames.has(name)) {
       throw new Error(
         `This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}…` : name)} more than once. Nothing was imported. ` +

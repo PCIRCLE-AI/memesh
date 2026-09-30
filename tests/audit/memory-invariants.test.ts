@@ -9,7 +9,7 @@ import { openDatabase, closeDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { lessonSlug } from '../../src/core/lesson-slug.js';
 import { AGENT_MESSAGE_SCOPE_COLUMNS, isFilesystemPathScopeId } from '../../src/core/agent-scope-id.js';
-import { importMemories } from '../../src/core/operations.js';
+import { remember, importMemories } from '../../src/core/operations.js';
 
 /**
  * scripts/audit/memory-invariants.mjs is the check that would have caught
@@ -839,6 +839,61 @@ describe('memory-invariants: read-only detector over a real graph', () => {
       expect(r.status, r.stdout).toBe(1);
       expect(r.stdout).toContain(`escaped  entries=51 bytes=${Buffer.byteLength(JSON.stringify(history), 'utf8')}`);
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a database in which no invariant could be checked exits 2, not "hold"', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-inv-'));
+    try {
+      const empty = path.join(dir, 'empty.db');
+      fs.writeFileSync(empty, '');
+      const r = run(empty);
+      expect(r.status, r.stdout + r.stderr).toBe(2);
+      expect(r.stdout).not.toContain('memory invariants hold');
+      expect(r.stderr).toContain('no invariant could be checked');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#530 — the history bounds the audit uses are the ones the import validator enforces', () => {
+    const constant = (file: string, name: string) => {
+      const m = new RegExp(`const ${name} = ([^;]+);`).exec(fs.readFileSync(file, 'utf8'));
+      expect(m, `${name} in ${file}`).not.toBeNull();
+      return m![1].trim();
+    };
+    const serializer = path.resolve('src/core/serializer.ts');
+    expect(constant(script, 'REPLACED_HISTORY_MAX_ENTRIES')).toBe(constant(serializer, 'MAX_IMPORTED_REPLACED_HISTORY_ENTRIES'));
+    expect(constant(script, 'REPLACED_HISTORY_MAX_BYTES')).toBe(constant(serializer, 'MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES'));
+  });
+
+  it('#530 — histories saturated to the writers\' byte cap are not rejected by the audit', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      openDatabase(dbPath);
+      try {
+        const big = (tag: string) => Array.from({ length: 4 }, (_, i) => `${tag}-${i}`.padEnd(15000, 'x'));
+        remember({ name: 'replaced-big', type: 'decision', observations: big('v0') });
+        for (let i = 1; i < 12; i++) remember({ name: 'replaced-big', type: 'decision', observations: big(`v${i}`), replace: true });
+        importMemories({ data: { version: '3.1.0', exported_at: '2026-10-01T00:00:00.000Z', entity_count: 1, entities: [{ name: 'imported-big', type: 'decision', namespace: 'personal', relations: [], observations: big('i0'), tags: [] }] }, merge_strategy: 'skip' });
+        for (let i = 1; i < 12; i++) importMemories({ data: { version: '3.1.0', exported_at: '2026-10-01T00:00:00.000Z', entity_count: 1, entities: [{ name: 'imported-big', type: 'decision', namespace: 'personal', relations: [], observations: big(`i${i}`), tags: [] }] }, merge_strategy: 'overwrite' });
+      } finally {
+        closeDatabase();
+      }
+      withRawDb(dbPath, (db) => {
+        for (const name of ['replaced-big', 'imported-big']) {
+          const row = db.prepare("SELECT length(CAST(json_extract(metadata, '$.replaced_history') AS BLOB)) AS bytes FROM entities WHERE name = ?").get(name) as { bytes: number };
+          // The writers' own cap is 64 KiB: well under it would mean the test did not saturate it.
+          expect(row.bytes, name).toBeGreaterThan(30 * 1024);
+          expect(row.bytes, name).toBeLessThanOrEqual(64 * 1024 + 512);
+        }
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain('ok   replaced-history-stays-bounded');
+    } finally {
+      closeDatabase();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

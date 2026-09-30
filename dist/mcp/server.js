@@ -27794,7 +27794,7 @@ function importMemories(args, options) {
   const seenNames = /* @__PURE__ */ new Set();
   for (const entity of bundleEntities) {
     const name = entity?.name;
-    if (typeof name !== "string")
+    if (typeof name !== "string" || name === "")
       continue;
     if (seenNames.has(name)) {
       throw new Error(`This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}\u2026` : name)} more than once. Nothing was imported. A file produced by \`memesh export\` names each memory once.`);
@@ -32487,11 +32487,12 @@ function stripNullProps(value) {
     return value;
   const out = {};
   for (const [k, v] of Object.entries(value)) {
-    if (v !== null)
+    if (v !== null || NULL_IS_DATA.has(k))
       out[k] = v;
   }
   return out;
 }
+var NULL_IS_DATA = /* @__PURE__ */ new Set(["payload"]);
 function parseOrFail(schema, args) {
   const raw = args === void 0 || args === null ? {} : args;
   const strictPass = schema.safeParse(raw);
