@@ -74,8 +74,16 @@ function connect(
 }
 
 /** Answers a register the way a router from before #518 does. */
-async function startLegacyRouter(socketPath: string, answer: 'rejects-version-field' | 'omits-version'): Promise<void> {
+async function startLegacyRouter(
+  socketPath: string,
+  answer: 'rejects-version-field' | 'omits-version',
+): Promise<() => Promise<void>> {
+  const sockets = new Set<net.Socket>();
   const server = net.createServer(socket => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+    // The host may already have hung up by the time the answer is written.
+    socket.on('error', () => undefined);
     socket.once('data', chunk => {
       const request = JSON.parse(chunk.toString('utf8').trim()) as Record<string, unknown>;
       const frame = answer === 'rejects-version-field' && 'memesh_version' in request
@@ -96,6 +104,11 @@ async function startLegacyRouter(socketPath: string, answer: 'rejects-version-fi
     server.listen(socketPath, resolve);
   });
   fs.chmodSync(socketPath, 0o600);
+  return async () => {
+    servers.splice(servers.indexOf(server), 1);
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  };
 }
 
 describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after an upgrade', () => {
@@ -164,6 +177,57 @@ describe.skipIf(process.platform === 'win32')('Feature: #518 an old router after
     } finally {
       writes.mockRestore();
     }
+  });
+
+  it('the note about an outdated router is printed again after a later reconnect', async () => {
+    const { db, socketPath } = setup();
+    const first = makeRouter(db, socketPath, memeshPackageVersion());
+    await first.start();
+    connection = await connectRouterHost({
+      socket_path: socketPath,
+      auth_token: 'token',
+      identity: {
+        project: 'project-a', principal_id: 'principal-a',
+        session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+      },
+      deliver: async () => ({ host: 'fixture', status: 'queued' }),
+      resilience: { initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0, initial_attempts: 1, start_router: async () => undefined },
+    });
+    const writes = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const outdatedNotes = () => writes.mock.calls.filter(([text]) => String(text).includes('router_outdated')).length;
+    try {
+      await first.stop();
+      const stopLegacy = await startLegacyRouter(socketPath, 'rejects-version-field');
+      await vi.waitFor(() => expect(outdatedNotes()).toBe(1), { timeout: 5_000 });
+
+      // A current router comes back and the host registers with it.
+      await stopLegacy();
+      const firstGeneration = connection.generation;
+      const second = makeRouter(db, socketPath, memeshPackageVersion());
+      await second.start();
+      await vi.waitFor(() => expect(connection?.generation).toBeGreaterThan(firstGeneration), { timeout: 5_000 });
+
+      // Lost again, into an outdated router again: the user is told again.
+      await second.stop();
+      await startLegacyRouter(socketPath, 'rejects-version-field');
+      await vi.waitFor(() => expect(outdatedNotes()).toBe(2), { timeout: 5_000 });
+    } finally {
+      writes.mockRestore();
+    }
+  });
+
+  it('an unreadable package.json with no error code is retried too', async () => {
+    const { db, socketPath } = setup();
+    const router = makeRouter(db, socketPath, memeshPackageVersion());
+    await router.start();
+    routers.push(router);
+    let reads = 0;
+    connection = await connect(socketPath, async () => undefined, 5, () => {
+      reads += 1;
+      if (reads === 1) throw new SyntaxError('Unexpected end of JSON input');
+      return memeshPackageVersion();
+    });
+    expect(reads).toBe(2);
   });
 
   it('a package.json caught mid-upgrade is retried, not taken for a missing router', async () => {
