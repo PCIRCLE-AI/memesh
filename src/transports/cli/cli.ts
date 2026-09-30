@@ -2283,8 +2283,16 @@ kgCmd
       // silently matches nothing.
       const to = requireAgentScopeArg(opts.to, 'project', '--to');
 
-      // Dry-run preview first (always computed).
-      const preview = renameProjectTag(opts.from, to, { apply: false });
+      // Dry-run preview first (always computed). A refusal (renaming a
+      // project to itself, #519) is one line and exit 1, not a stack trace.
+      let preview: ReturnType<typeof renameProjectTag>;
+      try {
+        preview = renameProjectTag(opts.from, to, { apply: false });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+        return;
+      }
       if (!opts.apply) {
         if (opts.json) { console.log(JSON.stringify({ ...preview, dryRun: true }, null, 2)); return; }
         console.log(`Dry-run: project:${opts.from} → project:${to}`);
@@ -2303,14 +2311,17 @@ kgCmd
         return;
       }
 
-      // --apply: back up the whole DB file before any mutation (recoverable).
+      // --apply: back up the whole database before any mutation (recoverable).
+      // Beside the database, not in the current directory (#519), and with
+      // VACUUM INTO rather than a file copy: the database runs in WAL mode, so
+      // a copy of the main file alone misses whatever the -wal file still holds.
       const dbPath = getDbPath();
-      const backupDir = path.join(process.cwd(), 'data', 'backups');
+      const backupDir = path.join(path.dirname(dbPath), 'backups');
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const backupPath = path.join(backupDir, `kg-before-rename-project-${stamp}.db`);
       try {
-        fs.mkdirSync(backupDir, { recursive: true });
-        fs.copyFileSync(dbPath, backupPath);
+        fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+        getDatabase().prepare('VACUUM INTO ?').run(backupPath);
       } catch (err) {
         console.error(`❌ Could not back up the DB before applying (${err instanceof Error ? err.message : err}); aborting without changes.`);
         process.exitCode = 1;
@@ -2323,7 +2334,7 @@ kgCmd
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
       console.log(`  ${result.messageRows} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
       console.log(`  Backup: ${backupPath}`);
-      console.log(`  Restore if needed: cp "${backupPath}" "${dbPath}"`);
+      console.log(`  Restore if needed (stop every memesh process first): sqlite3 "${dbPath}" ".restore '${backupPath}'"`);
     });
   });
 

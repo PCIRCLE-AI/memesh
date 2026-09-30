@@ -60616,6 +60616,9 @@ function renameProjectTag(from, to, opts) {
   const conn = opts?.db ?? getDatabase();
   const fromTag = `project:${from}`;
   const toTag = `project:${to}`;
+  if (fromTag === toTag) {
+    throw new Error(`--from and --to name the same project (${from}); nothing to rename, and applying it would remove the project from every memory.`);
+  }
   const affected = conn.prepare("SELECT DISTINCT e.id, e.name FROM entities e JOIN tags t ON t.entity_id = e.id WHERE t.tag = ? ORDER BY e.name").all(fromTag);
   const hasTo = conn.prepare("SELECT 1 FROM tags WHERE entity_id = ? AND tag = ?");
   const plan = affected.map((e) => ({
@@ -60634,7 +60637,7 @@ function renameProjectTag(from, to, opts) {
   });
   const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
   let messageRowsBlocked = 0;
-  if (opts?.apply && (affected.length > 0 || messageRows > 0)) {
+  if (affected.length > 0 || messageRows > 0) {
     const del = conn.prepare("DELETE FROM tags WHERE entity_id = ? AND tag = ?");
     const upd = conn.prepare("UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?");
     const tx = conn.transaction(() => {
@@ -60656,8 +60659,15 @@ function renameProjectTag(from, to, opts) {
           }
         }
       }
+      if (!opts?.apply)
+        throw DRY_RUN_ROLLBACK;
     });
-    tx();
+    try {
+      tx();
+    } catch (err) {
+      if (err !== DRY_RUN_ROLLBACK)
+        throw err;
+    }
   }
   return {
     fromTag,
@@ -60671,11 +60681,13 @@ function renameProjectTag(from, to, opts) {
     messageRowsBlocked
   };
 }
+var DRY_RUN_ROLLBACK;
 var init_project_tags = __esm({
   "dist/core/project-tags.js"() {
     "use strict";
     init_db();
     init_agent_scope_id();
+    DRY_RUN_ROLLBACK = /* @__PURE__ */ Symbol("dry-run rollback");
   }
 });
 
@@ -63491,7 +63503,14 @@ Rewrite one with:  memesh kg rename-project --from <old> --to <new>   (add --app
       return;
     }
     const to = requireAgentScopeArg(opts.to, "project", "--to");
-    const preview = renameProjectTag2(opts.from, to, { apply: false });
+    let preview;
+    try {
+      preview = renameProjectTag2(opts.from, to, { apply: false });
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+      return;
+    }
     if (!opts.apply) {
       if (opts.json) {
         console.log(JSON.stringify({ ...preview, dryRun: true }, null, 2));
@@ -63510,12 +63529,12 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
       return;
     }
     const dbPath = getDbPath();
-    const backupDir = path19.join(process.cwd(), "data", "backups");
+    const backupDir = path19.join(path19.dirname(dbPath), "backups");
     const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
     const backupPath = path19.join(backupDir, `kg-before-rename-project-${stamp}.db`);
     try {
-      fs21.mkdirSync(backupDir, { recursive: true });
-      fs21.copyFileSync(dbPath, backupPath);
+      fs21.mkdirSync(backupDir, { recursive: true, mode: 448 });
+      getDatabase().prepare("VACUUM INTO ?").run(backupPath);
     } catch (err) {
       console.error(`\u274C Could not back up the DB before applying (${err instanceof Error ? err.message : err}); aborting without changes.`);
       process.exitCode = 1;
@@ -63530,7 +63549,7 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
     console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
     console.log(`  ${result.messageRows} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ""}`);
     console.log(`  Backup: ${backupPath}`);
-    console.log(`  Restore if needed: cp "${backupPath}" "${dbPath}"`);
+    console.log(`  Restore if needed (stop every memesh process first): sqlite3 "${dbPath}" ".restore '${backupPath}'"`);
   });
 });
 program2.command("doctor").description("Verify local install health and show actionable fixes").option("--json", "Output machine-readable diagnostics as JSON").option("--probe-http", "Also probe the local HTTP server health endpoint").option("--url <url>", "Base URL for --probe-http", "http://127.0.0.1:3737").option("--fix", "Apply the whitelisted fixes doctor prescribes (asks per fix; --yes skips asking)").option("--yes", "With --fix: apply without asking").action(async (opts) => {

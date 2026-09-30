@@ -2037,12 +2037,12 @@ memesh kg rename-project --from tim --to TIM --apply   # commit (backs up the DB
 |------|---------|-------------|
 | `--from <name>` | — | Existing project name to rewrite. Omit both `--from`/`--to` to list all project tags. |
 | `--to <name>` | — | New project name |
-| `--apply` | off (dry-run) | Actually write the change. **Backs up the whole DB to `data/backups/kg-before-rename-project-<timestamp>.db` first**, and prints the restore command. |
+| `--apply` | off (dry-run) | Actually write the change. **Backs up the whole database to `backups/kg-before-rename-project-<timestamp>.db` beside the database file (`~/.memesh/backups/` by default) first**, and prints the restore command. |
 | `--json` | off | Output as JSON |
 
 A project identity is half the key of a message inbox (`project` + `recipient`) as well as an entity tag, so renaming only the tags left every message behind in a scope nobody polls. The command reports and moves both, in one transaction, and a project carried only by messages — with no tagged entity at all — is still renameable. A message row whose destination scope already holds an equivalent row is left in place and counted rather than deleted.
 
-**Safety**: dry-run is the default — nothing is written until `--apply`. On `--apply` the DB file is copied to `data/backups/` before any mutation; if the backup fails, the command aborts without changing anything. The tags table has a `UNIQUE(entity_id, tag)` constraint, so an entity that already carries the target tag has its old tag removed (a merge) rather than getting a duplicate.
+**Safety**: dry-run is the default — nothing is written until `--apply`. The dry run performs the same changes inside a transaction and rolls them back, so the counts it prints (including message rows that would be left in place) are the ones `--apply` produces. `--from` and `--to` naming the same project is refused: every carrier would count as a merge and lose its only project tag. On `--apply` a consistent copy of the database (including changes still in its write-ahead log) is written to the `backups/` folder beside it before any mutation; if the backup fails, the command aborts without changing anything. Restore it with every memesh process stopped: `sqlite3 <database> ".restore '<backup>'"`. The tags table has a `UNIQUE(entity_id, tag)` constraint, so an entity that already carries the target tag has its old tag removed (a merge) rather than getting a duplicate.
 
 ### memesh dream
 

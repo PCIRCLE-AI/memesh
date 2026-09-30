@@ -5,10 +5,14 @@ export function listProjectTags(db) {
     const rows = conn.prepare("SELECT tag, COUNT(*) c FROM tags WHERE tag LIKE 'project:%' GROUP BY tag ORDER BY c DESC, tag ASC").all();
     return rows.map((r) => ({ project: r.tag.slice('project:'.length), count: r.c }));
 }
+const DRY_RUN_ROLLBACK = Symbol('dry-run rollback');
 export function renameProjectTag(from, to, opts) {
     const conn = opts?.db ?? getDatabase();
     const fromTag = `project:${from}`;
     const toTag = `project:${to}`;
+    if (fromTag === toTag) {
+        throw new Error(`--from and --to name the same project (${from}); nothing to rename, and applying it would remove the project from every memory.`);
+    }
     const affected = conn.prepare('SELECT DISTINCT e.id, e.name FROM entities e JOIN tags t ON t.entity_id = e.id WHERE t.tag = ? ORDER BY e.name').all(fromTag);
     const hasTo = conn.prepare('SELECT 1 FROM tags WHERE entity_id = ? AND tag = ?');
     const plan = affected.map((e) => ({
@@ -29,7 +33,7 @@ export function renameProjectTag(from, to, opts) {
     });
     const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
     let messageRowsBlocked = 0;
-    if (opts?.apply && (affected.length > 0 || messageRows > 0)) {
+    if (affected.length > 0 || messageRows > 0) {
         const del = conn.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?');
         const upd = conn.prepare('UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?');
         const tx = conn.transaction(() => {
@@ -52,8 +56,16 @@ export function renameProjectTag(from, to, opts) {
                     }
                 }
             }
+            if (!opts?.apply)
+                throw DRY_RUN_ROLLBACK;
         });
-        tx();
+        try {
+            tx();
+        }
+        catch (err) {
+            if (err !== DRY_RUN_ROLLBACK)
+                throw err;
+        }
     }
     return {
         fromTag,

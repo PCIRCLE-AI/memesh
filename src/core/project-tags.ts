@@ -57,6 +57,9 @@ export function listProjectTags(db?: MemeshDatabase): ProjectTagCount[] {
   return rows.map((r) => ({ project: r.tag.slice('project:'.length), count: r.c }));
 }
 
+/** Thrown inside the dry-run transaction to roll every trial move back. */
+const DRY_RUN_ROLLBACK = Symbol('dry-run rollback');
+
 /**
  * Rewrite `project:<from>` → `project:<to>` across all entities.
  *
@@ -74,6 +77,12 @@ export function renameProjectTag(
   const conn = opts?.db ?? getDatabase();
   const fromTag = `project:${from}`;
   const toTag = `project:${to}`;
+  // Every carrier of `from` already "has" `to` when they are the same tag, so
+  // the plan below would mark each one a merge and delete its only project
+  // tag (#519). Renaming a project to itself is never what was meant.
+  if (fromTag === toTag) {
+    throw new Error(`--from and --to name the same project (${from}); nothing to rename, and applying it would remove the project from every memory.`);
+  }
 
   const affected = conn.prepare(
     'SELECT DISTINCT e.id, e.name FROM entities e JOIN tags t ON t.entity_id = e.id WHERE t.tag = ? ORDER BY e.name',
@@ -101,7 +110,7 @@ export function renameProjectTag(
   const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
   let messageRowsBlocked = 0;
 
-  if (opts?.apply && (affected.length > 0 || messageRows > 0)) {
+  if (affected.length > 0 || messageRows > 0) {
     const del = conn.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?');
     const upd = conn.prepare('UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?');
     const tx = conn.transaction(() => {
@@ -118,8 +127,15 @@ export function renameProjectTag(
           try { move.run(to, rid); } catch { messageRowsBlocked += 1; }
         }
       }
+      // A dry run performs the same moves and then rolls them back, so the
+      // blocked count it reports is the one the apply will produce (#519).
+      if (!opts?.apply) throw DRY_RUN_ROLLBACK;
     });
-    tx();
+    try {
+      tx();
+    } catch (err) {
+      if (err !== DRY_RUN_ROLLBACK) throw err;
+    }
   }
 
   return {

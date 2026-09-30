@@ -113,3 +113,28 @@ describe('project-tags: renameProjectTag moves durable message scopes too', () =
     expect(r.messageRows).toBeGreaterThan(0);
   });
 });
+
+describe('Feature: #519 renaming a project cannot remove it by accident', () => {
+  it('refuses to rename a project to itself and leaves every tag in place', () => {
+    remember({ name: 'a', type: 'note', tags: ['project:acme'] });
+    remember({ name: 'b', type: 'note', tags: ['project:acme'] });
+    expect(() => renameProjectTag('acme', 'acme', { apply: true })).toThrow(/same project/);
+    expect(() => renameProjectTag('acme', 'acme', { apply: false })).toThrow(/same project/);
+    expect(projectTagsOf('a')).toEqual(['project:acme']);
+    expect(projectTagsOf('b')).toEqual(['project:acme']);
+  });
+
+  it('the dry run reports the same blocked message rows the apply will refuse', () => {
+    const send = (project: string, key: string) => sendAgentMessage(getDatabase(), {
+      project, sender: 'author', recipient: 'reviewer', idempotency_key: key,
+      content_type: 'text/plain', payload: 'x',
+    });
+    // Same sender and key in both scopes: moving the old row collides.
+    send('old-scope', 'shared-key');
+    send('new-scope', 'shared-key');
+    const preview = renameProjectTag('old-scope', 'new-scope', { apply: false });
+    const applied = renameProjectTag('old-scope', 'new-scope', { apply: true });
+    expect(applied.messageRowsBlocked).toBeGreaterThan(0);
+    expect(preview.messageRowsBlocked).toBe(applied.messageRowsBlocked);
+  });
+});

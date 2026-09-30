@@ -342,6 +342,60 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('#519: kg rename-project --apply backs up next to the database, not in the current directory', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-backup-'));
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'seed-519', '--type', 'note', '--obs', 'x', '--tags', 'project:old-519',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      const rename = spawnSync(process.execPath, cliArgs(
+        'kg', 'rename-project', '--from', 'old-519', '--to', 'new-519', '--apply', '--json',
+      ), { encoding: 'utf8', env });
+      expect(rename.status, rename.stderr).toBe(0);
+      const { backupPath } = JSON.parse(rename.stdout) as { backupPath: string };
+      expect(fs.existsSync(backupPath)).toBe(true);
+      expect(fs.realpathSync(path.dirname(path.dirname(backupPath)))).toBe(fs.realpathSync(path.join(home, '.memesh')));
+      expect(path.resolve(backupPath).startsWith(path.resolve(process.cwd()) + path.sep)).toBe(false);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('#519: the rename-project backup holds writes still in the WAL file of an open connection', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-wal-'));
+    const { DatabaseSync } = await import('node:sqlite');
+    let held: InstanceType<typeof DatabaseSync> | undefined;
+    try {
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
+      const seed = spawnSync(process.execPath, cliArgs(
+        'remember', '--name', 'seed-wal', '--type', 'note', '--obs', 'x', '--tags', 'project:old-wal',
+      ), { encoding: 'utf8', env });
+      expect(seed.status, seed.stderr).toBe(0);
+      // Another live process (a hook, the MCP server) keeps a connection
+      // open, so its latest write sits in the -wal file, not the main file.
+      const dbPath = path.join(home, '.memesh', 'knowledge-graph.db');
+      held = new DatabaseSync(dbPath);
+      held.exec('PRAGMA wal_autocheckpoint = 0');
+      held.prepare("INSERT INTO entities (name, type) VALUES ('only-in-wal', 'note')").run();
+      const rename = spawnSync(process.execPath, cliArgs(
+        'kg', 'rename-project', '--from', 'old-wal', '--to', 'new-wal', '--apply', '--json',
+      ), { encoding: 'utf8', env });
+      expect(rename.status, rename.stderr).toBe(0);
+      const { backupPath } = JSON.parse(rename.stdout) as { backupPath: string };
+      const backup = new DatabaseSync(backupPath, { readOnly: true });
+      try {
+        expect(backup.prepare("SELECT count(*) AS n FROM entities WHERE name = 'only-in-wal'").get()).toEqual({ n: 1 });
+      } finally {
+        backup.close();
+      }
+    } finally {
+      held?.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it.skipIf(process.platform === 'win32')('kg rename-project refuses a filesystem path as --to, before computing any preview', () => {
     // `--to` names the destination scope that both entities and durable
     // agent-message rows get rewritten into — the same identity `send`
