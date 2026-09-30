@@ -194,13 +194,11 @@ describe('the read-only hooks apply the same cap they cannot get from openHookDb
     // while sitting well under the 2x a regression would produce.
     //
     // Distinct file_path per run: pre-edit-recall.js throttles repeat
-    // recalls of the same file within a session
-    // (`session-recalled-files.json`, keyed on memeshDir — which the floor
-    // and contended runs deliberately share, same dbPath). A fixed
-    // file_path would let the floor run's throttle write silently skip the
+    // recalls of the same file within a session. These payloads carry no
+    // session_id, so today nothing is throttled, but a fixed file_path would
+    // let any future throttle write on the floor run silently skip the
     // recall query on the contended run, collapsing the very second query
-    // this test exists to keep contended — caught by this test's own
-    // break-test, not by inspection.
+    // this test exists to keep contended.
     const makePreEditInput = (tag: string) => ({
       tool_name: 'Edit',
       tool_input: { file_path: `/tmp/hook-budget-probe/${tag}.ts`, new_string: 'x' },

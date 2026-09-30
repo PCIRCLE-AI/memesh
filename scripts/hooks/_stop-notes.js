@@ -51,7 +51,18 @@ export const NUDGE_MIN_TOOL_CALLS = 5;
 export const INGEST_MAX_FILES = 100;
 /** Most transcript bytes the nudge reads in one Stop (the newest ones). */
 const MAX_WINDOW_BYTES = 16 * 1024 * 1024;
-const SESSION_ID_RE = /^[A-Za-z0-9_-]+$/;
+/** A session id safe to use as a file name. */
+export const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/**
+ * The file name of one context's pre-edit recall list (#521): a session, or a
+ * subagent inside it (its payload carries the parent's session id plus its own
+ * agent id). A hash of the ids, so the name has a fixed length, and ids that
+ * differ only in case stay different files on a case-insensitive disk.
+ */
+export function recallListName(sessionId, agentId) {
+  return `${createHash('sha256').update(agentId ? `${sessionId}\n${agentId}` : sessionId).digest('hex').slice(0, 32)}.json`;
+}
 const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
 
 const MEMORY_WRITE_TOOL_RE = /(?:^|__)(?:remember|learn)$/;
@@ -336,14 +347,24 @@ export function scanTranscriptWindow(text, carry = null) {
 }
 
 /**
- * Remove offset files of sessions that have not stopped for 30 days. One
- * file per session would otherwise accumulate forever. At most
- * NUDGE_PRUNE_PER_RUN removals per Stop, so a long backlog is worked off
- * over several Stops rather than in one.
+ * Remove per-session state files not touched for 30 days. One file per
+ * session would otherwise accumulate forever. At most NUDGE_PRUNE_PER_RUN
+ * removals per call, so a long backlog is worked off over several runs
+ * rather than in one.
  */
-export function pruneNudgeState(dir, now) {
+export function pruneSessionState(dir, now, onFault) {
   let removed = 0;
-  for (const name of readdirSync(dir)) {
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch (err) {
+    // The directory itself is unreadable: nothing was pruned, and the caller
+    // must not have to guess why. Same line as a failed per-file removal.
+    try { process.stderr.write(`[memesh] could not prune ${dir}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+    if (onFault) onFault(err);
+    return removed;
+  }
+  for (const name of names) {
     if (removed >= NUDGE_PRUNE_PER_RUN) break;
     if (!name.endsWith('.json')) continue;
     const file = join(dir, name);
@@ -353,9 +374,11 @@ export function pruneNudgeState(dir, now) {
         removed++;
       }
     } catch (err) {
-      // Another Stop removed it first, or it is unreadable: either way this
-      // run leaves it; the next one retries.
-      try { process.stderr.write(`[memesh remember-nudge] could not prune ${file}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+      // Another hook removed it first: it is gone, which is what was wanted.
+      if (err?.code === 'ENOENT') continue;
+      // Unreadable: this run leaves it; the next one retries.
+      try { process.stderr.write(`[memesh] could not prune ${file}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+      if (onFault) onFault(err);
     }
   }
   return removed;
@@ -388,7 +411,7 @@ export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
   }
   const dir = join(getMemeshDirFromDbPath(), 'remember-nudge');
   ensurePrivateDir(dir);
-  pruneNudgeState(dir, Date.now());
+  pruneSessionState(dir, Date.now());
   const statePath = join(dir, `${sessionId}.json`);
   const state = readJson(statePath) ?? {};
   const { text, nextOffset } = readTranscriptWindow(transcriptPath, state.offset);
