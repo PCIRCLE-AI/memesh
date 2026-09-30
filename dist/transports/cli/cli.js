@@ -7985,6 +7985,8 @@ function agentScopeIdRejection(field, value) {
 function projectScopeRejection(value) {
   if (value.trim() === "")
     return "project must not be empty.";
+  if (value.length > AGENT_SCOPE_ID_MAX_LENGTH)
+    return `project must be at most ${AGENT_SCOPE_ID_MAX_LENGTH} characters.`;
   const absolute = agentScopeIdRejection("project", value);
   if (absolute)
     return absolute;
@@ -24447,7 +24449,7 @@ var init_schemas3 = __esm({
     agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH).transform(canonicalAgentScopeId).refine((value) => agentScopeIdRejection(field, value) === null, {
       error: (issue2) => agentScopeIdRejection(field, String(issue2.input)) ?? `${field} is not a valid identifier.`
     });
-    projectRules = (base) => base.max(AGENT_SCOPE_ID_MAX_LENGTH).superRefine((value, ctx) => {
+    projectRules = (base) => base.superRefine((value, ctx) => {
       const rejection = projectScopeRejection(value);
       if (rejection !== null)
         ctx.addIssue({ code: "custom", message: rejection });
@@ -26823,7 +26825,7 @@ function exportOpenAITools() {
             root_cause: { type: "string", description: "Why it happened" },
             prevention: { type: "string", description: "How to prevent it next time" },
             severity: { type: "string", enum: ["critical", "major", "minor"], description: "Severity level" },
-            project: { type: "string", description: "Project name. Omit for the current directory\u2019s project. A stable name, never a filesystem path." }
+            project: { type: "string", description: "Project name. Omit for the current directory\u2019s project. A stable name, never a filesystem path. Required over HTTP (POST /v1/learn answers 400 without it)." }
           },
           required: ["error", "fix"]
         }

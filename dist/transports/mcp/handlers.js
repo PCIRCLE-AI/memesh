@@ -20,7 +20,7 @@ function projectRequired(tool, project, ctx) {
     if (project !== undefined || !ctx.projectUndeterminable)
         return null;
     return fail(`${tool}: \`project\` is required here — this server runs in MeMesh's own directory and cannot tell which project you are in. `
-        + 'Pass the `project` value your SessionStart briefing gave you.');
+        + 'Pass the `project` value your SessionStart briefing gave you; if it gave none, run `memesh briefing --json` in your workspace and pass its `project` field.');
 }
 export function resolveTranscriptWorkspace(project, rootUris) {
     if (!rootUris)

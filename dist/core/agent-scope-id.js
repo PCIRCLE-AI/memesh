@@ -29,6 +29,8 @@ export function agentScopeIdRejection(field, value) {
 export function projectScopeRejection(value) {
     if (value.trim() === '')
         return 'project must not be empty.';
+    if (value.length > AGENT_SCOPE_ID_MAX_LENGTH)
+        return `project must be at most ${AGENT_SCOPE_ID_MAX_LENGTH} characters.`;
     const absolute = agentScopeIdRejection('project', value);
     if (absolute)
         return absolute;

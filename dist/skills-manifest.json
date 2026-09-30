@@ -43,8 +43,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
-      "sha256": "69a83c0dc7bad3693044cfc5c8c1e91ccc55d32b7392fdd5320cb706bd1bc6c4",
-      "bytes": 2979
+      "sha256": "f78667b12dfa128c2575aaa20029874e9e2bf4f99ac13c98f61bb455897aa2df",
+      "bytes": 3112
     },
     {
       "path": "scripts/hooks/_generated/bash-edited-paths.js",

@@ -134,7 +134,7 @@ const agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH)
     .refine((value) => agentScopeIdRejection(field, value) === null, {
     error: (issue) => agentScopeIdRejection(field, String(issue.input)) ?? `${field} is not a valid identifier.`,
 });
-const projectRules = (base) => base.max(AGENT_SCOPE_ID_MAX_LENGTH).superRefine((value, ctx) => {
+const projectRules = (base) => base.superRefine((value, ctx) => {
     const rejection = projectScopeRejection(value);
     if (rejection !== null)
         ctx.addIssue({ code: 'custom', message: rejection });

@@ -136,7 +136,7 @@ export function exportOpenAITools() {
                         root_cause: { type: 'string', description: 'Why it happened' },
                         prevention: { type: 'string', description: 'How to prevent it next time' },
                         severity: { type: 'string', enum: ['critical', 'major', 'minor'], description: 'Severity level' },
-                        project: { type: 'string', description: 'Project name. Omit for the current directory’s project. A stable name, never a filesystem path.' },
+                        project: { type: 'string', description: 'Project name. Omit for the current directory’s project. A stable name, never a filesystem path. Required over HTTP (POST /v1/learn answers 400 without it).' },
                     },
                     required: ['error', 'fix'],
                 },

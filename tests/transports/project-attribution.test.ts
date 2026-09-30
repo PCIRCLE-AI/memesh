@@ -15,6 +15,7 @@ import { handleTool } from '../../src/transports/mcp/handlers.js';
 import { app } from '../../src/transports/http/server.js';
 import { getDatabase, openDatabase, closeDatabase } from '../../src/db.js';
 import { getProjectName } from '../../src/core/paths.js';
+import { projectScopeRejection } from '../../src/core/agent-scope-id.js';
 import { getTaskState, setTaskState } from '../../src/core/task-state-store.js';
 import { remember } from '../../src/core/operations.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
@@ -259,6 +260,16 @@ describe('#527 CLI: an empty or path-shaped project is refused', () => {
     }
   });
 
+  it('refuses a project over the 200-character limit, so no key is written that the readers cannot read', () => {
+    const long = 'x'.repeat(250);
+    for (const args of [['task', '--project', long, '--goal', 'g'], ['learn', '--error', 'e', '--fix', 'f', '--project', long], ['briefing', '--project', long]]) {
+      const r = run(args);
+      expect(r.status, args[0] + r.stdout + r.stderr).toBe(1);
+      expect(r.stderr).toContain('--project');
+    }
+    expect(run(['task', '--project', 'y'.repeat(200), '--goal', 'g']).status).toBe(0);
+  });
+
   it('a bare .ssh is allowed, and a decomposed-Unicode project is stored and read back exactly as given', () => {
     expect(run(['task', '--project', '.ssh', '--goal', 'g']).status).toBe(0);
     const nfd = 'café-cli';
@@ -274,5 +285,12 @@ describe('#527 CLI: an empty or path-shaped project is refused', () => {
     const learned = run(['learn', '--error', 'e', '--fix', 'f', '--project', 'alpha', '--json']);
     expect(learned.status, learned.stderr).toBe(0);
     expect(JSON.parse(learned.stdout).name).toContain('alpha');
+  });
+});
+
+describe('#527 the one project validator owns the length limit', () => {
+  it('refuses 201 characters and accepts 200', () => {
+    expect(projectScopeRejection('x'.repeat(201))).toMatch(/^project/);
+    expect(projectScopeRejection('x'.repeat(200))).toBeNull();
   });
 });

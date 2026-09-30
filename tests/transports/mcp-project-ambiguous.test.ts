@@ -61,6 +61,7 @@ describe('#527 MCP server started in MeMesh\'s own directory', () => {
     const msg = text(r);
     expect(msg).toMatch(/`project`/);
     expect(msg).toMatch(/SessionStart/);
+    expect(msg, 'says how to recover when SessionStart gave no project').toMatch(/memesh briefing --json/);
     expect(msg.split('\n').filter((l) => l.trim()).length).toBe(1);
   });
 
@@ -72,10 +73,13 @@ describe('#527 MCP server started in MeMesh\'s own directory', () => {
     expect((await call(c, 'briefing', { project: 'ws-a' })).isError).toBeUndefined();
   });
 
-  it('is decided by the real directory: a symlink to the package root is refused too', async () => {
-    const link = path.join(tmp, 'link-to-root');
-    fs.symlinkSync(PACKAGE_ROOT, link);
-    const c = await connect(link);
+  it('is decided by the real directory: a symlinked plugin root is refused too', async () => {
+    // The child's process.cwd() is already resolved, so the symlink has to be
+    // on the OTHER side of the comparison: the announced plugin root.
+    const real = fs.realpathSync(fs.mkdtempSync(path.join(tmp, 'plugin-real-')));
+    const link = path.join(tmp, 'link-to-plugin');
+    fs.symlinkSync(real, link);
+    const c = await connect(real, { PLUGIN_ROOT: link });
     expect((await call(c, 'task_state', {})).isError).toBe(true);
   });
 

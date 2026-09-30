@@ -119,6 +119,11 @@ describe('exportOpenAITools', () => {
     expect(tool.function.parameters.required).toEqual(['name']);
   });
 
+  it('memesh_learn says HTTP requires project', () => {
+    const tool = tools.find((t: any) => t.function.name === 'memesh_learn') as any;
+    expect(tool.function.parameters.properties.project.description).toMatch(/HTTP[^.]*requires?[^.]*project|required over HTTP/i);
+  });
+
   it('memesh_learn requires error and fix', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_learn') as any;
     expect(tool.function.parameters.required).toEqual(['error', 'fix']);

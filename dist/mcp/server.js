@@ -29447,6 +29447,8 @@ function agentScopeIdRejection(field, value) {
 function projectScopeRejection(value) {
   if (value.trim() === "")
     return "project must not be empty.";
+  if (value.length > AGENT_SCOPE_ID_MAX_LENGTH)
+    return `project must be at most ${AGENT_SCOPE_ID_MAX_LENGTH} characters.`;
   const absolute = agentScopeIdRejection("project", value);
   if (absolute)
     return absolute;
@@ -30829,7 +30831,7 @@ var nonBlankBounded = (max) => external_exports.string().trim().min(1).max(max);
 var agentScopeId = (field) => nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH).transform(canonicalAgentScopeId).refine((value) => agentScopeIdRejection(field, value) === null, {
   error: (issue2) => agentScopeIdRejection(field, String(issue2.input)) ?? `${field} is not a valid identifier.`
 });
-var projectRules = (base) => base.max(AGENT_SCOPE_ID_MAX_LENGTH).superRefine((value, ctx) => {
+var projectRules = (base) => base.superRefine((value, ctx) => {
   const rejection = projectScopeRejection(value);
   if (rejection !== null)
     ctx.addIssue({ code: "custom", message: rejection });
@@ -32114,7 +32116,7 @@ function updateNoticeForEntryPoint(input) {
 function projectRequired(tool, project, ctx) {
   if (project !== void 0 || !ctx.projectUndeterminable)
     return null;
-  return fail(`${tool}: \`project\` is required here \u2014 this server runs in MeMesh's own directory and cannot tell which project you are in. Pass the \`project\` value your SessionStart briefing gave you.`);
+  return fail(`${tool}: \`project\` is required here \u2014 this server runs in MeMesh's own directory and cannot tell which project you are in. Pass the \`project\` value your SessionStart briefing gave you; if it gave none, run \`memesh briefing --json\` in your workspace and pass its \`project\` field.`);
 }
 function resolveTranscriptWorkspace(project, rootUris) {
   if (!rootUris)

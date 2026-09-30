@@ -112,7 +112,8 @@ export function agentScopeIdRejection(field: string, value: string): string | nu
  * Stricter than `agentScopeIdRejection`, which also guards agent ids that may
  * legitimately contain a slash: a project name is a label (`getProjectName`
  * builds `<basename>~<hash>`), so it never contains a path separator. Refused:
- * empty or whitespace-only, an absolute path, and any value with `/` or `\\`
+ * empty or whitespace-only, longer than `AGENT_SCOPE_ID_MAX_LENGTH`, an
+ * absolute path, and any value with `/` or `\\`
  * in it (`a/b`, `./foo`, `../foo`, `~/foo`). A bare `.ssh` stays allowed.
  *
  * It only judges; it never rewrites. A stored project key is compared byte
@@ -121,6 +122,7 @@ export function agentScopeIdRejection(field: string, value: string): string | nu
  */
 export function projectScopeRejection(value: string): string | null {
   if (value.trim() === '') return 'project must not be empty.';
+  if (value.length > AGENT_SCOPE_ID_MAX_LENGTH) return `project must be at most ${AGENT_SCOPE_ID_MAX_LENGTH} characters.`;
   const absolute = agentScopeIdRejection('project', value);
   if (absolute) return absolute;
   if (/[\\/]/.test(value)) {

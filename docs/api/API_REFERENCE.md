@@ -619,7 +619,7 @@ Record a structured lesson from a mistake or discovery. Creates a `lesson_learne
 | `root_cause` | string | No | Why it happened |
 | `prevention` | string | No | How to prevent it next time |
 | `severity` | string | No | Severity level: `"critical"`, `"major"`, or `"minor"` (default: `"minor"`) |
-| `project` | string | No | Project the lesson belongs to. Omit it to use the server process's own project — the current working directory's, as `task_state` and `briefing` do (MCP and `memesh learn`). **`POST /v1/learn` requires it**: an HTTP server has no caller to derive a project from, so a missing project answers `400` and nothing is stored. Stored exactly as given. When the MCP server was started in the directory it runs from (Codex starts a plugin's server in the plugin root; a workspace, even a MeMesh checkout, is not affected), the current directory says nothing about your project, so `project` is required there: the call is refused with a one-line error until you pass the `project` value your SessionStart briefing gave you. The same applies to `task_state` and `briefing`. Empty, or written as a path (`/Users/me/proj`, `a/b`, `./foo`, `~/foo`), is refused; a bare name such as `.ssh` is accepted. |
+| `project` | string | No | Project the lesson belongs to. Omit it to use the server process's own project — the current working directory's, as `task_state` and `briefing` do (MCP and `memesh learn`). **`POST /v1/learn` requires it**: an HTTP server has no caller to derive a project from, so a missing project answers `400` and nothing is stored. Stored exactly as given. When the MCP server was started in the directory it runs from (Codex starts a plugin's server in the plugin root; a workspace is not affected, even another MeMesh checkout; a server started from the very checkout it runs from, such as `claude --plugin-dir <checkout>` or `npm link`, counts as its own directory), the current directory says nothing about your project, so `project` is required there: the call is refused with a one-line error until you pass the `project` value your SessionStart briefing gave you. The same applies to `task_state` and `briefing`. Empty, or written as a path (`/Users/me/proj`, `a/b`, `./foo`, `~/foo`), is refused; a bare name such as `.ssh` is accepted. |
 
 **Response**:
 
@@ -1249,7 +1249,7 @@ What the owner stated about one project with `memesh task` — `goal`, `next`,
 `updated_at` of the last statement. Fields that were never stated are absent,
 not empty strings: the dashboard's Project tab renders an absent field as "not
 stated" and never derives progress from memory counts (#237). `project` is
-required (`400`, `validation.bad-param` without it, or when it is blank or over 200 characters); it is read as an exact key — a legacy project key that is a filesystem path can still be READ here, but no write (`task_state`, `memesh task`) accepts a path as a project; a project with no
+required (`400`, `validation.bad-param` without it, or when it is blank or over 200 characters); it is read as an exact key — a legacy project key that is a filesystem path can still be READ here, but `learn`, `task_state` and `briefing` accept a path as a project (messaging and `kg rename-project` rules are unchanged); a project with no
 statement is a `200` with `state: {}`.
 
 **Response**:

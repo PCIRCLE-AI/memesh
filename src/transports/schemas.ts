@@ -258,7 +258,7 @@ const agentScopeId = (field: string) =>
  * stored task-state key is matched byte for byte). Empty, absolute-path and
  * relative-path values are refused (#527).
  */
-const projectRules = (base: z.ZodString) => base.max(AGENT_SCOPE_ID_MAX_LENGTH).superRefine((value, ctx) => {
+const projectRules = (base: z.ZodString) => base.superRefine((value, ctx) => {
   const rejection = projectScopeRejection(value);
   if (rejection !== null) ctx.addIssue({ code: 'custom', message: rejection });
 });
