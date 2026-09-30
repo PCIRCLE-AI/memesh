@@ -272,7 +272,7 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
       send('vf-old');
       getDatabase().exec(trigger);
       const before = state();
-      expect(() => renameProjectTag('vf-old', 'vf-new', { apply: true })).toThrow(/rolled back/);
+      expect(() => renameProjectTag('vf-old', 'vf-new', { apply: true })).toThrow(/was not kept/);
       expect(state()).toEqual(before);
     });
   }
@@ -291,7 +291,7 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
     send('h2-old');
     getDatabase().exec('CREATE TRIGGER undo_move AFTER UPDATE OF project ON agent_messages BEGIN UPDATE agent_messages SET project = OLD.project WHERE rowid = NEW.rowid; END');
     const before = state();
-    expect(() => renameProjectTag('h2-old', 'h2-new', { apply: true })).toThrow(/is not scoped to h2-new.*rolled back/);
+    expect(() => renameProjectTag('h2-old', 'h2-new', { apply: true })).toThrow(/is not scoped to h2-new.*was not kept/);
     expect(state()).toEqual(before);
   });
 
@@ -300,7 +300,30 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
     send('h3-old');
     getDatabase().exec('CREATE TRIGGER drop_renamed AFTER UPDATE OF tag ON tags BEGIN DELETE FROM tags WHERE id = NEW.id; END');
     const before = state();
-    expect(() => renameProjectTag('h3-old', 'h3-new', { apply: true })).toThrow(/rolled back/);
+    expect(() => renameProjectTag('h3-old', 'h3-new', { apply: true })).toThrow(/was not kept/);
+    expect(state()).toEqual(before);
+  });
+
+  it('a real collision on a unique index is counted as left in place, and the other rows move', () => {
+    const cursor = getDatabase().prepare('INSERT INTO agent_message_cursors (cursor_token, project, recipient, event_sequence) VALUES (?, ?, ?, ?)');
+    cursor.run('c-old', 'cur-old', 'reviewer', 7);
+    cursor.run('c-new', 'cur-new', 'reviewer', 7);
+    cursor.run('c-other', 'cur-old', 'reviewer', 8);
+    const r = renameProjectTag('cur-old', 'cur-new', { apply: true });
+    expect(r.messageRowsBlocked).toBe(1);
+    expect(getDatabase().prepare('SELECT cursor_token, project FROM agent_message_cursors ORDER BY cursor_token').all()).toEqual([
+      { cursor_token: 'c-new', project: 'cur-new' },
+      { cursor_token: 'c-old', project: 'cur-old' },
+      { cursor_token: 'c-other', project: 'cur-new' },
+    ]);
+  });
+
+  it('a collision a trigger hits in another table is not taken for the destination holding the row', () => {
+    carrier('t3', ['project:t3-old']);
+    send('t3-old');
+    getDatabase().exec('CREATE TABLE side (a UNIQUE); INSERT INTO side VALUES (1); CREATE TRIGGER side_write AFTER UPDATE OF project ON agent_messages BEGIN INSERT INTO side VALUES (1); END');
+    const before = state();
+    expect(() => renameProjectTag('t3-old', 't3-new', { apply: true })).toThrow(/UNIQUE constraint failed: side\.a/);
     expect(state()).toEqual(before);
   });
 

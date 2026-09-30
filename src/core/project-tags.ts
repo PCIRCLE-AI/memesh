@@ -121,7 +121,7 @@ export function renameProjectTag(
             move.run(to, rid);
             movedRows.push({ table, rid });
           } catch (err) {
-            if (!isUniqueViolation(err)) throw err;
+            if (!isUniqueCollisionIn(table, err)) throw err;
             messageRowsBlocked += 1;
           }
         }
@@ -133,13 +133,13 @@ export function renameProjectTag(
       const hasTag = conn.prepare('SELECT 1 FROM tags WHERE entity_id = ? AND tag = ?');
       for (const p of plan) {
         if (hasTag.get(p.id, fromTag) || !hasTag.get(p.id, toTag)) {
-          throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result); the rename was rolled back.`);
+          throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result), so the rename was not kept.`);
         }
       }
       for (const { table, rid } of movedRows) {
         const row = conn.prepare(`SELECT project FROM ${table} WHERE rowid = ?`).get(rid) as { project: string } | undefined;
         if (row?.project !== to) {
-          throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result); the rename was rolled back.`);
+          throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result), so the rename was not kept.`);
         }
       }
     });
@@ -199,12 +199,16 @@ export function hasRenameWork(from: string, db?: MemeshDatabase): boolean {
   return affected.length > 0 || messageRows > 0;
 }
 
-function isUniqueViolation(err: unknown): boolean {
-  const code = (err as { errcode?: unknown } | null)?.errcode;
-  // By error code only: the message can carry any text, e.g. a trigger's
-  // RAISE(ABORT, ...) that quotes the destination name (a trigger is 1811).
+function isUniqueCollisionIn(table: string, err: unknown): boolean {
+  const e = err as { errcode?: unknown; message?: unknown } | null;
   // 2067: a UNIQUE index; 1555: a composite PRIMARY KEY (agent_message_idempotency).
-  return code === 2067 || code === 1555;
+  // A trigger's RAISE(ABORT, ...) is 1811, so its text, which can quote any
+  // name, never gets this far. For these two codes the message is SQLite's own
+  // ("UNIQUE constraint failed: <table>.<column>, ..."), and it must name the
+  // table being updated: a trigger's write that collides in another table is
+  // not "the destination already holds this row".
+  if (e?.errcode !== 2067 && e?.errcode !== 1555) return false;
+  return typeof e.message === 'string' && e.message.startsWith(`UNIQUE constraint failed: ${table}.`);
 }
 
 /**

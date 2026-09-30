@@ -60657,7 +60657,7 @@ function renameProjectTag(from, to, opts) {
             move.run(to, rid);
             movedRows.push({ table, rid });
           } catch (err) {
-            if (!isUniqueViolation(err))
+            if (!isUniqueCollisionIn(table, err))
               throw err;
             messageRowsBlocked += 1;
           }
@@ -60666,13 +60666,13 @@ function renameProjectTag(from, to, opts) {
       const hasTag = conn.prepare("SELECT 1 FROM tags WHERE entity_id = ? AND tag = ?");
       for (const p of plan) {
         if (hasTag.get(p.id, fromTag) || !hasTag.get(p.id, toTag)) {
-          throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result); the rename was rolled back.`);
+          throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result), so the rename was not kept.`);
         }
       }
       for (const { table, rid } of movedRows) {
         const row = conn.prepare(`SELECT project FROM ${table} WHERE rowid = ?`).get(rid);
         if (row?.project !== to) {
-          throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result); the rename was rolled back.`);
+          throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result), so the rename was not kept.`);
         }
       }
     });
@@ -60718,9 +60718,11 @@ function hasRenameWork(from, db2) {
   const { affected, messageRows } = planRename(db2 ?? getDatabase(), from, from);
   return affected.length > 0 || messageRows > 0;
 }
-function isUniqueViolation(err) {
-  const code = err?.errcode;
-  return code === 2067 || code === 1555;
+function isUniqueCollisionIn(table, err) {
+  const e = err;
+  if (e?.errcode !== 2067 && e?.errcode !== 1555)
+    return false;
+  return typeof e.message === "string" && e.message.startsWith(`UNIQUE constraint failed: ${table}.`);
 }
 function previewOnCopy(source, from, to) {
   const dir = fs21.mkdtempSync(path19.join(os3.tmpdir(), "memesh-rename-preview-"));
