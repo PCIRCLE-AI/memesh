@@ -480,10 +480,18 @@ function stripNullProps(value: unknown): unknown {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
-    if (v !== null) out[k] = v;
+    if (v !== null || NULL_IS_DATA.has(k)) out[k] = v;
   }
   return out;
 }
+
+/**
+ * A top-level parameter whose null is a value, not a blank: a message
+ * `payload` is any JSON value, null included, as the schema and the HTTP
+ * path accept (#553). Only `send` declares it; on every other action the
+ * unknown-key check above has already refused it.
+ */
+const NULL_IS_DATA: ReadonlySet<string> = new Set(['payload']);
 
 function parseOrFail<T>(schema: z.ZodType<T>, args: unknown):
   | { ok: true; data: T }

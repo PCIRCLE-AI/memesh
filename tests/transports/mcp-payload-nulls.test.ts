@@ -54,6 +54,38 @@ describe('Feature: #517 the MCP message tool stores a JSON payload exactly as se
     expect(await fetch(mcpId)).toEqual(await fetch(viaShared.message_id));
   });
 
+  it('#553 sends a null payload, as the schema and the HTTP path allow', async () => {
+    const sent = await handleTool('message', {
+      action: 'send', project: PROJECT, sender: 'agent-a', recipient: 'agent-e',
+      idempotency_key: 'k-553-mcp', content_type: 'application/json', payload: null,
+    }, 'claude-code');
+    expect(sent.isError, textOf(sent)).toBeUndefined();
+    const { message_id } = JSON.parse(textOf(sent)) as { message_id: string };
+    const viaShared = await executeAgentMessageAction(getDatabase(), {
+      action: 'send', project: PROJECT, sender: 'agent-a', recipient: 'agent-e',
+      idempotency_key: 'k-553-shared', content_type: 'application/json', payload: null,
+    }, { transport: 'http', sourceHost: 'http' }) as { message_id: string };
+
+    for (const id of [message_id, viaShared.message_id]) {
+      const fetched = await handleTool('message', {
+        action: 'fetch', project: PROJECT, recipient: 'agent-e', message_id: id,
+      }, 'claude-code');
+      expect(fetched.isError).toBeUndefined();
+      const body = JSON.parse(textOf(fetched)) as Record<string, unknown>;
+      expect(body).toHaveProperty('payload');
+      expect(body.payload).toBeNull();
+    }
+  });
+
+  it('#553 a send that omits the payload is still refused', async () => {
+    const sent = await handleTool('message', {
+      action: 'send', project: PROJECT, sender: 'agent-a', recipient: 'agent-f',
+      idempotency_key: 'k-553-missing', content_type: 'application/json',
+    }, 'claude-code');
+    expect(sent.isError).toBe(true);
+    expect(textOf(sent)).toContain('payload');
+  });
+
   it('still treats a null-valued top-level optional parameter as left blank', async () => {
     const sent = await handleTool('message', {
       action: 'send', project: PROJECT, sender: 'agent-a', recipient: 'agent-d',
