@@ -4843,7 +4843,7 @@ function removeGroupAndOtherAccess(target) {
     if (warned.has(target))
       return;
     warned.add(target);
-    const notYours = stat !== void 0 && typeof process.getuid === "function" && stat.uid !== process.getuid();
+    const notYours = stat !== void 0 && belongsToAnotherUser(stat);
     try {
       process.stderr.write(notYours ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). Point MEMESH_DB_PATH at a database you own, in a folder you own.
 ` : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); they may be able to read your memories. Fix it with: chmod go-rwx "${target}"
@@ -4851,6 +4851,9 @@ function removeGroupAndOtherAccess(target) {
     } catch {
     }
   }
+}
+function belongsToAnotherUser(stat) {
+  return typeof process.getuid === "function" && process.getuid() !== 0 && stat.uid !== process.getuid();
 }
 function databaseFiles(dbPath) {
   let real = dbPath;
@@ -4904,11 +4907,17 @@ function refuseMismatchedSidecars(dbPath) {
 function ownerWriteCommand(dbPath) {
   if (process.platform === "win32")
     return void 0;
-  const readOnly = databaseFiles(dbPath).filter((file2) => {
+  const readOnly = [];
+  for (const file2 of databaseFiles(dbPath)) {
     const stat = fs2.statSync(file2, { throwIfNoEntry: false });
-    return stat !== void 0 && (stat.mode & 128) === 0;
-  });
-  return readOnly.length > 0 ? `chmod u+w ${quoted(readOnly)}` : void 0;
+    if (stat === void 0 || (stat.mode & 128) !== 0)
+      continue;
+    if (belongsToAnotherUser(stat)) {
+      return `point MEMESH_DB_PATH at a database you own, in a folder you own; ${file2} belongs to another user.`;
+    }
+    readOnly.push(file2);
+  }
+  return readOnly.length > 0 ? `run: chmod u+w ${quoted(readOnly)}` : void 0;
 }
 var warned, SIDECAR_PERMISSIONS_CODE, OWNER_LETTERS, quoted, letters;
 var init_file_mode = __esm({
@@ -5939,10 +5948,10 @@ function openDatabase(dbPath) {
     process.umask(63);
   } catch {
   }
-  removeGroupAndOtherAccess(dir);
-  guardDatabaseFiles(resolvedPath);
   const [realPath, ...sidecars] = databaseFiles(resolvedPath);
   const realDir = path2.dirname(realPath);
+  removeGroupAndOtherAccess(dir);
+  guardDatabaseFiles(resolvedPath);
   const missing = sidecars.filter((file2) => !fs3.existsSync(file2)).map((file2) => file2.slice(realPath.length));
   let folderWritable = true;
   try {
@@ -5951,8 +5960,9 @@ function openDatabase(dbPath) {
     folderWritable = false;
   }
   if (missing.length > 0 && !folderWritable && fs3.existsSync(realPath)) {
-    const fix = `chmod u+w "${realDir}"`;
-    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`), { fix });
+    const notYours = belongsToAnotherUser(fs3.statSync(realDir));
+    const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w "${realDir}"`;
+    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
   }
   const opening = new MemeshDatabase(resolvedPath);
   try {
@@ -5968,7 +5978,7 @@ function openDatabase(dbPath) {
   const writeBack = ownerWriteCommand(resolvedPath);
   if (writeBack) {
     try {
-      process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. To write to it again, run: ${writeBack}
+      process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. To write to it again, ${writeBack}
 `);
     } catch {
     }
@@ -56730,11 +56740,13 @@ function inspectLocaleReadmeParity(packageRoot3, existsSyncImpl, readFileSyncImp
 function resolveDatabasePath() {
   return getDbPath();
 }
+function runOrSay(fix) {
+  return /^chmod /.test(fix) ? `Run: ${fix}` : fix;
+}
 function queryFailedFix(err) {
-  const refusal = err;
-  if (refusal?.code === SIDECAR_PERMISSIONS_CODE || typeof refusal?.fix === "string") {
-    const run = typeof refusal.fix === "string" ? ` Run: ${refusal.fix}` : "";
-    return `MeMesh did not open the database because of its permissions; the Database row above explains why.${run}`;
+  const fix = err?.fix;
+  if (typeof fix === "string") {
+    return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
   }
   const detail = err instanceof Error ? err.message : String(err);
   return /readonly database|SQLITE_READONLY/i.test(detail) ? "The database is read-only; the Database row above shows the command that makes it writable again." : "The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.";
@@ -57955,7 +57967,7 @@ async function runDoctor(options) {
     const db2 = openDatabaseImpl(databasePath);
     const count = db2.prepare("SELECT COUNT(*) as c FROM entities").get()?.c ?? 0;
     const writeBack = ownerWriteCommand(databasePath);
-    dbChecks.push(writeBack ? createCheck("database", "Database", "warn", `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, run: ${writeBack}`) : createCheck("database", "Database", "pass", `Database opened successfully at ${databasePath} (${count} entities).`));
+    dbChecks.push(writeBack ? createCheck("database", "Database", "warn", `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, ${writeBack}`) : createCheck("database", "Database", "pass", `Database opened successfully at ${databasePath} (${count} entities).`));
     const messageStorage = inspectAgentMessageStorage(db2, databasePath, configuredAgentMessageStoragePolicy(agentMessageStoragePolicy));
     if (messageStorage)
       dbChecks.push(messageStorage);
@@ -58024,7 +58036,7 @@ async function runDoctor(options) {
     const ownFix = err?.fix;
     if (typeof ownFix === "string") {
       diagnosis = message;
-      fix = `Run: ${ownFix}`;
+      fix = runOrSay(ownFix);
     } else if (existsSyncImpl(databasePath)) {
       try {
         const stat = statSyncImpl(databasePath);
@@ -58032,7 +58044,7 @@ async function runDoctor(options) {
         const canWrite = !!(stat.mode & 128);
         if (!canRead || !canWrite) {
           diagnosis = `Database file exists but has insufficient permissions (${(stat.mode & 511).toString(8)})`;
-          const files = ["", "-wal", "-shm"].map((suffix) => `${databasePath}${suffix}`).filter((file2) => existsSyncImpl(file2));
+          const files = databaseFiles(databasePath).filter((file2) => existsSyncImpl(file2));
           fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map((file2) => `"${file2}"`).join(" ")}`;
         } else if (stat.size === 0) {
           diagnosis = "Database file is empty (0 bytes) \u2014 likely corrupted";

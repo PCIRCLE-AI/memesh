@@ -11,8 +11,17 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { closeDatabase, openDatabase } from '../src/db.js';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
+import { ownerWriteCommand } from '../src/core/file-mode.js';
 
 const posix = process.platform !== 'win32';
+
+/** A root-owned file without the owner write bit, if this system has one. */
+const rootOwnedReadOnly = ['/etc/sudoers', '/usr/share/firmlinks'].find((file) => {
+  try {
+    const stat = fs.statSync(file);
+    return stat.uid === 0 && (stat.mode & 0o200) === 0;
+  } catch { return false; }
+});
 
 /**
  * Read the modes of `targets` after every SQLite call the open makes, so a
@@ -372,6 +381,87 @@ describe('Feature: #520 permission hardening covers every file, every outcome', 
       fs.chmodSync(linkDir, 0o700);
       fs.rmSync(linkDir, { recursive: true, force: true });
     }
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('a symlinked database whose REAL folder is read-only and holds no -wal/-shm is refused, naming the real folder', () => {
+    for (const s of ['-wal', '-shm']) fs.rmSync(`${dbPath}${s}`, { force: true });
+    const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-db-link-rw-'));
+    const link = path.join(linkDir, 'kg.db');
+    fs.symlinkSync(dbPath, link);
+    const realDir = path.dirname(fs.realpathSync(dbPath));
+    fs.chmodSync(dir, 0o500);
+    try {
+      let error: (Error & { fix?: string }) | undefined;
+      try { openDatabase(link); } catch (err) { error = err as Error & { fix?: string }; }
+      expect(error?.message).toContain(`MeMesh: ${realDir} is read-only`);
+      expect(error?.fix).toBe(`chmod u+w "${realDir}"`);
+      expect(mode(dir)).toBe(0o500);
+    } finally {
+      fs.chmodSync(dir, 0o700);
+      fs.rmSync(linkDir, { recursive: true, force: true });
+    }
+  });
+
+
+  it.skipIf(!posix)('a symlinked database\'s real folder is left as it is; only the link\'s folder is tightened', () => {
+    const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-db-link-open-'));
+    const link = path.join(linkDir, 'kg.db');
+    fs.symlinkSync(dbPath, link);
+    fs.chmodSync(dir, 0o755);
+    fs.chmodSync(linkDir, 0o755);
+    try {
+      openDatabase(link);
+      closeDatabase();
+      expect(mode(dir)).toBe(0o755);
+      expect(mode(linkDir)).toBe(0o700);
+    } finally {
+      fs.chmodSync(dir, 0o700);
+      fs.rmSync(linkDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('a symlinked database\'s read-only real folder is never given an owner bit', () => {
+    keepSidecars(); // so the read-only folder can still be read
+    const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-db-link-ro-real-'));
+    const link = path.join(linkDir, 'kg.db');
+    fs.symlinkSync(dbPath, link);
+    fs.chmodSync(dir, 0o500);
+    try {
+      openDatabase(link).prepare('SELECT count(*) FROM entities').get();
+      closeDatabase();
+      expect(mode(dir)).toBe(0o500);
+    } finally {
+      fs.chmodSync(dir, 0o700);
+      fs.rmSync(linkDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0)('a database in a folder that belongs to another user is refused with a way out, not a chmod the owner cannot run', () => {
+    // /etc/hosts: an existing file in a root-owned folder this user cannot
+    // write to, and with no -wal/-shm beside it. Never run as root: the guard
+    // would then really change /etc.
+    const linkDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-db-link-other-'));
+    const link = path.join(linkDir, 'kg.db');
+    fs.symlinkSync('/etc/hosts', link);
+    const realDir = path.dirname(fs.realpathSync(link));
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      let error: (Error & { fix?: string }) | undefined;
+      try { openDatabase(link); } catch (err) { error = err as Error & { fix?: string }; }
+      expect(error?.message).toContain(`${realDir} belongs to another user`);
+      expect(error?.message).toContain('Point MEMESH_DB_PATH at a database you own, in a folder you own.');
+      expect(error?.message).not.toContain('chmod u+w');
+      expect(error?.fix).not.toContain('chmod');
+    } finally {
+      fs.rmSync(linkDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!posix || process.getuid?.() === 0 || !rootOwnedReadOnly)('a read-only database that belongs to another user gets a way out, not a chmod the owner cannot run', () => {
+    const advice = ownerWriteCommand(rootOwnedReadOnly!);
+    expect(advice).toContain(`${rootOwnedReadOnly} belongs to another user`);
+    expect(advice).toContain('point MEMESH_DB_PATH at a database you own, in a folder you own');
+    expect(advice).not.toContain('chmod');
   });
 
   it.skipIf(!posix)('a folder that belongs to someone else is named once, with a way out, not a chmod the owner cannot run', () => {

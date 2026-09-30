@@ -4,7 +4,7 @@ import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
-import { databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess } from './core/file-mode.js';
+import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, rebuildFtsIndex, runOnceMigration, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
@@ -21,10 +21,10 @@ export function openDatabase(dbPath) {
         process.umask(0o077);
     }
     catch { }
-    removeGroupAndOtherAccess(dir);
-    guardDatabaseFiles(resolvedPath);
     const [realPath, ...sidecars] = databaseFiles(resolvedPath);
     const realDir = path.dirname(realPath);
+    removeGroupAndOtherAccess(dir);
+    guardDatabaseFiles(resolvedPath);
     const missing = sidecars.filter((file) => !fs.existsSync(file)).map((file) => file.slice(realPath.length));
     let folderWritable = true;
     try {
@@ -34,10 +34,13 @@ export function openDatabase(dbPath) {
         folderWritable = false;
     }
     if (missing.length > 0 && !folderWritable && fs.existsSync(realPath)) {
-        const fix = `chmod u+w "${realDir}"`;
+        const notYours = belongsToAnotherUser(fs.statSync(realDir));
+        const fix = notYours ? 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' : `chmod u+w "${realDir}"`;
         throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path.basename(realPath)} has no ${missing.join(' or ')} file there, ` +
-            'so it cannot be opened without writing to the folder. Copy the database to a writable folder and point ' +
-            `MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`), { fix });
+            'so it cannot be opened without writing to the folder. ' +
+            (notYours
+                ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}`
+                : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
     }
     const opening = new MemeshDatabase(resolvedPath);
     try {
@@ -55,7 +58,7 @@ export function openDatabase(dbPath) {
     if (writeBack) {
         try {
             process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. ` +
-                `To write to it again, run: ${writeBack}\n`);
+                `To write to it again, ${writeBack}\n`);
         }
         catch { }
     }

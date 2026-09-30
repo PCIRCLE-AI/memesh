@@ -11,7 +11,7 @@ import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
 import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS, } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
-import { ownerWriteCommand, SIDECAR_PERMISSIONS_CODE } from './file-mode.js';
+import { databaseFiles, ownerWriteCommand } from './file-mode.js';
 import { citationRulePath, citationRuleState } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
@@ -88,11 +88,13 @@ function inspectLocaleReadmeParity(packageRoot, existsSyncImpl, readFileSyncImpl
 function resolveDatabasePath() {
     return getDbPath();
 }
+function runOrSay(fix) {
+    return /^chmod /.test(fix) ? `Run: ${fix}` : fix;
+}
 function queryFailedFix(err) {
-    const refusal = err;
-    if (refusal?.code === SIDECAR_PERMISSIONS_CODE || typeof refusal?.fix === 'string') {
-        const run = typeof refusal.fix === 'string' ? ` Run: ${refusal.fix}` : '';
-        return `MeMesh did not open the database because of its permissions; the Database row above explains why.${run}`;
+    const fix = err?.fix;
+    if (typeof fix === 'string') {
+        return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
     }
     const detail = err instanceof Error ? err.message : String(err);
     return /readonly database|SQLITE_READONLY/i.test(detail)
@@ -1459,7 +1461,7 @@ export async function runDoctor(options) {
         const count = db.prepare('SELECT COUNT(*) as c FROM entities').get()?.c ?? 0;
         const writeBack = ownerWriteCommand(databasePath);
         dbChecks.push(writeBack
-            ? createCheck('database', 'Database', 'warn', `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, run: ${writeBack}`)
+            ? createCheck('database', 'Database', 'warn', `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`, `If it should be writable, ${writeBack}`)
             : createCheck('database', 'Database', 'pass', `Database opened successfully at ${databasePath} (${count} entities).`));
         const messageStorage = inspectAgentMessageStorage(db, databasePath, configuredAgentMessageStoragePolicy(agentMessageStoragePolicy));
         if (messageStorage)
@@ -1558,7 +1560,7 @@ export async function runDoctor(options) {
         const ownFix = err?.fix;
         if (typeof ownFix === 'string') {
             diagnosis = message;
-            fix = `Run: ${ownFix}`;
+            fix = runOrSay(ownFix);
         }
         else if (existsSyncImpl(databasePath)) {
             try {
@@ -1567,7 +1569,7 @@ export async function runDoctor(options) {
                 const canWrite = !!(stat.mode & 0o200);
                 if (!canRead || !canWrite) {
                     diagnosis = `Database file exists but has insufficient permissions (${(stat.mode & 0o777).toString(8)})`;
-                    const files = ['', '-wal', '-shm'].map((suffix) => `${databasePath}${suffix}`).filter((file) => existsSyncImpl(file));
+                    const files = databaseFiles(databasePath).filter((file) => existsSyncImpl(file));
                     fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map((file) => `"${file}"`).join(' ')}`;
                 }
                 else if (stat.size === 0) {

@@ -23,7 +23,7 @@ export function removeGroupAndOtherAccess(target: string): void {
     // A folder such as /tmp (or a file in it) belongs to someone else: chmod
     // on it is not the owner's to run, and the way out is a database of their
     // own in a folder of their own.
-    const notYours = stat !== undefined && typeof process.getuid === 'function' && stat.uid !== process.getuid();
+    const notYours = stat !== undefined && belongsToAnotherUser(stat);
     try {
       process.stderr.write(
         notYours
@@ -34,6 +34,12 @@ export function removeGroupAndOtherAccess(target: string): void {
       );
     } catch { /* stderr gone */ }
   }
+}
+
+/** A chmod on it is not this user's to run. */
+export function belongsToAnotherUser(stat: fs.Stats): boolean {
+  // Root can change any file, so nothing is out of its reach.
+  return typeof process.getuid === 'function' && process.getuid() !== 0 && stat.uid !== process.getuid();
 }
 
 /**
@@ -146,17 +152,23 @@ export function refuseMismatchedSidecars(dbPath: string): void {
 }
 
 /**
- * The command that gives the owner write access back to a database that
- * opened read-only because the owner removed it: the database and its
- * -wal/-shm that exist without an owner write bit, or undefined when none
- * lacks one (the cause is then something else, such as a read-only mount).
+ * What gives write access back to a database that opened read-only because
+ * the owner removed it: `run: chmod u+w` on the database and its -wal/-shm
+ * that exist without an owner write bit, or, when one of them belongs to
+ * another user (whose chmod this user cannot run), a database of their own.
+ * Undefined when none lacks the bit (the cause is then something else, such
+ * as a read-only mount).
  */
 export function ownerWriteCommand(dbPath: string): string | undefined {
   if (process.platform === 'win32') return undefined;
-  const readOnly = databaseFiles(dbPath)
-    .filter((file) => {
-      const stat = fs.statSync(file, { throwIfNoEntry: false });
-      return stat !== undefined && (stat.mode & 0o200) === 0;
-    });
-  return readOnly.length > 0 ? `chmod u+w ${quoted(readOnly)}` : undefined;
+  const readOnly: string[] = [];
+  for (const file of databaseFiles(dbPath)) {
+    const stat = fs.statSync(file, { throwIfNoEntry: false });
+    if (stat === undefined || (stat.mode & 0o200) !== 0) continue;
+    if (belongsToAnotherUser(stat)) {
+      return `point MEMESH_DB_PATH at a database you own, in a folder you own; ${file} belongs to another user.`;
+    }
+    readOnly.push(file);
+  }
+  return readOnly.length > 0 ? `run: chmod u+w ${quoted(readOnly)}` : undefined;
 }

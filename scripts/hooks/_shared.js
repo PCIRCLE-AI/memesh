@@ -978,7 +978,7 @@ export function openHookDb(env = process.env, opts = {}) {
     try {
       process.stderr.write(
         `MeMesh: ${dbPath} is read-only, so it is open for reads only and writes will be refused. ` +
-          `To write to it again, run: ${writeBack}\n`,
+          `To write to it again, ${writeBack}\n`,
       );
     } catch { /* stderr gone */ }
   }

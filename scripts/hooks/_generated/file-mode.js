@@ -23,7 +23,7 @@ export function removeGroupAndOtherAccess(target) {
         if (warned.has(target))
             return;
         warned.add(target);
-        const notYours = stat !== undefined && typeof process.getuid === 'function' && stat.uid !== process.getuid();
+        const notYours = stat !== undefined && belongsToAnotherUser(stat);
         try {
             process.stderr.write(notYours
                 ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). ` +
@@ -33,6 +33,9 @@ export function removeGroupAndOtherAccess(target) {
         }
         catch { }
     }
+}
+export function belongsToAnotherUser(stat) {
+    return typeof process.getuid === 'function' && process.getuid() !== 0 && stat.uid !== process.getuid();
 }
 export function databaseFiles(dbPath) {
     let real = dbPath;
@@ -108,10 +111,15 @@ export function refuseMismatchedSidecars(dbPath) {
 export function ownerWriteCommand(dbPath) {
     if (process.platform === 'win32')
         return undefined;
-    const readOnly = databaseFiles(dbPath)
-        .filter((file) => {
+    const readOnly = [];
+    for (const file of databaseFiles(dbPath)) {
         const stat = fs.statSync(file, { throwIfNoEntry: false });
-        return stat !== undefined && (stat.mode & 0o200) === 0;
-    });
-    return readOnly.length > 0 ? `chmod u+w ${quoted(readOnly)}` : undefined;
+        if (stat === undefined || (stat.mode & 0o200) !== 0)
+            continue;
+        if (belongsToAnotherUser(stat)) {
+            return `point MEMESH_DB_PATH at a database you own, in a folder you own; ${file} belongs to another user.`;
+        }
+        readOnly.push(file);
+    }
+    return readOnly.length > 0 ? `run: chmod u+w ${quoted(readOnly)}` : undefined;
 }

@@ -26108,7 +26108,7 @@ function removeGroupAndOtherAccess(target) {
     if (warned.has(target))
       return;
     warned.add(target);
-    const notYours = stat !== void 0 && typeof process.getuid === "function" && stat.uid !== process.getuid();
+    const notYours = stat !== void 0 && belongsToAnotherUser(stat);
     try {
       process.stderr.write(notYours ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). Point MEMESH_DB_PATH at a database you own, in a folder you own.
 ` : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); they may be able to read your memories. Fix it with: chmod go-rwx "${target}"
@@ -26116,6 +26116,9 @@ function removeGroupAndOtherAccess(target) {
     } catch {
     }
   }
+}
+function belongsToAnotherUser(stat) {
+  return typeof process.getuid === "function" && process.getuid() !== 0 && stat.uid !== process.getuid();
 }
 function databaseFiles(dbPath) {
   let real = dbPath;
@@ -26173,11 +26176,17 @@ function refuseMismatchedSidecars(dbPath) {
 function ownerWriteCommand(dbPath) {
   if (process.platform === "win32")
     return void 0;
-  const readOnly = databaseFiles(dbPath).filter((file2) => {
+  const readOnly = [];
+  for (const file2 of databaseFiles(dbPath)) {
     const stat = fs2.statSync(file2, { throwIfNoEntry: false });
-    return stat !== void 0 && (stat.mode & 128) === 0;
-  });
-  return readOnly.length > 0 ? `chmod u+w ${quoted(readOnly)}` : void 0;
+    if (stat === void 0 || (stat.mode & 128) !== 0)
+      continue;
+    if (belongsToAnotherUser(stat)) {
+      return `point MEMESH_DB_PATH at a database you own, in a folder you own; ${file2} belongs to another user.`;
+    }
+    readOnly.push(file2);
+  }
+  return readOnly.length > 0 ? `run: chmod u+w ${quoted(readOnly)}` : void 0;
 }
 
 // dist/core/time-utils.js
@@ -27130,10 +27139,10 @@ function openDatabase(dbPath) {
     process.umask(63);
   } catch {
   }
-  removeGroupAndOtherAccess(dir);
-  guardDatabaseFiles(resolvedPath);
   const [realPath, ...sidecars] = databaseFiles(resolvedPath);
   const realDir = path2.dirname(realPath);
+  removeGroupAndOtherAccess(dir);
+  guardDatabaseFiles(resolvedPath);
   const missing = sidecars.filter((file2) => !fs3.existsSync(file2)).map((file2) => file2.slice(realPath.length));
   let folderWritable = true;
   try {
@@ -27142,8 +27151,9 @@ function openDatabase(dbPath) {
     folderWritable = false;
   }
   if (missing.length > 0 && !folderWritable && fs3.existsSync(realPath)) {
-    const fix = `chmod u+w "${realDir}"`;
-    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`), { fix });
+    const notYours = belongsToAnotherUser(fs3.statSync(realDir));
+    const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w "${realDir}"`;
+    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
   }
   const opening = new MemeshDatabase(resolvedPath);
   try {
@@ -27159,7 +27169,7 @@ function openDatabase(dbPath) {
   const writeBack = ownerWriteCommand(resolvedPath);
   if (writeBack) {
     try {
-      process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. To write to it again, run: ${writeBack}
+      process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. To write to it again, ${writeBack}
 `);
     } catch {
     }

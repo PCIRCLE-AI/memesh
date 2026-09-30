@@ -17,7 +17,7 @@ import {
   type InstallChannel, type PluginHost,
 } from './install-channel.js';
 import { getInstallRecord } from './install-id.js';
-import { ownerWriteCommand, SIDECAR_PERMISSIONS_CODE } from './file-mode.js';
+import { databaseFiles, ownerWriteCommand } from './file-mode.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
 import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
@@ -340,17 +340,20 @@ function resolveDatabasePath(): string {
   return getDbPath();
 }
 
+/** A refusal's `fix` is either a command to run or advice (another user's file). */
+function runOrSay(fix: string): string {
+  return /^chmod /.test(fix) ? `Run: ${fix}` : fix;
+}
+
 /**
  * A read-only database, folder or -wal/-shm is a permission question, not a
- * disk one (#520). MeMesh's own refusals carry their command as `fix` (the
- * -wal/-shm one also has SIDECAR_PERMISSIONS_CODE), the same signal the
- * Database row reads, so the rows agree.
+ * disk one (#520). MeMesh's own refusals carry their command as `fix`, the
+ * same signal the Database row reads, so the rows agree.
  */
 function queryFailedFix(err: unknown): string {
-  const refusal = err as { code?: unknown; fix?: unknown } | null;
-  if (refusal?.code === SIDECAR_PERMISSIONS_CODE || typeof refusal?.fix === 'string') {
-    const run = typeof refusal.fix === 'string' ? ` Run: ${refusal.fix}` : '';
-    return `MeMesh did not open the database because of its permissions; the Database row above explains why.${run}`;
+  const fix = (err as { fix?: unknown } | null)?.fix;
+  if (typeof fix === 'string') {
+    return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
   }
   const detail = err instanceof Error ? err.message : String(err);
   return /readonly database|SQLITE_READONLY/i.test(detail)
@@ -3198,7 +3201,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           'Database',
           'warn',
           `Database at ${databasePath} (${count} entities) is read-only: reads work, writes are refused.`,
-          `If it should be writable, run: ${writeBack}`,
+          `If it should be writable, ${writeBack}`,
         )
         : createCheck(
           'database',
@@ -3434,7 +3437,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     const ownFix = (err as { fix?: unknown } | null)?.fix;
     if (typeof ownFix === 'string') {
       diagnosis = message;
-      fix = `Run: ${ownFix}`;
+      fix = runOrSay(ownFix);
     } else if (existsSyncImpl(databasePath)) {
       try {
         const stat = statSyncImpl(databasePath);
@@ -3448,7 +3451,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           // nothing to do here; putting it back is the owner's decision.
           // The -wal/-shm a read-only open left behind need the same bits;
           // restoring only the database would not make it writable (#520).
-          const files = ['', '-wal', '-shm'].map((suffix) => `${databasePath}${suffix}`).filter((file) => existsSyncImpl(file));
+          const files = databaseFiles(databasePath).filter((file) => existsSyncImpl(file));
           fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map((file) => `"${file}"`).join(' ')}`;
         } else if (stat.size === 0) {
           diagnosis = 'Database file is empty (0 bytes) — likely corrupted';

@@ -2620,6 +2620,42 @@ describe('database failure diagnostics (F15)', () => {
     }
   });
 
+  it.skipIf(process.platform === 'win32')('lists the real file\'s -wal/-shm when the database path is a symlink (#520)', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    const realDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-real-'));
+    tempRoots.push(realDir);
+    const target = path.join(realDir, 'kg.db');
+    for (const s of ['', '-wal', '-shm']) fs.writeFileSync(`${target}${s}`, 'x', { mode: 0o400 });
+    const dbPath = path.join(packageRoot, 'link.db');
+    fs.symlinkSync(target, dbPath);
+    const real = fs.realpathSync(dbPath); // SQLite's own name for the file
+    const previousEnv = process.env.MEMESH_DB_PATH;
+    process.env.MEMESH_DB_PATH = dbPath;
+    try {
+      const result = await runDoctor({
+        packageRoot,
+        packageVersion: '4.1.4',
+        openDatabaseImpl: () => { throw new Error('SQLITE_CANTOPEN'); },
+        closeDatabaseImpl: () => undefined,
+        getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+        getUpdateCheckImpl: async () => makeUpdateCheck(),
+        getCurrentInstallChannelImpl: () => 'npm-global',
+        installedPluginsPathImpl: path.join(packageRoot, 'no-such-registry.json'),
+        getInstallChannelSupportImpl: () => ({
+          channel: 'npm-global', label: 'npm global', canSelfUpdate: true,
+          recommendedCommand: 'memesh update', guidance: '',
+        }),
+        existsSyncImpl: (p: fs.PathLike) => [dbPath, real].some((f) => String(p).startsWith(f)) && fs.existsSync(p),
+      });
+      const dbCheck = result.checks.find(c => c.id === 'database');
+      expect(dbCheck!.fix).toContain(`chmod u+rw "${real}" "${real}-wal" "${real}-shm"`);
+    } finally {
+      if (previousEnv === undefined) delete process.env.MEMESH_DB_PATH;
+      else process.env.MEMESH_DB_PATH = previousEnv;
+    }
+  });
+
   it('does not blame the disk when the database is read-only (#520)', async () => {
     const packageRoot = createPackageRoot();
     tempRoots.push(packageRoot);
@@ -2662,6 +2698,10 @@ describe('database failure diagnostics (F15)', () => {
       new Error('MeMesh: /data/.memesh/knowledge-graph.db-wal has fewer owner permissions than /data/.memesh/knowledge-graph.db.'),
       { fix: 'chmod u+w "/data/.memesh/knowledge-graph.db-wal"', code: 'MEMESH_SIDECAR_PERMISSIONS' },
     )],
+    ['a read-only folder that belongs to another user', Object.assign(
+      new Error('MeMesh: /data is read-only and knowledge-graph.db has no -wal or -shm file there. /data belongs to another user, so you cannot make it writable.'),
+      { fix: 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' },
+    )],
   ] as const) {
     it(`does not blame the disk when MeMesh refuses ${name} (#520)`, async () => {
       const packageRoot = createPackageRoot();
@@ -2689,7 +2729,11 @@ describe('database failure diagnostics (F15)', () => {
           expect(row.fix).not.toContain('disk is not full');
           expect(row.fix).toContain('Database row');
           expect(row.fix).toContain(refusal.fix);
+          // A command is prefixed with Run:, advice is not.
+          if (refusal.fix.startsWith('chmod ')) expect(row.fix).toContain(`Run: ${refusal.fix}`);
+          else expect(row.fix).not.toContain('Run: ');
         }
+        expect(JSON.stringify(result.checks)).not.toContain('Run: Point');
       } finally {
         if (previousEnv === undefined) delete process.env.MEMESH_DB_PATH;
         else process.env.MEMESH_DB_PATH = previousEnv;
@@ -2723,7 +2767,7 @@ describe('database failure diagnostics (F15)', () => {
       const dbCheck = result.checks.find(c => c.id === 'database');
       expect(dbCheck!.status).toBe('warn');
       expect(dbCheck!.summary).toContain('is read-only');
-      expect(dbCheck!.fix).toContain(`chmod u+w "${dbPath}"`);
+      expect(dbCheck!.fix).toContain(`If it should be writable, run: chmod u+w "${dbPath}"`);
     } finally {
       fs.chmodSync(dbPath, 0o600);
       if (previousEnv === undefined) delete process.env.MEMESH_DB_PATH;
