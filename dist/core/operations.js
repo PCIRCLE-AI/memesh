@@ -6,6 +6,8 @@ import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
 import { canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent } from './recall-agent-view.js';
+import { boundReplacedHistory } from './replaced-history.js';
+export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from './replaced-history.js';
 function buildLocalMetadata(existingMetadata, overrides) {
     return {
         ...(existingMetadata ?? {}),
@@ -29,26 +31,6 @@ export function remember(input) {
     const kg = new KnowledgeGraph(db);
     const { args, derived, typeGiven } = resolveRememberInput(input);
     return db.transaction(() => rememberInTransaction(args, derived, typeGiven, db, kg)).immediate();
-}
-export const REPLACED_HISTORY_MAX = 20;
-export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
-const jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), 'utf8');
-function boundReplacedHistory(history) {
-    let out = history.slice(-REPLACED_HISTORY_MAX);
-    while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
-        out = out.slice(1);
-    if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
-        const only = out[0];
-        const kept = [];
-        const base = { ...only, observations: [], truncated: true };
-        for (const obs of only.observations) {
-            if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
-                break;
-            kept.push(obs);
-        }
-        out = [{ ...base, observations: kept }];
-    }
-    return out;
 }
 function summarizeReplacedHistory(entities) {
     for (const e of entities) {

@@ -53,7 +53,7 @@ Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Not
 
 The note is cleaned before anything is derived from it: control characters (other than newline and tab) are removed and credential-shaped substrings are replaced with `***REDACTED***`. It may be at most 20,000 characters, and the paragraphs it splits into may not derive more than 100 observations — a paragraph made only of list items yields one observation per item, so a single paragraph can push the count over the limit on its own; beyond that the call is rejected. One derived observation longer than 10,000 characters is **silently truncated** to that length with a trailing `…` — unlike a structured `observations` entry of the same length, which is rejected. Nothing in the response says it happened, so a caller sending one very long paragraph should split it rather than rely on the cap. `note` cannot be combined with `title` or `observations`. A note sent to a `name` that already exists appends its observations and leaves the existing title alone.
 
-**Replace**: `replace: true` with a `name` rewrites that memory: its observations are replaced by the ones given (or derived from `note`), its tags too when `tags` is given (omitted tags are kept), its title when `title` or `note` is given. The previous title, observations and tags are appended to `metadata.replaced_history` as `{ replaced_at, title, observations, tags }`, so the wrong line leaves recall but is not lost. The history keeps the newest 20 versions and at most 64 KB: older versions are dropped first, and a single version larger than that keeps the observations that fit and is marked `truncated: true`. Relations are untouched by a replace. `recall` results do not carry the history — they carry `metadata.replaced_history_count` — so read the versions from `export` or `GET /v1/entities/:name`. The keyword index is rewritten in the same transaction. On a name that does not exist yet there is no stored type to inherit, so `replace: true` needs an explicit `type`; with one it creates the memory and reports `replaced: false`, without one it is rejected. A memory archived with `forget` refuses `replace` outright: remember it again without `replace` to bring it back, then replace it. `replace` with `note` requires an explicit `name`.
+**Replace**: `replace: true` with a `name` rewrites that memory: its observations are replaced by the ones given (or derived from `note`), its tags too when `tags` is given (omitted tags are kept), its title when `title` or `note` is given. The previous title, observations and tags are appended to `metadata.replaced_history` as `{ replaced_at, title, observations, tags }`, so the wrong line leaves recall but is not lost. The history keeps the newest 20 versions and at most 64 KB: older versions are dropped first, and a single version larger than that keeps the observations, then the tags, that fit and is marked `truncated: true`. Relations are untouched by a replace. `recall` results do not carry the history — they carry `metadata.replaced_history_count` — so read the versions from `export` or `GET /v1/entities/:name`. The keyword index is rewritten in the same transaction. On a name that does not exist yet there is no stored type to inherit, so `replace: true` needs an explicit `type`; with one it creates the memory and reports `replaced: false`, without one it is rejected. A memory archived with `forget` refuses `replace` outright: remember it again without `replace` to bring it back, then replace it. `replace` with `note` requires an explicit `name`.
 
 **Input Schema**:
 
@@ -398,15 +398,17 @@ entry gets:
   LATER local `--replace` on the same memory (`rememberInTransaction`, a
   read-modify-write, not a display-only field — a forged history in a
   bundle could otherwise survive an import and then have a genuine later
-  replace silently appended onto it). An entity you already have keeps
-  its own history (or its absence) exactly; the bundle's value never reaches
-  the merge, for `append` and `overwrite` alike. For an entity the import
+  replace silently appended onto it). For an entity you already have, the
+  bundle's value never reaches the merge, for `append` and `overwrite`
+  alike: `append` keeps the local history exactly, and `overwrite` keeps it
+  and adds the version it replaced (nothing when the imported content is
+  identical to what is stored). For an entity the import
   CREATES, the bundle's value is accepted only when it is an array of AT
   MOST 50 ENTRIES, each one shaped exactly like a real entry (`replaced_at`:
   a string; `title`: a string or `null`; `observations`: an array of
   strings; `tags`: an array of strings; optional `truncated`: a boolean,
-  marking a version whose observations were pared down to fit the writer's
-  own 64 KiB cap; no other key), AND the WHOLE array's own serialized JSON
+  marking a version whose observations, then tags, were pared down to fit
+  the writer's own 64 KiB cap; no other key), AND the WHOLE array's own serialized JSON
   is AT MOST 256 KiB — a budget over the entire array together, not per
   entry (two 140 KiB entries are refused together even though each alone is
   under 256 KiB). One violation anywhere — shape, count, or the aggregate
@@ -514,7 +516,7 @@ Imported entities are marked with import provenance and treated as untrusted for
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `data` | object | Yes | The JSON bundle produced by `export` |
+| `data` | object | Yes | The JSON bundle produced by `export`. A bundle that names one memory more than once is refused and nothing is imported. |
 | `merge_strategy` | string | Yes | Merge strategy for conflicts: `"skip"`, `"overwrite"`, or `"append"` |
 | `namespace` | string | No | Force imported entities into this namespace, ignoring the namespace stored in the bundle. With `overwrite` or `append` it also **moves** entities that already exist, in bulk, out of the scope they are in — `metadata.previous_namespace` records where each came from. With `skip` it does not: see the table below. Must be `personal`, `team` or `global`; anything else is refused outright. |
 | `restore_archived` | boolean | No | Default `false`. With `overwrite` or `append`, a local entity that is archived (forgotten) and named by the bundle is left untouched and counted in `kept_archived`. `true` brings it back to active and merges or overwrites it like any other, and **requires** `merge_strategy` `append` or `overwrite`: with `skip` (which touches no existing entity) the call is refused with an error and nothing is imported. Must be a boolean; a string such as `"yes"` is refused. |
@@ -524,7 +526,7 @@ Imported entities are marked with import provenance and treated as untrusted for
 | Strategy | Behaviour on existing entity | Does `namespace` move it? |
 |----------|------------------------------|---------------------------|
 | `skip` | Keep existing entity unchanged, discard imported copy | **No** — "unchanged" includes its namespace |
-| `overwrite` | Replace existing entity's observations and tags with imported values | Yes |
+| `overwrite` | Replace existing entity's observations and tags with imported values; the replaced observations, tags and title are kept in `metadata.replaced_history`, like `remember` with `replace: true` (an import identical to what is stored adds no version) | Yes |
 | `append` | Append imported observations to existing (skipping any already present verbatim), deduplicate tags | Yes |
 
 `skip` is the exception because it is the one strategy that promises to touch

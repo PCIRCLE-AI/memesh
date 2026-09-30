@@ -9,6 +9,7 @@ import { openDatabase, closeDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { lessonSlug } from '../../src/core/lesson-slug.js';
 import { AGENT_MESSAGE_SCOPE_COLUMNS, isFilesystemPathScopeId } from '../../src/core/agent-scope-id.js';
+import { remember, importMemories } from '../../src/core/operations.js';
 
 /**
  * scripts/audit/memory-invariants.mjs is the check that would have caught
@@ -757,6 +758,142 @@ describe('memory-invariants: read-only detector over a real graph', () => {
       expect(r.status, r.stdout).toBe(0);
       expect(r.stdout).not.toContain('1:/agent');
     } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  const historyEntry = (i: number, text = `v${i}`) => ({ replaced_at: '2026-09-30T00:00:00.000Z', title: null, observations: [text], tags: [] });
+  const bundle = (name: string, observations: string[], metadata?: Record<string, unknown>) => ({
+    version: '3.1.0', exported_at: '2026-09-30T00:00:00.000Z', entity_count: 1,
+    entities: [{ name, type: 'decision', namespace: 'personal', relations: [], observations, tags: [], ...(metadata ? { metadata } : {}) }],
+  });
+
+  it('#530 — the histories the real writers store at their bounds are clean', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      openDatabase(dbPath);
+      try {
+        // A trusted restore of a fresh memory: the largest history any writer accepts.
+        const restored = importMemories({ data: bundle('restored', ['now'], { replaced_history: Array.from({ length: 50 }, (_, i) => historyEntry(i)) }), merge_strategy: 'skip' }, { trust: true });
+        expect(restored.imported).toBe(1);
+        // More import overwrites of one memory than the entry bound allows.
+        for (let i = 0; i < 55; i++) importMemories({ data: bundle('overwritten', [`v${i}`]), merge_strategy: 'overwrite' });
+      } finally {
+        closeDatabase();
+      }
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain('ok   replaced-history-stays-bounded');
+      withRawDb(dbPath, (db) => {
+        const lengths = db.prepare("SELECT name, json_array_length(metadata, '$.replaced_history') AS n FROM entities ORDER BY name").all();
+        expect(lengths).toEqual([{ name: 'overwritten', n: 20 }, { name: 'restored', n: 50 }]);
+      });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#530 — flags a history past the entry bound, past the byte bound, or not a list', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      withRawDb(dbPath, (db) => {
+        insertEntity(db, 'too-many', 'decision', { metadata: JSON.stringify({ replaced_history: Array.from({ length: 51 }, (_, i) => historyEntry(i)) }) });
+        insertEntity(db, 'too-big', 'decision', { metadata: JSON.stringify({ replaced_history: [historyEntry(0, 'x'.repeat(4 * 64 * 1024))] }) });
+        insertEntity(db, 'not-a-list', 'decision', { metadata: JSON.stringify({ replaced_history: { observations: ['v0'] } }) });
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(1);
+      expect(r.stdout).toContain('FAIL replaced-history-stays-bounded');
+      expect(r.stdout).toContain('too-many  entries=51');
+      expect(r.stdout).toMatch(/too-big {2}entries=1 bytes=\d+/);
+      expect(r.stdout).toContain('not-a-list  type=object');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a file that is not a database exits 2, never a clean verdict', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-inv-'));
+    try {
+      const dbPath = path.join(dir, 'garbage.db');
+      fs.writeFileSync(dbPath, 'not a sqlite database');
+      const r = run(dbPath);
+      expect(r.status, r.stdout + r.stderr).toBe(2);
+      expect(r.stdout).not.toContain('memory invariants hold');
+      expect(r.stderr).toContain('cannot query');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#530 — reports the same byte count the bound is judged by', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      const entry = { replaced_at: '2026-09-30T00:00:00.000Z', title: null, observations: ['中文'], tags: [] };
+      const history = Array.from({ length: 51 }, () => entry);
+      withRawDb(dbPath, (db) => {
+        // Stored with escaped non-ASCII, so SQLite's text is longer than the canonical JSON.
+        insertEntity(db, 'escaped', 'decision', { metadata: JSON.stringify({ replaced_history: history }).replace(/中文/g, '\\u4e2d\\u6587') });
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(1);
+      expect(r.stdout).toContain(`escaped  entries=51 bytes=${Buffer.byteLength(JSON.stringify(history), 'utf8')}`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a database in which no invariant could be checked exits 2, not "hold"', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-inv-'));
+    try {
+      const empty = path.join(dir, 'empty.db');
+      fs.writeFileSync(empty, '');
+      const r = run(empty);
+      expect(r.status, r.stdout + r.stderr).toBe(2);
+      expect(r.stdout).not.toContain('memory invariants hold');
+      expect(r.stderr).toContain('no invariant could be checked');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('#530 — the history bounds the audit uses are the ones the import validator enforces', () => {
+    const constant = (file: string, name: string) => {
+      const m = new RegExp(`const ${name} = ([^;]+);`).exec(fs.readFileSync(file, 'utf8'));
+      expect(m, `${name} in ${file}`).not.toBeNull();
+      return m![1].trim();
+    };
+    const serializer = path.resolve('src/core/serializer.ts');
+    expect(constant(script, 'REPLACED_HISTORY_MAX_ENTRIES')).toBe(constant(serializer, 'MAX_IMPORTED_REPLACED_HISTORY_ENTRIES'));
+    expect(constant(script, 'REPLACED_HISTORY_MAX_BYTES')).toBe(constant(serializer, 'MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES'));
+  });
+
+  it('#530 — histories saturated to the writers\' byte cap are not rejected by the audit', () => {
+    const { dir, dbPath } = freshGraph();
+    try {
+      openDatabase(dbPath);
+      try {
+        const big = (tag: string) => Array.from({ length: 4 }, (_, i) => `${tag}-${i}`.padEnd(15000, 'x'));
+        remember({ name: 'replaced-big', type: 'decision', observations: big('v0') });
+        for (let i = 1; i < 12; i++) remember({ name: 'replaced-big', type: 'decision', observations: big(`v${i}`), replace: true });
+        importMemories({ data: { version: '3.1.0', exported_at: '2026-10-01T00:00:00.000Z', entity_count: 1, entities: [{ name: 'imported-big', type: 'decision', namespace: 'personal', relations: [], observations: big('i0'), tags: [] }] }, merge_strategy: 'skip' });
+        for (let i = 1; i < 12; i++) importMemories({ data: { version: '3.1.0', exported_at: '2026-10-01T00:00:00.000Z', entity_count: 1, entities: [{ name: 'imported-big', type: 'decision', namespace: 'personal', relations: [], observations: big(`i${i}`), tags: [] }] }, merge_strategy: 'overwrite' });
+      } finally {
+        closeDatabase();
+      }
+      withRawDb(dbPath, (db) => {
+        for (const name of ['replaced-big', 'imported-big']) {
+          const row = db.prepare("SELECT length(CAST(json_extract(metadata, '$.replaced_history') AS BLOB)) AS bytes FROM entities WHERE name = ?").get(name) as { bytes: number };
+          // The writers' own cap is 64 KiB: well under it would mean the test did not saturate it.
+          expect(row.bytes, name).toBeGreaterThan(30 * 1024);
+          expect(row.bytes, name).toBeLessThanOrEqual(64 * 1024 + 512);
+        }
+      });
+      const r = run(dbPath);
+      expect(r.status, r.stdout).toBe(0);
+      expect(r.stdout).toContain('ok   replaced-history-stays-bounded');
+    } finally {
+      closeDatabase();
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
