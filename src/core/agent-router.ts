@@ -11,6 +11,7 @@ import {
   type AgentMessagePostCommitNotifier,
   type AgentTargetKind,
 } from './agent-messaging.js';
+import { compareSemVerPrecedence, parseSemVer } from './semver.js';
 
 export const AGENT_ROUTER_PROTOCOL_VERSION = 2;
 export const AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
@@ -32,6 +33,11 @@ const STARTUP_LOCK_WAIT_MS = 1_000;
 const STARTUP_LOCK_STALE_MS = 5_000;
 const MAX_FIELD_LENGTH = 200;
 const MAX_ADAPTER_RECEIPT_BYTES = 16 * 1024;
+/** How long an older router refuses to start after a newer host asked it to
+ *  step aside, so a still-running older host cannot respawn it straight back
+ *  in (#518). Short, so a real downgrade later is not blocked. */
+const SUPERSEDED_HOLD_MS = 10 * 60_000;
+const SUPERSEDED_METADATA_KEY = 'router_superseded_by';
 
 type SocketIdentity = Pick<fs.Stats, 'dev' | 'ino'>;
 type StartupLock = { fd: number; path: string; identity: SocketIdentity };
@@ -89,6 +95,10 @@ export interface AgentRouterOptions {
   db: MemeshDatabase;
   socket_path: string;
   adapters: readonly AgentHostAdapter[];
+  /** The MeMesh version this router runs, reported to every host that registers (#518). */
+  memesh_version: string;
+  /** Called after a host of a newer MeMesh version registered: this router should stop and exit. */
+  on_superseded?: () => void;
   router_instance_id?: string;
   limits?: AgentRouterLimits;
 }
@@ -103,6 +113,7 @@ export interface AgentRouterRegisterRequest {
   adapter_kind: string;
   work_summary?: string;
   auth_token?: string;
+  memesh_version?: string;
   hops: number;
 }
 
@@ -256,8 +267,10 @@ export class AgentRouterProtocolError extends AgentRouterError {}
 export class AgentRouter {
   readonly router_instance_id: string;
   readonly socket_path: string;
+  readonly memesh_version: string;
 
   private readonly db: MemeshDatabase;
+  private readonly onSuperseded: (() => void) | undefined;
   private readonly adapters: Map<string, AgentHostAdapter>;
   private readonly limits: Required<AgentRouterLimits>;
   private server: net.Server | null = null;
@@ -276,6 +289,8 @@ export class AgentRouter {
   constructor(options: AgentRouterOptions) {
     this.db = options.db;
     this.socket_path = validateSocketPath(options.socket_path);
+    this.memesh_version = validateVersion('memesh_version', options.memesh_version);
+    this.onSuperseded = options.on_superseded;
     this.router_instance_id = validateField(
       'router_instance_id',
       options.router_instance_id ?? randomUUID(),
@@ -304,6 +319,7 @@ export class AgentRouter {
       throw new AgentRouterError('insecure_socket_directory', 'Router socket directory must be private.');
     }
 
+    this.refuseIfSuperseded();
     const startupLock = await acquireStartupLock(this.socket_path);
     const server = net.createServer((socket) => this.acceptSocket(socket));
     this.server = server;
@@ -461,6 +477,14 @@ export class AgentRouter {
     if (!await adapter.authenticate(registration)) {
       throw new AgentRouterError('authentication_failed', 'The host adapter did not authenticate this session.');
     }
+    if (request.memesh_version !== undefined && isNewerVersion(request.memesh_version, this.memesh_version)) {
+      this.recordSuperseded(request.memesh_version);
+      if (this.onSuperseded) setImmediate(this.onSuperseded);
+      throw new AgentRouterError(
+        'router_outdated',
+        `router_outdated: this router runs MeMesh ${this.memesh_version} and MeMesh ${request.memesh_version} is installed; it is stopping so the installed version can start.`,
+      );
+    }
 
     const connection = this.registerConnection(registration);
     this.bindExternalConnection(connection, socket);
@@ -478,7 +502,31 @@ export class AgentRouter {
       generation: connection.generation,
       lease_ms: this.limits.lease_ms,
       drain_scheduled: true,
+      memesh_version: this.memesh_version,
     };
+  }
+
+  private recordSuperseded(version: string): void {
+    this.db.prepare(`
+      INSERT INTO memesh_metadata (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(SUPERSEDED_METADATA_KEY, JSON.stringify({ version, at_ms: Date.now() }));
+  }
+
+  private refuseIfSuperseded(): void {
+    const row = this.db.prepare('SELECT value FROM memesh_metadata WHERE key = ?')
+      .get(SUPERSEDED_METADATA_KEY) as { value: string } | undefined;
+    if (!row) return;
+    let record: { version?: unknown; at_ms?: unknown };
+    // An unreadable record cannot say a newer version exists; starting is the safe side.
+    try { record = JSON.parse(row.value) as typeof record; } catch { return; }
+    if (typeof record.version !== 'string' || typeof record.at_ms !== 'number') return;
+    if (Date.now() - record.at_ms >= SUPERSEDED_HOLD_MS) return;
+    if (!isNewerVersion(record.version, this.memesh_version)) return;
+    throw new AgentRouterError(
+      'router_superseded',
+      `MeMesh ${record.version} replaced this MeMesh ${this.memesh_version} router a moment ago; not starting.`,
+    );
   }
 
   private bindExternalConnection(connection: ConnectionRow, socket: net.Socket): void {
@@ -1233,6 +1281,7 @@ function parseRequest(frame: Buffer, maxHops: number): AgentRouterRequest {
       // declares one, can register; it is not read (see AgentSelectionCard).
       assertAllowedKeys(value, [
         ...common, 'project', 'principal_id', 'session_instance_id', 'adapter_kind', 'auth_token', 'model', 'work_summary',
+        'memesh_version',
       ]);
       return {
         version: AGENT_ROUTER_PROTOCOL_VERSION,
@@ -1245,6 +1294,7 @@ function parseRequest(frame: Buffer, maxHops: number): AgentRouterRequest {
         ...(value.work_summary === undefined || value.work_summary === null
           ? {} : { work_summary: validateField('work_summary', value.work_summary) }),
         ...(value.auth_token === undefined ? {} : { auth_token: validateField('auth_token', value.auth_token) }),
+        ...(value.memesh_version === undefined ? {} : { memesh_version: validateVersion('memesh_version', value.memesh_version) }),
         hops,
       };
     case 'discover':
@@ -1341,6 +1391,19 @@ function validateField(label: string, value: unknown): string {
     );
   }
   return normalized;
+}
+
+function validateVersion(label: string, value: unknown): string {
+  const version = validateField(label, value);
+  if (!parseSemVer(version)) throw new AgentRouterProtocolError('invalid_field', `${label} must be a semantic version.`);
+  return version;
+}
+
+/** True when `candidate` is a strictly later MeMesh version than `current`. */
+export function isNewerVersion(candidate: string, current: string): boolean {
+  const a = parseSemVer(candidate);
+  const b = parseSemVer(current);
+  return a !== null && b !== null && compareSemVerPrecedence(a, b) > 0;
 }
 
 function hostKind(adapterKind: string): AgentSelectionCard['host_kind'] {

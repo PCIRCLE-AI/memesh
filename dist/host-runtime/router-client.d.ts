@@ -17,6 +17,7 @@ export interface RouterDelivery {
 export interface RouterHostConnection {
     readonly connection_id: string;
     readonly generation: number;
+    readonly router_version: string;
     close(): Promise<void>;
 }
 export interface RouterClientResilienceOptions {
@@ -36,4 +37,5 @@ export interface ConnectRouterHostInput {
     resilience?: RouterClientResilienceOptions;
 }
 export declare function connectRouterHost(input: ConnectRouterHostInput): Promise<RouterHostConnection>;
+export declare function routerOutdatedDetail(error: unknown): string;
 //# sourceMappingURL=router-client.d.ts.map

@@ -105,6 +105,7 @@ const requiredFiles = [
   'dist/host-runtime/router.js',
   'dist/host-runtime/router-client.js',
   'dist/host-runtime/config.js',
+  'dist/host-runtime/package-version.js',
   'dist/host-runtime/codex.js',
   'dist/host-runtime/codex-session.js',
   'dist/host-runtime/claude.js',

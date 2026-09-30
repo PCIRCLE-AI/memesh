@@ -5,6 +5,7 @@ import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { AGENT_ROUTER_MAX_FRAME_BYTES, AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterProtocolError, isLegacyAgentRouterVersionMismatchResponse, } from '../core/agent-router.js';
 import { assertSecureLocalHostRuntimeSupported } from './config.js';
+import { memeshPackageVersion } from './package-version.js';
 const DEFAULT_INITIAL_RETRY_MS = 100;
 const DEFAULT_MAX_RETRY_MS = 5_000;
 const DEFAULT_RETRY_JITTER = 0.2;
@@ -18,6 +19,7 @@ class ActiveRouterHostConnection {
     resilience;
     currentConnectionId = '';
     currentGeneration = 0;
+    currentRouterVersion = '';
     currentSocket = null;
     connectingSocket = null;
     heartbeat = null;
@@ -36,6 +38,9 @@ class ActiveRouterHostConnection {
     }
     get generation() {
         return this.currentGeneration;
+    }
+    get router_version() {
+        return this.currentRouterVersion;
     }
     async connectInitial() {
         let lastError = new RouterTransportError('Could not connect to the router.');
@@ -166,15 +171,28 @@ class ActiveRouterHostConnection {
                         finish(new AgentRouterProtocolError('router_version_mismatch', 'router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.'));
                         continue;
                     }
+                    if (!registrationSettled && isRouterRejectingVersionField(frame)) {
+                        finish(routerOutdatedError());
+                        continue;
+                    }
                     if (!registrationSettled && frame.request_id === registerId) {
                         if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION) {
                             finish(new AgentRouterProtocolError('invalid_response', 'Router response identity does not match.'));
+                            continue;
+                        }
+                        if (frame.ok === false && isRecord(frame.error) && frame.error.code === 'router_outdated') {
+                            finish(new RouterTransportError(String(frame.error.message)));
                             continue;
                         }
                         if (frame.ok !== true || !isRecord(frame.result)) {
                             finish(new Error('Router registration was rejected.'));
                             continue;
                         }
+                        if (!requiredNonEmptyString(frame.result.memesh_version)) {
+                            finish(routerOutdatedError());
+                            continue;
+                        }
+                        this.currentRouterVersion = frame.result.memesh_version;
                         try {
                             connectionId = requiredFrameString(frame.result.connection_id);
                             generation = requiredFrameInteger(frame.result.generation);
@@ -231,6 +249,7 @@ class ActiveRouterHostConnection {
                 request_id: registerId,
                 ...this.input.identity,
                 auth_token: this.input.auth_token,
+                memesh_version: installedVersion(),
                 hops: 0,
             });
         });
@@ -464,6 +483,23 @@ function isDelivery(value, connectionId, generation, identity) {
         && requiredNonEmptyString(envelope.created_at)
         && Object.hasOwn(envelope, 'payload')
         && isRecord(envelope.provenance);
+}
+let cachedInstalledVersion;
+function installedVersion() {
+    cachedInstalledVersion ??= memeshPackageVersion();
+    return cachedInstalledVersion;
+}
+function isRouterRejectingVersionField(frame) {
+    return frame.ok === false && frame.request_id === '' && isRecord(frame.error)
+        && frame.error.code === 'unexpected_field'
+        && typeof frame.error.message === 'string' && frame.error.message.includes('memesh_version');
+}
+export function routerOutdatedDetail(error) {
+    return error instanceof AgentRouterProtocolError && error.code === 'router_outdated' ? ` ${error.message}` : '';
+}
+function routerOutdatedError() {
+    return new AgentRouterProtocolError('router_outdated', 'router_outdated: the running MeMesh message router started before this MeMesh version was installed and still runs the old code. '
+        + 'Stop it with `pkill -f dist/host-runtime/router.js`; the next MeMesh session starts the installed one.');
 }
 function requiredNonEmptyString(value) {
     return typeof value === 'string' && value.length > 0;

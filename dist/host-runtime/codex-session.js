@@ -9,7 +9,7 @@ import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
 import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessionPrincipal, } from '../core/codex-session-principal.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath, getProjectName } from '../core/paths.js';
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile, readHostConfigFile, readTokenFile, normalizeConfiguredRouterSocket, requiredString, } from './config.js';
-import { connectRouterHost } from './router-client.js';
+import { connectRouterHost, routerOutdatedDetail } from './router-client.js';
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 const CONTROL_TIMEOUT_MS = 2_000;
 const SESSION_END_GRACE_MS = 45_000;
@@ -521,8 +521,8 @@ if (isMainModule()) {
     try {
         await main();
     }
-    catch {
-        process.stderr.write('memesh-host-codex-session: session registration failed.\n');
+    catch (error) {
+        process.stderr.write(`memesh-host-codex-session: session registration failed.${routerOutdatedDetail(error)}\n`);
         process.exitCode = 1;
     }
 }

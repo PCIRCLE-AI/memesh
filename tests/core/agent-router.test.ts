@@ -82,6 +82,7 @@ async function startRouter(
   const router = new AgentRouter({
     db,
     socket_path: socketPath,
+    memesh_version: '1.0.0',
     limits: { delivery_timeout_ms: 200, ...limits },
     adapters: adapters ?? [{
       kind: 'test-host',
@@ -486,6 +487,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     const contenders = [0, 1].map(() => new AgentRouter({
       db,
       socket_path: socketPath,
+      memesh_version: '1.0.0',
       adapters: [{ kind: 'test-host', authenticate: value => value.auth_token === token }],
     }));
 
@@ -520,6 +522,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
     const contender = new AgentRouter({
       db,
       socket_path: socketPath,
+      memesh_version: '1.0.0',
       adapters: [{ kind: 'test-host', authenticate: value => value.auth_token === token }],
     });
 
@@ -807,7 +810,7 @@ describe.runIf(process.platform !== 'win32').sequential('AgentRouter real SQLite
 
   it('keeps the current in-flight owner when a same-delivery dispatch re-enters', async () => {
     const { db, socketPath } = setup();
-    const router = new AgentRouter({ db, socket_path: socketPath, adapters: [] });
+    const router = new AgentRouter({ db, socket_path: socketPath, memesh_version: '1.0.0', adapters: [] });
     routers.push(router);
     const internal = router as unknown as {
       dispatchDelivery(deliveryId: string, project: string, hops: number): Promise<boolean>;
@@ -1066,7 +1069,7 @@ it.runIf(process.platform === 'win32')('rejects secure router startup before cre
   tempDirs.push(directory);
   const db = openDatabase(path.join(directory, 'messages.db'));
   const socketPath = path.join(directory, 'nested', 'router.sock');
-  const candidate = new AgentRouter({ db, socket_path: socketPath, adapters: [] });
+  const candidate = new AgentRouter({ db, socket_path: socketPath, memesh_version: '1.0.0', adapters: [] });
 
   await expect(candidate.start()).rejects.toThrow(/secure local host runtime is not supported on Windows/i);
   expect(fs.existsSync(path.dirname(socketPath))).toBe(false);

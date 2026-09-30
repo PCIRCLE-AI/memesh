@@ -7,6 +7,7 @@ All notable changes to MeMesh are documented here.
 ### Fixed
 
 - A message sent through the MCP `message` tool keeps every `null` in its JSON payload. Before, the MCP boundary removed each null-valued key at any depth of the payload while `send` still reported success, so the recipient got different data than the CLI or HTTP would have stored (#517). A null-valued top-level tool parameter still means "left blank".
+- A message router started before an upgrade no longer keeps routing with the old code unnoticed. The router now reports its MeMesh version when a session connects. An older router from this release on steps aside and the installed one starts. A router from 4.10.11 or earlier is refused with the command to stop it (`pkill -f dist/host-runtime/router.js`), and the Claude Code and Codex hosts print that reason instead of a bare "registration failed". A session send that falls back to its principal now also tells the sender when the intended session is not connected, since only that session can take the message in (#518).
 
 ## [4.10.11] — 2026-09-29
 

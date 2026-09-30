@@ -7,6 +7,7 @@ import { AgentRouter, AgentRouterError, AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } fro
 import { createCodexCliQueueAdapter } from '../host-adapters/codex-cli-queue.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath } from '../core/paths.js';
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile } from './config.js';
+import { memeshPackageVersion } from './package-version.js';
 const dataDir = getMemeshDirFromDbPath();
 const socketFromEnv = process.env.MEMESH_ROUTER_SOCKET;
 const socketPath = socketFromEnv ?? getAgentRouterSocketPath();
@@ -50,6 +51,8 @@ try {
     router = new AgentRouter({
         db,
         socket_path: socketPath,
+        memesh_version: memeshPackageVersion(),
+        on_superseded: () => { void shutdown().finally(() => process.exit(0)); },
         adapters: [
             createCodexCliQueueAdapter({ authenticate, release_watch: { db } }),
             ...['claude-channel', 'codex-app-server', 'acp'].map(kind => ({ kind, authenticate })),

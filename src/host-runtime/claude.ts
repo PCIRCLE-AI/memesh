@@ -17,6 +17,7 @@ import { getProjectName } from '../core/paths.js';
 import { claudeCodeSessionFromEnv } from '../core/host-session.js';
 import {
   connectRouterHost,
+  routerOutdatedDetail,
   type ConnectRouterHostInput,
   type RouterDelivery,
   type RouterHostConnection,
@@ -303,8 +304,8 @@ async function main(): Promise<void> {
       ? undefined
       : requiredString(config.session_instance_id, 'session_instance_id'),
   }, {
-    on_fatal_error() {
-      process.stderr.write('memesh-host-claude: router registration failed.\n');
+    on_fatal_error(error) {
+      process.stderr.write(`memesh-host-claude: router registration failed.${routerOutdatedDetail(error)}\n`);
       process.exitCode = 1;
     },
   });

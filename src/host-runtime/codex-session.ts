@@ -21,7 +21,7 @@ import {
   normalizeConfiguredRouterSocket,
   requiredString,
 } from './config.js';
-import { connectRouterHost, type RouterHostConnection } from './router-client.js';
+import { connectRouterHost, routerOutdatedDetail, type RouterHostConnection } from './router-client.js';
 
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
 
@@ -622,8 +622,8 @@ function isMainModule(): boolean {
 if (isMainModule()) {
   try {
     await main();
-  } catch {
-    process.stderr.write('memesh-host-codex-session: session registration failed.\n');
+  } catch (error) {
+    process.stderr.write(`memesh-host-codex-session: session registration failed.${routerOutdatedDetail(error)}\n`);
     process.exitCode = 1;
   }
 }

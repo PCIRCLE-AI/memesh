@@ -30959,6 +30959,58 @@ import { randomUUID as randomUUID3 } from "node:crypto";
 import fs7 from "node:fs";
 import net from "node:net";
 import path6 from "node:path";
+
+// dist/core/semver.js
+var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+var NUMERIC_IDENTIFIER = /^\d+$/;
+function parseSemVer(version2) {
+  const match = SEMVER.exec(version2);
+  if (!match)
+    return null;
+  const prerelease = match[4]?.split(".") ?? null;
+  if (prerelease?.some((identifier) => NUMERIC_IDENTIFIER.test(identifier) && identifier.length > 1 && identifier.startsWith("0")))
+    return null;
+  return {
+    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
+    prerelease
+  };
+}
+function compareIdentifiers(a, b) {
+  const aNumeric = NUMERIC_IDENTIFIER.test(a);
+  const bNumeric = NUMERIC_IDENTIFIER.test(b);
+  if (aNumeric && bNumeric)
+    return BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0;
+  if (aNumeric !== bNumeric)
+    return aNumeric ? -1 : 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+function compareSemVerPrecedence(a, b) {
+  for (let index = 0; index < a.core.length; index += 1) {
+    if (a.core[index] !== b.core[index])
+      return a.core[index] < b.core[index] ? -1 : 1;
+  }
+  if (a.prerelease === null || b.prerelease === null) {
+    if (a.prerelease !== b.prerelease)
+      return a.prerelease === null ? 1 : -1;
+    return 0;
+  }
+  const length = Math.max(a.prerelease.length, b.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const aIdentifier = a.prerelease[index];
+    const bIdentifier = b.prerelease[index];
+    if (aIdentifier === void 0 || bIdentifier === void 0) {
+      if (aIdentifier !== bIdentifier)
+        return aIdentifier === void 0 ? -1 : 1;
+      break;
+    }
+    const compared = compareIdentifiers(aIdentifier, bIdentifier);
+    if (compared !== 0)
+      return compared;
+  }
+  return 0;
+}
+
+// dist/core/agent-router.js
 var AGENT_ROUTER_PROTOCOL_VERSION = 2;
 var AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
 var AGENT_ROUTER_SOCKET_PATH_MAX_BYTES = 103;
@@ -30966,6 +31018,7 @@ var MAX_LEASE_MS = 5 * 6e4;
 var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
 var MAX_FIELD_LENGTH = 200;
 var MAX_ADAPTER_RECEIPT_BYTES = 16 * 1024;
+var SUPERSEDED_HOLD_MS = 10 * 6e4;
 function isLegacyAgentRouterVersionMismatchResponse(value) {
   if (!isPlainObject5(value) || value.version !== 1 || value.request_id !== "" || value.ok !== false)
     return false;
@@ -31426,10 +31479,19 @@ function sendPrincipalFallback(db2, message, refused) {
     }
     throw error51;
   }
+  const connected = db2.prepare(`
+    SELECT 1 FROM agent_session_connections
+    WHERE project = ? AND session_instance_id = ? AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+    LIMIT 1
+  `).get(refused.project, refused.recipient, Date.now()) !== void 0;
   return {
     ...fallback,
     fallback: {
       reason: "recipient_unavailable",
+      intended_session_connected: connected,
+      ...connected ? {} : {
+        note: `Session ${refused.recipient} is not connected now. Only it can take this message in, the next time it runs; no other session of ${session.principal_id} will. If it has ended for good, send to ${session.principal_id} without intended_session instead.`
+      },
       from: {
         message_id: refused.message_id,
         delivery_id: refused.delivery_id,
@@ -31550,58 +31612,6 @@ import { fileURLToPath } from "url";
 // dist/core/version-check.js
 import fs8 from "fs";
 import path7 from "path";
-
-// dist/core/semver.js
-var SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
-var NUMERIC_IDENTIFIER = /^\d+$/;
-function parseSemVer(version2) {
-  const match = SEMVER.exec(version2);
-  if (!match)
-    return null;
-  const prerelease = match[4]?.split(".") ?? null;
-  if (prerelease?.some((identifier) => NUMERIC_IDENTIFIER.test(identifier) && identifier.length > 1 && identifier.startsWith("0")))
-    return null;
-  return {
-    core: [BigInt(match[1]), BigInt(match[2]), BigInt(match[3])],
-    prerelease
-  };
-}
-function compareIdentifiers(a, b) {
-  const aNumeric = NUMERIC_IDENTIFIER.test(a);
-  const bNumeric = NUMERIC_IDENTIFIER.test(b);
-  if (aNumeric && bNumeric)
-    return BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0;
-  if (aNumeric !== bNumeric)
-    return aNumeric ? -1 : 1;
-  return a < b ? -1 : a > b ? 1 : 0;
-}
-function compareSemVerPrecedence(a, b) {
-  for (let index = 0; index < a.core.length; index += 1) {
-    if (a.core[index] !== b.core[index])
-      return a.core[index] < b.core[index] ? -1 : 1;
-  }
-  if (a.prerelease === null || b.prerelease === null) {
-    if (a.prerelease !== b.prerelease)
-      return a.prerelease === null ? 1 : -1;
-    return 0;
-  }
-  const length = Math.max(a.prerelease.length, b.prerelease.length);
-  for (let index = 0; index < length; index += 1) {
-    const aIdentifier = a.prerelease[index];
-    const bIdentifier = b.prerelease[index];
-    if (aIdentifier === void 0 || bIdentifier === void 0) {
-      if (aIdentifier !== bIdentifier)
-        return aIdentifier === void 0 ? -1 : 1;
-      break;
-    }
-    const compared = compareIdentifiers(aIdentifier, bIdentifier);
-    if (compared !== 0)
-      return compared;
-  }
-  return 0;
-}
-
-// dist/core/version-check.js
 var STALE_AFTER_MS = 24 * 60 * 60 * 1e3;
 function isUpdateAvailable(currentVersion, latestVersion) {
   if (latestVersion === null)

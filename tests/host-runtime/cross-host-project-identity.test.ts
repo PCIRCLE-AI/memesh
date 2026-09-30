@@ -56,7 +56,7 @@ describe.skipIf(process.platform === 'win32')('#474: cross-host discovery — on
         lifecycle: fakeLifecycle(),
         connect_router: async (input) => {
           claudeProject = input.identity.project;
-          return { connection_id: 'claude-connection', generation: 1, close: async () => undefined };
+          return { connection_id: 'claude-connection', generation: 1, router_version: '1.0.0', close: async () => undefined };
         },
         cwd: () => dir,
       });
@@ -73,7 +73,7 @@ describe.skipIf(process.platform === 'win32')('#474: cross-host discovery — on
         {
           connect: async (input: ConnectRouterHostInput) => {
             codexProject = input.identity.project;
-            return { connection_id: 'codex-connection', generation: 1, close: async () => undefined };
+            return { connection_id: 'codex-connection', generation: 1, router_version: '1.0.0', close: async () => undefined };
           },
         },
       );

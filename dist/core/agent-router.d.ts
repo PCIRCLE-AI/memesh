@@ -46,6 +46,8 @@ export interface AgentRouterOptions {
     db: MemeshDatabase;
     socket_path: string;
     adapters: readonly AgentHostAdapter[];
+    memesh_version: string;
+    on_superseded?: () => void;
     router_instance_id?: string;
     limits?: AgentRouterLimits;
 }
@@ -59,6 +61,7 @@ export interface AgentRouterRegisterRequest {
     adapter_kind: string;
     work_summary?: string;
     auth_token?: string;
+    memesh_version?: string;
     hops: number;
 }
 export interface AgentRouterDiscoverRequest {
@@ -160,7 +163,9 @@ export declare class AgentRouterProtocolError extends AgentRouterError {
 export declare class AgentRouter {
     readonly router_instance_id: string;
     readonly socket_path: string;
+    readonly memesh_version: string;
     private readonly db;
+    private readonly onSuperseded;
     private readonly adapters;
     private readonly limits;
     private server;
@@ -177,6 +182,8 @@ export declare class AgentRouter {
     private handleFrame;
     private handleRequest;
     private register;
+    private recordSuperseded;
+    private refuseIfSuperseded;
     private bindExternalConnection;
     private disconnectSocket;
     private handleHostOutcome;
@@ -198,4 +205,5 @@ export declare class AgentRouter {
 }
 export declare function createAgentRouterNotifier(socketPath: string): AgentMessagePostCommitNotifier;
 export declare function sendAgentRouterRequest(socketPath: string, request: AgentRouterRequest, timeoutMs?: number): Promise<AgentJsonObject>;
+export declare function isNewerVersion(candidate: string, current: string): boolean;
 //# sourceMappingURL=agent-router.d.ts.map

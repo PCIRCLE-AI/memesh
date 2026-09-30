@@ -74,7 +74,11 @@ normal case. A `target_kind: "session"` send with
 `fallback_to_principal: true` does this by itself when the session refuses the
 message (`recipient_unavailable`): it sends the same message to the principal
 that session registered under, with `intended_session` set to it, and returns
-that message with a `fallback` field naming the refused one. A session the
+that message with a `fallback` field naming the refused one.
+`fallback.intended_session_connected` says whether that session is connected
+now; when it is not, `fallback.note` says that only it can take the message in
+when it next runs, so a sender whose target has ended for good knows to send to
+the principal without `intended_session` (#518). A session the
 router never registered has no known principal, so that send still fails,
 saying so, and so does a refused session registered through a host that
 cannot be named.
@@ -293,6 +297,21 @@ legacy daemon after an upgrade instead of killing it or taking over its live
 socket. Existing generated configs that name the former default are normalized
 in memory; an explicit custom socket remains exact and reports
 `router_version_mismatch` when it exposes the known legacy response shape.
+
+Within one protocol version, the router also reports the MeMesh version it
+runs, and each host sends its own when it registers (#518). A router that
+started before an upgrade is caught this way instead of silently routing with
+the old code:
+
+- A router older than the host, from a release that reports its version,
+  refuses that registration with `router_outdated`, stops, and does not start
+  again for ten minutes as that older version. The host retries and starts the
+  installed router.
+- A router from before versions were reported cannot stop itself. The host
+  refuses it with `router_outdated` and the instruction to stop it
+  (`pkill -f dist/host-runtime/router.js`); the next MeMesh session starts the
+  installed one.
+- A router newer than the host is used as is.
 
 Create one reusable owner-private config for each managed local host and
 principal. The stable principal is the logical recipient. Managed processes

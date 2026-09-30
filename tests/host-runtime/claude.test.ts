@@ -111,6 +111,7 @@ function fakeConnection() {
   return {
     connection_id: 'connection-a',
     generation: 1,
+    router_version: '1.0.0',
     close: vi.fn(async () => undefined),
   } satisfies RouterHostConnection;
 }

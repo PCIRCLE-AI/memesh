@@ -9,7 +9,7 @@ import { serializeNativeAgentMessage } from '../core/agent-messaging.js';
 import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
 import { getProjectName } from '../core/paths.js';
 import { claudeCodeSessionFromEnv } from '../core/host-session.js';
-import { connectRouterHost, } from './router-client.js';
+import { connectRouterHost, routerOutdatedDetail, } from './router-client.js';
 import { assertSecureLocalHostRuntimeSupported, normalizeConfiguredRouterSocket, readHostConfig, readTokenFile, requiredString, } from './config.js';
 import { runHostEntry } from './entry.js';
 const CHANNEL_INSTRUCTIONS = [
@@ -199,8 +199,8 @@ async function main() {
             ? undefined
             : requiredString(config.session_instance_id, 'session_instance_id'),
     }, {
-        on_fatal_error() {
-            process.stderr.write('memesh-host-claude: router registration failed.\n');
+        on_fatal_error(error) {
+            process.stderr.write(`memesh-host-claude: router registration failed.${routerOutdatedDetail(error)}\n`);
             process.exitCode = 1;
         },
     });

@@ -81,6 +81,29 @@ describe('Feature: #497 send can fall back to the principal and keep the intende
     expect(retried.fallback.from.message_id).toBe(result.fallback.from.message_id);
   });
 
+  it('#518: the sender is told when the intended session is not connected, so no session can take the message now', async () => {
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, disconnected: true, adapterKind: 'claude-channel' });
+
+    const result = await executeAgentMessageAction(getDatabase(), sessionSend(), {
+      transport: 'mcp', sourceHost: 'codex',
+    }, refused) as FallbackResult & { fallback: { intended_session_connected: boolean; note?: string } };
+
+    expect(result.fallback.intended_session_connected).toBe(false);
+    expect(result.fallback.note).toContain(SESSION_A);
+    expect(result.fallback.note).toContain('without intended_session');
+  });
+
+  it('#518: a connected session that refused is reported as connected, with no warning', async () => {
+    registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, adapterKind: 'claude-channel' });
+
+    const result = await executeAgentMessageAction(getDatabase(), sessionSend(), {
+      transport: 'mcp', sourceHost: 'codex',
+    }, refused) as FallbackResult & { fallback: { intended_session_connected: boolean; note?: string } };
+
+    expect(result.fallback.intended_session_connected).toBe(true);
+    expect(result.fallback.note).toBeUndefined();
+  });
+
   it('without the flag, a refused session send still fails with recipient_unavailable', async () => {
     registerAgentSession(PROJECT, PRINCIPAL, { sessionId: SESSION_A, disconnected: true });
 

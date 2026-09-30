@@ -13,6 +13,7 @@ import {
   type RouterDelivery,
   type RouterHostConnection,
 } from '../../src/host-runtime/router-client.js';
+import { memeshPackageVersion } from '../../src/host-runtime/package-version.js';
 
 let router: AgentRouter | undefined;
 let connection: RouterHostConnection | undefined;
@@ -73,7 +74,7 @@ async function startPostRegistrationFixture(
         version: AGENT_ROUTER_PROTOCOL_VERSION,
         request_id: request.request_id,
         ok: true,
-        result: { connection_id: connectionId, generation: registrationCount, lease_ms: 60_000 },
+        result: { connection_id: connectionId, generation: registrationCount, lease_ms: 60_000, memesh_version: memeshPackageVersion() },
       })}\n`);
       if (registrationCount === 1) {
         setImmediate(() => socket.write(`${JSON.stringify(firstFrame(connectionId, registrationCount))}\n`));
@@ -126,6 +127,7 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     router = new AgentRouter({
       db,
       socket_path: socketPath,
+      memesh_version: memeshPackageVersion(),
       adapters: [{ kind: 'codex-app-server', authenticate: value => value.auth_token === 'token' }],
     });
     await router.start();
@@ -194,6 +196,7 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
       const candidate = new AgentRouter({
         db,
         socket_path: socketPath,
+        memesh_version: memeshPackageVersion(),
         adapters: [{ kind: 'codex-app-server', authenticate: value => value.auth_token === 'token' }],
       });
       await candidate.start();
@@ -233,6 +236,7 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
       const candidate = new AgentRouter({
         db,
         socket_path: socketPath,
+        memesh_version: memeshPackageVersion(),
         adapters: [{ kind: 'codex-app-server', authenticate: value => value.auth_token === 'token' }],
       });
       await candidate.start();
@@ -521,6 +525,7 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     const makeRouter = () => new AgentRouter({
       db,
       socket_path: socketPath,
+      memesh_version: memeshPackageVersion(),
       limits: { lease_ms: 1_000, delivery_timeout_ms: 500 },
       adapters: [{ kind: 'codex-app-server', authenticate: value => value.auth_token === 'token' }],
     });
@@ -614,6 +619,7 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     router = new AgentRouter({
       db,
       socket_path: socketPath,
+      memesh_version: memeshPackageVersion(),
       adapters: [{ kind: 'codex-cli-queue', authenticate: value => value.auth_token === 'token' }],
     });
     await router.start();
@@ -651,6 +657,7 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
     router = new AgentRouter({
       db,
       socket_path: socketPath,
+      memesh_version: memeshPackageVersion(),
       adapters: [{ kind: 'codex-app-server', authenticate: value => value.auth_token === 'token' }],
     });
     await router.start();

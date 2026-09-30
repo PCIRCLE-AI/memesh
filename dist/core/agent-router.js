@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { fetchAgentMessage, } from './agent-messaging.js';
+import { compareSemVerPrecedence, parseSemVer } from './semver.js';
 export const AGENT_ROUTER_PROTOCOL_VERSION = 2;
 export const AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
 export const AGENT_ROUTER_MAX_HOPS = 4;
@@ -18,6 +19,8 @@ const STARTUP_LOCK_WAIT_MS = 1_000;
 const STARTUP_LOCK_STALE_MS = 5_000;
 const MAX_FIELD_LENGTH = 200;
 const MAX_ADAPTER_RECEIPT_BYTES = 16 * 1024;
+const SUPERSEDED_HOLD_MS = 10 * 60_000;
+const SUPERSEDED_METADATA_KEY = 'router_superseded_by';
 export function isLegacyAgentRouterVersionMismatchResponse(value) {
     if (!isPlainObject(value) || value.version !== 1 || value.request_id !== '' || value.ok !== false)
         return false;
@@ -42,7 +45,9 @@ export class AgentRouterProtocolError extends AgentRouterError {
 export class AgentRouter {
     router_instance_id;
     socket_path;
+    memesh_version;
     db;
+    onSuperseded;
     adapters;
     limits;
     server = null;
@@ -55,6 +60,8 @@ export class AgentRouter {
     constructor(options) {
         this.db = options.db;
         this.socket_path = validateSocketPath(options.socket_path);
+        this.memesh_version = validateVersion('memesh_version', options.memesh_version);
+        this.onSuperseded = options.on_superseded;
         this.router_instance_id = validateField('router_instance_id', options.router_instance_id ?? randomUUID());
         this.limits = normalizeLimits(options.limits);
         this.adapters = new Map();
@@ -78,6 +85,7 @@ export class AgentRouter {
         if ((directoryMode & 0o077) !== 0) {
             throw new AgentRouterError('insecure_socket_directory', 'Router socket directory must be private.');
         }
+        this.refuseIfSuperseded();
         const startupLock = await acquireStartupLock(this.socket_path);
         const server = net.createServer((socket) => this.acceptSocket(socket));
         this.server = server;
@@ -236,6 +244,12 @@ export class AgentRouter {
         if (!await adapter.authenticate(registration)) {
             throw new AgentRouterError('authentication_failed', 'The host adapter did not authenticate this session.');
         }
+        if (request.memesh_version !== undefined && isNewerVersion(request.memesh_version, this.memesh_version)) {
+            this.recordSuperseded(request.memesh_version);
+            if (this.onSuperseded)
+                setImmediate(this.onSuperseded);
+            throw new AgentRouterError('router_outdated', `router_outdated: this router runs MeMesh ${this.memesh_version} and MeMesh ${request.memesh_version} is installed; it is stopping so the installed version can start.`);
+        }
         const connection = this.registerConnection(registration);
         this.bindExternalConnection(connection, socket);
         this.selectionCards.set(connection.connection_id, {
@@ -252,7 +266,34 @@ export class AgentRouter {
             generation: connection.generation,
             lease_ms: this.limits.lease_ms,
             drain_scheduled: true,
+            memesh_version: this.memesh_version,
         };
+    }
+    recordSuperseded(version) {
+        this.db.prepare(`
+      INSERT INTO memesh_metadata (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value
+    `).run(SUPERSEDED_METADATA_KEY, JSON.stringify({ version, at_ms: Date.now() }));
+    }
+    refuseIfSuperseded() {
+        const row = this.db.prepare('SELECT value FROM memesh_metadata WHERE key = ?')
+            .get(SUPERSEDED_METADATA_KEY);
+        if (!row)
+            return;
+        let record;
+        try {
+            record = JSON.parse(row.value);
+        }
+        catch {
+            return;
+        }
+        if (typeof record.version !== 'string' || typeof record.at_ms !== 'number')
+            return;
+        if (Date.now() - record.at_ms >= SUPERSEDED_HOLD_MS)
+            return;
+        if (!isNewerVersion(record.version, this.memesh_version))
+            return;
+        throw new AgentRouterError('router_superseded', `MeMesh ${record.version} replaced this MeMesh ${this.memesh_version} router a moment ago; not starting.`);
     }
     bindExternalConnection(connection, socket) {
         for (const [connectionId, bound] of this.externalConnections) {
@@ -891,6 +932,7 @@ function parseRequest(frame, maxHops) {
         case 'register':
             assertAllowedKeys(value, [
                 ...common, 'project', 'principal_id', 'session_instance_id', 'adapter_kind', 'auth_token', 'model', 'work_summary',
+                'memesh_version',
             ]);
             return {
                 version: AGENT_ROUTER_PROTOCOL_VERSION,
@@ -903,6 +945,7 @@ function parseRequest(frame, maxHops) {
                 ...(value.work_summary === undefined || value.work_summary === null
                     ? {} : { work_summary: validateField('work_summary', value.work_summary) }),
                 ...(value.auth_token === undefined ? {} : { auth_token: validateField('auth_token', value.auth_token) }),
+                ...(value.memesh_version === undefined ? {} : { memesh_version: validateVersion('memesh_version', value.memesh_version) }),
                 hops,
             };
         case 'discover':
@@ -992,6 +1035,17 @@ function validateField(label, value) {
         throw new AgentRouterProtocolError('invalid_field', `${label} must contain 1-${MAX_FIELD_LENGTH} characters.`);
     }
     return normalized;
+}
+function validateVersion(label, value) {
+    const version = validateField(label, value);
+    if (!parseSemVer(version))
+        throw new AgentRouterProtocolError('invalid_field', `${label} must be a semantic version.`);
+    return version;
+}
+export function isNewerVersion(candidate, current) {
+    const a = parseSemVer(candidate);
+    const b = parseSemVer(current);
+    return a !== null && b !== null && compareSemVerPrecedence(a, b) > 0;
 }
 function hostKind(adapterKind) {
     if (adapterKind === 'codex-cli-queue' || adapterKind === 'codex-app-server')
