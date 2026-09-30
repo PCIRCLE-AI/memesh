@@ -981,11 +981,20 @@ describe('Feature: Session Start Hook', () => {
     expect(fs.existsSync(own)).toBe(false);
     expect(fs.existsSync(other)).toBe(true);
     expect(fs.existsSync(legacy)).toBe(false);
+  });
 
-    // A subagent's start leaves the list alone, even under the same id.
+  it('Scenario: A subagent start leaves its session\'s pre-edit list alone (#521)', () => {
+    const db = createTestDb();
+    db.close();
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const own = path.join(dir, 'this-session.json');
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+
     runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_type: 'Explore' });
-    expect(fs.existsSync(own)).toBe(true);
+
+    const kept = JSON.parse(fs.readFileSync(own, 'utf8')) as string[];
+    expect(kept).toEqual(['/src/auth.ts']);
   });
 
   it('Scenario: Session tracking files are written with private permissions', () => {
