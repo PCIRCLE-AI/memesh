@@ -1000,7 +1000,7 @@ fs.unlinkSync = function (p, ...rest) {
 };
 syncBuiltinESMExports();
 `);
-    const result = spawnSync('node', ['--import', loader, path.resolve('scripts/hooks/session-start.js')], {
+    const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/session-start.js')], {
       input: JSON.stringify({ cwd: '/tmp/anyproject', session_id: 'this-session', source: 'resume' }),
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',

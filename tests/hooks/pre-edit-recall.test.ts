@@ -4,6 +4,7 @@ import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { pathToFileURL } from 'node:url';
 import { expectPrivateFile } from '../helpers/permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 
@@ -408,7 +409,7 @@ fs.readdirSync = function (p, ...rest) {
 };
 syncBuiltinESMExports();
 `);
-    const result = spawnSync('node', ['--import', loader, path.resolve('scripts/hooks/pre-edit-recall.js')], {
+    const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/pre-edit-recall.js')], {
       input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
       env: { ...process.env, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
