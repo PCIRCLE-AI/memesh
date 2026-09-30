@@ -364,8 +364,9 @@ export function pruneSessionState(dir, now, onFault) {
         removed++;
       }
     } catch (err) {
-      // Another Stop removed it first, or it is unreadable: either way this
-      // run leaves it; the next one retries.
+      // Another hook removed it first: it is gone, which is what was wanted.
+      if (err?.code === 'ENOENT') continue;
+      // Unreadable: this run leaves it; the next one retries.
       try { process.stderr.write(`[memesh] could not prune ${file}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
       if (onFault) onFault(err);
     }

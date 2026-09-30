@@ -1030,6 +1030,20 @@ syncBuiltinESMExports();
     expect(fs.existsSync(own)).toBe(false);
   });
 
+  it('Scenario: A start that names an agent_id (never seen so far) would be a subagent\'s and leaves its parent\'s list alone (#521)', () => {
+    const db = createTestDb();
+    db.close();
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const own = path.join(dir, 'this-session.json');
+    fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+
+    runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_id: 'sub1', agent_type: 'Explore' });
+
+    const kept = JSON.parse(fs.readFileSync(own, 'utf8')) as string[];
+    expect(kept).toEqual(['/src/auth.ts']);
+  });
+
   it('Scenario: Session tracking files are written with private permissions', () => {
     const db = createScoringDb();
     db.prepare("INSERT INTO entities (name, type, confidence, status) VALUES (?, ?, ?, 'active')")

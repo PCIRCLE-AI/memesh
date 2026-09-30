@@ -46,7 +46,10 @@ const THROTTLE_DIR = join(memeshDir, 'pre-edit-recall');
 // A subagent's hook payload carries its PARENT's session_id plus its own agent_id
 // (Claude Code 2.1.285, captured), and its context has not seen what the parent
 // was shown, so it gets a list of its own.
-const throttleFileFor = (sessionId, agentId) => join(THROTTLE_DIR, agentId ? `${sessionId}--${agentId}.json` : `${sessionId}.json`);
+// The dot cannot occur in either id (SESSION_ID_RE), so two ids never make one name.
+const throttleFileFor = (sessionId, agentId) => join(THROTTLE_DIR, agentId ? `${sessionId}.${agentId}.json` : `${sessionId}.json`);
+// A file name is at most 255 bytes; two ids of 128 would not fit.
+const THROTTLE_NAME_MAX = 200;
 const MAX_RESULTS = 3;
 
 // #358 round 3 item 2: Strategy 2 fetches this many CANDIDATES before literal
@@ -104,7 +107,8 @@ process.stdin.on('end', () => {
     const fileKey = filePath.toLowerCase();
     const hasAgent = data.agent_id !== undefined && data.agent_id !== null && data.agent_id !== '';
     const throttleFile = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id)
-      && (!hasAgent || (typeof data.agent_id === 'string' && SESSION_ID_RE.test(data.agent_id)))
+      && (!hasAgent || (typeof data.agent_id === 'string' && SESSION_ID_RE.test(data.agent_id)
+        && data.session_id.length + data.agent_id.length < THROTTLE_NAME_MAX))
       ? throttleFileFor(data.session_id, hasAgent ? data.agent_id : null)
       : null;
     let seenFiles = [];
@@ -493,12 +497,12 @@ process.stdin.on('end', () => {
             }
           }
 
-          // Record as seen only when memories were actually shown: "already
-          // shown" must be true, and a file with nothing to recall is looked
-          // at again next time, so a memory stored meanwhile still appears.
-          // Never after a fault: that run looked at nothing, and marking the
-          // file seen would switch recall off for the whole session.
-          if (!recallFault && throttleFile && recallLines.length > 0) recordSeen(throttleFile, seenFiles, fileKey);
+          // Record as seen either way (avoid re-querying a no-result file; the
+          // repeat is recorded as throttled, which says nothing about whether
+          // anything was shown) — but not after a fault: that run looked at
+          // nothing, and marking the file seen would switch recall off for
+          // the whole session.
+          if (!recallFault && throttleFile) recordSeen(throttleFile, seenFiles, fileKey);
         }
       }
     } finally {
@@ -536,7 +540,7 @@ process.stdin.on('end', () => {
       // genuinely-matching row, and the old reason claimed there was
       // nothing when there was something this run never got to examine.
       record('skipped', throttled
-        ? SKIP_REASONS.recallAlreadyShown
+        ? SKIP_REASONS.recallThrottled
         : candidateWindowTruncated
           ? SKIP_REASONS.candidateWindowTruncated
           : SKIP_REASONS.nothingToRecall);

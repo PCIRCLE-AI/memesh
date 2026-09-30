@@ -312,7 +312,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(runHook({ session_id: 'session-b', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
   });
 
-  it('#521: a throttled repeat is recorded as already shown, not as nothing to recall', () => {
+  it('#521: a throttled repeat is recorded as throttled, not as nothing to recall', () => {
     const db = createTestDb();
     db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
     const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
@@ -326,7 +326,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     const outcomes = fs.readFileSync(path.join(testDir, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n')
       .map((l) => JSON.parse(l) as { hook: string; outcome: string; reason?: string })
       .filter((r) => r.hook === 'pre-edit-recall');
-    expect(outcomes.at(-1)?.reason).toContain('already shown');
+    expect(outcomes.at(-1)?.reason).toContain('throttled');
     expect(outcomes.at(-1)?.reason).not.toContain('nothing to recall');
   });
 
@@ -334,24 +334,38 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     .map((l) => JSON.parse(l) as { hook: string; outcome: string; reason?: string })
     .filter((r) => r.hook === 'pre-edit-recall');
 
-  it('#521: a file that had nothing to recall is not called "already shown", and is looked at again', () => {
+  it('#521: a repeat of a file that had nothing to recall is throttled, and the record does not claim anything was shown', () => {
     createTestDb().close();
     runHook({ session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } });
     runHook({ session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } });
-    expect(outcomesOf().map((o) => o.reason)).toEqual([
-      expect.stringContaining('nothing to recall'),
-      expect.stringContaining('nothing to recall'),
-    ]);
+    const reasons = outcomesOf().map((o) => o.reason ?? '');
+    expect(reasons[0]).toContain('nothing to recall');
+    expect(reasons[1]).toContain('throttled');
+    expect(reasons[1]).not.toContain('shown');
+  });
 
-    // A memory stored between the two edits is shown by the second one.
+  it('#521: a list file that cannot be written (folder readable) leaves its own error outcome', () => {
     const db = createTestDb();
-    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('late-decision', 'decision');
-    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('late-decision') as any;
-    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Added later');
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
     db.close();
-    expect(runHook({ session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } })).toContain('late-decision');
+
+    // The list path is a directory: writing it fails (EISDIR) while the folder itself reads and prunes fine.
+    fs.mkdirSync(path.join(testDir, 'pre-edit-recall', 'session-a.json'), { recursive: true });
+    const result = spawnSync('node', [path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('auth-decision');
+    const errors = outcomesOf().filter((o) => o.outcome === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0].reason).toContain('EISDIR');
   });
 
   it('#521: a per-session list that cannot be written leaves an error outcome and a stderr line', () => {
@@ -397,6 +411,69 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(edit(sub)).toBe('');                         // each is throttled after its own first showing
     expect(edit({})).toBe('');
     expect(edit({ agent_id: 'b2', agent_type: 'general-purpose' })).toContain('auth-decision'); // another subagent
+    // Ids that are legal alone never share a file name: session `a` + agent `b` is not session `a--b`.
+    expect(runHook({ session_id: 'a--b', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+    expect(runHook({ session_id: 'a', agent_id: 'b', tool_input: { file_path: '/src/auth.ts' } })).toContain('auth-decision');
+  });
+
+  it('#521: a list another hook removed first is not a fault', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const stale = path.join(dir, 'old-session.json');
+    fs.writeFileSync(stale, '[]');
+    const day = 24 * 60 * 60;
+    fs.utimesSync(stale, Date.now() / 1000 - 31 * day, Date.now() / 1000 - 31 * day);
+    // Parallel hooks scan the same folder: make this one lose the race for the stale list.
+    const loader = path.join(testDir, 'enoent.mjs');
+    fs.writeFileSync(loader, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const original = fs.unlinkSync;
+fs.unlinkSync = function (p, ...rest) {
+  if (String(p) === ${JSON.stringify(stale)}) { original.call(this, p, ...rest); const e = new Error('gone'); e.code = 'ENOENT'; throw e; }
+  return original.call(this, p, ...rest);
+};
+syncBuiltinESMExports();
+`);
+    const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 10000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('auth-decision');
+    expect(result.stderr).not.toContain('could not prune');
+    expect(outcomesOf().filter((o) => o.outcome === 'error')).toEqual([]);
+  });
+
+  it('#521: two ids that are each legal never make a file name that is too long or shared', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('auth-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('auth-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'Use OAuth 2.0');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    // 128 + 128 characters would be a 260-byte file name: no list, no error, still shown.
+    const long = { session_id: 's'.repeat(128), agent_id: 'a'.repeat(128), tool_input: { file_path: '/src/auth.ts' } };
+    expect(runHook(long)).toContain('auth-decision');
+    expect(runHook(long)).toContain('auth-decision');
+    // (a, b--c) and (a--b, c) are different contexts.
+    const edit = (session_id: string, agent_id: string) => runHook({ session_id, agent_id, tool_input: { file_path: '/src/auth.ts' } });
+    expect(edit('a', 'b--c')).toContain('auth-decision');
+    expect(edit('a--b', 'c')).toContain('auth-decision');
+    expect(edit('a', 'b--c')).toBe('');
+    const dir = path.join(testDir, 'pre-edit-recall');
+    expect(fs.readdirSync(dir).sort()).toEqual(['a--b.c.json', 'a.b--c.json']);
   });
 
   it('#521: an agent_id that is not a safe file name writes no list and is not throttled', () => {

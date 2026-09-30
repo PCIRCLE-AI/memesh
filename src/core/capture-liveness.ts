@@ -375,8 +375,8 @@ export const SKIP_REASONS = {
   noFilePath: 'no file_path in the tool input',
   noDatabaseForRecall: 'no database yet — nothing to recall',
   nothingToRecall: 'no guard matched and nothing to recall for this file',
-  /** #521: this session was already shown the memories for this file. */
-  recallAlreadyShown: 'no guard matched and this session was already shown the memories for this file',
+  /** #521: recall is once per file per session, and this session already looked at this file. */
+  recallThrottled: 'no guard matched and recall for this file is throttled: this session already looked at it',
   /**
    * pre-edit-recall #358 round 3 item 2: distinct from `nothingToRecall`.
    * Strategy 2 fetches a BOUNDED candidate window before literal

@@ -6,7 +6,7 @@ All notable changes to MeMesh are documented here.
 
 ### Fixed
 
-- Memories about a file are shown before an edit in every session again. Once any session (or another agent on the same machine) had been shown them, every other session editing that file got nothing, and the hook record said "nothing to recall". Each session now keeps its own list (a subagent keeps one of its own), only files whose memories were actually shown go on it, a repeat is recorded as already shown, and a list that cannot be written or cleaned up is recorded as an error instead of failing silently (#521).
+- Memories about a file are shown before an edit in every session again. Once any session (or another agent on the same machine) had been shown them, every other session editing that file got nothing, and the hook record said "nothing to recall". Each session now keeps its own list (a subagent keeps one of its own), a repeat is recorded as throttled, and a list that cannot be written or cleaned up is recorded as an error instead of failing silently (#521).
 - A message sent through the MCP `message` tool keeps every `null` in its JSON payload. Before, the MCP boundary removed each null-valued key at any depth of the payload while `send` still reported success, so the recipient got different data than the CLI or HTTP would have stored (#517). A null-valued top-level tool parameter still means "left blank", except `payload`, whose null is a value (#553).
 - The MCP `message` tool accepts `payload: null` on `send`, as its schema and the HTTP API already did; it was refused with `payload: Invalid input` (#553).
 
