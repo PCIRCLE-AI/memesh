@@ -33,12 +33,20 @@ import {
   SKIP_REASONS,
   SESSION_SNAPSHOT_TYPES,
   recordHookOutcome,
+  openMemeshDb,
 } from './_shared.js';
-import { MemeshDatabase } from './_generated/sqlite.js';
+import { pruneSessionState, recallListName, SESSION_ID_RE } from './_stop-notes.js';
 
 const dbPath = getDbPath();
 const memeshDir = getMemeshDirFromDbPath();
-const THROTTLE_FILE = join(memeshDir, 'session-recalled-files.json');
+// #521: one list per session. A single machine-wide list meant that once any
+// session (or another host) had recalled a file, every other session editing
+// it got nothing, recorded as "nothing to recall".
+const THROTTLE_DIR = join(memeshDir, 'pre-edit-recall');
+// A subagent's hook payload carries its PARENT's session_id plus its own agent id
+// (Claude Code 2.1.285, captured), and its context has not seen what the parent
+// was shown, so it gets a list of its own.
+const throttleFileFor = (sessionId, agentId) => join(THROTTLE_DIR, recallListName(sessionId, agentId));
 const MAX_RESULTS = 3;
 
 // #358 round 3 item 2: Strategy 2 fetches this many CANDIDATES before literal
@@ -91,11 +99,18 @@ process.stdin.on('end', () => {
     // Throttle — the RECALL half runs once per file per session. The guard
     // half is deliberately outside it, so a throttled call still opens the
     // database for the guard pass.
+    // A payload without a usable session id is never throttled: recalling
+    // twice costs a few lines, sharing one list across sessions hid memories.
     const fileKey = filePath.toLowerCase();
+    const hasAgent = data.agent_id !== undefined && data.agent_id !== null && data.agent_id !== '';
+    const throttleFile = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id)
+      && (!hasAgent || (typeof data.agent_id === 'string' && SESSION_ID_RE.test(data.agent_id)))
+      ? throttleFileFor(data.session_id, hasAgent ? data.agent_id : null)
+      : null;
     let seenFiles = [];
     try {
-      if (existsSync(THROTTLE_FILE)) {
-        const raw = JSON.parse(readFileSync(THROTTLE_FILE, 'utf8'));
+      if (throttleFile && existsSync(throttleFile)) {
+        const raw = JSON.parse(readFileSync(throttleFile, 'utf8'));
         seenFiles = Array.isArray(raw) ? raw : [];
       }
     } catch {
@@ -206,7 +221,7 @@ process.stdin.on('end', () => {
     // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling
     // and hands back a WRITABLE handle. This hook only reads; the guard
     // fire counter opens its own writable handle for its one UPDATE.
-    const db = new MemeshDatabase(dbPath, { readOnly: true });
+    const db = openMemeshDb(dbPath, { readOnly: true });
     // MemeshDatabase's constructor always sets busy_timeout to the 30s that
     // is correct for the CLI/MCP/HTTP writers; this hook's own budget
     // (hooks.json) is 5s, so left alone a contended lock outlives the hook.
@@ -478,10 +493,12 @@ process.stdin.on('end', () => {
             }
           }
 
-          // Record as seen either way (avoid re-querying a no-result file) —
-          // but not after a fault: that run looked at nothing, and marking
-          // the file seen would switch recall off for the whole session.
-          if (!recallFault) recordSeen(seenFiles, fileKey);
+          // Record as seen either way (avoid re-querying a no-result file; the
+          // repeat is recorded as throttled, which says nothing about whether
+          // anything was shown) — but not after a fault: that run looked at
+          // nothing, and marking the file seen would switch recall off for
+          // the whole session.
+          if (!recallFault && throttleFile) recordSeen(throttleFile, seenFiles, fileKey);
         }
       }
     } finally {
@@ -518,9 +535,11 @@ process.stdin.on('end', () => {
       // review's reproduction: 9+ decoys failing confirmation hid a 10th,
       // genuinely-matching row, and the old reason claimed there was
       // nothing when there was something this run never got to examine.
-      record('skipped', candidateWindowTruncated
-        ? SKIP_REASONS.candidateWindowTruncated
-        : SKIP_REASONS.nothingToRecall);
+      record('skipped', throttled
+        ? SKIP_REASONS.recallThrottled
+        : candidateWindowTruncated
+          ? SKIP_REASONS.candidateWindowTruncated
+          : SKIP_REASONS.nothingToRecall);
       return pass();
     }
 
@@ -656,14 +675,25 @@ function realpathNearestExisting(dir) {
   return { dir, tail: '' };
 }
 
-function recordSeen(seenFiles, fileKey) {
+function recordSeen(throttleFile, seenFiles, fileKey) {
+  // One ledger row per run, however many steps fail: a list that cannot be
+  // kept means the next edit of the file shows its memories again, and that
+  // must be queryable, not only a line on stderr.
+  let faulted = false;
+  const fault = (err) => {
+    if (faulted) return;
+    faulted = true;
+    record('error', `pre-edit list: ${hookErrorReason(err)}`);
+  };
   try {
     seenFiles.push(fileKey);
     // Cap at 100 to prevent unbounded growth
     if (seenFiles.length > 100) seenFiles = seenFiles.slice(-50);
-    ensurePrivateDir(memeshDir);
-    writePrivateJson(THROTTLE_FILE, seenFiles);
-  } catch {
-    // Non-critical
+    ensurePrivateDir(THROTTLE_DIR);
+    writePrivateJson(throttleFile, seenFiles);
+  } catch (err) {
+    try { process.stderr.write(`[memesh] could not keep the per-session recall list ${throttleFile}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+    fault(err);
   }
+  pruneSessionState(THROTTLE_DIR, Date.now(), fault);
 }

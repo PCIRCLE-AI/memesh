@@ -122,3 +122,37 @@ it.runIf(process.platform === 'win32')('rejects router startup before creating r
   expect(fs.existsSync(path.join(directory, 'router.sock'))).toBe(false);
   expect(fs.existsSync(token)).toBe(false);
 });
+
+// #520: the router keeps its socket, token and database in the data folder,
+// so it needs that folder writable — and must never make it writable itself.
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('router data folder permissions (#520)', () => {
+  const mode = (p: string) => fs.statSync(p).mode & 0o777;
+
+  it('a read-only data folder keeps its owner bits and the router stops with the reason', () => {
+    const directory = privateDirectory();
+    fs.chmodSync(directory, 0o555);
+    try {
+      const result = runRouter(directory, path.join(directory, 'router.token'));
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(1);
+      expect(result.stderr).toMatch(/MeMesh router failed: .*read-only/);
+      expect(result.stderr).not.toMatch(/\n\s+at /);
+      expect(mode(directory)).toBe(0o500);
+    } finally {
+      fs.chmodSync(directory, 0o700);
+    }
+  });
+
+  it('a world-readable data folder becomes owner-only', () => {
+    const directory = privateDirectory();
+    fs.chmodSync(directory, 0o755);
+    // An over-long socket path stops the router right after the folder step,
+    // so the test does not have to wait for a live router.
+    const result = runRouter(directory, path.join(directory, 'router.token'), {
+      MEMESH_ROUTER_SOCKET: path.join(directory, `${'x'.repeat(200)}.sock`),
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('code=invalid_socket_path');
+    expect(mode(directory)).toBe(0o700);
+  });
+});

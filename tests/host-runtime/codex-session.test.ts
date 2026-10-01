@@ -496,3 +496,48 @@ describe.skipIf(process.platform === 'win32')('detached launch input CLI boundar
     if (kind === 'symlink') expect(fs.lstatSync(input).isSymbolicLink()).toBe(true);
   });
 });
+
+// #520: the automatic companion keeps its lifecycle state and control socket
+// in the data folder; a read-only one is reported, never made writable.
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('Codex session data folder permissions (#520)', () => {
+  const mode = (p: string) => fs.statSync(p).mode & 0o777;
+  const connect = () => vi.fn(async () => ({ connection_id: 'automatic', generation: 1, close: async () => undefined }));
+
+  it('a read-only data folder keeps its owner bits and the companion refuses with the reason', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    fs.mkdirSync(dataDir, { mode: 0o700 });
+    fs.chmodSync(dataDir, 0o555);
+    try {
+      await expect(startCodexSessionCompanion(
+        undefined, hook, { PLUGIN_ROOT: '/plugin' }, { connect: connect() as never },
+      )).rejects.toThrow(/read-only/);
+      expect(mode(dataDir)).toBe(0o500);
+    } finally {
+      fs.chmodSync(dataDir, 0o700);
+    }
+  });
+
+  it('a read-only lifecycle folder keeps its owner bits and its state is refused with the reason', () => {
+    const { config } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    const lifecycle = path.join(dataDir, 'runtime', 'codex-session');
+    fs.mkdirSync(lifecycle, { recursive: true, mode: 0o700 });
+    fs.chmodSync(lifecycle, 0o555);
+    try {
+      expect(() => codexCompanionStatePath(dataDir, threadId)).toThrow(/read-only/);
+      expect(mode(lifecycle)).toBe(0o500);
+    } finally {
+      fs.chmodSync(lifecycle, 0o700);
+    }
+  });
+
+  it('a world-readable data folder becomes owner-only', async () => {
+    const { config, hook } = fixture();
+    const dataDir = automaticDataDir(config.workspace as string);
+    fs.mkdirSync(dataDir, { mode: 0o700 });
+    fs.chmodSync(dataDir, 0o755);
+    await startCodexSessionCompanion(undefined, hook, { PLUGIN_ROOT: '/plugin' }, { connect: connect() as never });
+    expect(mode(dataDir)).toBe(0o700);
+  });
+});

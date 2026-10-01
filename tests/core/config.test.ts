@@ -200,3 +200,56 @@ describe('FTS-only config', () => {
     expect(() => updateConfig({ autoCapture: true })).toThrow(ConfigUnreadableError);
   });
 });
+
+// #520: the config folder is the data folder. Other users lose access to it;
+// the owner never gets back a permission the owner took away.
+describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('config folder permissions (#520)', () => {
+  let dir: string;
+  let previousDir: string | undefined;
+  const mode = () => fs.statSync(dir).mode & 0o777;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-config-mode-'));
+    previousDir = process.env.MEMESH_DIR;
+    process.env.MEMESH_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (previousDir === undefined) delete process.env.MEMESH_DIR;
+    else process.env.MEMESH_DIR = previousDir;
+    fs.chmodSync(dir, 0o700);
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  it('a read-only folder keeps its owner bits, and the write fails loudly', () => {
+    fs.chmodSync(dir, 0o555);
+    expect(() => updateConfig({ autoCapture: false })).toThrow(/EACCES/);
+    expect(mode()).toBe(0o500);
+    expect(fs.existsSync(getConfigPath())).toBe(false);
+  });
+
+  it('an existing config.json whose permissions cannot be tightened is reported', () => {
+    fs.writeFileSync(getConfigPath(), '{}', { mode: 0o644 });
+    fs.chmodSync(getConfigPath(), 0o644);
+    const realChmod = fs.chmodSync;
+    vi.spyOn(fs, 'chmodSync').mockImplementation((target, m) => {
+      if (String(target) === getConfigPath()) throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      realChmod(target, m);
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      updateConfig({ autoCapture: false });
+      const written = stderr.mock.calls.map((c) => String(c[0])).join('');
+      expect(written).toContain(getConfigPath());
+      expect(written).toContain('EPERM');
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('a world-readable folder becomes owner-only', () => {
+    fs.chmodSync(dir, 0o755);
+    updateConfig({ autoCapture: false });
+    expect(mode()).toBe(0o700);
+  });
+});

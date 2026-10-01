@@ -74,7 +74,12 @@ async function setup(code = 'unexpected_field') {
   const server = net.createServer(s => {
     sockets.add(s); s.on('error', () => {}); s.once('close', () => sockets.delete(s));
     s.once('data', chunk => {
-      const frame = JSON.parse(chunk.toString().trim());
+      const frame = JSON.parse(chunk.toString().trim().split('\n')[0]);
+      if (code === 'accept') {
+        s.write(JSON.stringify({ version: 2, request_id: frame.request_id, ok: true,
+          result: { memesh_version: '0.0.0', connection_id: 'fixture', generation: 1, lease_ms: 60000 } }) + '\n');
+        return;
+      }
       response = () => s.write(JSON.stringify({ version: 2, request_id: code === 'unexpected_field' ? '' : frame.request_id,
         ok: false, error: { code, message: code === 'unexpected_field'
           ? 'Router frame contains unsupported field memesh_version.' : 'fixture invalid token' } }) + '\n');
@@ -119,6 +124,10 @@ function faultAfterFlag(f: Fixture, call: string, match: string, flag: string, n
   return preload;
 }
 function controlSocket(f: Fixture) {
+  return path.join(f.d, `c-${createHash('sha256').update(`v2:${thread}`).digest('hex').slice(0, 8)}.sock`);
+}
+/** The name a companion from before #518 bound. */
+function legacySocket(f: Fixture) {
   return path.join(f.d, `c-${createHash('sha256').update(thread).digest('hex').slice(0, 8)}.sock`);
 }
 function controls(f: Fixture) { return fs.readdirSync(f.d).filter(x => x.startsWith('c-')); }
@@ -148,11 +157,13 @@ function answers(socket: string) {
   });
 }
 /** A lifecycle record naming `ino` as its socket (none: a record from before #518), by default for a process that is gone. */
-function stageDeadOwner(f: Fixture, ino: string | undefined, pid = 2_147_483_647) {
+function stageDeadOwner(f: Fixture, ino: string | undefined, pid = 2_147_483_647, socket = controlSocket(f)) {
   fs.mkdirSync(f.life, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(f.life, `${thread}.json`), `${JSON.stringify({
     version: 1, pid, thread_id: thread, workspace: fs.realpathSync(f.d),
-    token: 'a'.repeat(32), control_socket: controlSocket(f), control_socket_ino: ino,
+    token: 'a'.repeat(32), control_socket: socket, control_socket_ino: ino,
+    // A record with an inode is written by a current companion, registered once the router accepted it.
+    ...(ino === undefined ? {} : { registered: true }),
   })}\n`, { mode: 0o600 });
 }
 describe.skipIf(process.platform === 'win32')('#518 companion failure channel', () => {
@@ -278,7 +289,7 @@ describe.skipIf(process.platform === 'win32')('#518 companion failure channel', 
     expect(fs.existsSync(stale)).toBe(false);
     expect(fs.readdirSync(f.life)).toEqual([]);
   });
-  it('a socket no record owns is left in place, and the start says why', async () => {
+  it('a socket no record owns is left in place, and the start says why without asking anyone to delete it', async () => {
     // Nothing proves its owner is gone: "nobody answers" is also what a live
     // companion between bind and listen looks like.
     const f = await setup(); const stale = controlSocket(f);
@@ -290,51 +301,83 @@ describe.skipIf(process.platform === 'win32')('#518 companion failure channel', 
     expect(p.c.exitCode).toBe(1);
     expect(p.stderr()).toContain('companion_busy');
     expect(p.stderr()).toContain(stale);
-    // Nothing is known to hold it: the line must not claim a live owner, and names the check.
+    expect(p.stderr()).toContain('no record shows');
+    // Nothing is known to hold it, and no check can prove it unused: no claim of a live owner, no deletion advice.
     expect(p.stderr()).not.toContain('still holds');
-    expect(p.stderr()).toContain(`lsof -U | grep '${stale}'`);
+    expect(p.stderr()).not.toMatch(/delete|lsof|rm /);
     expect(p.stderr().trim().split('\n')).toHaveLength(1);
     expect(fs.lstatSync(stale).ino).toBe(ino);
     expect(fs.readdirSync(f.life)).toEqual([]);
   });
-  it('a record from before #518 leaves its socket in place, and the start names the file and the one step', async () => {
-    const f = await setup(); const stale = controlSocket(f);
-    const holder = await holdSocket(stale);
+  it('a dead companion\'s record from before #518 no longer blocks the start, and its socket is left untouched', async () => {
+    const f = await setup(); const legacy = legacySocket(f);
+    const holder = await holdSocket(legacy);
     holder.kill('SIGKILL'); await new Promise(r => holder.once('close', r));
-    stageDeadOwner(f, undefined);
-    const ino = fs.lstatSync(stale).ino;
+    stageDeadOwner(f, undefined, 2_147_483_647, legacy);
+    const ino = fs.lstatSync(legacy).ino;
+    const q = launch(f);
+    await wait(() => !!f.response() || q.c.exitCode !== null);
+    expect(q.c.exitCode).toBeNull();
+    // The old record is retired; the new companion recorded its own socket, under the current name.
+    const record = JSON.parse(fs.readFileSync(path.join(f.life, `${thread}.json`), 'utf8'));
+    expect(record.token).not.toBe('a'.repeat(32));
+    expect(record.control_socket).toBe(controlSocket(f));
+    expect(fs.lstatSync(legacy).ino).toBe(ino);
+    f.response()!();
+    await wait(() => q.c.exitCode !== null);
+    expect(q.stderr()).not.toMatch(/delete|lsof/);
+    expect(fs.lstatSync(legacy).ino).toBe(ino);
+    // What became of the old record is on record, with the reason.
+    expect(companionLog(f)).toContain(`left ${legacy} in place: the record is from before #518`);
+  });
+  it('clearing a dead record from before #518 never touches a live socket at the current name', async () => {
+    const f = await setup(); const legacy = legacySocket(f);
+    const old = await holdSocket(legacy);
+    old.kill('SIGKILL'); await new Promise(r => old.once('close', r));
+    stageDeadOwner(f, undefined, 2_147_483_647, legacy);
+    const live = await holdSocket(controlSocket(f));
+    const liveIno = fs.lstatSync(controlSocket(f)).ino;
     const p = launch(f);
     await wait(() => p.c.exitCode !== null);
     expect(p.c.exitCode).toBe(1);
     expect(p.stderr()).toContain('companion_busy');
-    expect(p.stderr()).toContain('older MeMesh');
-    expect(p.stderr()).not.toContain('still holds');
-    expect(p.stderr()).toContain(`lsof -U | grep '${stale}'`);
-    expect(p.stderr().trim().split('\n')).toHaveLength(1);
-    expect(fs.lstatSync(stale).ino).toBe(ino);
-    // The step the line names is enough: the next start proceeds and retires the old record.
-    fs.unlinkSync(stale);
-    const q = launch(f);
-    await wait(() => !!f.response() || q.c.exitCode !== null);
-    expect(q.c.exitCode).toBeNull();
-    expect(fs.existsSync(path.join(f.life, `${thread}.json`))).toBe(false);
+    expect(fs.lstatSync(controlSocket(f)).ino).toBe(liveIno);
+    expect(await answers(controlSocket(f))).toBe(true);
+    live.kill('SIGKILL');
   });
-  it('SessionEnd with a dead companion\'s record from before #518 ends cleanly and says what it left', async () => {
-    const f = await setup(); const stale = controlSocket(f);
-    const holder = await holdSocket(stale);
+  it('a companion killed while it connects to the router leaves a record the next start clears', async () => {
+    const f = await setup(); launch(f);
+    await wait(() => !!f.response());
+    // Recorded before the router answered, with its socket's inode, but not yet registered.
+    const record = JSON.parse(fs.readFileSync(path.join(f.life, `${thread}.json`), 'utf8'));
+    expect(record.control_socket_ino).toBe(String(fs.lstatSync(controlSocket(f), { bigint: true }).ino));
+    expect(record.registered).toBeUndefined();
+    const companion = record.pid as number;
+    process.kill(companion, 'SIGKILL');
+    await wait(() => { try { process.kill(companion, 0); return false; } catch { return true; } });
+    expect(fs.existsSync(controlSocket(f))).toBe(true);
+    const q = launch(f);
+    const token = () => { try { return JSON.parse(fs.readFileSync(path.join(f.life, `${thread}.json`), 'utf8')).token; } catch { return undefined; } };
+    await wait(() => (token() !== undefined && token() !== record.token) || q.c.exitCode !== null);
+    expect(q.c.exitCode).toBeNull();
+    // The dead companion's record was cleared and its socket removed (a new socket may reuse the inode number).
+    expect(companionLog(f)).toContain(`cleared the record of companion ${companion}, which had exited; removed its socket ${controlSocket(f)}`);
+  });
+  it('SessionEnd with a dead companion\'s record from before #518 ends cleanly, leaves its socket and asks nothing', async () => {
+    const f = await setup(); const legacy = legacySocket(f);
+    const holder = await holdSocket(legacy);
     holder.kill('SIGKILL'); await new Promise(r => holder.once('close', r));
-    stageDeadOwner(f, undefined);
-    const ino = fs.lstatSync(stale).ino;
+    stageDeadOwner(f, undefined, 2_147_483_647, legacy);
+    const ino = fs.lstatSync(legacy).ino;
     const e = end(f);
     await wait(() => e.c.exitCode !== null);
     expect(e.c.exitCode).toBe(0);
-    expect(e.stderr()).toContain('session ended');
-    expect(e.stderr()).not.toContain('registration');
-    expect(e.stderr()).not.toContain('start the session');
-    expect(e.stderr()).toContain(`lsof -U | grep '${stale}'`);
-    expect(e.stderr().trim().split('\n')).toHaveLength(1);
-    expect(fs.lstatSync(stale).ino).toBe(ino);
+    expect(e.stderr()).toBe('');
+    expect(fs.lstatSync(legacy).ino).toBe(ino);
     expect(fs.existsSync(path.join(f.life, `${thread}.json`))).toBe(false);
+    // Silent on the terminal, but what it did and why is recorded.
+    expect(companionLog(f)).toContain('cleared the record of companion 2147483647, which had exited;');
+    expect(companionLog(f)).toContain(`left ${legacy} in place: the record is from before #518`);
   });
   it('a SessionEnd failure is reported as a session end, not a registration', async () => {
     const f = await setup();
@@ -373,6 +416,8 @@ describe.skipIf(process.platform === 'win32')('#518 companion failure channel', 
     expect(p.stderr()).toContain('companion_busy');
     expect(p.stderr()).toContain(`process ${process.pid}`);
     expect(p.stderr()).toContain('does not answer');
+    // The record is the only proof of which socket is the companion's: never advise deleting it.
+    expect(p.stderr()).not.toContain('delete');
     expect(p.stderr().trim().split('\n')).toHaveLength(1);
     expect(fs.existsSync(path.join(f.life, `${thread}.json`))).toBe(true);
   });
@@ -467,6 +512,31 @@ describe.skipIf(process.platform === 'win32')('#518 companion failure channel', 
     await new Promise(r => setTimeout(r, 300));
     expect(a.c.exitCode).toBeNull(); expect(a.stderr()).toBe('');
     expect(controls(f)).toHaveLength(1);
+  });
+  it('a bind that loses with EEXIST is refused like EADDRINUSE, in one line', async () => {
+    // Two starts binding at once: macOS sometimes reports the loser as EEXIST.
+    const f = await setup();
+    const preload = path.join(f.d, 'eexist.mjs');
+    fs.writeFileSync(preload, `import net from 'node:net';const real=net.Server.prototype.listen;
+      net.Server.prototype.listen=function(p,...rest){if(typeof p==='string'&&p.includes('/c-')){process.nextTick(()=>{
+      const e=new Error('listen EEXIST: file already exists '+p);e.code='EEXIST';this.emit('error',e)});return this}
+      return real.call(this,p,...rest)};`);
+    const p = launch(f, preload);
+    await wait(() => p.c.exitCode !== null, 8000);
+    expect(p.c.exitCode).toBe(1);
+    expect(p.stderr()).toContain('companion_busy');
+    expect(p.stderr()).toContain('no record shows');
+    expect(p.stderr().trim().split('\n')).toHaveLength(1);
+  });
+  it('a start the router accepts exits 0 and leaves its companion running and registered', async () => {
+    const f = await setup('accept');
+    const p = launch(f);
+    await wait(() => p.c.exitCode !== null, 8000);
+    expect(p.c.exitCode).toBe(0); expect(p.stderr()).toBe('');
+    const record = JSON.parse(fs.readFileSync(path.join(f.life, `${thread}.json`), 'utf8'));
+    expect(record.registered).toBe(true);
+    expect(() => process.kill(record.pid, 0)).not.toThrow();
+    expect(fs.existsSync(controlSocket(f))).toBe(true);
   });
   it('a second start for the same session refuses, and the running companion keeps its socket', async () => {
     const f = await setup();

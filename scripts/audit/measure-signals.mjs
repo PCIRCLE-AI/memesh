@@ -39,6 +39,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { refuseMismatchedSidecars } from '../hooks/_generated/file-mode.js';
 
 const args = process.argv.slice(2);
 const asJson = args.includes('--json');
@@ -52,6 +53,14 @@ if (!fs.existsSync(dbPath)) {
   process.exit(2);
 }
 
+// SQLite resets an empty -wal/-shm to the database's mode even on a
+// read-only open; refuse instead, as every MeMesh open does (#520).
+try {
+  refuseMismatchedSidecars(dbPath);
+} catch (err) {
+  console.error(err?.message ?? String(err));
+  process.exit(2);
+}
 const db = new DatabaseSync(dbPath, { readOnly: true });
 const one = (sql, ...a) => { try { return db.prepare(sql).get(...a); } catch { return undefined; } };
 const many = (sql, ...a) => { try { return db.prepare(sql).all(...a); } catch { return []; } };

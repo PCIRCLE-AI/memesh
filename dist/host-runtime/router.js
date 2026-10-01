@@ -8,6 +8,7 @@ import { createCodexCliQueueAdapter } from '../host-adapters/codex-cli-queue.js'
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath } from '../core/paths.js';
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile } from './config.js';
 import { memeshPackageVersion } from './package-version.js';
+import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 const dataDir = getMemeshDirFromDbPath();
 const socketFromEnv = process.env.MEMESH_ROUTER_SOCKET;
 const socketPath = socketFromEnv ?? getAgentRouterSocketPath();
@@ -38,7 +39,7 @@ let router;
 try {
     assertSecureLocalHostRuntimeSupported();
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    fs.chmodSync(dataDir, 0o700);
+    requirePrivateWritableDirectory(dataDir, 'the router keeps its socket, token and messages there');
     const expectedToken = ensureRouterTokenFile(tokenFile);
     const authenticate = (registration) => {
         if (!registration.auth_token)

@@ -11,6 +11,7 @@ import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
 import { TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { recallListName } from '../../scripts/hooks/_stop-notes.js';
 
 const require = createRequire(import.meta.url);
 // Non-git identity is basename + real-path hash; derive seeds through the
@@ -966,12 +967,82 @@ describe('Feature: Session Start Hook', () => {
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(1, projTag('anyproject'));
     db.close();
 
-    const throttlePath = path.join(testDir, 'session-recalled-files.json');
-    fs.writeFileSync(throttlePath, JSON.stringify(['/src/auth.ts']), 'utf8');
+    // #521: a start of THIS session clears its own list, not another session's.
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const own = path.join(dir, recallListName('this-session'));
+    const other = path.join(dir, recallListName('other-session'));
+    fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+    fs.writeFileSync(other, JSON.stringify(['/src/auth.ts']), 'utf8');
+    const legacy = path.join(testDir, 'session-recalled-files.json');
+    fs.writeFileSync(legacy, JSON.stringify(['/src/auth.ts']), 'utf8');
 
-    runHook({ cwd: '/tmp/anyproject' });
+    runHook({ cwd: '/tmp/anyproject', session_id: 'this-session' });
 
-    expect(fs.existsSync(throttlePath)).toBe(false);
+    expect(fs.existsSync(own)).toBe(false);
+    expect(fs.existsSync(other)).toBe(true);
+    expect(fs.existsSync(legacy)).toBe(false);
+  });
+
+  it('Scenario: A failed reset of this session\'s pre-edit list is reported, not a clean start (#521)', () => {
+    const db = createTestDb();
+    db.close();
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const own = path.join(dir, recallListName('this-session'));
+    fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+    const loader = path.join(testDir, 'fault.mjs');
+    fs.writeFileSync(loader, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const original = fs.unlinkSync;
+fs.unlinkSync = function (p, ...rest) {
+  if (String(p) === ${JSON.stringify(own)}) { const e = new Error('controlled EPERM'); e.code = 'EPERM'; throw e; }
+  return original.call(this, p, ...rest);
+};
+syncBuiltinESMExports();
+`);
+    const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd: '/tmp/anyproject', session_id: 'this-session', source: 'resume' }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.existsSync(own)).toBe(true);
+    expect(result.stderr).toContain('controlled EPERM');
+    const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l))
+      .filter((o) => o.hook === 'session-start');
+    expect(outcomes.some((o) => o.outcome === 'error' && String(o.reason).startsWith('pre-edit reset'))).toBe(true);
+  });
+
+  it('Scenario: A start that carries agent_type (a `claude --agent` main session) still resets its pre-edit list (#521)', () => {
+    // Native payloads (Claude Code 2.1.285): a `claude --agent x` main session's SessionStart carries
+    // agent_type but no agent_id, and a subagent has no SessionStart of its own.
+    const db = createTestDb();
+    db.close();
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const own = path.join(dir, recallListName('this-session'));
+    fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+
+    runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_type: 'x', source: 'compact' });
+
+    expect(fs.existsSync(own)).toBe(false);
+  });
+
+  it('Scenario: A start that names an agent_id (never seen so far) would be a subagent\'s and leaves its parent\'s list alone (#521)', () => {
+    const db = createTestDb();
+    db.close();
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const own = path.join(dir, recallListName('this-session'));
+    fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+
+    runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_id: 'sub1', agent_type: 'Explore' });
+
+    const kept = JSON.parse(fs.readFileSync(own, 'utf8')) as string[];
+    expect(kept).toEqual(['/src/auth.ts']);
   });
 
   it('Scenario: Session tracking files are written with private permissions', () => {

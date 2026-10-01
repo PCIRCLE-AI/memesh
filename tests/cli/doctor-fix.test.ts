@@ -8,6 +8,7 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { closeDatabase, openDatabase } from '../../src/db.js';
 
 const CLI = path.resolve('dist/transports/cli/cli.js');
 
@@ -69,5 +70,56 @@ describe('memesh doctor --fix', () => {
     expect(r.stdout).toContain('Nothing on the --fix whitelist to apply.');
     // And it did NOT write hooks over the plugin's management.
     expect(fs.existsSync(path.join(home, '.claude', 'settings.json'))).toBe(false);
+  });
+
+  describe('#520: removes other users\' access, never gives the owner back a permission', () => {
+    const posixUser = process.platform !== 'win32' && process.getuid?.() !== 0;
+    const mode = (p: string) => fs.statSync(p).mode & 0o777;
+    let dataDir: string;
+    let dbPath: string;
+
+    beforeEach(() => {
+      dataDir = path.join(home, '.memesh');
+      dbPath = path.join(dataDir, 'knowledge-graph.db');
+      openDatabase(dbPath);
+      closeDatabase();
+    });
+
+    afterEach(() => {
+      try { fs.chmodSync(dataDir, 0o700); fs.chmodSync(dbPath, 0o600); } catch { /* gone */ }
+    });
+
+    it.skipIf(!posixUser)('a read-only database in a read-only folder keeps its owner bits, and doctor says how to restore them', () => {
+      fs.chmodSync(dbPath, 0o444);
+      fs.chmodSync(dataDir, 0o555);
+      const r = run(['doctor', '--fix', '--yes']);
+      expect(mode(dbPath)).toBe(0o400); // owner r-- kept; group/other read removed
+      expect(mode(dataDir)).toBe(0o500); // owner r-x kept; group/other removed
+      expect(r.stdout).not.toContain('permissions restored');
+      // The open's own reason (the folder is read-only and the database has
+      // no -wal/-shm to read from) and its one command, never a move/reset.
+      const database = r.stdout.match(/\[FAIL\] Database\n([^\n]*)\n\s*Fix: ([^\n]*)/);
+      expect(database?.[1]).toContain(`${dataDir} is read-only`);
+      expect(database?.[2]).toBe(`Run: chmod u+w '${dataDir}'`);
+      expect(r.stdout).not.toMatch(/Backup and reset|\bmv '/);
+    });
+
+    it.skipIf(!posixUser)('a read-only database is named read-only in the Database row, with the command', () => {
+      fs.chmodSync(dbPath, 0o444);
+      const r = run(['doctor']);
+      const database = r.stdout.match(/\[(\w+)\] Database\n([^\n]*)\n\s*Fix: ([^\n]*)/);
+      expect(database?.[1]).toBe('WARN');
+      expect(database?.[2]).toContain('is read-only');
+      expect(database?.[3]).toContain(`chmod u+w '${dbPath}'`);
+      expect(mode(dbPath)).toBe(0o400);
+    });
+
+    it.skipIf(!posixUser)('a world-readable database and folder become owner-only', () => {
+      fs.chmodSync(dbPath, 0o644);
+      fs.chmodSync(dataDir, 0o755);
+      run(['doctor', '--fix', '--yes']);
+      expect(mode(dbPath)).toBe(0o600);
+      expect(mode(dataDir)).toBe(0o700);
+    });
   });
 });

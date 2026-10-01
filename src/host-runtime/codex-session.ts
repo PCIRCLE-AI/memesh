@@ -13,6 +13,7 @@ import {
   resolveCodexSessionPrincipal,
 } from '../core/codex-session-principal.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath, getProjectName } from '../core/paths.js';
+import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 import {
   assertSecureLocalHostRuntimeSupported,
   ensureRouterTokenFile,
@@ -54,6 +55,8 @@ interface CodexCompanionState {
   control_socket: string;
   /** The inode of the socket this companion bound. Absent in a record from before #518, whose socket is then never removed on its behalf. */
   control_socket_ino?: string;
+  /** Written once the router accepted the companion; the launcher waits for it. */
+  registered?: true;
 }
 
 export interface CodexSessionCompanionDependencies {
@@ -74,7 +77,7 @@ function lifecycleDirectory(dataDir: string): string {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   const stat = fs.lstatSync(directory);
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Codex companion lifecycle directory must be a real private directory.');
-  fs.chmodSync(directory, 0o700);
+  requirePrivateWritableDirectory(directory, 'the Codex session companion keeps its lifecycle state there');
   return directory;
 }
 
@@ -83,7 +86,12 @@ export function codexCompanionStatePath(dataDir: string, threadId: string): stri
 }
 
 export function codexCompanionControlSocketPath(dataDir: string, threadId: string): string {
-  const digest = createHash('sha256').update(threadId).digest('hex').slice(0, 8);
+  // Not the name a companion from before #518 bound (the digest of the bare
+  // thread id): its record names no inode, so nothing can prove that socket is
+  // unused, and a companion that binds another name is never blocked by it.
+  // Same length as before, and other letters, not other case: macOS file
+  // systems usually ignore case.
+  const digest = createHash('sha256').update(`v2:${threadId}`).digest('hex').slice(0, 8);
   // Keep this filename shorter than agent-router-v2.sock. Any data directory
   // already accepted by the router therefore also fits macOS AF_UNIX limits.
   return path.join(dataDir, `c-${digest}.sock`);
@@ -146,11 +154,12 @@ function errorText(error: unknown): string {
 }
 
 /**
- * The detached companion has no stdio, so why it could not stop cleanly is
+ * The detached companion has no stdio, so why it could not stop cleanly, and
+ * what a start or SessionEnd did with an exited companion's record, are
  * appended to an owner-private log in the data directory. If even that fails,
  * stderr is the last channel left.
  */
-function recordCompanionFailure(dataDir: string, line: string): void {
+function recordCompanionLog(dataDir: string, line: string): void {
   const text = `[${new Date().toISOString()}] ${line}\n`;
   try {
     fs.appendFileSync(path.join(dataDir, 'codex-companion.log'), text, { mode: 0o600 });
@@ -235,7 +244,8 @@ async function launchDetachedCompanion(
     // Check, then stop at the deadline, then wait: the last check always comes
     // after the last wait, so a reason published just before the deadline wins.
     for (;;) {
-      if (readCompanionState(statePath)?.pid === child.pid) return;
+      const state = readCompanionState(statePath);
+      if (state !== null && state.pid === child.pid && state.registered === true) return;
       const failure = takeCompanionFailure(failurePath);
       if (failure) throw failure;
       if (Date.now() >= deadline) break;
@@ -320,28 +330,18 @@ function socketIsSame(socketPath: string, ino: string | undefined): boolean {
   }
 }
 
-/** How to check a control socket is unused before deleting it by hand. */
-function unusedSocketCheck(socketPath: string): string {
-  return `If \`lsof -U | grep '${socketPath}'\` prints nothing, delete that file`;
-}
-
-function legacySocketNote(socketPath: string): string {
-  return `its record came from an older MeMesh and did not say which socket was its own, so ${socketPath} is left in place. `
-    + `${unusedSocketCheck(socketPath)}`;
-}
-
 /**
- * Clear the record of a companion whose process is gone. Returns the socket
- * path it had to leave in place (a record from before #518 names no inode),
- * else null.
+ * Clear the record of a companion whose process is gone, and its socket when
+ * it is still the one that companion bound. A record from before #518 names no
+ * inode: its socket is left in place, under a name no current companion binds.
  */
-function removeStaleState(statePath: string, state: CodexCompanionState): string | null {
-  if (!pidIsGone(state.pid)) return null;
+function removeStaleState(dataDir: string, statePath: string, state: CodexCompanionState): void {
+  if (!pidIsGone(state.pid)) return;
   // Move the record aside in one step: only the process whose rename took THIS
   // record may remove its socket, so two cleaners cannot both act on it.
   const taken = `${statePath}.${randomBytes(6).toString('hex')}.stale`;
   try { fs.renameSync(statePath, taken); } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
   }
   if (readCompanionState(taken)?.token !== state.token) {
@@ -350,15 +350,18 @@ function removeStaleState(statePath: string, state: CodexCompanionState): string
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
     fs.unlinkSync(taken);
-    return null;
+    return;
   }
   fs.unlinkSync(taken);
+  const cleared = `cleared the record of companion ${state.pid}, which had exited;`;
   if (socketIsSame(state.control_socket, state.control_socket_ino)) {
     fs.unlinkSync(state.control_socket);
-  } else if (state.control_socket_ino === undefined && fs.existsSync(state.control_socket)) {
-    return state.control_socket;
+    recordCompanionLog(dataDir, `${cleared} removed its socket ${state.control_socket}`);
+  } else if (state.control_socket_ino === undefined) {
+    recordCompanionLog(dataDir, `${cleared} left ${state.control_socket} in place: the record is from before #518 and names no socket inode`);
+  } else {
+    recordCompanionLog(dataDir, `${cleared} ${state.control_socket} is no longer the socket it bound, left in place`);
   }
-  return null;
 }
 
 /** Ask a running companion to terminate/retire over its control socket. Exported so `scripts/qa/live-journey.mjs` speaks the one protocol instead of a copy. */
@@ -394,12 +397,15 @@ async function terminatePriorExactCompanion(dataDir: string, session: ValidCodex
   if (state.thread_id !== session.threadId || state.workspace !== session.workspace) {
     throw new Error('Codex companion lifecycle state belongs to another exact session; refusing cross-thread termination.');
   }
+  // Recorded but not yet registered, and still running: another start for this
+  // session is under way. Refused as before the record was written this early;
+  // only a registered companion is replaced by a new start.
+  if (state.control_socket_ino !== undefined && state.registered !== true && !pidIsGone(state.pid)) {
+    throw new CompanionRefusal(`companion_busy: process ${state.pid} is still starting this Codex session's companion. `
+      + 'Start the session again once it has finished.');
+  }
   if (!await requestExactCompanionControl(state, 'terminate')) {
-    const leftSocket = removeStaleState(statePath, state);
-    if (leftSocket) {
-      throw new CompanionRefusal(`companion_busy: the last MeMesh companion for this Codex session has exited, but ${legacySocketNote(leftSocket)} `
-        + 'and start the session again.');
-    }
+    removeStaleState(dataDir, statePath, state);
     if (fs.existsSync(statePath)) {
       const current = readCompanionState(statePath);
       if (current?.token !== state.token) {
@@ -409,7 +415,8 @@ async function terminatePriorExactCompanion(dataDir: string, session: ValidCodex
       // Its process is still running: never signal a PID on the record's word alone.
       throw new CompanionRefusal(`companion_busy: process ${state.pid}, which ${statePath} names as this Codex session's companion, `
         + `is still running but does not answer on ${state.control_socket}. If \`ps -p ${state.pid}\` shows a MeMesh companion, `
-        + `stop it with \`kill ${state.pid}\`; otherwise delete ${statePath}. Then start the session again.`);
+        // Deleting a current record would drop the only proof of which socket is its own.
+        + `stop it with \`kill ${state.pid}\`${state.control_socket_ino === undefined ? `; otherwise delete ${statePath}` : ''}. Then start the session again.`);
     }
     return;
   }
@@ -459,9 +466,10 @@ function createCompanionControlServer(
         }
       });
     });
-    server.once('error', (error: NodeJS.ErrnoException) => reject(error.code === 'EADDRINUSE'
-      ? new CompanionRefusal(`companion_busy: ${socketPath} is still in place, and nothing records whether an earlier companion `
-        + `for this Codex session still uses it. ${unusedSocketCheck(socketPath)} and start the session again.`)
+    // Two starts binding at once: macOS reports the loser as EEXIST as well as EADDRINUSE.
+    server.once('error', (error: NodeJS.ErrnoException) => reject(error.code === 'EADDRINUSE' || error.code === 'EEXIST'
+      ? new CompanionRefusal(`companion_busy: ${socketPath} is still in place, and no record shows which companion `
+        + 'for this Codex session made it or whether it still uses it, so MeMesh leaves it alone and does not start a second one.')
       : error));
     server.listen(socketPath, () => resolve(server));
   });
@@ -603,7 +611,7 @@ function ensureOwnerPrivateDataDirectory(dataDir: string): void {
   if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
     throw new Error('The MeMesh data directory must be owned by the current user.');
   }
-  fs.chmodSync(dataDir, 0o700);
+  requirePrivateWritableDirectory(dataDir, 'the Codex session companion keeps its state and control socket there');
   if ((fs.lstatSync(dataDir).mode & 0o077) !== 0) {
     throw new Error('The MeMesh data directory must be owner-private.');
   }
@@ -641,24 +649,21 @@ async function readHookInput(): Promise<CodexSessionStartInput> {
   return value as CodexSessionStartInput;
 }
 
-/** Returns a note for the user when the session ended but something had to be left in place, else null. */
-async function endExactCodexSessionCompanion(dataDir: string, session: ValidCodexSessionStart): Promise<string | null> {
+async function endExactCodexSessionCompanion(dataDir: string, session: ValidCodexSessionStart): Promise<void> {
   const statePath = codexCompanionStatePath(dataDir, session.threadId);
   const state = readCompanionState(statePath);
   if (!state) {
     if (fs.existsSync(statePath)) throw new Error('Codex companion lifecycle state is malformed; refusing SessionEnd cleanup.');
-    return null;
+    return;
   }
   if (state.thread_id !== session.threadId || state.workspace !== session.workspace) {
     throw new Error('Codex SessionEnd does not match the stored companion identity; refusing cross-thread termination.');
   }
-  if (await requestExactCompanionControl(state, 'retire')) return null;
-  const leftSocket = removeStaleState(statePath, state);
-  if (leftSocket) return `session ended. Its companion had already exited, but ${legacySocketNote(leftSocket)}.`;
+  if (await requestExactCompanionControl(state, 'retire')) return;
+  removeStaleState(dataDir, statePath, state);
   if (fs.existsSync(statePath)) {
     throw new Error('Codex SessionEnd could not prove the stored companion identity; refusing PID-based termination.');
   }
-  return null;
 }
 
 export async function endCodexSessionCompanion(
@@ -704,7 +709,7 @@ async function runDetachedCompanion(
     }
     if (ownsPath) await new Promise<void>((resolve) => control?.close(() => resolve()) ?? resolve());
     removeOwnState(statePath, token);
-    if (problems.length > 0) recordCompanionFailure(dataDir, `companion ${process.pid} stopped with problems: ${problems.join('; ')}`);
+    if (problems.length > 0) recordCompanionLog(dataDir, `companion ${process.pid} stopped with problems: ${problems.join('; ')}`);
     return problems.length > 0;
   })();
   const exitAfterShutdown = () => {
@@ -713,7 +718,7 @@ async function runDetachedCompanion(
       // No argument: a failed start already set exitCode, and must keep it.
       process.exit();
     }, (error: unknown) => {
-      recordCompanionFailure(dataDir, `companion ${process.pid} could not finish stopping: ${errorText(error)}`);
+      recordCompanionLog(dataDir, `companion ${process.pid} could not finish stopping: ${errorText(error)}`);
       process.exit(1);
     });
   };
@@ -734,13 +739,10 @@ async function runDetachedCompanion(
     await terminatePriorExactCompanion(dataDir, session);
     control = await createCompanionControlServer(socketPath, token, controlLifecycle);
     socketIno = socketInode(socketPath);
-    connection = await connectCodexSessionCompanion(
-      readCodexSessionConfigIfPresent(path.join(dataDir, 'hosts', 'codex-session.json')),
-      session,
-      fs.realpathSync,
-      connectRouterHost,
-    );
-    writeCompanionState(statePath, {
+    // Recorded before the router connect, so a companion killed while connecting
+    // leaves a record naming its socket's inode, which the next start clears
+    // (removeStaleState) instead of finding a socket nothing claims.
+    const record: CodexCompanionState = {
       version: 1,
       pid: process.pid,
       thread_id: session.threadId,
@@ -748,7 +750,15 @@ async function runDetachedCompanion(
       token,
       control_socket: socketPath,
       control_socket_ino: socketIno,
-    });
+    };
+    writeCompanionState(statePath, record);
+    connection = await connectCodexSessionCompanion(
+      readCodexSessionConfigIfPresent(path.join(dataDir, 'hosts', 'codex-session.json')),
+      session,
+      fs.realpathSync,
+      connectRouterHost,
+    );
+    writeCompanionState(statePath, { ...record, registered: true });
   } catch (error) {
     process.exitCode = 1;
     try {
@@ -784,8 +794,7 @@ async function main(): Promise<void> {
   if (ending) {
     failureLead = 'session end failed.';
     ensureOwnerPrivateDataDirectory(dataDir);
-    const note = await endExactCodexSessionCompanion(dataDir, ending);
-    if (note) fs.writeSync(2, `memesh-host-codex-session: ${note}\n`);
+    await endExactCodexSessionCompanion(dataDir, ending);
     return;
   }
   const session = validateCodexSessionStart(input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT }, fs.realpathSync);
