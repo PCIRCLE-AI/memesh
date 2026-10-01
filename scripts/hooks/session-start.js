@@ -85,6 +85,7 @@ import {
 } from './_generated/briefing-index.js';
 import { handoffView, SESSION_HANDOFF_TYPE, sessionHandoffName } from './_generated/session-handoff.js';
 import { recipientEverSeenAnywhere, unknownRecipientHint } from './_generated/agent-message-inbox.js';
+import { redactMemoryText } from './_generated/core-paths.js';
 import {
   boundTaskStateLines,
   DECISION_LAYER_TYPES,
@@ -1547,7 +1548,10 @@ process.stdin.on('end', async () => {
             // clip()'s, on a word boundary — a hard slice at the line cap
             // would hand it a string with nothing left to trim and ship
             // mid-word fragments again.
-            if (text) snippets.set(row.entity_id, text.slice(0, SNIPPET_FETCH_CHARS));
+            // Redacted BEFORE the bound: a credential longer than the window
+            // lost its terminating `@` to the cut, stopped matching, and its
+            // prefix was printed. The mapping below redacts again (harmless).
+            if (text) snippets.set(row.entity_id, redactMemoryText(text).slice(0, SNIPPET_FETCH_CHARS));
           }
         }
 
@@ -1639,8 +1643,12 @@ process.stdin.on('end', async () => {
             // agent can credit the exact memory it used (the Stop hook's
             // accounting reads those markers back).
             id: e.id,
-            title: e.title ?? null,
-            snippet: snippets.get(e.id) ?? null,
+            // #464: the same redaction the durable-memory index applies, so a
+            // memory in both cannot be printed verbatim here and redacted a
+            // few lines below. Core's mapping (briefing.ts `toTopologyEntity`)
+            // does the same; the shared line builder cannot (see its comment).
+            title: e.title == null ? null : redactMemoryText(e.title),
+            snippet: snippets.has(e.id) ? redactMemoryText(snippets.get(e.id)) : null,
             signalScore: meta && typeof meta.signal_score === 'number' ? meta.signal_score : null,
             recency: e.recency ?? null,
           };
@@ -1701,7 +1709,7 @@ process.stdin.on('end', async () => {
         const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
         const indexRows = db.prepare(
           `SELECT e.id, e.name, e.type,${hasTitle ? ' e.title,' : ''} e.metadata,
-             (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+             (SELECT o.content FROM observations o
                WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
              max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
                WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
@@ -1717,7 +1725,9 @@ process.stdin.on('end', async () => {
             id: row.id,
             type: row.type,
             title: row.title ?? null,
-            snippet: row.snippet,
+            // Whole observation fetched, redacted, THEN bounded — `substr()`
+            // in SQL cut long credentials before the redactor saw them.
+            snippet: row.snippet == null ? null : redactMemoryText(row.snippet).slice(0, INDEX_SNIPPET_FETCH_CHARS),
             lastActivity: row.last_activity,
             // The RAW column: the index's gate must tell an absent metadata
             // column (allowed) from unparseable JSON (refused), exactly as

@@ -49,7 +49,7 @@ export const TOOL_DEFINITIONS = [
         name: 'remember',
         description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
             'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
-            'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
+            'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history (unless it is too large to keep, then the result has `previousVersionDropped`) instead of staying next to the fix.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -67,7 +67,7 @@ export const TOOL_DEFINITIONS = [
                 },
                 replace: {
                     type: 'boolean',
-                    description: 'Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).',
+                    description: 'Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced, unless it is too large to keep (then the result has `previousVersionDropped: true`). Default false (append).',
                 },
                 title: {
                     type: 'string',

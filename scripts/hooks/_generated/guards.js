@@ -65,7 +65,7 @@ export function validateGuardSpec(spec) {
     }
     return errors;
 }
-export function matchingGuards(guards, tool, haystack) {
+export function matchingGuards(guards, tool, haystack, onInvalid = () => { }) {
     const out = [];
     if (typeof haystack !== 'string' || haystack.length === 0)
         return out;
@@ -78,7 +78,8 @@ export function matchingGuards(guards, tool, haystack) {
         try {
             re = new RegExp(g.pattern, 'i');
         }
-        catch {
+        catch (err) {
+            onInvalid(g, err);
             continue;
         }
         if (re.test(haystack))

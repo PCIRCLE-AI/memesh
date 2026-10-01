@@ -1023,4 +1023,77 @@ describe('Feature: Post-Commit Hook', () => {
     expect(rows).toEqual(first);
     expect(new Set(rows).size, 'every stored line is distinct').toBe(rows.length);
   });
+
+  it('Scenario: a commit subject carrying a token -> title and observation are redacted (#523)', () => {
+    // Assembled at runtime so no line in the repository looks like a credential.
+    const tokenValue = 'abc123abc123abc123';
+    const subject = `chore: set ${['token', tokenValue].join('=')} for staging`;
+    const c = commit(subject);
+    runHook({
+      tool_name: 'Bash',
+      cwd: repoDir,
+      tool_input: { command: 'git commit -m "chore: rotate the staging token"' },
+      tool_output: c.output,
+    });
+
+    const db = openDb();
+    const entity = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(`commit-${c.hash}`) as Row;
+    expect(entity, 'the commit was captured').toBeTruthy();
+    const rows = (db.prepare(
+      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
+    ).all(entity.id) as Row[]).map((r) => r.content);
+    db.close();
+
+    expect(entity.title).not.toContain(tokenValue);
+    expect(entity.title).toContain('***REDACTED***');
+    expect(rows[0]).not.toContain(tokenValue);
+    expect(rows[0]).toContain('***REDACTED***');
+    expect(rows.join('\n')).not.toContain(tokenValue);
+  });
+
+  it('Scenario: credentials glued together with no separator are all redacted by the hook\'s one call (#523)', () => {
+    // An AWS key id glued to `password=…`: one pass over the pattern list
+    // masked the key id and left the password raw.
+    const password = 'hunterZZLEAK99';
+    const subject = `chore: key AKIA${'A'.repeat(16)}${['password', password].join('=')} end`;
+    const c = commit(subject);
+    runHook({
+      tool_name: 'Bash',
+      cwd: repoDir,
+      tool_input: { command: 'git commit -m "chore: glued"' },
+      tool_output: c.output,
+    });
+    const db = openDb();
+    const entity = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(`commit-${c.hash}`) as Row;
+    const rows = (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(entity.id) as Row[]).map((r) => r.content);
+    db.close();
+    expect(entity.title).not.toContain(password);
+    expect(rows.join('\n')).not.toContain(password);
+    expect(entity.title).toContain('***REDACTED***');
+  });
+
+  it('Scenario: a subject over 200 characters is redacted BEFORE the title is cut, so no secret fragment survives (#523)', () => {
+    // The connection string starts just before the 200-character title cut,
+    // so a cut-then-redact order leaves the password's first half in the title.
+    const password = 'hunter2hunter2';
+    const url = ['postgres://admin', `${password}@db.internal:5432/app`].join(':');
+    // `chore: ` (7) + 165 x + space = 173, so the url starts at 173, the
+    // password at 190, and the 200-character cut lands inside it.
+    const subject = `chore: ${'x'.repeat(165)} ${url} done`;
+    const c = commit(subject);
+    runHook({
+      tool_name: 'Bash',
+      cwd: repoDir,
+      tool_input: { command: 'git commit -m "chore: long subject"' },
+      tool_output: c.output,
+    });
+
+    const db = openDb();
+    const entity = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(`commit-${c.hash}`) as Row;
+    db.close();
+    expect(entity, 'the commit was captured').toBeTruthy();
+    expect(entity.title).not.toContain('hunter');
+    expect(entity.title).not.toContain('postgres://admin:');
+    expect(entity.title).toContain('***REDACTED***');
+  });
 });

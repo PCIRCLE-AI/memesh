@@ -4,6 +4,7 @@ import type { Entity, Relation, CreateEntityInput, SearchOptions } from './core/
 export declare class KnowledgeGraph {
     private db;
     constructor(db: MemeshDatabase);
+    private storedMetadata;
     updateEntityMetadata(name: string, updater: (currentMetadata: Record<string, unknown>) => Record<string, unknown> | null | undefined): void;
     createEntity(name: string, type: string, opts?: {
         observations?: string[];

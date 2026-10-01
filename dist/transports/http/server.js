@@ -21,7 +21,7 @@ import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchem
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
-import { getDbPath, getMemeshDirFromDbPath, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 import fs from 'fs';
 import path from 'path';
@@ -282,7 +282,7 @@ app.get('/v1/doctor', (_req, res) => handleGet(res, async () => {
         packageRoot,
         packageVersion,
     });
-    return JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(result))));
+    return JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(result))));
 }));
 const DoctorFixBody = z.object({ id: z.string().min(1).max(100) }).strict();
 app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, async ({ id }) => {
@@ -314,7 +314,7 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
         throw error;
     }
     const after = await runDoctor({ packageRoot, packageVersion });
-    const safe = (value) => JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(value))));
+    const safe = (value) => JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(value))));
     return {
         action: safe(action),
         before: safe({ status: before.status, checks: [check] }),

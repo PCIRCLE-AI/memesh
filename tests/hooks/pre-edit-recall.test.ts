@@ -254,6 +254,67 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(context).toContain('before  [31mred [0m  after  MARKER');
   });
 
+  it('redacts a stored credential before printing the first observation (#554)', () => {
+    // A memory written before #523 can still hold a credential; the injected
+    // snippet must not carry it into the agent's context. Assembled at
+    // runtime so no line in the repository looks like a credential.
+    const password = 'hunter2hunter2';
+    const url = ['postgres://appuser', `${password}@db.internal:5432/app`].join(':');
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('db-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('db-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, `Staging database is ${url} until Q4`);
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const result = runHook({ tool_input: { file_path: '/src/auth.ts' } });
+    const context = JSON.parse(result).hookSpecificOutput.additionalContext;
+    expect(context).toContain('db-decision');
+    expect(context).not.toContain(password);
+    expect(context).toContain('***REDACTED***');
+    expect(context).toContain('until Q4');
+  });
+
+  it('redacts a credential in the printed memory name too (#523)', () => {
+    const tokenValue = 'abc123abc123abc123';
+    const name = `deploy ${['token', tokenValue].join('=')}`;
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(name) as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, 'rotate it quarterly');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const context = JSON.parse(runHook({ tool_input: { file_path: '/src/auth.ts' } })).hookSpecificOutput.additionalContext;
+    expect(context).toContain('rotate it quarterly');
+    expect(context).not.toContain(tokenValue);
+    expect(context).toContain('deploy ***REDACTED***');
+  });
+
+  it('redacts BEFORE cutting the snippet to 120 characters (#554)', () => {
+    // The password starts at character 118, so a cut-then-redact order prints
+    // `postgres://appuser:hu` — the prefix of a credential the pattern can no
+    // longer see once it is cut.
+    const password = 'hunter2hunter2';
+    const url = ['postgres://appuser', `${password}@db.internal:5432/app`].join(':');
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('cut-decision', 'decision');
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('cut-decision') as any;
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, `${'y'.repeat(99)} ${url} tail`);
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, projectTag());
+    db.close();
+
+    const result = runHook({ tool_input: { file_path: '/src/auth.ts' } });
+    const context = JSON.parse(result).hookSpecificOutput.additionalContext;
+    expect(context).toContain('cut-decision');
+    expect(context).not.toContain('postgres://appuser:');
+    expect(context).not.toContain('hunter');
+    expect(context).toContain('***REDACTED***');
+  });
+
   it('should exclude untrusted imported memories from auto-injection', () => {
     const db = createTestDb();
     db.prepare('INSERT INTO entities (name, type, metadata) VALUES (?, ?, ?)').run(

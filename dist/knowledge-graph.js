@@ -4,6 +4,41 @@ import { indexedObservationText, insertFtsRow, joinIndexedObservations, removeFr
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
+const isGuardWithPattern = (guard) => guard !== null && typeof guard === 'object' && typeof guard.pattern === 'string';
+function redactMetadataForStore(next, stored) {
+    const storedHistory = stored?.replaced_history;
+    const incoming = next.replaced_history;
+    const kept = new Map();
+    if (Array.isArray(storedHistory))
+        for (const entry of storedHistory)
+            kept.set(JSON.stringify(entry), entry);
+    const fresh = {
+        ...next,
+        ...(Array.isArray(incoming)
+            ? { replaced_history: incoming.filter((entry) => !kept.has(JSON.stringify(entry))).map(redactVersionText) }
+            : {}),
+        ...(isGuardWithPattern(next.guard) ? { guard: { ...next.guard, pattern: undefined } } : {}),
+    };
+    const refusal = metadataRefusal(fresh, textsIn(stored));
+    if (refusal !== undefined) {
+        throw new Error(`MeMesh did not store this memory: ${refusal}. Nothing was written; remove that text and try again.`);
+    }
+    const redacted = redactTextValues(next, new Set(['guard', ...(Array.isArray(incoming) ? ['replaced_history'] : [])]));
+    if (redacted.guard !== undefined) {
+        const guard = redacted.guard;
+        redacted.guard = redactTextValues(redacted.guard, new Set(typeof guard?.pattern === 'string' ? ['pattern'] : []));
+    }
+    if (!Array.isArray(incoming))
+        return redacted;
+    return {
+        ...redacted,
+        replaced_history: redacted.replaced_history.map((entry) => {
+            const key = JSON.stringify(entry);
+            return kept.has(key) ? kept.get(key) : redactVersionText(entry);
+        }),
+    };
+}
 const MAX_QUERY_TERMS = 32;
 function buildMatchExpression(db, query) {
     const terms = tokenizeQuery(query);
@@ -70,20 +105,34 @@ export class KnowledgeGraph {
     constructor(db) {
         this.db = db;
     }
+    storedMetadata(name) {
+        const row = this.db.prepare('SELECT metadata FROM entities WHERE name = ?').get(name);
+        return row ? this.parseMetadata(row.metadata) : undefined;
+    }
     updateEntityMetadata(name, updater) {
         const row = this.db
             .prepare('SELECT metadata FROM entities WHERE name = ?')
             .get(name);
         if (!row)
             return;
-        const currentMetadata = this.parseMetadata(row.metadata);
-        const nextMetadata = updater(currentMetadata);
+        const stored = this.parseMetadata(row.metadata);
+        const nextMetadata = updater(this.parseMetadata(row.metadata));
+        const safe = nextMetadata
+            ? redactMetadataForStore(nextMetadata, stored)
+            : nextMetadata;
         this.db
             .prepare('UPDATE entities SET metadata = ? WHERE name = ?')
-            .run(nextMetadata ? JSON.stringify(nextMetadata) : null, name);
+            .run(safe ? JSON.stringify(safe) : null, name);
     }
     createEntity(name, type, opts) {
-        return this.db.transaction(() => this.createEntityInner(name, type, opts))();
+        const safe = opts === undefined ? undefined : {
+            ...opts,
+            ...redactTitleAndObservations(typeof opts.title === 'string' ? opts.title : undefined, opts.observations),
+            ...(opts.metadata !== undefined
+                ? { metadata: redactMetadataForStore(opts.metadata, this.storedMetadata(name)) }
+                : {}),
+        };
+        return this.db.transaction(() => this.createEntityInner(name, type, safe))();
     }
     createEntityInner(name, type, opts) {
         type = canonicalEntityType(type);

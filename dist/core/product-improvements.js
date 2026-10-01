@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { redactSecretList } from './paths.js';
 export const PRODUCT_IMPROVEMENT_KIND = 'product_improvement';
 function clean(label, value, max) {
     const normalized = value.replace(/\s+/g, ' ').trim();
@@ -42,6 +43,7 @@ function parsePayload(raw) {
     }
     const candidate = payload;
     const improvement = candidate.improvement;
+    const withoutMarkers = (value) => value.replace(/\*\*\*REDACTED\*\*\*/g, 'x');
     if (candidate.type !== PRODUCT_IMPROVEMENT_KIND
         || typeof candidate.name !== 'string'
         || typeof candidate.title !== 'string'
@@ -56,7 +58,7 @@ function parsePayload(raw) {
         || typeof improvement.verification_scenario !== 'string'
         || !Array.isArray(improvement.success_criteria)
         || improvement.success_criteria.length === 0
-        || improvement.success_criteria.some((value) => typeof value !== 'string' || !value.trim() || value.length > 1000)
+        || improvement.success_criteria.some((value) => typeof value !== 'string' || !value.trim() || withoutMarkers(value).length > 1000)
         || !Array.isArray(improvement.source_names)
         || improvement.source_names.length === 0
         || improvement.source_names.some((value) => typeof value !== 'string' || !value.trim() || value.length > 255)
@@ -65,10 +67,10 @@ function parsePayload(raw) {
         throw new Error('product-improvement proposal carries malformed content');
     }
     clean('proposal name', candidate.name, 255);
-    clean('title', candidate.title, 200);
-    clean('problem', improvement.problem, 5000);
-    clean('proposed change', improvement.proposed_change, 5000);
-    clean('verification scenario', improvement.verification_scenario, 5000);
+    clean('title', withoutMarkers(candidate.title), 200);
+    clean('problem', withoutMarkers(improvement.problem), 5000);
+    clean('proposed change', withoutMarkers(improvement.proposed_change), 5000);
+    clean('verification scenario', withoutMarkers(improvement.verification_scenario), 5000);
     if (improvement.source_host !== undefined)
         clean('source host', improvement.source_host, 64);
     return candidate;
@@ -96,11 +98,14 @@ function proposalResult(row, created) {
 }
 export function stageProductImprovement(db, input) {
     const project = clean('project', input.project, 200);
-    const title = clean('title', input.title, 200);
-    const problem = clean('problem', input.problem, 5000);
-    const proposedChange = clean('proposed change', input.proposed_change, 5000);
-    const verificationScenario = clean('verification scenario', input.verification_scenario, 5000);
-    const successCriteria = canonicalCriteria(input.success_criteria);
+    const criteria = canonicalCriteria(input.success_criteria);
+    const [title, problem, proposedChange, verificationScenario, ...successCriteria] = redactSecretList([
+        clean('title', input.title, 200),
+        clean('problem', input.problem, 5000),
+        clean('proposed change', input.proposed_change, 5000),
+        clean('verification scenario', input.verification_scenario, 5000),
+        ...criteria,
+    ]);
     const priority = input.priority ?? 'p1';
     const sourceNames = [...new Set(input.source_names.map((name) => clean('source name', name, 255)))]
         .sort((a, b) => a.localeCompare(b));

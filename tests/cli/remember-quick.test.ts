@@ -269,6 +269,23 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(noName.stderr).toContain('--replace needs --name');
   }, 60_000);
 
+  it('--replace says so when the previous version was too large to keep in replaced_history', () => {
+    expect(runCli(['remember', '--name=r4', '--type=note', '--obs=old line'], { HOME: tmpHome }).exitCode).toBe(0);
+    const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const row = db.prepare("SELECT id FROM entities WHERE name = 'r4'").get() as { id: number };
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'x'.repeat(70000));
+    db.close();
+    const r = runCli(['remember', '--name=r4', '--obs=new line', '--replace'], { HOME: tmpHome });
+    expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
+    expect(r.stdout).toContain('replaced: the previous version was too large to keep, so metadata.replaced_history does not include it');
+    expect(r.stdout).not.toContain('is kept in metadata.replaced_history');
+    // A normal replace still says it is kept.
+    const again = runCli(['remember', '--name=r5', '--type=note', '--obs=old line'], { HOME: tmpHome });
+    expect(again.exitCode).toBe(0);
+    const normal = runCli(['remember', '--name=r5', '--obs=new line', '--replace'], { HOME: tmpHome });
+    expect(normal.stdout).toContain('replaced: the previous version is kept in metadata.replaced_history');
+  }, 60_000);
+
   // #333 T4. cli.ts holds its OWN copy of the "name + type or nothing" rule,
   // ahead of the RememberSchema check — so relaxing only the schema would
   // have left the terminal rejecting the correction call that MCP and HTTP

@@ -1,6 +1,7 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { truncateTitle } from './title.js';
+import { redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { NAMESPACES } from './types.js';
 export const IMPORTABLE_METADATA_KEYS = new Set([
@@ -94,7 +95,7 @@ function buildImportedMetadata(existingMetadata, args) {
     const bundledSafe = {};
     for (const [key, value] of Object.entries(bundled)) {
         if (IMPORTABLE_METADATA_KEYS.has(key))
-            bundledSafe[key] = value;
+            bundledSafe[key] = redactTextValues(value);
     }
     const freshForgottenHashes = args.isNewEntity
         ? validateFreshForgottenHashes(bundled.forgotten_observation_hashes)
@@ -104,6 +105,11 @@ function buildImportedMetadata(existingMetadata, args) {
     const freshReplacedHistory = args.isNewEntity
         ? validateFreshReplacedHistory(bundled.replaced_history)
         : null;
+    const freshReplacedHistorySafe = freshReplacedHistory
+        ? validateFreshReplacedHistory(freshReplacedHistory.map(redactVersionText))
+        : null;
+    if (freshReplacedHistory && !freshReplacedHistorySafe)
+        args.onHistoryDropped();
     const preserveTrust = args.trust && !args.isNewEntity && args.mergeStrategy === 'append';
     return {
         ...(existingMetadata ?? {}),
@@ -111,7 +117,7 @@ function buildImportedMetadata(existingMetadata, args) {
         ...(freshForgottenHashes ? { forgotten_observation_hashes: freshForgottenHashes } : {}),
         ...(freshSignalScore !== null ? { signal_score: freshSignalScore } : {}),
         ...(freshPin ? { pin: true } : {}),
-        ...(freshReplacedHistory ? { replaced_history: freshReplacedHistory } : {}),
+        ...(freshReplacedHistorySafe ? { replaced_history: freshReplacedHistorySafe } : {}),
         ...(preserveTrust ? {} : {
             trust: args.trust ? 'trusted' : 'untrusted',
             provenance: {
@@ -174,6 +180,15 @@ function describeInvalidEntity(entity, index) {
             return `${where}.${field} is ${typeof e[field]}, not an array.`;
         }
     }
+    for (const field of ['observations', 'tags']) {
+        const list = e[field];
+        if (!Array.isArray(list))
+            continue;
+        const bad = list.findIndex((item) => typeof item !== 'string');
+        if (bad !== -1) {
+            return `${where}.${field}[${bad}] is ${typeof list[bad]}, not a string.`;
+        }
+    }
     if (e.namespace !== undefined && !NAMESPACES.includes(e.namespace)) {
         return `${where}.namespace is ${JSON.stringify(e.namespace)}, which is not one of: ${NAMESPACES.join(', ')}.`;
     }
@@ -224,9 +239,9 @@ export function importMemories(args, options) {
             const outcome = db.transaction(() => {
                 const existing = kg.getEntity(entity.name);
                 const bundledTitle = entity.title;
-                const title = typeof bundledTitle === 'string' && bundledTitle.trim().length > 0
-                    ? truncateTitle(bundledTitle)
-                    : undefined;
+                const redactedText = redactTitleAndObservations(typeof bundledTitle === 'string' && bundledTitle.trim().length > 0 ? bundledTitle : undefined, entity.observations ?? []);
+                const title = redactedText.title === undefined ? undefined : truncateTitle(redactedText.title);
+                const observations = redactedText.observations ?? [];
                 const namespace = args.namespace ?? (existing ? undefined : (entity.namespace || 'personal'));
                 const importedMetadata = buildImportedMetadata(existing?.metadata, {
                     bundled: entity.metadata,
@@ -235,6 +250,7 @@ export function importMemories(args, options) {
                     mergeStrategy: args.merge_strategy,
                     isNewEntity: !existing,
                     trust,
+                    onHistoryDropped: () => errors.push(`${entity.name}: imported without its replaced_history, which no longer fits its size limits once credentials in it are redacted`),
                 });
                 if (existing) {
                     if (args.merge_strategy === 'skip')
@@ -243,7 +259,7 @@ export function importMemories(args, options) {
                         return { kind: 'keptArchived' };
                     if (args.merge_strategy === 'append') {
                         const existingText = new Set(existing.observations);
-                        const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
+                        const newObservations = observations.filter((o) => !existingText.has(o));
                         kg.createEntity(entity.name, entity.type, {
                             title,
                             observations: newObservations,
@@ -258,7 +274,7 @@ export function importMemories(args, options) {
                 }
                 kg.createEntity(entity.name, entity.type, {
                     title,
-                    observations: entity.observations,
+                    observations,
                     tags: entity.tags,
                     metadata: importedMetadata,
                     namespace,

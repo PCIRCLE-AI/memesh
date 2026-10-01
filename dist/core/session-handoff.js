@@ -1,4 +1,5 @@
 import { parseSqliteUtcMs } from './time-utils.js';
+import { redactMemoryText } from './paths.js';
 export const SESSION_HANDOFF_TYPE = 'session-handoff';
 export const HANDOFF_STALE_HOURS = 72;
 export const HANDOFF_MAX_AGE_DAYS = 14;
@@ -88,7 +89,7 @@ function ageText(hours) {
     return `${d} day${d === 1 ? '' : 's'} ago`;
 }
 export function handoffView(record, now = new Date()) {
-    const text = record ? cleanHandoffText(record.text ?? '') : '';
+    const text = record ? cleanHandoffText(redactMemoryText(record.text ?? '')) : '';
     if (!record || !text)
         return { lines: [], status: 'empty' };
     const then = typeof record.observedAt === 'string' ? parseSqliteUtcMs(record.observedAt) : null;

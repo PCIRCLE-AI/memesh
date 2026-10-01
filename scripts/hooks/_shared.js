@@ -31,6 +31,7 @@ import {
   getDbPath,
   getMemeshDirFromDbPath,
   getProjectName,
+  redactSecretList,
   redactSecrets,
   canonicalRemoteLocator,
   gitRepoRoot,
@@ -108,12 +109,14 @@ export function loadActiveGuards(db, tool) {
  * The lines a fired guard injects — the message is memory content
  * (attacker-influenced in the general case), so callers wrap these with
  * buildReferenceContext like every other injection path. The `[mem:id]`
- * handle ties a heeded warning into citation accounting (R1).
+ * handle ties a heeded warning into citation accounting (R1). The message is
+ * redacted as it is printed (#523): one stored before the write-time
+ * redaction can still hold a credential.
  */
 export function guardWarningLines(matches, toolName) {
   const lines = [`A guard you accepted matched this ${toolName} input — check before proceeding:`];
   for (const g of matches) {
-    lines.push(`- [guard] ${g.message} [mem:${g.lessonId}]`);
+    lines.push(`- [guard] ${redactSecrets(g.message)} [mem:${g.lessonId}]`);
   }
   return lines;
 }
@@ -1807,7 +1810,18 @@ export function captureEntity(db, { name, type, observations = [], tags = [], ti
   return db.transaction(() => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }))();
 }
 
-function captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }) {
+function captureEntityInner(db, { name, type, observations: rawObservations, tags, title: rawTitle, metadata, replace, localHandoff, sourceHost }) {
+  // #523: every hook write is redacted here, once, before anything below
+  // reads or compares the text — the post-commit hook stored a commit
+  // subject like `set token=… for staging` verbatim as title and first
+  // observation. The dedupe and the contentless-FTS delete further down read
+  // the STORED text back from the database, so they stay exact. `name` and
+  // `tags` are dedup keys and are left alone.
+  // Title and observations are one set: a key split between them is masked as a whole.
+  const head = typeof rawTitle === 'string' ? [rawTitle] : [];
+  const texts = redactSecretList([...head, ...rawObservations.filter((o) => typeof o === 'string')]);
+  const title = head.length > 0 ? texts.shift() : rawTitle;
+  const observations = rawObservations.map((o) => (typeof o === 'string' ? texts.shift() : o));
   // source_host provenance: the host this hook run is under, as the caller
   // detected it. Claude Code and Codex both run these hooks, so it cannot be
   // assumed. Stamped only on the INSERT — an OR IGNORE re-capture of an

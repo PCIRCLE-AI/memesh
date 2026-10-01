@@ -1,5 +1,5 @@
 import { getDatabase } from '../db.js';
-import { getProjectName } from './paths.js';
+import { getProjectName, redactMemoryText } from './paths.js';
 import { readConfig } from './config.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { rankEntities } from './scoring.js';
@@ -64,8 +64,8 @@ function toTopologyEntity(row, snippet) {
         name: row.name,
         type: row.type || 'memory',
         id: row.id,
-        title: row.title,
-        snippet,
+        title: row.title == null ? row.title : redactMemoryText(row.title),
+        snippet: snippet == null ? snippet : redactMemoryText(snippet),
         signalScore: typeof signal === 'number' ? signal : null,
         recency: row.recency ?? null,
     };
@@ -80,7 +80,7 @@ function readIndexCandidates(db, projectName) {
     const nonGlobal = hasNamespace ? " AND (e.namespace IS NULL OR e.namespace <> 'global')" : '';
     const excluded = INDEX_EXCLUDED_TYPES.map(() => '?').join(',');
     const rows = db.prepare(`SELECT e.id, e.type, e.title, e.metadata,
-       (SELECT substr(o.content, 1, ${INDEX_SNIPPET_FETCH_CHARS}) FROM observations o
+       (SELECT o.content FROM observations o
          WHERE o.entity_id = e.id ORDER BY o.id ASC LIMIT 1) AS snippet,
        max(e.created_at, COALESCE((SELECT MAX(o2.created_at) FROM observations o2
          WHERE o2.entity_id = e.id), e.created_at)) AS last_activity
@@ -94,7 +94,7 @@ function readIndexCandidates(db, projectName) {
         id: row.id,
         type: row.type,
         title: row.title,
-        snippet: row.snippet,
+        snippet: row.snippet == null ? null : redactMemoryText(row.snippet).slice(0, INDEX_SNIPPET_FETCH_CHARS),
         lastActivity: row.last_activity,
         metadata: row.metadata,
     }));
@@ -186,13 +186,13 @@ export function assembleBriefing(project, recipient) {
     const snippets = new Map();
     if (survivorIds.length > 0) {
         const placeholders = survivorIds.map(() => '?').join(',');
-        const obsRows = db.prepare(`SELECT entity_id, substr(content, 1, ${SNIPPET_FETCH_CHARS}) AS content
+        const obsRows = db.prepare(`SELECT entity_id, content
        FROM observations WHERE entity_id IN (${placeholders})
        ORDER BY id ASC`).all(...survivorIds);
         for (const row of obsRows) {
             if (snippets.has(row.entity_id))
                 continue;
-            const text = String(row.content ?? '').trim();
+            const text = redactMemoryText(String(row.content ?? '')).trim().slice(0, SNIPPET_FETCH_CHARS);
             if (text)
                 snippets.set(row.entity_id, text);
         }

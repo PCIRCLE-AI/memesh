@@ -350,7 +350,7 @@ program
   .option('--title <title>', 'Short human-readable label shown as the headline (name stays the stable machine key)')
   .option('--obs <observations...>', 'Observations (space-separated)')
   .option('--tags <tags...>', 'Tags (space-separated)')
-  .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history')
+  .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history unless it is too large to keep (the result then says so)')
   .option('--namespace <namespace>', 'Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in — omit the flag to leave it alone.')
   // The two relation types that DO something. MCP and HTTP callers could state
   // them through `relations`; the CLI had no way to state any relation at all,
@@ -508,7 +508,11 @@ program
           if (result.title) console.log(`   title: ${result.title}`);
           console.log(`   fix it with: memesh remember --name "${result.name}" --type ${result.derived.type} --title "…" --obs "…" --replace`);
         }
-        if (result.replaced) console.log('   replaced: the previous version is kept in metadata.replaced_history');
+        if (result.replaced) {
+          console.log(result.previousVersionDropped
+            ? '   replaced: the previous version was too large to keep, so metadata.replaced_history does not include it'
+            : '   replaced: the previous version is kept in metadata.replaced_history');
+        }
         // A move drops the memory out of every scoped view it used to appear
         // in, so it is never silent.
         if (result.movedFromNamespace) {
@@ -645,10 +649,21 @@ program
   .option('--confirm', '[deprecated, no-op] forget is a soft archive — no confirmation needed')
   .action(async (opts) => {
     await withDatabase(() => {
-      const result = forget({
-        name: opts.name,
-        observation: opts.observation,
-      });
+      let result: ReturnType<typeof forget>;
+      try {
+        result = forget({
+          name: opts.name,
+          observation: opts.observation,
+        });
+      } catch (err) {
+        // A refusal (the selector only matches a redacted line, #523) is one
+        // line and exit 1, never a stack trace.
+        const error = err instanceof Error ? err.message : String(err);
+        if (opts.json) console.log(JSON.stringify({ error }));
+        else console.error(`Error: ${error}`);
+        process.exitCode = 1;
+        return;
+      }
       // D7: this used to set `process.exitCode = 1` inside the human-readable
       // branches only, so `--json` printed the identical "not found" result
       // and exited 0 — the one output shape a script actually parses was the

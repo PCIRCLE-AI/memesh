@@ -75,7 +75,11 @@ process.stdin.on('end', () => {
     db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
     let matches;
     try {
-      matches = matchingGuards(loadActiveGuards(db, 'Bash'), 'Bash', command);
+      // A guard whose stored pattern no longer compiles is recorded, not
+      // skipped in silence (#523): the outcome names the lesson so the
+      // owner can see which guard stopped firing and why.
+      matches = matchingGuards(loadActiveGuards(db, 'Bash'), 'Bash', command, (guard, err) =>
+        record('error', `guard pattern does not compile: ${hookErrorReason(err)}`, `lesson:${guard.lessonId}`));
     } finally {
       db.close();
     }

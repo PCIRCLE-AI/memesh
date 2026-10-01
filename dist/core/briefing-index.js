@@ -1,4 +1,4 @@
-import { redactSecrets, redactUserPaths } from './paths.js';
+import { redactMemoryText } from './paths.js';
 import { EVIDENCE_LAYER_TYPES, isAutoInjectable, projectLabel, topologyLine } from './work-topology.js';
 import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 export const INDEX_MAX_LINES = 40;
@@ -51,7 +51,7 @@ function candidateIsAutoInjectable(metadata) {
 function redact(text) {
     if (!text)
         return '';
-    return redactUserPaths(redactSecrets(String(text))).replace(/\s+/g, ' ').trim();
+    return redactMemoryText(String(text)).replace(/\s+/g, ' ').trim();
 }
 function indexLine(candidate) {
     const title = redact(candidate.title);

@@ -264,6 +264,13 @@ export interface RememberResult {
    */
   replaced?: boolean;
   /**
+   * `replace: true` only, and only when true: the previous version was too
+   * large to keep (its tags alone exceed the `replaced_history` byte cap), so
+   * it is NOT in `metadata.replaced_history`. `replaced` stays true — the
+   * memory was rewritten — but the old content is not recoverable from there.
+   */
+  previousVersionDropped?: true;
+  /**
    * `note` only: the shape the server derived from the text, echoed so a
    * caller can correct it in one more call (e.g. `replace: true` with a
    * better `title`).

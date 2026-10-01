@@ -1,10 +1,10 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
-import { getProjectName } from './paths.js';
+import { getProjectName, redactSecrets, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
-import { canonicalEntityType } from './work-topology.js';
+import { canonicalEntityType, sliceWholeChars } from './work-topology.js';
 import { capRecallForAgent } from './recall-agent-view.js';
 function buildLocalMetadata(existingMetadata, overrides) {
     return {
@@ -33,21 +33,30 @@ export function remember(input) {
 export const REPLACED_HISTORY_MAX = 20;
 export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
 const jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), 'utf8');
+function fitVersionToCap(only) {
+    const base = { ...only, observations: [], truncated: true };
+    while (base.title && jsonBytes([base]) > REPLACED_HISTORY_MAX_BYTES) {
+        base.title = sliceWholeChars(base.title, Math.floor(base.title.length * 0.9));
+    }
+    if (jsonBytes([base]) > REPLACED_HISTORY_MAX_BYTES)
+        return null;
+    const kept = [];
+    for (const obs of only.observations) {
+        if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
+            break;
+        kept.push(obs);
+    }
+    return { ...base, observations: kept };
+}
 function boundReplacedHistory(history) {
+    const newest = history[history.length - 1];
+    if (newest !== undefined && jsonBytes([newest]) > REPLACED_HISTORY_MAX_BYTES) {
+        const fitted = fitVersionToCap(newest);
+        return fitted ? [fitted] : boundReplacedHistory(history.slice(0, -1));
+    }
     let out = history.slice(-REPLACED_HISTORY_MAX);
     while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
         out = out.slice(1);
-    if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
-        const only = out[0];
-        const kept = [];
-        const base = { ...only, observations: [], truncated: true };
-        for (const obs of only.observations) {
-            if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
-                break;
-            kept.push(obs);
-        }
-        out = [{ ...base, observations: kept }];
-    }
     return out;
 }
 function summarizeReplacedHistory(entities) {
@@ -68,7 +77,13 @@ function resolveRememberInput(input) {
             throw new Error('remember needs `name` and `type`, or `note`');
         if (input.type === undefined && !input.replace)
             throw new Error('remember needs `name` and `type`, or `note`');
-        return { args: input, typeGiven: input.type !== undefined };
+        return {
+            args: {
+                ...input,
+                ...redactTitleAndObservations(typeof input.title === 'string' ? input.title : undefined, input.observations),
+            },
+            typeGiven: input.type !== undefined,
+        };
     }
     if (input.title !== undefined || input.observations !== undefined) {
         throw new Error('`note` derives title and observations; do not also pass `title` or `observations`');
@@ -105,6 +120,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
             + 'so this call would create one with no type — pass `type` to create it.');
     }
     let replacedVersion;
+    let previousVersionDropped = false;
     let retypedTo;
     let tags = args.tags;
     let title = args.title;
@@ -148,7 +164,8 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         },
     }));
     if (replacedVersion) {
-        const version = replacedVersion;
+        const version = redactVersionText(replacedVersion);
+        previousVersionDropped = jsonBytes([version]) > REPLACED_HISTORY_MAX_BYTES && fitVersionToCap(version) === null;
         kg.updateEntityMetadata(args.name, (current) => {
             const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
             return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
@@ -197,6 +214,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         ...(superseded.length > 0 ? { superseded } : {}),
         ...(relationErrors.length > 0 ? { relationErrors } : {}),
         ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
+        ...(previousVersionDropped ? { previousVersionDropped: true } : {}),
         ...(derived
             ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
             : {}),
@@ -262,10 +280,14 @@ export function forget(args) {
     const kg = new KnowledgeGraph(db);
     if (args.observation !== undefined) {
         const result = kg.removeObservation(args.name, args.observation);
+        const shown = redactSecrets(args.observation);
+        if (!result.removed && shown !== args.observation && db.prepare('SELECT 1 FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? AND o.content = ? LIMIT 1').get(args.name, shown)) {
+            throw new Error('No exact stored-text match for that observation; use the observation shown by recall.');
+        }
         return {
             observation_removed: result.removed,
             name: args.name,
-            observation: args.observation,
+            observation: shown,
             remaining_observations: result.remainingObservations,
             entity_found: result.entityFound,
         };

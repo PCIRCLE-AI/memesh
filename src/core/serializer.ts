@@ -6,6 +6,7 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { truncateTitle } from './title.js';
+import { redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { NAMESPACES } from './types.js';
 import type { ExportInput, ExportResult, ImportInput, ImportResult } from './types.js';
@@ -445,6 +446,8 @@ function buildImportedMetadata(
      * (`importMemories`) already has this as `Boolean(existing)`.
      */
     isNewEntity: boolean;
+    /** Called when a bundled history passed its limits but its redacted form does not. */
+    onHistoryDropped: () => void;
     /**
      * `--trust` (CLI only; never reachable from MCP or HTTP — see
      * `importMemories`'s second argument). Stamps a fresh or overwritten
@@ -470,7 +473,11 @@ function buildImportedMetadata(
   // authority key omitted from the deny-list failed silently, three times.
   const bundledSafe: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(bundled)) {
-    if (IMPORTABLE_METADATA_KEYS.has(key)) bundledSafe[key] = value;
+    // #523: the allow-list decides WHICH keys a bundle may set; the text
+    // inside them gets the same credential redaction as title and
+    // observations (a bundle is a file anyone may have edited). Only string
+    // values change; numbers, booleans and structure are untouched.
+    if (IMPORTABLE_METADATA_KEYS.has(key)) bundledSafe[key] = redactTextValues(value);
   }
 
   // FOUR AUTHORITY keys get a narrow, EXPLICIT restore exception, all only
@@ -516,6 +523,15 @@ function buildImportedMetadata(
   const freshReplacedHistory = args.isNewEntity
     ? validateFreshReplacedHistory(bundled.replaced_history)
     : null;
+  // #523: the validated history entries carry title and observation TEXT
+  // from the bundle, so they get the same redaction as everything else the
+  // bundle is allowed to set. A marker can be longer than what it replaces,
+  // so the limits are checked again on what will be stored; a history that
+  // no longer fits is left out, and the import says so.
+  const freshReplacedHistorySafe = freshReplacedHistory
+    ? validateFreshReplacedHistory(freshReplacedHistory.map(redactVersionText))
+    : null;
+  if (freshReplacedHistory && !freshReplacedHistorySafe) args.onHistoryDropped();
 
   // `--trust` on an `append` to an entity that already existed: the owner
   // decision (#407) is "leave the existing entity's trust exactly as it
@@ -534,7 +550,7 @@ function buildImportedMetadata(
     ...(freshForgottenHashes ? { forgotten_observation_hashes: freshForgottenHashes } : {}),
     ...(freshSignalScore !== null ? { signal_score: freshSignalScore } : {}),
     ...(freshPin ? { pin: true } : {}),
-    ...(freshReplacedHistory ? { replaced_history: freshReplacedHistory } : {}),
+    ...(freshReplacedHistorySafe ? { replaced_history: freshReplacedHistorySafe } : {}),
     ...(preserveTrust ? {} : {
       trust: args.trust ? 'trusted' : 'untrusted',
       provenance: {
@@ -672,6 +688,17 @@ function describeInvalidEntity(entity: unknown, index: number): string | null {
       return `${where}.${field} is ${typeof e[field]}, not an array.`;
     }
   }
+  // Elements of the two text lists must be strings: the redaction (#523) and
+  // the row INSERT both take a string, and a number here used to surface as
+  // an internal `.replace is not a function` instead of a sentence.
+  for (const field of ['observations', 'tags'] as const) {
+    const list = e[field];
+    if (!Array.isArray(list)) continue;
+    const bad = list.findIndex((item) => typeof item !== 'string');
+    if (bad !== -1) {
+      return `${where}.${field}[${bad}] is ${typeof list[bad]}, not a string.`;
+    }
+  }
   // The namespace a bundle carries per entity places the entities an import
   // CREATES, and it was unchecked while the caller's override became an enum.
   // So a bundle — which over MCP is content an agent may have been handed —
@@ -806,9 +833,20 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
         // over-long titles; createEntity itself caps nothing), and one
         // hand-edited 10,000-character title should not become a stored one.
         const bundledTitle = (entity as Record<string, unknown>).title;
-        const title = typeof bundledTitle === 'string' && bundledTitle.trim().length > 0
-          ? truncateTitle(bundledTitle)
-          : undefined;
+        // #523: a bundle is a file anyone may have edited, so its title and
+        // observations get the same credential redaction as a `remember` —
+        // once, here, so every strategy below (create, append, overwrite)
+        // stores the same text, and append's exact-text dedupe compares the
+        // redacted line against what is already stored. `name` and `tags`
+        // are keys and are left alone.
+        // Title and observations are one set; redacted BEFORE the title is
+        // cut, so a secret cut in half cannot slip past the pattern.
+        const redactedText = redactTitleAndObservations(
+          typeof bundledTitle === 'string' && bundledTitle.trim().length > 0 ? bundledTitle : undefined,
+          entity.observations ?? [],
+        );
+        const title = redactedText.title === undefined ? undefined : truncateTitle(redactedText.title);
+        const observations = redactedText.observations ?? [];
         // The caller's `--namespace` override applies to everything, existing
         // entities included — that is what "force all imported entities into
         // this namespace" means. The namespace stored IN the bundle only places
@@ -823,6 +861,9 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
           mergeStrategy: args.merge_strategy,
           isNewEntity: !existing,
           trust,
+          onHistoryDropped: () => errors.push(
+            `${entity.name}: imported without its replaced_history, which no longer fits its size limits once credentials in it are redacted`,
+          ),
         });
 
         if (existing) {
@@ -845,7 +886,7 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             // grows every shared entity's observation list without bound —
             // dogfooded: the same sentence duplicated on every re-run.
             const existingText = new Set(existing.observations);
-            const newObservations = (entity.observations ?? []).filter((o) => !existingText.has(o));
+            const newObservations = observations.filter((o) => !existingText.has(o));
             // Pass trustOverride directly so the createEntity confidence-
             // bump gate denies the lift on untrusted imports. Codex
             // caught a P1 where the trust value was being set via
@@ -874,7 +915,7 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
 
         kg.createEntity(entity.name, entity.type, {
           title,
-          observations: entity.observations,
+          observations,
           tags: entity.tags,
           metadata: importedMetadata,
           namespace,

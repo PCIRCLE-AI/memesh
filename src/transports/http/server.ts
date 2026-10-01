@@ -45,7 +45,7 @@ import {
 import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
-import { getDbPath, getMemeshDirFromDbPath, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 
 import fs from 'fs';
@@ -549,7 +549,14 @@ app.get('/v1/doctor', (_req, res) => handleGet(res, async () => {
   // Redacting server-side rather than in the widget covers every consumer of
   // the route at once, and the browser cannot do it: it does not know the
   // server's HOME.
-  return JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(result))));
+  //
+  // Credentials are redacted in each decoded string value (#523): in the
+  // serialised form a line break inside a pasted key is the two characters
+  // `\r\n` or `\n\t`, which the key pattern did not see, and the key body
+  // was published whole. Only the string values: a pass over the whole
+  // serialised report would read it as one document, and one summary
+  // holding a lone END line would mask every id and status in it.
+  return JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(result))));
 }));
 
 const DoctorFixBody = z.object({ id: z.string().min(1).max(100) }).strict();
@@ -592,7 +599,7 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
   }
 
   const after = await runDoctor({ packageRoot, packageVersion });
-  const safe = (value: unknown) => JSON.parse(redactUserPaths(redactSecrets(JSON.stringify(value))));
+  const safe = (value: unknown) => JSON.parse(redactUserPaths(JSON.stringify(redactTextValues(value))));
   return {
     action: safe(action),
     before: safe({ status: before.status, checks: [check] }),
