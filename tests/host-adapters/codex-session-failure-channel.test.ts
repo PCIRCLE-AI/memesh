@@ -118,9 +118,12 @@ function companionLog(f: Fixture) {
 /** A preload that makes `fs.<call>` throw EACCES for paths containing `match`, once `flag` exists. */
 function faultAfterFlag(f: Fixture, call: string, match: string, flag: string, name: string) {
   const preload = path.join(f.d, name);
+  // The values travel as data in a file beside the preload, never inside its code.
+  fs.writeFileSync(`${preload}.json`, JSON.stringify({ call, match, flag }));
   fs.writeFileSync(preload, `import fs from 'node:fs';import {syncBuiltinESMExports} from 'node:module';
-    const real=fs.${call};fs.${call}=function(p,...rest){if(String(p).includes(${JSON.stringify(match)})&&fs.existsSync(${JSON.stringify(flag)})){
-    const e=new Error('injected EACCES: ${call} '+p);e.code='EACCES';throw e}return real.call(fs,p,...rest)};syncBuiltinESMExports();`);
+    const {call,match,flag}=JSON.parse(fs.readFileSync(new URL(import.meta.url+'.json'),'utf8'));
+    const real=fs[call];fs[call]=function(p,...rest){if(String(p).includes(match)&&fs.existsSync(flag)){
+    const e=new Error('injected EACCES: '+call+' '+p);e.code='EACCES';throw e}return real.call(fs,p,...rest)};syncBuiltinESMExports();`);
   return preload;
 }
 function controlSocket(f: Fixture) {
@@ -144,7 +147,8 @@ function direct(f: Fixture, name: string, preload?: string) {
 }
 /** Another process listening on `socket`; it reads and drops whatever it is sent. */
 async function holdSocket(socket: string) {
-  const holder = spawn(process.execPath, ['-e', `require('net').createServer(s=>{s.on('error',()=>{});s.resume()}).listen(${JSON.stringify(socket)})`], { stdio: 'ignore' });
+  const holder = spawn(process.execPath, ['-e', "require('net').createServer(s=>{s.on('error',()=>{});s.resume()}).listen(process.env.HOLD_SOCKET)"],
+    { stdio: 'ignore', env: { ...process.env, HOLD_SOCKET: socket } });
   kids.push(holder);
   await wait(() => fs.existsSync(socket));
   return holder;
