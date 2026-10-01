@@ -619,7 +619,10 @@ describe.skipIf(process.platform === 'win32')('#518 companion failure channel', 
     // Either the first companion finished in time and the restart registers, or the restart says why.
     if (f.response() === before) { expect(q.c.exitCode).toBe(1); expect(q.stderr()).toContain('companion_busy'); }
     await wait(() => q.c.exitCode !== null, 8000);
-    await wait(() => controls(f).length === 0, 8000);
+    // A stopping companion removes its socket, then its record once the close
+    // completes: wait for both, so the check never lands between the two.
+    await wait(() => controls(f).length === 0 && fs.readdirSync(f.life).length === 0, 8000);
+    expect(controls(f)).toEqual([]);
     expect(fs.readdirSync(f.life)).toEqual([]);
   });
   it('a reason that arrives while a stop is already under way is still published', async () => {
