@@ -2636,9 +2636,9 @@ describe('database failure diagnostics (F15)', () => {
     const scenarios = [
       { name: 'cannot be opened: mv aside', prefix: 'Backup and reset: ', size: 4096, exists: true,
         check: (db: string) => { expect(fs.existsSync(db)).toBe(false); expect(fs.existsSync(`${db}.backup`)).toBe(true); } },
-      { name: 'empty: rm', prefix: 'Delete and recreate: ', size: 0, exists: true,
+      { name: 'empty: rm', prefix: 'Delete it; the next memesh command creates a fresh database: ', size: 0, exists: true,
         check: (db: string) => { expect(fs.existsSync(db)).toBe(false); } },
-      { name: 'folder missing: mkdir', prefix: 'Create directory: ', size: 0, exists: false,
+      { name: 'folder missing: mkdir', prefix: 'Create the folder; the next memesh command creates a fresh database: ', size: 0, exists: false,
         check: (db: string) => { expect(fs.statSync(path.dirname(db)).isDirectory()).toBe(true); } },
     ];
     for (const scenario of scenarios) {
@@ -2674,8 +2674,13 @@ describe('database failure diagnostics (F15)', () => {
           });
           const fix = result.checks.find(c => c.id === 'database')!.fix!;
           expect(fix.startsWith(scenario.prefix)).toBe(true);
-          const command = fix.slice(scenario.prefix.length).replace(/ && memesh recall.*$/, '');
-          const r = spawnSync('/bin/sh', ['-c', command], { cwd, encoding: 'utf8' });
+          // The whole command after the colon, pasted as is: `memesh` is a stub
+          // that succeeds, so a stray word of prose would fail the paste.
+          const command = fix.slice(scenario.prefix.length);
+          const bin = path.join(packageRoot, 'bin');
+          fs.mkdirSync(bin);
+          fs.writeFileSync(path.join(bin, 'memesh'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+          const r = spawnSync('/bin/sh', ['-c', command], { cwd, encoding: 'utf8', env: { PATH: `${bin}:/usr/bin:/bin` } });
           for (const marker of ['m1', 'm2', 'm3']) expect(fs.existsSync(path.join(cwd, marker)), `${marker} created by: ${command}`).toBe(false);
           expect(r.status, `${command}\n${r.stderr}`).toBe(0);
           scenario.check(dbPath);

@@ -48,7 +48,7 @@ export function diagnoseDatabaseFailure(
         fix = `If this is your live database (not a read-only copy), restore your own access: chmod u+rw ${files.map(shellQuote).join(' ')}`;
       } else if (stat.size === 0) {
         diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
-        fix = `Delete and recreate: rm ${shellQuote(databasePath)} && memesh recall (will create fresh DB)`;
+        fix = `Delete it; the next memesh command creates a fresh database: rm ${shellQuote(databasePath)} && memesh recall`;
       } else {
         diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
         fix = `Backup and reset: mv ${shellQuote(databasePath)} ${shellQuote(`${databasePath}.backup`)} && memesh recall`;
@@ -62,7 +62,7 @@ export function diagnoseDatabaseFailure(
     const dir = path.dirname(databasePath);
     if (!existsSyncImpl(dir)) {
       diagnosis = `Database directory does not exist: ${dir}`;
-      fix = `Create directory: mkdir -p ${shellQuote(dir)} && memesh recall (will create fresh DB)`;
+      fix = `Create the folder; the next memesh command creates a fresh database: mkdir -p ${shellQuote(dir)} && memesh recall`;
     } else {
       try {
         const dirStat = statSyncImpl(dir);
