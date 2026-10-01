@@ -6033,6 +6033,7 @@ function migrateToCurrentSchema(db2) {
   migrateEntitiesSchema(db2);
   runAutoDecay(db2);
   backfillSignalScores(db2);
+  ensureFtsSegmentation(db2);
   backfillTitles(db2);
   backfillAcceptedProposalTrust(db2);
   dedupeObservations(db2);
@@ -6042,7 +6043,6 @@ function migrateToCurrentSchema(db2) {
   splitFusedLessons(db2, { deriveTitle: deriveHeuristicTitle });
   repairFusedLessonShellHistory(db2);
   ensureDreamProposalsTable(db2);
-  ensureFtsSegmentation(db2);
   dropArchivedIndexRows(db2);
 }
 function reindexFts() {
