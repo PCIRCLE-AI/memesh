@@ -22,5 +22,7 @@ export declare function redactMemoryText(text: string): string;
 export declare function redactTextValues(value: unknown, skipKeys?: ReadonlySet<string>): unknown;
 export declare function redactVersionText(entry: unknown): unknown;
 export declare function textsIn(value: unknown): Set<string>;
-export declare function metadataRefusal(value: unknown, known: ReadonlySet<string>): string | undefined;
+export declare function metadataRefusal(value: unknown, known: ReadonlySet<string>, beside?: Iterable<string>): string | undefined;
+export declare function addsNewText(value: unknown, known: ReadonlySet<string>): boolean;
+export declare function clearPartsOfKey(metadata: Record<string, unknown>): Record<string, unknown>;
 //# sourceMappingURL=paths.d.ts.map

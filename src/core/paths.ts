@@ -327,6 +327,14 @@ export function _clearProjectNameCache(): void {
  * the same WOULD carry `lastIndex` from one call into the next and skip
  * matches; such a consumer must compile its own, from these sources.
  */
+/**
+ * The `sk-` key and the `name=value` credential, without the boundary each
+ * needs before it in the list below. `gluedAfter` runs them with no boundary
+ * at the end of a masked span.
+ */
+const SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
+const NAMED_VALUE = '(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"\'<>]{8,}';
+
 export const SECRET_PATTERN_SOURCES: readonly string[] = [
   // PEM private key. A BEGIN..END region is sensitive as a whole, whatever is
   // inside it (a hard-wrapped key, per-line prefixes, junk characters, any kind
@@ -377,7 +385,7 @@ export const SECRET_PATTERN_SOURCES: readonly string[] = [
   // coverage and makes a quote a hard stop. A length cap was tried instead
   // and rejected: `sk-` + 400 chars redacted the first 204 and published the
   // remaining 200. Measured, not assumed.
-  '\\bsk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]',
+  `\\b${SK_KEY}`,
   // Bearer token. `(?:\\s|\\\\[nrt])+` instead of plain \\s+: the HTTP
   // doctor egress redacts JSON-STRINGIFIED text, where a real newline
   // between "Bearer" and the token has become the two characters \n — a
@@ -395,7 +403,7 @@ export const SECRET_PATTERN_SOURCES: readonly string[] = [
   // `OPENAI_API_KEY=…` are the dominant credential shape in a shell
   // transcript and must match. The value must be 8+ characters so
   // `token=bucket` and `signature=valid` — prose, not credentials — survive.
-  '(?<![A-Za-z0-9])(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"\'<>]{8,}',
+  `(?<![A-Za-z0-9])${NAMED_VALUE}`,
   'ghp_[A-Za-z0-9]{30,}',              // GitHub PAT (classic)
   'gho_[A-Za-z0-9]{30,}',              // GitHub OAuth
   'gh[sur]_[A-Za-z0-9]{30,}',          // GitHub app/server/refresh tokens
@@ -424,7 +432,7 @@ export const SECRET_PATTERN_SOURCES: readonly string[] = [
  *  every pattern each time. */
 const SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, 'gi'));
 
-/** One string through the pattern list, repeated until nothing changes (bounded). */
+/** One string through the pattern list, repeated until nothing changes. */
 function redactRaw(input: string): string {
   // A marker left by one pattern can complete another's match when credentials
   // are glued together with no separator — `AKIA…password=…` masked the key id
@@ -473,17 +481,63 @@ function maskMatches(input: string): string {
     }
   }
   if (spans.length === 0) return input;
-  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
   let out = '';
   let at = 0;
-  let open: [number, number] | undefined;
-  for (const span of spans) {
-    if (open && span[0] < open[1]) { open[1] = Math.max(open[1], span[1]); continue; }
-    if (open) { out += `${input.slice(at, open[0])}***REDACTED***`; at = open[1]; }
-    open = [span[0], span[1]];
+  for (const [start, end] of gluedAfter(input, merge(spans))) {
+    out += `${input.slice(at, start)}${REDACTED}`;
+    at = end;
   }
-  if (open) out += `${input.slice(at, open[0])}***REDACTED***`;
-  return out + input.slice(open ? open[1] : at);
+  return out + input.slice(at);
+}
+
+/** Spans sorted, overlapping ones joined (and touching ones, when asked). */
+function merge(spans: Array<[number, number]>, touching = false): Array<[number, number]> {
+  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  const merged: Array<[number, number]> = [];
+  for (const [start, end] of spans) {
+    const last = merged[merged.length - 1];
+    if (last && (start < last[1] || (touching && start === last[1]))) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
+}
+
+/** `sk-…` and `name=value` with no boundary before them, tried at one position. */
+const GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, 'iy'));
+
+/**
+ * Masked spans, each grown over an `sk-` key or a `name=value` credential
+ * that starts inside it or right at its end and runs past it. Those two
+ * patterns need a boundary before them (`task-runner` is not a key,
+ * `mytoken=` is not a credential), and a credential glued before them takes
+ * that boundary away: `ghp_…sk-…` ends the GitHub token at `…sk`, and the
+ * `sk-` key that starts there no longer has a word boundary, so its tail
+ * would stay. Inside a masked span there is no ordinary word to protect.
+ * A position inside a match already found is not tried again: a start inside
+ * that run ends where the run ends.
+ */
+function gluedAfter(input: string, spans: Array<[number, number]>): Array<[number, number]> {
+  for (let grown = true; grown;) {
+    grown = false;
+    const found: Array<[number, number]> = [];
+    for (const [start, end] of spans) {
+      if (end >= input.length) continue;
+      for (const pattern of GLUED) {
+        for (let at = start, skipTo = start; at <= end; at++) {
+          if (at < skipTo) continue;
+          pattern.lastIndex = at;
+          const m = pattern.exec(input);
+          if (m === null) continue;
+          skipTo = at + m[0].length;
+          if (skipTo > end) found.push([at, skipTo]);
+        }
+      }
+    }
+    // Every span found ends past the span it started in or touches, and joins
+    // it, so each round grows a span; the rounds end at the end of the text.
+    if (found.length > 0) { spans = merge([...spans, ...found], true); grown = true; }
+  }
+  return spans;
 }
 
 const PRIVATE_KEY_MARKER = /-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----/gi;
@@ -493,6 +547,25 @@ const REDACTED = '***REDACTED***';
 /** JSON.rawJSON and JSON.isRawJSON (Node 21+): TypeScript's lib does not declare them yet, and an older Node does without them. */
 const nativeJson = JSON as JSON & { rawJSON?: (text: string) => unknown; isRawJSON?: (value: unknown) => boolean };
 const looksLikeJson = (text: string) => /^\s*[[{"]/.test(text);
+
+const JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g;
+const ESCAPED_CHAR: Record<string, string> = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+
+/**
+ * JSON text with its escapes read (`\u0074` is `t`, `\n` a newline), level
+ * after level, without parsing it: a member JSON.parse drops (the first value
+ * of a duplicate key) is still there. Undefined when the escapes nest more
+ * than eight levels deep: that text cannot be cleared.
+ */
+function readEscapes(text: string): string | undefined {
+  for (let level = 0; level < 8; level++) {
+    const read = text.replace(JSON_ESCAPE, (_, hex: string | undefined, c: string) =>
+      hex === undefined ? ESCAPED_CHAR[c] : String.fromCharCode(parseInt(hex, 16)));
+    if (read === text) return text;
+    text = read;
+  }
+  return undefined;
+}
 
 /**
  * True when a string holds one part of a private key that goes on in another
@@ -530,6 +603,9 @@ function* jsonTexts(value: unknown): Generator<string> {
 function holdsPartOfKeyDecoded(text: string): boolean {
   if (holdsPartOfKey(text)) return true;
   if (!looksLikeJson(text) || !(text.includes('\\') || ANY_PRIVATE_KEY_MARKER.test(text))) return false;
+  // Read lexically too: a duplicate key's dropped value is not in the parse.
+  const read = readEscapes(text);
+  if (read === undefined || holdsPartOfKey(read)) return true;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -647,7 +723,7 @@ function redactOne(input: string): Redaction {
   // others).
   try {
     const parsed = JSON.parse(input, keepNumberSpelling);
-    if ([...jsonTexts(parsed)].some(holdsPartOfKeyDecoded)) {
+    if (holdsPartOfKeyDecoded(input) || [...jsonTexts(parsed)].some(holdsPartOfKeyDecoded)) {
       return { text: JSON.stringify(mapJson(parsed, () => REDACTED, () => REDACTED)), masked: true };
     }
     let masked = false;
@@ -656,9 +732,12 @@ function redactOne(input: string): Redaction {
       (s) => { const r = redactOne(s); if (r.masked) masked = true; return r.text; },
       (k) => { const r = redactRaw(k); if (r !== k) masked = true; return r; },
     );
-    // The raw rules matching the source text is masking too: a credential in a
-    // duplicate key that JSON.parse dropped is in the text, not in `value`.
-    return { text: JSON.stringify(value), masked: masked || asRaw.masked };
+    // The raw rules matching the source text, or the text with its escapes
+    // read, is masking too: a credential in a duplicate key that JSON.parse
+    // dropped is in the text, not in `value`, and may be written in escapes.
+    const read = readEscapes(input);
+    const maskedInText = asRaw.masked || read === undefined || redactRaw(read) !== read;
+    return { text: JSON.stringify(value), masked: masked || maskedInText };
   } catch (err) {
     // Not JSON: the raw rules over the whole text. JSON nested too deep to
     // read or walk (about a thousand levels): none of it can be checked.
@@ -835,14 +914,24 @@ export function redactVersionText(entry: unknown): unknown {
   const version = rest as { title?: unknown; observations?: unknown };
   const observations = Array.isArray(version.observations) && version.observations.every((o) => typeof o === 'string')
     ? version.observations as string[] : undefined;
-  // Any other shape (a title that is not text, observations that are not a
-  // list of text) is redacted string by string, like other metadata.
-  if (observations === undefined || (version.title !== undefined && typeof version.title !== 'string')) {
-    return redactTextValues(entry);
+  // Observations that are not a list of text: string by string, like other metadata.
+  if (observations === undefined) return redactTextValues(entry);
+  // The title's text (none for a missing or null title, every string for one
+  // that is not text) joins the observations as one set.
+  const title = version.title;
+  const titleTexts = typeof title === 'string' ? [title] : title === undefined || title === null ? [] : [...textsIn(title)];
+  if ([...titleTexts, ...observations].some(holdsPartOfKeyDecoded)) {
+    return {
+      ...version,
+      ...(titleTexts.length === 0 ? {} : { title: typeof title === 'string' ? REDACTED : mapJson(JSON.parse(JSON.stringify(title)), () => REDACTED, () => REDACTED) }),
+      observations: observations.map(() => REDACTED),
+    };
   }
-  const title = typeof version.title === 'string' ? [version.title] : [];
-  const texts = redactSecretList([...title, ...observations]);
-  return { ...version, ...(title.length > 0 ? { title: texts[0] } : {}), observations: texts.slice(title.length) };
+  return {
+    ...version,
+    ...(typeof title === 'string' ? { title: redactSecrets(title) } : titleTexts.length === 0 ? {} : { title: redactTextValues(title) }),
+    observations: observations.map(redactSecrets),
+  };
 }
 
 /** Every string and key name in a structured value, as it would be stored. */
@@ -858,23 +947,72 @@ export function textsIn(value: unknown): Set<string> {
  * redacted name would sit beside the field's earlier copy instead of
  * replacing it). Text already stored (`known`) is not checked again, so a
  * memory written before #523 can still be updated.
+ *
+ * `beside` is the rest of the same write: the stored text it keeps and the
+ * title and observations it carries. When one of those holds part of a
+ * private key and the metadata adds any new string, the write is refused:
+ * the new string may be the rest of that key, and nothing tells it apart
+ * from a timestamp. A lone BEGIN or END line is not proof of a key; the
+ * write is refused because it cannot be told apart, not because a key was
+ * found.
  */
-export function metadataRefusal(value: unknown, known: ReadonlySet<string>): string | undefined {
+export function metadataRefusal(value: unknown, known: ReadonlySet<string>, beside: Iterable<string> = []): string | undefined {
   const serialized = value === undefined ? undefined : JSON.stringify(value);
   if (serialized === undefined) return undefined;
   const stack: unknown[] = [JSON.parse(serialized)];
   while (stack.length > 0) {
     const node = stack.pop();
     if (typeof node === 'string') {
-      if (!known.has(node) && holdsPartOfKeyDecoded(node)) return 'its metadata holds part of a private key (a BEGIN or END line without the rest)';
+      if (!known.has(node) && holdsPartOfKeyDecoded(node)) return 'its metadata holds part of a private key (a BEGIN or END line without the rest). Nothing was written; remove that text and try again';
     } else if (Array.isArray(node)) {
       for (const item of node) stack.push(item);
     } else if (node !== null && typeof node === 'object') {
       for (const [key, inner] of Object.entries(node)) {
-        if (!known.has(key) && (holdsPartOfKeyDecoded(key) || redactRaw(key) !== key)) return 'a metadata key name holds a credential or part of a private key';
+        if (!known.has(key) && (holdsPartOfKeyDecoded(key) || redactRaw(key) !== key)) return 'a metadata key name holds a credential or part of a private key. Nothing was written; remove that text and try again';
         stack.push(inner);
       }
     }
   }
+  if (addsNewText(value, known) && [...beside].some(holdsPartOfKeyDecoded)) {
+    return 'it adds new metadata text to a memory whose text holds a BEGIN or END line of a private key without the rest, '
+      + 'so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). '
+      + 'Nothing was written. To clear such a line the memory already holds, run `memesh pin <name>` or `memesh unpin <name>` '
+      + 'first: a write that adds no new text masks every part of a key in the memory\'s metadata, history included';
+  }
   return undefined;
+}
+
+/** Whether a structured value holds a string that is not in `known`. Key names do not count: a pin adds the key `pin` and no text. */
+export function addsNewText(value: unknown, known: ReadonlySet<string>): boolean {
+  const serialized = value === undefined ? undefined : JSON.stringify(value);
+  if (serialized === undefined) return false;
+  const stack: unknown[] = [JSON.parse(serialized)];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (typeof node === 'string') {
+      if (!known.has(node)) return true;
+    } else if (Array.isArray(node)) {
+      for (const item of node) stack.push(item);
+    } else if (node !== null && typeof node === 'object') {
+      for (const inner of Object.values(node)) stack.push(inner);
+    }
+  }
+  return false;
+}
+
+/**
+ * Metadata as a write that adds no new text stores it (#523): a
+ * `replaced_history` entry that holds part of a private key is redacted as
+ * its set (redactVersionText), and then every string and key name that
+ * still holds part of one becomes the marker. Everything else, and every
+ * other history entry, is kept as it was. This is how a memory written
+ * before #523 with a lone BEGIN or END line takes new text again.
+ */
+export function clearPartsOfKey(metadata: Record<string, unknown>): Record<string, unknown> {
+  const history = metadata.replaced_history;
+  const entries = Array.isArray(history)
+    ? { replaced_history: history.map((entry) => ([...textsIn(entry)].some(holdsPartOfKeyDecoded) ? redactVersionText(entry) : entry)) }
+    : {};
+  const clear = (text: string) => (holdsPartOfKeyDecoded(text) ? REDACTED : text);
+  return mapJson({ ...metadata, ...entries }, clear, clear) as Record<string, unknown>;
 }

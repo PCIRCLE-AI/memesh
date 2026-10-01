@@ -4,41 +4,45 @@ import { indexedObservationText, insertFtsRow, joinIndexedObservations, removeFr
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { canonicalEntityType } from './core/work-topology.js';
-import { metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
+import { addsNewText, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
 const isGuardWithPattern = (guard) => guard !== null && typeof guard === 'object' && typeof guard.pattern === 'string';
-function redactMetadataForStore(next, stored) {
+function redactMetadataForStore(next, stored, sameCall = []) {
     const storedHistory = stored?.replaced_history;
     const incoming = next.replaced_history;
     const kept = new Map();
     if (Array.isArray(storedHistory))
         for (const entry of storedHistory)
             kept.set(JSON.stringify(entry), entry);
-    const fresh = {
+    const fresh = withoutGuardPattern({
         ...next,
         ...(Array.isArray(incoming)
             ? { replaced_history: incoming.filter((entry) => !kept.has(JSON.stringify(entry))).map(redactVersionText) }
             : {}),
-        ...(isGuardWithPattern(next.guard) ? { guard: { ...next.guard, pattern: undefined } } : {}),
-    };
-    const refusal = metadataRefusal(fresh, textsIn(stored));
+    });
+    const known = textsIn(stored);
+    const keptText = [...textsIn(withoutGuardPattern(next))].filter((text) => known.has(text));
+    const refusal = metadataRefusal(fresh, known, [...keptText, ...sameCall]);
     if (refusal !== undefined) {
-        throw new Error(`MeMesh did not store this memory: ${refusal}. Nothing was written; remove that text and try again.`);
+        throw new Error(`MeMesh did not store this memory: ${refusal}.`);
     }
     const redacted = redactTextValues(next, new Set(['guard', ...(Array.isArray(incoming) ? ['replaced_history'] : [])]));
     if (redacted.guard !== undefined) {
         const guard = redacted.guard;
         redacted.guard = redactTextValues(redacted.guard, new Set(typeof guard?.pattern === 'string' ? ['pattern'] : []));
     }
-    if (!Array.isArray(incoming))
-        return redacted;
-    return {
+    const out = !Array.isArray(incoming) ? redacted : {
         ...redacted,
         replaced_history: redacted.replaced_history.map((entry) => {
             const key = JSON.stringify(entry);
             return kept.has(key) ? kept.get(key) : redactVersionText(entry);
         }),
     };
+    if (addsNewText(fresh, known))
+        return out;
+    const cleared = clearPartsOfKey(withoutGuardPattern(out));
+    return isGuardWithPattern(out.guard) ? { ...cleared, guard: { ...cleared.guard, pattern: out.guard.pattern } } : cleared;
 }
+const withoutGuardPattern = (metadata) => isGuardWithPattern(metadata.guard) ? { ...metadata, guard: { ...metadata.guard, pattern: undefined } } : metadata;
 const MAX_QUERY_TERMS = 32;
 function buildMatchExpression(db, query) {
     const terms = tokenizeQuery(query);
@@ -129,7 +133,10 @@ export class KnowledgeGraph {
             ...opts,
             ...redactTitleAndObservations(typeof opts.title === 'string' ? opts.title : undefined, opts.observations),
             ...(opts.metadata !== undefined
-                ? { metadata: redactMetadataForStore(opts.metadata, this.storedMetadata(name)) }
+                ? { metadata: redactMetadataForStore(opts.metadata, this.storedMetadata(name), [
+                        ...(typeof opts.title === 'string' ? [opts.title] : []),
+                        ...(opts.observations === undefined ? [] : opts.observations),
+                    ]) }
                 : {}),
         };
         return this.db.transaction(() => this.createEntityInner(name, type, safe))();

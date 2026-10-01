@@ -1209,3 +1209,162 @@ describe('r15: sets, metadata and the decoded reading (#523)', () => {
     expect(history[0].replaced_at).toBe('2026-09-28T00:00:00.000Z');
   });
 });
+
+describe('r18: part of a key beside new metadata text is refused as a whole (#523)', () => {
+  const key = generateKeyPairSync('ec', { namedCurve: 'P-256', privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+  const [header, ...rest] = String(key.privateKey).trim().split('\n');
+  const bodyLines = rest.slice(0, -1);
+  const body = bodyLines.join('\n');
+  const AMBIGUOUS = /cannot tell whether the new text continues that key/;
+  const row = (name: string) => getDatabase().prepare('SELECT metadata, title, namespace FROM entities WHERE name = ?').get(name) as
+    { metadata: string; title: string | null; namespace: string } | undefined;
+  const observationCount = (name: string) => (getDatabase().prepare(
+    'SELECT COUNT(*) n FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ?').get(name) as { n: number }).n;
+  /** A row written before #523: its metadata holds a lone BEGIN line under `existing`. */
+  const seedLegacyHeader = (name: string) => {
+    new KnowledgeGraph(getDatabase()).createEntity(name, 'note', { observations: ['x'], metadata: { trust: 'trusted', kind: 'note', existing: 'x' } });
+    getDatabase().prepare("UPDATE entities SET metadata = json_set(metadata, '$.existing', ?) WHERE name = ?").run(header, name);
+  };
+
+  it('F2: a stored lone BEGIN and a new body under a DIFFERENT top-level key: refused, metadata byte-identical', () => {
+    seedLegacyHeader('r18-f2');
+    const before = row('r18-f2')!.metadata;
+    const kg = new KnowledgeGraph(getDatabase());
+    expect(() => kg.updateEntityMetadata('r18-f2', (m) => ({ ...m, newbody: body }))).toThrow(AMBIGUOUS);
+    expect(() => kg.updateEntityMetadata('r18-f2', (m) => ({ ...m, nested: { deeper: [body] } }))).toThrow(AMBIGUOUS);
+    expect(row('r18-f2')!.metadata).toBe(before);
+    expect(row('r18-f2')!.metadata).not.toContain(bodyLines[0].slice(0, 40));
+  });
+
+  it('X1a: a BEGIN in the observations or title and a body in the metadata of one createEntity: refused, no row', () => {
+    const kg = new KnowledgeGraph(getDatabase());
+    expect(() => kg.createEntity('r18-x1a', 'note', { observations: [header], metadata: { verification_scenario: body } })).toThrow(AMBIGUOUS);
+    expect(() => kg.createEntity('r18-x1a', 'note', { title: header, observations: ['x'], metadata: { note: body } })).toThrow(AMBIGUOUS);
+    expect(row('r18-x1a')).toBeUndefined();
+    // The same note with no new metadata text is stored, the header masked.
+    kg.createEntity('r18-x1a', 'note', { observations: [header], metadata: { pinned: true, score: 0.5 } });
+    expect(JSON.stringify(storedText('r18-x1a'))).not.toContain('BEGIN');
+  });
+
+  it('a legacy row keeps trust and kind; a boolean pin and an update with no new text succeed, and store the lone line masked', () => {
+    seedLegacyHeader('r18-pin');
+    new KnowledgeGraph(getDatabase()).updateEntityMetadata('r18-pin', (m) => ({ ...m }));
+    expect(setPinned('r18-pin', true).found).toBe(true);
+    const meta = JSON.parse(row('r18-pin')!.metadata);
+    expect(meta).toMatchObject({ trust: 'trusted', kind: 'note', pin: true, existing: '***REDACTED***' });
+  });
+
+  it('recovery through existing writers: after a pin, namespace move, replace and import append all succeed', () => {
+    seedLegacyHeader('r18-recover');
+    expect(() => remember({ name: 'r18-recover', type: 'note', observations: ['refused'] })).toThrow(AMBIGUOUS);
+    expect(observationCount('r18-recover')).toBe(1);
+    setPinned('r18-recover', true);
+    remember({ name: 'r18-recover', type: 'note', observations: ['appended'], namespace: 'team' });
+    expect(row('r18-recover')!.namespace).toBe('team');
+    remember({ name: 'r18-recover', type: 'note', observations: ['replaced'], replace: true });
+    const result = importMemories({
+      data: {
+        version: '3.1.0', exported_at: '2026-10-01T00:00:00.000Z', entity_count: 1,
+        entities: [{ name: 'r18-recover', type: 'note', namespace: 'team', relations: [], tags: [], observations: ['imported'] }],
+      } as unknown as ExportResult,
+      merge_strategy: 'append',
+    });
+    expect(result.errors).toEqual([]);
+    expect(JSON.parse(storedText('r18-recover')).observations).toEqual(['replaced', 'imported']);
+    expect(row('r18-recover')!.metadata).not.toContain('BEGIN');
+  });
+
+  it('task_state: a legacy goal holding a lone BEGIN refuses new text with no new observation; an unpin recovers', () => {
+    const project = 'r18-task';
+    setTaskState({ project, patch: { goal: 'placeholder' } });
+    const name = taskStateName(project);
+    getDatabase().prepare("UPDATE entities SET metadata = json_set(metadata, '$.task_state.goal', ?) WHERE name = ?").run(header, name);
+    const count = observationCount(name);
+    const before = row(name)!.metadata;
+    expect(() => setTaskState({ project, patch: { next: 'ship it' } })).toThrow(AMBIGUOUS);
+    expect(observationCount(name)).toBe(count);
+    expect(row(name)!.metadata).toBe(before);
+    // Restating the goal is new text too; an unpin (no new text) stores the line masked first.
+    expect(() => setTaskState({ project, patch: { goal: 'clean goal', next: 'ship it' } })).toThrow(AMBIGUOUS);
+    setPinned(name, false);
+    setTaskState({ project, patch: { goal: 'clean goal', next: 'ship it' } });
+    expect(JSON.parse(row(name)!.metadata).task_state).toMatchObject({ goal: 'clean goal', next: 'ship it' });
+  });
+
+  it('a lone BEGIN or END held in replaced_history: new text is refused until a pin, which masks only the entries holding part of a key', () => {
+    const kg = new KnowledgeGraph(getDatabase());
+    const entry = (at: string, observations: string[]) => ({ replaced_at: at, title: 'old', observations, tags: ['t'], truncated: false });
+    kg.createEntity('r18-history-lock', 'note', { observations: ['x'], metadata: { trust: 'trusted', replaced_history: [
+      entry('t0', ['first']), entry('t1', ['split', 'x']), entry('t2', ['last']),
+    ] } });
+    // Written before #523: entry t1 holds a header and a body line in two observations.
+    getDatabase().prepare("UPDATE entities SET metadata = json_set(metadata, '$.replaced_history[1].observations', json(?)) WHERE name = ?")
+      .run(JSON.stringify([header, bodyLines[0]]), 'r18-history-lock');
+    const before = JSON.parse(row('r18-history-lock')!.metadata);
+    expect(() => remember({ name: 'r18-history-lock', type: 'note', observations: ['more'] })).toThrow(AMBIGUOUS);
+    expect(row('r18-history-lock')!.metadata).toBe(JSON.stringify(before));
+    setPinned('r18-history-lock', true);
+    const after = JSON.parse(row('r18-history-lock')!.metadata);
+    expect(after.pin).toBe(true);
+    expect(after.trust).toBe('trusted');
+    expect(after.replaced_history.map((e: { replaced_at: string }) => e.replaced_at)).toEqual(['t0', 't1', 't2']);
+    expect(JSON.stringify(after.replaced_history[0])).toBe(JSON.stringify(before.replaced_history[0]));
+    expect(JSON.stringify(after.replaced_history[2])).toBe(JSON.stringify(before.replaced_history[2]));
+    expect(after.replaced_history[1]).toMatchObject({ replaced_at: 't1', observations: ['***REDACTED***', '***REDACTED***'], tags: ['t'], truncated: false });
+    expect(row('r18-history-lock')!.metadata).not.toContain(bodyLines[0].slice(0, 40));
+    remember({ name: 'r18-history-lock', type: 'note', observations: ['more'] });
+    expect(JSON.parse(storedText('r18-history-lock')).observations).toContain('more');
+    // A lone END at the top level is masked by an unpin the same way.
+    kg.createEntity('r18-end', 'note', { observations: ['x'], metadata: { note: 'x' } });
+    getDatabase().prepare("UPDATE entities SET metadata = json_set(metadata, '$.note', ?) WHERE name = ?").run(rest[rest.length - 1], 'r18-end');
+    expect(() => remember({ name: 'r18-end', type: 'note', observations: ['more'] })).toThrow(AMBIGUOUS);
+    setPinned('r18-end', false);
+    expect(JSON.parse(row('r18-end')!.metadata).note).toBe('***REDACTED***');
+    remember({ name: 'r18-end', type: 'note', observations: ['more'] });
+  });
+
+  it('a guard whose pattern detects a key header is not part of a key: its memory still takes new text, and a pin keeps the pattern', () => {
+    const kg = new KnowledgeGraph(getDatabase());
+    const pattern = ['-----BEGIN', 'RSA PRIVATE', 'KEY-----'].join(' ');
+    kg.createEntity('r18-guard', 'lesson_learned', { observations: ['x'], metadata: { guard: { pattern, message: 'do not paste keys' } } });
+    remember({ name: 'r18-guard', type: 'lesson_learned', observations: ['more'] });
+    setPinned('r18-guard', true);
+    expect(JSON.parse(row('r18-guard')!.metadata).guard.pattern).toBe(pattern);
+  });
+
+  it('a history entry with a null or object title and a split key in its observations stores no line of the key', () => {
+    const kg = new KnowledgeGraph(getDatabase());
+    kg.createEntity('r18-null-title', 'note', { observations: ['x'], metadata: { replaced_history: [{ replaced_at: 't0', title: null, observations: [header, ...bodyLines], tags: [] }] } });
+    kg.createEntity('r18-object-title', 'note', { observations: ['x'], metadata: { replaced_history: [{ replaced_at: 't0', title: { a: header }, observations: bodyLines, tags: [] }] } });
+    for (const name of ['r18-null-title', 'r18-object-title']) {
+      const history = JSON.parse(row(name)!.metadata).replaced_history;
+      for (const line of bodyLines) expect(JSON.stringify(history), name).not.toContain(line.slice(0, 40));
+      expect(history[0].replaced_at).toBe('t0');
+    }
+    expect(JSON.parse(row('r18-null-title')!.metadata).replaced_history[0].title).toBeNull();
+    const imported = importMemories({
+      data: {
+        version: '3.1.0', exported_at: '2026-10-01T00:00:00.000Z', entity_count: 1,
+        entities: [{ name: 'r18-import-null-title', type: 'note', namespace: 'personal', relations: [], tags: [], observations: ['now'],
+          metadata: { replaced_history: [{ replaced_at: 't0', title: null, observations: [header, ...bodyLines], tags: [] }] } }],
+      } as unknown as ExportResult,
+      merge_strategy: 'skip',
+    });
+    expect(imported.errors).toEqual([]);
+    for (const line of bodyLines) expect(row('r18-import-null-title')!.metadata).not.toContain(line.slice(0, 40));
+  });
+
+  it('F1: a credential or a header written in \\u escapes inside a duplicate key JSON.parse drops is still found', () => {
+    const escape = (text: string) => [...text].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+    expect(holdsSecret([`{"k":"t\\u006fken=ESCAPEDSHADOWBODY83647592","k":"safe"}`])).toBe(true);
+    expect(holdsSecret([`{"k":"${escape(`sk-${'abcd1234efgh'}`)}","k":"safe"}`])).toBe(true);
+    // A header in the dropped duplicate, the body in the member that stays: every string is masked.
+    const doc = `{"k":"${escape(header)}","k":${JSON.stringify(body)}}`;
+    const out = redactSecrets(doc);
+    for (const line of bodyLines) expect(out).not.toContain(line.slice(0, 40));
+    remember({ name: 'r18-f1', type: 'note', observations: [doc] });
+    for (const line of bodyLines) expect(storedText('r18-f1')).not.toContain(line.slice(0, 40));
+    // Escaped text with nothing secret in it is not secret-shaped.
+    expect(holdsSecret(['{"k":"caf\\u00e9","k":"x"}'])).toBe(false);
+  });
+});

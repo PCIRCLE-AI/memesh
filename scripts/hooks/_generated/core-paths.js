@@ -163,6 +163,8 @@ export function canonicalRemoteLocator(remote) {
 export function _clearProjectNameCache() {
     projectNameCache.clear();
 }
+const SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
+const NAMED_VALUE = '(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"\'<>]{8,}';
 export const SECRET_PATTERN_SOURCES = [
     '-----BEGIN[A-Z ]*PRIVATE KEY-----(?:[\\s\\S]*?-----END[A-Z ]*PRIVATE KEY-----|[\\s\\S]*)',
     '(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]+:[^\\s:@/]+@',
@@ -170,9 +172,9 @@ export const SECRET_PATTERN_SOURCES = [
     'SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}',
     '[srp]k_(?:live|test)_[A-Za-z0-9]{16,}',
     'npm_[A-Za-z0-9]{36}',
-    '\\bsk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]',
+    `\\b${SK_KEY}`,
     'Bearer(?:\\s|\\\\[nrt])+[A-Za-z0-9_.\\-]{16,}',
-    '(?<![A-Za-z0-9])(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"\'<>]{8,}',
+    `(?<![A-Za-z0-9])${NAMED_VALUE}`,
     'ghp_[A-Za-z0-9]{30,}',
     'gho_[A-Za-z0-9]{30,}',
     'gh[sur]_[A-Za-z0-9]{30,}',
@@ -209,24 +211,54 @@ function maskMatches(input) {
     }
     if (spans.length === 0)
         return input;
-    spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
     let out = '';
     let at = 0;
-    let open;
-    for (const span of spans) {
-        if (open && span[0] < open[1]) {
-            open[1] = Math.max(open[1], span[1]);
-            continue;
-        }
-        if (open) {
-            out += `${input.slice(at, open[0])}***REDACTED***`;
-            at = open[1];
-        }
-        open = [span[0], span[1]];
+    for (const [start, end] of gluedAfter(input, merge(spans))) {
+        out += `${input.slice(at, start)}${REDACTED}`;
+        at = end;
     }
-    if (open)
-        out += `${input.slice(at, open[0])}***REDACTED***`;
-    return out + input.slice(open ? open[1] : at);
+    return out + input.slice(at);
+}
+function merge(spans, touching = false) {
+    spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+    const merged = [];
+    for (const [start, end] of spans) {
+        const last = merged[merged.length - 1];
+        if (last && (start < last[1] || (touching && start === last[1])))
+            last[1] = Math.max(last[1], end);
+        else
+            merged.push([start, end]);
+    }
+    return merged;
+}
+const GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, 'iy'));
+function gluedAfter(input, spans) {
+    for (let grown = true; grown;) {
+        grown = false;
+        const found = [];
+        for (const [start, end] of spans) {
+            if (end >= input.length)
+                continue;
+            for (const pattern of GLUED) {
+                for (let at = start, skipTo = start; at <= end; at++) {
+                    if (at < skipTo)
+                        continue;
+                    pattern.lastIndex = at;
+                    const m = pattern.exec(input);
+                    if (m === null)
+                        continue;
+                    skipTo = at + m[0].length;
+                    if (skipTo > end)
+                        found.push([at, skipTo]);
+                }
+            }
+        }
+        if (found.length > 0) {
+            spans = merge([...spans, ...found], true);
+            grown = true;
+        }
+    }
+    return spans;
 }
 const PRIVATE_KEY_MARKER = /-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----/gi;
 const PRIVATE_KEY_END = /-----END[A-Z ]*PRIVATE KEY-----/i;
@@ -234,6 +266,17 @@ const ANY_PRIVATE_KEY_MARKER = /-----(?:BEGIN|END)[A-Z ]*PRIVATE KEY-----/i;
 const REDACTED = '***REDACTED***';
 const nativeJson = JSON;
 const looksLikeJson = (text) => /^\s*[[{"]/.test(text);
+const JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g;
+const ESCAPED_CHAR = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+function readEscapes(text) {
+    for (let level = 0; level < 8; level++) {
+        const read = text.replace(JSON_ESCAPE, (_, hex, c) => hex === undefined ? ESCAPED_CHAR[c] : String.fromCharCode(parseInt(hex, 16)));
+        if (read === text)
+            return text;
+        text = read;
+    }
+    return undefined;
+}
 function holdsPartOfKey(text) {
     let open = false;
     for (const [, marker] of text.matchAll(PRIVATE_KEY_MARKER)) {
@@ -268,6 +311,9 @@ function holdsPartOfKeyDecoded(text) {
         return true;
     if (!looksLikeJson(text) || !(text.includes('\\') || ANY_PRIVATE_KEY_MARKER.test(text)))
         return false;
+    const read = readEscapes(text);
+    if (read === undefined || holdsPartOfKey(read))
+        return true;
     let parsed;
     try {
         parsed = JSON.parse(text);
@@ -343,14 +389,16 @@ function redactOne(input) {
         return asRaw;
     try {
         const parsed = JSON.parse(input, keepNumberSpelling);
-        if ([...jsonTexts(parsed)].some(holdsPartOfKeyDecoded)) {
+        if (holdsPartOfKeyDecoded(input) || [...jsonTexts(parsed)].some(holdsPartOfKeyDecoded)) {
             return { text: JSON.stringify(mapJson(parsed, () => REDACTED, () => REDACTED)), masked: true };
         }
         let masked = false;
         const value = mapJson(parsed, (s) => { const r = redactOne(s); if (r.masked)
             masked = true; return r.text; }, (k) => { const r = redactRaw(k); if (r !== k)
             masked = true; return r; });
-        return { text: JSON.stringify(value), masked: masked || asRaw.masked };
+        const read = readEscapes(input);
+        const maskedInText = asRaw.masked || read === undefined || redactRaw(read) !== read;
+        return { text: JSON.stringify(value), masked: masked || maskedInText };
     }
     catch (err) {
         return err instanceof SyntaxError ? asRaw : { text: REDACTED, masked: true };
@@ -407,18 +455,28 @@ export function redactVersionText(entry) {
     const version = rest;
     const observations = Array.isArray(version.observations) && version.observations.every((o) => typeof o === 'string')
         ? version.observations : undefined;
-    if (observations === undefined || (version.title !== undefined && typeof version.title !== 'string')) {
+    if (observations === undefined)
         return redactTextValues(entry);
+    const title = version.title;
+    const titleTexts = typeof title === 'string' ? [title] : title === undefined || title === null ? [] : [...textsIn(title)];
+    if ([...titleTexts, ...observations].some(holdsPartOfKeyDecoded)) {
+        return {
+            ...version,
+            ...(titleTexts.length === 0 ? {} : { title: typeof title === 'string' ? REDACTED : mapJson(JSON.parse(JSON.stringify(title)), () => REDACTED, () => REDACTED) }),
+            observations: observations.map(() => REDACTED),
+        };
     }
-    const title = typeof version.title === 'string' ? [version.title] : [];
-    const texts = redactSecretList([...title, ...observations]);
-    return { ...version, ...(title.length > 0 ? { title: texts[0] } : {}), observations: texts.slice(title.length) };
+    return {
+        ...version,
+        ...(typeof title === 'string' ? { title: redactSecrets(title) } : titleTexts.length === 0 ? {} : { title: redactTextValues(title) }),
+        observations: observations.map(redactSecrets),
+    };
 }
 export function textsIn(value) {
     const serialized = value === undefined ? undefined : JSON.stringify(value);
     return new Set(serialized === undefined ? [] : jsonTexts(JSON.parse(serialized)));
 }
-export function metadataRefusal(value, known) {
+export function metadataRefusal(value, known, beside = []) {
     const serialized = value === undefined ? undefined : JSON.stringify(value);
     if (serialized === undefined)
         return undefined;
@@ -427,7 +485,7 @@ export function metadataRefusal(value, known) {
         const node = stack.pop();
         if (typeof node === 'string') {
             if (!known.has(node) && holdsPartOfKeyDecoded(node))
-                return 'its metadata holds part of a private key (a BEGIN or END line without the rest)';
+                return 'its metadata holds part of a private key (a BEGIN or END line without the rest). Nothing was written; remove that text and try again';
         }
         else if (Array.isArray(node)) {
             for (const item of node)
@@ -436,10 +494,46 @@ export function metadataRefusal(value, known) {
         else if (node !== null && typeof node === 'object') {
             for (const [key, inner] of Object.entries(node)) {
                 if (!known.has(key) && (holdsPartOfKeyDecoded(key) || redactRaw(key) !== key))
-                    return 'a metadata key name holds a credential or part of a private key';
+                    return 'a metadata key name holds a credential or part of a private key. Nothing was written; remove that text and try again';
                 stack.push(inner);
             }
         }
     }
+    if (addsNewText(value, known) && [...beside].some(holdsPartOfKeyDecoded)) {
+        return 'it adds new metadata text to a memory whose text holds a BEGIN or END line of a private key without the rest, '
+            + 'so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). '
+            + 'Nothing was written. To clear such a line the memory already holds, run `memesh pin <name>` or `memesh unpin <name>` '
+            + 'first: a write that adds no new text masks every part of a key in the memory\'s metadata, history included';
+    }
     return undefined;
+}
+export function addsNewText(value, known) {
+    const serialized = value === undefined ? undefined : JSON.stringify(value);
+    if (serialized === undefined)
+        return false;
+    const stack = [JSON.parse(serialized)];
+    while (stack.length > 0) {
+        const node = stack.pop();
+        if (typeof node === 'string') {
+            if (!known.has(node))
+                return true;
+        }
+        else if (Array.isArray(node)) {
+            for (const item of node)
+                stack.push(item);
+        }
+        else if (node !== null && typeof node === 'object') {
+            for (const inner of Object.values(node))
+                stack.push(inner);
+        }
+    }
+    return false;
+}
+export function clearPartsOfKey(metadata) {
+    const history = metadata.replaced_history;
+    const entries = Array.isArray(history)
+        ? { replaced_history: history.map((entry) => ([...textsIn(entry)].some(holdsPartOfKeyDecoded) ? redactVersionText(entry) : entry)) }
+        : {};
+    const clear = (text) => (holdsPartOfKeyDecoded(text) ? REDACTED : text);
+    return mapJson({ ...metadata, ...entries }, clear, clear);
 }

@@ -4198,24 +4198,62 @@ function maskMatches(input) {
   }
   if (spans.length === 0)
     return input;
-  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
   let out = "";
   let at = 0;
-  let open;
-  for (const span of spans) {
-    if (open && span[0] < open[1]) {
-      open[1] = Math.max(open[1], span[1]);
-      continue;
-    }
-    if (open) {
-      out += `${input.slice(at, open[0])}***REDACTED***`;
-      at = open[1];
-    }
-    open = [span[0], span[1]];
+  for (const [start, end] of gluedAfter(input, merge(spans))) {
+    out += `${input.slice(at, start)}${REDACTED}`;
+    at = end;
   }
-  if (open)
-    out += `${input.slice(at, open[0])}***REDACTED***`;
-  return out + input.slice(open ? open[1] : at);
+  return out + input.slice(at);
+}
+function merge(spans, touching = false) {
+  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  const merged = [];
+  for (const [start, end] of spans) {
+    const last = merged[merged.length - 1];
+    if (last && (start < last[1] || touching && start === last[1]))
+      last[1] = Math.max(last[1], end);
+    else
+      merged.push([start, end]);
+  }
+  return merged;
+}
+function gluedAfter(input, spans) {
+  for (let grown = true; grown; ) {
+    grown = false;
+    const found = [];
+    for (const [start, end] of spans) {
+      if (end >= input.length)
+        continue;
+      for (const pattern of GLUED) {
+        for (let at = start, skipTo = start; at <= end; at++) {
+          if (at < skipTo)
+            continue;
+          pattern.lastIndex = at;
+          const m = pattern.exec(input);
+          if (m === null)
+            continue;
+          skipTo = at + m[0].length;
+          if (skipTo > end)
+            found.push([at, skipTo]);
+        }
+      }
+    }
+    if (found.length > 0) {
+      spans = merge([...spans, ...found], true);
+      grown = true;
+    }
+  }
+  return spans;
+}
+function readEscapes(text) {
+  for (let level = 0; level < 8; level++) {
+    const read = text.replace(JSON_ESCAPE, (_, hex3, c) => hex3 === void 0 ? ESCAPED_CHAR[c] : String.fromCharCode(parseInt(hex3, 16)));
+    if (read === text)
+      return text;
+    text = read;
+  }
+  return void 0;
 }
 function holdsPartOfKey(text) {
   let open = false;
@@ -4251,6 +4289,9 @@ function holdsPartOfKeyDecoded(text) {
     return true;
   if (!looksLikeJson(text) || !(text.includes("\\") || ANY_PRIVATE_KEY_MARKER.test(text)))
     return false;
+  const read = readEscapes(text);
+  if (read === void 0 || holdsPartOfKey(read))
+    return true;
   let parsed;
   try {
     parsed = JSON.parse(text);
@@ -4326,7 +4367,7 @@ function redactOne(input) {
     return asRaw;
   try {
     const parsed = JSON.parse(input, keepNumberSpelling);
-    if ([...jsonTexts(parsed)].some(holdsPartOfKeyDecoded)) {
+    if (holdsPartOfKeyDecoded(input) || [...jsonTexts(parsed)].some(holdsPartOfKeyDecoded)) {
       return { text: JSON.stringify(mapJson(parsed, () => REDACTED, () => REDACTED)), masked: true };
     }
     let masked = false;
@@ -4341,7 +4382,9 @@ function redactOne(input) {
         masked = true;
       return r;
     });
-    return { text: JSON.stringify(value), masked: masked || asRaw.masked };
+    const read = readEscapes(input);
+    const maskedInText = asRaw.masked || read === void 0 || redactRaw(read) !== read;
+    return { text: JSON.stringify(value), masked: masked || maskedInText };
   } catch (err) {
     return err instanceof SyntaxError ? asRaw : { text: REDACTED, masked: true };
   }
@@ -4396,18 +4439,28 @@ function redactVersionText(entry) {
     return rest;
   const version2 = rest;
   const observations = Array.isArray(version2.observations) && version2.observations.every((o) => typeof o === "string") ? version2.observations : void 0;
-  if (observations === void 0 || version2.title !== void 0 && typeof version2.title !== "string") {
+  if (observations === void 0)
     return redactTextValues(entry);
+  const title = version2.title;
+  const titleTexts = typeof title === "string" ? [title] : title === void 0 || title === null ? [] : [...textsIn(title)];
+  if ([...titleTexts, ...observations].some(holdsPartOfKeyDecoded)) {
+    return {
+      ...version2,
+      ...titleTexts.length === 0 ? {} : { title: typeof title === "string" ? REDACTED : mapJson(JSON.parse(JSON.stringify(title)), () => REDACTED, () => REDACTED) },
+      observations: observations.map(() => REDACTED)
+    };
   }
-  const title = typeof version2.title === "string" ? [version2.title] : [];
-  const texts = redactSecretList([...title, ...observations]);
-  return { ...version2, ...title.length > 0 ? { title: texts[0] } : {}, observations: texts.slice(title.length) };
+  return {
+    ...version2,
+    ...typeof title === "string" ? { title: redactSecrets(title) } : titleTexts.length === 0 ? {} : { title: redactTextValues(title) },
+    observations: observations.map(redactSecrets)
+  };
 }
 function textsIn(value) {
   const serialized = value === void 0 ? void 0 : JSON.stringify(value);
   return new Set(serialized === void 0 ? [] : jsonTexts(JSON.parse(serialized)));
 }
-function metadataRefusal(value, known) {
+function metadataRefusal(value, known, beside = []) {
   const serialized = value === void 0 ? void 0 : JSON.stringify(value);
   if (serialized === void 0)
     return void 0;
@@ -4416,21 +4469,50 @@ function metadataRefusal(value, known) {
     const node = stack.pop();
     if (typeof node === "string") {
       if (!known.has(node) && holdsPartOfKeyDecoded(node))
-        return "its metadata holds part of a private key (a BEGIN or END line without the rest)";
+        return "its metadata holds part of a private key (a BEGIN or END line without the rest). Nothing was written; remove that text and try again";
     } else if (Array.isArray(node)) {
       for (const item of node)
         stack.push(item);
     } else if (node !== null && typeof node === "object") {
       for (const [key, inner] of Object.entries(node)) {
         if (!known.has(key) && (holdsPartOfKeyDecoded(key) || redactRaw(key) !== key))
-          return "a metadata key name holds a credential or part of a private key";
+          return "a metadata key name holds a credential or part of a private key. Nothing was written; remove that text and try again";
         stack.push(inner);
       }
     }
   }
+  if (addsNewText(value, known) && [...beside].some(holdsPartOfKeyDecoded)) {
+    return "it adds new metadata text to a memory whose text holds a BEGIN or END line of a private key without the rest, so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). Nothing was written. To clear such a line the memory already holds, run `memesh pin <name>` or `memesh unpin <name>` first: a write that adds no new text masks every part of a key in the memory's metadata, history included";
+  }
   return void 0;
 }
-var AGENT_ROUTER_SOCKET_FILENAME, projectNameCache, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, keepNumberSpelling;
+function addsNewText(value, known) {
+  const serialized = value === void 0 ? void 0 : JSON.stringify(value);
+  if (serialized === void 0)
+    return false;
+  const stack = [JSON.parse(serialized)];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    if (typeof node === "string") {
+      if (!known.has(node))
+        return true;
+    } else if (Array.isArray(node)) {
+      for (const item of node)
+        stack.push(item);
+    } else if (node !== null && typeof node === "object") {
+      for (const inner of Object.values(node))
+        stack.push(inner);
+    }
+  }
+  return false;
+}
+function clearPartsOfKey(metadata) {
+  const history = metadata.replaced_history;
+  const entries = Array.isArray(history) ? { replaced_history: history.map((entry) => [...textsIn(entry)].some(holdsPartOfKeyDecoded) ? redactVersionText(entry) : entry) } : {};
+  const clear = (text) => holdsPartOfKeyDecoded(text) ? REDACTED : text;
+  return mapJson({ ...metadata, ...entries }, clear, clear);
+}
+var AGENT_ROUTER_SOCKET_FILENAME, projectNameCache, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, SK_KEY, NAMED_VALUE, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, GLUED, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, JSON_ESCAPE, ESCAPED_CHAR, keepNumberSpelling;
 var init_paths = __esm({
   "dist/core/paths.js"() {
     "use strict";
@@ -4439,6 +4521,8 @@ var init_paths = __esm({
     PROJECT_HASH_HEX_LENGTH = 32;
     PROJECT_ID_MAX_LENGTH = 200;
     PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
+    SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
+    NAMED_VALUE = `(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"'<>]{8,}`;
     SECRET_PATTERN_SOURCES = [
       "-----BEGIN[A-Z ]*PRIVATE KEY-----(?:[\\s\\S]*?-----END[A-Z ]*PRIVATE KEY-----|[\\s\\S]*)",
       "(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]+:[^\\s:@/]+@",
@@ -4446,9 +4530,9 @@ var init_paths = __esm({
       "SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}",
       "[srp]k_(?:live|test)_[A-Za-z0-9]{16,}",
       "npm_[A-Za-z0-9]{36}",
-      '\\bsk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]',
+      `\\b${SK_KEY}`,
       "Bearer(?:\\s|\\\\[nrt])+[A-Za-z0-9_.\\-]{16,}",
-      `(?<![A-Za-z0-9])(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"'<>]{8,}`,
+      `(?<![A-Za-z0-9])${NAMED_VALUE}`,
       "ghp_[A-Za-z0-9]{30,}",
       "gho_[A-Za-z0-9]{30,}",
       "gh[sur]_[A-Za-z0-9]{30,}",
@@ -4458,12 +4542,15 @@ var init_paths = __esm({
       "xox[baprs]-[A-Za-z0-9-]{10,}"
     ];
     SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, "gi"));
+    GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, "iy"));
     PRIVATE_KEY_MARKER = /-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----/gi;
     PRIVATE_KEY_END = /-----END[A-Z ]*PRIVATE KEY-----/i;
     ANY_PRIVATE_KEY_MARKER = /-----(?:BEGIN|END)[A-Z ]*PRIVATE KEY-----/i;
     REDACTED = "***REDACTED***";
     nativeJson = JSON;
     looksLikeJson = (text) => /^\s*[[{"]/.test(text);
+    JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g;
+    ESCAPED_CHAR = { '"': '"', "\\": "\\", "/": "/", b: "\b", f: "\f", n: "\n", r: "\r", t: "	" };
     keepNumberSpelling = (_key, value, context) => typeof value === "number" && context?.source !== void 0 && nativeJson.rawJSON ? nativeJson.rawJSON(context.source) : value;
   }
 });
@@ -4474,36 +4561,39 @@ __export(knowledge_graph_exports, {
   KnowledgeGraph: () => KnowledgeGraph
 });
 import { createHash as createHash2 } from "node:crypto";
-function redactMetadataForStore(next, stored) {
+function redactMetadataForStore(next, stored, sameCall = []) {
   const storedHistory = stored?.replaced_history;
   const incoming = next.replaced_history;
   const kept = /* @__PURE__ */ new Map();
   if (Array.isArray(storedHistory))
     for (const entry of storedHistory)
       kept.set(JSON.stringify(entry), entry);
-  const fresh = {
+  const fresh = withoutGuardPattern({
     ...next,
-    ...Array.isArray(incoming) ? { replaced_history: incoming.filter((entry) => !kept.has(JSON.stringify(entry))).map(redactVersionText) } : {},
-    ...isGuardWithPattern(next.guard) ? { guard: { ...next.guard, pattern: void 0 } } : {}
-  };
-  const refusal = metadataRefusal(fresh, textsIn(stored));
+    ...Array.isArray(incoming) ? { replaced_history: incoming.filter((entry) => !kept.has(JSON.stringify(entry))).map(redactVersionText) } : {}
+  });
+  const known = textsIn(stored);
+  const keptText = [...textsIn(withoutGuardPattern(next))].filter((text) => known.has(text));
+  const refusal = metadataRefusal(fresh, known, [...keptText, ...sameCall]);
   if (refusal !== void 0) {
-    throw new Error(`MeMesh did not store this memory: ${refusal}. Nothing was written; remove that text and try again.`);
+    throw new Error(`MeMesh did not store this memory: ${refusal}.`);
   }
   const redacted = redactTextValues(next, /* @__PURE__ */ new Set(["guard", ...Array.isArray(incoming) ? ["replaced_history"] : []]));
   if (redacted.guard !== void 0) {
     const guard = redacted.guard;
     redacted.guard = redactTextValues(redacted.guard, new Set(typeof guard?.pattern === "string" ? ["pattern"] : []));
   }
-  if (!Array.isArray(incoming))
-    return redacted;
-  return {
+  const out = !Array.isArray(incoming) ? redacted : {
     ...redacted,
     replaced_history: redacted.replaced_history.map((entry) => {
       const key = JSON.stringify(entry);
       return kept.has(key) ? kept.get(key) : redactVersionText(entry);
     })
   };
+  if (addsNewText(fresh, known))
+    return out;
+  const cleared = clearPartsOfKey(withoutGuardPattern(out));
+  return isGuardWithPattern(out.guard) ? { ...cleared, guard: { ...cleared.guard, pattern: out.guard.pattern } } : cleared;
 }
 function buildMatchExpression(db2, query) {
   const terms = tokenizeQuery(query);
@@ -4558,7 +4648,7 @@ function dropUbiquitousTerms(db2, terms) {
     return terms;
   }
 }
-var isGuardWithPattern, MAX_QUERY_TERMS, UBIQUITOUS_TERM_FRACTION, MIN_ROWS_FOR_DF_GUARD, MAX_DF_LOOKUP_TERMS, LATIN_FOLDABLE, KnowledgeGraph;
+var isGuardWithPattern, withoutGuardPattern, MAX_QUERY_TERMS, UBIQUITOUS_TERM_FRACTION, MIN_ROWS_FOR_DF_GUARD, MAX_DF_LOOKUP_TERMS, LATIN_FOLDABLE, KnowledgeGraph;
 var init_knowledge_graph = __esm({
   "dist/knowledge-graph.js"() {
     "use strict";
@@ -4569,6 +4659,7 @@ var init_knowledge_graph = __esm({
     init_work_topology();
     init_paths();
     isGuardWithPattern = (guard) => guard !== null && typeof guard === "object" && typeof guard.pattern === "string";
+    withoutGuardPattern = (metadata) => isGuardWithPattern(metadata.guard) ? { ...metadata, guard: { ...metadata.guard, pattern: void 0 } } : metadata;
     MAX_QUERY_TERMS = 32;
     UBIQUITOUS_TERM_FRACTION = 0.5;
     MIN_ROWS_FOR_DF_GUARD = 25;
@@ -4596,7 +4687,10 @@ var init_knowledge_graph = __esm({
         const safe = opts === void 0 ? void 0 : {
           ...opts,
           ...redactTitleAndObservations(typeof opts.title === "string" ? opts.title : void 0, opts.observations),
-          ...opts.metadata !== void 0 ? { metadata: redactMetadataForStore(opts.metadata, this.storedMetadata(name)) } : {}
+          ...opts.metadata !== void 0 ? { metadata: redactMetadataForStore(opts.metadata, this.storedMetadata(name), [
+            ...typeof opts.title === "string" ? [opts.title] : [],
+            ...opts.observations === void 0 ? [] : opts.observations
+          ]) } : {}
         };
         return this.db.transaction(() => this.createEntityInner(name, type, safe))();
       }
@@ -8444,7 +8538,7 @@ __export(util_exports, {
   issue: () => issue,
   joinValues: () => joinValues,
   jsonStringifyReplacer: () => jsonStringifyReplacer,
-  merge: () => merge,
+  merge: () => merge2,
   mergeDefs: () => mergeDefs,
   normalizeParams: () => normalizeParams,
   nullish: () => nullish,
@@ -8794,7 +8888,7 @@ function safeExtend(schema, shape) {
   });
   return clone(schema, def);
 }
-function merge(a, b) {
+function merge2(a, b) {
   if (a._zod.def.checks?.length) {
     throw new Error(".merge() cannot be used on object schemas containing refinements. Use .safeExtend() instead.");
   }
@@ -45107,7 +45201,7 @@ var require_utils2 = __commonJS({
         obj[key] = value;
       }
     };
-    var merge2 = function merge3(target, source, options) {
+    var merge3 = function merge4(target, source, options) {
       if (!source) {
         return target;
       }
@@ -45164,7 +45258,7 @@ var require_utils2 = __commonJS({
           if (has.call(target, i)) {
             var targetItem = target[i];
             if (targetItem && typeof targetItem === "object" && item && typeof item === "object") {
-              target[i] = merge3(targetItem, item, options);
+              target[i] = merge4(targetItem, item, options);
             } else {
               target[target.length] = item;
             }
@@ -45183,7 +45277,7 @@ var require_utils2 = __commonJS({
       return Object.keys(source).reduce(function(acc, key) {
         var value = source[key];
         if (has.call(acc, key)) {
-          setProperty(acc, key, merge3(acc[key], value, options));
+          setProperty(acc, key, merge4(acc[key], value, options));
         } else {
           setProperty(acc, key, value);
         }
@@ -45338,7 +45432,7 @@ var require_utils2 = __commonJS({
       isRegExp,
       markOverflow,
       maybeMap,
-      merge: merge2
+      merge: merge3
     };
   }
 });
@@ -62508,8 +62602,8 @@ function requireOneOf(value, allowed, flag) {
 function shellQuoteIfNeeded(value) {
   return /^[A-Za-z0-9._/:@%+=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
-function describeImportFlags(cmd, opts, merge2) {
-  const parts = [`--merge ${merge2}`];
+function describeImportFlags(cmd, opts, merge3) {
+  const parts = [`--merge ${merge3}`];
   if (cmd.getOptionValueSource("namespace") === "cli")
     parts.push(`--namespace ${String(opts.namespace)}`);
   if (cmd.getOptionValueSource("restoreArchived") === "cli")

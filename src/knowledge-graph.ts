@@ -16,7 +16,7 @@ import {
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { canonicalEntityType } from './core/work-topology.js';
-import { metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
+import { addsNewText, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
 
 /**
  * Metadata as it will be STORED: every string redacted, with two exceptions.
@@ -39,6 +39,7 @@ const isGuardWithPattern = (guard: unknown): guard is Record<string, unknown> & 
 function redactMetadataForStore(
   next: Record<string, unknown>,
   stored: Record<string, unknown> | undefined,
+  sameCall: readonly string[] = [],
 ): Record<string, unknown> {
   const storedHistory = stored?.replaced_history;
   const incoming = next.replaced_history;
@@ -50,31 +51,43 @@ function redactMetadataForStore(
   // credential in a key name, is refused and nothing is written. A new
   // history entry is redacted as its own set first (redactVersionText), and
   // text the row already holds is not checked again (metadataRefusal).
-  const fresh = {
+  const fresh = withoutGuardPattern({
     ...next,
     ...(Array.isArray(incoming)
       ? { replaced_history: incoming.filter((entry) => !kept.has(JSON.stringify(entry))).map(redactVersionText) }
       : {}),
-    ...(isGuardWithPattern(next.guard) ? { guard: { ...next.guard, pattern: undefined } } : {}),
-  };
-  const refusal = metadataRefusal(fresh, textsIn(stored));
+  });
+  // The rest of the write: the stored text it keeps, and the title and
+  // observations of the same call. Part of a key there plus a new string
+  // here is refused as a whole (metadataRefusal).
+  const known = textsIn(stored);
+  const keptText = [...textsIn(withoutGuardPattern(next))].filter((text) => known.has(text));
+  const refusal = metadataRefusal(fresh, known, [...keptText, ...sameCall]);
   if (refusal !== undefined) {
-    throw new Error(`MeMesh did not store this memory: ${refusal}. Nothing was written; remove that text and try again.`);
+    throw new Error(`MeMesh did not store this memory: ${refusal}.`);
   }
   const redacted = redactTextValues(next, new Set(['guard', ...(Array.isArray(incoming) ? ['replaced_history'] : [])])) as Record<string, unknown>;
   if (redacted.guard !== undefined) {
     const guard = redacted.guard as { pattern?: unknown } | null;
     redacted.guard = redactTextValues(redacted.guard, new Set(typeof guard?.pattern === 'string' ? ['pattern'] : []));
   }
-  if (!Array.isArray(incoming)) return redacted;
-  return {
+  const out = !Array.isArray(incoming) ? redacted : {
     ...redacted,
     replaced_history: (redacted.replaced_history as unknown[]).map((entry) => {
       const key = JSON.stringify(entry);
       return kept.has(key) ? kept.get(key) : redactVersionText(entry);
     }),
   };
+  // A write that adds no new text (a pin, an unpin) masks every part of a key
+  // the row holds, history included, so the memory takes new text again.
+  if (addsNewText(fresh, known)) return out;
+  const cleared = clearPartsOfKey(withoutGuardPattern(out));
+  return isGuardWithPattern(out.guard) ? { ...cleared, guard: { ...(cleared.guard as object), pattern: out.guard.pattern } } : cleared;
 }
+
+/** The metadata without `guard.pattern`, which is kept exactly as given and is not caller prose. */
+const withoutGuardPattern = (metadata: Record<string, unknown>): Record<string, unknown> =>
+  isGuardWithPattern(metadata.guard) ? { ...metadata, guard: { ...metadata.guard, pattern: undefined } } : metadata;
 
 /**
  * Cap on how many terms of a query reach the FTS5 MATCH expression. The broad
@@ -338,8 +351,8 @@ function dropUbiquitousTerms(db: MemeshDatabase, terms: string[]): string[] {
 export class KnowledgeGraph {
   constructor(private db: MemeshDatabase) {}
 
-  /** The `replaced_history` a row already holds, or undefined when there is
-   *  no row or no history — the provenance `redactMetadataForStore` keys on. */
+  /** The metadata a row already holds, or undefined when there is no row —
+   *  the provenance `redactMetadataForStore` keys on. */
   private storedMetadata(name: string): Record<string, unknown> | undefined {
     const row = this.db.prepare('SELECT metadata FROM entities WHERE name = ?').get(name) as { metadata: string | null } | undefined;
     return row ? this.parseMetadata(row.metadata) : undefined;
@@ -435,7 +448,10 @@ export class KnowledgeGraph {
       // a `verification_scenario` here); structure, numbers and booleans are
       // untouched.
       ...(opts.metadata !== undefined
-        ? { metadata: redactMetadataForStore(opts.metadata, this.storedMetadata(name)) }
+        ? { metadata: redactMetadataForStore(opts.metadata, this.storedMetadata(name), [
+          ...(typeof opts.title === 'string' ? [opts.title] : []),
+          ...(opts.observations === undefined ? [] : opts.observations),
+        ]) }
         : {}),
     };
     return this.db.transaction(() => this.createEntityInner(name, type, safe))();

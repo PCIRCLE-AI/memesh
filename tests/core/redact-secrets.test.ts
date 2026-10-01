@@ -375,6 +375,32 @@ describe('redactSecrets (public-egress credential masking)', () => {
       expect(redactSecrets(crossFamily)).not.toMatch(/Zq9Zq9|Aa1Aa1|Yy7Yy7/);
     });
 
+    it('a key or name=value glued after another credential: its tail is masked; ordinary text after a token stays (#523 r18)', () => {
+      const r = (n: number, seed: string) => seed.repeat(Math.ceil(n / seed.length)).slice(0, n);
+      // No single pattern covers any of these whole: each first token stops where the second begins.
+      const masked: Array<[string, string]> = [
+        ['ghp then sk-', `ghp_${r(36, 'Aa1')}sk-proj-${r(30, 'Zq9')}`],
+        ['github_pat then sk-', `github_pat_${r(30, 'Aa1')}sk-${r(30, 'Zq9')}`],
+        ['ghp then token=', `ghp_${r(36, 'Aa1')}token=${r(24, 'Zq9')}`],
+        ['ghp then a masked sk- key', `ghp_${r(36, 'Aa1')}sk-proj-****${r(12, 'Zq9')}`],
+        ['AKIA then sk-', `AKIA${r(16, 'AB12')}sk-${r(30, 'Zq9')}`],
+        ['AKIA then password=', `AKIA${r(16, 'AB12')}password=${r(24, 'Zq9')}`],
+        ['JWT then token=', `${['eyJ' + r(30, 'Aa1'), r(20, 'Aa1'), r(24, 'Aa1')].join('.')}&token=${r(24, 'Zq9')}`],
+      ];
+      for (const [name, text] of masked) {
+        const out = redactSecrets(text);
+        expect(out, name).not.toMatch(/Zq9Zq9|Aa1Aa1/);
+        expect(redactSecrets(out), name).toBe(out);
+      }
+      const ghp = `ghp_${r(36, 'Aa1')}`;
+      for (const [name, tail] of [['-abcdefgh', '-abcdefgh'], ['=ordinary', '=ordinary'], ['.v2', '.v2'], [' and more prose', ' and more prose']]) {
+        expect(redactSecrets(`${ghp}${tail}`), name).toBe(`${REDACTED}${tail}`);
+      }
+      const conn = ['postgres://appuser', `${r(12, 'Aa1')}@db.example.com:5432/app`].join(':');
+      expect(redactSecrets(conn)).toBe(`${REDACTED}db.example.com:5432/app`);
+      expect(redactSecrets('task-runner and disk-usage and mytoken=abcdefghijkl')).toBe('task-runner and disk-usage and mytoken=abcdefghijkl');
+    });
+
     it('overlapping matches cost a bounded amount, and past the bound the rest is masked, never kept', () => {
       const pathological = 'sk-'.repeat(333_333);
       let started = Date.now();
