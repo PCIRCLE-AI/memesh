@@ -449,6 +449,10 @@ function parseStoredObject(raw: string, label: string): AgentJsonObject {
  *
  * The fallback's idempotency key is derived from the caller's, so a retry of
  * the same call returns the same principal message instead of a second one.
+ *
+ * Only the intended session can take the fallback in. When it is not
+ * connected now, the sender is told so (#518): if that session has ended for
+ * good, no session will ever take the message, and the sender should know.
  */
 function sendPrincipalFallback(
   db: MemeshDatabase,
@@ -485,10 +489,21 @@ function sendPrincipalFallback(
     }
     throw error;
   }
+  const connected = db.prepare(`
+    SELECT 1 FROM agent_session_connections
+    WHERE project = ? AND session_instance_id = ? AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+    LIMIT 1
+  `).get(refused.project, refused.recipient, Date.now()) !== undefined;
   return {
     ...fallback,
     fallback: {
       reason: 'recipient_unavailable',
+      intended_session_connected: connected,
+      ...(connected ? {} : {
+        note: `Session ${refused.recipient} is not connected now. Only it can take this message in, the next time it runs; `
+          + `no other session of ${session.principal_id} will. If it has ended for good, send to ${session.principal_id} `
+          + 'without intended_session instead.',
+      }),
       from: {
         message_id: refused.message_id,
         delivery_id: refused.delivery_id,

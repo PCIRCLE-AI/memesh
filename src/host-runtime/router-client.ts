@@ -11,6 +11,7 @@ import {
   isLegacyAgentRouterVersionMismatchResponse,
 } from '../core/agent-router.js';
 import { assertSecureLocalHostRuntimeSupported } from './config.js';
+import { memeshPackageVersion } from './package-version.js';
 
 const DEFAULT_INITIAL_RETRY_MS = 100;
 const DEFAULT_MAX_RETRY_MS = 5_000;
@@ -50,6 +51,8 @@ export interface RouterClientResilienceOptions {
   registration_timeout_ms?: number;
   /** Test seam; production starts the packaged router entrypoint without a shell. */
   start_router?: () => void | Promise<void>;
+  /** Test seam; production reads the installed package.json at each registration. */
+  installed_version?: () => string;
   /** Test seam for deterministic jitter. Must return a value between zero and one. */
   random?: () => number;
 }
@@ -69,6 +72,7 @@ type NormalizedResilienceOptions = {
   initial_attempts: number;
   registration_timeout_ms: number;
   start_router: () => Promise<void>;
+  installed_version: () => string;
   random: () => number;
 };
 
@@ -77,6 +81,7 @@ class RouterTransportError extends Error {}
 class ActiveRouterHostConnection implements RouterHostConnection {
   private currentConnectionId = '';
   private currentGeneration = 0;
+  private reportedOutdatedRouter = false;
   private currentSocket: net.Socket | null = null;
   private connectingSocket: net.Socket | null = null;
   private heartbeat: NodeJS.Timeout | null = null;
@@ -147,6 +152,18 @@ class ActiveRouterHostConnection implements RouterHostConnection {
   }
 
   private async connectOnce(): Promise<void> {
+    // Read each time: after an in-place downgrade a long-running host must
+    // not keep claiming the newer version it started with (#518). Outside the
+    // try below, so a package.json caught mid-upgrade is retried, not taken
+    // for a missing router.
+    let installedVersion: string;
+    try {
+      installedVersion = this.resilience.installed_version();
+    } catch (error) {
+      throw new RouterTransportError(
+        `Could not read the installed MeMesh version: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
     try {
       assertPrivateRouterSocket(this.input.socket_path);
       const socket = net.createConnection(this.input.socket_path);
@@ -154,7 +171,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
       try {
         await waitForSocketConnect(socket);
         if (this.closed) throw new RouterTransportError('Router host connection was closed.');
-        await this.registerSocket(socket);
+        await this.registerSocket(socket, installedVersion);
       } catch (error) {
         socket.destroy();
         throw error;
@@ -174,7 +191,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
     }
   }
 
-  private registerSocket(socket: net.Socket): Promise<void> {
+  private registerSocket(socket: net.Socket, installedVersion: string): Promise<void> {
     const registerId = randomUUID();
     let buffer = Buffer.alloc(0);
     let connectionId = '';
@@ -224,13 +241,26 @@ class ActiveRouterHostConnection implements RouterHostConnection {
             ));
             continue;
           }
+          if (!registrationSettled && isRouterRejectingVersionField(frame)) {
+            finish(routerOutdatedError());
+            continue;
+          }
           if (!registrationSettled && frame.request_id === registerId) {
             if (frame.version !== AGENT_ROUTER_PROTOCOL_VERSION) {
               finish(new AgentRouterProtocolError('invalid_response', 'Router response identity does not match.'));
               continue;
             }
+            if (frame.ok === false && isRecord(frame.error) && frame.error.code === 'router_outdated') {
+              // An older router stepping aside: retrying starts the installed one.
+              finish(new RouterTransportError(String(frame.error.message)));
+              continue;
+            }
             if (frame.ok !== true || !isRecord(frame.result)) {
               finish(new Error('Router registration was rejected.'));
+              continue;
+            }
+            if (!requiredNonEmptyString(frame.result.memesh_version)) {
+              finish(routerOutdatedError());
               continue;
             }
             try {
@@ -297,6 +327,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
         request_id: registerId,
         ...this.input.identity,
         auth_token: this.input.auth_token,
+        memesh_version: installedVersion,
         hops: 0,
       });
     });
@@ -306,6 +337,7 @@ class ActiveRouterHostConnection implements RouterHostConnection {
     this.currentSocket = socket;
     this.currentConnectionId = connectionId;
     this.currentGeneration = generation;
+    this.reportedOutdatedRouter = false;
     this.clearHeartbeat();
     this.heartbeat = setInterval(() => {
       if (this.closed || this.currentSocket !== socket) return;
@@ -380,9 +412,15 @@ class ActiveRouterHostConnection implements RouterHostConnection {
       try {
         await this.connectOnce();
         if (this.currentSocket) return;
-      } catch {
+      } catch (error) {
         // Active hosts remain eligible for recovery. Every retry is delayed
         // and capped, including non-startup transport and protocol failures.
+        // An outdated router needs the user to act, so say so, once.
+        const outdated = routerOutdatedDetail(error);
+        if (outdated && !this.reportedOutdatedRouter) {
+          this.reportedOutdatedRouter = true;
+          try { process.stderr.write(`memesh-host:${outdated}\n`); } catch { /* stderr gone */ }
+        }
       }
     }
   }
@@ -503,6 +541,7 @@ function normalizeResilience(options: RouterClientResilienceOptions = {}): Norma
       if (options.start_router) await options.start_router();
       else await startPackagedRouter();
     },
+    installed_version: options.installed_version ?? memeshPackageVersion,
     random: options.random ?? Math.random,
   };
 }
@@ -557,6 +596,26 @@ function isDelivery(
     && requiredNonEmptyString(envelope.created_at)
     && Object.hasOwn(envelope, 'payload')
     && isRecord(envelope.provenance);
+}
+
+/** How a router from before #518 answers a register that names the host's version. */
+function isRouterRejectingVersionField(frame: Record<string, unknown>): boolean {
+  return frame.ok === false && frame.request_id === '' && isRecord(frame.error)
+    && frame.error.code === 'unexpected_field'
+    && typeof frame.error.message === 'string' && frame.error.message.includes('memesh_version');
+}
+
+/** The line to show a user when `error` says the running router is outdated, else ''. */
+export function routerOutdatedDetail(error: unknown): string {
+  return error instanceof AgentRouterProtocolError && error.code === 'router_outdated' ? ` ${error.message}` : '';
+}
+
+function routerOutdatedError(): AgentRouterProtocolError {
+  return new AgentRouterProtocolError(
+    'router_outdated',
+    'router_outdated: the running MeMesh message router started before this MeMesh version was installed and still runs the old code. '
+      + 'Stop it with `pkill -f dist/host-runtime/router.js`; the next MeMesh session starts the installed one.',
+  );
 }
 
 function requiredNonEmptyString(value: unknown): value is string {

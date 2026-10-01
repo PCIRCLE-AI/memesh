@@ -74,7 +74,11 @@ normal case. A `target_kind: "session"` send with
 `fallback_to_principal: true` does this by itself when the session refuses the
 message (`recipient_unavailable`): it sends the same message to the principal
 that session registered under, with `intended_session` set to it, and returns
-that message with a `fallback` field naming the refused one. A session the
+that message with a `fallback` field naming the refused one.
+`fallback.intended_session_connected` says whether that session is connected
+now; when it is not, `fallback.note` says that only it can take the message in
+when it next runs, so a sender whose target has ended for good knows to send to
+the principal without `intended_session` (#518). A session the
 router never registered has no known principal, so that send still fails,
 saying so, and so does a refused session registered through a host that
 cannot be named.
@@ -294,6 +298,21 @@ socket. Existing generated configs that name the former default are normalized
 in memory; an explicit custom socket remains exact and reports
 `router_version_mismatch` when it exposes the known legacy response shape.
 
+Within one protocol version, the router also reports the MeMesh version it
+runs, and each host sends its own when it registers (#518). A router that
+started before an upgrade is caught this way instead of silently routing with
+the old code:
+
+- A router older than the host, from a release that reports its version,
+  refuses that registration with `router_outdated`, stops, and does not start
+  again for ten minutes as that older version. The host retries and starts the
+  installed router.
+- A router from before versions were reported cannot stop itself. The host
+  refuses it with `router_outdated` and the instruction to stop it
+  (`pkill -f dist/host-runtime/router.js`); the next MeMesh session starts the
+  installed one.
+- A router newer than the host is used as is.
+
 Create one reusable owner-private config for each managed local host and
 principal. The stable principal is the logical recipient. Managed processes
 generate a fresh exact session identity. Ordinary Codex plugin sessions instead
@@ -364,6 +383,19 @@ writer is gone. `SessionEnd` leaves a bounded 45-second idle queue window;
 resume replaces the prior exact generation through its private control socket,
 and expiry removes the registration. A missing or malformed identity, invalid
 cwd, insecure explicit override, or failed connection does not register a host.
+A companion records its control socket, with the socket's inode, as soon as it
+binds it, and marks the record registered once the router accepts it. The
+socket is removed only by that companion while the path is still its own, or
+after its record shows its process is gone and the socket is still the one it
+bound. A start while another start for the same session is still under way,
+or with a socket in the way that no record accounts for, is refused with one
+`companion_busy` line, and the file is left alone: nothing can prove such a
+socket unused. A record left by a MeMesh from before #518 does not block a
+start; its socket used another name and is left in place.
+The companion has no terminal of its own, so a reason it could not stop
+cleanly is appended to the owner-private `codex-companion.log` in the MeMesh
+data directory, and so is what a start or `SessionEnd` did with the record of
+a companion that had exited (its socket removed, or left in place and why).
 
 For a registered session, MeMesh invokes `codex queue` with one untrusted full
 envelope capped at 16,384 bytes (16 KiB), including routing metadata and payload.

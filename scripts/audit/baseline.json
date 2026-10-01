@@ -346,10 +346,10 @@
       "reason": "`input.commits ?? []` — WhySchema documents commits as optional (a caller without a working tree resolves none); the result carries commits: [] visibly, and every real gap in the chain is a typed abstention, never a default.",
       "triaged": "2026-08-16 (UX-3 memesh why); re-keyed 2026-08-24 (M-07: file_not_found abstention + why.ts imports added above; statements byte-identical, classification unchanged)"
     },
-    "C5 src/core/agent-router.ts:851": {
+    "C5 src/core/agent-router.ts:899": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "A host adapter may accept a delivery without optional transport metadata. The empty receipt is still validated and persisted as an explicit host_accept fact; accepted itself is required and no ACK, read, or workflow state is inferred from the missing receipt.",
-      "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-08-28 after bounded backlog drain and the Windows fail-closed guard moved the unchanged statement; re-keyed 2026-09-01 after live-directory code shifted the unchanged statement; re-keyed 2026-09-06 after router protocol constants shifted the unchanged statement; re-keyed 2026-09-26 843→848 after AGENT_ROUTER_SOCKET_PATH_MAX_BYTES was added above (#402/#404); re-keyed 2026-09-28 848→850 after the card model field gained a doc comment above; statement byte-identical, classification unchanged; re-keyed 2026-09-28 850→851 (#497: DeliveryRow gained intended_session above; statement byte-identical, classification unchanged)"
+      "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-08-28 after bounded backlog drain and the Windows fail-closed guard moved the unchanged statement; re-keyed 2026-09-01 after live-directory code shifted the unchanged statement; re-keyed 2026-09-06 after router protocol constants shifted the unchanged statement; re-keyed 2026-09-26 843→848 after AGENT_ROUTER_SOCKET_PATH_MAX_BYTES was added above (#402/#404); re-keyed 2026-09-28 848→850 after the card model field gained a doc comment above; statement byte-identical, classification unchanged; re-keyed 2026-09-28 850→851 (#497: DeliveryRow gained intended_session above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 851→899 (#518: memesh_version option, register step-aside and the superseded hold were added above; statement byte-identical, classification unchanged)"
     },
     "C5 src/host-adapters/acp-client.ts:771": {
       "class": "SAFE-BY-CONSTRUCTION",

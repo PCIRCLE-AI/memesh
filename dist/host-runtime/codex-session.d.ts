@@ -22,6 +22,8 @@ interface CodexCompanionState {
     workspace: string;
     token: string;
     control_socket: string;
+    control_socket_ino?: string;
+    registered?: true;
 }
 export interface CodexSessionCompanionDependencies {
     connect?: typeof connectRouterHost;

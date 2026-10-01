@@ -26133,11 +26133,12 @@ function validateSocketPath(socketPath) {
 function isPlainObject4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var AGENT_ROUTER_PROTOCOL_VERSION, AGENT_ROUTER_MAX_FRAME_BYTES, AGENT_ROUTER_SOCKET_PATH_MAX_BYTES, MAX_LEASE_MS, DEFAULT_CLIENT_TIMEOUT_MS, MAX_FIELD_LENGTH, MAX_ADAPTER_RECEIPT_BYTES, AgentRouterError, AgentRouterProtocolError;
+var AGENT_ROUTER_PROTOCOL_VERSION, AGENT_ROUTER_MAX_FRAME_BYTES, AGENT_ROUTER_SOCKET_PATH_MAX_BYTES, MAX_LEASE_MS, DEFAULT_CLIENT_TIMEOUT_MS, MAX_FIELD_LENGTH, MAX_ADAPTER_RECEIPT_BYTES, SUPERSEDED_HOLD_MS, AgentRouterError, AgentRouterProtocolError;
 var init_agent_router = __esm({
   "dist/core/agent-router.js"() {
     "use strict";
     init_agent_messaging();
+    init_semver();
     AGENT_ROUTER_PROTOCOL_VERSION = 2;
     AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
     AGENT_ROUTER_SOCKET_PATH_MAX_BYTES = 103;
@@ -26145,6 +26146,7 @@ var init_agent_router = __esm({
     DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
     MAX_FIELD_LENGTH = 200;
     MAX_ADAPTER_RECEIPT_BYTES = 16 * 1024;
+    SUPERSEDED_HOLD_MS = 10 * 6e4;
     AgentRouterError = class extends Error {
       code;
       constructor(code, message) {
@@ -26433,10 +26435,19 @@ function sendPrincipalFallback(db2, message, refused) {
     }
     throw error51;
   }
+  const connected = db2.prepare(`
+    SELECT 1 FROM agent_session_connections
+    WHERE project = ? AND session_instance_id = ? AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+    LIMIT 1
+  `).get(refused.project, refused.recipient, Date.now()) !== void 0;
   return {
     ...fallback,
     fallback: {
       reason: "recipient_unavailable",
+      intended_session_connected: connected,
+      ...connected ? {} : {
+        note: `Session ${refused.recipient} is not connected now. Only it can take this message in, the next time it runs; no other session of ${session.principal_id} will. If it has ended for good, send to ${session.principal_id} without intended_session instead.`
+      },
       from: {
         message_id: refused.message_id,
         delivery_id: refused.delivery_id,

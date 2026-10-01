@@ -26,6 +26,7 @@ export interface RouterClientResilienceOptions {
     initial_attempts?: number;
     registration_timeout_ms?: number;
     start_router?: () => void | Promise<void>;
+    installed_version?: () => string;
     random?: () => number;
 }
 export interface ConnectRouterHostInput {
@@ -36,4 +37,5 @@ export interface ConnectRouterHostInput {
     resilience?: RouterClientResilienceOptions;
 }
 export declare function connectRouterHost(input: ConnectRouterHostInput): Promise<RouterHostConnection>;
+export declare function routerOutdatedDetail(error: unknown): string;
 //# sourceMappingURL=router-client.d.ts.map
