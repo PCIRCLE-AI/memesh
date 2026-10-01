@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { memeshDir } from './paths.js';
+import { removeGroupAndOtherAccess } from './file-mode.js';
 export { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, isSessionLimitInRange } from './session-limit.js';
 const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'setupCompleted', 'briefing'];
 export const RETIRED_CONFIG_KEYS = [
@@ -83,17 +84,9 @@ function writeRawConfig(raw) {
     const dir = configDir();
     const p = configFilePath();
     fs.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
-    try {
-        fs.chmodSync(dir, PRIVATE_DIR_MODE);
-    }
-    catch {
-    }
+    removeGroupAndOtherAccess(dir);
     fs.writeFileSync(p, JSON.stringify(raw, null, 2), { mode: PRIVATE_FILE_MODE });
-    try {
-        fs.chmodSync(p, PRIVATE_FILE_MODE);
-    }
-    catch {
-    }
+    removeGroupAndOtherAccess(p);
 }
 export class ConfigUnreadableError extends Error {
     constructor(p) {

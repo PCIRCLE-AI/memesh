@@ -4,6 +4,7 @@ import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
+import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import {
@@ -42,7 +43,54 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
 
   const dir = path.dirname(resolvedPath);
   fs.mkdirSync(dir, { recursive: true });
-  try { fs.chmodSync(dir, 0o700); } catch { /* non-POSIX */ }
+
+  // Tighten file mode on the folder, the DB and its WAL/SHM sidecars so other
+  // local users on a shared system cannot read memory contents. The DB
+  // contains all observations and possibly secrets pasted into Claude.
+  //
+  // All of it happens BEFORE SQLite opens anything:
+  //   1. The process umask, so any -wal/-shm SQLite creates (including ones
+  //      recreated after a checkpoint(TRUNCATE) or fresh shm-mapping) are
+  //      born with 0600.
+  //   2. Group/other access comes off the files that exist, so a database
+  //      that then fails to open (an old schema on a read-only file) is not
+  //      left readable, and SQLite, which copies the database file's mode
+  //      onto an empty sidecar, has no group/other bit to copy.
+  //   3. A -wal or -shm with fewer owner permissions than the database is
+  //      refused with the owner's commands: MeMesh never adds an owner bit,
+  //      and SQLite would (or would open the database silently read-only).
+  try { process.umask(0o077); } catch { /* non-POSIX */ }
+  const [realPath, ...sidecars] = databaseFiles(resolvedPath);
+  const realDir = path.dirname(realPath);
+  // Only the path's own folder is tightened. For a symlinked database the
+  // real file's folder is checked below but never changed: it may be a
+  // folder the user shares on purpose.
+  removeGroupAndOtherAccess(dir);
+  guardDatabaseFiles(resolvedPath);
+
+  // A read-only folder can still be READ when -wal and -shm are both there
+  // (sqlite.org/wal.html, section 5). Without one, SQLite can only fail, and
+  // says just "unable to open database file"; name the folder and a way out.
+  // The folder is the REAL file's: SQLite keeps -wal/-shm beside it when the
+  // database path is a symlink.
+  const missing = sidecars.filter((file) => !fs.existsSync(file)).map((file) => file.slice(realPath.length));
+  let folderWritable = true;
+  try { fs.accessSync(realDir, fs.constants.W_OK); } catch { folderWritable = false; }
+  if (missing.length > 0 && !folderWritable && fs.existsSync(realPath)) {
+    // A folder of another user's is not this user's to chmod.
+    const notYours = belongsToAnotherUser(fs.statSync(realDir));
+    const fix = notYours ? 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' : `chmod u+w ${shellQuote(realDir)}`;
+    throw Object.assign(
+      new Error(
+        `MeMesh: ${realDir} is read-only and ${path.basename(realPath)} has no ${missing.join(' or ')} file there, ` +
+          'so it cannot be opened without writing to the folder. ' +
+          (notYours
+            ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}`
+            : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`),
+      ),
+      { fix },
+    );
+  }
 
   // The module singleton is published only once initialisation SUCCEEDS.
   //
@@ -61,15 +109,38 @@ export function openDatabase(dbPath?: string): MemeshDatabase {
   // `insertFtsRow`'s current segmentation rules into an index that was never
   // migrated, which is the contentless-FTS delete mismatch the rest of this
   // release exists to eliminate.
+  db = openInitialisedDatabase(resolvedPath);
+  // Opened read-only because the owner took write access away: every later
+  // write will be refused, so say once, here, what gives it back.
+  const writeBack = ownerWriteCommand(resolvedPath);
+  if (writeBack) {
+    try {
+      process.stderr.write(
+        `MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. ` +
+          `To write to it again, ${writeBack}\n`,
+      );
+    } catch { /* stderr gone */ }
+  }
+  return db;
+}
+
+/**
+ * Open `resolvedPath` and bring it current exactly as `openDatabase` does, but
+ * hand the handle back without publishing it as the process singleton. The
+ * caller owns closing it. `kg rename-project`'s preview uses it to run the real
+ * apply on a throwaway copy. It runs none of openDatabase's permission checks:
+ * a caller opening anything but a file it just created in a private folder
+ * must run guardDatabaseFiles (with an owner-only umask) first.
+ */
+export function openInitialisedDatabase(resolvedPath: string): MemeshDatabase {
   const opening = new MemeshDatabase(resolvedPath);
   try {
-    initialiseDatabase(opening, resolvedPath);
+    initialiseDatabase(opening);
   } catch (err) {
     try { opening.close(); } catch { /* already closing down */ }
     throw err;
   }
-  db = opening;
-  return db;
+  return opening;
 }
 
 /**
@@ -87,7 +158,7 @@ function isReadonlyDbError(err: unknown): boolean {
   return /readonly database|SQLITE_READONLY/i.test(msg);
 }
 
-function initialiseDatabase(db: MemeshDatabase, resolvedPath: string): MemeshDatabase {
+function initialiseDatabase(db: MemeshDatabase): MemeshDatabase {
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   // Bringing the schema current is a WRITE, and "cannot migrate" must not
@@ -101,7 +172,7 @@ function initialiseDatabase(db: MemeshDatabase, resolvedPath: string): MemeshDat
   // an incomplete migration is survivable, because nothing can write to
   // the old shape either.
   try {
-    migrateToCurrentSchema(db, resolvedPath);
+    migrateToCurrentSchema(db);
   } catch (err) {
     if (!isReadonlyDbError(err)) throw err;
     try {
@@ -122,30 +193,11 @@ function initialiseDatabase(db: MemeshDatabase, resolvedPath: string): MemeshDat
  * is load-bearing for reading what the database already holds.
  */
 
-function migrateToCurrentSchema(db: MemeshDatabase, resolvedPath: string): void {
+function migrateToCurrentSchema(db: MemeshDatabase): void {
   db.exec(SCHEMA_SQL);
   db.exec(FTS_SQL);
   ensureTagsUniqueIndex(db);
   ensureHookRunsSince(db);
-
-  // Tighten file mode on the DB and its WAL/SHM sidecars so other local
-  // users on a shared system cannot read memory contents. The DB
-  // contains all observations and possibly secrets pasted into Claude.
-  //
-  // Two-layer defence:
-  //   1. Tighten the process umask BEFORE writing any sidecar so that
-  //      any SQLite-created -wal/-shm files (including ones recreated
-  //      after a checkpoint(TRUNCATE) or fresh shm-mapping) are born
-  //      with 0600. The earlier one-shot chmod missed sidecars that
-  //      SQLite created later during normal operation.
-  //   2. Belt-and-suspenders: explicitly chmod the existing files now,
-  //      in case the umask was looser when this process started and
-  //      SQLite already created them.
-  try { process.umask(0o077); } catch { /* non-POSIX */ }
-  for (const suffix of ['', '-wal', '-shm']) {
-    try { fs.chmodSync(`${resolvedPath}${suffix}`, 0o600); }
-    catch { /* sidecar may not exist yet, or non-POSIX */ }
-  }
 
   // The full conditional-ALTER chain — shared with the hooks via
   // storage/schema.ts, so a new column lands in ONE place and reaches both

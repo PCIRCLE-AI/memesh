@@ -78,6 +78,27 @@ describe('install-id', () => {
     expect(record.install_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 
+  it.skipIf(process.platform === 'win32')('an existing install.json whose permissions cannot be tightened is reported (#520)', async () => {
+    const file = path.join(tmpDir, 'install.json');
+    fs.writeFileSync(file, 'not json at all', { mode: 0o644 });
+    fs.chmodSync(file, 0o644);
+    const realChmod = fs.chmodSync;
+    vi.spyOn(fs, 'chmodSync').mockImplementation((target, m) => {
+      if (String(target) === file) throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
+      realChmod(target, m);
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const { getInstallRecord } = await freshModule();
+      getInstallRecord();
+      const written = stderr.mock.calls.map((c) => String(c[0])).join('');
+      expect(written).toContain(file);
+      expect(written).toContain('EPERM');
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it('getInstallId returns the same id as getInstallRecord', async () => {
     const { getInstallRecord, getInstallId } = await freshModule();
     expect(getInstallId()).toBe(getInstallRecord().install_id);

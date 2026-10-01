@@ -183,7 +183,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'import',
-        description: 'Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite deletes their previous observations and tags instead of archiving them. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.',
+        description: 'Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite replaces their observations and tags, keeping the previous version in metadata.replaced_history. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -192,7 +192,7 @@ export const TOOL_DEFINITIONS = [
                 merge_strategy: {
                     type: 'string',
                     enum: ['skip', 'overwrite', 'append'],
-                    description: 'Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived — this cannot be undone)',
+                    description: 'Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the previous version is kept in metadata.replaced_history, up to the last 20)',
                 },
                 restore_archived: {
                     type: 'boolean',
@@ -378,11 +378,12 @@ function stripNullProps(value) {
         return value;
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-        if (v !== null)
+        if (v !== null || NULL_IS_DATA.has(k))
             out[k] = v;
     }
     return out;
 }
+const NULL_IS_DATA = new Set(['payload']);
 function parseOrFail(schema, args) {
     const raw = args === undefined || args === null ? {} : args;
     const strictPass = schema.safeParse(raw);

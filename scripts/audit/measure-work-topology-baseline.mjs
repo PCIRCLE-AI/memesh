@@ -42,6 +42,7 @@ import os from 'node:os';
 // Numbers printed before this change are not comparable with numbers printed
 // after it, for exactly the reason the drift mattered.
 import { WORK_LAYER_TYPES } from '../hooks/_generated/work-topology.js';
+import { refuseMismatchedSidecars } from '../hooks/_generated/file-mode.js';
 
 const home = process.env.HOME || os.homedir();
 const dbPath = process.env.MEMESH_DB_PATH || path.join(home, '.memesh', 'knowledge-graph.db');
@@ -54,6 +55,9 @@ function fail(msg) {
 }
 
 if (!fs.existsSync(dbPath)) fail(`no database at ${dbPath}`);
+// SQLite resets an empty -wal/-shm to the database's mode even on a
+// read-only open; refuse instead, as every MeMesh open does (#520).
+try { refuseMismatchedSidecars(dbPath); } catch (err) { fail(err?.message ?? String(err)); }
 // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling
 // and hands back a WRITABLE handle.
 const db = new DatabaseSync(dbPath, { readOnly: true });
