@@ -396,6 +396,10 @@ describe('redactSecrets (public-egress credential masking)', () => {
       for (const [name, tail] of [['-abcdefgh', '-abcdefgh'], ['=ordinary', '=ordinary'], ['.v2', '.v2'], [' and more prose', ' and more prose']]) {
         expect(redactSecrets(`${ghp}${tail}`), name).toBe(`${REDACTED}${tail}`);
       }
+      // A JWT whose last segment holds the start of another one: a start inside the first
+      // match that ends at the same place must not skip the one that ends later.
+      const nestedJwt = `eyJAAeyJ${'A'.repeat(8)}.${'B'.repeat(8)}.CCCCeyJ${'D'.repeat(8)}.${r(9, 'Zq9')}.${r(9, 'Yy7')}`;
+      expect(redactSecrets(nestedJwt)).not.toMatch(/Zq9|Yy7/);
       // A glued key that runs to the end of the text takes in every span after it: one marker, not two.
       expect(redactSecrets(`ghp_${r(36, 'Aa1')}sk-${r(10, 'q')}AKIA${r(16, 'AB12')}zzzzz`)).toBe(REDACTED);
       const conn = ['postgres://appuser', `${r(12, 'Aa1')}@db.example.com:5432/app`].join(':');
@@ -433,6 +437,18 @@ describe('redactSecrets (public-egress credential masking)', () => {
       const out = redactSecrets(tokens);
       expect(Date.now() - started).toBeLessThan(2000);
       expect(out).not.toContain('ghp_');
+      // A JWT is made of segments, so its overlapping matches are not skipped
+      // ahead: here every `eyJ` starts a match running to the end, and the cap
+      // is what keeps it linear.
+      const segmented = `${'eyJ'.repeat(40_000)}.${'b'.repeat(8)}.${'c'.repeat(8)}`;
+      started = Date.now();
+      expect(redactSecrets(segmented)).toBe(REDACTED);
+      expect(Date.now() - started).toBeLessThan(2000);
+      // A tail that no key can end in, after many `sk-` starts: each run is searched twice, not once per start.
+      const tail = `${'sk-'.repeat(1400)}A${'*'.repeat(800_000)}`;
+      started = Date.now();
+      expect(redactSecrets(tail).startsWith(REDACTED)).toBe(true);
+      expect(Date.now() - started).toBeLessThan(2000);
       // Ordinary prose around credentials is untouched by the bound.
       expect(redactSecrets(`keep this ${'ghp_' + 'A'.repeat(36)} and this`)).toBe(`keep this ${REDACTED} and this`);
     });

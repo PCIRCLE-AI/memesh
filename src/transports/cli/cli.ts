@@ -704,7 +704,18 @@ function registerPinCommand(name: string, description: string, pinned: boolean, 
     .option('--json', 'Output as JSON')
     .action(async (opts) => {
       await withDatabase(() => {
-        const result = setPinned(opts.name, pinned);
+        let result: ReturnType<typeof setPinned>;
+        try {
+          result = setPinned(opts.name, pinned);
+        } catch (err) {
+          // A refusal (#523: the memory holds part of a private key) is one
+          // line and exit 1, never a stack trace.
+          const error = err instanceof Error ? err.message : String(err);
+          if (opts.json) console.log(JSON.stringify({ error }));
+          else console.error(`Error: ${error}`);
+          process.exitCode = 1;
+          return;
+        }
         if (opts.json) console.log(JSON.stringify(result));
         else console.log(result.found ? onFound(opts.name) : `Entity "${opts.name}" not found`);
         // A pin that pinned nothing exiting 0 is invisible to scripts — the
@@ -1733,7 +1744,18 @@ program
         return;
       }
 
-      const result = setTaskState({ project: opts.project, patch, sourceHost: 'cli' });
+      let result: ReturnType<typeof setTaskState>;
+      try {
+        result = setTaskState({ project: opts.project, patch, sourceHost: 'cli' });
+      } catch (err) {
+        // A refusal (#523: the record holds part of a private key) is one
+        // line and exit 1, never a stack trace.
+        const error = err instanceof Error ? err.message : String(err);
+        if (opts.json) console.log(JSON.stringify({ error }));
+        else console.error(`Error: ${error}`);
+        process.exitCode = 1;
+        return;
+      }
       if (opts.json) {
         console.log(JSON.stringify(result));
         return;

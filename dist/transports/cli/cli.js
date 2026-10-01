@@ -4185,14 +4185,21 @@ function maskMatches(input) {
   let work = 0;
   search: for (const pattern of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
+    let lastEnd = -1;
     for (let m = pattern.exec(input); m !== null; m = pattern.exec(input)) {
+      const end = m.index + m[0].length;
+      if (end === lastEnd && !SEGMENTED.has(pattern)) {
+        pattern.lastIndex = end;
+        continue;
+      }
+      lastEnd = end;
       work += m[0].length;
       if (work > budget) {
         spans.push([m.index, input.length]);
         pattern.lastIndex = 0;
         break search;
       }
-      spans.push([m.index, m.index + m[0].length]);
+      spans.push([m.index, end]);
       pattern.lastIndex = m.index + 1;
     }
   }
@@ -4335,7 +4342,7 @@ function redactSet(items) {
     return { texts: items.map(() => REDACTED), masked: true };
   let masked = false;
   const texts = items.map((item) => {
-    const r = redactOne(item);
+    const r = redactOne(item, true);
     if (r.masked)
       masked = true;
     return r.text;
@@ -4356,7 +4363,7 @@ function redactTitleAndObservations(title, observations) {
 function holdsSecret(items) {
   return redactSet(items).masked;
 }
-function redactOne(input) {
+function redactOne(input, partChecked = false) {
   const raw = redactRaw(input);
   const asRaw = { text: raw, masked: raw !== input };
   if (!looksLikeJson(input))
@@ -4365,12 +4372,15 @@ function redactOne(input) {
     return asRaw;
   try {
     const parsed = JSON.parse(input, keepNumberSpelling);
-    if (holdsPartOfKeyDecoded(input) || [...jsonTexts(parsed)].some(holdsPartOfKeyDecoded)) {
+    if (!partChecked && holdsPartOfKeyDecoded(input)) {
       return { text: JSON.stringify(mapJson(parsed, () => REDACTED, () => REDACTED)), masked: true };
     }
+    const read = readEscapes(input);
+    if (read === void 0)
+      return { text: REDACTED, masked: true };
     let masked = false;
     const value = mapJson(parsed, (s) => {
-      const r = redactOne(s);
+      const r = redactOne(s, true);
       if (r.masked)
         masked = true;
       return r.text;
@@ -4380,9 +4390,6 @@ function redactOne(input) {
         masked = true;
       return r;
     });
-    const read = readEscapes(input);
-    if (read === void 0)
-      return { text: REDACTED, masked: true };
     const maskedInText = asRaw.masked || redactRaw(read) !== read;
     return { text: JSON.stringify(value), masked: masked || maskedInText };
   } catch (err) {
@@ -4488,7 +4495,7 @@ function besideRefusal(addsText, beside) {
     return void 0;
   for (const text of beside) {
     if (holdsPartOfKeyDecoded(text)) {
-      return 'it adds new text to a memory that holds a BEGIN or END line of a private key without the rest, so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). Nothing was written. To clear such a line in the memory\'s metadata, run `memesh unpin --name <name>` first (it adds no text, and masks every part of a key in the metadata, history included); to remove such a line from its observations, run `memesh forget --name <name> --observation "<that line>"`';
+      return 'it adds new text to a memory that holds a BEGIN or END line of a private key without the rest, so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). Nothing was written. To clear such a line in the memory\'s metadata, run `memesh unpin --name <name>` first (it adds no text, and masks every part of a key in the metadata, history included); to remove such a line from its observations, run `memesh forget --name <name> --observation "<that line>"`; to replace such a title, run `memesh remember --name <name> --type <its type> --title "<new title>"`';
     }
   }
   return void 0;
@@ -4522,7 +4529,7 @@ function clearPartsOfKey(metadata) {
   const clear = (text) => holdsPartOfKeyDecoded(text) ? REDACTED : text;
   return mapJson({ ...metadata, ...entries }, clear, clear);
 }
-var AGENT_ROUTER_SOCKET_FILENAME, projectNameCache, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, SK_KEY, NAMED_VALUE, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, GLUED, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, JSON_ESCAPE, ESCAPED_CHAR, keepNumberSpelling;
+var AGENT_ROUTER_SOCKET_FILENAME, projectNameCache, PROJECT_HASH_HEX_LENGTH, PROJECT_ID_MAX_LENGTH, PROJECT_LABEL_MAX_LENGTH, SK_KEY, NAMED_VALUE, JWT_TOKEN, SENDGRID_KEY, SECRET_PATTERN_SOURCES, SECRET_PATTERNS, SEGMENTED, GLUED, PRIVATE_KEY_MARKER, PRIVATE_KEY_END, ANY_PRIVATE_KEY_MARKER, REDACTED, nativeJson, looksLikeJson, JSON_ESCAPE, ESCAPED_CHAR, keepNumberSpelling;
 var init_paths = __esm({
   "dist/core/paths.js"() {
     "use strict";
@@ -4533,11 +4540,13 @@ var init_paths = __esm({
     PROJECT_LABEL_MAX_LENGTH = PROJECT_ID_MAX_LENGTH - PROJECT_HASH_HEX_LENGTH - 1;
     SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
     NAMED_VALUE = `(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"'<>]{8,}`;
+    JWT_TOKEN = "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}";
+    SENDGRID_KEY = "SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}";
     SECRET_PATTERN_SOURCES = [
       "-----BEGIN[A-Z ]*PRIVATE KEY-----(?:[\\s\\S]*?-----END[A-Z ]*PRIVATE KEY-----|[\\s\\S]*)",
       "(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]+:[^\\s:@/]+@",
-      "eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}",
-      "SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}",
+      JWT_TOKEN,
+      SENDGRID_KEY,
       "[srp]k_(?:live|test)_[A-Za-z0-9]{16,}",
       "npm_[A-Za-z0-9]{36}",
       `\\b${SK_KEY}`,
@@ -4552,6 +4561,7 @@ var init_paths = __esm({
       "xox[baprs]-[A-Za-z0-9-]{10,}"
     ];
     SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, "gi"));
+    SEGMENTED = new Set([JWT_TOKEN, SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
     GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, "iy"));
     PRIVATE_KEY_MARKER = /-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----/gi;
     PRIVATE_KEY_END = /-----END[A-Z ]*PRIVATE KEY-----/i;
@@ -62915,7 +62925,18 @@ program2.command("forget").description("Archive an entity or remove an observati
 function registerPinCommand(name, description, pinned, onFound) {
   program2.command(name).description(description).requiredOption("--name <name>", "Entity name").option("--json", "Output as JSON").action(async (opts) => {
     await withDatabase(() => {
-      const result = setPinned(opts.name, pinned);
+      let result;
+      try {
+        result = setPinned(opts.name, pinned);
+      } catch (err) {
+        const error51 = err instanceof Error ? err.message : String(err);
+        if (opts.json)
+          console.log(JSON.stringify({ error: error51 }));
+        else
+          console.error(`Error: ${error51}`);
+        process.exitCode = 1;
+        return;
+      }
       if (opts.json)
         console.log(JSON.stringify(result));
       else
@@ -63611,7 +63632,18 @@ Set it with:  memesh task --goal "\u2026" --next "\u2026"`);
       console.log(lines.join("\n"));
       return;
     }
-    const result = setTaskState({ project: opts.project, patch, sourceHost: "cli" });
+    let result;
+    try {
+      result = setTaskState({ project: opts.project, patch, sourceHost: "cli" });
+    } catch (err) {
+      const error51 = err instanceof Error ? err.message : String(err);
+      if (opts.json)
+        console.log(JSON.stringify({ error: error51 }));
+      else
+        console.error(`Error: ${error51}`);
+      process.exitCode = 1;
+      return;
+    }
     if (opts.json) {
       console.log(JSON.stringify(result));
       return;

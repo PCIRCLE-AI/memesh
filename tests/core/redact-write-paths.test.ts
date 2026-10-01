@@ -1410,6 +1410,20 @@ describe('r18: part of a key beside new metadata text is refused as a whole (#52
     }
   });
 
+  it('r20: a lone key line held in the TITLE: new text refused; remember with a new title replaces it, then the memory takes new text', () => {
+    // Written before #523: the header is the title, indexed as it was stored.
+    const db = getDatabase();
+    const id = Number(db.prepare("INSERT INTO entities (name, type, title, namespace) VALUES ('r20-title', 'note', ?, 'personal')").run(header).lastInsertRowid);
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'keep');
+    insertFtsRow(db, id, 'r20-title', indexedObservationText(db, id), header);
+    expect(() => remember({ name: 'r20-title', type: 'note', observations: ['more'] })).toThrow(AMBIGUOUS);
+    expect(() => remember({ name: 'r20-title', type: 'note', observations: ['more'] })).toThrow(/memesh remember --name <name> --type <its type> --title/);
+    remember({ name: 'r20-title', type: 'note', title: 'renamed' });
+    expect(row('r20-title')!.title).toBe('renamed');
+    remember({ name: 'r20-title', type: 'note', observations: ['more'] });
+    expect(JSON.parse(storedText('r20-title')).observations).toEqual(['keep', 'more']);
+  });
+
   it('a history entry with a null or object title and a split key in its observations stores no line of the key', () => {
     const kg = new KnowledgeGraph(getDatabase());
     kg.createEntity('r18-null-title', 'note', { observations: ['x'], metadata: { replaced_history: [{ replaced_at: 't0', title: null, observations: [header, ...bodyLines], tags: [] }] } });

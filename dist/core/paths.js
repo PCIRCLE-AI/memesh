@@ -157,11 +157,13 @@ export function _clearProjectNameCache() {
 }
 const SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
 const NAMED_VALUE = '(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"\'<>]{8,}';
+const JWT_TOKEN = 'eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}';
+const SENDGRID_KEY = 'SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}';
 export const SECRET_PATTERN_SOURCES = [
     '-----BEGIN[A-Z ]*PRIVATE KEY-----(?:[\\s\\S]*?-----END[A-Z ]*PRIVATE KEY-----|[\\s\\S]*)',
     '(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]+:[^\\s:@/]+@',
-    'eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}',
-    'SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}',
+    JWT_TOKEN,
+    SENDGRID_KEY,
     '[srp]k_(?:live|test)_[A-Za-z0-9]{16,}',
     'npm_[A-Za-z0-9]{36}',
     `\\b${SK_KEY}`,
@@ -176,6 +178,7 @@ export const SECRET_PATTERN_SOURCES = [
     'xox[baprs]-[A-Za-z0-9-]{10,}',
 ];
 const SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, 'gi'));
+const SEGMENTED = new Set([JWT_TOKEN, SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
 function redactRaw(input) {
     let out = input;
     for (let before = ''; out !== before;) {
@@ -190,14 +193,21 @@ function maskMatches(input) {
     let work = 0;
     search: for (const pattern of SECRET_PATTERNS) {
         pattern.lastIndex = 0;
+        let lastEnd = -1;
         for (let m = pattern.exec(input); m !== null; m = pattern.exec(input)) {
+            const end = m.index + m[0].length;
+            if (end === lastEnd && !SEGMENTED.has(pattern)) {
+                pattern.lastIndex = end;
+                continue;
+            }
+            lastEnd = end;
             work += m[0].length;
             if (work > budget) {
                 spans.push([m.index, input.length]);
                 pattern.lastIndex = 0;
                 break search;
             }
-            spans.push([m.index, m.index + m[0].length]);
+            spans.push([m.index, end]);
             pattern.lastIndex = m.index + 1;
         }
     }
@@ -348,7 +358,7 @@ function redactSet(items) {
         return { texts: items.map(() => REDACTED), masked: true };
     let masked = false;
     const texts = items.map((item) => {
-        const r = redactOne(item);
+        const r = redactOne(item, true);
         if (r.masked)
             masked = true;
         return r.text;
@@ -370,7 +380,7 @@ export function holdsSecret(items) {
     return redactSet(items).masked;
 }
 const keepNumberSpelling = (_key, value, context) => typeof value === 'number' && context?.source !== undefined && nativeJson.rawJSON ? nativeJson.rawJSON(context.source) : value;
-function redactOne(input) {
+function redactOne(input, partChecked = false) {
     const raw = redactRaw(input);
     const asRaw = { text: raw, masked: raw !== input };
     if (!looksLikeJson(input))
@@ -379,16 +389,16 @@ function redactOne(input) {
         return asRaw;
     try {
         const parsed = JSON.parse(input, keepNumberSpelling);
-        if (holdsPartOfKeyDecoded(input) || [...jsonTexts(parsed)].some(holdsPartOfKeyDecoded)) {
+        if (!partChecked && holdsPartOfKeyDecoded(input)) {
             return { text: JSON.stringify(mapJson(parsed, () => REDACTED, () => REDACTED)), masked: true };
         }
-        let masked = false;
-        const value = mapJson(parsed, (s) => { const r = redactOne(s); if (r.masked)
-            masked = true; return r.text; }, (k) => { const r = redactRaw(k); if (r !== k)
-            masked = true; return r; });
         const read = readEscapes(input);
         if (read === undefined)
             return { text: REDACTED, masked: true };
+        let masked = false;
+        const value = mapJson(parsed, (s) => { const r = redactOne(s, true); if (r.masked)
+            masked = true; return r.text; }, (k) => { const r = redactRaw(k); if (r !== k)
+            masked = true; return r; });
         const maskedInText = asRaw.masked || redactRaw(read) !== read;
         return { text: JSON.stringify(value), masked: masked || maskedInText };
     }
@@ -502,7 +512,8 @@ export function besideRefusal(addsText, beside) {
                 + 'so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). '
                 + 'Nothing was written. To clear such a line in the memory\'s metadata, run `memesh unpin --name <name>` first '
                 + '(it adds no text, and masks every part of a key in the metadata, history included); to remove such a line '
-                + 'from its observations, run `memesh forget --name <name> --observation "<that line>"`';
+                + 'from its observations, run `memesh forget --name <name> --observation "<that line>"`; to replace such a title, '
+                + 'run `memesh remember --name <name> --type <its type> --title "<new title>"`';
         }
     }
     return undefined;

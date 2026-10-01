@@ -334,6 +334,9 @@ export function _clearProjectNameCache(): void {
  */
 const SK_KEY = 'sk[-_][^\\s"\\\\]{4,}[A-Za-z0-9]';
 const NAMED_VALUE = '(?:api[-_]?key|access[-_]?token|auth[-_]?token|refresh[-_]?token|session[-_]?token|token|secret|password|passwd|pwd|signature)=[^&\\s"\'<>]{8,}';
+/** The two patterns made of separate segments: a match starting inside one of them can end later (maskMatches). */
+const JWT_TOKEN = 'eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}';
+const SENDGRID_KEY = 'SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}';
 
 export const SECRET_PATTERN_SOURCES: readonly string[] = [
   // PEM private key. A BEGIN..END region is sensitive as a whole, whatever is
@@ -348,9 +351,9 @@ export const SECRET_PATTERN_SOURCES: readonly string[] = [
   // anchored so it cannot fire on ordinary `word:word@word` prose.
   '(?:postgres|postgresql|mysql|mariadb|mongodb(?:\\+srv)?|redis|rediss|amqp|amqps)://[^\\s:@/]+:[^\\s:@/]+@',
   // JWT — three base64url segments; `eyJ` is base64 of `{"`.
-  'eyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}',
+  JWT_TOKEN,
   // SendGrid API key.
-  'SG\\.[A-Za-z0-9_-]{16,}\\.[A-Za-z0-9_-]{16,}',
+  SENDGRID_KEY,
   // Stripe secret/restricted/publishable live+test keys.
   '[srp]k_(?:live|test)_[A-Za-z0-9]{16,}',
   // npm automation token.
@@ -431,6 +434,7 @@ export const SECRET_PATTERN_SOURCES: readonly string[] = [
  *  of times per session, inside a 10-second budget — and it was recompiling
  *  every pattern each time. */
 const SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, 'gi'));
+const SEGMENTED = new Set([JWT_TOKEN, SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
 
 /** One string through the pattern list, repeated until nothing changes. */
 function redactRaw(input: string): string {
@@ -459,9 +463,14 @@ function redactRaw(input: string): string {
  * search starts again one character later, which finds every match however
  * much of it the previous one swallowed. Overlapping searches can cost more
  * than one pass over the text (`sk-sk-sk-…` matches from every `sk-` to the
- * end), so the work is capped, and the cap fails closed: once the matches
- * found add up to more than four times the text, everything from the current
- * match to the end of the text is masked.
+ * end). Most patterns are one run of characters after a prefix, so a match
+ * that starts inside another one of the same pattern ends where it ends: once
+ * a search comes back with the same end, it skips ahead to that end, and a
+ * run is searched twice, not once per start. A JWT and a SendGrid key are
+ * made of segments, so a start inside one can end later; those keep
+ * searching from every start. The work is capped too, and the cap fails
+ * closed: once the matches found add up to more than four times the text,
+ * everything from the current match to the end of the text is masked.
  */
 function maskMatches(input: string): string {
   const spans: Array<[number, number]> = [];
@@ -469,14 +478,21 @@ function maskMatches(input: string): string {
   let work = 0;
   search: for (const pattern of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
+    let lastEnd = -1;
     for (let m = pattern.exec(input); m !== null; m = pattern.exec(input)) {
+      const end = m.index + m[0].length;
+      if (end === lastEnd && !SEGMENTED.has(pattern)) {
+        pattern.lastIndex = end;
+        continue;
+      }
+      lastEnd = end;
       work += m[0].length;
       if (work > budget) {
         spans.push([m.index, input.length]);
         pattern.lastIndex = 0;
         break search;
       }
-      spans.push([m.index, m.index + m[0].length]);
+      spans.push([m.index, end]);
       pattern.lastIndex = m.index + 1;
     }
   }
@@ -663,7 +679,7 @@ function redactSet(items: readonly string[]): { texts: string[]; masked: boolean
   if (items.some(holdsPartOfKeyDecoded)) return { texts: items.map(() => REDACTED), masked: true };
   let masked = false;
   const texts = items.map((item) => {
-    const r = redactOne(item);
+    const r = redactOne(item, true);
     if (r.masked) masked = true;
     return r.text;
   });
@@ -705,7 +721,12 @@ export function holdsSecret(items: readonly string[]): boolean {
 const keepNumberSpelling = (_key: string, value: unknown, context?: { source?: string }) =>
   typeof value === 'number' && context?.source !== undefined && nativeJson.rawJSON ? nativeJson.rawJSON(context.source) : value;
 
-function redactOne(input: string): Redaction {
+/**
+ * `partChecked`: the caller already found no part of a private key in this
+ * text, at any depth (redactSet, or the document this string came from), so
+ * that walk is not repeated for every level of a nested document.
+ */
+function redactOne(input: string, partChecked = false): Redaction {
   const raw = redactRaw(input);
   const asRaw = { text: raw, masked: raw !== input };
   // Only an object, an array or a string can hold text to redact.
@@ -726,20 +747,21 @@ function redactOne(input: string): Redaction {
   // others).
   try {
     const parsed = JSON.parse(input, keepNumberSpelling);
-    if (holdsPartOfKeyDecoded(input) || [...jsonTexts(parsed)].some(holdsPartOfKeyDecoded)) {
+    if (!partChecked && holdsPartOfKeyDecoded(input)) {
       return { text: JSON.stringify(mapJson(parsed, () => REDACTED, () => REDACTED)), masked: true };
     }
+    // Escapes nested too deep to read: none of it can be checked.
+    const read = readEscapes(input);
+    if (read === undefined) return { text: REDACTED, masked: true };
     let masked = false;
     const value = mapJson(
       parsed,
-      (s) => { const r = redactOne(s); if (r.masked) masked = true; return r.text; },
+      (s) => { const r = redactOne(s, true); if (r.masked) masked = true; return r.text; },
       (k) => { const r = redactRaw(k); if (r !== k) masked = true; return r; },
     );
     // The raw rules matching the source text, or the text with its escapes
     // read, is masking too: a credential in a duplicate key that JSON.parse
     // dropped is in the text, not in `value`, and may be written in escapes.
-    const read = readEscapes(input);
-    if (read === undefined) return { text: REDACTED, masked: true };
     const maskedInText = asRaw.masked || redactRaw(read) !== read;
     return { text: JSON.stringify(value), masked: masked || maskedInText };
   } catch (err) {
@@ -994,7 +1016,8 @@ export function besideRefusal(addsText: boolean, beside: Iterable<string>): stri
         + 'so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). '
         + 'Nothing was written. To clear such a line in the memory\'s metadata, run `memesh unpin --name <name>` first '
         + '(it adds no text, and masks every part of a key in the metadata, history included); to remove such a line '
-        + 'from its observations, run `memesh forget --name <name> --observation "<that line>"`';
+        + 'from its observations, run `memesh forget --name <name> --observation "<that line>"`; to replace such a title, '
+        + 'run `memesh remember --name <name> --type <its type> --title "<new title>"`';
     }
   }
   return undefined;
