@@ -11,6 +11,7 @@ import { seedOversizedEntity } from '../helpers/recall-size-fixture.js';
 // We open our own isolated DB and start the app on a random port.
 import { app, startServer, __setRemoteTokenForTest, isLoopbackRequest } from '../../src/transports/http/server.js';
 import { readConfig } from '../../src/core/config.js';
+import { shellQuote } from '../../src/core/file-mode.js';
 
 let tmpDir: string;
 let server: ReturnType<typeof app.listen>;
@@ -313,6 +314,45 @@ describe('HTTP Transport: GET /v1/entities/:name', () => {
     const res = await req('GET', '/v1/entities/no-such-entity-xyz');
     expect(res.status).toBe(404);
     expect(res.body.success).toBe(false);
+  });
+
+  it('shows a credential stored before redaction masked, in the list and the detail, and leaves the row as stored (#523)', async () => {
+    // Assembled at runtime so no line in the repository looks like a credential.
+    const password = 'hunter2hunter2';
+    const url = ['postgres://appuser', `${password}@db:5432/app`].join(':');
+    const token = ['token', 'abc123abc123abc123'].join('=');
+    const db = getDatabase();
+    // Raw SQL: every writer redacts now, so only a row written this way holds the text.
+    const metadata = JSON.stringify({
+      note: `see ${token}`,
+      guard: { pattern: 'token=\\w+', message: `never commit ${token}` },
+      replaced_history: [{ replaced_at: '2026-01-01T00:00:00.000Z', title: `old ${token}`, observations: [`was ${url}`], tags: [] }],
+    });
+    const id = Number(db.prepare("INSERT INTO entities (name, type, title, metadata) VALUES ('legacy-shown', 'note', ?, ?)").run(`db ${token}`, metadata).lastInsertRowid);
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, `primary is ${url}`);
+    const stored = () => JSON.stringify([
+      db.prepare("SELECT title, metadata FROM entities WHERE name = 'legacy-shown'").get(),
+      db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(id),
+    ]);
+    const before = stored();
+
+    const detail = await req('GET', '/v1/entities/legacy-shown');
+    expect(detail.status).toBe(200);
+    const list = await req('GET', '/v1/entities?limit=5000&status=all');
+    const listed = (list.body.data as Array<{ name: string }>).find((e) => e.name === 'legacy-shown');
+    expect(listed, 'the list carries the memory').toBeTruthy();
+    for (const shown of [detail.body.data, listed]) {
+      const text = JSON.stringify(shown);
+      expect(text).not.toContain(password);
+      expect(text).not.toContain('abc123abc123');
+      expect(shown.title).toBe('db ***REDACTED***');
+      expect(shown.observations).toEqual(['primary is ***REDACTED***db:5432/app']);
+      expect(shown.metadata.replaced_history[0].observations).toEqual(['was ***REDACTED***db:5432/app']);
+      expect(shown.metadata.replaced_history[0].replaced_at).toBe('2026-01-01T00:00:00.000Z');
+      // A guard's pattern is a matcher, not content: kept as given.
+      expect(shown.metadata.guard.pattern).toBe('token=\\w+');
+    }
+    expect(stored()).toBe(before);
   });
 });
 
@@ -913,6 +953,87 @@ describe('HTTP Transport: startServer host guard', () => {
     }
   });
 
+  // #520: a remote bind keeps its bearer token in the data folder. Starting
+  // the server removes other users' access to that folder, and never gives
+  // the owner back a write bit the owner removed. (A loopback `memesh serve`
+  // does not touch the folder at all.)
+  for (const [start, end] of [[0o555, 0o500], [0o755, 0o700]] as const) {
+    it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(`a remote start turns a ${start.toString(8)} data folder into ${end.toString(8)}`, async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-http-folder-'));
+      const previousDbPath = process.env.MEMESH_DB_PATH;
+      const previousToken = process.env.MEMESH_REMOTE_TOKEN;
+      process.env.MEMESH_DB_PATH = path.join(dir, 'test.db');
+      delete process.env.MEMESH_REMOTE_TOKEN;
+      fs.writeFileSync(path.join(dir, 'remote-token'), `${'a'.repeat(64)}\n`, { mode: 0o600 });
+      fs.chmodSync(dir, start);
+      let remoteServer: ReturnType<typeof app.listen> | undefined;
+      try {
+        // In the read-only folder the database cannot be created, so the start
+        // itself fails; the folder step before it is what this test is about.
+        try { remoteServer = startServer('0.0.0.0', 0, { allowRemote: true }); } catch { /* 555: no database */ }
+        if (start === 0o755) expect(remoteServer).toBeDefined();
+        expect(fs.statSync(dir).mode & 0o777).toBe(end);
+      } finally {
+        if (remoteServer?.listening) {
+          await new Promise<void>((resolve, reject) => {
+            remoteServer!.close((err) => (err ? reject(err) : resolve()));
+          });
+        }
+        __setRemoteTokenForTest(null);
+        if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
+        else process.env.MEMESH_DB_PATH = previousDbPath;
+        if (previousToken === undefined) delete process.env.MEMESH_REMOTE_TOKEN;
+        else process.env.MEMESH_REMOTE_TOKEN = previousToken;
+        fs.chmodSync(dir, 0o700);
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    });
+  }
+
+  // #520: an existing remote token is only read — it keeps the owner's bits
+  // (a 0400 token stays 0400) and still authenticates; a new one is 0600.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('an existing 0400 remote token stays 0400 and still authenticates; a new one is created 0600', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-http-token-'));
+    const previousDbPath = process.env.MEMESH_DB_PATH;
+    const previousToken = process.env.MEMESH_REMOTE_TOKEN;
+    process.env.MEMESH_DB_PATH = path.join(dir, 'test.db');
+    delete process.env.MEMESH_REMOTE_TOKEN;
+    const tokenPath = path.join(dir, 'remote-token');
+    const servers: Array<ReturnType<typeof app.listen>> = [];
+    const stop = async () => {
+      for (const server of servers.splice(0)) {
+        if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+        await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+      }
+      __setRemoteTokenForTest(null);
+    };
+    try {
+      const token = 'b'.repeat(64);
+      fs.writeFileSync(tokenPath, `${token}\n`, { mode: 0o600 });
+      fs.chmodSync(tokenPath, 0o400);
+      servers.push(startServer('0.0.0.0', 0, { allowRemote: true }));
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(fs.statSync(tokenPath).mode & 0o777).toBe(0o400);
+      const port = (servers[0].address() as { port: number }).port;
+      const ok = await fetch(`http://127.0.0.1:${port}/v1/health`, { headers: { Authorization: `Bearer ${token}` } });
+      expect(ok.status).toBe(200);
+      await stop();
+
+      fs.chmodSync(tokenPath, 0o600);
+      fs.rmSync(tokenPath);
+      servers.push(startServer('0.0.0.0', 0, { allowRemote: true }));
+      expect(fs.statSync(tokenPath).mode & 0o777).toBe(0o600);
+    } finally {
+      await stop();
+      if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
+      else process.env.MEMESH_DB_PATH = previousDbPath;
+      if (previousToken === undefined) delete process.env.MEMESH_REMOTE_TOKEN;
+      else process.env.MEMESH_REMOTE_TOKEN = previousToken;
+      try { fs.chmodSync(tokenPath, 0o600); } catch { /* removed */ }
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  });
+
   // Codex challenge regression: previously a second startServer() call
   // bound to loopback would clobber the module-global `remoteToken` to
   // null, silently de-authenticating any already-running remote
@@ -1009,7 +1130,16 @@ describe('HTTP Transport: Startup validation', () => {
     closeDatabase();
 
     try {
-      expect(() => startServer('127.0.0.1', 0)).toThrow(/Database initialization failed/);
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      let printed = '';
+      try {
+        expect(() => startServer('127.0.0.1', 0)).toThrow(/Database initialization failed/);
+        printed = spy.mock.calls.map((c) => c.join(' ')).join('\n');
+      } finally { spy.mockRestore(); }
+      // The same diagnosis doctor gives: the "folder" is a file.
+      expect(printed).toContain(`${blockingFile} is a file, not a folder`);
+      expect(printed).toContain('Fix: Point MEMESH_DB_PATH at a path inside a folder');
+      expect(printed).not.toMatch(/Backup and reset|mv /);
     } finally {
       if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
       else process.env.MEMESH_DB_PATH = previousDbPath;
@@ -1018,6 +1148,60 @@ describe('HTTP Transport: Startup validation', () => {
       // and so other concurrent tests are not affected.
       openDatabase(path.join(tmpDir, 'test.db'));
     }
+  });
+
+  // A refusal over permissions says its own fix, as doctor does. Moving the
+  // database aside would not fix it, and the old text told the owner to.
+  describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('a permission refusal at startup', () => {
+    function startupOutput(setup: (dir: string, dbPath: string) => void): string {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memesh-http-perm-it's-"));
+      const dbPath = path.join(dir, 'test.db');
+      const previousDbPath = process.env.MEMESH_DB_PATH;
+      closeDatabase();
+      openDatabase(dbPath);
+      closeDatabase();
+      for (const s of ['-wal', '-shm']) fs.rmSync(`${dbPath}${s}`, { force: true });
+      setup(dir, dbPath);
+      process.env.MEMESH_DB_PATH = dbPath;
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+      try {
+        expect(() => startServer('127.0.0.1', 0)).toThrow(/Database initialization failed/);
+        return spy.mock.calls.map((c) => c.join(' ')).join('\n');
+      } finally {
+        spy.mockRestore();
+        if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
+        else process.env.MEMESH_DB_PATH = previousDbPath;
+        for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, dir]) { try { fs.chmodSync(p, 0o700); } catch { /* gone */ } }
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        openDatabase(path.join(tmpDir, 'test.db'));
+      }
+    }
+
+    it('read-only folder: prints the chmod, not the reset advice', () => {
+      let dirName = '';
+      const out = startupOutput((dir) => { dirName = dir; fs.chmodSync(dir, 0o500); });
+      expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(dirName)}`);
+      expect(out).not.toMatch(/Backup and reset|mv |Quick fix/);
+    });
+
+    it('a -wal with fewer owner permissions: prints the chmod, not the reset advice', () => {
+      let wal = '';
+      const out = startupOutput((_dir, dbPath) => {
+        wal = `${dbPath}-wal`;
+        fs.writeFileSync(wal, '', { mode: 0o400 });
+      });
+      expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(wal)}`);
+      expect(out).not.toMatch(/Backup and reset|mv |Quick fix/);
+    });
+
+    it('a database the owner cannot read or write: prints the chmod doctor prints, not the reset advice', () => {
+      for (const fileMode of [0o000, 0o200]) {
+        let db = '';
+        const out = startupOutput((_dir, dbPath) => { db = dbPath; fs.chmodSync(dbPath, fileMode); });
+        expect(out, fileMode.toString(8)).toContain(`chmod u+rw ${shellQuote(db)}`);
+        expect(out, fileMode.toString(8)).not.toMatch(/Backup and reset|mv |Quick fix/);
+      }
+    });
   });
 
   it('shows actual bound port instead of input port (F15 port display fix)', async () => {

@@ -71,7 +71,7 @@ export const TOOL_DEFINITIONS = [
     description:
       'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
       'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
-      'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history (unless it is too large to keep, then the result has `previousVersionDropped`) instead of staying next to the fix.',
+      'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -93,7 +93,7 @@ export const TOOL_DEFINITIONS = [
         replace: {
           type: 'boolean',
           description:
-            'Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced, unless it is too large to keep (then the result has `previousVersionDropped: true`). Default false (append).',
+            'Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).',
         },
         title: {
           type: 'string',
@@ -232,7 +232,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'import',
-    description: 'Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite deletes their previous observations and tags instead of archiving them. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.',
+    description: 'Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite replaces their observations and tags, keeping the previous version in metadata.replaced_history. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -250,7 +250,7 @@ export const TOOL_DEFINITIONS = [
           // sent callers to omit a field the schema rejects.
           // API_REFERENCE.md has said the truth all along; this string is what
           // the agent actually reads.
-          description: 'Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived — this cannot be undone)',
+          description: 'Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the previous version is kept in metadata.replaced_history, up to the last 20)',
         },
         restore_archived: {
           type: 'boolean',
@@ -466,8 +466,9 @@ function formatIssue(issue: z.ZodIssue): string {
  * where Claude Code and Codex omit the key entirely. Zod's `.optional()`
  * accepts the missing key but rejects the explicit null, so the exact same
  * recall that succeeds from Codex fails from Gemini with a type error. At
- * this boundary a null-valued property can only mean "left blank" — no
- * memesh tool uses null as a sentinel — so it is dropped before validation.
+ * this boundary a null-valued property means "left blank", so it is dropped
+ * before validation — except where null is itself the value (NULL_IS_DATA
+ * below: a message `payload`, #553).
  *
  * Only the tool's own parameters (the top level) are touched. What a
  * parameter CARRIES is data and is passed on as sent: a message payload, an
@@ -480,10 +481,18 @@ function stripNullProps(value: unknown): unknown {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value)) {
-    if (v !== null) out[k] = v;
+    if (v !== null || NULL_IS_DATA.has(k)) out[k] = v;
   }
   return out;
 }
+
+/**
+ * A top-level parameter whose null is a value, not a blank: a message
+ * `payload` is any JSON value, null included, as the schema and the HTTP
+ * path accept (#553). Only `send` declares it; on every other action the
+ * unknown-key check above has already refused it.
+ */
+const NULL_IS_DATA: ReadonlySet<string> = new Set(['payload']);
 
 function parseOrFail<T>(schema: z.ZodType<T>, args: unknown):
   | { ok: true; data: T }

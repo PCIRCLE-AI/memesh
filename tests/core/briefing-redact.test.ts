@@ -181,4 +181,56 @@ describe('briefing redaction (#464)', () => {
     expect(injected).toContain('Decisions and direction');
     expectRedactedEverywhere(injected);
   });
+
+  it('the SessionStart hook reads a bounded part of a huge legacy observation, so the redactor cannot spend its time budget', () => {
+    // 300,000 characters of `eyJ`: no write path accepts this any more, but
+    // an older version stored such rows, and redacting all of it takes tens
+    // of seconds. The hook reads a bounded prefix and stays within budget.
+    const db = getDatabase();
+    const huge = Number(db.prepare("INSERT INTO entities (name, type, title, status) VALUES ('huge-legacy-decision', 'decision', 'huge legacy decision', 'active')").run().lastInsertRowid);
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(huge, 'eyJ'.repeat(100_000));
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(huge, `project:${project}`);
+    closeDatabase(); // the hook opens its own handle
+    const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'standard' },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    openDatabase(dbPath); // afterEach closes it
+    const injected: string =
+      JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!).hookSpecificOutput.additionalContext;
+    expect(injected).toContain('huge legacy decision');
+    expectRedactedEverywhere(injected);
+  });
+
+  it('a credential crossing the read window is left out whole, and a huge legacy handoff is read within budget', () => {
+    const db = getDatabase();
+    // A long first credential redacts to a short marker, pulling what follows
+    // it into the printed snippet; the URL's `@` sits exactly at 16384, past
+    // the read window, so a cut there would print its prefix.
+    const pw = 'straddlepw';
+    const crossing = `password=${'A'.repeat(16350)} ${['postgres://u1', `${pw}@host/db`].join(':')} tail`;
+    const row = Number(db.prepare("INSERT INTO entities (name, type, title, status) VALUES ('crossing-window-decision', 'decision', 'crossing window decision', 'active')").run().lastInsertRowid);
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row, crossing);
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row, `project:${project}`);
+    // A handoff written through `remember` before the Stop hook bounded it.
+    db.prepare('UPDATE observations SET content = ? WHERE entity_id = (SELECT id FROM entities WHERE name = ?)')
+      .run(`${'eyJ'.repeat(100_000)} finish the migration script`, sessionHandoffName(project));
+    closeDatabase(); // the hook opens its own handle
+    const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath, MEMESH_BRIEFING: 'standard' },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    openDatabase(dbPath); // afterEach closes it
+    const injected: string =
+      JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!).hookSpecificOutput.additionalContext;
+    expect(injected).toContain('crossing window decision');
+    expect(injected).not.toContain(pw);
+    expect(injected).not.toContain('postgres://u1');
+    expect(injected).toContain('Where the last session left off');
+    expect(injected).toContain('finish the migration script');
+  });
 });

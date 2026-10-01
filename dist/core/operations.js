@@ -1,11 +1,13 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
-import { getProjectName, redactSecrets, redactTitleAndObservations, redactVersionText } from './paths.js';
+import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
-import { canonicalEntityType, sliceWholeChars } from './work-topology.js';
+import { canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent } from './recall-agent-view.js';
+import { boundReplacedHistory } from './replaced-history.js';
+export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from './replaced-history.js';
 function buildLocalMetadata(existingMetadata, overrides) {
     return {
         ...(existingMetadata ?? {}),
@@ -30,35 +32,6 @@ export function remember(input) {
     const { args, derived, typeGiven } = resolveRememberInput(input);
     return db.transaction(() => rememberInTransaction(args, derived, typeGiven, db, kg)).immediate();
 }
-export const REPLACED_HISTORY_MAX = 20;
-export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
-const jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), 'utf8');
-function fitVersionToCap(only) {
-    const base = { ...only, observations: [], truncated: true };
-    while (base.title && jsonBytes([base]) > REPLACED_HISTORY_MAX_BYTES) {
-        base.title = sliceWholeChars(base.title, Math.floor(base.title.length * 0.9));
-    }
-    if (jsonBytes([base]) > REPLACED_HISTORY_MAX_BYTES)
-        return null;
-    const kept = [];
-    for (const obs of only.observations) {
-        if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
-            break;
-        kept.push(obs);
-    }
-    return { ...base, observations: kept };
-}
-function boundReplacedHistory(history) {
-    const newest = history[history.length - 1];
-    if (newest !== undefined && jsonBytes([newest]) > REPLACED_HISTORY_MAX_BYTES) {
-        const fitted = fitVersionToCap(newest);
-        return fitted ? [fitted] : boundReplacedHistory(history.slice(0, -1));
-    }
-    let out = history.slice(-REPLACED_HISTORY_MAX);
-    while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
-        out = out.slice(1);
-    return out;
-}
 function summarizeReplacedHistory(entities) {
     for (const e of entities) {
         const history = e.metadata?.replaced_history;
@@ -68,6 +41,23 @@ function summarizeReplacedHistory(entities) {
         e.metadata = { ...rest, replaced_history_count: history.length };
     }
     return entities;
+}
+export function shownEntity(entity) {
+    const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+    const metadata = entity.metadata === undefined ? undefined : redactTextValues(entity.metadata);
+    const guard = entity.metadata?.guard;
+    if (metadata && guard && typeof guard.pattern === 'string') {
+        metadata.guard = { ...metadata.guard, pattern: guard.pattern };
+    }
+    const history = entity.metadata?.replaced_history;
+    if (metadata && Array.isArray(history))
+        metadata.replaced_history = history.map(redactVersionText);
+    return {
+        ...entity,
+        ...(typeof entity.title === 'string' ? { title: shown.title } : {}),
+        observations: shown.observations,
+        ...(metadata === undefined ? {} : { metadata }),
+    };
 }
 function resolveRememberInput(input) {
     if (input.note === undefined) {
@@ -120,7 +110,6 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
             + 'so this call would create one with no type — pass `type` to create it.');
     }
     let replacedVersion;
-    let previousVersionDropped = false;
     let retypedTo;
     let tags = args.tags;
     let title = args.title;
@@ -165,7 +154,6 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     }));
     if (replacedVersion) {
         const version = redactVersionText(replacedVersion);
-        previousVersionDropped = jsonBytes([version]) > REPLACED_HISTORY_MAX_BYTES && fitVersionToCap(version) === null;
         kg.updateEntityMetadata(args.name, (current) => {
             const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
             return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
@@ -214,7 +202,6 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         ...(superseded.length > 0 ? { superseded } : {}),
         ...(relationErrors.length > 0 ? { relationErrors } : {}),
         ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
-        ...(previousVersionDropped ? { previousVersionDropped: true } : {}),
         ...(derived
             ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
             : {}),
@@ -231,7 +218,7 @@ function searchAndScore(args) {
         limit: args.limit,
         includeArchived: args.include_archived,
         namespace: args.namespace,
-    }));
+    })).map(shownEntity);
     return {
         entities,
         relevanceMap: args.query ? buildRelevanceMap(entities) : new Map(),
@@ -282,7 +269,7 @@ export function forget(args) {
         const result = kg.removeObservation(args.name, args.observation);
         const shown = redactSecrets(args.observation);
         if (!result.removed && shown !== args.observation && db.prepare('SELECT 1 FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? AND o.content = ? LIMIT 1').get(args.name, shown)) {
-            throw new Error('No exact stored-text match for that observation; use the observation shown by recall.');
+            throw new Error('No exact stored-text match for that observation. recall shows credential-shaped text masked; a line is selected by its stored text, which export returns, or rewrite the memory with replace.');
         }
         return {
             observation_removed: result.removed,

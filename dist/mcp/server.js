@@ -6902,12 +6902,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs13, exportName) {
+    function addFormats(ajv, list, fs14, exportName) {
       var _a3;
       var _b;
       (_a3 = (_b = ajv.opts.code).formats) !== null && _a3 !== void 0 ? _a3 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs13[f]);
+        ajv.addFormat(f, fs14[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6916,7 +6916,7 @@ var require_dist = __commonJS({
 });
 
 // dist/mcp/server.js
-import fs12 from "fs";
+import fs13 from "fs";
 import path10 from "path";
 
 // node_modules/zod/v4/core/index.js
@@ -24856,7 +24856,7 @@ var MemeshDatabase = class extends DatabaseSync {
 
 // dist/db.js
 import path2 from "path";
-import fs2 from "fs";
+import fs3 from "fs";
 
 // dist/knowledge-graph.js
 import { createHash as createHash2 } from "node:crypto";
@@ -25493,7 +25493,47 @@ var SECRET_PATTERN_SOURCES = [
   "xox[baprs]-[A-Za-z0-9-]{10,}"
 ];
 var SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, "gi"));
-var SEGMENTED = new Set([JWT_TOKEN, SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
+var SEGMENTED = new Set([SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
+var JWT_PATTERN = SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(JWT_TOKEN)];
+var TOKEN_CHAR = /[A-Za-z0-9_-]/;
+function* jwtMatches(input) {
+  const runEnd = (from) => {
+    let i2 = from;
+    while (i2 < input.length && TOKEN_CHAR.test(input[i2]))
+      i2++;
+    return i2;
+  };
+  const eyj = /eyj/gi;
+  const findEyj = (from) => {
+    eyj.lastIndex = from;
+    return eyj.exec(input)?.index ?? -1;
+  };
+  let nextEyj = findEyj(0);
+  let i = 0;
+  while (i < input.length && nextEyj !== -1) {
+    if (!TOKEN_CHAR.test(input[i])) {
+      i++;
+      continue;
+    }
+    const headerEnd = runEnd(i);
+    if (nextEyj < i)
+      nextEyj = findEyj(i);
+    if (nextEyj === -1)
+      break;
+    if (nextEyj + 11 <= headerEnd && input[headerEnd] === ".") {
+      const payloadEnd = runEnd(headerEnd + 1);
+      if (payloadEnd - (headerEnd + 1) >= 8 && input[payloadEnd] === ".") {
+        const signatureEnd = runEnd(payloadEnd + 1);
+        if (signatureEnd - (payloadEnd + 1) >= 8) {
+          for (let start = nextEyj; start !== -1 && start + 11 <= headerEnd; start = findEyj(start + 1)) {
+            yield [start, signatureEnd];
+          }
+        }
+      }
+    }
+    i = headerEnd;
+  }
+}
 function redactRaw(input) {
   let out = input;
   for (let before = ""; out !== before; ) {
@@ -25507,6 +25547,17 @@ function maskMatches(input) {
   const budget = 4 * input.length + 1024;
   let work = 0;
   search: for (const pattern of SECRET_PATTERNS) {
+    if (pattern === JWT_PATTERN) {
+      for (const [start, end] of jwtMatches(input)) {
+        work += end - start;
+        if (work > budget) {
+          spans.push([start, input.length]);
+          break search;
+        }
+        spans.push([start, end]);
+      }
+      continue;
+    }
     pattern.lastIndex = 0;
     let lastEnd = -1;
     for (let m = pattern.exec(input); m !== null; m = pattern.exec(input)) {
@@ -26489,6 +26540,118 @@ function runAutoDecay(db2) {
 }
 var COMPRESS_INTERVAL_MS = 24 * 60 * 60 * 1e3;
 
+// dist/core/file-mode.js
+import fs2 from "fs";
+function shellQuote(value) {
+  const word = value.startsWith("-") ? `./${value}` : value;
+  return `'${word.replace(/'/g, `'\\''`)}'`;
+}
+var warned = /* @__PURE__ */ new Set();
+function removeGroupAndOtherAccess(target) {
+  let stat;
+  try {
+    stat = fs2.statSync(target);
+    const mode = stat.mode & 4095;
+    if ((mode & 63) !== 0)
+      fs2.chmodSync(target, mode & ~63);
+  } catch (err) {
+    const code = err.code;
+    if (code === "ENOENT")
+      return;
+    if (warned.has(target))
+      return;
+    warned.add(target);
+    const notYours = stat !== void 0 && belongsToAnotherUser(stat);
+    try {
+      process.stderr.write(notYours ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). Point MEMESH_DB_PATH at a database you own, in a folder you own.
+` : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); they may be able to read your memories. Fix it with: chmod go-rwx ${shellQuote(target)}
+`);
+    } catch {
+    }
+  }
+}
+function belongsToAnotherUser(stat) {
+  return typeof process.getuid === "function" && process.getuid() !== 0 && stat.uid !== process.getuid();
+}
+function databaseFiles(dbPath) {
+  let real = dbPath;
+  try {
+    if (fs2.lstatSync(dbPath).isSymbolicLink())
+      real = fs2.realpathSync(dbPath);
+  } catch {
+  }
+  return [real, `${real}-wal`, `${real}-shm`];
+}
+function guardDatabaseFiles(dbPath) {
+  for (const target of databaseFiles(dbPath))
+    removeGroupAndOtherAccess(target);
+  refuseMismatchedSidecars(dbPath);
+}
+var SIDECAR_PERMISSIONS_CODE = "MEMESH_SIDECAR_PERMISSIONS";
+var OWNER_LETTERS = [[256, "r"], [128, "w"], [64, "x"]];
+var quoted = (files) => files.map(shellQuote).join(" ");
+var letters = (bits) => OWNER_LETTERS.filter(([bit]) => bits & bit).map(([, letter]) => letter).join("");
+function refuseMismatchedSidecars(dbPath) {
+  if (process.platform === "win32")
+    return;
+  const [real, wal, shm] = databaseFiles(dbPath);
+  const database = fs2.statSync(real, { throwIfNoEntry: false });
+  if (!database)
+    return;
+  const fewer = [];
+  const extra = [];
+  const notYours = [];
+  let fewerBits = 0;
+  let extraBits = 0;
+  for (const sidecar of [wal, shm]) {
+    const stat = fs2.statSync(sidecar, { throwIfNoEntry: false });
+    if (!stat)
+      continue;
+    const missing = database.mode & ~stat.mode & (stat.size === 0 ? 448 : 384);
+    const added = stat.mode & ~database.mode & 448;
+    if (missing !== 0) {
+      fewer.push(sidecar);
+      fewerBits |= missing;
+    } else if (added !== 0 && stat.size === 0) {
+      extra.push(sidecar);
+      extraBits |= added;
+    } else
+      continue;
+    if (belongsToAnotherUser(stat))
+      notYours.push(sidecar);
+  }
+  if (notYours.length === 0 && fewer.length + extra.length > 0 && belongsToAnotherUser(database))
+    notYours.push(real);
+  if (notYours.length > 0) {
+    const fix = "Point MEMESH_DB_PATH at a database you own, in a folder you own.";
+    throw Object.assign(new Error(`MeMesh: the owner permissions of ${real} and its ${[...fewer, ...extra].join(" and ")} do not match, and ${notYours.join(" and ")} ${notYours.length > 1 ? "belong" : "belongs"} to another user, so you cannot change them. ${fix}`), { fix, code: SIDECAR_PERMISSIONS_CODE });
+  }
+  if (fewer.length > 0) {
+    const fix = `chmod u+${letters(fewerBits)} ${quoted(fewer)}`;
+    const keepReadOnly = fewerBits === 128 ? ` To keep the database read-only instead, run: chmod u-w ${shellQuote(real)}` : "";
+    throw Object.assign(new Error(`MeMesh: ${fewer.join(" and ")} ${fewer.length > 1 ? "have" : "has"} fewer owner permissions than ${real}, so opening it would either widen them or leave the database silently read-only. To use the database normally, run: ${fix}.${keepReadOnly}`), { fix, code: SIDECAR_PERMISSIONS_CODE });
+  }
+  if (extra.length > 0) {
+    const fix = `chmod u-${letters(extraBits)} ${quoted(extra)}`;
+    throw Object.assign(new Error(`MeMesh: ${extra.join(" and ")} ${extra.length > 1 ? "are" : "is"} empty and ${extra.length > 1 ? "have" : "has"} more owner permissions than ${real}, which SQLite would reset while opening. To read the database as it is, run: ${fix}. To use it normally, run: chmod u+${letters(extraBits)} ${shellQuote(real)}`), { fix, code: SIDECAR_PERMISSIONS_CODE });
+  }
+}
+function ownerWriteCommand(dbPath) {
+  if (process.platform === "win32")
+    return void 0;
+  const readOnly = [];
+  for (const file2 of databaseFiles(dbPath)) {
+    const stat = fs2.statSync(file2, { throwIfNoEntry: false });
+    if (stat === void 0 || (stat.mode & 128) !== 0)
+      continue;
+    if (belongsToAnotherUser(stat)) {
+      return `point MEMESH_DB_PATH at a database you own, in a folder you own; ${file2} belongs to another user.`;
+    }
+    readOnly.push(file2);
+  }
+  return readOnly.length > 0 ? `run: chmod u+w ${quoted(readOnly)}` : void 0;
+}
+
 // dist/core/time-utils.js
 function parseSqliteUtcMs(sqliteTimestamp) {
   const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(sqliteTimestamp ?? "");
@@ -27434,14 +27597,42 @@ function openDatabase(dbPath) {
     return db;
   const resolvedPath = dbPath ?? getDbPath();
   const dir = path2.dirname(resolvedPath);
-  fs2.mkdirSync(dir, { recursive: true });
+  fs3.mkdirSync(dir, { recursive: true });
   try {
-    fs2.chmodSync(dir, 448);
+    process.umask(63);
   } catch {
   }
+  const [realPath, ...sidecars] = databaseFiles(resolvedPath);
+  const realDir = path2.dirname(realPath);
+  removeGroupAndOtherAccess(dir);
+  guardDatabaseFiles(resolvedPath);
+  const missing = sidecars.filter((file2) => !fs3.existsSync(file2)).map((file2) => file2.slice(realPath.length));
+  let folderWritable = true;
+  try {
+    fs3.accessSync(realDir, fs3.constants.W_OK);
+  } catch {
+    folderWritable = false;
+  }
+  if (missing.length > 0 && !folderWritable && fs3.existsSync(realPath)) {
+    const notYours = belongsToAnotherUser(fs3.statSync(realDir));
+    const fix = notYours ? "Point MEMESH_DB_PATH at a database you own, in a folder you own." : `chmod u+w ${shellQuote(realDir)}`;
+    throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path2.basename(realPath)} has no ${missing.join(" or ")} file there, so it cannot be opened without writing to the folder. ` + (notYours ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}` : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
+  }
+  db = openInitialisedDatabase(resolvedPath);
+  const writeBack = ownerWriteCommand(resolvedPath);
+  if (writeBack) {
+    try {
+      process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. To write to it again, ${writeBack}
+`);
+    } catch {
+    }
+  }
+  return db;
+}
+function openInitialisedDatabase(resolvedPath) {
   const opening = new MemeshDatabase(resolvedPath);
   try {
-    initialiseDatabase(opening, resolvedPath);
+    initialiseDatabase(opening);
   } catch (err) {
     try {
       opening.close();
@@ -27449,18 +27640,17 @@ function openDatabase(dbPath) {
     }
     throw err;
   }
-  db = opening;
-  return db;
+  return opening;
 }
 function isReadonlyDbError(err) {
   const msg = err instanceof Error ? err.message : String(err);
   return /readonly database|SQLITE_READONLY/i.test(msg);
 }
-function initialiseDatabase(db2, resolvedPath) {
+function initialiseDatabase(db2) {
   db2.pragma("journal_mode = WAL");
   db2.pragma("foreign_keys = ON");
   try {
-    migrateToCurrentSchema(db2, resolvedPath);
+    migrateToCurrentSchema(db2);
   } catch (err) {
     if (!isReadonlyDbError(err))
       throw err;
@@ -27471,21 +27661,11 @@ function initialiseDatabase(db2, resolvedPath) {
   }
   return db2;
 }
-function migrateToCurrentSchema(db2, resolvedPath) {
+function migrateToCurrentSchema(db2) {
   db2.exec(SCHEMA_SQL);
   db2.exec(FTS_SQL);
   ensureTagsUniqueIndex(db2);
   ensureHookRunsSince(db2);
-  try {
-    process.umask(63);
-  } catch {
-  }
-  for (const suffix of ["", "-wal", "-shm"]) {
-    try {
-      fs2.chmodSync(`${resolvedPath}${suffix}`, 384);
-    } catch {
-    }
-  }
   migrateEntitiesSchema(db2);
   runAutoDecay(db2);
   backfillSignalScores(db2);
@@ -27700,7 +27880,7 @@ function getDatabase() {
 }
 
 // dist/transports/mcp/handlers.js
-import fs11 from "node:fs";
+import fs12 from "node:fs";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // dist/core/scoring.js
@@ -27978,6 +28158,37 @@ function agentRecallEnvelope(r) {
   };
 }
 
+// dist/core/replaced-history.js
+var REPLACED_HISTORY_MAX = 20;
+var REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
+var jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
+function boundReplacedHistory(history) {
+  let out = history.slice(-REPLACED_HISTORY_MAX);
+  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
+    out = out.slice(1);
+  if (out.length === 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) {
+    const only = out[0];
+    const fits = (v) => jsonBytes([v]) <= REPLACED_HISTORY_MAX_BYTES;
+    let kept = { ...only, observations: [], tags: [], truncated: true };
+    while (kept.title && !fits(kept))
+      kept = { ...kept, title: sliceWholeChars(kept.title, Math.floor(kept.title.length * 0.9)) };
+    for (const obs of only.observations) {
+      const next = { ...kept, observations: [...kept.observations, obs] };
+      if (!fits(next))
+        break;
+      kept = next;
+    }
+    for (const tag of only.tags) {
+      const next = { ...kept, tags: [...kept.tags, tag] };
+      if (!fits(next))
+        break;
+      kept = next;
+    }
+    out = [kept];
+  }
+  return out;
+}
+
 // dist/core/types.js
 var NAMESPACES = ["personal", "team", "global"];
 
@@ -28154,6 +28365,14 @@ function describeInvalidEntity(entity, index) {
   }
   return null;
 }
+function storedContentOf(db2, name) {
+  const row = db2.prepare("SELECT id, title FROM entities WHERE name = ?").get(name);
+  return {
+    title: row.title ?? null,
+    observations: db2.prepare("SELECT content FROM observations WHERE entity_id = ? ORDER BY id").all(row.id).map((o) => o.content),
+    tags: db2.prepare("SELECT tag FROM tags WHERE entity_id = ?").all(row.id).map((t) => t.tag).sort()
+  };
+}
 function importMemories(args, options) {
   const trust = options?.trust === true;
   if (!MERGE_STRATEGIES.includes(args.merge_strategy)) {
@@ -28172,7 +28391,19 @@ function importMemories(args, options) {
   if (!Array.isArray(bundleEntities)) {
     throw new Error(`This file has no "entities" array (found ${bundleEntities === void 0 ? "nothing" : typeof bundleEntities}). Nothing was imported. memesh import expects a file produced by \`memesh export\`.`);
   }
+  const seenNames = /* @__PURE__ */ new Set();
+  for (const entity of bundleEntities) {
+    const name = entity?.name;
+    if (typeof name !== "string" || name === "")
+      continue;
+    const stored = Buffer.from(name, "utf8").toString("utf8");
+    if (seenNames.has(stored)) {
+      throw new Error(`This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}\u2026` : name)} more than once. Nothing was imported. A file produced by \`memesh export\` names each memory once.`);
+    }
+    seenNames.add(stored);
+  }
   const db2 = getDatabase();
+  const storedContent = (name) => storedContentOf(db2, name);
   const kg = new KnowledgeGraph(db2);
   let imported = 0;
   let overwritten = 0;
@@ -28207,6 +28438,7 @@ function importMemories(args, options) {
           trust,
           onHistoryDropped: () => errors.push(`${entity.name}: imported without its replaced_history, which no longer fits its size limits once credentials in it are redacted`)
         });
+        let replacedVersion;
         if (existing) {
           if (args.merge_strategy === "skip")
             return { kind: "skipped" };
@@ -28225,6 +28457,12 @@ function importMemories(args, options) {
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
             return { kind: "appended" };
           }
+          replacedVersion = {
+            replaced_at: (/* @__PURE__ */ new Date()).toISOString(),
+            title: existing.title ?? null,
+            observations: [...existing.observations],
+            tags: [...existing.tags].sort()
+          };
           kg.clearEntityData(entity.name);
         }
         kg.createEntity(entity.name, entity.type, {
@@ -28236,7 +28474,15 @@ function importMemories(args, options) {
           trustOverride: "untrusted"
         });
         if (existing) {
-          kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+          kg.updateEntityMetadata(entity.name, (current) => {
+            const merged = { ...current, ...importedMetadata };
+            const replaced = replacedVersion;
+            const history = Array.isArray(merged.replaced_history) ? merged.replaced_history : [];
+            const now = storedContent(entity.name);
+            const unchanged = now.title === replaced.title && JSON.stringify(now.observations) === JSON.stringify(replaced.observations) && JSON.stringify(now.tags) === JSON.stringify(replaced.tags);
+            const version2 = redactVersionText(replaced);
+            return unchanged ? merged : { ...merged, replaced_history: boundReplacedHistory([...history, version2]) };
+          });
         }
         if (!existing) {
           const bundledCreatedAt = entity.created_at;
@@ -28313,35 +28559,6 @@ function remember(input) {
   const { args, derived, typeGiven } = resolveRememberInput(input);
   return db2.transaction(() => rememberInTransaction(args, derived, typeGiven, db2, kg)).immediate();
 }
-var REPLACED_HISTORY_MAX = 20;
-var REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
-var jsonBytes = (v) => Buffer.byteLength(JSON.stringify(v), "utf8");
-function fitVersionToCap(only) {
-  const base = { ...only, observations: [], truncated: true };
-  while (base.title && jsonBytes([base]) > REPLACED_HISTORY_MAX_BYTES) {
-    base.title = sliceWholeChars(base.title, Math.floor(base.title.length * 0.9));
-  }
-  if (jsonBytes([base]) > REPLACED_HISTORY_MAX_BYTES)
-    return null;
-  const kept = [];
-  for (const obs of only.observations) {
-    if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES)
-      break;
-    kept.push(obs);
-  }
-  return { ...base, observations: kept };
-}
-function boundReplacedHistory(history) {
-  const newest = history[history.length - 1];
-  if (newest !== void 0 && jsonBytes([newest]) > REPLACED_HISTORY_MAX_BYTES) {
-    const fitted = fitVersionToCap(newest);
-    return fitted ? [fitted] : boundReplacedHistory(history.slice(0, -1));
-  }
-  let out = history.slice(-REPLACED_HISTORY_MAX);
-  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES)
-    out = out.slice(1);
-  return out;
-}
 function summarizeReplacedHistory(entities) {
   for (const e of entities) {
     const history = e.metadata?.replaced_history;
@@ -28351,6 +28568,23 @@ function summarizeReplacedHistory(entities) {
     e.metadata = { ...rest, replaced_history_count: history.length };
   }
   return entities;
+}
+function shownEntity(entity) {
+  const shown = redactTitleAndObservations(typeof entity.title === "string" ? entity.title : void 0, entity.observations);
+  const metadata = entity.metadata === void 0 ? void 0 : redactTextValues(entity.metadata);
+  const guard = entity.metadata?.guard;
+  if (metadata && guard && typeof guard.pattern === "string") {
+    metadata.guard = { ...metadata.guard, pattern: guard.pattern };
+  }
+  const history = entity.metadata?.replaced_history;
+  if (metadata && Array.isArray(history))
+    metadata.replaced_history = history.map(redactVersionText);
+  return {
+    ...entity,
+    ...typeof entity.title === "string" ? { title: shown.title } : {},
+    observations: shown.observations,
+    ...metadata === void 0 ? {} : { metadata }
+  };
 }
 function resolveRememberInput(input) {
   if (input.note === void 0) {
@@ -28399,7 +28633,6 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, so this call would create one with no type \u2014 pass \`type\` to create it.`);
   }
   let replacedVersion;
-  let previousVersionDropped = false;
   let retypedTo;
   let tags = args.tags;
   let title = args.title;
@@ -28440,7 +28673,6 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
   }));
   if (replacedVersion) {
     const version2 = redactVersionText(replacedVersion);
-    previousVersionDropped = jsonBytes([version2]) > REPLACED_HISTORY_MAX_BYTES && fitVersionToCap(version2) === null;
     kg.updateEntityMetadata(args.name, (current) => {
       const history = Array.isArray(current.replaced_history) ? current.replaced_history : [];
       return { ...current, replaced_history: boundReplacedHistory([...history, version2]) };
@@ -28484,7 +28716,6 @@ function rememberInTransaction(args, derived, typeGiven, db2, kg) {
     ...superseded.length > 0 ? { superseded } : {},
     ...relationErrors.length > 0 ? { relationErrors } : {},
     ...args.replace ? { replaced: replacedVersion !== void 0 } : {},
-    ...previousVersionDropped ? { previousVersionDropped: true } : {},
     ...derived ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } } : {}
   };
 }
@@ -28495,7 +28726,7 @@ function searchAndScore(args) {
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace
-  }));
+  })).map(shownEntity);
   return {
     entities,
     relevanceMap: args.query ? buildRelevanceMap(entities) : /* @__PURE__ */ new Map()
@@ -28545,7 +28776,7 @@ function forget(args) {
     const result2 = kg.removeObservation(args.name, args.observation);
     const shown = redactSecrets(args.observation);
     if (!result2.removed && shown !== args.observation && db2.prepare("SELECT 1 FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? AND o.content = ? LIMIT 1").get(args.name, shown)) {
-      throw new Error("No exact stored-text match for that observation; use the observation shown by recall.");
+      throw new Error("No exact stored-text match for that observation. recall shows credential-shaped text masked; a line is selected by its stored text, which export returns, or rewrite the memory with replace.");
     }
     return {
       observation_removed: result2.removed,
@@ -28566,7 +28797,7 @@ function forget(args) {
 import { createHash as createHash7 } from "node:crypto";
 
 // dist/core/transcript-source.js
-import fs3 from "fs";
+import fs4 from "fs";
 import { createHash as createHash5 } from "node:crypto";
 import path3 from "path";
 var MAX_TRANSCRIPT_SOURCE_BYTES = 8 * 1024 * 1024;
@@ -28578,10 +28809,10 @@ function readTranscriptSnapshot(transcriptPath, expected) {
 function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRemaining) {
   let fd;
   try {
-    fd = fs3.openSync(transcriptPath, fs3.constants.O_RDONLY | fs3.constants.O_NOFOLLOW);
-    if (fs3.lstatSync(transcriptPath).isSymbolicLink())
+    fd = fs4.openSync(transcriptPath, fs4.constants.O_RDONLY | fs4.constants.O_NOFOLLOW);
+    if (fs4.lstatSync(transcriptPath).isSymbolicLink())
       return { snapshot: null, aggregateLimitExceeded: false };
-    const before = fs3.fstatSync(fd, { bigint: true });
+    const before = fs4.fstatSync(fd, { bigint: true });
     const sizeBytes = Number(before.size);
     if (!before.isFile() || sizeBytes < 0 || sizeBytes > MAX_TRANSCRIPT_SOURCE_BYTES) {
       return { snapshot: null, aggregateLimitExceeded: false };
@@ -28601,12 +28832,12 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
     const bytes = Buffer.allocUnsafe(sizeBytes);
     let offset = 0;
     while (offset < bytes.length) {
-      const count = fs3.readSync(fd, bytes, offset, bytes.length - offset, offset);
+      const count = fs4.readSync(fd, bytes, offset, bytes.length - offset, offset);
       if (count === 0)
         return { snapshot: null, aggregateLimitExceeded: false };
       offset += count;
     }
-    const after = fs3.fstatSync(fd, { bigint: true });
+    const after = fs4.fstatSync(fd, { bigint: true });
     if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs) {
       return { snapshot: null, aggregateLimitExceeded: false };
     }
@@ -28619,7 +28850,7 @@ function readTranscriptSnapshotWithin(transcriptPath, expected, aggregateBytesRe
   } finally {
     if (fd !== void 0) {
       try {
-        fs3.closeSync(fd);
+        fs4.closeSync(fd);
       } catch {
       }
     }
@@ -28654,7 +28885,7 @@ function sameProjectPath(a, b) {
   if (path3.normalize(a) === path3.normalize(b))
     return true;
   try {
-    if (fs3.realpathSync(a) === fs3.realpathSync(b))
+    if (fs4.realpathSync(a) === fs4.realpathSync(b))
       return true;
   } catch {
   }
@@ -28672,10 +28903,10 @@ function scanTranscripts(opts) {
   const dir = path3.join(claudeProjectsDir(), projectTranscriptSlug(cwd));
   let names;
   try {
-    const dirStat = fs3.lstatSync(dir);
+    const dirStat = fs4.lstatSync(dir);
     if (dirStat.isSymbolicLink() || !dirStat.isDirectory())
       return [];
-    names = fs3.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
+    names = fs4.readdirSync(dir).filter((name) => name.endsWith(".jsonl")).sort();
   } catch {
     return [];
   }
@@ -28685,7 +28916,7 @@ function scanTranscripts(opts) {
   const eligibleNames = [];
   try {
     for (const name of names) {
-      const stat = fs3.lstatSync(path3.join(dir, name));
+      const stat = fs4.lstatSync(path3.join(dir, name));
       if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_TRANSCRIPT_SOURCE_BYTES || stat.mtimeMs < cutoffMs)
         continue;
       plannedBytes += stat.size;
@@ -29423,7 +29654,7 @@ function computePatterns(db2, categories) {
 }
 
 // dist/core/config.js
-import fs4 from "fs";
+import fs5 from "fs";
 import path4 from "path";
 function configDir() {
   return memeshDir();
@@ -29445,10 +29676,10 @@ function warnUnreadable(p, detail) {
 }
 function readRawConfigResult() {
   const p = configFilePath();
-  if (!fs4.existsSync(p))
+  if (!fs5.existsSync(p))
     return { raw: {}, state: "absent" };
   try {
-    const parsed = JSON.parse(fs4.readFileSync(p, "utf8"));
+    const parsed = JSON.parse(fs5.readFileSync(p, "utf8"));
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("top-level JSON value is not an object");
     }
@@ -29486,7 +29717,7 @@ function readConfig() {
 
 // dist/core/repo-state.js
 import { execFileSync as execFileSync2 } from "child_process";
-import fs5 from "fs";
+import fs6 from "fs";
 import path5 from "path";
 var GIT_TIMEOUT_MS = 5e3;
 function tryGit2(cwd, args) {
@@ -29502,7 +29733,7 @@ function tryGit2(cwd, args) {
 }
 function declaredVersionOf(repoRoot) {
   try {
-    const raw = fs5.readFileSync(path5.join(repoRoot, "package.json"), "utf8");
+    const raw = fs6.readFileSync(path5.join(repoRoot, "package.json"), "utf8");
     const version2 = JSON.parse(raw).version;
     return typeof version2 === "string" && version2.length > 0 ? version2 : null;
   } catch {
@@ -30370,7 +30601,7 @@ import { createHash as createHash9, randomBytes, randomUUID as randomUUID2 } fro
 
 // dist/core/agent-message-storage.js
 import { createHash as createHash8, randomUUID } from "node:crypto";
-import fs6 from "node:fs";
+import fs7 from "node:fs";
 var TERMINAL_WORKFLOW_STATES = /* @__PURE__ */ new Set(["completed", "cancelled", "rejected"]);
 var AgentMessageStorageError = class extends Error {
   code;
@@ -31418,7 +31649,7 @@ var MessageSchema = external_exports.discriminatedUnion("action", [
 
 // dist/core/agent-router.js
 import { randomUUID as randomUUID3 } from "node:crypto";
-import fs7 from "node:fs";
+import fs8 from "node:fs";
 import net from "node:net";
 import path6 from "node:path";
 var AGENT_ROUTER_PROTOCOL_VERSION = 2;
@@ -32004,13 +32235,13 @@ async function executeAgentMessageAction(db2, rawInput, context, dependencies = 
 }
 
 // dist/core/update-entrypoint.js
-import fs10 from "fs";
+import fs11 from "fs";
 import path9 from "path";
 import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 
 // dist/core/version-check.js
-import fs8 from "fs";
+import fs9 from "fs";
 import path7 from "path";
 
 // dist/core/semver.js
@@ -32155,9 +32386,9 @@ function parseStoredUpdateCheck(raw) {
 function readStoredUpdateCheck(updateCheckPath, currentVersion) {
   try {
     const targetPath = getUpdateCheckPath(updateCheckPath, currentVersion);
-    if (!fs8.existsSync(targetPath))
+    if (!fs9.existsSync(targetPath))
       return null;
-    return parseStoredUpdateCheck(JSON.parse(fs8.readFileSync(targetPath, "utf8")));
+    return parseStoredUpdateCheck(JSON.parse(fs9.readFileSync(targetPath, "utf8")));
   } catch {
     return null;
   }
@@ -32170,7 +32401,7 @@ function getLastUpdateCheck(currentVersion, options = {}) {
 }
 
 // dist/core/update-notice.js
-import fs9 from "fs";
+import fs10 from "fs";
 import path8 from "path";
 var UP_TO_DATE_REFRESH_MS = 60 * 60 * 1e3;
 var UPGRADE_AVAILABLE_REFRESH_MS = 12 * 60 * 60 * 1e3;
@@ -32181,7 +32412,7 @@ var JUST_UPGRADED_FILE = "just-upgraded.json";
 function staleRunningProcessNotice(runningVersion, packageJsonPath3) {
   let onDisk;
   try {
-    onDisk = JSON.parse(fs9.readFileSync(packageJsonPath3, "utf8")).version;
+    onDisk = JSON.parse(fs10.readFileSync(packageJsonPath3, "utf8")).version;
   } catch {
     return null;
   }
@@ -32218,9 +32449,9 @@ function parseIso(value) {
 }
 function readJson(file2) {
   try {
-    if (!fs9.existsSync(file2))
+    if (!fs10.existsSync(file2))
       return null;
-    const parsed = JSON.parse(fs9.readFileSync(file2, "utf8"));
+    const parsed = JSON.parse(fs10.readFileSync(file2, "utf8"));
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
@@ -32255,7 +32486,7 @@ function readJustUpgradedMarker(dir) {
 }
 function clearJustUpgradedMarker(dir) {
   try {
-    fs9.unlinkSync(path8.join(dir, JUST_UPGRADED_FILE));
+    fs10.unlinkSync(path8.join(dir, JUST_UPGRADED_FILE));
   } catch {
   }
 }
@@ -32263,13 +32494,13 @@ function claimJustUpgradedMarker(dir) {
   const file2 = path8.join(dir, JUST_UPGRADED_FILE);
   const taken = `${file2}.claimed-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
   try {
-    fs9.renameSync(file2, taken);
+    fs10.renameSync(file2, taken);
   } catch {
     return null;
   }
   const raw = readJson(taken);
   try {
-    fs9.unlinkSync(taken);
+    fs10.unlinkSync(taken);
   } catch {
   }
   if (!raw)
@@ -32359,7 +32590,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
   const claims = path9.join(dir, "update-prompt-claims");
   let names;
   try {
-    names = fs10.readdirSync(claims);
+    names = fs11.readdirSync(claims);
   } catch {
     return false;
   }
@@ -32369,18 +32600,18 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
     const file2 = path9.join(claims, name);
     let fd = null;
     try {
-      fd = fs10.openSync(file2, "r");
-      const stat = fs10.fstatSync(fd);
+      fd = fs11.openSync(file2, "r");
+      const stat = fs11.fstatSync(fd);
       if (now.getTime() - stat.mtimeMs > RECENT_HOOK_NOTICE_MS)
         continue;
-      const value = JSON.parse(fs10.readFileSync(fd, "utf8"));
+      const value = JSON.parse(fs11.readFileSync(fd, "utf8"));
       if (value.currentVersion === currentVersion && (latestVersion === null || value.latestVersion === latestVersion))
         return true;
     } catch {
     } finally {
       if (fd !== null)
         try {
-          fs10.closeSync(fd);
+          fs11.closeSync(fd);
         } catch {
         }
     }
@@ -32389,7 +32620,7 @@ function recentHookNoticeExists(dir, currentVersion, latestVersion, now = /* @__
 }
 function updateCheckEnabledIn(dir) {
   try {
-    const raw = JSON.parse(fs10.readFileSync(path9.join(dir, "config.json"), "utf8"));
+    const raw = JSON.parse(fs11.readFileSync(path9.join(dir, "config.json"), "utf8"));
     return raw.updateCheck !== false;
   } catch {
     return true;
@@ -32401,30 +32632,30 @@ function cliThrottled(dir, currentVersion, now) {
   let fd = null;
   try {
     try {
-      fd = fs10.openSync(marker, "r+");
+      fd = fs11.openSync(marker, "r+");
     } catch (err) {
       const code = err.code;
       if (code !== "ENOENT") {
         return true;
       }
-      fs10.mkdirSync(dir, { recursive: true, mode: 448 });
+      fs11.mkdirSync(dir, { recursive: true, mode: 448 });
       try {
-        fd = fs10.openSync(marker, "wx", 384);
+        fd = fs11.openSync(marker, "wx", 384);
       } catch (raceErr) {
         if (raceErr.code === "EEXIST")
           return true;
         throw raceErr;
       }
-      fs10.writeSync(fd, String(now.getTime()));
+      fs11.writeSync(fd, String(now.getTime()));
       return false;
     }
-    const stat = fs10.fstatSync(fd);
+    const stat = fs11.fstatSync(fd);
     if (now.getTime() - stat.mtimeMs < CLI_NOTICE_THROTTLE_MS)
       return true;
-    fs10.ftruncateSync(fd, 0);
-    fs10.writeSync(fd, String(now.getTime()), 0);
+    fs11.ftruncateSync(fd, 0);
+    fs11.writeSync(fd, String(now.getTime()), 0);
     try {
-      fs10.fchmodSync(fd, 384);
+      fs11.fchmodSync(fd, 384);
     } catch {
     }
     return false;
@@ -32433,7 +32664,7 @@ function cliThrottled(dir, currentVersion, now) {
   } finally {
     if (fd !== null)
       try {
-        fs10.closeSync(fd);
+        fs11.closeSync(fd);
       } catch {
       }
   }
@@ -32441,23 +32672,23 @@ function cliThrottled(dir, currentVersion, now) {
 function spawnCacheRefresh(dir, currentVersion, now) {
   try {
     const cliPath = fileURLToPath(new URL("../transports/cli/cli.js", import.meta.url));
-    if (!fs10.existsSync(cliPath))
+    if (!fs11.existsSync(cliPath))
       return false;
     const tag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : "unknown";
     const marker = path9.join(dir, `last-fresh-refresh.${tag}.lock`);
     try {
-      if (now.getTime() - fs10.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
+      if (now.getTime() - fs11.statSync(marker).mtimeMs < FRESH_CHECK_THROTTLE_MS)
         return false;
-      fs10.unlinkSync(marker);
+      fs11.unlinkSync(marker);
     } catch {
     }
-    fs10.mkdirSync(dir, { recursive: true, mode: 448 });
+    fs11.mkdirSync(dir, { recursive: true, mode: 448 });
     try {
-      const fd = fs10.openSync(marker, "wx", 384);
+      const fd = fs11.openSync(marker, "wx", 384);
       try {
-        fs10.writeSync(fd, `${process.pid}-${now.getTime()}`);
+        fs11.writeSync(fd, `${process.pid}-${now.getTime()}`);
       } finally {
-        fs10.closeSync(fd);
+        fs11.closeSync(fd);
       }
     } catch {
       return false;
@@ -32561,8 +32792,8 @@ function resolveTranscriptWorkspace(project, rootUris) {
       const parsed = new URL(uri);
       if (parsed.protocol !== "file:")
         continue;
-      const root = fs11.realpathSync(fileURLToPath2(parsed));
-      if (!fs11.statSync(root).isDirectory() || getProjectName(root) !== project)
+      const root = fs12.realpathSync(fileURLToPath2(parsed));
+      if (!fs12.statSync(root).isDirectory() || getProjectName(root) !== project)
         continue;
       matches.add(root);
     } catch {
@@ -32582,7 +32813,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "remember",
-    description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history (unless it is too large to keep, then the result has `previousVersionDropped`) instead of staying next to the fix.',
+    description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. To correct a memory, call again with its `name` and `replace: true` \u2014 the memory keeps the `type` it has unless you pass a different one \u2014 and the old content moves to metadata.replaced_history instead of staying next to the fix.',
     inputSchema: {
       type: "object",
       properties: {
@@ -32600,7 +32831,7 @@ var TOOL_DEFINITIONS = [
         },
         replace: {
           type: "boolean",
-          description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced, unless it is too large to keep (then the result has `previousVersionDropped: true`). Default false (append)."
+          description: "Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append)."
         },
         title: {
           type: "string",
@@ -32712,7 +32943,7 @@ var TOOL_DEFINITIONS = [
   },
   {
     name: "import",
-    description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite deletes their previous observations and tags instead of archiving them. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.",
+    description: "Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite replaces their observations and tags, keeping the previous version in metadata.replaced_history. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.",
     inputSchema: {
       type: "object",
       properties: {
@@ -32721,7 +32952,7 @@ var TOOL_DEFINITIONS = [
         merge_strategy: {
           type: "string",
           enum: ["skip", "overwrite", "append"],
-          description: "Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived \u2014 this cannot be undone)"
+          description: "Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the previous version is kept in metadata.replaced_history, up to the last 20)"
         },
         restore_archived: {
           type: "boolean",
@@ -32907,11 +33138,12 @@ function stripNullProps(value) {
     return value;
   const out = {};
   for (const [k, v] of Object.entries(value)) {
-    if (v !== null)
+    if (v !== null || NULL_IS_DATA.has(k))
       out[k] = v;
   }
   return out;
 }
+var NULL_IS_DATA = /* @__PURE__ */ new Set(["payload"]);
 function parseOrFail(schema, args) {
   const raw = args === void 0 || args === null ? {} : args;
   const strictPass = schema.safeParse(raw);
@@ -32938,7 +33170,7 @@ function normalizeClientHost(name) {
 }
 var packageVersion = (() => {
   try {
-    return JSON.parse(fs11.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
+    return JSON.parse(fs12.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")).version ?? "0.0.0";
   } catch {
     return "0.0.0";
   }
@@ -33129,7 +33361,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
 
 // dist/mcp/server.js
 var packageJsonPath2 = path10.resolve(path10.dirname(fileURLToPath3(import.meta.url)), "../../package.json");
-var packageVersion2 = JSON.parse(fs12.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
+var packageVersion2 = JSON.parse(fs13.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
 var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} } });
 server.setRequestHandler(ListToolsRequestSchema, async () => ({

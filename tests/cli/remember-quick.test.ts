@@ -269,7 +269,7 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(noName.stderr).toContain('--replace needs --name');
   }, 60_000);
 
-  it('--replace says so when the previous version was too large to keep in replaced_history', () => {
+  it('--replace keeps a previous version too large for replaced_history, cut to fit, and says it is kept', () => {
     expect(runCli(['remember', '--name=r4', '--type=note', '--obs=old line'], { HOME: tmpHome }).exitCode).toBe(0);
     const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
     const row = db.prepare("SELECT id FROM entities WHERE name = 'r4'").get() as { id: number };
@@ -277,8 +277,13 @@ describe('memesh remember CLI: quick-capture form', () => {
     db.close();
     const r = runCli(['remember', '--name=r4', '--obs=new line', '--replace'], { HOME: tmpHome });
     expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
-    expect(r.stdout).toContain('replaced: the previous version was too large to keep, so metadata.replaced_history does not include it');
-    expect(r.stdout).not.toContain('is kept in metadata.replaced_history');
+    expect(r.stdout).toContain('replaced: the previous version is kept in metadata.replaced_history');
+    // The version is cut to fit: its observation stays, the tag that alone exceeds the cap goes.
+    const read = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
+    const meta = JSON.parse((read.prepare("SELECT metadata FROM entities WHERE name = 'r4'").get() as { metadata: string }).metadata);
+    read.close();
+    expect(meta.replaced_history).toHaveLength(1);
+    expect(meta.replaced_history[0]).toMatchObject({ observations: ['old line'], tags: [], truncated: true });
     // A normal replace still says it is kept.
     const again = runCli(['remember', '--name=r5', '--type=note', '--obs=old line'], { HOME: tmpHome });
     expect(again.exitCode).toBe(0);

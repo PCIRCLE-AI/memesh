@@ -1,7 +1,7 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
-import { redactSecretList, redactSecrets } from './paths.js';
+import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
 export const MEMORY_ROOT = '/memories';
 const NAMESPACES = ['personal', 'team', 'global'];
 const FILE_SUFFIX = '.md';
@@ -67,6 +67,10 @@ function entityPath(namespace, name) {
 }
 function renderBody(entity) {
     return entity.observations.join('\n');
+}
+function renderShownBody(entity) {
+    const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+    return shown.observations.join('\n');
 }
 function lineOwners(observations) {
     const owners = [];
@@ -161,7 +165,7 @@ function viewEntity(namespace, name, range, path) {
     if (!entity) {
         return err(`The path ${path} does not exist. Please provide a valid path.`);
     }
-    const body = renderBody(entity);
+    const body = renderShownBody(entity);
     const lines = body === '' ? [] : body.split('\n');
     if (range === undefined) {
         if (body.length > MAX_VIEW_CHARS) {
@@ -229,7 +233,7 @@ function strReplace(namespace, name, oldStr, newStr, path) {
     const shown = redactSecrets(oldStr);
     const first = body.indexOf(oldStr);
     if (first === -1 && shown !== oldStr && body.includes(shown)) {
-        return err(`No replacement was performed: no exact stored-text match for old_str in ${path}; use the text shown by view.`);
+        return err(`No replacement was performed: no exact stored-text match for old_str in ${path}. view shows credential-shaped text masked; old_str must match the stored text, which export returns.`);
     }
     if (first === -1) {
         return err(`No replacement was performed, old_str \`${shown}\` did not appear verbatim in ${path}.`);
@@ -267,7 +271,8 @@ function insertLine(namespace, name, atLine, text, path) {
     const entity = findEntity(kg, namespace, name);
     if (!entity)
         return err(`Error: The path ${path} does not exist`);
-    const owners = lineOwners(entity.observations);
+    const shownObservations = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations).observations;
+    const owners = lineOwners(shownObservations);
     const line = atLine;
     if (line < 0 || line > owners.length) {
         return err(`Error: Invalid \`insert_line\` parameter: ${line}. ` +

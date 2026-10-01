@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url';
 import {
   openDatabase, closeDatabase, getDatabase, reindexFts,
 } from '../../db.js';
+import type { MemeshDatabase } from '../../storage/sqlite.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
 import { readConfig, updateConfig } from '../../core/config.js';
@@ -45,6 +46,7 @@ import {
   ensureRouterTokenFile,
 } from '../../host-runtime/config.js';
 import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/install-channel.js';
+import { shellQuote } from '../../core/file-mode.js';
 
 // DX: every CLI command that touches the DB used to repeat
 //   openDatabase(); try { ...body... } finally { closeDatabase(); }
@@ -73,6 +75,14 @@ async function withDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
   } finally {
     closeDatabase();
   }
+}
+
+/** A refused write is one line (or `{"error"}` with --json) and exit 1, never a stack trace. */
+function printRefusal(err: unknown, json: boolean | undefined): void {
+  const error = err instanceof Error ? err.message : String(err);
+  if (json) console.log(JSON.stringify({ error }));
+  else console.error(`Error: ${error}`);
+  process.exitCode = 1;
 }
 
 /**
@@ -182,9 +192,21 @@ function requireOneOf(value: string | undefined, allowed: readonly string[], fla
  * holding a space or a shell metacharacter would make the command run
  * something other than what it displays. (The interactive confirmation
  * PROMPT is not a command to paste, so it prints the raw path instead.)
+ * A word starting with `-` or `=` is quoted too: `-x` reads as an option,
+ * and zsh expands `=ls` to the path of `ls`.
  */
 function shellQuoteIfNeeded(value: string): string {
-  return /^[A-Za-z0-9._/:@%+=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  return /^[A-Za-z0-9._/:@%+][A-Za-z0-9._/:@%+=-]*$/.test(value) ? value : shellQuote(value);
+}
+
+/**
+ * A value that is not a path (a memory name or type) as one shell word, its
+ * text unchanged: shellQuote's `./` for a leading `-` would change the value
+ * itself. The commands that print one pass it as `--option=word`, or after
+ * `--`, so a leading `-` is not read as an option.
+ */
+function shellWord(value: string): string {
+  return /^[A-Za-z0-9._/:@%+][A-Za-z0-9._/:@%+=-]*$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -350,7 +372,7 @@ program
   .option('--title <title>', 'Short human-readable label shown as the headline (name stays the stable machine key)')
   .option('--obs <observations...>', 'Observations (space-separated)')
   .option('--tags <tags...>', 'Tags (space-separated)')
-  .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history unless it is too large to keep (the result then says so)')
+  .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history')
   .option('--namespace <namespace>', 'Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in — omit the flag to leave it alone.')
   // The two relation types that DO something. MCP and HTTP callers could state
   // them through `relations`; the CLI had no way to state any relation at all,
@@ -506,13 +528,9 @@ program
           // here because the result carried only the REQUESTED title; that
           // half of the fix has moved to core, where every caller gets it.
           if (result.title) console.log(`   title: ${result.title}`);
-          console.log(`   fix it with: memesh remember --name "${result.name}" --type ${result.derived.type} --title "…" --obs "…" --replace`);
+          console.log(`   fix it with: memesh remember --name=${shellWord(result.name)} --type=${shellWord(result.derived.type)} --title "…" --obs "…" --replace`);
         }
-        if (result.replaced) {
-          console.log(result.previousVersionDropped
-            ? '   replaced: the previous version was too large to keep, so metadata.replaced_history does not include it'
-            : '   replaced: the previous version is kept in metadata.replaced_history');
-        }
+        if (result.replaced) console.log('   replaced: the previous version is kept in metadata.replaced_history');
         // A move drops the memory out of every scoped view it used to appear
         // in, so it is never silent.
         if (result.movedFromNamespace) {
@@ -658,10 +676,7 @@ program
       } catch (err) {
         // A refusal (the selector only matches a redacted line, #523) is one
         // line and exit 1, never a stack trace.
-        const error = err instanceof Error ? err.message : String(err);
-        if (opts.json) console.log(JSON.stringify({ error }));
-        else console.error(`Error: ${error}`);
-        process.exitCode = 1;
+        printRefusal(err, opts.json);
         return;
       }
       // D7: this used to set `process.exitCode = 1` inside the human-readable
@@ -685,7 +700,7 @@ program
         // found" sent the user to re-create a memory that already exists — the
         // one action guaranteed to make it worse.
         console.log(`Entity "${opts.name}" has no observation matching that text (${result.remaining_observations} observation(s) present).`);
-        console.log(`See them with: memesh recall "${opts.name}" --json`);
+        console.log(`See them with: memesh recall --json -- ${shellWord(opts.name)}`);
       } else {
         console.log(`Entity "${opts.name}" not found`);
       }
@@ -710,10 +725,7 @@ function registerPinCommand(name: string, description: string, pinned: boolean, 
         } catch (err) {
           // A refusal (#523: the memory holds part of a private key) is one
           // line and exit 1, never a stack trace.
-          const error = err instanceof Error ? err.message : String(err);
-          if (opts.json) console.log(JSON.stringify({ error }));
-          else console.error(`Error: ${error}`);
-          process.exitCode = 1;
+          printRefusal(err, opts.json);
           return;
         }
         if (opts.json) console.log(JSON.stringify(result));
@@ -756,7 +768,7 @@ program
         const outDir = path.dirname(path.resolve(opts.out));
         if (!fs.existsSync(outDir)) {
           console.error(`Error: cannot write ${opts.out} — the directory ${outDir} does not exist.`);
-          console.error(`       Create it first (mkdir -p "${outDir}"), or drop -o to write to stdout.`);
+          console.error(`       Create it first (mkdir -p ${shellQuote(outDir)}), or drop -o to write to stdout.`);
           process.exit(1);
         }
         // Synchronous write so the CLI exits with a deterministic
@@ -772,7 +784,7 @@ program
       if (result.truncated) {
         process.stderr.write(
           `⚠️  This is NOT the whole graph — ${result.entity_count} entities is the --limit, and there are more.\n`
-          + `   For a full backup, raise it: memesh export --limit 100000${opts.out ? ` -o ${opts.out}` : ''}\n`,
+          + `   For a full backup, raise it: memesh export --limit 100000${opts.out ? ` -o ${shellQuoteIfNeeded(opts.out)}` : ''}\n`,
         );
       }
     });
@@ -863,7 +875,7 @@ program
         }
         if ((err as NodeJS.ErrnoException)?.code === 'EACCES') {
           console.error(`Error: cannot read ${file} (permission denied).`);
-          console.error(`       Check file permissions: ls -la ${file}`);
+          console.error(`       Check file permissions: ls -la ${shellQuoteIfNeeded(file)}`);
           process.exit(1);
         }
         throw err;
@@ -1012,14 +1024,23 @@ program
   .action(async (opts) => {
     requireOneOf(opts.severity, ['critical', 'major', 'minor'], '--severity');
     await withDatabase(() => {
-      const result = learn({
-        error: opts.error,
-        fix: opts.fix,
-        root_cause: opts.rootCause,
-        prevention: opts.prevention,
-        severity: opts.severity as LessonSeverity | undefined,
-        sourceHost: 'cli',
-      });
+      let result: ReturnType<typeof learn>;
+      try {
+        result = learn({
+          error: opts.error,
+          fix: opts.fix,
+          root_cause: opts.rootCause,
+          prevention: opts.prevention,
+          severity: opts.severity as LessonSeverity | undefined,
+          sourceHost: 'cli',
+        });
+      } catch (err) {
+        // A refusal (#523: the lesson's memory holds part of a private key, or
+        // the error text is nothing but credentials) is one line and exit 1,
+        // never a stack trace.
+        printRefusal(err, opts.json);
+        return;
+      }
       if (opts.json) {
         console.log(JSON.stringify(result));
       } else {
@@ -1399,12 +1420,12 @@ agentCmd
     const launchCommand = host === 'codex-session'
       ? null
       : host === 'codex'
-        ? `memesh-host-codex --config ${JSON.stringify(configPath)}`
+        ? `memesh-host-codex --config ${shellQuote(configPath)}`
         : host === 'claude'
           ? 'claude --dangerously-load-development-channels server:memesh-channel'
-          : `memesh-host-acp --config ${JSON.stringify(configPath)}`;
+          : `memesh-host-acp --config ${shellQuote(configPath)}`;
     const registrationCommand = host === 'claude'
-      ? `claude mcp add --transport stdio --scope user memesh-channel -- memesh-host-claude --config ${JSON.stringify(configPath)}`
+      ? `claude mcp add --transport stdio --scope user memesh-channel -- memesh-host-claude --config ${shellQuote(configPath)}`
       : null;
     const result = {
       host,
@@ -1750,10 +1771,7 @@ program
       } catch (err) {
         // A refusal (#523: the record holds part of a private key) is one
         // line and exit 1, never a stack trace.
-        const error = err instanceof Error ? err.message : String(err);
-        if (opts.json) console.log(JSON.stringify({ error }));
-        else console.error(`Error: ${error}`);
-        process.exitCode = 1;
+        printRefusal(err, opts.json);
         return;
       }
       if (opts.json) {
@@ -2291,13 +2309,13 @@ kgCmd
   .option('--apply', 'Actually write the change. Default is a dry-run preview. Backs up the DB first.')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
-    await withDatabase(async () => {
-      const { listProjectTags, renameProjectTag } = await import('../../core/project-tags.js');
+    const run = async (to: string, db?: MemeshDatabase): Promise<void> => {
+      const { listProjectTags, renameProjectTag, hasRenameWork } = await import('../../core/project-tags.js');
 
       // List mode — no --from/--to: show the current project-tag distribution
       // so the user can spot splits (e.g. tim vs TIM) before mapping them.
       if (!opts.from && !opts.to) {
-        const tags = listProjectTags();
+        const tags = listProjectTags(db);
         if (opts.json) { console.log(JSON.stringify(tags, null, 2)); return; }
         if (tags.length === 0) { console.log('No project:* tags found.'); return; }
         console.log('Project tags (entity count):');
@@ -2305,24 +2323,17 @@ kgCmd
         console.log(`\nRewrite one with:  memesh kg rename-project --from <old> --to <new>   (add --apply to write)`);
         return;
       }
-      if (!opts.from || !opts.to) {
-        console.error('Provide BOTH --from and --to (or neither, to list).');
-        process.exitCode = 1;
-        return;
-      }
-
-      // --to is a NEW routing identity — the same shape `agent setup` and the
-      // message surfaces already gate — so it goes through the same refusal
-      // and canonical form. --from is deliberately NOT validated or
-      // canonicalised: it names an EXISTING row the owner is repairing (it may
-      // itself be the path-shaped or NFD-spelled value this command exists to
-      // fix), and it must match that row's exact byte spelling or the repair
-      // silently matches nothing.
-      const to = requireAgentScopeArg(opts.to, 'project', '--to');
-
-      // Dry-run preview first (always computed).
-      const preview = renameProjectTag(opts.from, to, { apply: false });
       if (!opts.apply) {
+        // The preview runs the real apply on a throwaway copy; any failure is
+        // one line and exit 1, not a stack trace.
+        let preview: ReturnType<typeof renameProjectTag>;
+        try {
+          preview = renameProjectTag(opts.from, to, { apply: false, db });
+        } catch (err) {
+          console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+          process.exitCode = 1;
+          return;
+        }
         if (opts.json) { console.log(JSON.stringify({ ...preview, dryRun: true }, null, 2)); return; }
         console.log(`Dry-run: project:${opts.from} → project:${to}`);
         console.log(`  ${preview.affectedEntities} entit${preview.affectedEntities === 1 ? 'y' : 'ies'} carry project:${opts.from}`);
@@ -2330,38 +2341,128 @@ kgCmd
         // A project identity is half the key of a durable-message inbox, so a
         // rename that moved only the tags left the messages in a scope nobody
         // polls. Reported separately because it is a different kind of row.
-        console.log(`  ${preview.messageRows} durable agent-message row(s) scoped to ${opts.from} would move to ${to}`);
+        console.log(`  ${preview.messageRows - preview.messageRowsBlocked} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} would be left in place (${to} already holds an equivalent row)` : ''}`);
         console.log(`\nNothing written. Re-run with --apply to commit (the DB is backed up first).`);
         return;
       }
 
-      if (preview.affectedEntities === 0 && preview.messageRows === 0) {
+      let hasWork: boolean;
+      try {
+        hasWork = hasRenameWork(opts.from);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+        return;
+      }
+      if (!hasWork) {
         console.log(`Nothing carries project ${opts.from} — no entity tags and no agent-message rows. Nothing to do.`);
         return;
       }
 
-      // --apply: back up the whole DB file before any mutation (recoverable).
+      // --apply: back up the whole database before any mutation (recoverable).
+      // Beside the database, not in the current directory (#519), and with
+      // VACUUM INTO rather than a file copy: the database runs in WAL mode, so
+      // a copy of the main file alone misses whatever the -wal file still holds.
       const dbPath = getDbPath();
-      const backupDir = path.join(process.cwd(), 'data', 'backups');
+      const backupDir = path.join(path.dirname(dbPath), 'backups');
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const backupPath = path.join(backupDir, `kg-before-rename-project-${stamp}.db`);
       try {
-        fs.mkdirSync(backupDir, { recursive: true });
-        fs.copyFileSync(dbPath, backupPath);
+        fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
+        // Owner-private like the database: opening it set the umask to 077.
+        getDatabase().prepare('VACUUM INTO ?').run(backupPath);
       } catch (err) {
         console.error(`❌ Could not back up the DB before applying (${err instanceof Error ? err.message : err}); aborting without changes.`);
         process.exitCode = 1;
         return;
       }
 
-      const result = renameProjectTag(opts.from, to, { apply: true });
+      let result: ReturnType<typeof renameProjectTag>;
+      try {
+        result = renameProjectTag(opts.from, to, { apply: true });
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)} — nothing was changed; the backup is at ${backupPath}`);
+        process.exitCode = 1;
+        return;
+      }
       if (opts.json) { console.log(JSON.stringify({ ...result, backupPath }, null, 2)); return; }
       console.log(`✅ project:${opts.from} → project:${to}`);
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
-      console.log(`  ${result.messageRows} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
+      console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
       console.log(`  Backup: ${backupPath}`);
-      console.log(`  Restore if needed: cp "${backupPath}" "${dbPath}"`);
-    });
+      // sqlite3 reads the dot-command argument as a double-quoted string, then
+      // the shell reads the whole command: quote for both.
+      const dotQuoted = `"${backupPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+      console.log(`  Restore if needed (stop every memesh process first): sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`);
+    };
+
+    // --to is a NEW routing identity — the same shape `agent setup` and the
+    // message surfaces already gate — so it goes through the same refusal
+    // and canonical form. --from is deliberately NOT validated or
+    // canonicalised: it names an EXISTING row the owner is repairing (it may
+    // itself be the path-shaped or NFD-spelled value this command exists to
+    // fix), and it must match that row's exact byte spelling or the repair
+    // silently matches nothing.
+    // A refusal is one line and exit 1, before anything is opened.
+    if (!opts.from !== !opts.to) {
+      console.error('Error: provide BOTH --from and --to (or neither, to list).');
+      process.exitCode = 1;
+      return;
+    }
+    if (opts.apply && !opts.from) {
+      console.error('Error: --apply needs both --from and --to.');
+      process.exitCode = 1;
+      return;
+    }
+    let to = '';
+    if (opts.from && opts.to) {
+      try {
+        to = requireAgentScopeArg(opts.to, 'project', '--to');
+        const { sameProjectRefusal } = await import('../../core/project-tags.js');
+        const refusal = sameProjectRefusal(opts.from, to);
+        if (refusal) throw new Error(refusal);
+      } catch (err) {
+        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        process.exitCode = 1;
+        return;
+      }
+    }
+
+    // Only --apply writes. A normal open does write (auto-decay and the other
+    // one-time passes run on it), so listing and the dry-run preview read
+    // through a read-only handle instead (#519).
+    if (opts.apply) {
+      await withDatabase(() => run(to));
+      return;
+    }
+    // No database yet is a true answer, not a fault: say so and create nothing.
+    if (!fs.existsSync(getDbPath())) {
+      if (opts.from) {
+        console.error(`Error: No MeMesh database at ${getDbPath()}, so nothing carries project ${opts.from}. Check HOME and MEMESH_DB_PATH.`);
+        process.exitCode = 1;
+      } else if (opts.json) {
+        console.log('[]');
+      } else {
+        console.log(`No MeMesh database yet (${getDbPath()}); nothing to list.`);
+      }
+      return;
+    }
+    let readOnlyDb: MemeshDatabase;
+    try {
+      readOnlyDb = (await import('../../core/project-tags.js')).openReadOnlyForPreview(getDbPath());
+    } catch (err) {
+      console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+      process.exitCode = 1;
+      return;
+    }
+    try {
+      await run(to, readOnlyDb);
+    } catch (err) {
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    } finally {
+      readOnlyDb.close();
+    }
   });
 
 // --- doctor ---
@@ -2385,8 +2486,10 @@ program
     // --fix executes only prescriptions that carry a fixId — attached at the
     // diagnosing branch in doctor.ts, never parsed from the human fix text.
     // The whitelist is limited to recoverable local repairs: hook wiring,
-    // retired-key cleanup (with a config backup), keyword-index rebuild, db
-    // chmod, and explicit host plugin refresh. Destructive database reset
+    // retired-key cleanup (with a config backup), keyword-index rebuild and
+    // explicit host plugin refresh. Database permissions are not on it: the
+    // open already removes other users' access, and the owner's own bits are
+    // the owner's decision (#520). Destructive database reset
     // branches remain human decisions.
     if (opts.fix) {
       // The dispatch is a Record, not an if-chain, so a fourth fixId added
@@ -2399,10 +2502,6 @@ program
           openDatabase();
           try { return `keyword index rebuilt (${reindexFts().entities} entities)`; }
           finally { closeDatabase(); }
-        },
-        'chmod-db': () => {
-          fs.chmodSync(getDbPath(), 0o600);
-          return `permissions restored: chmod 600 ${getDbPath()}`;
         },
         'config-retired-settings': () => {
           const fixed = removeRetiredConfigKeys();

@@ -4,7 +4,7 @@ import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
 import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
-import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, } from '../../core/operations.js';
+import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, shownEntity, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
@@ -22,6 +22,8 @@ import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
+import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
+import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 import fs from 'fs';
 import path from 'path';
@@ -61,10 +63,7 @@ function loadOrCreateRemoteToken() {
     const dir = memeshDir();
     const tokenPath = path.join(dir, 'remote-token');
     fs.mkdirSync(dir, { recursive: true });
-    try {
-        fs.chmodSync(dir, 0o700);
-    }
-    catch { }
+    removeGroupAndOtherAccess(dir);
     const generated = randomBytes(32).toString('hex');
     try {
         const fd = fs.openSync(tokenPath, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
@@ -88,10 +87,7 @@ function loadOrCreateRemoteToken() {
     if (value.length < 16) {
         throw new Error(`Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
     }
-    try {
-        fs.chmodSync(tokenPath, 0o600);
-    }
-    catch { }
+    removeGroupAndOtherAccess(tokenPath);
     return { token: Buffer.from(value, 'utf8'), freshlyCreated: false };
 }
 function constantTimeEquals(a, b) {
@@ -631,9 +627,9 @@ app.get('/v1/entities', (req, res) => {
         const { type: typeFilter, limit, status } = query;
         const includeArchived = status === 'all';
         const kg = new KnowledgeGraph(getDatabase());
-        return typeFilter
+        return (typeFilter
             ? kg.listByType(typeFilter, limit, includeArchived)
-            : kg.listRecent(limit, includeArchived, undefined, false);
+            : kg.listRecent(limit, includeArchived, undefined, false)).map(shownEntity);
     });
 });
 app.get('/v1/entities/:name', (req, res) => handleGet(res, () => {
@@ -642,7 +638,7 @@ app.get('/v1/entities/:name', (req, res) => handleGet(res, () => {
     if (!entity) {
         throw new HttpError(404, 'resource.not-found', `Entity "${String(req.params.name)}" not found`);
     }
-    return entity;
+    return shownEntity(entity);
 }));
 const HOST = process.env.MEMESH_HTTP_HOST || '127.0.0.1';
 const PORT = parseInt(process.env.MEMESH_HTTP_PORT || '3737');
@@ -704,14 +700,10 @@ export function startServer(host = HOST, port = PORT, opts) {
         console.error('\n❌ MeMesh startup failed: database cannot be opened\n');
         console.error(`   Database path: ${dbPath}`);
         console.error(`   Error: ${message}\n`);
-        console.error('Possible causes:');
-        console.error('  • Database file is corrupted (run: memesh doctor)');
-        console.error('  • Insufficient permissions (check file ownership)');
-        console.error('  • Another process has locked the database');
-        console.error('  • Disk is full or read-only\n');
-        console.error('Quick fix: Backup and reset the database:');
-        console.error(`  mv "${dbPath}" "${dbPath}.backup"`);
-        console.error('  memesh (will create a fresh database)\n');
+        const { diagnosis, fix } = diagnoseDatabaseFailure(err, dbPath);
+        if (diagnosis !== message)
+            console.error(`   Diagnosis: ${diagnosis}`);
+        console.error(`Fix: ${fix}\n`);
         throw new Error(`Database initialization failed: ${message}`, { cause: err });
     }
     const injectedUpdateSeam = Boolean(opts?.updateCheckImpl || opts?.lastUpdateCheckImpl);

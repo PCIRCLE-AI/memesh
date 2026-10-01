@@ -49,7 +49,7 @@ export const TOOL_DEFINITIONS = [
         name: 'remember',
         description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions, patterns, lessons learned, and important context. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
             'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
-            'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history (unless it is too large to keep, then the result has `previousVersionDropped`) instead of staying next to the fix.',
+            'To correct a memory, call again with its `name` and `replace: true` — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -67,7 +67,7 @@ export const TOOL_DEFINITIONS = [
                 },
                 replace: {
                     type: 'boolean',
-                    description: 'Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced, unless it is too large to keep (then the result has `previousVersionDropped: true`). Default false (append).',
+                    description: 'Rewrite the memory named by `name` instead of appending to it: its observations are replaced (and its tags when `tags` is given, its title when `title` or `note` is given). The previous version is kept in metadata.replaced_history with the time it was replaced. Default false (append).',
                 },
                 title: {
                     type: 'string',
@@ -183,7 +183,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'import',
-        description: 'Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite deletes their previous observations and tags instead of archiving them. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.',
+        description: 'Import memories from a JSON export snapshot. Supports skip, append, or overwrite strategies for existing entities; overwrite replaces their observations and tags, keeping the previous version in metadata.replaced_history. A local memory that was forgotten (archived) stays archived unless restore_archived is true; the result reports how many were left as they were in kept_archived.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -192,7 +192,7 @@ export const TOOL_DEFINITIONS = [
                 merge_strategy: {
                     type: 'string',
                     enum: ['skip', 'overwrite', 'append'],
-                    description: 'Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the old ones are deleted, not archived — this cannot be undone)',
+                    description: 'Required. How to handle an entity that already exists: skip = leave it untouched, append = add these observations to it, overwrite = REPLACE its observations and tags (the previous version is kept in metadata.replaced_history, up to the last 20)',
                 },
                 restore_archived: {
                     type: 'boolean',
@@ -378,11 +378,12 @@ function stripNullProps(value) {
         return value;
     const out = {};
     for (const [k, v] of Object.entries(value)) {
-        if (v !== null)
+        if (v !== null || NULL_IS_DATA.has(k))
             out[k] = v;
     }
     return out;
 }
+const NULL_IS_DATA = new Set(['payload']);
 function parseOrFail(schema, args) {
     const raw = args === undefined || args === null ? {} : args;
     const strictPass = schema.safeParse(raw);

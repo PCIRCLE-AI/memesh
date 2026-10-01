@@ -24,7 +24,7 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
-import { redactSecretList, redactSecrets } from './paths.js';
+import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
 import type { Entity, Namespace } from './types.js';
 
 /** The one prefix every path must sit under. Anything else is refused. */
@@ -209,6 +209,16 @@ function entityPath(namespace: string, name: string): string {
  */
 function renderBody(entity: Entity): string {
   return entity.observations.join('\n');
+}
+
+/**
+ * The file as `view` shows it (#523): the observations redacted as one set
+ * with the title, so a memory stored before #523 does not show a stored
+ * credential. What is stored is unchanged.
+ */
+function renderShownBody(entity: Entity): string {
+  const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+  return (shown.observations as string[]).join('\n');
 }
 
 /**
@@ -401,7 +411,7 @@ function viewEntity(
     return err(`The path ${path} does not exist. Please provide a valid path.`);
   }
 
-  const body = renderBody(entity);
+  const body = renderShownBody(entity);
   const lines = body === '' ? [] : body.split('\n');
 
   if (range === undefined) {
@@ -511,9 +521,9 @@ function strReplace(
   }
 
   const body = renderBody(entity);
-  // #523: `old_str` must appear exactly as the file holds it — what `view`
-  // shows. A file written BEFORE #523 may still hold a credential as written,
-  // and its raw text finds it. The redacted spelling of `old_str` is never
+  // #523: `old_str` must appear exactly as the file holds it. `view` shows a
+  // credential stored BEFORE #523 masked, so the masked marker never selects
+  // that raw line; its raw text, which `export` returns, finds it. The redacted spelling of `old_str` is never
   // used to edit: many different texts redact to one `***REDACTED***`, so it
   // edited an unrelated redacted line and reported success (#523). When
   // only that spelling is in the file, the call is refused as ambiguous.
@@ -521,7 +531,7 @@ function strReplace(
   const shown = redactSecrets(oldStr);
   const first = body.indexOf(oldStr);
   if (first === -1 && shown !== oldStr && body.includes(shown)) {
-    return err(`No replacement was performed: no exact stored-text match for old_str in ${path}; use the text shown by view.`);
+    return err(`No replacement was performed: no exact stored-text match for old_str in ${path}. view shows credential-shaped text masked; old_str must match the stored text, which export returns.`);
   }
   if (first === -1) {
     return err(
@@ -584,7 +594,12 @@ function insertLine(
   const entity = findEntity(kg, namespace, name);
   if (!entity) return err(`Error: The path ${path} does not exist`);
 
-  const owners = lineOwners(entity.observations);
+  // Lines are numbered as `view` shows them: a credential stored before #523
+  // that spans lines is shown as one masked line (#523). The shown list keeps
+  // one entry per stored observation, so an owner index points into the
+  // stored list, and the text is inserted there.
+  const shownObservations = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations).observations as string[];
+  const owners = lineOwners(shownObservations);
   const line = atLine as number;
   if (line < 0 || line > owners.length) {
     return err(

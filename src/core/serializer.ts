@@ -8,6 +8,7 @@ import { KnowledgeGraph } from '../knowledge-graph.js';
 import { truncateTitle } from './title.js';
 import { redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { parseSqliteUtcMs } from './time-utils.js';
+import { boundReplacedHistory, type ReplacedVersion } from './replaced-history.js';
 import { NAMESPACES } from './types.js';
 import type { ExportInput, ExportResult, ImportInput, ImportResult } from './types.js';
 
@@ -204,7 +205,7 @@ export const AUTHORITY_METADATA_KEYS: ReadonlySet<string> = new Set([
   // `append` and `overwrite` alike. A FRESH entity accepts ONLY a value
   // `validateFreshReplacedHistory` below shapes-checks against exactly what
   // `rememberInTransaction`'s own `replace` path writes
-  // (`ReplacedVersion`, operations.ts ~132-139) — never a partially
+  // (`ReplacedVersion`, replaced-history.ts) — never a partially
   // trusted shape.
   'replaced_history',
   // Compaction-chain depth guard (dreamer.ts ~110, ~747) — denied always, no
@@ -323,8 +324,8 @@ function validateFreshSignalScore(value: unknown): number | null {
  * the real writer before picking numbers (round 8, isolated child-process
  * probe, `rememberInTransaction`'s own `replace` path, not a guess):
  *
- * - `REPLACED_HISTORY_MAX` (operations.ts ~87) is 20 entries.
- *   `REPLACED_HISTORY_MAX_BYTES` (operations.ts ~95) is 64 KiB — round 9
+ * - `REPLACED_HISTORY_MAX` (replaced-history.ts) is 20 entries.
+ *   `REPLACED_HISTORY_MAX_BYTES` (replaced-history.ts) is 64 KiB — round 9
  *   review caught a round-8 comment here calling this "64 KiB PER ENTRY",
  *   which the real code does not say: `boundReplacedHistory`'s own byte
  *   check, `while (out.length > 1 && jsonBytes(out) >
@@ -348,7 +349,7 @@ function validateFreshSignalScore(value: unknown): number | null {
  *   validator therefore bounds total serialized SIZE, not element COUNT,
  *   for `observations`/`tags`.
  * - `title` is `string | null` in the real type (`ReplacedVersion`,
- *   operations.ts ~132-139) — genuinely `null`, not merely absent, whenever
+ *   replaced-history.ts) — genuinely `null`, not merely absent, whenever
  *   the replaced version had no title. A validator that only accepted a
  *   STRING title would reject this real, common shape.
  * - A single 100 KiB observation, replaced, produced an entry with
@@ -372,7 +373,7 @@ function validateFreshSignalScore(value: unknown): number | null {
 const MAX_IMPORTED_REPLACED_HISTORY_ENTRIES = 50;
 const MAX_IMPORTED_REPLACED_HISTORY_TOTAL_BYTES = 4 * 64 * 1024;
 
-/** The exact key set `ReplacedVersion` (operations.ts ~132-139) has — no
+/** The exact key set `ReplacedVersion` (replaced-history.ts) has — no
  *  other key survives, on ANY entry, or the WHOLE list is dropped. */
 const REPLACED_HISTORY_ENTRY_KEYS: ReadonlySet<string> = new Set([
   'replaced_at', 'title', 'observations', 'tags', 'truncated',
@@ -417,7 +418,7 @@ function isValidReplacedHistoryEntry(entry: unknown): entry is {
  * this file drops the whole value rather than filtering it down: a partial
  * history is a wrong answer to "what did this memory used to say", not a
  * safer one. The byte check runs LAST, over the WHOLE array — the same
- * quantity, over the same thing, `boundReplacedHistory` (operations.ts)
+ * quantity, over the same thing, `boundReplacedHistory` (replaced-history.ts)
  * bounds for real data; see the constant's own comment above for why this
  * moved here from a per-entry check in round 9.
  */
@@ -713,6 +714,18 @@ function describeInvalidEntity(entity: unknown, index: number): string | null {
   return null;
 }
 
+/** A memory's title, observations (in order) and tags (sorted like the history entry's), as stored. */
+function storedContentOf(db: ReturnType<typeof getDatabase>, name: string): Omit<ReplacedVersion, 'replaced_at'> {
+  const row = db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name) as { id: number; title: string | null };
+  return {
+    title: row.title ?? null,
+    observations: (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(row.id) as { content: string }[])
+      .map((o) => o.content),
+    tags: (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(row.id) as { tag: string }[])
+      .map((t) => t.tag).sort(),
+  };
+}
+
 /**
  * `options.trust` is a SECOND argument, never a field of `ImportInput` or
  * its Zod schema (`ImportSchema` stays `.strict()`) — so MCP `import` and
@@ -777,7 +790,29 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
     );
   }
 
+  // An export names each memory once. Two entries with one name would make
+  // the second overwrite file the first into replaced_history, and one
+  // oversized first entry then pushes every real older version out of the
+  // history bound (#530).
+  const seenNames = new Set<string>();
+  for (const entity of bundleEntities) {
+    const name = (entity as { name?: unknown } | null)?.name;
+    // An unusable name is reported for its own entry below; only usable ones can collide.
+    if (typeof name !== 'string' || name === '') continue;
+    // SQLite stores text as UTF-8, where a lone surrogate becomes U+FFFD, so
+    // two names that differ only there are one row: compare that spelling.
+    const stored = Buffer.from(name, 'utf8').toString('utf8');
+    if (seenNames.has(stored)) {
+      throw new Error(
+        `This file names ${JSON.stringify(name.length > 80 ? `${name.slice(0, 80)}…` : name)} more than once. Nothing was imported. ` +
+        'A file produced by `memesh export` names each memory once.'
+      );
+    }
+    seenNames.add(stored);
+  }
+
   const db = getDatabase();
+  const storedContent = (name: string) => storedContentOf(db, name);
   const kg = new KnowledgeGraph(db);
 
   let imported = 0;
@@ -866,6 +901,7 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
           ),
         });
 
+        let replacedVersion: ReplacedVersion | undefined;
         if (existing) {
           if (args.merge_strategy === 'skip') return { kind: 'skipped' } as const;
           // A forgotten memory outranks a bundle naming it: without
@@ -909,7 +945,16 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
             kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
             return { kind: 'appended' } as const;
           }
-          // overwrite: clear existing data, then re-populate below
+          // overwrite: file what is there into `replaced_history` (same shape
+          // `remember` with `replace: true` writes), clear it, then
+          // re-populate below. #530: without this, a bundle naming an
+          // existing memory erased its observations and tags with no trace.
+          replacedVersion = {
+            replaced_at: new Date().toISOString(),
+            title: existing.title ?? null,
+            observations: [...existing.observations],
+            tags: [...existing.tags].sort(),
+          };
           kg.clearEntityData(entity.name);
         }
 
@@ -935,7 +980,25 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean })
           trustOverride: 'untrusted',
         });
         if (existing) {
-          kg.updateEntityMetadata(entity.name, (current) => ({ ...current, ...importedMetadata }));
+          kg.updateEntityMetadata(entity.name, (current) => {
+            const merged = { ...current, ...importedMetadata };
+            // importedMetadata carries the local history (a bundle's own is
+            // never accepted for an existing memory); append the version
+            // this overwrite just replaced.
+            const replaced = replacedVersion!;
+            const history = Array.isArray(merged.replaced_history) ? merged.replaced_history as ReplacedVersion[] : [];
+            // Restoring the same backup again replaces a version with itself:
+            // recording it would push real older versions out of the bound.
+            const now = storedContent(entity.name);
+            const unchanged = now.title === replaced.title
+              && JSON.stringify(now.observations) === JSON.stringify(replaced.observations)
+              && JSON.stringify(now.tags) === JSON.stringify(replaced.tags);
+            // Redacted BEFORE the bounds, as remember's replace does (#523):
+            // `***REDACTED***` can be longer than what it replaces, so a
+            // version bounded on its raw bytes could be stored over the cap.
+            const version = redactVersionText(replaced) as ReplacedVersion;
+            return unchanged ? merged : { ...merged, replaced_history: boundReplacedHistory([...history, version]) };
+          });
         }
 
         // `created_at` and a bundled `status: 'archived'` are applied only to

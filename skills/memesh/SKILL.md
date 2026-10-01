@@ -283,8 +283,7 @@ memesh reindex --fts                         # rebuild the local keyword index
    existing name adds observations and dedupes tags by default. Pass
    `replace: true` (CLI: `--replace`) to rewrite the entity's observations,
    tags and title instead — the previous version moves to
-   `metadata.replaced_history`, not lost (unless it is too large to keep; the
-   result then has `previousVersionDropped`). Reuse the name to grow or correct
+   `metadata.replaced_history`, not lost. Reuse the name to grow or correct
    one memory; do not mint `-v2` / dated variants of it.
 2. **`supersedes` retires the loser.** When a new memory replaces an old one,
    record it with `--supersedes <old-name>` (MCP: a relation of type

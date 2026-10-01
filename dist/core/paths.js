@@ -178,7 +178,47 @@ export const SECRET_PATTERN_SOURCES = [
     'xox[baprs]-[A-Za-z0-9-]{10,}',
 ];
 const SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, 'gi'));
-const SEGMENTED = new Set([JWT_TOKEN, SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
+const SEGMENTED = new Set([SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
+const JWT_PATTERN = SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(JWT_TOKEN)];
+const TOKEN_CHAR = /[A-Za-z0-9_-]/;
+function* jwtMatches(input) {
+    const runEnd = (from) => {
+        let i = from;
+        while (i < input.length && TOKEN_CHAR.test(input[i]))
+            i++;
+        return i;
+    };
+    const eyj = /eyj/gi;
+    const findEyj = (from) => {
+        eyj.lastIndex = from;
+        return eyj.exec(input)?.index ?? -1;
+    };
+    let nextEyj = findEyj(0);
+    let i = 0;
+    while (i < input.length && nextEyj !== -1) {
+        if (!TOKEN_CHAR.test(input[i])) {
+            i++;
+            continue;
+        }
+        const headerEnd = runEnd(i);
+        if (nextEyj < i)
+            nextEyj = findEyj(i);
+        if (nextEyj === -1)
+            break;
+        if (nextEyj + 11 <= headerEnd && input[headerEnd] === '.') {
+            const payloadEnd = runEnd(headerEnd + 1);
+            if (payloadEnd - (headerEnd + 1) >= 8 && input[payloadEnd] === '.') {
+                const signatureEnd = runEnd(payloadEnd + 1);
+                if (signatureEnd - (payloadEnd + 1) >= 8) {
+                    for (let start = nextEyj; start !== -1 && start + 11 <= headerEnd; start = findEyj(start + 1)) {
+                        yield [start, signatureEnd];
+                    }
+                }
+            }
+        }
+        i = headerEnd;
+    }
+}
 function redactRaw(input) {
     let out = input;
     for (let before = ''; out !== before;) {
@@ -192,6 +232,17 @@ function maskMatches(input) {
     const budget = 4 * input.length + 1024;
     let work = 0;
     search: for (const pattern of SECRET_PATTERNS) {
+        if (pattern === JWT_PATTERN) {
+            for (const [start, end] of jwtMatches(input)) {
+                work += end - start;
+                if (work > budget) {
+                    spans.push([start, input.length]);
+                    break search;
+                }
+                spans.push([start, end]);
+            }
+            continue;
+        }
         pattern.lastIndex = 0;
         let lastEnd = -1;
         for (let m = pattern.exec(input); m !== null; m = pattern.exec(input)) {

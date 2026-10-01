@@ -126,6 +126,16 @@ describe('Feature: lesson guards at the PreToolUse hooks', () => {
     expect(ctx).toContain('***REDACTED***');
   });
 
+  it('a guard message has its home-directory path replaced with ~ when it is injected, like every other memory line (#464)', () => {
+    const home = os.homedir();
+    const id = seedGuardedLesson({ ...bashGuard, message: `read ${home}/runbook.md first` }, 'g-home');
+    const { stdout } = runHook('guard-check.js', { tool_name: 'Bash', tool_input: { command: 'git checkout -- src/' } });
+    const ctx = JSON.parse(stdout).hookSpecificOutput.additionalContext as string;
+    expect(ctx).toContain(`[mem:${id}]`);
+    expect(ctx).toContain('read ~/runbook.md first');
+    expect(ctx).not.toContain(`${home}/`);
+  });
+
   it('a non-matching command, a disabled guard, and a wrong-tool guard are all silence', () => {
     seedGuardedLesson(bashGuard, 'g-armed');
     seedGuardedLesson({ ...bashGuard, enabled: false, pattern: 'rm\\s+-rf\\s' }, 'g-disabled');

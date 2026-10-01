@@ -97,7 +97,6 @@ export interface RememberResult {
     }>;
     movedFromNamespace?: string;
     replaced?: boolean;
-    previousVersionDropped?: true;
     derived?: {
         name: string;
         type: string;

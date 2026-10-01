@@ -1051,6 +1051,33 @@ describe('Feature: Post-Commit Hook', () => {
     expect(rows.join('\n')).not.toContain(tokenValue);
   });
 
+  it('Scenario: a committed file whose name carries a token -> metadata.files is redacted, the commit is still captured (#523)', () => {
+    const tokenValue = 'abc123abc123abc123';
+    const fileName = `${['token', tokenValue].join('=')}.txt`;
+    fs.writeFileSync(path.join(repoDir, fileName), 'content\n');
+    git(['add', '-A']);
+    const out = git(['commit', '-q', '-m', 'chore: add a config file', '--no-verify']) || '';
+    const hash = git(['rev-parse', '--short', 'HEAD']).trim();
+    const isFirst = git(['rev-list', '--count', 'HEAD']).trim() === '1';
+    const line = isFirst ? `[main (root-commit) ${hash}] chore: add a config file` : `[main ${hash}] chore: add a config file`;
+    runHook({
+      tool_name: 'Bash',
+      cwd: repoDir,
+      tool_input: { command: 'git commit -m "chore: add a config file"' },
+      tool_output: out + line + '\n 1 file changed, 1 insertion(+)\n',
+    });
+
+    const db = openDb();
+    const entity = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(`commit-${hash}`) as { metadata: string } | undefined;
+    db.close();
+    expect(entity, 'the commit was captured').toBeTruthy();
+    const metadata = JSON.parse(entity!.metadata) as { files?: string[] };
+    expect(Array.isArray(metadata.files)).toBe(true);
+    expect(metadata.files!.length).toBeGreaterThan(0);
+    expect(entity!.metadata).not.toContain(tokenValue);
+    expect(entity!.metadata).toContain('***REDACTED***');
+  });
+
   it('Scenario: credentials glued together with no separator are all redacted by the hook\'s one call (#523)', () => {
     // An AWS key id glued to `password=…`: one pass over the pattern list
     // masked the key id and left the password raw.

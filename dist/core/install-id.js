@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 import { memeshDir } from './paths.js';
+import { removeGroupAndOtherAccess } from './file-mode.js';
 const SCHEMA_VERSION = 1;
 function installFilePath() {
     return path.join(memeshDir(), 'install.json');
@@ -30,15 +31,9 @@ export function getInstallRecord() {
     };
     try {
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        try {
-            fs.chmodSync(path.dirname(filePath), 0o700);
-        }
-        catch { }
+        removeGroupAndOtherAccess(path.dirname(filePath));
         fs.writeFileSync(filePath, JSON.stringify(record, null, 2), { encoding: 'utf8', mode: 0o600 });
-        try {
-            fs.chmodSync(filePath, 0o600);
-        }
-        catch { }
+        removeGroupAndOtherAccess(filePath);
     }
     catch {
     }

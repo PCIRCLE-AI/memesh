@@ -73,9 +73,10 @@ import {
   writeCitationRule,
   writeAutoUpdateConsent,
   writePrivateJson,
+  openMemeshDb,
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
-import { MemeshDatabase } from './_generated/sqlite.js';
+import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
 import {
   buildBriefingIndex,
   injectedIndexReserve,
@@ -114,7 +115,8 @@ try {
 
 const dbPath = getDbPath();
 const memeshDir = getMemeshDirFromDbPath();
-const throttlePath = join(memeshDir, 'session-recalled-files.json');
+const throttleDir = join(memeshDir, 'pre-edit-recall');
+const legacyThrottlePath = join(memeshDir, 'session-recalled-files.json');
 
 /**
  * Build the strong deprecation warning lines to prepend to the
@@ -837,7 +839,7 @@ function recordLauncherSession(data, launcher) {
   try {
     return recordSessionLauncher(() => {
       if (!existsSync(dbPath)) return null;
-      db = new MemeshDatabase(dbPath);
+      db = openMemeshDb(dbPath);
       db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
       return db;
     }, { sessionId: data.session_id, source: data.source, agentType: data.agent_type, launcher });
@@ -1062,13 +1064,25 @@ process.stdin.on('end', async () => {
       try { process.stderr.write(`[memesh session-start] citation rule: ${err?.message || err}\n`); } catch {}
     }
 
-    // Clear per-session throttle files from previous session
+    // A new start of THIS session (startup, /clear, resume, compact) shows
+    // recalls again. Other sessions keep their own lists (#521). Every start
+    // resets, whether or not it carries agent_type: a `claude --agent` main
+    // session does, and a subagent has no SessionStart of its own (payloads
+    // captured on Claude Code 2.1.285). Only a start that names an agent_id
+    // (not seen so far) would be a subagent's, and leaves its parent's list.
     try {
-      if (existsSync(throttlePath)) {
-        unlinkSync(throttlePath);
+      const sid = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id) ? data.session_id : null;
+      if (sid && !data.agent_id) {
+        const own = join(throttleDir, recallListName(sid));
+        if (existsSync(own)) unlinkSync(own);
       }
-    } catch {
-      // Non-critical
+      // The old machine-wide list, from before #521.
+      if (existsSync(legacyThrottlePath)) unlinkSync(legacyThrottlePath);
+    } catch (err) {
+      // The list stays, so this session's next recall would stay suppressed:
+      // say so, and record it, rather than look like a clean start.
+      try { process.stderr.write(`[memesh session-start] pre-edit reset: ${err?.message || err}\n`); } catch {}
+      record({ outcome: 'error', reason: `pre-edit reset: ${hookErrorReason(err)}` });
     }
 
     // Every banner below this line is a PROMISE that memories will be saved,
@@ -1167,7 +1181,7 @@ process.stdin.on('end', async () => {
     // connection refuses it — and it was never doing anything: the mode is a
     // property of the database file that the writing side already set, and a
     // reader opens a WAL database perfectly well without asking for it.
-    const db = new MemeshDatabase(dbPath, { readOnly: true });
+    const db = openMemeshDb(dbPath, { readOnly: true });
     // MemeshDatabase's constructor always sets busy_timeout to the 30s that
     // is correct for the CLI/MCP/HTTP writers; this hook's own budget
     // (hooks.json) is 10s, so left alone a contended lock outlives the hook.

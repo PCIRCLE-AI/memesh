@@ -1069,7 +1069,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
       expect(r.exitCode).not.toBe(0);
       expect(r.stderr).toContain('could not remove the broken cache');
       expect(r.stderr).toContain('orphaned');
-      expect(r.stderr).toContain(`rm -rf "${path.join(cacheRoot, '4.8.2')}"`);
+      expect(r.stderr).toContain(`rm -rf '${path.join(cacheRoot, '4.8.2')}'`);
       expect(r.stderr, 'named a previous cache that never existed for this fresh-install case').not.toContain('previous cache');
     } finally {
       fs.chmodSync(registryDir, 0o755);
@@ -1091,7 +1091,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
       expect(r.exitCode).not.toBe(0);
       expect(r.stderr).toContain('could not acquire the upgrade lock');
       expect(r.stderr).toContain(lockDir);
-      expect(r.stderr).toContain(`rmdir "${lockDir}"`);
+      expect(r.stderr).toContain(`rmdir '${lockDir}'`);
     } finally {
       fs.rmdirSync(lockDir);
     }
@@ -1178,8 +1178,8 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
       expect(r.exitCode).not.toBe(0);
       expect(r.stderr).toContain(`could not remove the broken cache at ${live}`);
       expect(r.stderr).toContain('previous cache is still intact at');
-      expect(r.stderr).toContain(`rm -rf "${live}"`);
-      expect(r.stderr).toMatch(/mv ".*\.previous-.*" ".*4\.8\.2"/);
+      expect(r.stderr).toContain(`rm -rf '${live}'`);
+      expect(r.stderr).toMatch(/mv '.*\.previous-.*' '.*4\.8\.2'/);
     } finally {
       fs.chmodSync(registryDir, 0o755);
     }
@@ -1208,7 +1208,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
     const r = runScript(shimCommandFailure('rm', '.previous-4.8.2-'));
     expect(r.exitCode, r.stderr).toBe(0);
     expect(r.stderr).toMatch(/WARNING: upgrade succeeded.*previous cache/i);
-    expect(r.stderr).toMatch(/rm -rf ".*\.previous-4\.8\.2-/);
+    expect(r.stderr).toMatch(/rm -rf '.*\.previous-4\.8\.2-/);
     const previous = fs.readdirSync(cacheRoot).filter(name => name.startsWith('.previous-4.8.2-'));
     expect(previous).toHaveLength(1);
     expect(fs.existsSync(path.join(cacheRoot, previous[0], 'LIVE-MARKER.txt'))).toBe(true);
@@ -1268,7 +1268,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
       expect(r.exitCode).not.toBe(0);
       expect(r.stderr).toContain('could not restore the previous cache');
       expect(r.stderr).toContain('still intact at');
-      expect(r.stderr).toMatch(/mv ".*\.previous-.*" ".*4\.8\.2"/);
+      expect(r.stderr).toMatch(/mv '.*\.previous-.*' '.*4\.8\.2'/);
     } finally {
       fs.chmodSync(registryDir, 0o755);
     }

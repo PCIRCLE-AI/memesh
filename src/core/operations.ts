@@ -12,10 +12,10 @@
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { rankEntities } from './scoring.js';
-import { getProjectName, redactSecrets, redactTitleAndObservations, redactVersionText } from './paths.js';
+import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
-import { canonicalEntityType, sliceWholeChars } from './work-topology.js';
+import { canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent, type RecallForAgentResult } from './recall-agent-view.js';
 import type {
   RememberInput,
@@ -27,6 +27,8 @@ import type {
   LearnResult,
   Entity,
 } from './types.js';
+import { boundReplacedHistory, type ReplacedVersion } from './replaced-history.js';
+export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES, type ReplacedVersion } from './replaced-history.js';
 
 type EntityMetadata = {
   trust?: 'trusted' | 'untrusted';
@@ -86,60 +88,11 @@ export function remember(input: RememberInput): RememberResult {
   return db.transaction(() => rememberInTransaction(args, derived, typeGiven, db, kg)).immediate();
 }
 
-/** Most previous versions a replaced memory keeps in `metadata.replaced_history`. */
-export const REPLACED_HISTORY_MAX = 20;
-/**
- * Most bytes (serialized JSON) the history may take. The count alone did not
- * bound it: a 256 KB note replaced twenty times is megabytes of metadata on
- * one row. Oldest versions go first; a single version larger than the cap
- * keeps as many of its observations as fit and is marked `truncated`.
- */
-export const REPLACED_HISTORY_MAX_BYTES = 64 * 1024;
-
-const jsonBytes = (v: unknown) => Buffer.byteLength(JSON.stringify(v), 'utf8');
-
-/**
- * The newest version cut to fit the byte cap alone: observations emptied, the
- * title cut (never through half of an emoji) until the rest fits, then as many
- * observations as fit. `null` when the version cannot fit even without them
- * (its tags alone exceed the cap).
- */
-function fitVersionToCap(only: ReplacedVersion): ReplacedVersion | null {
-  const base = { ...only, observations: [] as string[], truncated: true };
-  while (base.title && jsonBytes([base]) > REPLACED_HISTORY_MAX_BYTES) {
-    base.title = sliceWholeChars(base.title, Math.floor(base.title.length * 0.9));
-  }
-  if (jsonBytes([base]) > REPLACED_HISTORY_MAX_BYTES) return null;
-  const kept: string[] = [];
-  for (const obs of only.observations) {
-    if (jsonBytes([{ ...base, observations: [...kept, obs] }]) > REPLACED_HISTORY_MAX_BYTES) break;
-    kept.push(obs);
-  }
-  return { ...base, observations: kept };
-}
-
-/**
- * Apply both history bounds. The newest version is settled first: one that
- * cannot fit the cap on its own is cut to fit, or, when it cannot fit even
- * cut, dropped by itself — the earlier versions stay under the same bounds
- * rather than being evicted to make room for something that is not stored.
- */
-function boundReplacedHistory(history: ReplacedVersion[]): ReplacedVersion[] {
-  const newest = history[history.length - 1];
-  if (newest !== undefined && jsonBytes([newest]) > REPLACED_HISTORY_MAX_BYTES) {
-    const fitted = fitVersionToCap(newest);
-    return fitted ? [fitted] : boundReplacedHistory(history.slice(0, -1));
-  }
-  let out = history.slice(-REPLACED_HISTORY_MAX);
-  while (out.length > 1 && jsonBytes(out) > REPLACED_HISTORY_MAX_BYTES) out = out.slice(1);
-  return out;
-}
-
 /**
  * Recall answers carry `replaced_history_count` instead of the history
  * itself: every hit's metadata is serialized to the caller, and the history
  * is the one field that can be large. The full history stays readable from
- * `export` and `GET /v1/entities/:name`.
+ * `GET /v1/entities/:name` (masked like recall) and `export` (as stored).
  */
 function summarizeReplacedHistory(entities: Entity[]): Entity[] {
   for (const e of entities) {
@@ -151,13 +104,30 @@ function summarizeReplacedHistory(entities: Entity[]): Entity[] {
   return entities;
 }
 
-export interface ReplacedVersion {
-  replaced_at: string;
-  title: string | null;
-  observations: string[];
-  tags: string[];
-  /** Set when the version alone exceeded the byte cap and lost observations. */
-  truncated?: boolean;
+/**
+ * A memory as recall and the dashboard show it (#523): the title and
+ * observations redacted as one set, each replaced version as one set, and the
+ * other text in its metadata string by string, so a row stored before #523
+ * does not hand a stored credential to whoever reads it. Only this copy
+ * changes: the stored row, the keyword index, the name, tags, ids and scores
+ * stay as they are, and a guard's pattern is kept as given. `export` does not
+ * use it: a backup keeps the stored text.
+ */
+export function shownEntity(entity: Entity): Entity {
+  const shown = redactTitleAndObservations(typeof entity.title === 'string' ? entity.title : undefined, entity.observations);
+  const metadata = entity.metadata === undefined ? undefined : redactTextValues(entity.metadata) as Record<string, unknown>;
+  const guard = entity.metadata?.guard as { pattern?: unknown } | null | undefined;
+  if (metadata && guard && typeof guard.pattern === 'string') {
+    metadata.guard = { ...(metadata.guard as Record<string, unknown>), pattern: guard.pattern };
+  }
+  const history = entity.metadata?.replaced_history;
+  if (metadata && Array.isArray(history)) metadata.replaced_history = history.map(redactVersionText);
+  return {
+    ...entity,
+    ...(typeof entity.title === 'string' ? { title: shown.title } : {}),
+    observations: shown.observations as string[],
+    ...(metadata === undefined ? {} : { metadata }),
+  };
 }
 
 // `type` stays optional: `replace` on an existing name inherits the stored
@@ -284,8 +254,6 @@ function rememberInTransaction(
   // this transaction, clearEntityData's own transaction is a SAVEPOINT, so a
   // failure anywhere below rolls the clear back too.
   let replacedVersion: ReplacedVersion | undefined;
-  /** True when the replaced version was too large to keep in `replaced_history` even cut down. */
-  let previousVersionDropped = false;
   /** Set when the replace path rewrote the stored type, so the receipt can report it. */
   let retypedTo: string | undefined;
   let tags = args.tags;
@@ -375,7 +343,6 @@ function rememberInTransaction(
     // can be longer than what it replaces, and a version bounded on its raw
     // bytes was stored at 100 KB against the 64 KB cap.
     const version = redactVersionText(replacedVersion) as ReplacedVersion;
-    previousVersionDropped = jsonBytes([version]) > REPLACED_HISTORY_MAX_BYTES && fitVersionToCap(version) === null;
     kg.updateEntityMetadata(args.name, (current) => {
       const history = Array.isArray(current.replaced_history) ? current.replaced_history as ReplacedVersion[] : [];
       return { ...current, replaced_history: boundReplacedHistory([...history, version]) };
@@ -452,7 +419,6 @@ function rememberInTransaction(
     ...(superseded.length > 0 ? { superseded } : {}),
     ...(relationErrors.length > 0 ? { relationErrors } : {}),
     ...(args.replace ? { replaced: replacedVersion !== undefined } : {}),
-    ...(previousVersionDropped ? { previousVersionDropped: true as const } : {}),
     ...(derived
       ? { derived: { name: args.name, type: retypedTo ?? existing?.type ?? entityType, title: derived.title, observations: derived.observations } }
       : {}),
@@ -468,8 +434,9 @@ function rememberInTransaction(
  * Empty query returns recent entities.
  *
  * Deliberately NOT run through `stripControlChars` (#374): an
- * explicit recall returns stored content as-is by design, so the caller who
- * asked for a memory sees exactly what is stored in it.
+ * explicit recall returns the stored text with its control characters, so
+ * the caller who asked for a memory sees what is stored in it; only
+ * credential-shaped text is masked (`shownEntity`, #523).
  */
 export function recall(args: RecallInput): Entity[] {
   const { entities, relevanceMap } = searchAndScore(args);
@@ -491,7 +458,7 @@ function searchAndScore(args: RecallInput): { entities: Entity[]; relevanceMap: 
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace,
-  }));
+  })).map(shownEntity);
   return {
     entities,
     relevanceMap: args.query ? buildRelevanceMap(entities) : new Map<string, number>(),
@@ -610,15 +577,18 @@ export function forget(args: ForgetInput): ForgetResult {
   // many different texts redact to one `***REDACTED***`, so it removed an
   // unrelated redacted line and reported success (#523).
   // When only that spelling is stored, the call is refused as ambiguous and
-  // nothing changes; a line stored redacted is removed by its stored text,
-  // the form recall shows. The response echoes the redacted spelling only.
+  // nothing changes; a line stored redacted is removed by its stored text.
+  // recall shows a line stored before #523 masked, so that shown form selects
+  // only a line whose stored text is the marker itself, never the raw line;
+  // the raw line's selector is its stored text, which `export` returns. The
+  // response echoes the redacted spelling only.
   if (args.observation !== undefined) {
     const result = kg.removeObservation(args.name, args.observation);
     const shown = redactSecrets(args.observation);
     if (!result.removed && shown !== args.observation && db.prepare(
       'SELECT 1 FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? AND o.content = ? LIMIT 1',
     ).get(args.name, shown)) {
-      throw new Error('No exact stored-text match for that observation; use the observation shown by recall.');
+      throw new Error('No exact stored-text match for that observation. recall shows credential-shaped text masked; a line is selected by its stored text, which export returns, or rewrite the memory with replace.');
     }
     return {
       observation_removed: result.removed,

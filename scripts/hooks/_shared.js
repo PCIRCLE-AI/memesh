@@ -1,7 +1,8 @@
-import { appendFileSync, chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { spawn } from 'child_process';
 import { MemeshDatabase } from './_generated/sqlite.js';
+import { guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
 import { dirname, join } from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 
@@ -33,6 +34,8 @@ import {
   getProjectName,
   redactSecretList,
   redactSecrets,
+  redactMemoryText,
+  redactTextValues,
   canonicalRemoteLocator,
   gitRepoRoot,
 } from './_generated/core-paths.js';
@@ -116,7 +119,7 @@ export function loadActiveGuards(db, tool) {
 export function guardWarningLines(matches, toolName) {
   const lines = [`A guard you accepted matched this ${toolName} input — check before proceeding:`];
   for (const g of matches) {
-    lines.push(`- [guard] ${redactSecrets(g.message)} [mem:${g.lessonId}]`);
+    lines.push(`- [guard] ${redactMemoryText(g.message)} [mem:${g.lessonId}]`);
   }
   return lines;
 }
@@ -144,7 +147,7 @@ export const GUARD_COUNTER_WAIT_MS = 200;
 export function recordGuardFires(dbPath, lessonIds) {
   if (!lessonIds || lessonIds.length === 0) return;
   try {
-    const db = new MemeshDatabase(dbPath);
+    const db = openMemeshDb(dbPath);
     try {
       // The constructor only opens the file and sets the 30 s wait meant for
       // the CLI and servers; nothing has touched the lock yet, so lowering it
@@ -888,7 +891,7 @@ export function unreadMessageLines(env = process.env, recordFailure, onRecipient
   let db;
   try {
     // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling.
-    db = new MemeshDatabase(dbPath, { readOnly: true });
+    db = openMemeshDb(dbPath, { readOnly: true });
     db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
     const session = hookMessageSessionId(hostContext?.sessionId, env);
     if (session.mismatch) onSessionMismatch?.();
@@ -898,6 +901,22 @@ export function unreadMessageLines(env = process.env, recordFailure, onRecipient
   } finally {
     try { db?.close(); } catch { /* already closed */ }
   }
+}
+
+/**
+ * The ONE place a hook constructs a MemeshDatabase on the memesh database
+ * (#520), read-only handles included: SQLite resets an EMPTY -wal/-shm to the
+ * database's mode on any open, so every open must pass the same guard as
+ * openDatabase() in src/db.ts. New files are born owner-only, existing ones
+ * lose group/other access and keep the owner's bits, and a -wal/-shm SQLite
+ * would change is refused with the owner's commands.
+ * tests/hooks/data-folder-permissions.test.ts fails if a hook opens the
+ * database any other way.
+ */
+export function openMemeshDb(dbPath, options) {
+  try { process.umask(0o077); } catch { /* non-POSIX */ }
+  guardDatabaseFiles(dbPath);
+  return new MemeshDatabase(dbPath, options);
 }
 
 export function openHookDb(env = process.env, opts = {}) {
@@ -911,7 +930,8 @@ export function openHookDb(env = process.env, opts = {}) {
   const dbDir = env.MEMESH_DB_PATH ? dirname(env.MEMESH_DB_PATH) : memeshDir();
   if (!existsSync(dbDir)) mkdirSync(dbDir, { recursive: true });
 
-  const db = new MemeshDatabase(dbPath);
+  removeGroupAndOtherAccess(dbDir);
+  const db = openMemeshDb(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   // A hook waits for a held write lock for less time than Claude Code will
@@ -958,6 +978,15 @@ export function openHookDb(env = process.env, opts = {}) {
   // recordHookRun() itself at every SUCCESSFUL exit (including "ran, nothing
   // worth saving"), so a mid-capture throw leaves no stamp.
 
+  const writeBack = ownerWriteCommand(dbPath);
+  if (writeBack) {
+    try {
+      process.stderr.write(
+        `MeMesh: ${dbPath} is read-only, so it is open for reads only and writes will be refused. ` +
+          `To write to it again, ${writeBack}\n`,
+      );
+    } catch { /* stderr gone */ }
+  }
   return { db, dbPath };
 }
 
@@ -1203,7 +1232,9 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     } finally {
       closeSync(fd);
     }
-    try { chmodSync(filePath, 0o600); } catch { /* best-effort hardening */ }
+    // A ledger that already existed keeps its old mode; tighten it, loudly
+    // when that cannot be done (#520).
+    removeGroupAndOtherAccess(filePath);
     rotateHookOutcomes(filePath);
   } catch (err) {
     try {
@@ -1835,7 +1866,12 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
   // [WORKAROUND: no record here on purpose — a null sourceHost means the host
   // is unknown, and this same run's hook outcome already records it as
   // host 'unknown'; a stamp would only guess.]
-  const insertMetadata = { ...(metadata ?? {}), provenance: sourceHost ? { source_host: sourceHost } : {} };
+  // Metadata text (a commit's file names, for example) is caller text too and
+  // is redacted string by string, like the graph's own writer does (#523).
+  const insertMetadata = {
+    ...redactTextValues(metadata),
+    provenance: sourceHost ? { source_host: sourceHost } : {},
+  };
   if (title != null) insertMetadata.title_source = 'heuristic';
   const insertResult = db
     .prepare('INSERT OR IGNORE INTO entities (name, type, metadata, title) VALUES (?, ?, ?, ?)')
@@ -2042,22 +2078,22 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 
+/**
+ * A new folder is created 0700; an existing one only loses group/other
+ * access. A fixed 0700 gave the owner back write access to a data folder the
+ * owner had made read-only, on every hook run (#520). A write into a folder
+ * that stays read-only then fails at its own call site, which reports it.
+ */
 export function ensurePrivateDir(dirPath) {
   mkdirSync(dirPath, { recursive: true, mode: PRIVATE_DIR_MODE });
-  try {
-    chmodSync(dirPath, PRIVATE_DIR_MODE);
-  } catch {
-    // Best-effort hardening only.
-  }
+  removeGroupAndOtherAccess(dirPath);
 }
 
 export function writePrivateFile(filePath, content) {
   writeFileSync(filePath, content, { encoding: 'utf8', mode: PRIVATE_FILE_MODE });
-  try {
-    chmodSync(filePath, PRIVATE_FILE_MODE);
-  } catch {
-    // Best-effort hardening only.
-  }
+  // `mode` applies only when the file is created; an existing one keeps its
+  // old mode until this, which says so when it cannot tighten it.
+  removeGroupAndOtherAccess(filePath);
 }
 
 export function writePrivateJson(filePath, value) {
@@ -2369,7 +2405,7 @@ export function logAutoUpdate(line) {
     ensurePrivateDir(dir);
     const path = join(dir, 'auto-update.log');
     appendFileSync(path, `[${new Date().toISOString()}] ${line}\n`);
-    try { chmodSync(path, 0o600); } catch { /* non-POSIX */ }
+    removeGroupAndOtherAccess(path);
     return true;
   } catch {
     return false;
@@ -2418,7 +2454,7 @@ export async function spawnAutoUpdate(version, installChannelMod) {
 
     try {
       fd = openSync(logPath, 'a', 0o600);
-      try { chmodSync(logPath, 0o600); } catch { /* non-POSIX */ }
+      removeGroupAndOtherAccess(logPath);
     } catch (err) {
       try {
         process.stderr.write(

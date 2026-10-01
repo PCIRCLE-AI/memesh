@@ -908,9 +908,7 @@ describe('serialized metadata, fresh history, wrong-sibling forget, staging cap 
     const id = (db.prepare("SELECT id FROM entities WHERE name = 'legacy-title'").get() as { id: number }).id;
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'old');
     const cut = remember({ name: 'legacy-title', type: 'note', title: 'new', observations: ['new'], replace: true });
-    // A version that was only cut to fit is kept, so it is not reported as dropped.
     expect(cut.replaced).toBe(true);
-    expect('previousVersionDropped' in cut).toBe(false);
     const history = JSON.parse(metaOf('legacy-title')).replaced_history as Array<{ title: string; truncated?: boolean }>;
     expect(history.length).toBeLessThanOrEqual(REPLACED_HISTORY_MAX);
     expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThanOrEqual(REPLACED_HISTORY_MAX_BYTES);
@@ -923,34 +921,40 @@ describe('serialized metadata, fresh history, wrong-sibling forget, staging cap 
     expect(redactSecrets(title).startsWith(history[0].title)).toBe(true);
   });
 
-  it('a version whose tags alone exceed the history byte cap is dropped, not stored over the cap', () => {
+  it('a version whose tags alone exceed the history byte cap is kept with as many tags as fit, never stored over the cap', () => {
     const db = getDatabase();
     const id = Number(db.prepare("INSERT INTO entities (name, type) VALUES ('legacy-tags', 'note')").run().lastInsertRowid);
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'old');
-    for (let i = 0; i < 70; i++) db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `${'t'.repeat(1000)}${i}`);
+    const tags = Array.from({ length: 70 }, (_, i) => `${'t'.repeat(1000)}${i}`);
+    for (const tag of tags) db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
     const result = remember({ name: 'legacy-tags', type: 'note', observations: ['new'], replace: true });
-    expect(JSON.parse(metaOf('legacy-tags')).replaced_history).toEqual([]);
-    // The result says so: the memory was rewritten, but the old version is not in the history.
     expect(result.replaced).toBe(true);
-    expect(result.previousVersionDropped).toBe(true);
+    const history = JSON.parse(metaOf('legacy-tags')).replaced_history as Array<{ observations: string[]; tags: string[]; truncated?: boolean }>;
+    // One entry, cut to fit: its observation, then the tags in order as far as they fit.
+    expect(history).toHaveLength(1);
+    expect(history[0].truncated).toBe(true);
+    expect(history[0].observations).toEqual(['old']);
+    expect(history[0].tags.length).toBeGreaterThan(0);
+    expect(history[0].tags.length).toBeLessThan(tags.length);
+    for (const tag of history[0].tags) expect(tags).toContain(tag);
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThanOrEqual(REPLACED_HISTORY_MAX_BYTES);
   });
 
-  it('a newest version that cannot fit is dropped alone: the earlier versions stay under the same bounds', () => {
+  it('a newest version too large with its tags is kept cut; the earlier versions are evicted oldest first to make room', () => {
     const db = getDatabase();
     const id = Number(db.prepare("INSERT INTO entities (name, type) VALUES ('legacy-keep', 'note')").run().lastInsertRowid);
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'v0');
     // Twenty ordinary replaces: the history now holds REPLACED_HISTORY_MAX versions.
-    for (let i = 1; i <= REPLACED_HISTORY_MAX; i++) {
-      const normal = remember({ name: 'legacy-keep', type: 'note', observations: [`v${i}`], replace: true });
-      expect('previousVersionDropped' in normal, `replace ${i}`).toBe(false);
-    }
-    const before = JSON.parse(metaOf('legacy-keep')).replaced_history as unknown[];
-    expect(before).toHaveLength(REPLACED_HISTORY_MAX);
+    for (let i = 1; i <= REPLACED_HISTORY_MAX; i++) remember({ name: 'legacy-keep', type: 'note', observations: [`v${i}`], replace: true });
+    expect(JSON.parse(metaOf('legacy-keep')).replaced_history).toHaveLength(REPLACED_HISTORY_MAX);
     // A legacy tag that alone is larger than the history cap, then one more replace.
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'x'.repeat(70000));
-    expect(remember({ name: 'legacy-keep', type: 'note', observations: ['next'], replace: true }).previousVersionDropped).toBe(true);
-    const after = JSON.parse(metaOf('legacy-keep')).replaced_history as Array<{ tags: string[] }>;
-    expect(after).toEqual(before);
+    expect(remember({ name: 'legacy-keep', type: 'note', observations: ['next'], replace: true }).replaced).toBe(true);
+    const after = JSON.parse(metaOf('legacy-keep')).replaced_history as Array<{ observations: string[]; tags: string[]; truncated?: boolean }>;
+    // The newest version (v20 with the huge tag) is kept, without the tag that cannot fit;
+    // the older versions went first, oldest first, until it fit.
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ observations: ['v20'], tags: [], truncated: true });
     expect(Buffer.byteLength(JSON.stringify(after))).toBeLessThanOrEqual(REPLACED_HISTORY_MAX_BYTES);
     expect(JSON.stringify(after)).not.toContain('xxxxxxxxxx');
   });
@@ -1458,5 +1462,86 @@ describe('r18: part of a key beside new metadata text is refused as a whole (#52
     for (const line of bodyLines) expect(storedText('r18-f1')).not.toContain(line.slice(0, 40));
     // Escaped text with nothing secret in it is not secret-shaped.
     expect(holdsSecret(['{"k":"caf\\u00e9","k":"x"}'])).toBe(false);
+  });
+});
+
+describe('r21: legacy text is shown masked; edits keep exact stored text; import overwrite bounds after redaction (#523)', () => {
+  it('view shows a legacy stored credential masked; str_replace by the stored text still edits that line; the row is unchanged by view', () => {
+    const db = getDatabase();
+    const id = Number(db.prepare("INSERT INTO entities (name, type, namespace) VALUES ('r21-view', 'note', 'personal')").run().lastInsertRowid);
+    for (const line of [`db is ${DB_URL}`, 'keep this']) db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, line);
+    const path = `${MEMORY_ROOT}/personal/r21-view.md`;
+    const before = JSON.stringify(db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(id));
+    const shown = handleMemoryCommand({ command: 'view', path });
+    expect(shown.isError).toBe(false);
+    expect(JSON.stringify(shown)).not.toContain(DB_PASSWORD);
+    expect(JSON.stringify(shown)).toContain('***REDACTED***');
+    expect(JSON.stringify(db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(id))).toBe(before);
+    // The stored text is still the selector.
+    const edited = handleMemoryCommand({ command: 'str_replace', path, old_str: `db is ${DB_URL}`, new_str: 'db rotated' });
+    expect(edited.isError).toBe(false);
+    expect((db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(id) as { content: string }[]).map((o) => o.content))
+      .toEqual(['db rotated', 'keep this']);
+  });
+
+  it('insert numbers lines as view shows them when a legacy multi-line key is shown as one masked line', () => {
+    const key = generateKeyPairSync('ec', { namedCurve: 'P-256', privateKeyEncoding: { type: 'pkcs8', format: 'pem' }, publicKeyEncoding: { type: 'spki', format: 'pem' } });
+    const pem = String(key.privateKey).trim();
+    const db = getDatabase();
+    const id = Number(db.prepare("INSERT INTO entities (name, type, namespace) VALUES ('r21-insert', 'note', 'personal')").run().lastInsertRowid);
+    for (const obs of [pem, 'after']) db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, obs);
+    const path = `${MEMORY_ROOT}/personal/r21-insert.md`;
+    const shown = handleMemoryCommand({ command: 'view', path });
+    expect(JSON.stringify(shown)).toContain('1\\t***REDACTED***');
+    expect(JSON.stringify(shown)).toContain('2\\tafter');
+    // Line 2 as shown is "after": the text lands after it, not inside or after the key.
+    expect(handleMemoryCommand({ command: 'insert', path, insert_line: 2, insert_text: 'appended' }).isError).toBe(false);
+    const lines = (db.prepare('SELECT content FROM observations WHERE entity_id = ? ORDER BY id').all(id) as { content: string }[]).map((o) => o.content);
+    expect(lines.slice(-2)).toEqual(['after', 'appended']);
+    expect(lines.join('\n')).not.toContain(pem.split('\n')[1].slice(0, 40));
+  });
+
+  it('recall returns a legacy stored credential masked, in observations, title and metadata; the stored row is unchanged', () => {
+    const db = getDatabase();
+    remember({ name: 'r21-recall', type: 'note', title: 'zebra title', observations: ['zebra note'] });
+    db.prepare("UPDATE observations SET content = ? WHERE content = 'zebra note'").run(`zebra ${DB_URL}`);
+    db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.note', ?) WHERE name = 'r21-recall'").run(`see ${TOKEN_ASSIGNMENT}`);
+    db.prepare("UPDATE entities SET title = ? WHERE name = 'r21-recall'").run(`zebra title ${TOKEN_ASSIGNMENT}`);
+    const before = JSON.stringify([
+      db.prepare("SELECT metadata, title FROM entities WHERE name = 'r21-recall'").get(),
+      db.prepare("SELECT content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'r21-recall'").all(),
+    ]);
+    const found = recall({ query: 'zebra' }).find((e) => e.name === 'r21-recall');
+    expect(found, 'recall found the memory').toBeTruthy();
+    expect(JSON.stringify(found)).not.toContain(DB_PASSWORD);
+    expect(JSON.stringify(found)).not.toContain(TOKEN_VALUE);
+    expect(found!.observations[0]).toContain('***REDACTED***');
+    expect(found!.title).toBe('zebra title ***REDACTED***');
+    const after = JSON.stringify([
+      db.prepare("SELECT metadata, title FROM entities WHERE name = 'r21-recall'").get(),
+      db.prepare("SELECT content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'r21-recall'").all(),
+    ]);
+    expect(after).toBe(before);
+  });
+
+  it('an import overwrite of a legacy memory whose redacted text outgrows the history cap stores the version within the cap', () => {
+    const db = getDatabase();
+    const id = Number(db.prepare("INSERT INTO entities (name, type, namespace) VALUES ('r21-overwrite', 'note', 'personal')").run().lastInsertRowid);
+    // 6,600 short keys: about 46 KB as stored, about 92 KB once each becomes ***REDACTED***.
+    const text = Array.from({ length: 6600 }, () => 'sk-abcd1').join(' ');
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, text);
+    const result = importMemories({
+      data: {
+        version: '3.1.0', exported_at: '2026-10-01T00:00:00.000Z', entity_count: 1,
+        entities: [{ name: 'r21-overwrite', type: 'note', namespace: 'personal', relations: [], tags: [], observations: ['new text'] }],
+      } as unknown as ExportResult,
+      merge_strategy: 'overwrite',
+    });
+    expect(result.errors).toEqual([]);
+    const metadata = (db.prepare("SELECT metadata FROM entities WHERE name = 'r21-overwrite'").get() as { metadata: string }).metadata;
+    const history = JSON.parse(metadata).replaced_history as unknown[];
+    expect(history).toHaveLength(1);
+    expect(Buffer.byteLength(JSON.stringify(history))).toBeLessThanOrEqual(REPLACED_HISTORY_MAX_BYTES);
+    expect(metadata).not.toContain('sk-abcd1');
   });
 });

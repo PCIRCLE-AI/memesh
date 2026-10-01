@@ -434,7 +434,53 @@ export const SECRET_PATTERN_SOURCES: readonly string[] = [
  *  of times per session, inside a 10-second budget — and it was recompiling
  *  every pattern each time. */
 const SECRET_PATTERNS = SECRET_PATTERN_SOURCES.map((s) => new RegExp(s, 'gi'));
-const SEGMENTED = new Set([JWT_TOKEN, SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
+const SEGMENTED = new Set([SENDGRID_KEY].map((s) => SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(s)]));
+const JWT_PATTERN = SECRET_PATTERNS[SECRET_PATTERN_SOURCES.indexOf(JWT_TOKEN)];
+
+const TOKEN_CHAR = /[A-Za-z0-9_-]/;
+
+/**
+ * The matches JWT_TOKEN's overlapping search in maskMatches finds, in the same
+ * order, without the regex (#567). The regex retried every `eyJ` and rescanned
+ * the rest of its run each time, so text made of `eyJ` runs with no `.` took
+ * about 45 s for 300 KB. Every match that starts in one run of token
+ * characters ends at the same place, the end of the signature's run, and
+ * whether it exists depends only on what follows the run; so each run is read
+ * once, and when it can hold a match every `eyJ` in it (any case, as with the
+ * `i` flag) with eight or more characters after it starts one, as before.
+ */
+function* jwtMatches(input: string): Generator<[number, number]> {
+  const runEnd = (from: number): number => {
+    let i = from;
+    while (i < input.length && TOKEN_CHAR.test(input[i])) i++;
+    return i;
+  };
+  const eyj = /eyj/gi;
+  const findEyj = (from: number): number => {
+    eyj.lastIndex = from;
+    return eyj.exec(input)?.index ?? -1;
+  };
+  let nextEyj = findEyj(0);
+  let i = 0;
+  while (i < input.length && nextEyj !== -1) {
+    if (!TOKEN_CHAR.test(input[i])) { i++; continue; }
+    const headerEnd = runEnd(i);
+    if (nextEyj < i) nextEyj = findEyj(i);
+    if (nextEyj === -1) break;
+    if (nextEyj + 11 <= headerEnd && input[headerEnd] === '.') {
+      const payloadEnd = runEnd(headerEnd + 1);
+      if (payloadEnd - (headerEnd + 1) >= 8 && input[payloadEnd] === '.') {
+        const signatureEnd = runEnd(payloadEnd + 1);
+        if (signatureEnd - (payloadEnd + 1) >= 8) {
+          for (let start = nextEyj; start !== -1 && start + 11 <= headerEnd; start = findEyj(start + 1)) {
+            yield [start, signatureEnd];
+          }
+        }
+      }
+    }
+    i = headerEnd;
+  }
+}
 
 /** One string through the pattern list, repeated until nothing changes. */
 function redactRaw(input: string): string {
@@ -466,9 +512,10 @@ function redactRaw(input: string): string {
  * end). Most patterns are one run of characters after a prefix, so a match
  * that starts inside another one of the same pattern ends where it ends: once
  * a search comes back with the same end, it skips ahead to that end, and a
- * run is searched twice, not once per start. A JWT and a SendGrid key are
- * made of segments, so a start inside one can end later; those keep
- * searching from every start. The work is capped too, and the cap fails
+ * run is searched twice, not once per start. A SendGrid key is made of
+ * segments, so a start inside one can end later; it keeps searching from
+ * every start. A JWT is segmented too, and its matches come from jwtMatches.
+ * The work is capped too, and the cap fails
  * closed: once the matches found add up to more than four times the text,
  * everything from the current match to the end of the text is masked.
  */
@@ -477,6 +524,18 @@ function maskMatches(input: string): string {
   const budget = 4 * input.length + 1024;
   let work = 0;
   search: for (const pattern of SECRET_PATTERNS) {
+    if (pattern === JWT_PATTERN) {
+      // Counted against the cap like the regex matches below.
+      for (const [start, end] of jwtMatches(input)) {
+        work += end - start;
+        if (work > budget) {
+          spans.push([start, input.length]);
+          break search;
+        }
+        spans.push([start, end]);
+      }
+      continue;
+    }
     pattern.lastIndex = 0;
     let lastEnd = -1;
     for (let m = pattern.exec(input); m !== null; m = pattern.exec(input)) {

@@ -17,6 +17,7 @@ import {
   exportMemories,
   importMemories,
   learn,
+  shownEntity,
 } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import {
@@ -46,6 +47,8 @@ import { executeAgentMessageAction } from '../agent-messaging.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
+import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
+import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 
 import fs from 'fs';
@@ -168,7 +171,8 @@ function loadOrCreateRemoteToken(): { token: Buffer; freshlyCreated: boolean } {
   const dir = memeshDir();
   const tokenPath = path.join(dir, 'remote-token');
   fs.mkdirSync(dir, { recursive: true });
-  try { fs.chmodSync(dir, 0o700); } catch { /* non-POSIX */ }
+  // #520: other users lose access; the owner's own bits stay as set.
+  removeGroupAndOtherAccess(dir);
 
   // Race-free create: try O_EXCL first. If two memesh-http instances
   // launch simultaneously, exactly one wins the create; the loser falls
@@ -198,7 +202,9 @@ function loadOrCreateRemoteToken(): { token: Buffer; freshlyCreated: boolean } {
       `Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`
     );
   }
-  try { fs.chmodSync(tokenPath, 0o600); } catch { /* non-POSIX */ }
+  // An existing token is only read, never rewritten: it loses group/other
+  // access and keeps the owner's bits, so a 0400 token stays 0400 (#520).
+  removeGroupAndOtherAccess(tokenPath);
   return { token: Buffer.from(value, 'utf8'), freshlyCreated: false };
 }
 
@@ -1146,9 +1152,11 @@ app.get('/v1/entities', (req, res) => {
     // bumped `access_count` and stamped `last_accessed_at = now` on up to
     // five thousand memories, which is the export defect five times over and
     // triggered by looking rather than by taking a backup.
-    return typeFilter
+    // Shown like recall (#523): a credential stored before redaction is
+    // masked here, the stored row is not touched.
+    return (typeFilter
       ? kg.listByType(typeFilter, limit, includeArchived)
-      : kg.listRecent(limit, includeArchived, undefined, false);
+      : kg.listRecent(limit, includeArchived, undefined, false)).map(shownEntity);
   });
 });
 
@@ -1159,7 +1167,7 @@ app.get('/v1/entities/:name', (req, res) => handleGet(res, () => {
   if (!entity) {
     throw new HttpError(404, 'resource.not-found', `Entity "${String(req.params.name)}" not found`);
   }
-  return entity;
+  return shownEntity(entity);
 }));
 
 // --- Start server ---
@@ -1280,14 +1288,12 @@ export function startServer(
     console.error('\n❌ MeMesh startup failed: database cannot be opened\n');
     console.error(`   Database path: ${dbPath}`);
     console.error(`   Error: ${message}\n`);
-    console.error('Possible causes:');
-    console.error('  • Database file is corrupted (run: memesh doctor)');
-    console.error('  • Insufficient permissions (check file ownership)');
-    console.error('  • Another process has locked the database');
-    console.error('  • Disk is full or read-only\n');
-    console.error('Quick fix: Backup and reset the database:');
-    console.error(`  mv "${dbPath}" "${dbPath}.backup"`);
-    console.error('  memesh (will create a fresh database)\n');
+    // The same diagnosis and fix as `memesh doctor`'s database row: a
+    // permission problem gets its chmod, never the advice to move the
+    // database aside, which would hide the owner's data from the server.
+    const { diagnosis, fix } = diagnoseDatabaseFailure(err, dbPath);
+    if (diagnosis !== message) console.error(`   Diagnosis: ${diagnosis}`);
+    console.error(`Fix: ${fix}\n`);
     throw new Error(`Database initialization failed: ${message}`, { cause: err });
   }
 

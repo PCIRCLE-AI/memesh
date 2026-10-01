@@ -772,3 +772,26 @@ describe('the pattern list is safe for the transcript drop gate too', () => {
     expect(redactSecrets('sk-proj-**********ZfQ9') !== 'sk-proj-**********ZfQ9').toBe(true);
   });
 });
+
+describe('a JWT-shaped run that never completes is searched in linear time (#567)', () => {
+  it('300 KB of `eyJ` with no dot is redacted in well under a second, unchanged', () => {
+    const text = 'eyJ'.repeat(100_000);
+    const started = Date.now();
+    expect(redactSecrets(text)).toBe(text);
+    // Was about 45 s: every `eyJ` rescanned the rest of the run.
+    expect(Date.now() - started).toBeLessThan(2000);
+  });
+
+  it('a JWT still matches whole, also glued to another one, and a header holding `eyJ` is masked from there', () => {
+    const jwt = ['eyJhbGciOiJIUzI1NiJ9', 'eyJzdWIiOiIxMjM0NTY3ODkwIn0', 'SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c'].join('.');
+    expect(redactSecrets(`a ${jwt} b`)).toBe('a ***REDACTED*** b');
+    expect(redactSecrets(`${jwt}${jwt}`)).toBe('***REDACTED***');
+    const inner = `eyJhbGciOieyJ0eXAiOiJKV1QifQ.${jwt.split('.').slice(1).join('.')}`;
+    const out = redactSecrets(inner);
+    expect(out).not.toContain('SflKxwRJ');
+    expect(out).toContain('***REDACTED***');
+    // Glued to a prefix, with a second `eyJ` inside the header: masked from the first `eyJ`, as before.
+    const glued = `prefixeyJ${'A'.repeat(8)}eyJ${'B'.repeat(8)}.${'C'.repeat(8)}.${'D'.repeat(8)}`;
+    expect(redactSecrets(glued)).toBe('prefix***REDACTED***');
+  });
+});

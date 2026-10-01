@@ -95,6 +95,10 @@ const SOURCES = [
   // router's actual registration could name two different principals for
   // the same session.
   { from: 'dist/core/codex-session-principal.js', to: 'codex-session-principal.js', src: 'src/core/codex-session-principal.ts' },
+  // The permission rule (#520): hooks create and open the same data folder
+  // and database as core, so they must remove only group/other access and
+  // give the sidecars the database's owner bits exactly as core does.
+  { from: 'dist/core/file-mode.js', to: 'file-mode.js', src: 'src/core/file-mode.ts' },
   { from: 'dist/storage/fts-index.js', to: 'fts-index.js', src: 'src/storage/fts-index.ts' },
   { from: 'dist/storage/schema.js', to: 'schema.js', src: 'src/storage/schema.ts' },
   // The SQLite driver. A leaf by construction — it imports `node:module` and
