@@ -5,7 +5,7 @@
 // connection string was kept or dropped depending on which argument carried
 // it. `learn` builds its observations AND its entity name from the raw error
 // text, so a secret in the error landed in the name too.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { remember, recall, learn, forget, importMemories, recallForAgent, setPinned, REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from '../../src/core/operations.js';
 import { createPrivateKey, generateKeyPairSync } from 'node:crypto';
 import { exportMemories } from '../../src/core/serializer.js';
@@ -1155,7 +1155,7 @@ describe('r15: sets, metadata and the decoded reading (#523)', () => {
     expect((getDatabase().prepare('SELECT metadata FROM entities WHERE name = ?').get('meta-key') as { metadata: string }).metadata).toBe(before);
     // A row stored before #523 with a lone BEGIN line in its metadata can still be updated.
     getDatabase().prepare("UPDATE entities SET metadata = json_set(metadata, '$.verification_scenario', ?) WHERE name = ?").run(`see ${header}`, 'meta-key');
-    kg.updateEntityMetadata('meta-key', (m) => ({ ...m, pinned: true }));
+    setPinned('meta-key', false);
     remember({ name: 'meta-key', type: 'note', observations: ['appended'] });
     expect(storedText('meta-key')).toContain('appended');
   });
@@ -1241,24 +1241,30 @@ describe('r18: part of a key beside new metadata text is refused as a whole (#52
     expect(() => kg.createEntity('r18-x1a', 'note', { observations: [header], metadata: { verification_scenario: body } })).toThrow(AMBIGUOUS);
     expect(() => kg.createEntity('r18-x1a', 'note', { title: header, observations: ['x'], metadata: { note: body } })).toThrow(AMBIGUOUS);
     expect(row('r18-x1a')).toBeUndefined();
-    // The same note with no new metadata text is stored, the header masked.
-    kg.createEntity('r18-x1a', 'note', { observations: [header], metadata: { pinned: true, score: 0.5 } });
+    // The same note with no metadata is stored, the header masked.
+    kg.createEntity('r18-x1a', 'note', { observations: [header] });
     expect(JSON.stringify(storedText('r18-x1a'))).not.toContain('BEGIN');
   });
 
-  it('a legacy row keeps trust and kind; a boolean pin and an update with no new text succeed, and store the lone line masked', () => {
+  it('a legacy row keeps trust and kind; an unpin of a never-pinned row and an update with no new text succeed and store the lone line masked; a pin there is refused', () => {
     seedLegacyHeader('r18-pin');
-    new KnowledgeGraph(getDatabase()).updateEntityMetadata('r18-pin', (m) => ({ ...m }));
-    expect(setPinned('r18-pin', true).found).toBe(true);
+    expect(() => setPinned('r18-pin', true)).toThrow(/memesh unpin/);
+    expect(setPinned('r18-pin', false).found).toBe(true);
+    seedLegacyHeader('r18-pin-noop');
+    new KnowledgeGraph(getDatabase()).updateEntityMetadata('r18-pin-noop', (m) => ({ ...m }));
+    expect(JSON.parse(row('r18-pin-noop')!.metadata).existing).toBe('***REDACTED***');
     const meta = JSON.parse(row('r18-pin')!.metadata);
-    expect(meta).toMatchObject({ trust: 'trusted', kind: 'note', pin: true, existing: '***REDACTED***' });
+    expect(meta).toMatchObject({ trust: 'trusted', kind: 'note', existing: '***REDACTED***' });
+    expect(meta.pin).toBeUndefined();
+    setPinned('r18-pin', true);
+    expect(JSON.parse(row('r18-pin')!.metadata).pin).toBe(true);
   });
 
-  it('recovery through existing writers: after a pin, namespace move, replace and import append all succeed', () => {
+  it('recovery through existing writers: after an unpin, namespace move, replace and import append all succeed', () => {
     seedLegacyHeader('r18-recover');
     expect(() => remember({ name: 'r18-recover', type: 'note', observations: ['refused'] })).toThrow(AMBIGUOUS);
     expect(observationCount('r18-recover')).toBe(1);
-    setPinned('r18-recover', true);
+    setPinned('r18-recover', false);
     remember({ name: 'r18-recover', type: 'note', observations: ['appended'], namespace: 'team' });
     expect(row('r18-recover')!.namespace).toBe('team');
     remember({ name: 'r18-recover', type: 'note', observations: ['replaced'], replace: true });
@@ -1291,7 +1297,7 @@ describe('r18: part of a key beside new metadata text is refused as a whole (#52
     expect(JSON.parse(row(name)!.metadata).task_state).toMatchObject({ goal: 'clean goal', next: 'ship it' });
   });
 
-  it('a lone BEGIN or END held in replaced_history: new text is refused until a pin, which masks only the entries holding part of a key', () => {
+  it('a lone BEGIN or END held in replaced_history: new text is refused until an unpin, which masks only the entries holding part of a key', () => {
     const kg = new KnowledgeGraph(getDatabase());
     const entry = (at: string, observations: string[]) => ({ replaced_at: at, title: 'old', observations, tags: ['t'], truncated: false });
     kg.createEntity('r18-history-lock', 'note', { observations: ['x'], metadata: { trust: 'trusted', replaced_history: [
@@ -1303,9 +1309,9 @@ describe('r18: part of a key beside new metadata text is refused as a whole (#52
     const before = JSON.parse(row('r18-history-lock')!.metadata);
     expect(() => remember({ name: 'r18-history-lock', type: 'note', observations: ['more'] })).toThrow(AMBIGUOUS);
     expect(row('r18-history-lock')!.metadata).toBe(JSON.stringify(before));
-    setPinned('r18-history-lock', true);
+    setPinned('r18-history-lock', false);
     const after = JSON.parse(row('r18-history-lock')!.metadata);
-    expect(after.pin).toBe(true);
+    expect(after.pin).toBeUndefined();
     expect(after.trust).toBe('trusted');
     expect(after.replaced_history.map((e: { replaced_at: string }) => e.replaced_at)).toEqual(['t0', 't1', 't2']);
     expect(JSON.stringify(after.replaced_history[0])).toBe(JSON.stringify(before.replaced_history[0]));
@@ -1330,6 +1336,78 @@ describe('r18: part of a key beside new metadata text is refused as a whole (#52
     remember({ name: 'r18-guard', type: 'lesson_learned', observations: ['more'] });
     setPinned('r18-guard', true);
     expect(JSON.parse(row('r18-guard')!.metadata).guard.pattern).toBe(pattern);
+    // An unpin adds no text, so it masks parts of a key in the metadata: the pattern is not one.
+    setPinned('r18-guard', false);
+    expect(JSON.parse(row('r18-guard')!.metadata).guard.pattern).toBe(pattern);
+  });
+
+  it('r19: a key body in NEW metadata key names counts as new text (legacy row, and a fresh createEntity with the header in an observation)', () => {
+    seedLegacyHeader('r19-keys');
+    const before = row('r19-keys')!.metadata;
+    const kg = new KnowledgeGraph(getDatabase());
+    const asKeys = Object.fromEntries(bodyLines.map((line) => [line, true]));
+    expect(() => kg.updateEntityMetadata('r19-keys', (m) => ({ ...m, ...asKeys }))).toThrow(AMBIGUOUS);
+    expect(row('r19-keys')!.metadata).toBe(before);
+    expect(() => kg.createEntity('r19-keys-fresh', 'note', { observations: [header], metadata: asKeys })).toThrow(AMBIGUOUS);
+    expect(row('r19-keys-fresh')).toBeUndefined();
+  });
+
+  it('r19: a lone header held in a stored OBSERVATION refuses new metadata text and new observations; forget of that exact line recovers, nothing else removed', () => {
+    const kg = new KnowledgeGraph(getDatabase());
+    // Written before #523: a raw header line among the observations.
+    const id = Number(getDatabase().prepare("INSERT INTO entities (name, type, namespace, metadata) VALUES ('r19-obs', 'note', 'personal', '{\"trust\":\"trusted\"}')").run().lastInsertRowid);
+    for (const o of ['keep one', header, 'keep two']) getDatabase().prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, o);
+    const before = row('r19-obs')!.metadata;
+    expect(() => kg.updateEntityMetadata('r19-obs', (m) => ({ ...m, note: body }))).toThrow(AMBIGUOUS);
+    expect(() => kg.createEntity('r19-obs', 'note', { observations: [body] })).toThrow(AMBIGUOUS);
+    expect(row('r19-obs')!.metadata).toBe(before);
+    expect(observationCount('r19-obs')).toBe(3);
+    forget({ name: 'r19-obs', observation: header });
+    expect(JSON.parse(storedText('r19-obs')).observations).toEqual(['keep one', 'keep two']);
+    remember({ name: 'r19-obs', type: 'note', observations: ['more'] });
+    expect(JSON.parse(storedText('r19-obs')).observations).toEqual(['keep one', 'keep two', 'more']);
+  });
+
+  it('r19: on a frozen clock (reviewed_at equal to the stored one) remember and setTaskState on a legacy row are still refused with no effect', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(new Date('2026-10-01T00:00:00.000Z'));
+      remember({ name: 'r19-clock', type: 'note', observations: ['x'] });
+      getDatabase().prepare("UPDATE entities SET metadata = json_set(metadata, '$.existing', ?) WHERE name = ?").run(header, 'r19-clock');
+      const before = row('r19-clock')!.metadata;
+      const count = observationCount('r19-clock');
+      expect(() => remember({ name: 'r19-clock', type: 'note', observations: ['more'] })).toThrow(AMBIGUOUS);
+      expect(row('r19-clock')!.metadata).toBe(before);
+      expect(observationCount('r19-clock')).toBe(count);
+      const project = 'r19-clock-task';
+      setTaskState({ project, patch: { goal: 'placeholder' } });
+      const name = taskStateName(project);
+      getDatabase().prepare("UPDATE entities SET metadata = json_set(metadata, '$.task_state.goal', ?) WHERE name = ?").run(header, name);
+      const taskBefore = row(name)!.metadata;
+      const taskCount = observationCount(name);
+      expect(() => setTaskState({ project, patch: { next: 'ship it' } })).toThrow(AMBIGUOUS);
+      expect(row(name)!.metadata).toBe(taskBefore);
+      expect(observationCount(name)).toBe(taskCount);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('r19: setTaskState is one write: a failure of its task_state update leaves no new observation and no metadata change', () => {
+    const project = 'r19-atomic';
+    setTaskState({ project, patch: { goal: 'start' } });
+    const name = taskStateName(project);
+    const db = getDatabase();
+    db.exec(`CREATE TRIGGER r19_fail BEFORE UPDATE OF metadata ON entities WHEN json_extract(NEW.metadata, '$.task_state.next') = 'boom' BEGIN SELECT RAISE(ABORT, 'r19 controlled failure'); END;`);
+    try {
+      const before = row(name)!.metadata;
+      const count = observationCount(name);
+      expect(() => setTaskState({ project, patch: { next: 'boom' } })).toThrow(/r19 controlled failure/);
+      expect(row(name)!.metadata).toBe(before);
+      expect(observationCount(name)).toBe(count);
+    } finally {
+      db.exec('DROP TRIGGER r19_fail');
+    }
   });
 
   it('a history entry with a null or object title and a split key in its observations stores no line of the key', () => {

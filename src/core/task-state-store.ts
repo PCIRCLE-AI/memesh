@@ -136,22 +136,27 @@ export function setTaskState(input: SetTaskStateInput): SetTaskStateResult {
   // by whatever it does have.
   const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
 
-  remember({
-    name,
-    type: TASK_STATE_TYPE,
-    observations,
-    tags: [`project:${project}`],
-    title,
-    sourceHost: input.sourceHost,
-  });
+  // One transaction: when the metadata write below fails, the observations
+  // `remember()` added are rolled back with it.
+  const db = getDatabase();
+  db.transaction(() => {
+    remember({
+      name,
+      type: TASK_STATE_TYPE,
+      observations,
+      tags: [`project:${project}`],
+      title,
+      sourceHost: input.sourceHost,
+    });
 
-  // Metadata is the state's home; the observations above are its history.
-  // Written after `remember()` because `updateEntityMetadata` is a no-op on a
-  // row that does not exist yet, and on a first call it does not.
-  new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
-    ...current,
-    task_state: state,
-  }));
+    // Metadata is the state's home; the observations above are its history.
+    // Written after `remember()` because `updateEntityMetadata` is a no-op on a
+    // row that does not exist yet, and on a first call it does not.
+    new KnowledgeGraph(db).updateEntityMetadata(name, (current) => ({
+      ...current,
+      task_state: state,
+    }));
+  }).immediate();
 
   return { project, state: redactedState(state), changed };
 }

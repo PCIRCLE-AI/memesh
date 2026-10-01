@@ -16,7 +16,7 @@ import {
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { canonicalEntityType } from './core/work-topology.js';
-import { addsNewText, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
+import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
 
 /**
  * Metadata as it will be STORED: every string redacted, with two exceptions.
@@ -358,6 +358,15 @@ export class KnowledgeGraph {
     return row ? this.parseMetadata(row.metadata) : undefined;
   }
 
+  /** The observations a row already holds, and its title unless the write replaces it (#523: text kept beside what a write adds). */
+  private storedText(name: string, keepTitle: boolean): string[] {
+    const row = this.db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name) as { id: number; title: string | null } | undefined;
+    if (!row) return [];
+    const observations = (this.db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(row.id) as { content: string }[])
+      .map((o) => o.content);
+    return keepTitle && row.title !== null ? [row.title, ...observations] : observations;
+  }
+
   updateEntityMetadata(
     name: string,
     updater: (currentMetadata: Record<string, unknown>) => Record<string, unknown> | null | undefined
@@ -377,7 +386,7 @@ export class KnowledgeGraph {
     const stored = this.parseMetadata(row.metadata);
     const nextMetadata = updater(this.parseMetadata(row.metadata));
     const safe = nextMetadata
-      ? redactMetadataForStore(nextMetadata, stored)
+      ? redactMetadataForStore(nextMetadata, stored, this.storedText(name, true))
       : nextMetadata;
     this.db
       .prepare('UPDATE entities SET metadata = ? WHERE name = ?')
@@ -441,6 +450,18 @@ export class KnowledgeGraph {
     // STRING values are redacted too, except `guard.pattern` and the history
     // entries the row already holds (redactMetadataForStore). Redaction is
     // the identity on ordinary text.
+    // Text this call writes, and the text the row keeps beside it. A title
+    // or observations added to a memory whose kept text holds part of a
+    // private key is refused as a whole (besideRefusal), whatever the
+    // metadata does.
+    const stored = this.storedMetadata(name);
+    const written = [
+      ...(typeof opts?.title === 'string' ? [opts.title] : []),
+      ...(opts?.observations === undefined ? [] : opts.observations),
+    ];
+    const kept = stored === undefined ? [] : this.storedText(name, typeof opts?.title !== 'string');
+    const refusal = stored === undefined ? undefined : besideRefusal(written.length > 0, [...textsIn(withoutGuardPattern(stored)), ...kept]);
+    if (refusal !== undefined) throw new Error(`MeMesh did not store this memory: ${refusal}.`);
     const safe = opts === undefined ? undefined : {
       ...opts,
       ...redactTitleAndObservations(typeof opts.title === 'string' ? opts.title : undefined, opts.observations),
@@ -448,10 +469,7 @@ export class KnowledgeGraph {
       // a `verification_scenario` here); structure, numbers and booleans are
       // untouched.
       ...(opts.metadata !== undefined
-        ? { metadata: redactMetadataForStore(opts.metadata, this.storedMetadata(name), [
-          ...(typeof opts.title === 'string' ? [opts.title] : []),
-          ...(opts.observations === undefined ? [] : opts.observations),
-        ]) }
+        ? { metadata: redactMetadataForStore(opts.metadata, stored, [...kept, ...written]) }
         : {}),
     };
     return this.db.transaction(() => this.createEntityInner(name, type, safe))();

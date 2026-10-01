@@ -4206,12 +4206,12 @@ function maskMatches(input) {
   }
   return out + input.slice(at);
 }
-function merge(spans, touching = false) {
+function merge(spans) {
   spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
   const merged = [];
   for (const [start, end] of spans) {
     const last = merged[merged.length - 1];
-    if (last && (start < last[1] || touching && start === last[1]))
+    if (last && start < last[1])
       last[1] = Math.max(last[1], end);
     else
       merged.push([start, end]);
@@ -4219,35 +4219,33 @@ function merge(spans, touching = false) {
   return merged;
 }
 function gluedAfter(input, spans) {
-  for (let grown = true; grown; ) {
-    grown = false;
-    const found = [];
-    for (const [start, end] of spans) {
-      if (end >= input.length)
-        continue;
-      for (const pattern of GLUED) {
-        for (let at = start, skipTo = start; at <= end; at++) {
-          if (at < skipTo)
-            continue;
-          pattern.lastIndex = at;
-          const m = pattern.exec(input);
-          if (m === null)
-            continue;
-          skipTo = at + m[0].length;
-          if (skipTo > end)
-            found.push([at, skipTo]);
-        }
-      }
+  const out = [];
+  let next = 0;
+  while (next < spans.length) {
+    const [start] = spans[next];
+    let end = spans[next][1];
+    next++;
+    const skipTo = GLUED.map(() => start);
+    for (let at = start; at <= end && end < input.length; at++) {
+      GLUED.forEach((pattern, i) => {
+        if (at < skipTo[i])
+          return;
+        pattern.lastIndex = at;
+        const m = pattern.exec(input);
+        if (m === null)
+          return;
+        skipTo[i] = at + m[0].length;
+        end = Math.max(end, skipTo[i]);
+      });
+      while (next < spans.length && spans[next][0] <= end)
+        end = Math.max(end, spans[next++][1]);
     }
-    if (found.length > 0) {
-      spans = merge([...spans, ...found], true);
-      grown = true;
-    }
+    out.push([start, end]);
   }
-  return spans;
+  return out;
 }
 function readEscapes(text) {
-  for (let level = 0; level < 8; level++) {
+  for (let level = 0; level <= 8; level++) {
     const read = text.replace(JSON_ESCAPE, (_, hex3, c) => hex3 === void 0 ? ESCAPED_CHAR[c] : String.fromCharCode(parseInt(hex3, 16)));
     if (read === text)
       return text;
@@ -4290,7 +4288,7 @@ function holdsPartOfKeyDecoded(text) {
   if (!looksLikeJson(text) || !(text.includes("\\") || ANY_PRIVATE_KEY_MARKER.test(text)))
     return false;
   const read = readEscapes(text);
-  if (read === void 0 || holdsPartOfKey(read))
+  if (read !== void 0 && holdsPartOfKey(read))
     return true;
   let parsed;
   try {
@@ -4383,7 +4381,9 @@ function redactOne(input) {
       return r;
     });
     const read = readEscapes(input);
-    const maskedInText = asRaw.masked || read === void 0 || redactRaw(read) !== read;
+    if (read === void 0)
+      return { text: REDACTED, masked: true };
+    const maskedInText = asRaw.masked || redactRaw(read) !== read;
     return { text: JSON.stringify(value), masked: masked || maskedInText };
   } catch (err) {
     return err instanceof SyntaxError ? asRaw : { text: REDACTED, masked: true };
@@ -4481,8 +4481,15 @@ function metadataRefusal(value, known, beside = []) {
       }
     }
   }
-  if (addsNewText(value, known) && [...beside].some(holdsPartOfKeyDecoded)) {
-    return "it adds new metadata text to a memory whose text holds a BEGIN or END line of a private key without the rest, so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). Nothing was written. To clear such a line the memory already holds, run `memesh pin <name>` or `memesh unpin <name>` first: a write that adds no new text masks every part of a key in the memory's metadata, history included";
+  return besideRefusal(addsNewText(value, known), beside);
+}
+function besideRefusal(addsText, beside) {
+  if (!addsText)
+    return void 0;
+  for (const text of beside) {
+    if (holdsPartOfKeyDecoded(text)) {
+      return 'it adds new text to a memory that holds a BEGIN or END line of a private key without the rest, so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). Nothing was written. To clear such a line in the memory\'s metadata, run `memesh unpin --name <name>` first (it adds no text, and masks every part of a key in the metadata, history included); to remove such a line from its observations, run `memesh forget --name <name> --observation "<that line>"`';
+    }
   }
   return void 0;
 }
@@ -4500,8 +4507,11 @@ function addsNewText(value, known) {
       for (const item of node)
         stack.push(item);
     } else if (node !== null && typeof node === "object") {
-      for (const inner of Object.values(node))
+      for (const [key, inner] of Object.entries(node)) {
+        if (!known.has(key))
+          return true;
         stack.push(inner);
+      }
     }
   }
   return false;
@@ -4674,23 +4684,36 @@ var init_knowledge_graph = __esm({
         const row = this.db.prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
         return row ? this.parseMetadata(row.metadata) : void 0;
       }
+      storedText(name, keepTitle) {
+        const row = this.db.prepare("SELECT id, title FROM entities WHERE name = ?").get(name);
+        if (!row)
+          return [];
+        const observations = this.db.prepare("SELECT content FROM observations WHERE entity_id = ?").all(row.id).map((o) => o.content);
+        return keepTitle && row.title !== null ? [row.title, ...observations] : observations;
+      }
       updateEntityMetadata(name, updater) {
         const row = this.db.prepare("SELECT metadata FROM entities WHERE name = ?").get(name);
         if (!row)
           return;
         const stored = this.parseMetadata(row.metadata);
         const nextMetadata = updater(this.parseMetadata(row.metadata));
-        const safe = nextMetadata ? redactMetadataForStore(nextMetadata, stored) : nextMetadata;
+        const safe = nextMetadata ? redactMetadataForStore(nextMetadata, stored, this.storedText(name, true)) : nextMetadata;
         this.db.prepare("UPDATE entities SET metadata = ? WHERE name = ?").run(safe ? JSON.stringify(safe) : null, name);
       }
       createEntity(name, type, opts) {
+        const stored = this.storedMetadata(name);
+        const written = [
+          ...typeof opts?.title === "string" ? [opts.title] : [],
+          ...opts?.observations === void 0 ? [] : opts.observations
+        ];
+        const kept = stored === void 0 ? [] : this.storedText(name, typeof opts?.title !== "string");
+        const refusal = stored === void 0 ? void 0 : besideRefusal(written.length > 0, [...textsIn(withoutGuardPattern(stored)), ...kept]);
+        if (refusal !== void 0)
+          throw new Error(`MeMesh did not store this memory: ${refusal}.`);
         const safe = opts === void 0 ? void 0 : {
           ...opts,
           ...redactTitleAndObservations(typeof opts.title === "string" ? opts.title : void 0, opts.observations),
-          ...opts.metadata !== void 0 ? { metadata: redactMetadataForStore(opts.metadata, this.storedMetadata(name), [
-            ...typeof opts.title === "string" ? [opts.title] : [],
-            ...opts.observations === void 0 ? [] : opts.observations
-          ]) } : {}
+          ...opts.metadata !== void 0 ? { metadata: redactMetadataForStore(opts.metadata, stored, [...kept, ...written]) } : {}
         };
         return this.db.transaction(() => this.createEntityInner(name, type, safe))();
       }
@@ -25269,18 +25292,21 @@ function setTaskState(input) {
   if (changed.length === 0)
     return { project, state: redactedState(state), changed };
   const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
-  remember({
-    name,
-    type: TASK_STATE_TYPE,
-    observations,
-    tags: [`project:${project}`],
-    title,
-    sourceHost: input.sourceHost
-  });
-  new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
-    ...current,
-    task_state: state
-  }));
+  const db2 = getDatabase();
+  db2.transaction(() => {
+    remember({
+      name,
+      type: TASK_STATE_TYPE,
+      observations,
+      tags: [`project:${project}`],
+      title,
+      sourceHost: input.sourceHost
+    });
+    new KnowledgeGraph(db2).updateEntityMetadata(name, (current) => ({
+      ...current,
+      task_state: state
+    }));
+  }).immediate();
   return { project, state: redactedState(state), changed };
 }
 var TaskStateUnreadableError;

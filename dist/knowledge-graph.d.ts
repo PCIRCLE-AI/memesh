@@ -5,6 +5,7 @@ export declare class KnowledgeGraph {
     private db;
     constructor(db: MemeshDatabase);
     private storedMetadata;
+    private storedText;
     updateEntityMetadata(name: string, updater: (currentMetadata: Record<string, unknown>) => Record<string, unknown> | null | undefined): void;
     createEntity(name: string, type: string, opts?: {
         observations?: string[];

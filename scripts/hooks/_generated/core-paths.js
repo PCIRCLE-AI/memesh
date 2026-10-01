@@ -219,12 +219,12 @@ function maskMatches(input) {
     }
     return out + input.slice(at);
 }
-function merge(spans, touching = false) {
+function merge(spans) {
     spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
     const merged = [];
     for (const [start, end] of spans) {
         const last = merged[merged.length - 1];
-        if (last && (start < last[1] || (touching && start === last[1])))
+        if (last && start < last[1])
             last[1] = Math.max(last[1], end);
         else
             merged.push([start, end]);
@@ -233,32 +233,30 @@ function merge(spans, touching = false) {
 }
 const GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, 'iy'));
 function gluedAfter(input, spans) {
-    for (let grown = true; grown;) {
-        grown = false;
-        const found = [];
-        for (const [start, end] of spans) {
-            if (end >= input.length)
-                continue;
-            for (const pattern of GLUED) {
-                for (let at = start, skipTo = start; at <= end; at++) {
-                    if (at < skipTo)
-                        continue;
-                    pattern.lastIndex = at;
-                    const m = pattern.exec(input);
-                    if (m === null)
-                        continue;
-                    skipTo = at + m[0].length;
-                    if (skipTo > end)
-                        found.push([at, skipTo]);
-                }
-            }
+    const out = [];
+    let next = 0;
+    while (next < spans.length) {
+        const [start] = spans[next];
+        let end = spans[next][1];
+        next++;
+        const skipTo = GLUED.map(() => start);
+        for (let at = start; at <= end && end < input.length; at++) {
+            GLUED.forEach((pattern, i) => {
+                if (at < skipTo[i])
+                    return;
+                pattern.lastIndex = at;
+                const m = pattern.exec(input);
+                if (m === null)
+                    return;
+                skipTo[i] = at + m[0].length;
+                end = Math.max(end, skipTo[i]);
+            });
+            while (next < spans.length && spans[next][0] <= end)
+                end = Math.max(end, spans[next++][1]);
         }
-        if (found.length > 0) {
-            spans = merge([...spans, ...found], true);
-            grown = true;
-        }
+        out.push([start, end]);
     }
-    return spans;
+    return out;
 }
 const PRIVATE_KEY_MARKER = /-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----/gi;
 const PRIVATE_KEY_END = /-----END[A-Z ]*PRIVATE KEY-----/i;
@@ -269,7 +267,7 @@ const looksLikeJson = (text) => /^\s*[[{"]/.test(text);
 const JSON_ESCAPE = /\\(?:u([0-9a-fA-F]{4})|(["\\/bfnrt]))/g;
 const ESCAPED_CHAR = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
 function readEscapes(text) {
-    for (let level = 0; level < 8; level++) {
+    for (let level = 0; level <= 8; level++) {
         const read = text.replace(JSON_ESCAPE, (_, hex, c) => hex === undefined ? ESCAPED_CHAR[c] : String.fromCharCode(parseInt(hex, 16)));
         if (read === text)
             return text;
@@ -312,7 +310,7 @@ function holdsPartOfKeyDecoded(text) {
     if (!looksLikeJson(text) || !(text.includes('\\') || ANY_PRIVATE_KEY_MARKER.test(text)))
         return false;
     const read = readEscapes(text);
-    if (read === undefined || holdsPartOfKey(read))
+    if (read !== undefined && holdsPartOfKey(read))
         return true;
     let parsed;
     try {
@@ -397,7 +395,9 @@ function redactOne(input) {
             masked = true; return r.text; }, (k) => { const r = redactRaw(k); if (r !== k)
             masked = true; return r; });
         const read = readEscapes(input);
-        const maskedInText = asRaw.masked || read === undefined || redactRaw(read) !== read;
+        if (read === undefined)
+            return { text: REDACTED, masked: true };
+        const maskedInText = asRaw.masked || redactRaw(read) !== read;
         return { text: JSON.stringify(value), masked: masked || maskedInText };
     }
     catch (err) {
@@ -499,11 +499,19 @@ export function metadataRefusal(value, known, beside = []) {
             }
         }
     }
-    if (addsNewText(value, known) && [...beside].some(holdsPartOfKeyDecoded)) {
-        return 'it adds new metadata text to a memory whose text holds a BEGIN or END line of a private key without the rest, '
-            + 'so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). '
-            + 'Nothing was written. To clear such a line the memory already holds, run `memesh pin <name>` or `memesh unpin <name>` '
-            + 'first: a write that adds no new text masks every part of a key in the memory\'s metadata, history included';
+    return besideRefusal(addsNewText(value, known), beside);
+}
+export function besideRefusal(addsText, beside) {
+    if (!addsText)
+        return undefined;
+    for (const text of beside) {
+        if (holdsPartOfKeyDecoded(text)) {
+            return 'it adds new text to a memory that holds a BEGIN or END line of a private key without the rest, '
+                + 'so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). '
+                + 'Nothing was written. To clear such a line in the memory\'s metadata, run `memesh unpin --name <name>` first '
+                + '(it adds no text, and masks every part of a key in the metadata, history included); to remove such a line '
+                + 'from its observations, run `memesh forget --name <name> --observation "<that line>"`';
+        }
     }
     return undefined;
 }
@@ -523,8 +531,11 @@ export function addsNewText(value, known) {
                 stack.push(item);
         }
         else if (node !== null && typeof node === 'object') {
-            for (const inner of Object.values(node))
+            for (const [key, inner] of Object.entries(node)) {
+                if (!known.has(key))
+                    return true;
                 stack.push(inner);
+            }
         }
     }
     return false;

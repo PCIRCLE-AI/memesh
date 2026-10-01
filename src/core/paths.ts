@@ -490,13 +490,13 @@ function maskMatches(input: string): string {
   return out + input.slice(at);
 }
 
-/** Spans sorted, overlapping ones joined (and touching ones, when asked). */
-function merge(spans: Array<[number, number]>, touching = false): Array<[number, number]> {
+/** Spans sorted, overlapping ones joined. */
+function merge(spans: Array<[number, number]>): Array<[number, number]> {
   spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
   const merged: Array<[number, number]> = [];
   for (const [start, end] of spans) {
     const last = merged[merged.length - 1];
-    if (last && (start < last[1] || (touching && start === last[1]))) last[1] = Math.max(last[1], end);
+    if (last && start < last[1]) last[1] = Math.max(last[1], end);
     else merged.push([start, end]);
   }
   return merged;
@@ -513,31 +513,33 @@ const GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, 'iy'));
  * that boundary away: `ghp_…sk-…` ends the GitHub token at `…sk`, and the
  * `sk-` key that starts there no longer has a word boundary, so its tail
  * would stay. Inside a masked span there is no ordinary word to protect.
- * A position inside a match already found is not tried again: a start inside
- * that run ends where the run ends.
+ * One sweep from left to right: each position is tried once per pattern, a
+ * span grows as matches run past its end and takes in the spans it reaches,
+ * and a position inside a match already found is not tried again (a start
+ * inside that run ends where the run ends).
  */
 function gluedAfter(input: string, spans: Array<[number, number]>): Array<[number, number]> {
-  for (let grown = true; grown;) {
-    grown = false;
-    const found: Array<[number, number]> = [];
-    for (const [start, end] of spans) {
-      if (end >= input.length) continue;
-      for (const pattern of GLUED) {
-        for (let at = start, skipTo = start; at <= end; at++) {
-          if (at < skipTo) continue;
-          pattern.lastIndex = at;
-          const m = pattern.exec(input);
-          if (m === null) continue;
-          skipTo = at + m[0].length;
-          if (skipTo > end) found.push([at, skipTo]);
-        }
-      }
+  const out: Array<[number, number]> = [];
+  let next = 0;
+  while (next < spans.length) {
+    const [start] = spans[next];
+    let end = spans[next][1];
+    next++;
+    const skipTo = GLUED.map(() => start);
+    for (let at = start; at <= end && end < input.length; at++) {
+      GLUED.forEach((pattern, i) => {
+        if (at < skipTo[i]) return;
+        pattern.lastIndex = at;
+        const m = pattern.exec(input);
+        if (m === null) return;
+        skipTo[i] = at + m[0].length;
+        end = Math.max(end, skipTo[i]);
+      });
+      while (next < spans.length && spans[next][0] <= end) end = Math.max(end, spans[next++][1]);
     }
-    // Every span found ends past the span it started in or touches, and joins
-    // it, so each round grows a span; the rounds end at the end of the text.
-    if (found.length > 0) { spans = merge([...spans, ...found], true); grown = true; }
+    out.push([start, end]);
   }
-  return spans;
+  return out;
 }
 
 const PRIVATE_KEY_MARKER = /-----(BEGIN|END)[A-Z ]*PRIVATE KEY-----/gi;
@@ -555,10 +557,11 @@ const ESCAPED_CHAR: Record<string, string> = { '"': '"', '\\': '\\', '/': '/', b
  * JSON text with its escapes read (`\u0074` is `t`, `\n` a newline), level
  * after level, without parsing it: a member JSON.parse drops (the first value
  * of a duplicate key) is still there. Undefined when the escapes nest more
- * than eight levels deep: that text cannot be cleared.
+ * than eight levels deep: that text cannot be read, so it is stored as the
+ * marker on its own (redactOne), like JSON nested too deep to parse.
  */
 function readEscapes(text: string): string | undefined {
-  for (let level = 0; level < 8; level++) {
+  for (let level = 0; level <= 8; level++) {
     const read = text.replace(JSON_ESCAPE, (_, hex: string | undefined, c: string) =>
       hex === undefined ? ESCAPED_CHAR[c] : String.fromCharCode(parseInt(hex, 16)));
     if (read === text) return text;
@@ -605,7 +608,7 @@ function holdsPartOfKeyDecoded(text: string): boolean {
   if (!looksLikeJson(text) || !(text.includes('\\') || ANY_PRIVATE_KEY_MARKER.test(text))) return false;
   // Read lexically too: a duplicate key's dropped value is not in the parse.
   const read = readEscapes(text);
-  if (read === undefined || holdsPartOfKey(read)) return true;
+  if (read !== undefined && holdsPartOfKey(read)) return true;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -736,7 +739,8 @@ function redactOne(input: string): Redaction {
     // read, is masking too: a credential in a duplicate key that JSON.parse
     // dropped is in the text, not in `value`, and may be written in escapes.
     const read = readEscapes(input);
-    const maskedInText = asRaw.masked || read === undefined || redactRaw(read) !== read;
+    if (read === undefined) return { text: REDACTED, masked: true };
+    const maskedInText = asRaw.masked || redactRaw(read) !== read;
     return { text: JSON.stringify(value), masked: masked || maskedInText };
   } catch (err) {
     // Not JSON: the raw rules over the whole text. JSON nested too deep to
@@ -973,16 +977,30 @@ export function metadataRefusal(value: unknown, known: ReadonlySet<string>, besi
       }
     }
   }
-  if (addsNewText(value, known) && [...beside].some(holdsPartOfKeyDecoded)) {
-    return 'it adds new metadata text to a memory whose text holds a BEGIN or END line of a private key without the rest, '
-      + 'so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). '
-      + 'Nothing was written. To clear such a line the memory already holds, run `memesh pin <name>` or `memesh unpin <name>` '
-      + 'first: a write that adds no new text masks every part of a key in the memory\'s metadata, history included';
+  return besideRefusal(addsNewText(value, known), beside);
+}
+
+/**
+ * Why a write that adds text cannot be stored beside the rest of the same
+ * write (`beside`: the text the memory keeps, and the title and observations
+ * written with it), or undefined when it can: one of those holds part of a
+ * private key, and the new text may be the rest of it.
+ */
+export function besideRefusal(addsText: boolean, beside: Iterable<string>): string | undefined {
+  if (!addsText) return undefined;
+  for (const text of beside) {
+    if (holdsPartOfKeyDecoded(text)) {
+      return 'it adds new text to a memory that holds a BEGIN or END line of a private key without the rest, '
+        + 'so MeMesh cannot tell whether the new text continues that key (the line alone is not proof of a key). '
+        + 'Nothing was written. To clear such a line in the memory\'s metadata, run `memesh unpin --name <name>` first '
+        + '(it adds no text, and masks every part of a key in the metadata, history included); to remove such a line '
+        + 'from its observations, run `memesh forget --name <name> --observation "<that line>"`';
+    }
   }
   return undefined;
 }
 
-/** Whether a structured value holds a string that is not in `known`. Key names do not count: a pin adds the key `pin` and no text. */
+/** Whether a structured value holds a string or a key name that is not in `known`. */
 export function addsNewText(value: unknown, known: ReadonlySet<string>): boolean {
   const serialized = value === undefined ? undefined : JSON.stringify(value);
   if (serialized === undefined) return false;
@@ -994,7 +1012,10 @@ export function addsNewText(value: unknown, known: ReadonlySet<string>): boolean
     } else if (Array.isArray(node)) {
       for (const item of node) stack.push(item);
     } else if (node !== null && typeof node === 'object') {
-      for (const inner of Object.values(node)) stack.push(inner);
+      for (const [key, inner] of Object.entries(node)) {
+        if (!known.has(key)) return true;
+        stack.push(inner);
+      }
     }
   }
   return false;

@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { generateKeyPairSync } from 'crypto';
-import { redactSecretList, redactSecrets, redactUserPaths, SECRET_PATTERN_SOURCES } from '../../src/core/paths.js';
+import { holdsSecret, redactSecretList, redactSecrets, redactUserPaths, SECRET_PATTERN_SOURCES } from '../../src/core/paths.js';
 
 /**
  * redactSecrets guards two PUBLIC egresses — the dashboard's /v1/doctor and
@@ -396,9 +396,31 @@ describe('redactSecrets (public-egress credential masking)', () => {
       for (const [name, tail] of [['-abcdefgh', '-abcdefgh'], ['=ordinary', '=ordinary'], ['.v2', '.v2'], [' and more prose', ' and more prose']]) {
         expect(redactSecrets(`${ghp}${tail}`), name).toBe(`${REDACTED}${tail}`);
       }
+      // A glued key that runs to the end of the text takes in every span after it: one marker, not two.
+      expect(redactSecrets(`ghp_${r(36, 'Aa1')}sk-${r(10, 'q')}AKIA${r(16, 'AB12')}zzzzz`)).toBe(REDACTED);
       const conn = ['postgres://appuser', `${r(12, 'Aa1')}@db.example.com:5432/app`].join(':');
       expect(redactSecrets(conn)).toBe(`${REDACTED}db.example.com:5432/app`);
       expect(redactSecrets('task-runner and disk-usage and mytoken=abcdefghijkl')).toBe('task-runner and disk-usage and mytoken=abcdefghijkl');
+    });
+
+    it('r19: a chain of glued sk- and token= credentials is masked in time linear in its length', () => {
+      // Each unit ends in a backslash: the sk- run stops there, and the next unit is only reached through token=.
+      const chain = (n: number) => `ghp_${'A'.repeat(36)}${'sk-AAAAAAA&xtoken=BBBBBBBB\\x'.repeat(n)} prose`;
+      expect(chain(8000).length).toBeGreaterThan(224_000);
+      const started = Date.now();
+      const out = redactSecrets(chain(8000));
+      expect(Date.now() - started).toBeLessThan(1000);
+      expect(out).toBe(`${REDACTED} prose`);
+      expect(redactSecrets(chain(3))).toBe(`${REDACTED} prose`);
+    });
+
+    it('r19: escapes are read 8 levels deep; text escaped deeper is masked on its own, never its siblings', () => {
+      const wrap = (levels: number) => { let t = 'ordinary café'; for (let i = 0; i < levels; i++) t = JSON.stringify(t); return t; };
+      // wrap(n) quotes n times: n - 1 levels of escapes.
+      expect(holdsSecret([wrap(9)])).toBe(false);
+      expect(redactSecrets(wrap(9))).toBe(wrap(9));
+      expect(redactSecretList([wrap(10), 'innocent sibling'])).toEqual([REDACTED, 'innocent sibling']);
+      expect(redactSecretList([wrap(10).replace('ordinary café', 'token=abcdefghijkl'), 'innocent sibling'])).toEqual([REDACTED, 'innocent sibling']);
     });
 
     it('overlapping matches cost a bounded amount, and past the bound the rest is masked, never kept', () => {

@@ -52,18 +52,21 @@ export function setTaskState(input) {
     if (changed.length === 0)
         return { project, state: redactedState(state), changed };
     const title = state.goal ?? state.next ?? state.blocked ?? state.done ?? `Task state for ${project}`;
-    remember({
-        name,
-        type: TASK_STATE_TYPE,
-        observations,
-        tags: [`project:${project}`],
-        title,
-        sourceHost: input.sourceHost,
-    });
-    new KnowledgeGraph(getDatabase()).updateEntityMetadata(name, (current) => ({
-        ...current,
-        task_state: state,
-    }));
+    const db = getDatabase();
+    db.transaction(() => {
+        remember({
+            name,
+            type: TASK_STATE_TYPE,
+            observations,
+            tags: [`project:${project}`],
+            title,
+            sourceHost: input.sourceHost,
+        });
+        new KnowledgeGraph(db).updateEntityMetadata(name, (current) => ({
+            ...current,
+            task_state: state,
+        }));
+    }).immediate();
     return { project, state: redactedState(state), changed };
 }
 //# sourceMappingURL=task-state-store.js.map
