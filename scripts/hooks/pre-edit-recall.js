@@ -33,8 +33,8 @@ import {
   SKIP_REASONS,
   SESSION_SNAPSHOT_TYPES,
   recordHookOutcome,
+  openMemeshDb,
 } from './_shared.js';
-import { MemeshDatabase } from './_generated/sqlite.js';
 import { pruneSessionState, recallListName, SESSION_ID_RE } from './_stop-notes.js';
 
 const dbPath = getDbPath();
@@ -221,7 +221,7 @@ process.stdin.on('end', () => {
     // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling
     // and hands back a WRITABLE handle. This hook only reads; the guard
     // fire counter opens its own writable handle for its one UPDATE.
-    const db = new MemeshDatabase(dbPath, { readOnly: true });
+    const db = openMemeshDb(dbPath, { readOnly: true });
     // MemeshDatabase's constructor always sets busy_timeout to the 30s that
     // is correct for the CLI/MCP/HTTP writers; this hook's own budget
     // (hooks.json) is 5s, so left alone a contended lock outlives the hook.

@@ -30,6 +30,11 @@
 
 set -uo pipefail
 
+# A path as one word of a command printed for the owner to paste. Single quotes
+# switch off every expansion, so a directory name holding $(...) or a backtick
+# cannot run anything; double quotes would not.
+shq() { local q="'\\''"; printf "'%s'" "${1//\'/$q}"; }
+
 # D9: removes every OTHER stale version directory under $root, not just the
 # one an upgrade just swapped out. Before the atomic-swap rename elsewhere in
 # this script, an interrupted or pre-this-mechanism upgrade could leave a
@@ -173,7 +178,7 @@ install_signal_traps
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   if [ -d "$LOCK_DIR" ]; then
     echo "ERROR: could not acquire the upgrade lock at $LOCK_DIR — another upgrade may be running." >&2
-    echo "       If nothing else is actually running (a previous run crashed and left the lock behind): rmdir \"$LOCK_DIR\"" >&2
+    echo "       If nothing else is actually running (a previous run crashed and left the lock behind): rmdir $(shq "$LOCK_DIR")" >&2
   else
     echo "ERROR: could not create the upgrade lock at $LOCK_DIR." >&2
     echo "       Its parent must exist and be writable: ${LOCK_DIR%/*}" >&2
@@ -202,7 +207,7 @@ echo "==> Fetching latest from marketplace origin..."
     else
       echo "ERROR: marketplace fast-forward failed; the checkout may be dirty or its history may not match origin/$CURRENT_BRANCH." >&2
       [ -n "$MERGE_ERROR" ] && echo "       $MERGE_ERROR" >&2
-      echo "       Inspect it without discarding work: git -C \"$MARKETPLACE_DIR\" status --short" >&2
+      echo "       Inspect it without discarding work: git -C $(shq "$MARKETPLACE_DIR") status --short" >&2
     fi
     exit 1
   }
@@ -451,11 +456,11 @@ rollback_swap() {
     if [ -e "$PREVIOUS_PATH" ] || [ -L "$PREVIOUS_PATH" ]; then
       echo "       The previous cache is still intact at $PREVIOUS_PATH; installed_plugins.json remains unchanged." >&2
       echo "       Remove the broken cache, then restore the previous cache manually:" >&2
-      echo "       rm -rf \"$NEW_INSTALL_PATH\"" >&2
-      echo "       mv \"$PREVIOUS_PATH\" \"$NEW_INSTALL_PATH\"" >&2
+      echo "       rm -rf $(shq "$NEW_INSTALL_PATH")" >&2
+      echo "       mv $(shq "$PREVIOUS_PATH") $(shq "$NEW_INSTALL_PATH")" >&2
     else
       echo "       installed_plugins.json was not updated to point at it, so it is orphaned. Remove it manually:" >&2
-      echo "       rm -rf \"$NEW_INSTALL_PATH\"" >&2
+      echo "       rm -rf $(shq "$NEW_INSTALL_PATH")" >&2
     fi
     return 1
   fi
@@ -470,7 +475,7 @@ rollback_swap() {
     echo "ERROR: could not restore the previous cache." >&2
     if [ -e "$PREVIOUS_PATH" ] || [ -L "$PREVIOUS_PATH" ]; then
       echo "       It is still intact at $PREVIOUS_PATH — move it back manually:" >&2
-      echo "       mv \"$PREVIOUS_PATH\" \"$NEW_INSTALL_PATH\"" >&2
+      echo "       mv $(shq "$PREVIOUS_PATH") $(shq "$NEW_INSTALL_PATH")" >&2
     else
       echo "       It is gone from $PREVIOUS_PATH and $NEW_INSTALL_PATH is also missing. This should not happen — check $CACHE_ROOT by hand." >&2
     fi
@@ -704,7 +709,7 @@ fi
 rm -rf "$PREVIOUS_PATH" 2>/dev/null
 if [ -e "$PREVIOUS_PATH" ] || [ -L "$PREVIOUS_PATH" ]; then
   echo "WARNING: upgrade succeeded, but the previous cache could not be removed at $PREVIOUS_PATH." >&2
-  echo "         Remove it manually when no Claude Code process is using it: rm -rf \"$PREVIOUS_PATH\"" >&2
+  echo "         Remove it manually when no Claude Code process is using it: rm -rf $(shq "$PREVIOUS_PATH")" >&2
 fi
 
 # D9: sweep every OTHER stale version directory under $CACHE_ROOT, not just

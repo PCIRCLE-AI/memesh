@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { memeshDir } from './paths.js';
+import { removeGroupAndOtherAccess } from './file-mode.js';
 // #431 — the sessionLimit range, the integer check and the effective-value
 // resolver live in the zero-import leaf below (mirrored verbatim for the
 // hooks by scripts/generate-hook-core.mjs); this file is not itself a leaf
@@ -158,17 +159,13 @@ function writeRawConfig(raw: RawConfig): void {
   const dir = configDir();
   const p = configFilePath();
   fs.mkdirSync(dir, { recursive: true, mode: PRIVATE_DIR_MODE });
-  try {
-    fs.chmodSync(dir, PRIVATE_DIR_MODE);
-  } catch {
-    // Best-effort hardening only.
-  }
+  // #520: other users lose access; the owner keeps exactly the bits the owner
+  // set. A read-only folder then makes the write below fail with EACCES.
+  removeGroupAndOtherAccess(dir);
   fs.writeFileSync(p, JSON.stringify(raw, null, 2), { mode: PRIVATE_FILE_MODE });
-  try {
-    fs.chmodSync(p, PRIVATE_FILE_MODE);
-  } catch {
-    // Best-effort hardening only.
-  }
+  // `mode` applies only when the file is created; an existing config.json
+  // keeps its old mode until this, which says so when it cannot tighten it.
+  removeGroupAndOtherAccess(p);
 }
 
 export class ConfigUnreadableError extends Error {

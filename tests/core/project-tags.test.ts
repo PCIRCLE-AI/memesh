@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -416,5 +416,55 @@ describe('Feature: #519 the read-only preview falls back to immutable only when 
     const f = failing('database is locked');
     expect(() => openReadOnlyForPreview(db, f.open)).toThrow('database is locked');
     expect(f.targets).toHaveLength(1);
+  }));
+});
+
+describe('Feature: #520 the rename-project preview opens the database through the same permission guard', () => {
+  const stub = { prepare: () => ({ get: () => 1 }), close: () => {} } as unknown as MemeshDatabase;
+  const mode = (p: string) => fs.statSync(p).mode & 0o777;
+  const inTempDir = (fn: (dir: string) => void) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-ro-guard-'));
+    try { fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  };
+
+  it.skipIf(process.platform === 'win32')('refuses an empty -wal/-shm with fewer owner permissions instead of widening them', () => inTempDir((dir) => {
+    const db = path.join(dir, 'a.db');
+    fs.writeFileSync(db, '');
+    fs.chmodSync(db, 0o600);
+    for (const s of ['-wal', '-shm']) { fs.writeFileSync(`${db}${s}`, ''); fs.chmodSync(`${db}${s}`, 0o400); }
+    let error: (Error & { code?: string }) | undefined;
+    try { openReadOnlyForPreview(db, () => stub); } catch (err) { error = err as Error & { code?: string }; }
+    expect(error?.code).toBe('MEMESH_SIDECAR_PERMISSIONS');
+    for (const s of ['-wal', '-shm']) expect(mode(`${db}${s}`), s).toBe(0o400);
+  }));
+
+  it.skipIf(process.platform === 'win32')("the preview's throwaway copy is owner-only, whatever umask the process had", () => {
+    remember({ name: 'copy-mode', type: 'note', tags: ['project:cm-old'] });
+    // The CLI's dry run opens only through openReadOnlyForPreview, so the
+    // owner-only umask must come from there, not from an earlier openDatabase.
+    const oldMask = process.umask(0o022);
+    const modes: number[] = [];
+    const realRm = fs.rmSync;
+    const spy = vi.spyOn(fs, 'rmSync').mockImplementation(((target: fs.PathLike, opts?: fs.RmOptions) => {
+      const copy = path.join(String(target), 'copy.db');
+      if (String(target).includes('memesh-rename-preview-') && fs.existsSync(copy)) modes.push(fs.statSync(copy).mode & 0o777);
+      return realRm(target, opts);
+    }) as typeof fs.rmSync);
+    try {
+      const handle = openReadOnlyForPreview(fixture.dbPath);
+      try { renameProjectTag('cm-old', 'cm-new', { apply: false, db: handle }); } finally { handle.close(); }
+    } finally {
+      spy.mockRestore();
+      process.umask(oldMask);
+    }
+    expect(modes).toEqual([0o600]);
+  });
+
+  it.skipIf(process.platform === 'win32')('removes group and other access from the database, like every other open', () => inTempDir((dir) => {
+    const db = path.join(dir, 'a.db');
+    fs.writeFileSync(db, '');
+    fs.chmodSync(db, 0o644);
+    expect(openReadOnlyForPreview(db, () => stub)).toBe(stub);
+    expect(mode(db)).toBe(0o600);
   }));
 });

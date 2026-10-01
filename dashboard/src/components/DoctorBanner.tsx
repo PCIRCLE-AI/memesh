@@ -14,7 +14,7 @@ interface DoctorCheck {
   fix?: string;
   code?: string;
   params?: Record<string, string | number>;
-  fixId?: 'install-hooks' | 'fts-rebuild' | 'chmod-db' | 'config-retired-settings' | 'plugin-cache-refresh';
+  fixId?: 'install-hooks' | 'fts-rebuild' | 'config-retired-settings' | 'plugin-cache-refresh';
 }
 interface DoctorResult { status: string; checks: DoctorCheck[] }
 

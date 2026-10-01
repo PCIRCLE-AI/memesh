@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { canonicalAgentScopeId } from '../core/agent-scope-id.js';
 import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessionPrincipal, } from '../core/codex-session-principal.js';
 import { getAgentRouterSocketPath, getMemeshDirFromDbPath, getProjectName } from '../core/paths.js';
+import { requirePrivateWritableDirectory } from '../core/file-mode.js';
 import { assertSecureLocalHostRuntimeSupported, ensureRouterTokenFile, readHostConfigFile, readTokenFile, normalizeConfiguredRouterSocket, requiredString, } from './config.js';
 import { connectRouterHost } from './router-client.js';
 const MAX_HOOK_INPUT_BYTES = 64 * 1024;
@@ -19,7 +20,7 @@ function lifecycleDirectory(dataDir) {
     const stat = fs.lstatSync(directory);
     if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error('Codex companion lifecycle directory must be a real private directory.');
-    fs.chmodSync(directory, 0o700);
+    requirePrivateWritableDirectory(directory, 'the Codex session companion keeps its lifecycle state there');
     return directory;
 }
 export function codexCompanionStatePath(dataDir, threadId) {
@@ -336,7 +337,7 @@ function ensureOwnerPrivateDataDirectory(dataDir) {
     if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) {
         throw new Error('The MeMesh data directory must be owned by the current user.');
     }
-    fs.chmodSync(dataDir, 0o700);
+    requirePrivateWritableDirectory(dataDir, 'the Codex session companion keeps its state and control socket there');
     if ((fs.lstatSync(dataDir).mode & 0o077) !== 0) {
         throw new Error('The MeMesh data directory must be owner-private.');
     }

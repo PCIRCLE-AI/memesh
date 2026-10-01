@@ -20,7 +20,7 @@
  * it.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -165,6 +165,72 @@ describe('CLI: flags reject values they do not understand', () => {
       expect(r.stderr).not.toContain('at Object.');
     });
 
+    it.skipIf(process.platform === 'win32')('the `mkdir -p` it prints runs nothing the directory name holds (#520)', () => {
+      const cwd = path.join(home, 'cwd');
+      fs.mkdirSync(cwd);
+      const missing = path.join(home, "-d$(touch m1)`touch m2`;touch m3;it's \"q\" sp");
+      const r = runCli(['export', '-o', path.join(missing, 'out.json')]);
+      expect(r.exitCode).toBe(1);
+      const command = /Create it first \((mkdir -p [\s\S]*)\), or drop -o/.exec(r.stderr)?.[1];
+      expect(command, r.stderr).toBeDefined();
+      const pasted = spawnSync('/bin/sh', ['-c', command!], { cwd, encoding: 'utf8' });
+      for (const marker of ['m1', 'm2', 'm3']) expect(fs.existsSync(path.join(cwd, marker)), `${marker} created by: ${command}`).toBe(false);
+      expect(pasted.status, pasted.stderr).toBe(0);
+      expect(fs.statSync(missing).isDirectory()).toBe(true);
+    });
+
+    it.skipIf(process.platform === 'win32')('the `memesh export --limit` hint it prints runs nothing the output path holds (#520)', () => {
+      const cwd = path.join(home, 'cwd');
+      fs.mkdirSync(cwd);
+      // No quote in the name: a stray one would make an unquoted hint a syntax error that runs nothing.
+      const dir = path.join(home, 'o$(touch m1)`touch m2`;touch m3');
+      fs.mkdirSync(dir);
+      expect(runCli(['remember', '--name', 'a', '--type', 'note', '--obs', 'one']).exitCode).toBe(0);
+      expect(runCli(['remember', '--name', 'b', '--type', 'note', '--obs', 'two']).exitCode).toBe(0);
+      // runCli keeps stderr only on failure, and this export succeeds.
+      const r = spawnSync('node', [CLI_PATH, 'export', '--limit', '1', '-o', path.join(dir, 'out.json')], {
+        encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home },
+      });
+      expect(r.status, r.stderr).toBe(0);
+      const command = /raise it: (memesh export .*)$/m.exec(r.stderr)?.[1];
+      expect(command, r.stderr).toBeDefined();
+      spawnSync('/bin/sh', ['-c', command!], { cwd, encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+      for (const marker of ['m1', 'm2', 'm3']) expect(fs.existsSync(path.join(cwd, marker)), `${marker} created by: ${command}`).toBe(false);
+    });
+
+    it.skipIf(process.platform === 'win32')('the `memesh remember` fix hint it prints runs nothing the memory type holds (#520)', () => {
+      const cwd = path.join(home, 'cwd');
+      fs.mkdirSync(cwd);
+      const r = runCli(['remember', 'a short note about the deploy', '--type', 't$(touch m1)`touch m2`;touch m3']);
+      expect(r.exitCode, r.stderr).toBe(0);
+      const command = /fix it with: (memesh remember .*)$/m.exec(r.stdout)?.[1];
+      expect(command, r.stdout).toBeDefined();
+      spawnSync('/bin/sh', ['-c', command!], { cwd, encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+      for (const marker of ['m1', 'm2', 'm3']) expect(fs.existsSync(path.join(cwd, marker)), `${marker} created by: ${command}`).toBe(false);
+    });
+
+    it.skipIf(process.platform === 'win32')('the printed remember and recall hints keep a name or type that starts with a dash as given (#520)', () => {
+      const env = { ...process.env, HOME: home, USERPROFILE: home };
+      const asCli = (command: string) => command.replace(/^memesh /, `'${process.execPath}' '${CLI_PATH}' `);
+      const r = runCli(['remember', 'a short note about the deploy', '--type', '-dash type']);
+      expect(r.exitCode, r.stderr).toBe(0);
+      const fix = /fix it with: (memesh remember .*)$/m.exec(r.stdout)?.[1];
+      expect(fix, r.stdout).toBeDefined();
+      const name = /--name=(\S+)/.exec(fix!)?.[1];
+      const pasted = spawnSync('/bin/sh', ['-c', asCli(fix!)], { encoding: 'utf8', env });
+      expect(pasted.status, pasted.stderr).toBe(0);
+      const recalled = spawnSync('/bin/sh', ['-c', asCli(`memesh recall --json -- ${name}`)], { encoding: 'utf8', env });
+      expect(JSON.parse(recalled.stdout).entities[0].type).toBe('-dash type');
+      // The forget hint for a name that starts with a dash finds that memory.
+      expect(runCli(['remember', '--name', '-dash-name', '--type', 'note', '--obs', 'kept']).exitCode).toBe(0);
+      const miss = runCli(['forget', '--name', '-dash-name', '--observation', 'not there']);
+      const see = /See them with: (memesh recall .*)$/m.exec(miss.stdout)?.[1];
+      // `recall` searches, so a rewritten './-dash-name' would still find it: the hint must carry the name as given.
+      expect(see).toBe("memesh recall --json -- '-dash-name'");
+      const shown = spawnSync('/bin/sh', ['-c', asCli(see!)], { encoding: 'utf8', env });
+      expect(JSON.parse(shown.stdout).entities.map((e: { name: string }) => e.name)).toContain('-dash-name');
+    });
+
     it('`export -o` into a directory that exists still writes', () => {
       const out = path.join(home, 'out.json');
       expect(runCli(['export', '-o', out]).exitCode).toBe(0);
@@ -173,6 +239,18 @@ describe('CLI: flags reject values they do not understand', () => {
   });
 
   describe('forget says which thing was missing', () => {
+    it.skipIf(process.platform === 'win32')('the `memesh recall` it prints runs nothing the memory name holds (#520)', () => {
+      const cwd = path.join(home, 'cwd');
+      fs.mkdirSync(cwd);
+      const name = "n$(touch m1)`touch m2`;touch m3;it's";
+      expect(runCli(['remember', '--name', name, '--type', 'note', '--obs', 'kept']).exitCode).toBe(0);
+      const r = runCli(['forget', '--name', name, '--observation', 'not there']);
+      const command = /See them with: (memesh recall .*)$/m.exec(r.stdout)?.[1];
+      expect(command, r.stdout + r.stderr).toBeDefined();
+      spawnSync('/bin/sh', ['-c', command!], { cwd, encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+      for (const marker of ['m1', 'm2', 'm3']) expect(fs.existsSync(path.join(cwd, marker)), `${marker} created by: ${command}`).toBe(false);
+    });
+
     it('an entity that exists, with text that matches no observation', () => {
       expect(runCli(['remember', '--name', 'kept', '--type', 'note', '--obs', 'the real text']).exitCode).toBe(0);
       const r = runCli(['forget', '--name', 'kept', '--observation', 'text that is not there']);

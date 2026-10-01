@@ -73,10 +73,10 @@ import {
   writeCitationRule,
   writeAutoUpdateConsent,
   writePrivateJson,
+  openMemeshDb,
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
 import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
-import { MemeshDatabase } from './_generated/sqlite.js';
 import {
   buildBriefingIndex,
   injectedIndexReserve,
@@ -838,7 +838,7 @@ function recordLauncherSession(data, launcher) {
   try {
     return recordSessionLauncher(() => {
       if (!existsSync(dbPath)) return null;
-      db = new MemeshDatabase(dbPath);
+      db = openMemeshDb(dbPath);
       db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
       return db;
     }, { sessionId: data.session_id, source: data.source, agentType: data.agent_type, launcher });
@@ -1180,7 +1180,7 @@ process.stdin.on('end', async () => {
     // connection refuses it — and it was never doing anything: the mode is a
     // property of the database file that the writing side already set, and a
     // reader opens a WAL database perfectly well without asking for it.
-    const db = new MemeshDatabase(dbPath, { readOnly: true });
+    const db = openMemeshDb(dbPath, { readOnly: true });
     // MemeshDatabase's constructor always sets busy_timeout to the 30s that
     // is correct for the CLI/MCP/HTTP writers; this hook's own budget
     // (hooks.json) is 10s, so left alone a contended lock outlives the hook.

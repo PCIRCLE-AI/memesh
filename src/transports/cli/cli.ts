@@ -46,6 +46,7 @@ import {
   ensureRouterTokenFile,
 } from '../../host-runtime/config.js';
 import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/install-channel.js';
+import { shellQuote } from '../../core/file-mode.js';
 
 // DX: every CLI command that touches the DB used to repeat
 //   openDatabase(); try { ...body... } finally { closeDatabase(); }
@@ -183,9 +184,21 @@ function requireOneOf(value: string | undefined, allowed: readonly string[], fla
  * holding a space or a shell metacharacter would make the command run
  * something other than what it displays. (The interactive confirmation
  * PROMPT is not a command to paste, so it prints the raw path instead.)
+ * A word starting with `-` or `=` is quoted too: `-x` reads as an option,
+ * and zsh expands `=ls` to the path of `ls`.
  */
 function shellQuoteIfNeeded(value: string): string {
-  return /^[A-Za-z0-9._/:@%+=-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  return /^[A-Za-z0-9._/:@%+][A-Za-z0-9._/:@%+=-]*$/.test(value) ? value : shellQuote(value);
+}
+
+/**
+ * A value that is not a path (a memory name or type) as one shell word, its
+ * text unchanged: shellQuote's `./` for a leading `-` would change the value
+ * itself. The commands that print one pass it as `--option=word`, or after
+ * `--`, so a leading `-` is not read as an option.
+ */
+function shellWord(value: string): string {
+  return /^[A-Za-z0-9._/:@%+][A-Za-z0-9._/:@%+=-]*$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -507,7 +520,7 @@ program
           // here because the result carried only the REQUESTED title; that
           // half of the fix has moved to core, where every caller gets it.
           if (result.title) console.log(`   title: ${result.title}`);
-          console.log(`   fix it with: memesh remember --name "${result.name}" --type ${result.derived.type} --title "…" --obs "…" --replace`);
+          console.log(`   fix it with: memesh remember --name=${shellWord(result.name)} --type=${shellWord(result.derived.type)} --title "…" --obs "…" --replace`);
         }
         if (result.replaced) console.log('   replaced: the previous version is kept in metadata.replaced_history');
         // A move drops the memory out of every scoped view it used to appear
@@ -671,7 +684,7 @@ program
         // found" sent the user to re-create a memory that already exists — the
         // one action guaranteed to make it worse.
         console.log(`Entity "${opts.name}" has no observation matching that text (${result.remaining_observations} observation(s) present).`);
-        console.log(`See them with: memesh recall "${opts.name}" --json`);
+        console.log(`See them with: memesh recall --json -- ${shellWord(opts.name)}`);
       } else {
         console.log(`Entity "${opts.name}" not found`);
       }
@@ -731,7 +744,7 @@ program
         const outDir = path.dirname(path.resolve(opts.out));
         if (!fs.existsSync(outDir)) {
           console.error(`Error: cannot write ${opts.out} — the directory ${outDir} does not exist.`);
-          console.error(`       Create it first (mkdir -p "${outDir}"), or drop -o to write to stdout.`);
+          console.error(`       Create it first (mkdir -p ${shellQuote(outDir)}), or drop -o to write to stdout.`);
           process.exit(1);
         }
         // Synchronous write so the CLI exits with a deterministic
@@ -747,7 +760,7 @@ program
       if (result.truncated) {
         process.stderr.write(
           `⚠️  This is NOT the whole graph — ${result.entity_count} entities is the --limit, and there are more.\n`
-          + `   For a full backup, raise it: memesh export --limit 100000${opts.out ? ` -o ${opts.out}` : ''}\n`,
+          + `   For a full backup, raise it: memesh export --limit 100000${opts.out ? ` -o ${shellQuoteIfNeeded(opts.out)}` : ''}\n`,
         );
       }
     });
@@ -838,7 +851,7 @@ program
         }
         if ((err as NodeJS.ErrnoException)?.code === 'EACCES') {
           console.error(`Error: cannot read ${file} (permission denied).`);
-          console.error(`       Check file permissions: ls -la ${file}`);
+          console.error(`       Check file permissions: ls -la ${shellQuoteIfNeeded(file)}`);
           process.exit(1);
         }
         throw err;
@@ -1374,12 +1387,12 @@ agentCmd
     const launchCommand = host === 'codex-session'
       ? null
       : host === 'codex'
-        ? `memesh-host-codex --config ${JSON.stringify(configPath)}`
+        ? `memesh-host-codex --config ${shellQuote(configPath)}`
         : host === 'claude'
           ? 'claude --dangerously-load-development-channels server:memesh-channel'
-          : `memesh-host-acp --config ${JSON.stringify(configPath)}`;
+          : `memesh-host-acp --config ${shellQuote(configPath)}`;
     const registrationCommand = host === 'claude'
-      ? `claude mcp add --transport stdio --scope user memesh-channel -- memesh-host-claude --config ${JSON.stringify(configPath)}`
+      ? `claude mcp add --transport stdio --scope user memesh-channel -- memesh-host-claude --config ${shellQuote(configPath)}`
       : null;
     const result = {
       host,
@@ -2432,8 +2445,10 @@ program
     // --fix executes only prescriptions that carry a fixId — attached at the
     // diagnosing branch in doctor.ts, never parsed from the human fix text.
     // The whitelist is limited to recoverable local repairs: hook wiring,
-    // retired-key cleanup (with a config backup), keyword-index rebuild, db
-    // chmod, and explicit host plugin refresh. Destructive database reset
+    // retired-key cleanup (with a config backup), keyword-index rebuild and
+    // explicit host plugin refresh. Database permissions are not on it: the
+    // open already removes other users' access, and the owner's own bits are
+    // the owner's decision (#520). Destructive database reset
     // branches remain human decisions.
     if (opts.fix) {
       // The dispatch is a Record, not an if-chain, so a fourth fixId added
@@ -2446,10 +2461,6 @@ program
           openDatabase();
           try { return `keyword index rebuilt (${reindexFts().entities} entities)`; }
           finally { closeDatabase(); }
-        },
-        'chmod-db': () => {
-          fs.chmodSync(getDbPath(), 0o600);
-          return `permissions restored: chmod 600 ${getDbPath()}`;
         },
         'config-retired-settings': () => {
           const fixed = removeRetiredConfigKeys();

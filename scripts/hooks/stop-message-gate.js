@@ -29,8 +29,8 @@ import {
   hookMessageSessionId,
   SESSION_ID_MISMATCH_REASON,
   writePrivateJson,
+  openMemeshDb,
 } from './_shared.js';
-import { MemeshDatabase } from './_generated/sqlite.js';
 import { pruneSessionState, SESSION_ID_RE } from './_stop-notes.js';
 
 /** Newest blocked-for ids kept per session — bounds the state file. */
@@ -113,7 +113,7 @@ process.stdin.on('end', () => {
     };
     try {
       // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling.
-      db = new MemeshDatabase(dbPath, { readOnly: true });
+      db = openMemeshDb(dbPath, { readOnly: true });
       db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
       // #497: the session leaves out a message meant for another session.
       const inboxSession = hookMessageSessionId(sessionId);

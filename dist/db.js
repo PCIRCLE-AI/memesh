@@ -4,6 +4,7 @@ import fs from 'fs';
 import { runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
+import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { SCHEMA_SQL, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, rebuildFtsIndex, runOnceMigration, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
@@ -17,16 +18,45 @@ export function openDatabase(dbPath) {
     const dir = path.dirname(resolvedPath);
     fs.mkdirSync(dir, { recursive: true });
     try {
-        fs.chmodSync(dir, 0o700);
+        process.umask(0o077);
     }
     catch { }
+    const [realPath, ...sidecars] = databaseFiles(resolvedPath);
+    const realDir = path.dirname(realPath);
+    removeGroupAndOtherAccess(dir);
+    guardDatabaseFiles(resolvedPath);
+    const missing = sidecars.filter((file) => !fs.existsSync(file)).map((file) => file.slice(realPath.length));
+    let folderWritable = true;
+    try {
+        fs.accessSync(realDir, fs.constants.W_OK);
+    }
+    catch {
+        folderWritable = false;
+    }
+    if (missing.length > 0 && !folderWritable && fs.existsSync(realPath)) {
+        const notYours = belongsToAnotherUser(fs.statSync(realDir));
+        const fix = notYours ? 'Point MEMESH_DB_PATH at a database you own, in a folder you own.' : `chmod u+w ${shellQuote(realDir)}`;
+        throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and ${path.basename(realPath)} has no ${missing.join(' or ')} file there, ` +
+            'so it cannot be opened without writing to the folder. ' +
+            (notYours
+                ? `${realDir} belongs to another user, so you cannot make it writable. ${fix}`
+                : `Copy the database to a writable folder and point MEMESH_DB_PATH at the copy, or make the folder writable: ${fix}`)), { fix });
+    }
     db = openInitialisedDatabase(resolvedPath);
+    const writeBack = ownerWriteCommand(resolvedPath);
+    if (writeBack) {
+        try {
+            process.stderr.write(`MeMesh: ${resolvedPath} is read-only, so it is open for reads only and writes will be refused. ` +
+                `To write to it again, ${writeBack}\n`);
+        }
+        catch { }
+    }
     return db;
 }
 export function openInitialisedDatabase(resolvedPath) {
     const opening = new MemeshDatabase(resolvedPath);
     try {
-        initialiseDatabase(opening, resolvedPath);
+        initialiseDatabase(opening);
     }
     catch (err) {
         try {
@@ -41,11 +71,11 @@ function isReadonlyDbError(err) {
     const msg = err instanceof Error ? err.message : String(err);
     return /readonly database|SQLITE_READONLY/i.test(msg);
 }
-function initialiseDatabase(db, resolvedPath) {
+function initialiseDatabase(db) {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     try {
-        migrateToCurrentSchema(db, resolvedPath);
+        migrateToCurrentSchema(db);
     }
     catch (err) {
         if (!isReadonlyDbError(err))
@@ -58,21 +88,11 @@ function initialiseDatabase(db, resolvedPath) {
     }
     return db;
 }
-function migrateToCurrentSchema(db, resolvedPath) {
+function migrateToCurrentSchema(db) {
     db.exec(SCHEMA_SQL);
     db.exec(FTS_SQL);
     ensureTagsUniqueIndex(db);
     ensureHookRunsSince(db);
-    try {
-        process.umask(0o077);
-    }
-    catch { }
-    for (const suffix of ['', '-wal', '-shm']) {
-        try {
-            fs.chmodSync(`${resolvedPath}${suffix}`, 0o600);
-        }
-        catch { }
-    }
     migrateEntitiesSchema(db);
     runAutoDecay(db);
     backfillSignalScores(db);

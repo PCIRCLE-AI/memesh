@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { getDatabase, openInitialisedDatabase } from '../db.js';
 import { AGENT_MESSAGE_PROJECT_TABLES } from './agent-scope-id.js';
+import { guardDatabaseFiles } from './file-mode.js';
 export function listProjectTags(db) {
     const conn = db ?? getDatabase();
     const rows = conn.prepare("SELECT tag, COUNT(*) c FROM tags WHERE tag LIKE 'project:%' GROUP BY tag ORDER BY c DESC, tag ASC").all();
@@ -151,6 +152,11 @@ function previewOnCopy(source, from, to) {
     }
 }
 export function openReadOnlyForPreview(dbPath, openHandle = (target) => new MemeshDatabase(target, { readOnly: true })) {
+    try {
+        process.umask(0o077);
+    }
+    catch { }
+    guardDatabaseFiles(dbPath);
     const open = (target) => {
         const handle = openHandle(target);
         try {

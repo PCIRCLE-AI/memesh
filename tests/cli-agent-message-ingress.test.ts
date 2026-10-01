@@ -1151,6 +1151,32 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
+  // The launch and registration commands embed the config path (#520): a
+  // data folder whose name holds `$(...)` must not run it when pasted.
+  it.skipIf(process.platform === 'win32')('the printed launch and registration commands run nothing the config path holds', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-quote-'));
+    try {
+      const home = path.join(root, "h$(touch m1)`touch m2`;touch m3;it's");
+      const cwd = path.join(root, 'cwd');
+      fs.mkdirSync(home);
+      fs.mkdirSync(cwd);
+      for (const host of ['codex', 'claude']) {
+        const setup = spawnSync(process.execPath, cliArgs(
+          'agent', 'setup', host, '--project', 'test', '--principal', `p-${host}`, ...(host === 'codex' ? ['--workspace', home] : []), '--json',
+        ), { encoding: 'utf8', env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' } });
+        expect(setup.status, setup.stderr).toBe(0);
+        const result = JSON.parse(setup.stdout) as { registration_command: string | null; launch_command: string | null };
+        for (const command of [result.registration_command, result.launch_command]) {
+          if (!command) continue;
+          spawnSync('/bin/sh', ['-c', command], { cwd, encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
+          for (const marker of ['m1', 'm2', 'm3']) expect(fs.existsSync(path.join(cwd, marker)), `${marker} created by: ${command}`).toBe(false);
+        }
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // A declared model was a guess: the host picks the model per session (and
   // `/model` changes it mid-session), and no host tells MeMesh which one runs.
   // An older script may still pass --model, so it is accepted, said to be

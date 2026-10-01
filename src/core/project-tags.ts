@@ -13,6 +13,7 @@ import { pathToFileURL } from 'node:url';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { getDatabase, openInitialisedDatabase } from '../db.js';
 import { AGENT_MESSAGE_PROJECT_TABLES } from './agent-scope-id.js';
+import { guardDatabaseFiles } from './file-mode.js';
 
 export interface ProjectTagCount {
   project: string;
@@ -268,6 +269,11 @@ export function openReadOnlyForPreview(
   dbPath: string,
   openHandle: (target: string) => MemeshDatabase = (target) => new MemeshDatabase(target, { readOnly: true }),
 ): MemeshDatabase {
+  // The guard every other open of the database runs (#520): files memesh
+  // creates are owner-only, and a -wal/-shm whose owner permissions opening
+  // would change is refused rather than widened.
+  try { process.umask(0o077); } catch { /* non-POSIX */ }
+  guardDatabaseFiles(dbPath);
   const open = (target: string): MemeshDatabase => {
     const handle = openHandle(target);
     try {
