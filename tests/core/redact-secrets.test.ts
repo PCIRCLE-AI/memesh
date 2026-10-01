@@ -269,7 +269,7 @@ describe('redactSecrets (public-egress credential masking)', () => {
         ['array, no END element', JSON.stringify(['before', `${header}\n`, ...lined, 'End.', 42, true, null, { safe: 'x' }])],
         ['array, END element', JSON.stringify(['before', `${header}\n`, ...lined, `${end}\n`, 'after', 42])],
         ['array, junk in an element', JSON.stringify([`${header}\n`, ...bodyLines.map((l, i) => (i === 1 ? `${l}",\n` : `${l}\n`)), `${end}\n`])],
-        ['array, CRLF elements', JSON.stringify([`${header}\r\n`, ...lined.map((l) => l.replace('\n', '\r\n')), 'End.'])],
+        ['array, CRLF elements', JSON.stringify([`${header}\r\n`, ...lined.map((l) => l.replace(/\n$/, '\r\n')), 'End.'])],
         ['array, splitlines elements', JSON.stringify([header, ...bodyLines, 'End.'])],
         ['array, chunks', JSON.stringify([`${header}\n${bodyLines[0]}`, ...bodyLines.slice(1), end])],
         ['array, header with text after it', JSON.stringify([`${header} saved below`, ...bodyLines])],

@@ -141,7 +141,7 @@ function expectRedactedEverywhere(text: string): void {
   expect(indexPart(text)).toContain('is the old primary');
   expect(text).not.toContain(homeDir());
   expect(text).toContain('***REDACTED***');
-  expect(text).toContain('~/runbook.md');
+  expect(text).toContain(path.join('~', 'runbook.md')); // `~\runbook.md` on Windows
 
   // The decision is in both places, redacted in both — never one of each.
   const ranked = rankedPart(text);
