@@ -2,8 +2,9 @@
 // work-topology — which memories are the WORK, and how to say them in one line
 // =============================================================================
 //
-// A runtime leaf with no imports at all, so
-// scripts/generate-hook-core.mjs copies it next to the hooks. Three consumers
+// A runtime leaf with no imports at all — not even a node builtin, because the
+// dashboard bundles it for the browser (MemoriesTab.tsx, entity-display.ts) —
+// so scripts/generate-hook-core.mjs copies it next to the hooks. Three consumers
 // were meant to share one answer to "what counts as the work layer" — the
 // graph, the memory list, and what gets injected into an agent — and both the
 // CEO and the design review landed independently on the same conclusion: that
@@ -185,6 +186,14 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   const snippet = entity.snippet?.trim();
   // session-summary/pre-compact store titles as `<label>~<32 hex>: …` (the
   // routing hash from getProjectName()); it means nothing in prose (#409).
+  //
+  // Redaction (#464) does NOT happen here, although this is the one builder
+  // every injected line goes through: the redactors live in paths.ts, which
+  // imports fs/os/crypto, and the dashboard bundles this module for the
+  // browser (MemoriesTab.tsx, entity-display.ts). Each caller redacts in its
+  // row → TopologyEntity mapping with `redactMemoryText` instead; the
+  // briefing/session-start parity test and tests/core/briefing-redact.test.ts
+  // are what hold those callers to the same treatment.
   const text = (title || snippet || `${entity.type} memory`).replace(/~[0-9a-f]{32}\b/g, '');
   // The citation handle. A line that carries the entity's id lets an agent
   // cite the memory it actually used — `[mem:42]` — so the Stop hook's

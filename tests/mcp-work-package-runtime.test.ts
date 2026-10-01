@@ -129,7 +129,9 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     expect(proposalCount()).toMatchObject({ n: 0 });
     expect((await call('work_package', { action: 'prepare', project, kind: 'digest' })).data.package).toEqual(pkg);
 
-    const result = { name: 'runtime-parser-digest', type: 'digest', observations: ['Five parser cleanup steps completed.'], tags: ['parser'] };
+    // A pretty-printed JSON observation with nothing secret in it, escapes
+    // included, is not "secret-shaped" (#523).
+    const result = { name: 'runtime-parser-digest', type: 'digest', observations: ['Five parser cleanup steps completed.', '{\n  "steps": 5,\n  "log": "line1\\nline2",\n  "id": 12345678901234567890\n}'], tags: ['parser'] };
     const invalid = await call('work_package', {
       action: 'submit', package_id: pkg.id, ref: pkg.ref, result: { ...result, tags: ['project:forged'] },
     });
@@ -142,6 +144,13 @@ it('stages digest and visible transcript work through the actual MCP stdio proce
     });
     expect(secretShaped.response.isError).toBe(true);
     expect(secretShaped.data.error).toBe('secret_shaped_result');
+    expect(proposalCount()).toMatchObject({ n: 0 });
+    // The rest of a split key, with its END line, is secret-shaped as a set (#523).
+    const splitKey = await call('work_package', {
+      action: 'submit', package_id: pkg.id, ref: pkg.ref,
+      result: { ...result, observations: ['MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg', `-----END ${'PRIV' + 'ATE'} KEY-----`] },
+    });
+    expect(splitKey.data.error).toBe('secret_shaped_result');
     expect(proposalCount()).toMatchObject({ n: 0 });
     const staged = await call('work_package', { action: 'submit', package_id: pkg.id, ref: pkg.ref, result });
     expect(staged.response.isError).not.toBe(true);

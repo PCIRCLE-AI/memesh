@@ -16,6 +16,78 @@ import {
 import { computeSignalScore } from './core/signal-scorer.js';
 import { dropEntityFromIndexes } from './storage/entity-index.js';
 import { canonicalEntityType } from './core/work-topology.js';
+import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
+
+/**
+ * Metadata as it will be STORED: every string redacted, with two exceptions.
+ *
+ * - `guard.pattern`, when it is a string, is kept as given. It is a regular expression, and one
+ *   that DETECTS a credential (`api_key=[A-Za-z0-9_-]+`) looks like one:
+ *   rewriting it into `***REDACTED***` produced an invalid regex that the
+ *   hook skipped forever (#523). Everything else in `guard` — the message
+ *   the hook injects, the examples, any other key — is caller text and is
+ *   redacted (#523).
+ * - `replaced_history` follows provenance: an entry byte-identical to one
+ *   the row already holds (`storedHistory`, read from the row before any
+ *   updater ran) is the accepted old record and stays exactly as stored; any
+ *   other entry is NEW caller material and is redacted (#523). A
+ *   value that is not an array is redacted like any other text (#523).
+ */
+const isGuardWithPattern = (guard: unknown): guard is Record<string, unknown> & { pattern: string } =>
+  guard !== null && typeof guard === 'object' && typeof (guard as { pattern?: unknown }).pattern === 'string';
+
+function redactMetadataForStore(
+  next: Record<string, unknown>,
+  stored: Record<string, unknown> | undefined,
+  sameCall: readonly string[] = [],
+): Record<string, unknown> {
+  const storedHistory = stored?.replaced_history;
+  const incoming = next.replaced_history;
+  const kept = new Map<string, unknown>();
+  if (Array.isArray(storedHistory)) for (const entry of storedHistory) kept.set(JSON.stringify(entry), entry);
+  // Metadata is redacted string by string, so `trust`, `kind` and timestamps
+  // never become the marker. A key split across its strings would then keep
+  // its other parts, so new metadata that holds part of a private key, or a
+  // credential in a key name, is refused and nothing is written. A new
+  // history entry is redacted as its own set first (redactVersionText), and
+  // text the row already holds is not checked again (metadataRefusal).
+  const fresh = withoutGuardPattern({
+    ...next,
+    ...(Array.isArray(incoming)
+      ? { replaced_history: incoming.filter((entry) => !kept.has(JSON.stringify(entry))).map(redactVersionText) }
+      : {}),
+  });
+  // The rest of the write: the stored text it keeps, and the title and
+  // observations of the same call. Part of a key there plus a new string
+  // here is refused as a whole (metadataRefusal).
+  const known = textsIn(stored);
+  const keptText = [...textsIn(withoutGuardPattern(next))].filter((text) => known.has(text));
+  const refusal = metadataRefusal(fresh, known, [...keptText, ...sameCall]);
+  if (refusal !== undefined) {
+    throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+  }
+  const redacted = redactTextValues(next, new Set(['guard', ...(Array.isArray(incoming) ? ['replaced_history'] : [])])) as Record<string, unknown>;
+  if (redacted.guard !== undefined) {
+    const guard = redacted.guard as { pattern?: unknown } | null;
+    redacted.guard = redactTextValues(redacted.guard, new Set(typeof guard?.pattern === 'string' ? ['pattern'] : []));
+  }
+  const out = !Array.isArray(incoming) ? redacted : {
+    ...redacted,
+    replaced_history: (redacted.replaced_history as unknown[]).map((entry) => {
+      const key = JSON.stringify(entry);
+      return kept.has(key) ? kept.get(key) : redactVersionText(entry);
+    }),
+  };
+  // A write that adds no new text (a pin, an unpin) masks every part of a key
+  // the row holds, history included, so the memory takes new text again.
+  if (addsNewText(fresh, known)) return out;
+  const cleared = clearPartsOfKey(withoutGuardPattern(out));
+  return isGuardWithPattern(out.guard) ? { ...cleared, guard: { ...(cleared.guard as object), pattern: out.guard.pattern } } : cleared;
+}
+
+/** The metadata without `guard.pattern`, which is kept exactly as given and is not caller prose. */
+const withoutGuardPattern = (metadata: Record<string, unknown>): Record<string, unknown> =>
+  isGuardWithPattern(metadata.guard) ? { ...metadata, guard: { ...metadata.guard, pattern: undefined } } : metadata;
 
 /**
  * Cap on how many terms of a query reach the FTS5 MATCH expression. The broad
@@ -279,6 +351,22 @@ function dropUbiquitousTerms(db: MemeshDatabase, terms: string[]): string[] {
 export class KnowledgeGraph {
   constructor(private db: MemeshDatabase) {}
 
+  /** The metadata a row already holds, or undefined when there is no row —
+   *  the provenance `redactMetadataForStore` keys on. */
+  private storedMetadata(name: string): Record<string, unknown> | undefined {
+    const row = this.db.prepare('SELECT metadata FROM entities WHERE name = ?').get(name) as { metadata: string | null } | undefined;
+    return row ? this.parseMetadata(row.metadata) : undefined;
+  }
+
+  /** The observations a row already holds, and its title unless the write replaces it (#523: text kept beside what a write adds). */
+  private storedText(name: string, keepTitle: boolean): string[] {
+    const row = this.db.prepare('SELECT id, title FROM entities WHERE name = ?').get(name) as { id: number; title: string | null } | undefined;
+    if (!row) return [];
+    const observations = (this.db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(row.id) as { content: string }[])
+      .map((o) => o.content);
+    return keepTitle && row.title !== null ? [row.title, ...observations] : observations;
+  }
+
   updateEntityMetadata(
     name: string,
     updater: (currentMetadata: Record<string, unknown>) => Record<string, unknown> | null | undefined
@@ -289,11 +377,20 @@ export class KnowledgeGraph {
 
     if (!row) return;
 
-    const currentMetadata = this.parseMetadata(row.metadata);
-    const nextMetadata = updater(currentMetadata);
+    // #523: the public updater is a writer of caller text as much as
+    // `createEntity` is (task_state, dreamer, a library caller), so what it
+    // returns is redacted (see redactMetadataForStore). The stored history
+    // is read from the row on its own, BEFORE the updater runs: the updater
+    // gets a mutable object, and an entry pushed onto that object's array
+    // must not count as one the row already held (#523).
+    const stored = this.parseMetadata(row.metadata);
+    const nextMetadata = updater(this.parseMetadata(row.metadata));
+    const safe = nextMetadata
+      ? redactMetadataForStore(nextMetadata, stored, this.storedText(name, true))
+      : nextMetadata;
     this.db
       .prepare('UPDATE entities SET metadata = ? WHERE name = ?')
-      .run(nextMetadata ? JSON.stringify(nextMetadata) : null, name);
+      .run(safe ? JSON.stringify(safe) : null, name);
   }
 
   createEntity(
@@ -339,7 +436,43 @@ export class KnowledgeGraph {
     // Safe to nest: `MemeshDatabase` tracks depth and turns an inner
     // transaction into a SAVEPOINT, so `createEntitiesBatch`'s outer
     // transaction and the import/dreamer callers keep working unchanged.
-    return this.db.transaction(() => this.createEntityInner(name, type, opts))();
+    //
+    // #523 — credential redaction at the ONE writer, for the same reason
+    // #451 canonicalizes the type here: `KnowledgeGraph` is exported from
+    // the package root, so a caller that never goes through `remember`
+    // (the memory tool, import, dreamer acceptance, a library user) reaches
+    // this method directly with user or model text. The callers that must
+    // redact EARLIER keep doing so — `learn` before deriving its name, the
+    // memory tool before splitting lines, the hooks before cutting a title
+    // — because a name or a cut fragment is already lost by the time text
+    // arrives here. `name` and `tags` are keys and are left alone (the FTS
+    // delete below reads the stored text back, so it stays exact); metadata
+    // STRING values are redacted too, except `guard.pattern` and the history
+    // entries the row already holds (redactMetadataForStore). Redaction is
+    // the identity on ordinary text.
+    // Text this call writes, and the text the row keeps beside it. A title
+    // or observations added to a memory whose kept text holds part of a
+    // private key is refused as a whole (besideRefusal), whatever the
+    // metadata does.
+    const stored = this.storedMetadata(name);
+    const written = [
+      ...(typeof opts?.title === 'string' ? [opts.title] : []),
+      ...(opts?.observations === undefined ? [] : opts.observations),
+    ];
+    const kept = stored === undefined ? [] : this.storedText(name, typeof opts?.title !== 'string');
+    const refusal = stored === undefined ? undefined : besideRefusal(written.length > 0, [...textsIn(withoutGuardPattern(stored)), ...kept]);
+    if (refusal !== undefined) throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    const safe = opts === undefined ? undefined : {
+      ...opts,
+      ...redactTitleAndObservations(typeof opts.title === 'string' ? opts.title : undefined, opts.observations),
+      // Metadata STRING values are caller text too (a library caller can put
+      // a `verification_scenario` here); structure, numbers and booleans are
+      // untouched.
+      ...(opts.metadata !== undefined
+        ? { metadata: redactMetadataForStore(opts.metadata, stored, [...kept, ...written]) }
+        : {}),
+    };
+    return this.db.transaction(() => this.createEntityInner(name, type, safe))();
   }
 
   private createEntityInner(

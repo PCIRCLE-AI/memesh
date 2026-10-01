@@ -411,6 +411,7 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 
 - **Trigger**: `PreToolUse` event on `Edit` and `Write` tools
 - **Matcher**: `Edit|Write`
+- **What is printed**: each memory's name, type and the first 120 characters of its first observation, with credential-shaped text and home-directory paths redacted in the name and in the observation before the cut (#554, #523) — the same treatment as every other injected memory line.
 - **Behavior**: A memory is injected for the edited file only if (a) it carries the exact tag `file:<full basename>`, or (b) its `entities.name` or one of its `observations.content` literally names the file — for every script, ASCII or not — and it is not an auto-captured session snapshot. A memory that refers to a file only by its stem ("the `auth` module …"), only loosely in prose ("the Claude MD file"), or by a DIFFERENT file's basename does NOT match; this is deliberately narrower than an earlier version of this hook (see CHANGELOG `[4.10.2]`).
   - An exact `file:<basename>` TAG match — the full basename with its extension, never the extension-less stem alone (a `file:<stem>` tag, also written by the capture producer, is not unique to one file: `file:auth` is on both `auth.ts` and `auth.py`).
   - An FTS5 search used only as a CANDIDATE GENERATOR — the ASCII basename's own words, extension included, adjacent and in order (not merely any one of them; a non-ASCII basename's candidate search is on its stem, bigram-OR'd, ranked by relevance) — over a bounded window of up to 50 candidates, followed by a LITERAL CONFIRMATION in JS over every fetched candidate: the FULL basename, extension included, must occur literally — for every script, never only the stem, even on the non-ASCII path — NFC-normalised, in the entity's name or one of its observations. Case folding is ASCII-only and applied PER CHARACTER (`A-Z`→`a-z`, everything else including every non-ASCII script passes through unchanged) — not gated on the whole basename being ASCII, so a mixed-script basename's own ASCII extension still folds (`設定配置.TS` confirms `設定配置.ts`). The candidate query alone is not sufficient: a token-adjacency hit is not proof the literal name appears (`05-CLAUDE-md.md` tokenizes to "claude" immediately followed by "md" too).
@@ -445,7 +446,7 @@ Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecyc
 
 - **Trigger**: `PostToolUse` event on `Bash` tool
 - **Matcher**: `Bash` (filters for git commit commands)
-- **Behavior**: Detects git commit messages from tool output, creates a `commit` entity with the commit message as an observation, tags with the project name; includes diff stats (files changed, insertions, deletions)
+- **Behavior**: Detects git commit messages from tool output, creates a `commit` entity with the commit subject as its title and first observation, tags with the project name; includes diff stats (files changed, insertions, deletions). Like every hook write (`captureEntity` in `_shared.js`), credential-shaped text in the title and observations is replaced with `***REDACTED***` before it is stored (#523)
 
 ### Decision Nudge (`scripts/hooks/decision-nudge.js`)
 

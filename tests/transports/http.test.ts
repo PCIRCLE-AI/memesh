@@ -315,6 +315,45 @@ describe('HTTP Transport: GET /v1/entities/:name', () => {
     expect(res.status).toBe(404);
     expect(res.body.success).toBe(false);
   });
+
+  it('shows a credential stored before redaction masked, in the list and the detail, and leaves the row as stored (#523)', async () => {
+    // Assembled at runtime so no line in the repository looks like a credential.
+    const password = 'hunter2hunter2';
+    const url = ['postgres://appuser', `${password}@db:5432/app`].join(':');
+    const token = ['token', 'abc123abc123abc123'].join('=');
+    const db = getDatabase();
+    // Raw SQL: every writer redacts now, so only a row written this way holds the text.
+    const metadata = JSON.stringify({
+      note: `see ${token}`,
+      guard: { pattern: 'token=\\w+', message: `never commit ${token}` },
+      replaced_history: [{ replaced_at: '2026-01-01T00:00:00.000Z', title: `old ${token}`, observations: [`was ${url}`], tags: [] }],
+    });
+    const id = Number(db.prepare("INSERT INTO entities (name, type, title, metadata) VALUES ('legacy-shown', 'note', ?, ?)").run(`db ${token}`, metadata).lastInsertRowid);
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, `primary is ${url}`);
+    const stored = () => JSON.stringify([
+      db.prepare("SELECT title, metadata FROM entities WHERE name = 'legacy-shown'").get(),
+      db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(id),
+    ]);
+    const before = stored();
+
+    const detail = await req('GET', '/v1/entities/legacy-shown');
+    expect(detail.status).toBe(200);
+    const list = await req('GET', '/v1/entities?limit=5000&status=all');
+    const listed = (list.body.data as Array<{ name: string }>).find((e) => e.name === 'legacy-shown');
+    expect(listed, 'the list carries the memory').toBeTruthy();
+    for (const shown of [detail.body.data, listed]) {
+      const text = JSON.stringify(shown);
+      expect(text).not.toContain(password);
+      expect(text).not.toContain('abc123abc123');
+      expect(shown.title).toBe('db ***REDACTED***');
+      expect(shown.observations).toEqual(['primary is ***REDACTED***db:5432/app']);
+      expect(shown.metadata.replaced_history[0].observations).toEqual(['was ***REDACTED***db:5432/app']);
+      expect(shown.metadata.replaced_history[0].replaced_at).toBe('2026-01-01T00:00:00.000Z');
+      // A guard's pattern is a matcher, not content: kept as given.
+      expect(shown.metadata.guard.pattern).toBe('token=\\w+');
+    }
+    expect(stored()).toBe(before);
+  });
 });
 
 // ── List entities ─────────────────────────────────────────────────────────────
