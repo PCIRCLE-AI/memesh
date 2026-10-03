@@ -55,8 +55,10 @@ that is itself another registered session of the project
 `intended_for_other_session` (#497). A caller with no session id, or with an
 id no session registered, still can — a Codex MCP process has none. Under
 Codex, SessionStart and the prompt hook do not remind about a delivery the
-router already pushed into the thread (it has a host acceptance); under
-Claude Code they still do.
+router already pushed into THIS thread (its host acceptance names this
+thread); a delivery pushed into a different thread of the same principal, for
+example one that ended without running it, is still reminded until the
+recipient records intake. Under Claude Code they still remind.
 
 Every Claude Code session in one project shares one principal, so a message
 sent to that principal reaches all of them. A message can instead name the
@@ -141,9 +143,11 @@ result reports only that recipient's unfetched deliveries and tells it to
 `message_id`. Fetching remains separate from intake and acknowledgement.
 
 The messaging path keeps durable store-and-forward compatibility. For an
-exact active local Codex or Claude session, MeMesh sends one bounded full
-message through the authenticated native host channel and waits for native
-acceptance; no marker-to-fetch step is required. An oversized full envelope
+exact active local Claude session, MeMesh sends one bounded full message
+through the authenticated native host channel and waits for native
+acceptance; no marker-to-fetch step is required. For an exact active local
+Codex session it queues only a short notice naming the message, and the agent
+reads the body from the inbox. An oversized full envelope
 returns `native_message_too_large`; other unavailable or rejected exact sessions
 return `recipient_unavailable` while scoped recovery data remains durable.
 Principal targets retain asynchronous store-and-forward semantics.
@@ -158,6 +162,14 @@ unavailability.
 `poll`/`watch` are compatibility and diagnostic APIs. A queue admission or
 `host_accept` is not proof that an agent read the payload, acknowledged it, or
 accepted the work.
+A delivery attempt that the router stopped waiting for (`host_outcome_timeout`)
+does not mean the host did not run it: a host that finishes later still sends
+its acceptance, and the router records it for exactly that attempt on that
+same, still-current connection, so the delivery is not sent again. The
+timed-out attempt stays recorded in the database, and a sender that was told
+the send failed was told so for that attempt. A host that stops before
+sending its acceptance can still be sent the same delivery again: delivery is
+at least once, not exactly once.
 
 ## Claude Code recipient fallback, Stop gate, and channel-flag warning (#468)
 
@@ -381,7 +393,9 @@ Detachment is required because Codex reaps an async hook child when the CLI
 process exits, while `codex queue` accepts the thread only after its active
 writer is gone. `SessionEnd` leaves a bounded 45-second idle queue window;
 resume replaces the prior exact generation through its private control socket,
-and expiry removes the registration. A missing or malformed identity, invalid
+also when the same thread is resumed from another directory (it then registers
+under that directory's project; a `SessionEnd` from the old directory does not
+end the new registration), and expiry removes the registration. A missing or malformed identity, invalid
 cwd, insecure explicit override, or failed connection does not register a host.
 A companion records its control socket, with the socket's inode, as soon as it
 binds it, and marks the record registered once the router accepts it. The
@@ -397,17 +411,27 @@ cleanly is appended to the owner-private `codex-companion.log` in the MeMesh
 data directory, and so is what a start or `SessionEnd` did with the record of
 a companion that had exited (its socket removed, or left in place and why).
 
-For a registered session, MeMesh invokes `codex queue` with one untrusted full
-envelope capped at 16,384 bytes (16 KiB), including routing metadata and payload.
+For a registered session, MeMesh invokes `codex queue` with a short notice, never
+the message body: the project, recipient, target kind, message id and delivery
+id, and how to handle it. The agent first reads the message's receipts and stops
+if it already recorded intake; otherwise it fetches the body from the durable
+inbox with the MeMesh message tool, treats it as untrusted, and records intake.
+Without the message tool, or without approval to use it, the agent says so and
+the message stays pending. The body therefore has one source, the inbox, and a
+queued notice that runs after intake (Codex cannot withdraw it without its
+app-server daemon) does not bring a second copy. Whether the agent stops is
+still the agent's own check, not something MeMesh enforces, and two concurrent
+fetches can both read the body. The full envelope is still capped at 16,384
+bytes (16 KiB), including routing metadata and payload, and an oversized one
+reports `native_message_too_large`.
 The separate durable JSON-encoded payload limit is 65,536 bytes (64 KiB). The exact-session sender returns
-`native_delivery.status: "native_accepted"` only after the queue accepts it;
-Codex does not need a second `message fetch` to inspect that native message.
-For ordinary CLI, a message accepted in the idle window becomes model-visible
+`native_delivery.status: "native_accepted"` only after the queue accepts the notice.
+For ordinary CLI, a notice accepted in the idle window becomes model-visible
 when that same thread resumes; it does not wake a stopped terminal or Desktop UI.
-The persisted `host_accept` is neither agent readback nor an `ack` or workflow
-disposition. Codex exposes message text only through its `--message` process
-argument, so same-user process inspection may observe it while the short-lived
-queue command runs; do not put secrets in native messages.
+The persisted `host_accept` (with `content: "notice"`) is neither agent readback
+nor an `ack` or workflow disposition, and it does not silence the waiting-message
+reminder: that stops only at intake. The message body never appears in the
+`codex queue` process arguments; the notice's routing identifiers do.
 
 Codex can leave an accepted message unstarted: an item queued while a turn
 runs stays in the thread queue if that turn is interrupted, and neither an
@@ -507,6 +531,12 @@ session automatically; EOF, MCP close, or normal signals unregister it.
 An internal generic ACP runner remains an experimental adapter surface. No ACP
 provider is documented as a supported native-wakeup path here; protocol or
 process readiness alone is not proof that a provider accepted a message.
+If the agent process of a started ACP runner exits, or the runner fails after
+start, `memesh-host-acp` unregisters, prints the cause (the exit code or
+signal, or the failure) on stderr and exits 1, also when a SIGINT or SIGTERM
+arrives after the agent failed. Closing it with SIGINT or SIGTERM before any
+failure exits 0 and is not reported as a failure; if that close itself fails,
+it prints why and exits 1.
 
 The managed Codex app-server and Claude channel paths deliver only while their
 configured target is active and registered. If it is stopped, missing, disconnected, or replaced, MeMesh keeps the durable message but does not start
@@ -523,6 +553,7 @@ for active Codex-session delivery.
 - `poll` and `memesh message watch` return only events for the exact project and recipient. They are compatibility and diagnostic paths; the opaque cursor can be persisted and reused after a timeout, dropped hint, duplicate delivery, or process restart.
 - `fetch` returns the payload only to the named recipient and matching `target_kind` in the named project. Exact-session messages require `target_kind=session`; polling and fetching do not acknowledge the message.
 - `intake`, `ack`, `disposition`, and `activation` are explicit, separate, idempotent receipt facts. `intake` and `disposition` for a delivery with an `intended_session` are refused (`intended_for_other_session`) unless the caller is that session. Inbox/MCP ACK is valid without a host-native acceptance; host-native ACK remains bound to its `host_accept`. `receipts` returns one ordered projection and identifies each underlying fact source. For example, `manual_resume_required` does not imply ACK, acceptance, rejection, cancellation, or completion.
+- The `host_accept` fact in `receipts` carries a `delivery_state` observed at read time: whether intake is `recorded` or `pending`, and whether the session it was accepted for is `live`, `not_live`, `unknown` (no registry row names it) or `not_applicable` (plain principal delivery). A session-target or `intended_session` message whose session ended before intake shows `pending` with `not_live`; nobody else is reminded of it and MeMesh does not resend or reroute it, and a MeMesh send cannot wake or resume that session. The sender can resume it in its own host (which may not succeed at once) and read receipts again, or decide to send it again to the principal, knowing the original session may still take the first message if it comes back. `not_live` is an observation, not a permanent end. Nothing is stored for this; older readers see the same stored facts.
 - The transport, rather than model-provided payload data, records sender-host provenance.
 
 ## Repeatable owner-run live checks
@@ -594,12 +625,13 @@ memesh kg rename-project --from <old> --to <new> --apply  # backs up first
 
 ## Identity and lifecycle
 
-A **principal** is the stable logical recipient. A **session** is one live host connection for that principal. A **generation** changes when that session is replaced. An exact-session target never reroutes. A principal target can deliver only to an eligible active session after its activation checkpoint; it does not replay historical inbox contents into a first session.
+A **principal** is the stable logical recipient. A **session** is one live host connection for that principal. A **generation** changes when that session is replaced. The replaced host is told so, and stops: it can no longer receive. `memesh-host-claude`, `memesh-host-codex` and `memesh-host-acp` print `replaced by a newer connection for this session; stopping.` on stderr, close and exit 0; the Codex session companion writes that line to `codex-companion.log` in the data directory and exits. A close that fails, or a failure that came first, still exits 1. Stopping the replaced host leaves the newer connection registered. An exact-session target never reroutes. A principal target can deliver only to an eligible active session after its activation checkpoint; it does not replay historical inbox contents into a first session.
 
 Persistence, dispatch attempt, host acceptance, intake, acknowledgement,
 workflow disposition, retention, and presence are independent state axes. An
-active configured exact session receives a bounded full message without
-polling or an inbox fetch. An oversized full envelope returns
+active configured exact Claude session receives a bounded full message without
+polling or an inbox fetch; a Codex session receives a notice and reads the body
+from the inbox. An oversized full envelope returns
 `native_message_too_large`. A stopped, missing, busy beyond its queue limit,
 disconnected, or unsupported session returns `recipient_unavailable` and is
 not awakened, resumed, or replaced; durable state remains available for audit
@@ -673,8 +705,10 @@ reply, or a stopped-session wake-up.
 ## Lifecycle
 
 1. A sender calls `message` with `action: "send"`, a stable sender, one recipient, a project, an idempotency key, and a payload.
-2. For an eligible exact Codex or Claude session, the router sends one bounded
-   untrusted full envelope and waits for native host acceptance. An explicit
+2. For an eligible exact Claude session, the router sends one bounded untrusted
+   full envelope; for a Codex session, a short notice naming the message, whose
+   body the agent then fetches from the inbox. Either way it waits for native
+   host acceptance. An explicit
    `poll`/`watch` client may still read privacy-minimized events for recovery,
    compatibility, or diagnosis.
 3. Native acceptance returns `native_delivery.status: "native_accepted"`; an

@@ -26,6 +26,7 @@ export type ConnectRouterHost = (options: {
         work_summary?: string;
     };
     deliver: (delivery: RouterDelivery) => Promise<Record<string, unknown>>;
+    on_superseded?: () => void;
 }) => Promise<RouterHostConnection>;
 interface AcpHostAdapterHandle {
     readonly acp_session_id: string;
@@ -41,6 +42,8 @@ export interface ManagedAcpHostRuntime {
     readonly principal_id: string;
     readonly session_instance_id: string;
     readonly acp_session_id: string;
+    readonly failure: Promise<Error>;
+    readonly superseded: Promise<void>;
     close: () => Promise<void>;
 }
 export interface ManagedAcpLaunch {
@@ -54,5 +57,13 @@ export interface ManagedAcpLaunch {
 export declare function createAcpSessionUpdateSink(configuredPath: unknown): AcpSessionUpdateSink | undefined;
 export declare function resolveManagedAcpLaunch(config: Record<string, unknown>, createSessionInstanceId?: () => string): ManagedAcpLaunch;
 export declare function startManagedAcpHost(config: Record<string, unknown>, dependencies: ManagedAcpHostDependencies): Promise<ManagedAcpHostRuntime>;
+export interface ManagedAcpHostSupervision {
+    onSignal(handler: () => void): void;
+    exit(code: number): void;
+    stderr: {
+        write(text: string): unknown;
+    };
+}
+export declare function superviseManagedAcpHost(runtime: ManagedAcpHostRuntime, io: ManagedAcpHostSupervision): Promise<never>;
 export {};
 //# sourceMappingURL=acp.d.ts.map

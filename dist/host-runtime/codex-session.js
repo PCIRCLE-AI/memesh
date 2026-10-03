@@ -327,8 +327,8 @@ async function terminatePriorExactCompanion(dataDir, session) {
             throw new Error('Codex companion lifecycle state is malformed; refusing to replace it.');
         return;
     }
-    if (state.thread_id !== session.threadId || state.workspace !== session.workspace) {
-        throw new Error('Codex companion lifecycle state belongs to another exact session; refusing cross-thread termination.');
+    if (state.thread_id !== session.threadId) {
+        throw new Error('Codex companion lifecycle state names another thread; refusing cross-thread termination.');
     }
     if (state.control_socket_ino !== undefined && state.registered !== true && !pidIsGone(state.pid)) {
         throw new CompanionRefusal(`companion_busy: process ${state.pid} is still starting this Codex session's companion. `
@@ -399,7 +399,7 @@ export async function startCodexSessionCompanion(config, hookInput, environment,
         return null;
     return connectCodexSessionCompanion(config, session, realpath, dependencies.connect ?? connectRouterHost);
 }
-function connectCodexSessionCompanion(config, session, realpath, connect) {
+function connectCodexSessionCompanion(config, session, realpath, connect, onSuperseded) {
     const selected = config === undefined
         ? automaticCodexSessionConfig(session)
         : configuredCodexSessionConfig(config, session, realpath);
@@ -416,6 +416,7 @@ function connectCodexSessionCompanion(config, session, realpath, connect) {
         async deliver() {
             throw new Error('Codex CLI queue delivery is owned by the router adapter.');
         },
+        on_superseded: onSuperseded,
     });
 }
 function validateCodexSessionStart(hookInput, environment, realpath) {
@@ -606,8 +607,12 @@ async function runDetachedCompanion(dataDir, input, failurePath) {
             control_socket_ino: socketIno,
         };
         writeCompanionState(statePath, record);
-        connection = await connectCodexSessionCompanion(readCodexSessionConfigIfPresent(path.join(dataDir, 'hosts', 'codex-session.json')), session, fs.realpathSync, connectRouterHost);
-        writeCompanionState(statePath, { ...record, registered: true });
+        connection = await connectCodexSessionCompanion(readCodexSessionConfigIfPresent(path.join(dataDir, 'hosts', 'codex-session.json')), session, fs.realpathSync, connectRouterHost, () => {
+            recordCompanionLog(dataDir, `companion ${process.pid} replaced by a newer connection for this session; stopping.`);
+            exitAfterShutdown();
+        });
+        if (!cleanup)
+            writeCompanionState(statePath, { ...record, registered: true });
     }
     catch (error) {
         process.exitCode = 1;

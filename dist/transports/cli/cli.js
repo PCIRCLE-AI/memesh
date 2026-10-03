@@ -26249,7 +26249,7 @@ function receiptDetail(note2, context) {
 }
 function resolveCanonicalDelivery(db2, project, recipient, messageId2) {
   const delivery = db2.prepare(`
-    SELECT delivery_id, message_id, project, recipient
+    SELECT delivery_id, message_id, project, recipient, target_kind, intended_session
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId2);
@@ -26290,6 +26290,9 @@ function recordPublicWorkflow(db2, input, context) {
   });
 }
 function readPublicReceipts(db2, input) {
+  return db2.transaction(() => readPublicReceiptsSnapshot(db2, input))();
+}
+function readPublicReceiptsSnapshot(db2, input) {
   const delivery = resolveCanonicalDelivery(db2, input.project, input.recipient, input.message_id);
   const projected = [];
   const legacy = readAgentMessageReceipts(db2, input);
@@ -26300,7 +26303,11 @@ function readPublicReceipts(db2, input) {
   }));
   const hostAccept = readHostAccept(db2, delivery.delivery_id);
   if (hostAccept) {
-    projected.push({ fact: projectHostAccept(delivery, hostAccept), rank: 0, order: hostAccept.fact_order });
+    projected.push({
+      fact: { ...projectHostAccept(delivery, hostAccept), delivery_state: readDeliveryState(db2, delivery) },
+      rank: 0,
+      order: hostAccept.fact_order
+    });
   }
   const ackFacts = db2.prepare(`
     SELECT rowid AS fact_order, ack_fact_id, delivery_id, host_accept_id, actor,
@@ -26347,6 +26354,41 @@ function readPublicReceipts(db2, input) {
     });
   }
   return projected.sort((left, right) => left.fact.created_at.localeCompare(right.fact.created_at) || left.rank - right.rank || left.order - right.order).map(({ fact }) => fact);
+}
+function readDeliveryState(db2, delivery) {
+  const observedAtMs = Date.now();
+  const intake = db2.prepare(`
+    SELECT 1 FROM agent_message_receipts
+    WHERE project = ? AND recipient = ? AND message_id = ? AND receipt_kind = 'intake'
+    LIMIT 1
+  `).get(delivery.project, delivery.recipient, delivery.message_id) === void 0 ? "pending" : "recorded";
+  const observed_at = new Date(observedAtMs).toISOString();
+  const session = delivery.target_kind === "session" ? delivery.recipient : delivery.intended_session;
+  if (session === null)
+    return { observed_at, intake, target_session: "not_applicable" };
+  return { observed_at, intake, target_session: sessionLiveness(db2, delivery.project, session, observedAtMs), session };
+}
+function sessionLiveness(db2, project, session, observedAtMs) {
+  const ids = [...sessionAliasChain(db2, session)];
+  const marks = ids.map(() => "?").join(", ");
+  try {
+    const registered = db2.prepare(`
+      SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${marks}) LIMIT 1
+    `).get(project, ...ids) !== void 0;
+    if (!registered)
+      return "unknown";
+    const live = db2.prepare(`
+      SELECT 1 FROM agent_session_connections
+      WHERE project = ? AND session_instance_id IN (${marks})
+        AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+      LIMIT 1
+    `).get(project, ...ids, observedAtMs) !== void 0;
+    return live ? "live" : "not_live";
+  } catch (error51) {
+    if (/no such table: agent_session_(instances|connections)\b/.test(error51 instanceof Error ? error51.message : ""))
+      return "unknown";
+    throw error51;
+  }
 }
 function projectHostAccept(delivery, fact) {
   return {
@@ -26566,6 +26608,7 @@ var init_agent_messaging2 = __esm({
     init_schemas3();
     init_agent_router();
     init_paths();
+    init_agent_message_inbox();
     AgentRecipientUnavailableError = class extends AgentMessagingError {
       code = "recipient_unavailable";
       constructor(detail) {

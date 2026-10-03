@@ -20,6 +20,7 @@ export interface ManagedCodexHost {
     readonly thread_id: string;
     readonly session_instance_id: string;
     readonly process: ChildProcess;
+    readonly superseded: Promise<void>;
     close(): Promise<void>;
 }
 export interface ManagedCodexHostDependencies {
@@ -30,5 +31,14 @@ export interface ManagedCodexHostDependencies {
     wait?: (milliseconds: number) => Promise<void>;
 }
 export declare function startManagedCodexHost(config: ManagedCodexHostConfig, dependencies?: ManagedCodexHostDependencies): Promise<ManagedCodexHost>;
+export interface ManagedCodexHostSupervision {
+    onSignal(handler: () => void): void;
+    exit(code: number): void;
+    fail(): void;
+    stderr: {
+        write(text: string): unknown;
+    };
+}
+export declare function superviseManagedCodexHost(host: ManagedCodexHost, io: ManagedCodexHostSupervision): void;
 export {};
 //# sourceMappingURL=codex.d.ts.map

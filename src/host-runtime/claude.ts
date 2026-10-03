@@ -88,7 +88,10 @@ export interface ClaudeManagedSessionDependencies {
   connect_router?: (input: ConnectRouterHostInput) => Promise<RouterHostConnection>;
   generate_session_id?: () => string;
   lifecycle?: LifecycleBindings;
-  on_fatal_error?: (error: unknown) => void;
+  /** `cause` is set only when closing after a replacement failed (#532). */
+  on_fatal_error?: (error: unknown, cause?: 'replacement_close') => void;
+  /** Told once that a newer registration of this session replaced it; the session then closes (#532). */
+  on_superseded?: () => void;
   /**
    * Test seam for the process's own working directory — the identity this
    * channel host registers under (#474). Defaults to `process.cwd()`, which
@@ -197,6 +200,14 @@ export async function startClaudeManagedSession(
     void close().catch(error => dependencies.on_fatal_error?.(error));
   }
 
+  // It can no longer receive, so it stops rather than stay connected to Claude
+  // Code looking like a Channel that works. May arrive while still registering.
+  function onSuperseded(): void {
+    if (phase === 'closing' || phase === 'closed') return;
+    dependencies.on_superseded?.();
+    void close().catch(error => dependencies.on_fatal_error?.(error, 'replacement_close'));
+  }
+
   const deliverOne = async (delivery: RouterDelivery) => {
     if (phase !== 'registering' && phase !== 'registered') {
       throw new Error('Claude channel session is not available.');
@@ -239,6 +250,7 @@ export async function startClaudeManagedSession(
         ...(config.work_summary === undefined ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
       },
       deliver,
+      on_superseded: onSuperseded,
     }).then(async (connection) => {
       if (phase !== 'registering') {
         await connection.close();
@@ -304,11 +316,20 @@ async function main(): Promise<void> {
       ? undefined
       : requiredString(config.session_instance_id, 'session_instance_id'),
   }, {
-    on_fatal_error(error) {
-      process.stderr.write(`memesh-host-claude: router registration failed.${routerOutdatedDetail(error)}\n`);
+    on_fatal_error(error, cause) {
+      process.stderr.write(claudeHostFatalLine(error, cause));
       process.exitCode = 1;
     },
+    on_superseded() {
+      process.stderr.write('memesh-host-claude: replaced by a newer connection for this session; stopping.\n');
+    },
   });
+}
+
+/** The one stderr line `memesh-host-claude` prints for a fatal error. */
+export function claudeHostFatalLine(error: unknown, cause?: 'replacement_close'): string {
+  if (cause === 'replacement_close') return 'memesh-host-claude: closing after the replacement failed.\n';
+  return `memesh-host-claude: router registration failed.${routerOutdatedDetail(error)}\n`;
 }
 
 function isMainModule(): boolean {

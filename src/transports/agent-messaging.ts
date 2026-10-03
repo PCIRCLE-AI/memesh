@@ -29,6 +29,7 @@ import {
   type AgentRouterDiscoverRequest,
 } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
+import { sessionAliasChain } from '../core/agent-message-inbox.js';
 
 export type AgentMessageActionInput = z.infer<typeof MessageSchema>;
 
@@ -85,6 +86,20 @@ type CanonicalDeliveryScope = {
   message_id: string;
   project: string;
   recipient: string;
+  target_kind: string;
+  intended_session: string | null;
+};
+
+/**
+ * G-dead: what a sender can see about an accepted message, observed when the
+ * receipts are read. `not_live` is only that observation, not a lost message:
+ * MeMesh never resends or reroutes it, and the sender may send to the principal.
+ */
+type DeliveryState = {
+  observed_at: string;
+  intake: 'recorded' | 'pending';
+  target_session: 'live' | 'not_live' | 'unknown' | 'not_applicable';
+  session?: string;
 };
 
 type HostAcceptRow = {
@@ -241,7 +256,7 @@ function resolveCanonicalDelivery(
   messageId: string,
 ): CanonicalDeliveryScope {
   const delivery = db.prepare(`
-    SELECT delivery_id, message_id, project, recipient
+    SELECT delivery_id, message_id, project, recipient, target_kind, intended_session
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId) as CanonicalDeliveryScope | undefined;
@@ -295,7 +310,15 @@ function recordPublicWorkflow(
   });
 }
 
+// One read transaction, so the facts and the observed delivery state are one snapshot.
 function readPublicReceipts(
+  db: MemeshDatabase,
+  input: Extract<AgentMessageActionInput, { action: 'receipts' }>,
+): ProjectedFact[] {
+  return db.transaction(() => readPublicReceiptsSnapshot(db, input))();
+}
+
+function readPublicReceiptsSnapshot(
   db: MemeshDatabase,
   input: Extract<AgentMessageActionInput, { action: 'receipts' }>,
 ): ProjectedFact[] {
@@ -311,7 +334,11 @@ function readPublicReceipts(
 
   const hostAccept = readHostAccept(db, delivery.delivery_id);
   if (hostAccept) {
-    projected.push({ fact: projectHostAccept(delivery, hostAccept), rank: 0, order: hostAccept.fact_order });
+    projected.push({
+      fact: { ...projectHostAccept(delivery, hostAccept), delivery_state: readDeliveryState(db, delivery) },
+      rank: 0,
+      order: hostAccept.fact_order,
+    });
   }
 
   const ackFacts = db.prepare(`
@@ -365,6 +392,46 @@ function readPublicReceipts(
       || left.rank - right.rank
       || left.order - right.order)
     .map(({ fact }) => fact);
+}
+
+function readDeliveryState(db: MemeshDatabase, delivery: CanonicalDeliveryScope): DeliveryState {
+  const observedAtMs = Date.now();
+  const intake = db.prepare(`
+    SELECT 1 FROM agent_message_receipts
+    WHERE project = ? AND recipient = ? AND message_id = ? AND receipt_kind = 'intake'
+    LIMIT 1
+  `).get(delivery.project, delivery.recipient, delivery.message_id) === undefined ? 'pending' : 'recorded';
+  const observed_at = new Date(observedAtMs).toISOString();
+  const session = delivery.target_kind === 'session' ? delivery.recipient : delivery.intended_session;
+  if (session === null) return { observed_at, intake, target_session: 'not_applicable' };
+  return { observed_at, intake, target_session: sessionLiveness(db, delivery.project, session, observedAtMs), session };
+}
+
+/** Live through any id in the session's alias chain; a session no registry row names is `unknown`, never `not_live`. */
+function sessionLiveness(
+  db: MemeshDatabase,
+  project: string,
+  session: string,
+  observedAtMs: number,
+): DeliveryState['target_session'] {
+  const ids = [...sessionAliasChain(db, session)];
+  const marks = ids.map(() => '?').join(', ');
+  try {
+    const registered = db.prepare(`
+      SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${marks}) LIMIT 1
+    `).get(project, ...ids) !== undefined;
+    if (!registered) return 'unknown';
+    const live = db.prepare(`
+      SELECT 1 FROM agent_session_connections
+      WHERE project = ? AND session_instance_id IN (${marks})
+        AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+      LIMIT 1
+    `).get(project, ...ids, observedAtMs) !== undefined;
+    return live ? 'live' : 'not_live';
+  } catch (error) {
+    if (/no such table: agent_session_(instances|connections)\b/.test(error instanceof Error ? error.message : '')) return 'unknown';
+    throw error;
+  }
 }
 
 function projectHostAccept(delivery: CanonicalDeliveryScope, fact: HostAcceptRow): ProjectedFact {

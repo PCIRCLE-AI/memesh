@@ -34,6 +34,7 @@ export interface ConnectRouterHostInput {
     auth_token: string;
     identity: RouterHostIdentity;
     deliver(delivery: RouterDelivery): Promise<AgentJsonObject>;
+    on_superseded?: () => void;
     resilience?: RouterClientResilienceOptions;
 }
 export declare function connectRouterHost(input: ConnectRouterHostInput): Promise<RouterHostConnection>;

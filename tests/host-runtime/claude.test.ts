@@ -13,6 +13,7 @@ import {
   type ClaudeChannelNotification,
 } from '../../src/host-adapters/claude-channel.js';
 import {
+  claudeHostFatalLine,
   startClaudeManagedSession,
   type ClaudeManagedSessionConfig,
   type ClaudeManagedSessionDependencies,
@@ -511,6 +512,66 @@ describe.skipIf(process.platform === 'win32')('Claude managed host runtime', () 
     await vi.waitFor(() => expect(lateConnection.close).toHaveBeenCalledTimes(1));
 
     expect(context.session.phase).toBe('closed');
+  });
+
+  it('#532: closes the Channel with one notice and no fatal error when a newer connection replaces it', async () => {
+    const superseded = vi.fn();
+    const fatal = vi.fn();
+    const context = await setup({ on_superseded: superseded, on_fatal_error: fatal });
+    context.server.oninitialized?.();
+    await context.session.registered;
+
+    context.routerInput()!.on_superseded?.();
+    await vi.waitFor(() => expect(context.session.phase).toBe('closed'));
+    context.lifecycle.emit('SIGTERM');
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(superseded).toHaveBeenCalledTimes(1);
+    expect(context.server.close).toHaveBeenCalledTimes(1);
+    expect(fatal).not.toHaveBeenCalled();
+    await expect(context.routerInput()!.deliver(delivery('after-replacement'))).rejects
+      .toThrow('session is not available');
+  });
+
+  it('#532: closes even when the replacement is reported before registration has returned', async () => {
+    const superseded = vi.fn();
+    const fatal = vi.fn();
+    const late = fakeConnection();
+    const context = await setup({
+      on_superseded: superseded,
+      on_fatal_error: fatal,
+      connect_router: async (input) => {
+        input.on_superseded?.();
+        return late;
+      },
+    });
+    context.server.oninitialized?.();
+
+    await expect(context.session.registered).rejects.toThrow('closed before router registration');
+    await vi.waitFor(() => expect(context.session.phase).toBe('closed'));
+    await vi.waitFor(() => expect(late.close).toHaveBeenCalledTimes(1));
+    expect(superseded).toHaveBeenCalledTimes(1);
+    expect(context.server.close).toHaveBeenCalledTimes(1);
+    expect(fatal).not.toHaveBeenCalled();
+  });
+
+  it('#532: reports a failed close after a replacement as fatal', async () => {
+    const server = fakeServer();
+    server.close.mockRejectedValueOnce(new Error('server close broke'));
+    const fatal = vi.fn();
+    const context = await setup({ server, on_superseded: vi.fn(), on_fatal_error: fatal });
+    context.server.oninitialized?.();
+    await context.session.registered;
+
+    context.routerInput()!.on_superseded?.();
+    await vi.waitFor(() => expect(fatal).toHaveBeenCalledTimes(1));
+    expect(fatal.mock.calls[0][0]).toMatchObject({ message: 'server close broke' });
+    expect(fatal.mock.calls[0][1]).toBe('replacement_close');
+    // The entry prints a fixed reason for it, not the registration failure line.
+    expect(claudeHostFatalLine(fatal.mock.calls[0][0], fatal.mock.calls[0][1]))
+      .toBe('memesh-host-claude: closing after the replacement failed.\n');
+    expect(claudeHostFatalLine(new Error('router unavailable')))
+      .toBe('memesh-host-claude: router registration failed.\n');
   });
 
   it('fails closed when router registration fails', async () => {

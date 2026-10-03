@@ -19,8 +19,10 @@ import {
   createAcpSessionUpdateSink,
   resolveManagedAcpLaunch,
   startManagedAcpHost,
+  superviseManagedAcpHost,
   type ConnectRouterHost,
 } from '../../src/host-runtime/acp.js';
+import { runHostEntry } from '../../src/host-runtime/entry.js';
 
 const temporaryDirectories: string[] = [];
 
@@ -405,4 +407,105 @@ it.runIf(process.platform === 'win32')('fails closed before spawning ACP or regi
 
   expect(connectAcpHost).not.toHaveBeenCalled();
   expect(connectRouterHost).not.toHaveBeenCalled();
+});
+
+describe('#532 a managed ACP host whose started agent fails', () => {
+  const deliver: AcpRouterRegistration['deliver'] = async () => ({
+    host: 'acp', acp_session_id: 'gemini-acp-session', accepted: true, stop_reason: 'end_turn',
+  });
+
+  async function supervised(closeRouter: () => void = () => {}) {
+    const events: string[] = [];
+    let acpOptions: AcpClientOptions | undefined;
+    let superseded: (() => void) | undefined;
+    const runtime = await startManagedAcpHost(managedConfig(), {
+      connect_router_host: async (options) => {
+        superseded = options.on_superseded;
+        return { generation: 1, close: closeRouter };
+      },
+      connect_acp_host: managedConnector(events, deliver, (options) => { acpOptions = options; }),
+    });
+    const stderr: string[] = [];
+    const exits: number[] = [];
+    let signal: (() => void) | undefined;
+    const write = (text: string) => { stderr.push(text); return true; };
+    const exitCode = runHostEntry('memesh-host-acp', () => superviseManagedAcpHost(runtime, {
+      onSignal: (handler) => { signal = handler; },
+      exit: (code) => { exits.push(code); },
+      stderr: { write },
+    }), { write });
+    return {
+      events, runtime, stderr, exits, exitCode,
+      fail: (error: Error) => acpOptions?.onFailure?.(error),
+      signal: () => signal?.(),
+      supersede: () => superseded?.(),
+    };
+  }
+
+  it.skipIf(process.platform === 'win32')('exits 1 with the agent\'s cause on stderr, after closing the host once', async () => {
+    const host = await supervised();
+    host.fail(new AcpProcessExitError('ACP process exited with code 3.'));
+    await expect(host.exitCode).resolves.toBe(1);
+    expect(host.stderr).toEqual(['memesh-host-acp: ACP process exited with code 3.\n']);
+    expect(host.exits).toEqual([]);
+    expect(host.events.filter((event) => event === 'terminate')).toHaveLength(1);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps exit 1 when a signal arrives after the agent failed', async () => {
+    const host = await supervised();
+    host.fail(new AcpProcessExitError('ACP process exited with signal SIGKILL.'));
+    await Promise.resolve();
+    host.signal(); // SIGTERM during the failure's own shutdown
+    await expect(host.exitCode).resolves.toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(host.exits).toEqual([]); // the signal never exits 0 over the failure
+    expect(host.stderr).toEqual(['memesh-host-acp: ACP process exited with signal SIGKILL.\n']);
+    expect(host.events.filter((event) => event === 'terminate')).toHaveLength(1);
+  });
+
+  it.skipIf(process.platform === 'win32')('exits 0 without a failure report when a signal closes it first', async () => {
+    const host = await supervised();
+    host.signal();
+    await vi.waitFor(() => expect(host.exits).toEqual([0]));
+    const outcome = await Promise.race([
+      host.runtime.failure.then(() => 'failed'),
+      new Promise((resolve) => setTimeout(() => resolve('still pending'), 50)),
+    ]);
+    expect(outcome).toBe('still pending');
+    expect(host.stderr).toEqual([]);
+  });
+
+  const replaced = 'memesh-host-acp: replaced by a newer connection for this session; stopping.\n';
+
+  it.skipIf(process.platform === 'win32')('exits 0 with one notice when a newer connection replaces it, and a later signal changes nothing', async () => {
+    const host = await supervised();
+    host.supersede();
+    await vi.waitFor(() => expect(host.exits).toEqual([0]));
+    host.signal();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(host.exits).toEqual([0]);
+    expect(host.stderr).toEqual([replaced]);
+    expect(host.events.filter((event) => event === 'terminate')).toHaveLength(1);
+  });
+
+  it.skipIf(process.platform === 'win32')('exits 1, not 0, when closing after a replacement fails', async () => {
+    const host = await supervised(() => { throw new Error('router close broke'); });
+    host.supersede();
+    await vi.waitFor(() => expect(host.exits).toEqual([1]));
+    expect(host.stderr).toEqual([
+      replaced,
+      'memesh-host-acp: closing after the replacement failed: router close broke\n',
+    ]);
+  });
+
+  it.skipIf(process.platform === 'win32')('keeps the agent failure\'s exit 1 when a replacement arrives after it', async () => {
+    const host = await supervised();
+    host.fail(new AcpProcessExitError('ACP process exited with code 3.'));
+    await Promise.resolve();
+    host.supersede();
+    await expect(host.exitCode).resolves.toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(host.exits).toEqual([]);
+    expect(host.stderr).toEqual(['memesh-host-acp: ACP process exited with code 3.\n']);
+  });
 });

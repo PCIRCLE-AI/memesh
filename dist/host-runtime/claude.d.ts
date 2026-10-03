@@ -29,7 +29,8 @@ export interface ClaudeManagedSessionDependencies {
     connect_router?: (input: ConnectRouterHostInput) => Promise<RouterHostConnection>;
     generate_session_id?: () => string;
     lifecycle?: LifecycleBindings;
-    on_fatal_error?: (error: unknown) => void;
+    on_fatal_error?: (error: unknown, cause?: 'replacement_close') => void;
+    on_superseded?: () => void;
     cwd?: () => string;
     env?: NodeJS.ProcessEnv;
 }
@@ -40,5 +41,6 @@ export interface ClaudeManagedSession {
     close(): Promise<void>;
 }
 export declare function startClaudeManagedSession(config: ClaudeManagedSessionConfig, dependencies?: ClaudeManagedSessionDependencies): Promise<ClaudeManagedSession>;
+export declare function claudeHostFatalLine(error: unknown, cause?: 'replacement_close'): string;
 export {};
 //# sourceMappingURL=claude.d.ts.map

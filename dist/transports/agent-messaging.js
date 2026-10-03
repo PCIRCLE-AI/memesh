@@ -3,6 +3,7 @@ import { AgentIntendedSessionUnsupportedError, AgentMessageAccessError, AgentMes
 import { MessageSchema } from './schemas.js';
 import { AGENT_ROUTER_PROTOCOL_VERSION, AgentRouterError, createAgentRouterNotifier, sendAgentRouterRequest, } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
+import { sessionAliasChain } from '../core/agent-message-inbox.js';
 export class AgentRecipientUnavailableError extends AgentMessagingError {
     code = 'recipient_unavailable';
     constructor(detail) {
@@ -118,7 +119,7 @@ function receiptDetail(note, context) {
 }
 function resolveCanonicalDelivery(db, project, recipient, messageId) {
     const delivery = db.prepare(`
-    SELECT delivery_id, message_id, project, recipient
+    SELECT delivery_id, message_id, project, recipient, target_kind, intended_session
     FROM agent_message_deliveries
     WHERE project = ? AND recipient = ? AND message_id = ?
   `).get(project, recipient, messageId);
@@ -159,6 +160,9 @@ function recordPublicWorkflow(db, input, context) {
     });
 }
 function readPublicReceipts(db, input) {
+    return db.transaction(() => readPublicReceiptsSnapshot(db, input))();
+}
+function readPublicReceiptsSnapshot(db, input) {
     const delivery = resolveCanonicalDelivery(db, input.project, input.recipient, input.message_id);
     const projected = [];
     const legacy = readAgentMessageReceipts(db, input);
@@ -169,7 +173,11 @@ function readPublicReceipts(db, input) {
     }));
     const hostAccept = readHostAccept(db, delivery.delivery_id);
     if (hostAccept) {
-        projected.push({ fact: projectHostAccept(delivery, hostAccept), rank: 0, order: hostAccept.fact_order });
+        projected.push({
+            fact: { ...projectHostAccept(delivery, hostAccept), delivery_state: readDeliveryState(db, delivery) },
+            rank: 0,
+            order: hostAccept.fact_order,
+        });
     }
     const ackFacts = db.prepare(`
     SELECT rowid AS fact_order, ack_fact_id, delivery_id, host_accept_id, actor,
@@ -220,6 +228,42 @@ function readPublicReceipts(db, input) {
         || left.rank - right.rank
         || left.order - right.order)
         .map(({ fact }) => fact);
+}
+function readDeliveryState(db, delivery) {
+    const observedAtMs = Date.now();
+    const intake = db.prepare(`
+    SELECT 1 FROM agent_message_receipts
+    WHERE project = ? AND recipient = ? AND message_id = ? AND receipt_kind = 'intake'
+    LIMIT 1
+  `).get(delivery.project, delivery.recipient, delivery.message_id) === undefined ? 'pending' : 'recorded';
+    const observed_at = new Date(observedAtMs).toISOString();
+    const session = delivery.target_kind === 'session' ? delivery.recipient : delivery.intended_session;
+    if (session === null)
+        return { observed_at, intake, target_session: 'not_applicable' };
+    return { observed_at, intake, target_session: sessionLiveness(db, delivery.project, session, observedAtMs), session };
+}
+function sessionLiveness(db, project, session, observedAtMs) {
+    const ids = [...sessionAliasChain(db, session)];
+    const marks = ids.map(() => '?').join(', ');
+    try {
+        const registered = db.prepare(`
+      SELECT 1 FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${marks}) LIMIT 1
+    `).get(project, ...ids) !== undefined;
+        if (!registered)
+            return 'unknown';
+        const live = db.prepare(`
+      SELECT 1 FROM agent_session_connections
+      WHERE project = ? AND session_instance_id IN (${marks})
+        AND disconnected_at IS NULL AND lease_expires_at_ms > ?
+      LIMIT 1
+    `).get(project, ...ids, observedAtMs) !== undefined;
+        return live ? 'live' : 'not_live';
+    }
+    catch (error) {
+        if (/no such table: agent_session_(instances|connections)\b/.test(error instanceof Error ? error.message : ''))
+            return 'unknown';
+        throw error;
+    }
 }
 function projectHostAccept(delivery, fact) {
     return {

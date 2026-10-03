@@ -6,7 +6,8 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const KILL_GRACE_MS = 1_000;
 const MAX_READ_BYTES = 1024 * 1024;
 const QUEUE_PAGE = 100;
-const MEMESH_MESSAGE_PREFIX = '{"message_type":"memesh_message"';
+// What MeMesh queues: a notice now, the full message before (still possibly waiting in a queue).
+const MEMESH_QUEUED_PREFIXES = ['{"message_type":"memesh_message_notice"', '{"message_type":"memesh_message"'];
 
 /** `other_input`: something MeMesh did not queue is waiting too, so nothing is started. */
 export type CodexQueueRelease =
@@ -138,8 +139,11 @@ function stop(child: ChildProcess): void {
 }
 
 function isMemeshSubmission(item: QueuedItem): boolean {
-  return Array.isArray(item.input) && item.input.length > 0 && item.input.every((part) =>
-    part.type === 'text' && typeof part.text === 'string' && part.text.startsWith(MEMESH_MESSAGE_PREFIX));
+  return Array.isArray(item.input) && item.input.length > 0 && item.input.every((part) => {
+    const text = part.text;
+    return part.type === 'text' && typeof text === 'string'
+      && MEMESH_QUEUED_PREFIXES.some((prefix) => text.startsWith(prefix));
+  });
 }
 
 /** A masked client frame; every payload here is far below 64 KiB. */

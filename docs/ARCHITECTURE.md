@@ -58,7 +58,7 @@ MeMesh separates concerns into two layers:
 - `types.ts` — shared TypeScript interfaces (zero external deps)
 - `operations.ts` — `remember`, `recall`, `forget`, `export`, `import` as pure functions called by all transports
 - `agent-messaging.ts` — transactional exact-recipient messages, opaque cursors, bounded waits, payload fetch, a 64 KiB JSON-encoded durable payload cap, and independent receipt facts
-- `agent-router.ts` — owner-private local routing from a durable message event to an eligible active host adapter, plus a bounded project-scoped directory of live registrations; native delivery carries one untrusted full envelope capped at 16 KiB, including routing metadata and payload
+- `agent-router.ts` — owner-private local routing from a durable message event to an eligible active host adapter, plus a bounded project-scoped directory of live registrations; native delivery is bounded by a 16 KiB cap on the untrusted full envelope, including routing metadata and payload; the Claude Code channel carries that envelope, the Codex CLI queue only a notice naming the message
 - `config.ts` — owner-local configuration reads and partial updates for the retained non-model settings
 - `paths.ts` — centralised filesystem path resolution (HOME-first override; shared with hooks via a build-generated copy in `scripts/hooks/_generated/`)
 - `scoring.ts` — multi-factor scoring engine: weights search relevance, recency, frequency, confidence, recall-impact; exports `rankEntities()` used by all recall paths
@@ -285,8 +285,8 @@ Tool call: remember({name, type, observations, tags, relations})
 message send (MCP / HTTP / CLI)
   -> durable exact-recipient message + notification event in SQLite
   -> owner-private local agent router
-  -> eligible active supported host adapter (for example, configured Codex)
-  -> bounded untrusted full message through the native host channel
+  -> eligible active supported host adapter (Claude Code channel or Codex CLI queue)
+  -> Claude: bounded untrusted full envelope; Codex: short notice, body read from the inbox
      (64 KiB JSON-encoded durable payload; 16 KiB complete native envelope)
   -> exact-session send returns only after native host acceptance
 ```

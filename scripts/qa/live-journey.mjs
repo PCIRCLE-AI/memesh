@@ -858,7 +858,10 @@ export function assertNoHostOutcomeReceipts(receipts, expected) {
 
 /**
  * Require a one-to-one mapping between exact-session sends and native queue
- * invocations. Extra, duplicate, crossed, or rewritten envelopes all fail.
+ * invocations. The Codex queue carries only a notice naming the message (its
+ * exact routing ids, never the body); the body is read from the durable inbox,
+ * so a `fetched` copy must equal the sent payload. Extra, duplicate, crossed,
+ * rewritten, or sentinel-carrying notices all fail.
  *
  * @param {unknown[]} invocations task-owned codex queue records
  * @param {Array<{sessionId: string, messageId: string, deliveryId: string, project: string, sender: string, contentType: string, payload: unknown, fetched?: unknown}>} messages
@@ -877,20 +880,27 @@ export function assertExactCodexQueueRouting(invocations, messages) {
     try { serialized = JSON.parse(invocation.serialized_message); } catch {
       throw new Error('The task-owned codex queue stub received invalid serialized native JSON.');
     }
-    const envelope = serialized?.envelope;
-    if (serialized?.message_type !== 'memesh_message'
-      || serialized?.delivery_id !== message.deliveryId
-      || envelope?.message_id !== message.messageId
-      || envelope?.project !== message.project
-      || envelope?.sender !== message.sender
-      || envelope?.recipient !== message.sessionId
-      || envelope?.target_kind !== 'session'
-      || envelope?.content_type !== message.contentType
-      || !isDeepStrictEqual(envelope?.payload, message.payload)
-      || (message.fetched !== undefined && !isDeepStrictEqual(envelope, message.fetched))) {
-      throw new Error(`The native queue envelope crossed exact-session boundaries: ${JSON.stringify(serialized)}.`);
+    const notice = serialized;
+    const noticeKeys = ['delivery_id', 'handling', 'message_id', 'message_type', 'project', 'recipient', 'target_kind'];
+    if (notice?.message_type !== 'memesh_message_notice'
+      || !isDeepStrictEqual(Object.keys(notice).sort(), noticeKeys)
+      || typeof notice.handling !== 'string'
+      || notice.delivery_id !== message.deliveryId
+      || notice.message_id !== message.messageId
+      || notice.project !== message.project
+      || notice.recipient !== message.sessionId
+      || notice.target_kind !== 'session'
+      // This journey's own unique sentinel is the body marker; it must never be in the notice.
+      || (typeof message.payload?.qa_sentinel === 'string'
+        && invocation.serialized_message.includes(message.payload.qa_sentinel))
+      || (message.fetched !== undefined && (
+        message.fetched?.message_id !== message.messageId
+        || message.fetched?.sender !== message.sender
+        || message.fetched?.content_type !== message.contentType
+        || !isDeepStrictEqual(message.fetched?.payload, message.payload)))) {
+      throw new Error(`The native queue notice crossed exact-session boundaries: ${JSON.stringify(serialized)}.`);
     }
-    return { message, invocation, envelope };
+    return { message, invocation, notice };
   });
 }
 

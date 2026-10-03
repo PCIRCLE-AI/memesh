@@ -150,16 +150,16 @@ matching valid override supplies its principal; the project is always the
 automatic one for that workspace, same as an ordinary thread there would get.
 Another workspace keeps automatic thread-scoped registration. A malformed or
 insecure override fails closed. The authenticated router sends the exact
-registered thread one bounded full message through native `codex queue`; no
-second `message fetch` is required. A message accepted during the idle window
+registered thread a short notice through native `codex queue`, never the
+message body; the agent fetches the body from the durable inbox and records
+intake, and stops if it already has. A notice accepted during the idle window
 becomes model-visible when the same thread resumes; a stopped UI is not
 awakened.
 
 `host_accept` records only that the local Codex queue accepted that message. It
 does not prove an agent read the payload, acknowledged it, or accepted the
-work. Codex exposes message text through its `--message` process argument, so
-same-user process inspection may observe it while the queue command runs; do
-not send secrets through the native path. If the session is stopped, missing,
+work. The notice's routing identifiers, not the body, appear in the `codex queue`
+process arguments; still do not send secrets through the native path. If the session is stopped, missing,
 or disconnected, MeMesh neither starts nor replaces it; the durable inbox remains
 available to scoped fetch, cursor recovery, `poll`, and `memesh message watch`
 for audit and diagnosis. Failed exact-session native delivery is not replayed

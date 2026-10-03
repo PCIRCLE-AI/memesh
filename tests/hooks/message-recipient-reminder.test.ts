@@ -687,7 +687,7 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
   describe('Feature: #490 a session-targeted delivery is reminded under its principal, only while live', () => {
     // The router already pushed this delivery into the host (a host_accept
     // row, through the same FK chain the router writes).
-    function seedHostAccept(project: string, deliveryId: string, principal: string) {
+    function seedHostAccept(project: string, deliveryId: string, principal: string, receiptJson = '{}') {
       const suffix = randomUUID();
       const db = getDatabase();
       db.prepare(`
@@ -708,8 +708,8 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       `).run(`attempt-${suffix}`, deliveryId, project, principal, `session-${suffix}`, `connection-${suffix}`);
       db.prepare(`
         INSERT INTO agent_host_accepts (host_accept_id, attempt_id, delivery_id, adapter_kind, receipt_json)
-        VALUES (?, ?, ?, 'test-adapter', '{}')
-      `).run(`host-accept-${suffix}`, `attempt-${suffix}`, deliveryId);
+        VALUES (?, ?, ?, 'test-adapter', ?)
+      `).run(`host-accept-${suffix}`, `attempt-${suffix}`, deliveryId, receiptJson);
     }
 
     const codexEnv = { MEMESH_HOOK_HOST: 'codex', MEMESH_RECIPIENT: 'claude-implementer' };
@@ -723,6 +723,24 @@ describe('Feature: a session that declares MEMESH_RECIPIENT is told when a messa
       expect(promptResult.stdout).not.toContain('message waiting');
       const start = run('session-start.js', { cwd: tmp, session_id: 's-1', source: 'startup' }, codexEnv);
       expect(start.stdout).not.toContain('message waiting');
+    });
+
+    it('#514: under Codex, a principal message queued into thread T1 is reminded in thread T2, not in T1', async () => {
+      const t1 = '01a10000-0000-7000-8000-0000000000a1';
+      const t2 = '01a10000-0000-7000-8000-0000000000a2';
+      registerAgentSession('team-room', 'claude-implementer'); // the principal row the host-accept fixture needs
+      const sent = await executeAgentMessageAction(getDatabase(), {
+        action: 'send', project: 'team-room', sender: 'codex-lead', recipient: 'claude-implementer',
+        idempotency_key: 'k-other-thread', payload: { text: 'for the principal' }, content_type: 'application/json',
+      }, { transport: 'mcp', sourceHost: 'test-host' }) as { delivery_id: string };
+      seedHostAccept('team-room', sent.delivery_id, 'claude-implementer', JSON.stringify({ host: 'codex-cli', status: 'queued', thread_id: t1 }));
+
+      const inT2 = run('user-prompt-intent.js', { prompt: 'hello there', session_id: t2, cwd: tmp }, codexEnv);
+      expect(context(inT2.stdout)).toContain('1 message waiting for "claude-implementer"');
+      const startT2 = run('session-start.js', { cwd: tmp, session_id: t2, source: 'startup' }, codexEnv);
+      expect(context(startT2.stdout)).toContain('1 message waiting for "claude-implementer"');
+      const inT1 = run('user-prompt-intent.js', { prompt: 'hello there', session_id: t1, cwd: tmp }, codexEnv);
+      expect(inT1.stdout).not.toContain('message waiting');
     });
 
     it('under Codex, still reminds about a delivery with no host acceptance', async () => {

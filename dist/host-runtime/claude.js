@@ -95,6 +95,12 @@ export async function startClaudeManagedSession(config, dependencies = {}) {
     function onInputClose() {
         void close().catch(error => dependencies.on_fatal_error?.(error));
     }
+    function onSuperseded() {
+        if (phase === 'closing' || phase === 'closed')
+            return;
+        dependencies.on_superseded?.();
+        void close().catch(error => dependencies.on_fatal_error?.(error, 'replacement_close'));
+    }
     const deliverOne = async (delivery) => {
         if (phase !== 'registering' && phase !== 'registered') {
             throw new Error('Claude channel session is not available.');
@@ -137,6 +143,7 @@ export async function startClaudeManagedSession(config, dependencies = {}) {
                 ...(config.work_summary === undefined ? {} : { work_summary: requiredString(config.work_summary, 'work_summary') }),
             },
             deliver,
+            on_superseded: onSuperseded,
         }).then(async (connection) => {
             if (phase !== 'registering') {
                 await connection.close();
@@ -199,11 +206,19 @@ async function main() {
             ? undefined
             : requiredString(config.session_instance_id, 'session_instance_id'),
     }, {
-        on_fatal_error(error) {
-            process.stderr.write(`memesh-host-claude: router registration failed.${routerOutdatedDetail(error)}\n`);
+        on_fatal_error(error, cause) {
+            process.stderr.write(claudeHostFatalLine(error, cause));
             process.exitCode = 1;
         },
+        on_superseded() {
+            process.stderr.write('memesh-host-claude: replaced by a newer connection for this session; stopping.\n');
+        },
     });
+}
+export function claudeHostFatalLine(error, cause) {
+    if (cause === 'replacement_close')
+        return 'memesh-host-claude: closing after the replacement failed.\n';
+    return `memesh-host-claude: router registration failed.${routerOutdatedDetail(error)}\n`;
 }
 function isMainModule() {
     const entrypoint = process.argv[1];

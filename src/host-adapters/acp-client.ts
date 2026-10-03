@@ -77,6 +77,12 @@ export interface AcpClientOptions extends AcpHostIdentity {
   session?: AcpSessionSelection;
   router: AcpRouterRegistrar;
   onSessionUpdate?: (update: AcpSessionUpdate) => void;
+  /**
+   * Called once with the error that ended an adapter that had started (the
+   * agent process exited, its stdin closed, a protocol or timeout failure).
+   * Never called for an explicit `close()`.
+   */
+  onFailure?: (error: Error) => void;
   initialize_timeout_ms?: number;
   session_timeout_ms?: number;
   prompt_timeout_ms?: number;
@@ -169,6 +175,7 @@ export class AcpClientHostAdapter {
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly router: AcpRouterRegistrar;
   private readonly onSessionUpdate?: (update: AcpSessionUpdate) => void;
+  private readonly onFailure?: (error: Error) => void;
   private readonly maxEnvelopeBytes: number;
   private readonly maxFrameBytes: number;
   private readonly maxQueueDepth: number;
@@ -203,6 +210,7 @@ export class AcpClientHostAdapter {
     this.child = child;
     this.router = options.router;
     this.onSessionUpdate = options.onSessionUpdate;
+    this.onFailure = options.onFailure;
     this.maxEnvelopeBytes = options.max_envelope_bytes;
     this.maxFrameBytes = options.max_frame_bytes;
     this.maxQueueDepth = options.max_queue_depth;
@@ -577,6 +585,7 @@ export class AcpClientHostAdapter {
     this.rejectPending(error);
     void this.unregisterFromRouter();
     if (stop && !this.exited) stopChild(this.child, this.shutdownGraceMs);
+    if (!this.closing) this.onFailure?.(error);
   }
 
   private rejectPending(error: Error): void {
@@ -612,8 +621,9 @@ export class AcpClientHostAdapter {
   }
 }
 
-interface NormalizedOptions extends Omit<Required<AcpClientOptions>, 'onSessionUpdate'> {
+interface NormalizedOptions extends Omit<Required<AcpClientOptions>, 'onSessionUpdate' | 'onFailure'> {
   onSessionUpdate?: (update: AcpSessionUpdate) => void;
+  onFailure?: (error: Error) => void;
 }
 
 class BootstrapConnection {
@@ -786,6 +796,7 @@ function normalizeOptions(options: AcpClientOptions): NormalizedOptions {
     session: options.session ?? { kind: 'new' },
     router: options.router,
     onSessionUpdate: options.onSessionUpdate,
+    onFailure: options.onFailure,
     initialize_timeout_ms: boundedInteger(
       'initialize_timeout_ms', options.initialize_timeout_ms ?? DEFAULT_INITIALIZE_TIMEOUT_MS, 1, MAX_CONFIGURED_TIMEOUT_MS,
     ),

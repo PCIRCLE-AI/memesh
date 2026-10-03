@@ -417,6 +417,7 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
       connection_id: connectionId,
       generation,
     }));
+    const superseded = vi.fn();
     try {
       connection = await connectRouterHost({
         socket_path: socketPath,
@@ -426,11 +427,13 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
           session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
         },
         deliver: async () => ({ host: 'fixture', status: 'queued' }),
+        on_superseded: superseded,
         resilience: { initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0 },
       });
       await vi.waitFor(() => expect(fixture.registrations()).toBe(2));
       expect(connection.connection_id).toBe('connection-2');
       expect(connection.generation).toBe(2);
+      expect(superseded).not.toHaveBeenCalled();
     } finally {
       await connection?.close();
       connection = undefined;
@@ -647,6 +650,101 @@ describe.skipIf(process.platform === 'win32')('production router host client', (
       WHERE project = ? AND session_instance_id = ? AND disconnected_at IS NULL
     `).get('project-a', 'thread-a')).toEqual({ count: 1 });
     await first.close();
+  });
+
+  it('#532: tells only the replaced host, once, and its close leaves the replacement receiving', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rc-supersede-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const db = openDatabase(path.join(tempDir, 'messages.db'));
+    router = new AgentRouter({
+      db,
+      socket_path: socketPath,
+      memesh_version: memeshPackageVersion(),
+      adapters: [{ kind: 'codex-app-server', authenticate: value => value.auth_token === 'token' }],
+    });
+    await router.start();
+    const delivered = vi.fn(async (_delivery: RouterDelivery) => ({ host: 'fixture', status: 'queued' }));
+    const connect = (onSuperseded: () => void) => connectRouterHost({
+      socket_path: socketPath,
+      auth_token: 'token',
+      identity: {
+        project: 'project-a', principal_id: 'principal-a',
+        session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+      },
+      deliver: delivered,
+      on_superseded: onSuperseded,
+      resilience: { initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0 },
+    });
+    const oldSuperseded = vi.fn();
+    const replacementSuperseded = vi.fn();
+    const old = await connect(oldSuperseded);
+    connection = await connect(replacementSuperseded);
+
+    await vi.waitFor(() => expect(oldSuperseded).toHaveBeenCalledTimes(1));
+    await old.close();
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(oldSuperseded).toHaveBeenCalledTimes(1);
+    expect(replacementSuperseded).not.toHaveBeenCalled();
+    expect(db.prepare(`
+      SELECT disconnected_at FROM agent_session_connections WHERE connection_id = ?
+    `).get(connection.connection_id)).toEqual({ disconnected_at: null });
+
+    const sent = sendAgentMessage(db, {
+      project: 'project-a', sender: 'sender-a', recipient: 'session-a', target_kind: 'session',
+      idempotency_key: 'after-supersede', payload: { text: 'still here' }, content_type: 'application/json',
+    });
+    await createAgentRouterNotifier(socketPath).notify({
+      project: sent.project,
+      delivery_id: sent.delivery_id,
+      event_id: sent.event_id,
+      target_kind: sent.target_kind,
+      target_id: sent.recipient,
+    });
+    await vi.waitFor(() => expect(delivered).toHaveBeenCalledTimes(1));
+    expect(delivered.mock.calls[0][0]).toMatchObject({
+      delivery_id: sent.delivery_id,
+      connection_id: connection.connection_id,
+      generation: connection.generation,
+    });
+
+    await connection.close();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(replacementSuperseded).not.toHaveBeenCalled();
+  });
+
+  it('#532: reports a supersession that arrives before the connect call has returned', async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rc-early-'));
+    fs.chmodSync(tempDir, 0o700);
+    const socketPath = path.join(tempDir, 'router.sock');
+    const fixture = await startPostRegistrationFixture(socketPath, (connectionId, generation) => ({
+      version: AGENT_ROUTER_PROTOCOL_VERSION,
+      type: 'session_superseded',
+      connection_id: connectionId,
+      generation,
+    }));
+    const superseded = vi.fn();
+    try {
+      connection = await connectRouterHost({
+        socket_path: socketPath,
+        auth_token: 'token',
+        identity: {
+          project: 'project-a', principal_id: 'principal-a',
+          session_instance_id: 'session-a', adapter_kind: 'codex-app-server',
+        },
+        deliver: async () => ({ host: 'fixture', status: 'queued' }),
+        on_superseded: superseded,
+        resilience: { initial_retry_ms: 10, max_retry_ms: 20, retry_jitter: 0 },
+      });
+      await vi.waitFor(() => expect(superseded).toHaveBeenCalledTimes(1));
+      await new Promise(resolve => setTimeout(resolve, 60));
+      expect(fixture.registrations()).toBe(1);
+    } finally {
+      await connection?.close();
+      connection = undefined;
+      await fixture.close();
+    }
+    expect(superseded).toHaveBeenCalledTimes(1);
   });
 
   it('uses delayed capped retries and close cancels the pending reconnect loop', async () => {

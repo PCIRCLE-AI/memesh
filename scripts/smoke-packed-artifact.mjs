@@ -665,7 +665,7 @@ try {
 // binary npm installed for this consumer, connects a controlled host through
 // the installed router-client module, and sends through the installed `memesh`
 // CLI with a payload on stdin. This verifies the installed-artifact
-// router-to-adapter full-message contract using a controlled host and a fake
+// router-to-adapter notice contract using a controlled host and a fake
 // queue; it does not create or observe a real Codex task or user-visible
 // notification. The contract is exercised without poll/watch: exact-session
 // send returns only after the router persists native host acceptance.
@@ -886,35 +886,31 @@ fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread
     }));
     await waitFor(
       () => fs.existsSync(queueCapture) || hostExit !== null,
-      'installed-artifact router-to-adapter full-message dispatch to the fake queue',
+      'installed-artifact router-to-adapter notice dispatch to the fake queue',
     );
     assert.equal(hostExit, null, `controlled host exited during router-to-adapter dispatch: ${hostStderr}`);
     assert.equal(hostOutput.includes('"unexpected-payload-delivery"'), false, 'router bypassed the Codex native adapter');
     const queued = JSON.parse(fs.readFileSync(queueCapture, 'utf8'));
     assert.equal(queued.thread_id, '01a041b4-5c67-75b3-9505-4e33d7942b8e');
-    assert.equal(queued.message.message_type, 'memesh_message');
-    assert.equal(queued.message.delivery_id, send.delivery_id);
-    assert.deepEqual(queued.message.envelope, {
+    // The Codex queue carries only a notice naming the message; the body stays in
+    // the durable inbox and is read back by the fetch below.
+    assert.deepEqual(queued.message, {
+      message_type: 'memesh_message_notice',
+      handling: queued.message.handling,
       project: 'packaged-native-smoke',
-      message_id: send.message_id,
-      sender: 'installed-cli-sender',
-      sender_host: 'cli',
       recipient: '01a041b4-5c67-75b3-9505-4e33d7942b8e',
       target_kind: 'session',
-      content_type: 'application/json',
-      correlation_id: null,
-      reply_to: null,
-      privacy: 'private',
-      created_at: send.created_at,
-      payload: { marker: 'installed-native-stdin' },
-      provenance: { transport: 'cli', source_host: 'cli' },
-    });
+      message_id: send.message_id,
+      delivery_id: send.delivery_id,
+    }, 'the queued Codex notice carried other fields than the exact routing');
+    assert.equal(typeof queued.message.handling, 'string');
     assert.equal(send.native_delivery.status, 'native_accepted', 'exact-session send returned before native acceptance');
-    assert.equal(JSON.stringify(queued).includes('installed-native-stdin'), true, 'native message omitted the full payload');
+    assert.equal(JSON.stringify(queued).includes('installed-native-stdin'), false, 'the queued notice carried the message body');
     const accepted = readHostAcceptance(nativeDbPath, send.delivery_id);
     assert.equal(accepted.attempts, 1, 'router-to-adapter dispatch did not persist exactly one dispatch attempt');
     assert.equal(accepted.acceptance?.adapter_kind, 'codex-cli-queue', 'router-to-adapter dispatch did not persist host_accept');
     assert.equal(JSON.parse(accepted.acceptance.receipt_json).host, 'codex-cli');
+    assert.equal(JSON.parse(accepted.acceptance.receipt_json).content, 'notice', 'host_accept did not record a notice-only acceptance');
 
     const fetched = JSON.parse(execFileSync(installedBin('memesh'), [
       'message', 'fetch',
@@ -1154,7 +1150,10 @@ try {
     const mcpQueued = JSON.parse(fs.readFileSync(queueCapture, 'utf8'));
     assert.equal(mcpQueued.thread_id, sessionB, 'MCP A-to-B queue dispatch targeted the wrong Codex session');
     assert.equal(mcpQueued.message.delivery_id, mcpExchange.delivery_id, 'MCP A-to-B queue dispatch used the wrong delivery');
-    assert.deepEqual(mcpQueued.message.envelope.payload, mcpExchange.payload, 'MCP A-to-B queue dispatch lost the exact payload');
+    assert.equal(mcpQueued.message.message_type, 'memesh_message_notice', 'MCP A-to-B queue dispatch was not a notice');
+    assert.equal(mcpQueued.message.message_id, mcpExchange.message_id, 'MCP A-to-B notice named another message');
+    assert.equal('envelope' in mcpQueued.message, false, 'MCP A-to-B notice carried an envelope');
+    assert.equal(JSON.stringify(mcpQueued).includes(mcpExchange.payload.marker), false, 'MCP A-to-B notice carried the message body');
     const mcpAccepted = readHostAcceptance(nativeDbPath, mcpExchange.delivery_id);
     assert.equal(mcpAccepted.attempts, 1, 'MCP A-to-B dispatch did not persist exactly one attempt');
     assert.equal(mcpAccepted.acceptance?.adapter_kind, 'codex-cli-queue', 'MCP A-to-B dispatch did not persist host_accept');
@@ -1181,4 +1180,4 @@ fs.rmSync(smokeDir, { recursive: true, force: true });
 // Say something on success. A check that prints nothing when it passes is
 // indistinguishable from one that did not run — the exact failure mode this
 // repo has spent several releases removing from its own code.
-console.log('✅ Packaged artifact smoke test passed — tarball installs outside the repo, completes MCP lifecycle exchanges, and verifies the installed-artifact router-to-adapter full-message contract via a controlled host and fake queue → synchronous native_accepted readback → persisted host_accept with no implicit ACK/disposition');
+console.log('✅ Packaged artifact smoke test passed — tarball installs outside the repo, completes MCP lifecycle exchanges, and verifies the installed-artifact router-to-adapter notice contract via a controlled host and fake queue → synchronous native_accepted readback → persisted notice host_accept with no implicit ACK/disposition → message body fetched from the durable inbox');

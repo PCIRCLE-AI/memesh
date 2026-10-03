@@ -187,6 +187,8 @@ export declare class AgentRouter {
     private bindExternalConnection;
     private disconnectSocket;
     private handleHostOutcome;
+    private recordLateHostAccept;
+    private insertHostAccept;
     private registerConnection;
     private discover;
     private requireCurrentConnection;

@@ -62,6 +62,13 @@ export interface ConnectRouterHostInput {
   auth_token: string;
   identity: RouterHostIdentity;
   deliver(delivery: RouterDelivery): Promise<AgentJsonObject>;
+  /**
+   * Called once, after the connection has stopped, when the router hands this
+   * session to a newer registration (#532). The host should shut down: it can
+   * no longer receive. Never called for close() or for a frame naming another
+   * connection, and it may run before the connect call has returned.
+   */
+  on_superseded?: () => void;
   resilience?: RouterClientResilienceOptions;
 }
 
@@ -284,10 +291,12 @@ class ActiveRouterHostConnection implements RouterHostConnection {
               ));
               return;
             }
+            const current = !this.closed && this.currentSocket === socket;
             this.closed = true;
             this.clearHeartbeat();
             if (this.currentSocket === socket) this.currentSocket = null;
             socket.destroy();
+            if (current) this.input.on_superseded?.();
             continue;
           }
           if (frame.type !== 'deliver') continue;

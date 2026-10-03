@@ -31,12 +31,18 @@ export async function startManagedCodexHost(config, dependencies = {}) {
         windowsHide: true,
     });
     let routerConnection;
+    let reportSuperseded;
+    const superseded = new Promise((resolve) => { reportSuperseded = resolve; });
     let closeTask;
     const close = () => {
         closeTask ??= (async () => {
-            await routerConnection?.close();
-            if (isChildRunning(child))
-                child.kill('SIGTERM');
+            try {
+                await routerConnection?.close();
+            }
+            finally {
+                if (isChildRunning(child))
+                    child.kill('SIGTERM');
+            }
         })();
         return closeTask;
     };
@@ -86,11 +92,13 @@ export async function startManagedCodexHost(config, dependencies = {}) {
                     queued_submission_id: receipt.queued_submission_id,
                 };
             },
+            on_superseded: reportSuperseded,
         });
         return {
             thread_id: thread.thread_id,
             session_instance_id: normalized.sessionInstanceId,
             process: child,
+            superseded,
             close,
         };
     }
@@ -189,20 +197,39 @@ function isChildRunning(child) {
 function delay(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
+export function superviseManagedCodexHost(host, io) {
+    let stopping = false;
+    let failed = false;
+    const stop = (reason, notice) => {
+        if (stopping || failed)
+            return;
+        stopping = true;
+        if (notice)
+            io.stderr.write(notice);
+        void host.close().then(() => io.exit(0), (error) => {
+            io.stderr.write(`memesh-host-codex: closing after the ${reason} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+            io.exit(1);
+        });
+    };
+    io.onSignal(() => (failed ? io.exit(1) : stop('signal')));
+    void host.superseded.then(() => stop('replacement', 'memesh-host-codex: replaced by a newer connection for this session; stopping.\n'));
+    host.process.once('exit', () => {
+        if (stopping)
+            return;
+        failed = true;
+        io.fail();
+    });
+}
 async function runManagedCodexHost() {
     const host = await startManagedCodexHost(readHostConfig());
-    let shuttingDown = false;
-    const shutdown = () => {
-        if (shuttingDown)
-            return;
-        shuttingDown = true;
-        void host.close().finally(() => process.exit(0));
-    };
-    process.once('SIGINT', shutdown);
-    process.once('SIGTERM', shutdown);
-    host.process.once('exit', () => {
-        if (!shuttingDown)
-            process.exitCode = 1;
+    superviseManagedCodexHost(host, {
+        onSignal(handler) {
+            process.once('SIGINT', handler);
+            process.once('SIGTERM', handler);
+        },
+        exit: (code) => process.exit(code),
+        fail: () => { process.exitCode = 1; },
+        stderr: process.stderr,
     });
 }
 const entryPath = process.argv[1];

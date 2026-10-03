@@ -8,8 +8,10 @@ import { canonicalAgentScopeId } from '../../src/core/agent-scope-id.js';
 import { getProjectName } from '../../src/core/paths.js';
 import {
   startManagedCodexHost,
+  superviseManagedCodexHost,
   type ManagedCodexHostConfig,
 } from '../../src/host-runtime/codex.js';
+import type { ConnectRouterHostInput } from '../../src/host-runtime/router-client.js';
 
 class FakeChild extends EventEmitter {
   exitCode: number | null = null;
@@ -188,6 +190,110 @@ describe.skipIf(process.platform === 'win32')('managed Codex host runtime', () =
       expect(routerConnection.close).toHaveBeenCalledTimes(1);
     } finally {
       await socket.close();
+    }
+  });
+});
+
+describe.skipIf(process.platform === 'win32')('#532 a managed Codex host replaced by a newer connection', () => {
+  const replaced = 'memesh-host-codex: replaced by a newer connection for this session; stopping.\n';
+
+  async function supervised(options: { early?: boolean; closeRouter?: () => Promise<void> } = {}) {
+    const socket = await privateSocket();
+    const config = await configFor(socket.socketPath, socket.directory);
+    const child = new FakeChild();
+    let routerInput: ConnectRouterHostInput | undefined;
+    const routerConnection = {
+      connection_id: 'connection-1', generation: 7, close: vi.fn(options.closeRouter ?? (async () => {})),
+    };
+    const host = await startManagedCodexHost(config, {
+      spawn: vi.fn(() => child) as never,
+      start_thread: vi.fn(async () => {
+        await socket.listen();
+        return { thread_id: 'thread-owned-1' };
+      }),
+      create_adapter: vi.fn(() => ({ queue: vi.fn() })),
+      connect_router_host: vi.fn(async (input: ConnectRouterHostInput) => {
+        routerInput = input;
+        if (options.early) input.on_superseded?.();
+        return routerConnection;
+      }) as never,
+    });
+    const exits: number[] = [];
+    const stderr: string[] = [];
+    const failures: string[] = [];
+    let signal: (() => void) | undefined;
+    superviseManagedCodexHost(host, {
+      onSignal: (handler) => { signal = handler; },
+      exit: (code) => { exits.push(code); },
+      fail: () => { failures.push('child'); },
+      stderr: { write: (text: string) => { stderr.push(text); return true; } },
+    });
+    return {
+      child, exits, stderr, failures, routerConnection, socket,
+      supersede: () => routerInput?.on_superseded?.(),
+      signal: () => signal?.(),
+    };
+  }
+
+  it('stops its own Codex, exits 0 with one notice, and a later signal changes nothing', async () => {
+    const host = await supervised();
+    try {
+      host.supersede();
+      await vi.waitFor(() => expect(host.exits).toEqual([0]));
+      host.signal();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(host.exits).toEqual([0]);
+      expect(host.child.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(host.failures).toEqual([]);
+      expect(host.stderr).toHaveLength(1);
+      expect(host.stderr).toEqual([replaced]);
+    } finally {
+      await host.socket.close();
+    }
+  });
+
+  it('still stops when the replacement is reported before the connect call returned', async () => {
+    const host = await supervised({ early: true });
+    try {
+      await vi.waitFor(() => expect(host.exits).toEqual([0]));
+      expect(host.child.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(host.stderr).toEqual([replaced]);
+    } finally {
+      await host.socket.close();
+    }
+  });
+
+  it('never exits 0 over a Codex process that had already died', async () => {
+    const host = await supervised();
+    try {
+      host.child.exitCode = 1;
+      host.child.emit('exit', 1, null);
+      host.supersede();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(host.failures).toEqual(['child']);
+      expect(host.exits).toEqual([]);
+      expect(host.stderr).toEqual([]);
+      host.signal();
+      expect(host.exits).toEqual([1]);
+    } finally {
+      await host.socket.close();
+    }
+  });
+
+  it('exits 1 when closing after the replacement fails', async () => {
+    const host = await supervised({ closeRouter: async () => { throw new Error('router close broke'); } });
+    try {
+      host.supersede();
+      await vi.waitFor(() => expect(host.exits).toEqual([1]));
+      expect(host.stderr).toEqual([
+        replaced,
+        'memesh-host-codex: closing after the replacement failed: router close broke\n',
+      ]);
+      // The owned Codex still stops, and its exit is not taken for a crash.
+      expect(host.child.kill).toHaveBeenCalledWith('SIGTERM');
+      expect(host.failures).toEqual([]);
+    } finally {
+      await host.socket.close();
     }
   });
 });
